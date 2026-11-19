@@ -12001,6 +12001,10 @@ impl DownloadManager {
                         );
                         return;
                     }
+                    log_info!(
+                        "[manager] seeding stopped by pause request for task {}",
+                        task_id.get(..8).unwrap_or(task_id)
+                    );
                     // 用户再次停止做种：撤销手动恢复时的限制豁免，下次普通恢复重新受限制约束。
                     if let Err(error) = self.db.set_task_seed_limits_exempt(task_id, false).await {
                         crate::logger::report_error(
@@ -20269,6 +20273,104 @@ mod tests {
         drop(new);
         if let Err(error) = std::fs::remove_dir_all(&work) {
             tracing::debug!(%error, "BT rebuild test directory cleanup skipped");
+        }
+    }
+
+    /// 重启续种：磁力任务用会话目录缓存的 `{info_hash}.torrent` 挂载，不向网络要元数据。
+    /// 测试会话关了 DHT、磁力里的 tracker 不可达——走磁力解析会一直卡在元数据阶段，
+    /// 断网 / 路由器重启时启动的续种就是这样停在非做种态的。
+    #[cfg(feature = "bt")]
+    #[tokio::test]
+    async fn magnet_reseed_uses_cached_metadata_without_network() {
+        let (work, port) = bt_test_dir("magnet_cached_reseed");
+        let save = work.join("save");
+        std::fs::create_dir_all(&save).expect("save dir");
+        let payload: Vec<u8> = (0..1024 * 1024_u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
+            .collect();
+        std::fs::write(save.join("payload.bin"), &payload).expect("payload");
+        let torrent = librqbit::create_torrent(
+            &save.join("payload.bin"),
+            librqbit::CreateTorrentOptions {
+                piece_length: Some(64 * 1024),
+                ..Default::default()
+            },
+            &librqbit::spawn_utils::BlockingSpawner::new(1),
+        )
+        .await
+        .expect("create torrent")
+        .as_bytes()
+        .expect("torrent bytes");
+        let info_hash = librqbit::torrent_from_bytes(&torrent)
+            .expect("parse torrent")
+            .info_hash
+            .as_string();
+        let magnet = format!(
+            "magnet:?xt=urn:btih:{info_hash}&dn=payload.bin&tr=udp%3A%2F%2F127.0.0.1%3A9%2Fannounce"
+        );
+
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        db.insert_task(
+            "seed",
+            &magnet,
+            "payload.bin",
+            &save.to_string_lossy(),
+            1,
+            payload.len() as i64,
+            "",
+            "",
+            "",
+            3,
+        )
+        .await
+        .expect("insert task");
+        db.set_task_seeding_active("seed", 0)
+            .await
+            .expect("mark seeding");
+        let mut mgr = bt_test_manager(db, &work, bt_test_config(port));
+        mgr.ensure_bt_session().await.expect("BT session");
+        let bt = mgr.bt_session.clone().expect("live session");
+        std::fs::write(bt.torrent_path(&info_hash), &torrent).expect("cache torrent");
+        let task = mgr
+            .db
+            .load_task_by_id("seed")
+            .await
+            .expect("load task")
+            .expect("task row");
+        mgr.spawn_reseed_from_disk(bt.clone(), &task).await;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let row = mgr
+                .db
+                .load_task_by_id("seed")
+                .await
+                .expect("load task")
+                .expect("task row");
+            let registered = bt
+                .seeding_manager()
+                .active_task_ids()
+                .await
+                .contains(&"seed".to_string());
+            if row.seeding_status == SEEDING_STATUS_ACTIVE && registered {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "offline magnet reseed must seed from the cached metadata \
+                 (status={}, message={:?}, registered={registered})",
+                row.seeding_status,
+                row.seeding_message
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        mgr.shutdown().await;
+        drop(bt);
+        if let Err(error) = std::fs::remove_dir_all(&work) {
+            tracing::debug!(%error, "BT magnet reseed test directory cleanup skipped");
         }
     }
 

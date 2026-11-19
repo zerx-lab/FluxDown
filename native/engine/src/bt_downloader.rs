@@ -520,17 +520,22 @@ fn torrent_is_private(torrent_bytes: &[u8]) -> bool {
     librqbit::torrent_from_bytes(torrent_bytes).is_ok_and(|torrent| torrent.info.data.private)
 }
 
-/// 把追加 tracker 以 `tr=` 参数并入磁力链接，已在链接里的 tracker 不重复追加。
-/// （种子文件的追加 tracker 走 `AddTorrentOptions::trackers`，见 [`SharedBtSession::add_input`]。）
-pub fn magnet_with_trackers(magnet: &str, trackers: &[String]) -> String {
-    let existing: HashSet<String> = url::Url::parse(magnet)
+/// 磁力链接自带的 tracker（`tr=` 参数，已解码），保持链接内顺序。
+fn magnet_trackers(magnet: &str) -> Vec<String> {
+    url::Url::parse(magnet)
         .map(|url| {
             url.query_pairs()
                 .filter(|(key, _)| key == "tr")
                 .map(|(_, value)| value.into_owned())
                 .collect()
         })
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+/// 把追加 tracker 以 `tr=` 参数并入磁力链接，已在链接里的 tracker 不重复追加。
+/// （种子文件的追加 tracker 走 `AddTorrentOptions::trackers`，见 [`SharedBtSession::add_input`]。）
+pub fn magnet_with_trackers(magnet: &str, trackers: &[String]) -> String {
+    let existing: HashSet<String> = magnet_trackers(magnet).into_iter().collect();
     let mut out = magnet.to_owned();
     for tracker in trackers {
         if existing.contains(tracker) {
@@ -2082,6 +2087,35 @@ impl SharedBtSession {
             .join(format!("{info_hash_hex}.torrent"))
     }
 
+    /// 磁力任务在会话目录里缓存的种子元数据（`{info_hash}.torrent`，须与磁力链接的
+    /// info hash 一致），连同磁力链接原文返回；非磁力来源、无缓存或不一致时为 `None`。
+    ///
+    /// 重启后续种用它挂载，不必先联网向节点要元数据：启动时网络尚未就绪（路由器
+    /// 重启、断网）也能完成本地校验并开始做种，网络恢复后再由 DHT / tracker 找到节点。
+    async fn cached_magnet_metadata(&self, source: &TorrentSource) -> Option<(Vec<u8>, String)> {
+        let TorrentSource::Magnet(magnet) = source else {
+            return None;
+        };
+        let expected = source.info_hash_hex()?;
+        let path = self.torrent_path(&expected);
+        let bytes = match tokio::fs::read(&path).await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    log_warn!(
+                        "[BT] cached torrent {} unreadable, resolving the magnet instead: {}",
+                        path.display(),
+                        error
+                    );
+                }
+                return None;
+            }
+        };
+        librqbit::torrent_from_bytes(&bytes)
+            .is_ok_and(|parsed| parsed.info_hash.as_string().eq_ignore_ascii_case(&expected))
+            .then(|| (bytes, magnet.clone()))
+    }
+
     /// 任务是否正从磁盘重新挂载做种（本地数据校验中）。
     pub fn is_reseeding(&self, task_id: &str) -> bool {
         self.reseeding
@@ -2171,7 +2205,32 @@ impl SharedBtSession {
             ..Default::default()
         };
         self.apply_task_options(task_id, &mut opts).await;
-        let add_input = self.add_input(&source, &mut opts);
+        let add_input = match self.cached_magnet_metadata(&source).await {
+            Some((bytes, magnet)) => {
+                // 磁力链接自带的 tracker 仍要带上（缓存文件不保证带 announce）；
+                // 私有种子不追加会话 tracker，与 `add_input` 对种子文件的处理一致。
+                let mut trackers = magnet_trackers(&normalize_magnet(&magnet));
+                if !torrent_is_private(&bytes) {
+                    let extra = self
+                        .extra_trackers
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .clone();
+                    for tracker in extra {
+                        if !trackers.contains(&tracker) {
+                            trackers.push(tracker);
+                        }
+                    }
+                }
+                opts.trackers = Some(trackers);
+                log_info!(
+                    "[BT] task={} reseeding from cached torrent metadata",
+                    short_id(task_id)
+                );
+                AddTorrent::from_bytes(Bytes::from(bytes))
+            }
+            None => self.add_input(&source, &mut opts),
+        };
         let response = self
             .session
             .add_torrent(add_input, Some(opts))
