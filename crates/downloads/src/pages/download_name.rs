@@ -14,7 +14,10 @@ enum NameMode {
     #[default]
     Auto,
     // Auto displays the detected name but retains the exact text to restore in manual mode.
-    AutoWithDraft(SharedString),
+    AutoWithDraft {
+        text: SharedString,
+        prefilled: bool,
+    },
     Manual {
         prefilled: bool,
     },
@@ -47,16 +50,17 @@ impl DownloadName {
             return;
         }
         if auto {
-            let state = input.read(cx);
-            let matches_detected = state.text() == self.detected.as_str();
-            if matches_detected
-                && (self.detected.is_empty()
-                    || matches!(self.mode, NameMode::Manual { prefilled: true }))
-            {
+            let text = input.read(cx).text();
+            let matches_detected = text == self.detected.as_str();
+            let prefilled = matches!(self.mode, NameMode::Manual { prefilled: true });
+            if matches_detected && (self.detected.is_empty() || prefilled) {
                 self.mode = NameMode::Auto;
             } else {
-                let text: Cow<'_, str> = state.text().into();
-                self.mode = NameMode::AutoWithDraft(SharedString::from(text.as_ref()));
+                let text: Cow<'_, str> = text.into();
+                self.mode = NameMode::AutoWithDraft {
+                    text: SharedString::from(text.as_ref()),
+                    prefilled: prefilled && text.trim() == self.detected.trim(),
+                };
                 if !matches_detected {
                     set_text(input, self.detected.clone(), window, cx);
                 }
@@ -68,10 +72,12 @@ impl DownloadName {
                     prefilled: !self.detected.is_empty(),
                 },
             );
-            if let NameMode::AutoWithDraft(draft) = previous {
-                self.mode = NameMode::Manual { prefilled: false };
-                if input.read(cx).text() != draft.as_str() {
-                    set_text(input, draft, window, cx);
+            if let NameMode::AutoWithDraft { text, prefilled } = previous {
+                self.mode = NameMode::Manual {
+                    prefilled: prefilled && text.trim() == self.detected.trim(),
+                };
+                if input.read(cx).text() != text.as_str() {
+                    set_text(input, text, window, cx);
                 }
             }
         }

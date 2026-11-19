@@ -164,6 +164,7 @@
 
 另见 AGENTS.md §4：render 读的状态必须在 entity / global / `ListState` / `ScrollHandle` 内，父 view notify 不再重建子 view，渲染期不得无条件写 entity / global。
 - **新建下载探测名要回填手动模式下的空白输入**：先回填，再预测分类，避免按 URL 后缀误判。只有实际显示过的自动预填值才可随探测更新且不作为手动覆盖提交；后来探测到同名不能认领手动草稿 → `crates/downloads/src/pages/download_name.rs::DownloadName::set_detected`、`new_download/probe.rs::sync_rename`。
+- **自动／手动切换要记住等效草稿的预填来源**：给预填名加首尾空白仍不算改名，切回手动要原样恢复输入且不提交名称覆盖；独立输入的同名草稿仍是显式名称。BT 多文件种子只选一个顶层文件时，误提交覆盖会多建一层目录 → `crates/downloads/src/pages/download_name.rs::DownloadName::set_auto`、回归 `automatic_bt_name_is_displayed_without_losing_a_manual_draft`。
 - **扩展任务行投影不能丢掉已有任务事实**：统一编辑增加分类／标签时曾漏映射 `group_id`、`save_dir`，导致组成员误显示「忽略插件重试」且目录上下文丢失。`DownloadTaskView::local` 必须保留二者；不要用改菜单断言来掩盖事实缺失 → `crates/downloads/src/model/mod.rs::DownloadTaskView::local`、回归 `components::task_table::context_menu_tests::plugin_retry_fact_excludes_task_group_members`。
 - **「全部」命中不能抑制「其他」计数，手动分类须单独求值**：`CategoryIndex::for_each_match` 曾把 `Matcher::All` 也计作具体命中，导致未分类任务的侧栏计数为零；手动归入 `other` 也不能进入自动兜底分支。Rust／Web 均须满足一次扫描计数与逐项过滤等价，重复规则只计一次 → `crates/downloads/src/model/categories.rs`、`model/counts.rs::category_override_counts_match_filters_including_other`、Web `model/counts.test.ts`。
 

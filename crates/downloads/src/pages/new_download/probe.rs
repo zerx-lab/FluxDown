@@ -429,6 +429,10 @@ mod tests {
                 .update(cx, |input, cx| input.set_value("Report.pdf", window, cx));
             apply_probe(view, "Report.pdf", window, cx);
             assert_name(view, cx, "Report.pdf", "Report.pdf");
+            view.set_auto_name(true, window, cx);
+            assert_name(view, cx, "Report.pdf", "");
+            view.set_auto_name(false, window, cx);
+            assert_name(view, cx, "Report.pdf", "Report.pdf");
 
             view.entries = vec![entry("https://example.com/other.zip")];
             view.probe.cache.insert(

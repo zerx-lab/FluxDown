@@ -1588,6 +1588,12 @@ mod tests {
             for unchanged in ["  movie.mkv ", "   "] {
                 input.update(cx, |input, cx| input.set_value(unchanged, window, cx));
                 assert_eq!(view.name_override(cx), None);
+                view.download_name.set_auto(true, input, window, cx);
+                assert_eq!(&*input.read(cx).value(), "movie.mkv");
+                assert_eq!(view.name_override(cx), None);
+                view.download_name.set_auto(false, input, window, cx);
+                assert_eq!(&*input.read(cx).value(), unchanged);
+                assert_eq!(view.name_override(cx), None);
             }
             input.update(cx, |input, cx| input.set_value("  My Movie  ", window, cx));
             assert_eq!(view.name_override(cx).as_deref(), Some("My Movie"));
