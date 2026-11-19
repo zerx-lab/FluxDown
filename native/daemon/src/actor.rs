@@ -156,6 +156,10 @@ pub enum ActorOperation {
         task_id: String,
         enabled: bool,
     },
+    AddTaskWebSeed {
+        task_id: String,
+        url: String,
+    },
     DeleteTask {
         task_id: String,
         delete_files: bool,
@@ -1416,6 +1420,23 @@ async fn execute_operation(
             #[cfg(not(feature = "bt"))]
             {
                 let _ = task_id;
+                return Err(ActorError::InvalidArgument(
+                    UNSUPPORTED_PROTOCOL_MESSAGE.to_owned(),
+                ));
+            }
+        }
+        ActorOperation::AddTaskWebSeed { task_id, url } => {
+            #[cfg(feature = "bt")]
+            {
+                engine
+                    .manager
+                    .add_bt_web_seed(&task_id, &url)
+                    .await
+                    .map_err(bt_task_op_error)?;
+            }
+            #[cfg(not(feature = "bt"))]
+            {
+                let _ = (task_id, url);
                 return Err(ActorError::InvalidArgument(
                     UNSUPPORTED_PROTOCOL_MESSAGE.to_owned(),
                 ));
@@ -2837,6 +2858,8 @@ fn bt_status_to_dto(
                     WebSeedState::Downloading => "downloading",
                     WebSeedState::BackingOff => "backingOff",
                     WebSeedState::Disabled => "disabled",
+                    WebSeedState::Pending => "pending",
+                    WebSeedState::Rejected => "rejected",
                 }
                 .to_owned(),
                 downloaded: seed.downloaded,

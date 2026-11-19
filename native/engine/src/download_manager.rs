@@ -7437,6 +7437,68 @@ impl DownloadManager {
         Ok(true)
     }
 
+    /// Appends a BEP 19 source without changing the torrent or its info hash.
+    /// The source is applied to the current handle and carried across session rebuilds.
+    ///
+    /// # Errors
+    /// The task is not a torrent, the URL is invalid, the list is full, or the live
+    /// session or storage rejected the addition. Without a handle, success means saved.
+    /// Consult [`Self::bt_status`] for the source's application state.
+    #[cfg(feature = "bt")]
+    pub async fn add_bt_web_seed(
+        &mut self,
+        task_id: &str,
+        url: &str,
+    ) -> Result<(), crate::bt_task_files::BtTaskOpError> {
+        use crate::bt_local_seed::{MAX_WEB_SEEDS, is_web_seed_url};
+        use crate::bt_task_files::BtTaskOpError;
+
+        let url = url.trim();
+        if !is_web_seed_url(url) {
+            return Err(BtTaskOpError::InvalidArgument(
+                "expected an absolute HTTP or HTTPS URL of at most 4096 bytes".to_owned(),
+            ));
+        }
+        let task = self
+            .db
+            .load_task_by_id(task_id)
+            .await?
+            .filter(|task| is_bt_url(&task.url))
+            .ok_or(BtTaskOpError::NotFound)?;
+        let mut seeds = self.db.task_web_seeds(task_id).await?;
+        let declared = if let Some(bytes) = self.db.load_torrent_file_bytes(task_id).await?
+            && !bytes.is_empty()
+        {
+            librqbit::torrent_from_bytes(&bytes)
+                .map_err(|error| {
+                    BtTaskOpError::Operation(format!("torrent parse error: {error:#}"))
+                })?
+                .url_list
+        } else if is_magnet(&task.url) {
+            librqbit::Magnet::parse(&bt_downloader::normalize_magnet(&task.url))
+                .map_err(|error| {
+                    BtTaskOpError::Operation(format!("magnet parse error: {error:#}"))
+                })?
+                .web_seeds
+        } else {
+            Vec::new()
+        };
+        let urls: HashSet<_> = declared.iter().chain(&seeds).map(String::as_str).collect();
+        if !urls.contains(url) && urls.len() >= MAX_WEB_SEEDS {
+            return Err(BtTaskOpError::InvalidArgument(format!(
+                "a torrent can have at most {MAX_WEB_SEEDS} web seeds"
+            )));
+        }
+        if let Some(bt) = &self.bt_session {
+            return bt.save_web_seed(&self.db, task_id, url, seeds).await;
+        }
+        if !seeds.iter().any(|seed| seed == url) {
+            seeds.push(url.to_owned());
+            self.db.set_task_web_seeds(task_id, &seeds).await?;
+        }
+        Ok(())
+    }
+
     /// 修改 BT 任务的选片方式（`None` = 该项不变），对齐 qBittorrent 右键「按顺序下载」
     /// 「先下载首尾文件块」；两项都关 = 最稀有优先。落库后若 BT 会话在，登记到会话并
     /// 热改已入册的句柄（下载中从下一个请求的块起生效）；否则下次启动时烘焙。
@@ -7980,7 +8042,16 @@ impl DownloadManager {
                 e
             ),
         }
+        self.register_bt_web_seeds(bt, &task.task_id).await;
         options
+    }
+
+    #[cfg(feature = "bt")]
+    async fn register_bt_web_seeds(&self, bt: &SharedBtSession, task_id: &str) {
+        match self.db.task_web_seeds(task_id).await {
+            Ok(seeds) => bt.register_web_seeds(task_id, seeds).await,
+            Err(error) => log_info!("[manager] web seeds of {task_id} unavailable: {error:#}"),
+        }
     }
 
     /// BT 被禁用时把仍停在「排队/下载中/准备中」的任务落回暂停(2)并广播，
@@ -8314,7 +8385,12 @@ impl DownloadManager {
                 self.auto_failover_pending.remove(task_id);
                 self.auto_failover_attempts.remove(task_id);
                 match self.db.delete_task(task_id).await {
-                    Ok(sources) => self.broadcast_deleted_rss_sources(sources).await,
+                    Ok(sources) => {
+                        if let Some(bt) = &self.bt_session {
+                            bt.clear_web_seeds(task_id).await;
+                        }
+                        self.broadcast_deleted_rss_sources(sources).await;
+                    }
                     Err(e) => log_info!(
                         "[manager] duplicate cleanup {}: DB delete error: {}",
                         task_id,
@@ -14145,6 +14221,10 @@ impl DownloadManager {
                 return Err(DeleteTaskError::Record(error.into()));
             }
         }
+        #[cfg(feature = "bt")]
+        if let Some(bt) = &self.bt_session {
+            bt.clear_web_seeds(task_id).await;
+        }
         self.prune_group_dirs(group_dirs, &[task_id.to_string()])
             .await;
 
@@ -14335,6 +14415,10 @@ impl DownloadManager {
                 Ok(sources) => {
                     for task_id in &deleted {
                         self.replayable_requests.remove(task_id);
+                        #[cfg(feature = "bt")]
+                        if let Some(bt) = &self.bt_session {
+                            bt.clear_web_seeds(task_id).await;
+                        }
                     }
                     self.broadcast_deleted_rss_sources(sources).await;
                     self.prune_group_dirs(group_dirs, &deleted).await;
@@ -14712,25 +14796,19 @@ impl DownloadManager {
         use crate::bt_local_seed::LocalSeedError;
         use crate::bt_status::{BtStatusView, PeerCounts, PeerRow};
         let db_error = |error: crate::db::DbError| LocalSeedError::Operation(format!("{error:#}"));
-        let task = self
+        let (url, bytes, saved_web_seeds) = self
             .db
-            .load_task_by_id(task_id)
+            .load_bt_status_inputs(task_id)
             .await
             .map_err(db_error)?
             .ok_or_else(|| LocalSeedError::InvalidArgument("task not found".to_owned()))?;
-        let bytes = self
-            .db
-            .load_torrent_file_bytes(task_id)
-            .await
-            .map_err(db_error)?
-            .filter(|bytes| !bytes.is_empty());
         // 种子自带的 tracker 层（BEP 12；磁力链接每个 `tr=` 自成一层）、私有标记与 v2 info hash。
         let (info_hash, mut info_hash_v2, own_tiers, mut private): (
             String,
             Option<String>,
             Vec<Vec<String>>,
             bool,
-        ) = if let Some(bytes) = &bytes {
+        ) = if let Some(bytes) = bytes.as_deref().filter(|bytes| !bytes.is_empty()) {
             let parsed = librqbit::torrent_from_bytes(bytes).map_err(|error| {
                 LocalSeedError::InvalidArgument(format!("torrent parse error: {error}"))
             })?;
@@ -14749,12 +14827,12 @@ impl DownloadManager {
                 tiers,
                 parsed.info.data.private,
             )
-        } else if is_magnet(&task.url) {
-            let info_hash = TorrentSource::Magnet(task.url.clone())
+        } else if is_magnet(&url) {
+            let info_hash = TorrentSource::Magnet(url.clone())
                 .info_hash_hex()
                 .ok_or_else(|| LocalSeedError::InvalidArgument("invalid magnet link".to_owned()))?;
             let magnet =
-                librqbit::Magnet::parse(&crate::bt_downloader::normalize_magnet(&task.url)).ok();
+                librqbit::Magnet::parse(&crate::bt_downloader::normalize_magnet(&url)).ok();
             let info_hash_v2 = magnet
                 .as_ref()
                 .and_then(librqbit::Magnet::as_id32)
@@ -14794,10 +14872,29 @@ impl DownloadManager {
                 crate::bt_status::idle_tracker_rows(&own_tiers, &session)
             }
         };
-        let web_seeds = handle
-            .as_ref()
-            .map(|handle| crate::bt_status::web_seed_rows(handle.web_seeds()))
-            .unwrap_or_default();
+        let mut web_seeds = handle.as_ref().map_or_else(Vec::new, |handle| {
+            crate::bt_status::web_seed_rows(handle.web_seeds())
+        });
+        let web_seeds_enabled = match (&self.bt_session, &handle) {
+            (Some(bt), Some(_)) => bt.web_seeds_enabled(),
+            _ => self.bt_config.enable_webseed,
+        };
+        for url in saved_web_seeds {
+            if !web_seeds.iter().any(|seed| seed.url == url) {
+                use crate::bt_status::{WebSeedRow, WebSeedState};
+                web_seeds.push(WebSeedRow {
+                    url,
+                    state: if !web_seeds_enabled {
+                        WebSeedState::Disabled
+                    } else if handle.is_some() {
+                        WebSeedState::Rejected
+                    } else {
+                        WebSeedState::Pending
+                    },
+                    ..Default::default()
+                });
+            }
+        }
         if let Some(handle) = handle {
             // 磁力任务的 v2 哈希与私有标记在取得元数据后才知道。
             info_hash_v2 =
@@ -15468,6 +15565,7 @@ impl DownloadManager {
         let options = self.bt_task_options(task);
         let upload_limit_bps = options.upload_limit_bps;
         bt.register_task_options(&task_id, options).await;
+        self.register_bt_web_seeds(&bt, &task_id).await;
         // 在途登记与关停信号：会话重建（改监听类设置 / 禁用 BT）时，本任务不再向
         // 旧会话登记，由 `invalidate_bt_session` 在新会话上统一重新挂载。
         let reseed_guard = bt.begin_reseed(&task_id);
@@ -20336,6 +20434,170 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "bt")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn web_seed_rejection_before_and_after_handle_publication() {
+        exercise_web_seed_status("web_seed_capacity", true).await;
+    }
+
+    #[cfg(feature = "bt")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn web_seed_disabled_with_published_handle() {
+        exercise_web_seed_status("web_seed_disabled", false).await;
+    }
+
+    #[cfg(feature = "bt")]
+    async fn exercise_web_seed_status(fixture: &str, enable_webseed: bool) {
+        use crate::{bt_local_seed::MAX_WEB_SEEDS, bt_status::WebSeedState};
+
+        let (work, port) = bt_test_dir(fixture);
+        let file = work.join("payload.bin");
+        std::fs::write(&file, b"web seed fixture").expect("payload");
+        let torrent = librqbit::create_torrent(
+            &file,
+            Default::default(),
+            &librqbit::spawn_utils::BlockingSpawner::new(1),
+        )
+        .await
+        .expect("create torrent")
+        .as_bytes()
+        .expect("torrent bytes");
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        // The manager hasn't received metadata; its declared-URL check has no
+        // visibility into the sources of the handle that is about to publish.
+        let id = "magnet-task";
+        db.insert_task(
+            id,
+            "magnet:?xt=urn:btih:def7006974f228ca39c44c806a0fb839a0469c97",
+            "payload.bin",
+            &work.to_string_lossy(),
+            2,
+            0,
+            "",
+            "",
+            "",
+            0,
+        )
+        .await
+        .expect("insert task");
+        let pending = "http://127.0.0.1:1/pending";
+        let rejected = "http://127.0.0.1:1/rejected";
+        let config = bt_test_config(port);
+        let mut mgr = bt_test_manager(
+            db,
+            &work,
+            BtConfig {
+                enable_webseed: false,
+                ..config.clone()
+            },
+        );
+        mgr.add_bt_web_seed(id, pending)
+            .await
+            .expect("save source before session creation");
+        let status = mgr.bt_status(id).await.expect("disabled status");
+        assert!(matches!(
+            status.web_seeds.as_slice(),
+            [seed] if seed.url == pending && seed.state == WebSeedState::Disabled
+        ));
+        if enable_webseed {
+            mgr.set_bt_config(config.clone());
+            let status = mgr.bt_status(id).await.expect("pending status");
+            assert!(matches!(
+                status.web_seeds.as_slice(),
+                [seed] if seed.url == pending && seed.state == WebSeedState::Pending
+            ));
+        }
+        mgr.ensure_bt_session().await.expect("BT session");
+        let bt = mgr.bt_session.clone().expect("live session");
+        if enable_webseed {
+            mgr.add_bt_web_seed(id, pending)
+                .await
+                .expect("duplicate source in fresh session");
+            let mut registered = librqbit::AddTorrentOptions::default();
+            bt.apply_task_options(id, &mut registered).await;
+            assert!(matches!(
+                registered.web_seeds.as_deref(),
+                Some([url]) if url == pending
+            ));
+        }
+        let mut opts = librqbit::AddTorrentOptions {
+            paused: true,
+            output_folder: Some(work.join("download").to_string_lossy().into_owned()),
+            web_seeds: enable_webseed.then(|| {
+                (0..MAX_WEB_SEEDS)
+                    .map(|index| format!("http://127.0.0.1:1/source-{index}"))
+                    .collect()
+            }),
+            ..Default::default()
+        };
+        if !enable_webseed {
+            mgr.register_bt_web_seeds(&bt, id).await;
+            bt.apply_task_options(id, &mut opts).await;
+        }
+        let response = bt
+            .session()
+            .add_torrent(librqbit::AddTorrent::from_bytes(torrent), Some(opts))
+            .await
+            .expect("add torrent to rqbit");
+        let librqbit::AddTorrentResponse::Added(_, handle) = response else {
+            panic!("expected a fresh torrent");
+        };
+
+        if !enable_webseed {
+            // rqbit retains the URL but disables its worker. Check the actual
+            // handle before publication can replay the saved URL.
+            assert!(matches!(
+                handle.web_seeds().as_slice(),
+                [seed] if seed.url == pending && seed.state == librqbit::WebSeedState::Disabled
+            ));
+        }
+        bt.store_handle(id, handle).await;
+        if enable_webseed {
+            let error = mgr
+                .add_bt_web_seed(id, rejected)
+                .await
+                .expect_err("full handle must reject a new source");
+            assert!(matches!(
+                error,
+                crate::bt_task_files::BtTaskOpError::InvalidArgument(message)
+                    if message == format!("a torrent can have at most {MAX_WEB_SEEDS} web seeds")
+            ));
+            assert_eq!(
+                mgr.db.task_web_seeds(id).await.expect("stored sources"),
+                [pending]
+            );
+            let status = mgr.bt_status(id).await.expect("published status");
+            assert_eq!(status.web_seeds.len(), MAX_WEB_SEEDS + 1);
+            assert!(
+                status
+                    .web_seeds
+                    .iter()
+                    .any(|seed| seed.url == pending && seed.state == WebSeedState::Rejected)
+            );
+            assert!(!status.web_seeds.iter().any(|seed| seed.url == rejected));
+        } else {
+            for requested_enabled in [false, true] {
+                // Changing the requested setting does not rebuild this session.
+                mgr.set_bt_config(BtConfig {
+                    enable_webseed: requested_enabled,
+                    ..config.clone()
+                });
+                let status = mgr.bt_status(id).await.expect("published disabled status");
+                assert!(matches!(
+                    status.web_seeds.as_slice(),
+                    [seed] if seed.url == pending && seed.state == WebSeedState::Disabled
+                ));
+            }
+        }
+        mgr.shutdown().await;
+        drop(bt);
+        if let Err(error) = std::fs::remove_dir_all(&work) {
+            tracing::debug!(%error, "BT web seed test directory cleanup skipped");
+        }
+    }
+
     /// #939 现场：启动续种的本地数据校验尚在途时，会话因监听类设置变更重建。
     /// 任务必须在新会话上继续做种（对齐 qBittorrent：改设置不打断做种），
     /// 旧会话连同其 runtime 必须真正释放（不 panic、不留继续上传的僵尸会话），
@@ -20390,6 +20652,10 @@ mod tests {
         let mut mgr = bt_test_manager(db, &work, config.clone());
         mgr.ensure_bt_session().await.expect("BT session");
         let old = mgr.bt_session.clone().expect("live session");
+        let web_seed = "http://127.0.0.1:1/payload.bin";
+        mgr.add_bt_web_seed("seed", web_seed)
+            .await
+            .expect("add source to completed task");
         let task = mgr
             .db
             .load_task_by_id("seed")
@@ -20443,6 +20709,15 @@ mod tests {
             );
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
+        let handle = new.cached_handle("seed").await.expect("reseeding handle");
+        let live_rows = crate::bt_status::web_seed_rows(handle.web_seeds());
+        let live_seed = live_rows
+            .iter()
+            .find(|seed| seed.url == web_seed)
+            .expect("saved source attached to the rebuilt handle");
+        let status = mgr.bt_status("seed").await.expect("reseeding status");
+        assert_eq!(status.web_seeds.as_slice(), std::slice::from_ref(live_seed));
+        drop(handle);
 
         mgr.shutdown().await;
         drop(new);

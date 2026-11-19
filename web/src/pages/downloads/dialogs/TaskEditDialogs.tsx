@@ -1,6 +1,6 @@
 // 重命名文件 / 更换下载链接 / 修改线程数 / BT 移动数据 / BT 任务限速：任务级小对话框，引擎稳定错误码映射为本地化文案。
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useT } from '../../../i18n'
 import { RpcError, TASK_STATUS, rpc, useTask, useTasksLoading } from '../../../lib/rpc'
@@ -12,7 +12,7 @@ import { PathText } from '../../../ui/PathText'
 import { moveTaskStorage, resumeIfFailed } from '../model/actions'
 import { limitKibText, parseTaskSegments, taskLimitsParams } from '../model/taskEdit'
 import { FsPickerDialog } from './FsPickerDialog'
-import { closeChangeSegments, closeChangeUrl, closeMoveStorage, closeRename, closeTaskLimits } from './store'
+import { closeAddWebSeed, closeChangeSegments, closeChangeUrl, closeMoveStorage, closeRename, closeTaskLimits } from './store'
 import { mapEngineError } from './utils'
 
 /** 引擎稳定错误码 → 文案键（native/engine `rename_task` 契约，错误消息即错误码）。 */
@@ -44,6 +44,7 @@ interface TaskScopedProps {
 function SingleFieldDialog({
   title,
   label,
+  hint,
   placeholder,
   okLabel,
   initial,
@@ -54,6 +55,7 @@ function SingleFieldDialog({
 }: {
   title: string
   label: string
+  hint?: string
   placeholder: string
   okLabel: string
   initial: string
@@ -107,11 +109,36 @@ function SingleFieldDialog({
             onChange={(event) => setValue(event.target.value)}
           />
         </FormField>
+        {hint ? <FieldHint>{hint}</FieldHint> : null}
         {error ? <FieldError className="break-all">{error}</FieldError> : null}
         {/* 让回车提交：隐藏的提交按钮 */}
         <button type="submit" className="hidden" tabIndex={-1} aria-hidden />
       </Form>
     </Dialog>
+  )
+}
+
+export function AddWebSeedDialog({ taskId, session }: { taskId: string; session: number }) {
+  const t = useT()
+  const onClose = useCallback(() => closeAddWebSeed(session), [session])
+  return (
+    <TaskScoped
+      taskId={taskId}
+      onClose={onClose}
+      render={() => (
+        <SingleFieldDialog
+          title={t('btAddWebSeedTitle')}
+          label={t('btWebSeedUrl')}
+          placeholder="https://"
+          hint={t('btAddWebSeedHint')}
+          okLabel={t('confirm')}
+          initial=""
+          errors={{}}
+          onClose={onClose}
+          submit={(url) => rpc.daemon.task.addWebSeed({ taskId, url })}
+        />
+      )}
+    />
   )
 }
 

@@ -65,6 +65,9 @@
 
 另见 AGENTS.md §4：BT 判定只认 `magnet:` 与 `torrent-file://`、「复制链接」读 `origin_url`、`dht.json` 撞端口排除区间。
 
+- **BT 内部摘挂不能清手动 HTTP 源登记**：文件选择窗改保存目录时，同一 worker 直接重进下载，不再经 manager 从 DB 登记；`SharedBtSession::delete_task` 只摘句柄，永久删除任务才清登记。应用已保存来源与发布句柄须与用户添加互斥，否则容量拒绝会被当成已应用 → `bt_downloader.rs::{store_handle,save_web_seed}`。
+- **BT 磁盘续种不经过普通下载登记**：新会话从本地已完成数据恢复时，`DownloadManager::spawn_reseed_from_disk` 必须在挂载前复用 `register_bt_web_seeds`；否则详情会将未加载的已保存来源误报为拒绝。已有来源的重复添加也必须补回会话登记。
+
 - **随机默认监听端口只能在配置缺失时生成，并原子保存 BT 两个边界**：每次启动重随机会破坏手动 NAT / 防火墙规则；无差别迁移旧值会覆盖用户自选范围与 eD2K 的显式 `0`。只缺一个 BT 边界时沿用另一个，不能拼接随机值 → `native/engine/src/db.rs::init_default_config`、回归 `default_listen_ports_*`（#872）。
 
 - **Windows 子路径 NotFound 不保证父路径是目录**：BT 完成命名先检查目标目录本身，普通文件返回 NotADirectory，避免把其下的候选名误判为空闲 → `native/engine/src/bt_downloader.rs::dedup_name_in_dir`；回归 `completion_layout_propagates_destination_scan_error`。
@@ -121,6 +124,7 @@
 - **可移植视图的动作 / 关闭事件可能先于 `view.open` 应答到达客户端**：插件在 `init` 里 `ctx.navigate()` / `ctx.close()` 时，事件经广播通道、应答经 RPC 通道各自送达，客户端按会话 id 找宿主会扑空而静默丢失；daemon 也会在登记前收到关闭、留下永不清理的存储条目。客户端在 open 进行中按会话缓存动作、登记时执行，daemon 登记后用 `has_view_session` 补清 → GPUI `crates/plugin_ui/src/portable/mod.rs::PortableSessions::{stash,register}`、Web `web/src/pages/plugins/view/viewStore.ts::stashEarly`、`native/daemon/src/plugin_host_rpc.rs`（`DAEMON_PLUGIN_VIEW_OPEN`）；回归 `actions_arriving_before_the_open_reply_run_once_the_session_registers`、`actions_from_init_reach_clients_and_closed_session_is_not_stored`。
 - **插件新增 bridge 能力必须同步穿过审计装饰器**：只在 `EngineBridge` 实现 `image_request` 时，真实宿主使用的 `AuditingBridge` 会落到 trait 默认拒绝，隔离的 JS 测试却能通过。新增桥能力同步转发与脱敏审计，端到端夹具使用生产装饰器 → `plugin/audit.rs::AuditingBridge::image_request`；回归 `native/daemon/src/plugin_host_rpc.rs::image_resources_cross_js_and_authenticated_http_and_expire_on_close`。
 - **来源缓存不是图片资源生命周期**：认证插件禁用来源缓存、五分钟缓存过期或图集翻页都会反复产出 PNG；同会话必须按内容去重，旧图由插件移除全部用途（含预加载状态）后显式 `images.release`，不能用最近 HTTP 读取时间 LRU 淘汰客户端仍持有的引用。图片 HTTP client 缓存键还须包含来源白名单，不能与普通 fetch 共用无白名单 client → `plugin/images.rs::{insert,release}`、`plugin/host_manager.rs::host_image_load`、`plugin/bridge.rs::image_request`。
+- **`daemon.plugin.view.event` 的 RPC 应答只确认入队**：检查事件副作用（如 `images.release` 后 HTTP 返回 404）前，测试须等待对应会话的成功视图帧；验证关闭回收时应关闭仍持有资源的会话 → `native/daemon/src/plugin_host_rpc.rs::image_resources_cross_js_and_authenticated_http_and_expire_on_close`。
 - **插件状态变化必须经 `PluginManager::publish_state` 广播，不能只发 `PluginAutoDisabled`**：熔断曾只发 `PluginAutoDisabled`，GPUI 贡献点（任务右键命令 / 详情页签 / 活动页）只认 `PluginsChanged` 而一直残留；插件 `flux.settings.update`、站点默认写入也曾无事件，两端显示旧值。新写入点一律在结束时调 `publish_state`，daemon handler 不再自己发 → `native/engine/src/plugin/manager.rs::publish_state`、回归 `circuit_breaker_trip_publishes_disabled_state_before_notice` / `host_settings_update_publishes_new_values`。
 - **待授权不应覆盖已持久化的停用原因**：新装等待授权且原本应启用的插件可以预警 URL 模式重叠；手动停用的插件升级新增权限后仍不参与冲突检测。授权清单与启停原因分开呈现，授权不会重新启用手动停用的插件 → `native/engine/src/plugin/manager.rs::load_one`、回归 `native/daemon/src/service.rs::plugin_conflicts_follow_install_and_enable_state_in_events_and_list`。
 - **二段解析任务绝不能以原始链接起跑**：组成员 / 插件订阅条目的 `url` 是分享页，绑定被清空（卸载、旧版 fail-closed 行、忽略插件重试）后起跑会把 HTML 存成文件。起跑 / 恢复 / 解析回流都要先重绑、无插件即 fail-closed，`ignoreRetry` 对其拒绝 → `native/engine/src/download_manager.rs::{rebind_second_stage,fail_second_stage_unavailable}`、回归 `native/engine/tests/engine/plugin_state_freshness.rs`。
@@ -207,6 +211,7 @@
 - **新建下载等处生成 UUID 不得用 `crypto.randomUUID()`，一律 `randomUuid()`**：浏览器只在安全上下文（HTTPS / localhost）暴露它，NAS / Docker 经 `http://<局域网 IP>:17800` 访问时缺失，调用即抛错；`getRandomValues` 无此限制 → `web/src/lib/uuid.ts::randomUuid`（使用方 `web/src/pages/downloads/dialogs/importRunner.ts`）。
 - **新增可省略的任务 DTO 字段须同步 Web 归一化契约测试**：Rust `TaskDto.properties` 在全默认时省略，Web `normalizeTask` 会补齐；只更新 `TASK_DEFAULTS` 而漏更新测试的独立期望，会同时破坏任务、快照、事件和转发帧的四个契约用例（#1146 CI）。默认值应对齐 Rust serde，非默认的编辑属性也须验证保留 → `native/protocol/src/task_edit.rs::TaskPropertiesDto`、`web/src/lib/rpc/normalize.ts::TASK_DEFAULTS`、`normalize.test.ts`。
 - **设置行的 `pointer-events-none` 不会禁用键盘与辅助技术操作**：偏好开关依赖另一开关时，除行级灰化外还须把 `disabled` 传给底层 `Switch`；静默自动更新关闭自动检查后必须原生禁用 → `web/src/pages/settings/kit/fields.tsx::PrefSwitchRow`。
+- **可在请求期间关闭的面板须按打开实例处理异步关闭**：任务 ID 相同也可能是新的表单。Web「添加 HTTP 源」每次打开分配会话 ID，用作 React key，关闭只清除匹配会话；迟到的成功回包不能清掉新面板或草稿 → `web/src/pages/downloads/dialogs/{store.ts,DownloadDialogsHost.tsx,TaskEditDialogs.tsx}`；回归 `web/src/pages/downloads/dialogs/store.test.ts`。
 
 ## 浏览器扩展
 

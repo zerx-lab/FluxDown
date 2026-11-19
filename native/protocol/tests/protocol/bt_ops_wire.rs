@@ -2,13 +2,13 @@
 //! 方法名、慢方法归属、DTO 的 camelCase 形状与旧 daemon 缺省字段的兼容。
 
 use fluxdown_protocol::method::{
-    ALL_METHODS, DAEMON_BT_PORT_STATUS, DAEMON_TASK_BT_FILES, DAEMON_TASK_MOVE_STORAGE,
-    DAEMON_TASK_REANNOUNCE, DAEMON_TASK_RECHECK, DAEMON_TASK_RENAME_BT_FILE,
-    DAEMON_TASK_SET_BT_LIMITS, DAEMON_TASK_SET_FILE_PRIORITIES, DAEMON_TASK_SET_SUPER_SEEDING,
-    is_slow_daemon_method,
+    ALL_METHODS, DAEMON_BT_PORT_STATUS, DAEMON_TASK_ADD_WEB_SEED, DAEMON_TASK_BT_FILES,
+    DAEMON_TASK_MOVE_STORAGE, DAEMON_TASK_REANNOUNCE, DAEMON_TASK_RECHECK,
+    DAEMON_TASK_RENAME_BT_FILE, DAEMON_TASK_SET_BT_LIMITS, DAEMON_TASK_SET_FILE_PRIORITIES,
+    DAEMON_TASK_SET_SUPER_SEEDING, is_slow_daemon_method,
 };
 use fluxdown_protocol::{
-    BT_FILE_PRIORITY_HIGH, BT_FILE_PRIORITY_MAXIMUM, BT_FILE_PRIORITY_NORMAL,
+    AddTaskWebSeedParams, BT_FILE_PRIORITY_HIGH, BT_FILE_PRIORITY_MAXIMUM, BT_FILE_PRIORITY_NORMAL,
     BT_FILE_PRIORITY_SKIP, BtDhtDto, BtDhtState, BtFilePriorityDto, BtFilesDto, BtPortMappingDto,
     BtPortStatusDto, BtStatusDto, BtTaskFileDto, BtTrackerDto, BtWebSeedDto, DaemonSeedLocalParams,
     MoveTaskStorageParams, RenameBtFileParams, SeedLocalResultDto, SetTaskBtLimitsParams,
@@ -29,6 +29,7 @@ fn bt_task_methods_are_canonical_and_only_move_is_slow() {
         (DAEMON_TASK_MOVE_STORAGE, "daemon.task.moveStorage"),
         (DAEMON_TASK_SET_BT_LIMITS, "daemon.task.setBtLimits"),
         (DAEMON_TASK_SET_SUPER_SEEDING, "daemon.task.setSuperSeeding"),
+        (DAEMON_TASK_ADD_WEB_SEED, "daemon.task.addWebSeed"),
         (DAEMON_TASK_REANNOUNCE, "daemon.task.reannounce"),
         (DAEMON_BT_PORT_STATUS, "daemon.bt.portStatus"),
     ];
@@ -112,6 +113,10 @@ fn params_use_camel_case_and_omit_unset_fields() {
         .unwrap(),
         json!({"taskId": "t1", "enabled": true})
     );
+
+    let web_seed = json!({"taskId": "t1", "url": "https://mirror.example/files/"});
+    let params: AddTaskWebSeedParams = serde_json::from_value(web_seed.clone()).unwrap();
+    assert_eq!(serde_json::to_value(params).unwrap(), web_seed);
 }
 
 #[test]

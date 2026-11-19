@@ -51,6 +51,8 @@ public enum HostMethod {
     public static let daemonTaskSetBtLimits = "daemon.task.setBtLimits"
     /// 超级做种开关（`{taskId, enabled}`）：完成（做种）后才实际生效，可提前设置。
     public static let daemonTaskSetSuperSeeding = "daemon.task.setSuperSeeding"
+    /// 添加 BT HTTP 源（移动端无入口，仅保持方法表一一对应）。
+    public static let daemonTaskAddWebSeed = "daemon.task.addWebSeed"
     /// 立即向 tracker 重新汇报（`{taskId}`；移动端没有 Tracker 页，仅保持方法表一一对应）。
     public static let daemonTaskReannounce = "daemon.task.reannounce"
     public static let daemonTaskVerify = "daemon.task.verify"

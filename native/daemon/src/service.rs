@@ -337,6 +337,14 @@ impl DaemonService {
                 })
                 .await
             }
+            method::DAEMON_TASK_ADD_WEB_SEED => {
+                let params = parse_params::<fluxdown_protocol::AddTaskWebSeedParams>(params)?;
+                self.execute_unit(ActorOperation::AddTaskWebSeed {
+                    task_id: params.task_id,
+                    url: params.url,
+                })
+                .await
+            }
             method::DAEMON_TASK_BT_FILES => {
                 let params = parse_params::<fluxdown_protocol::DaemonBtStatusParams>(params)?;
                 match self

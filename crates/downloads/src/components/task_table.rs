@@ -624,6 +624,8 @@ pub(crate) enum MenuEntry {
     MoveStorage,
     /// 任务级 BT 限速对话框（单选；条件见 [`task_limits_visible`]）。
     TaskSpeedLimits,
+    /// Add a BEP 19 source (single local BitTorrent task).
+    AddWebSeed,
     /// 超级做种勾选（可多选；条件见 [`super_seeding_visible`]）。
     SuperSeeding,
     /// 复制磁力链接（单选；条件见 [`TaskMenuFacts::can_share_torrent`]）。
@@ -715,6 +717,9 @@ pub(crate) fn context_menu_items(selection: &[TaskMenuFacts]) -> Vec<MenuEntry> 
     }
     if task_limits_visible(selection) {
         items.push(MenuEntry::TaskSpeedLimits);
+    }
+    if single_local_bt(selection) {
+        items.push(MenuEntry::AddWebSeed);
     }
     if super_seeding_visible(selection) {
         items.push(MenuEntry::SuperSeeding);
@@ -896,7 +901,7 @@ pub(crate) fn force_recheck_visible(selection: &[TaskMenuFacts]) -> bool {
 }
 
 /// 单选本机 BT 任务（任意状态）。
-fn single_local_bt(selection: &[TaskMenuFacts]) -> bool {
+pub(crate) fn single_local_bt(selection: &[TaskMenuFacts]) -> bool {
     matches!(selection, [only] if only.is_local && only.is_bt)
 }
 
@@ -3353,6 +3358,11 @@ impl DownloadTableDelegate {
                 self.strings.bt_task_limits.clone(),
                 FluxIcon::Gauge,
                 Box::new(crate::actions::TaskLimitsSelected),
+            ),
+            MenuEntry::AddWebSeed => menu.menu_with_icon(
+                self.strings.bt_add_web_seed.clone(),
+                FluxIcon::Globe,
+                Box::new(crate::actions::AddWebSeedSelected),
             ),
             MenuEntry::SuperSeeding => {
                 let facts: Vec<_> = selected
@@ -7076,11 +7086,12 @@ mod context_menu_tests {
             .position(|entry| *entry == MenuEntry::VerifyIntegrity)
             .expect("completed BT task offers verification");
         assert_eq!(
-            items.get(at + 1..at + 5),
+            items.get(at + 1..at + 6),
             Some(
                 &[
                     MenuEntry::MoveStorage,
                     MenuEntry::TaskSpeedLimits,
+                    MenuEntry::AddWebSeed,
                     MenuEntry::SuperSeeding,
                     MenuEntry::Redownload,
                 ][..]
@@ -7143,12 +7154,13 @@ mod context_menu_tests {
                 MenuEntry::CopyUrl
             };
             assert_eq!(
-                items.get(at + 3..at + 8),
+                items.get(at + 3..at + 9),
                 Some(
                     &[
                         MenuEntry::ForceRecheck,
                         MenuEntry::MoveStorage,
                         MenuEntry::TaskSpeedLimits,
+                        MenuEntry::AddWebSeed,
                         MenuEntry::SuperSeeding,
                         next,
                     ][..]
@@ -7286,6 +7298,7 @@ mod context_menu_tests {
             assert!(task_limits_visible(&[single]));
         }
         assert!(!task_limits_visible(&[http]));
+        assert!(!context_menu_items(&[http]).contains(&MenuEntry::AddWebSeed));
         for selection in [&[remote][..], &[unfinished, completed][..], &[][..]] {
             assert!(!move_storage_visible(selection), "{selection:?}");
             assert!(!task_limits_visible(selection), "{selection:?}");
@@ -7295,6 +7308,7 @@ mod context_menu_tests {
                 !items.contains(&MenuEntry::TaskSpeedLimits),
                 "{selection:?}"
             );
+            assert!(!items.contains(&MenuEntry::AddWebSeed), "{selection:?}");
         }
 
         // 超级做种：全体本机 BT，可多选、任意状态。

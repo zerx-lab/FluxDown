@@ -209,6 +209,8 @@ pub enum DownloadsCommand {
     SetBtLimits(fluxdown_protocol::SetTaskBtLimitsParams),
     /// 超级做种开关（`daemon.task.setSuperSeeding`）。
     SetSuperSeeding(fluxdown_protocol::SetTaskSuperSeedingParams),
+    /// Append a BEP 19 source to a BitTorrent task.
+    AddWebSeed(fluxdown_protocol::AddTaskWebSeedParams),
     /// 立即向 tracker 重新汇报（`daemon.task.reannounce`）；不在运行为 `taskStateConflict`。
     Reannounce {
         task_id: String,
