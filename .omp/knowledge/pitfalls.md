@@ -183,7 +183,7 @@
 - **新建下载等处生成 UUID 不得用 `crypto.randomUUID()`，一律 `randomUuid()`**：浏览器只在安全上下文（HTTPS / localhost）暴露它，NAS / Docker 经 `http://<局域网 IP>:17800` 访问时缺失，调用即抛错；`getRandomValues` 无此限制 → `web/src/lib/uuid.ts::randomUuid`（使用方 `web/src/pages/downloads/dialogs/importRunner.ts`）。
 - **新增可省略的任务 DTO 字段须同步 Web 归一化契约测试**：Rust `TaskDto.properties` 在全默认时省略，Web `normalizeTask` 会补齐；只更新 `TASK_DEFAULTS` 而漏更新测试的独立期望，会同时破坏任务、快照、事件和转发帧的四个契约用例（#1146 CI）。默认值应对齐 Rust serde，非默认的编辑属性也须验证保留 → `native/protocol/src/task_edit.rs::TaskPropertiesDto`、`web/src/lib/rpc/normalize.ts::TASK_DEFAULTS`、`normalize.test.ts`。
 - **设置行的 `pointer-events-none` 不会禁用键盘与辅助技术操作**：偏好开关依赖另一开关时，除行级灰化外还须把 `disabled` 传给底层 `Switch`；静默自动更新关闭自动检查后必须原生禁用 → `web/src/pages/settings/kit/fields.tsx::PrefSwitchRow`。
-- **可在请求期间关闭的面板须按打开实例处理异步关闭**：任务 ID 相同也可能是新的表单。Web「添加 HTTP 源」每次打开分配会话 ID，用作 React key，关闭只清除匹配会话；迟到的成功回包不能清掉新面板或草稿 → `web/src/pages/downloads/dialogs/{store.ts,DownloadDialogsHost.tsx,TaskEditDialogs.tsx}`；浏览器回归 `web/tests/add-web-seed-dialog.html`。
+- **可在请求期间关闭的面板须按打开实例处理异步关闭**：任务 ID 相同也可能是新的表单。Web「添加 HTTP 源」每次打开分配会话 ID，用作 React key，关闭只清除匹配会话；迟到的成功回包不能清掉新面板或草稿 → `web/src/pages/downloads/dialogs/{store.ts,DownloadDialogsHost.tsx,TaskEditDialogs.tsx}`；回归 `web/src/pages/downloads/dialogs/store.test.ts`。
 
 ## 浏览器扩展
 

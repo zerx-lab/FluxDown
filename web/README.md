@@ -32,14 +32,3 @@ If you are developing a production application, we recommend enabling type-aware
 ```
 
 See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
-
-## Offline Web Seed UI check
-
-With the Web Vite dev server running, open `/tests/add-web-seed-dialog.html`.
-The page exercises the production torrent context menu and Add Web Seed dialog
-against controlled RPC responses; no agent or HTTP mirror is required.
-The page sets `document.documentElement.dataset.roostUi` to `pass` only after
-the interaction assertions pass and the fixture is cleaned up.
-
-`bun test` separately covers the dialog store's stale-close guard: an old
-request cannot close a new dialog for the same torrent.
