@@ -1889,14 +1889,16 @@ mod tests {
     async fn system_open_unattended_follows_skip_selection_preference() {
         tokio::time::timeout(Duration::from_secs(10), async {
             let (capture, mut calls, daemon_events, stop, server) = daemon_service().await;
-            let mut revision = 0;
-            for (silent, skip, expected) in [
+            for (index, (silent, skip, expected)) in [
                 (true, true, true),
                 (true, false, false),
                 (false, true, false),
                 (false, false, false),
-            ] {
-                revision += 1;
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let revision = index as u64 + 1;
                 capture.events.publish(AgentEvent::PreferencesChanged(
                     fluxdown_protocol::AgentPreferencesDto {
                         revision,
