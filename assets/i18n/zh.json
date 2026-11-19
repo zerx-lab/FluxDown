@@ -2641,7 +2641,7 @@
   "detailErrorCopied": "已复制",
   "taskErrorUnexpectedHtml": "服务器返回了网页，而不是要下载的文件。这可能是分享页、登录页或中转页。若要下载原文件，请在浏览器中复制文件的下载直链。",
   "taskSaveHtml": "仍下载 HTML",
-  "taskSaveHtmlConfirm": "将重新发送原请求，把网页保存为独立的 .html 文件。不会覆盖已有文件，也不会使用原文件的校验和。原失败任务会保留。",
+  "taskSaveHtmlConfirm": "将重新请求任务保存的 URL，而不是插件解析出的临时直链。若服务器返回完整网页，将保存为独立的 .html 文件。不会覆盖已有文件，也不会使用原文件的校验和。原失败任务会保留。",
   "taskSaveHtmlUnavailable": "原失败任务或其浏览器请求已不可用，请在浏览器中重新发起下载。",
   "taskSaveHtmlCreated": "已添加 HTML 下载任务",
   "taskErrorHtmlChanged": "服务器已不再返回完整网页，未保存 HTML 文件。",

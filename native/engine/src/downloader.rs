@@ -30,6 +30,12 @@ use crate::transfer_activity::{TaskRuntime, TaskSegment, TransferTracker};
 pub enum DownloadError {
     #[error("request failed: {0}")]
     Request(#[from] reqwest::Error),
+    #[error("server returned HTML page (Content-Type: {mime}) — {source}")]
+    HtmlHttp {
+        mime: &'static str,
+        #[source]
+        source: reqwest::Error,
+    },
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("db error: {0}")]
@@ -127,7 +133,10 @@ pub enum DownloadError {
 /// 通知 coordinator 进行降级处理。
 pub(crate) fn is_server_rejection(e: &DownloadError) -> bool {
     match e {
-        DownloadError::Request(req_err) => {
+        DownloadError::Request(req_err)
+        | DownloadError::HtmlHttp {
+            source: req_err, ..
+        } => {
             if let Some(status) = req_err.status() {
                 matches!(status.as_u16(), 403 | 429)
             } else {
@@ -1634,15 +1643,26 @@ fn is_bot_challenge(headers: &reqwest::header::HeaderMap) -> bool {
 /// 405 且只允许 POST 时追加 [`POST_ONLY_TAG`]。
 fn probe_status_desc(resp: &reqwest::Response) -> String {
     let status = resp.status().as_u16();
-    if is_bot_challenge(resp.headers()) {
-        format!("{status} {BOT_CHALLENGE_TAG}")
+    let tag = if is_bot_challenge(resp.headers()) {
+        BOT_CHALLENGE_TAG
     } else if resp.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED
         && allows_only_post(resp.headers())
     {
-        format!("{status} {POST_ONLY_TAG}")
+        POST_ONLY_TAG
     } else {
-        status.to_string()
+        ""
+    };
+    let mut desc = status.to_string();
+    if !tag.is_empty() {
+        desc.push(' ');
+        desc.push_str(tag);
     }
+    if let Some(mime) = login_page_mime(resp) {
+        desc.push(' ');
+        desc.push_str(HTML_LOGIN_TAG);
+        desc.push_str(mime);
+    }
+    desc
 }
 
 /// `Allow` 头列出 POST 且不含 GET / HEAD（OneDrive 打包端点回 `Allow: OPTIONS, POST`）。
@@ -1695,6 +1715,9 @@ fn probe_rejection(e: &DownloadError) -> Option<ProbeRejection> {
             continue;
         };
         let trimmed = status_desc.trim();
+        let trimmed = trimmed
+            .split_once(HTML_LOGIN_TAG)
+            .map_or(trimmed, |(desc, _)| desc.trim_end());
         if trimmed
             .strip_suffix(BOT_CHALLENGE_TAG)
             .is_some_and(|status| status.trim().parse::<u16>().is_ok())
@@ -1788,6 +1811,7 @@ pub struct DownloadSpec {
     /// 随 spec 一并释放（取消 / 跳过 / 失败时连接随之关闭）。
     held_response: std::sync::Mutex<Option<reqwest::Response>>,
     html_only: bool,
+    expects_html: bool,
 }
 
 #[derive(Debug)]
@@ -1828,6 +1852,7 @@ impl DownloadSpec {
             confirmed_generation: std::sync::atomic::AtomicU64::new(0),
             held_response: std::sync::Mutex::new(None),
             html_only: false,
+            expects_html: false,
         }
     }
 
@@ -3029,12 +3054,13 @@ pub(crate) fn held_probe_applies(p: &DownloadParams) -> bool {
         && !crate::dash_downloader::is_dash_url(&p.url)
 }
 
-/// 文件名是否以 HTML 类扩展名结尾——用于 HTML 安全网判断"服务器返回 HTML
-/// 是否为用户期望"。空字符串视为不像 HTML：调用方有责任在到达此处前确保
-/// 文件名已经解析（run_download 中的 auto_name 空值检查 :1581 是兜底位置）。
+/// 文件名是否以 HTML 类扩展名结尾。
 pub(crate) fn filename_looks_like_html(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    lower.ends_with(".html") || lower.ends_with(".htm") || lower.ends_with(".xhtml")
+    name.rsplit_once('.').is_some_and(|(_, ext)| {
+        ["html", "htm", "xhtml"]
+            .into_iter()
+            .any(|candidate| ext.eq_ignore_ascii_case(candidate))
+    })
 }
 
 pub(crate) const UNEXPECTED_HTML_PREFIX: &str = "server returned HTML page (Content-Type: ";
@@ -3046,6 +3072,96 @@ fn html_mime(content_type: &str) -> Option<&'static str> {
     ["text/html", "application/xhtml+xml"]
         .into_iter()
         .find(|candidate| mime.eq_ignore_ascii_case(candidate))
+}
+
+const HTML_LOGIN_TAG: &str = "[html-login] ";
+
+pub(crate) fn html_evidence(content_type: &str, response_name: &str) -> Option<&'static str> {
+    html_mime(content_type).or_else(|| {
+        filename_looks_like_html(response_name).then_some("not HTML; HTML response filename")
+    })
+}
+
+fn response_content_type(resp: &reqwest::Response) -> &str {
+    resp.headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+}
+
+fn login_page_mime(resp: &reqwest::Response) -> Option<&'static str> {
+    if matches!(resp.status().as_u16(), 401 | 403) {
+        html_mime(response_content_type(resp))
+    } else {
+        None
+    }
+}
+
+fn html_probe_diagnostic(message: String) -> String {
+    if let Some(probes) = message.strip_prefix("probes failed: ")
+        && let Some(mime) = probes
+            .split(", ")
+            .filter_map(|probe| probe.split_once('='))
+            .find_map(|(_, value)| {
+                let (status, mime) = value.split_once(HTML_LOGIN_TAG)?;
+                if !matches!(status.split_whitespace().next(), Some("401" | "403")) {
+                    return None;
+                }
+                html_mime(mime.split_whitespace().next()?)
+            })
+    {
+        let details = message.replace(HTML_LOGIN_TAG, "");
+        format!("{UNEXPECTED_HTML_PREFIX}{mime}) — {details}")
+    } else {
+        message
+    }
+}
+
+impl DownloadSpec {
+    pub(crate) fn check_http_status(
+        &self,
+        resp: reqwest::Response,
+    ) -> Result<reqwest::Response, DownloadError> {
+        // A replay cannot itself be replayed using the failed-task action.
+        let mime = if self.html_only {
+            None
+        } else {
+            login_page_mime(&resp)
+        };
+        resp.error_for_status().map_err(|source| match mime {
+            Some(mime) => DownloadError::HtmlHttp { mime, source },
+            None => DownloadError::Request(source),
+        })
+    }
+
+    pub(crate) fn check_html_response(
+        &self,
+        resp: &reqwest::Response,
+        url: &str,
+        method: &reqwest::Method,
+    ) -> Result<(), DownloadError> {
+        if self.expects_html && !self.html_only {
+            return Ok(());
+        }
+        let ct = response_content_type(resp);
+        let evidence = html_mime(ct).or_else(|| {
+            let name = extract_filename(resp.headers(), url, resp.url().as_str());
+            html_evidence("", &name.name)
+        });
+        if self.html_only {
+            let status = resp.status();
+            if evidence.is_none() || !status.is_success() || matches!(status.as_u16(), 204..=206) {
+                return Err(DownloadError::Other(HTML_RESPONSE_CHANGED_MESSAGE.into()));
+            }
+        } else if let Some(evidence) = evidence {
+            return Err(DownloadError::Other(format!(
+                "{UNEXPECTED_HTML_PREFIX}{evidence}) for a non-HTML download — \
+                 aborting to avoid corrupting saved file; {}",
+                html_response_hint(url, Some(resp.url()), method)
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// HTML 安全网文案的成因提示（接在「server returned HTML page …」之后）。
@@ -3734,7 +3850,7 @@ pub(crate) async fn run_download_mode(mut params: DownloadParams, html_only: boo
             // pause / cancel already handled upstream — nothing to do
         }
         Err(e) => {
-            let msg = e.to_string();
+            let msg = html_probe_diagnostic(e.to_string());
             // 追加完整错误链（root cause），方便排查网络/TLS 等底层错误。
             // msg 已包含 reqwest 顶层描述，这里从 source 的 source 开始
             // 避免重复打印同一层信息。
@@ -4230,26 +4346,21 @@ async fn run_download_inner(
             crate::intercept::ProtocolKind::Http,
         ));
     spec.html_only = html_only;
+    // The prelude may have filled in the output name from URL or response metadata.
+    spec.expects_html = !html_only
+        && filename_looks_like_html(&p.file_name)
+        && !p.db.get_task_naming_state(&p.task_id).await?.0;
     let spec_ref = std::sync::Arc::new(spec);
 
-    // Safety net (probe 阶段)：服务器在 probe 阶段返回 HTML 但用户期望二进制
-    // 文件——典型场景：Lanzou 等 CDN transit page、form-POST 端点用 GET 访问。
-    // 立即终止，避免落盘成 fake.zip 这类损坏文件。
-    //
-    // 第二道防线在 download_single 的 req.send() 后做实际响应的 Content-Type 检查
-    // （通过 build_request 发起，见 :2335 附近），覆盖 hint_file_size 旁路场景。
-    if let Some(mime) = html_mime(&info.content_type) {
-        let expected = if p.file_name.is_empty() {
-            &info.file_name
-        } else {
-            &p.file_name
-        };
-        if !filename_looks_like_html(expected) {
-            return Err(DownloadError::Other(format!(
-                "{UNEXPECTED_HTML_PREFIX}{mime}) instead of the expected file — {}",
-                html_response_hint(&p.url, probe_final_url.as_ref(), &p.spec.method)
-            )));
-        }
+    // A hinted filename is not response evidence; hinted downloads are checked when data arrives.
+    if !spec_ref.expects_html
+        && p.hint_file_size == 0
+        && let Some(evidence) = html_evidence(&info.content_type, &info.file_name)
+    {
+        return Err(DownloadError::Other(format!(
+            "{UNEXPECTED_HTML_PREFIX}{evidence}) instead of the expected file — {}",
+            html_response_hint(&p.url, probe_final_url.as_ref(), &p.spec.method)
+        )));
     }
 
     // 早期取消检查：probe 完成后、创建文件之前检测 pause/delete，
@@ -4522,6 +4633,7 @@ async fn run_download_inner(
     //     full body, corrupting the assembled output. Force single-stream
     //     for non-GET to make uupdump-style form-POST downloads safe.
     let use_segments = effective_supports_range
+        && !html_only
         && effective_total_bytes > 1_048_576
         && (segments > 1 || resume_has_segments)
         && p.spec.is_get_like();
@@ -4705,7 +4817,6 @@ async fn run_download_inner(
                     &p.cancel_token,
                     &p.speed_limiter,
                     &spec_ref,
-                    &actual_name,
                     &resume_etag,
                     &resume_last_modified,
                     false,
@@ -4760,7 +4871,6 @@ async fn run_download_inner(
             &p.cancel_token,
             &p.speed_limiter,
             &spec_ref,
-            &actual_name,
             &resume_etag,
             &resume_last_modified,
             p.is_resume,
@@ -5375,7 +5485,6 @@ async fn download_single(
     cancel_token: &CancellationToken,
     speed_limiter: &SpeedLimiter,
     spec: &DownloadSpec,
-    expected_filename: &str,
     expected_etag: &str,
     expected_last_modified: &str,
     is_resume: bool,
@@ -5406,7 +5515,6 @@ async fn download_single(
             cancel_token,
             speed_limiter,
             spec,
-            expected_filename,
             &etag_baseline,
             &last_modified_baseline,
             is_resume,
@@ -5606,7 +5714,6 @@ async fn download_single_once(
     cancel_token: &CancellationToken,
     speed_limiter: &SpeedLimiter,
     spec: &DownloadSpec,
-    expected_filename: &str,
     // 续传一致性校验：probe 阶段看到的文件版本标识。Range 206 返回后与响应
     // validator 做后验比对，避免发送可能作废一次性签名 URL 的 If-Range。
     expected_etag: &str,
@@ -5629,7 +5736,12 @@ async fn download_single_once(
 
     // 续传时临时文件已写满（收尾阶段被中断/失败）：无需任何网络请求，直接交给
     // 调用方的完整性检查与收尾，避免把数 GB 整文件从 0 重下。
-    if is_resume && !clean_boundary && total_bytes > 0 && physical_existing_len == total_bytes {
+    if !spec.html_only
+        && is_resume
+        && !clean_boundary
+        && total_bytes > 0
+        && physical_existing_len == total_bytes
+    {
         log_info!(
             "[download-single] task {} temp file already holds all {} bytes; skipping download",
             task_id,
@@ -5658,7 +5770,8 @@ async fn download_single_once(
     // 保留响应只出现在 fresh 运行（GET 类）或非 GET 请求上；后者从不按 Range 续传，即使
     // 任务以续传身份进入也必须消费它，否则同一表单会被再提交一次。
     let use_held = spec.has_held_response();
-    let want_resume = spec.current().is_get_like()
+    let want_resume = !spec.html_only
+        && spec.current().is_get_like()
         && supports_range
         && !use_held
         && physical_existing_len > 0
@@ -5759,7 +5872,7 @@ async fn download_single_once(
         resp = resend_after_refresh(spec, &mut used, full, &build_full, cancel_token).await?;
         refetched_full = true;
     }
-    let mut resp = resp.error_for_status()?;
+    let mut resp = spec.check_http_status(resp)?;
 
     if want_resume && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT {
         let resp_etag = resp
@@ -5805,9 +5918,9 @@ async fn download_single_once(
                 );
                 drop(resp);
                 let full = send_cancellable(build_full(&used), cancel_token).await?;
-                resp = resend_after_refresh(spec, &mut used, full, &build_full, cancel_token)
-                    .await?
-                    .error_for_status()?;
+                resp = spec.check_http_status(
+                    resend_after_refresh(spec, &mut used, full, &build_full, cancel_token).await?,
+                )?;
                 refetched_full = true;
             } else {
                 log_warn!(
@@ -5876,57 +5989,18 @@ async fn download_single_once(
             );
             drop(resp);
             let full = send_cancellable(build_full(&used), cancel_token).await?;
-            resp = resend_after_refresh(spec, &mut used, full, &build_full, cancel_token)
-                .await?
-                .error_for_status()?;
+            resp = spec.check_http_status(
+                resend_after_refresh(spec, &mut used, full, &build_full, cancel_token).await?,
+            )?;
             refetched_full = true;
         }
     }
 
-    // ---- Safety net: HTML response on a binary download ---------------------
-    //
-    // 兜底 hint_file_size > 0 旁路（行 1480-1536）跳过 probe 的场景：
-    // 当扩展端给出一次性 CDN URL 的 fileSize 提示时，downloader 跳过 probe
-    // 直接进入下载，但若 CDN 实际返回 HTML 错误页（token 已被消费、签名过期、
-    // 站点改用 form POST 等），会落盘成 fake.zip 这类损坏文件。
-    //
-    // 这里在 send 后第一时间检查 Content-Type——发现 text/html 但用户期望
-    // 二进制文件时立即终止下载，确保即使协议升级出问题也绝不再发生
-    // "HTML 当 zip 保存"的损坏。
-    {
-        let ct_raw = resp
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        let mime = html_mime(ct_raw);
-        if spec.html_only {
-            let status = resp.status();
-            if mime.is_none()
-                || !status.is_success()
-                || matches!(
-                    status,
-                    reqwest::StatusCode::PARTIAL_CONTENT
-                        | reqwest::StatusCode::NO_CONTENT
-                        | reqwest::StatusCode::RESET_CONTENT
-                )
-            {
-                return Err(DownloadError::Other(HTML_RESPONSE_CHANGED_MESSAGE.into()));
-            }
-        } else if let Some(mime) = mime
-            && !filename_looks_like_html(expected_filename)
-        {
-            return Err(DownloadError::Other(format!(
-                "{UNEXPECTED_HTML_PREFIX}{mime}) for a non-HTML download — \
-                 aborting to avoid corrupting saved file; {}",
-                html_response_hint(
-                    spec.route_url(url).as_deref().unwrap_or(url),
-                    Some(resp.url()),
-                    &used.method,
-                )
-            )));
-        }
-    }
+    spec.check_html_response(
+        &resp,
+        spec.route_url(url).as_deref().unwrap_or(url),
+        &used.method,
+    )?;
 
     // 第一道闸：拒绝任何【无法完整还原】的响应压缩——必须在 detect_content_encoding
     // 解压分支之前判定。原因（BUG-HTTP-LAYERED-ENCODING-UNREACHABLE）：
@@ -6214,6 +6288,9 @@ async fn download_single_once(
         }
     }
 
+    if spec.html_only && downloaded == 0 {
+        return Err(DownloadError::Other(HTML_RESPONSE_CHANGED_MESSAGE.into()));
+    }
     drop(reading);
     if progress_tx
         .send(ProgressUpdate {
@@ -9675,7 +9752,6 @@ mod single_resume_tests {
             &CancellationToken::new(),
             &SpeedLimiter::new(0),
             &super::DownloadSpec::new(spec),
-            "f.bin",
             "",
             "",
             is_resume,
@@ -10496,7 +10572,7 @@ mod single_resume_tests {
         let attempt = || {
             download_single(
                 "second", &url, &dest, 17, false, &client, &db, &NoopSink, &tx, &cancel, &limiter,
-                &spec, "f.bin", "", "", false,
+                &spec, "", "", false,
             )
         };
         assert!(matches!(
@@ -10509,7 +10585,7 @@ mod single_resume_tests {
         paused.cancel();
         let paused_result = download_single(
             "second", &url, &dest, 17, false, &client, &db, &NoopSink, &tx, &paused, &limiter,
-            &spec, "f.bin", "", "", false,
+            &spec, "", "", false,
         )
         .await;
         assert!(matches!(paused_result, Err(DownloadError::Cancelled)));

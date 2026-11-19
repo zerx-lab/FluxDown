@@ -111,14 +111,18 @@ async fn serve(mut stream: TcpStream, server: Arc<Server>) {
         if server.return_binary_for_share.load(Ordering::SeqCst) {
             zip_response(ZIP_BODY)
         } else {
+            let (status, headers, body) = server.share_response.lock().unwrap().unwrap_or((
+                "200 OK",
+                "Content-Type: Text/HTML; charset=utf-8\r\n",
+                HTML_BODY,
+            ));
             let mut response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: Text/HTML; charset=utf-8\r\n\
-                 Content-Length: {}\r\nConnection: close\r\n\r\n",
-                HTML_BODY.len()
+                "HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
             )
             .into_bytes();
             if method != "HEAD" {
-                response.extend_from_slice(HTML_BODY);
+                response.extend_from_slice(body);
             }
             response
         }
@@ -141,11 +145,14 @@ async fn serve(mut stream: TcpStream, server: Arc<Server>) {
     let _ignored = stream.write_all(&response).await;
 }
 
+type ShareResponse = (&'static str, &'static str, &'static [u8]);
+
 #[derive(Default)]
 struct Server {
     log: Mutex<Vec<String>>,
     truncate_next_zip: AtomicBool,
     return_binary_for_share: AtomicBool,
+    share_response: Mutex<Option<ShareResponse>>,
 }
 
 struct Harness {
@@ -518,6 +525,115 @@ async fn save_html_keeps_original_and_existing_file_and_rejects_changed_response
     h.cleanup().await;
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn html_response_name_is_evidence_not_download_intent() {
+    let mut h = Harness::new("html_response_filename").await;
+    for (headers, hint, filename) in [
+        (
+            "Content-Type: application/octet-stream\r\n\
+             Content-Disposition: attachment; filename=login.html\r\n",
+            0,
+            "archive.zip",
+        ),
+        (
+            "Content-Disposition: attachment; filename=login.html\r\n",
+            -1,
+            "archive.zip",
+        ),
+        (
+            "Content-Disposition: attachment; filename=login.html\r\n",
+            0,
+            "",
+        ),
+    ] {
+        *h.server.share_response.lock().unwrap() = Some(("200 OK", headers, HTML_BODY));
+        let mut spec = h.share_spec(None);
+        spec.file_name = filename.into();
+        spec.hint_file_size = hint;
+        let original = h.engine.manager.create_task(spec).await.unwrap();
+        let failed = h.finish(&original).await;
+        assert_eq!(failed.status, 4);
+        assert!(failed.error_message.contains("HTML response filename"));
+        assert!(!h.work_dir.join("archive.zip").exists());
+        assert!(!h.work_dir.join("login.html").exists());
+
+        let saved = h
+            .engine
+            .manager
+            .save_html_response(&original)
+            .await
+            .unwrap();
+        let page = h.finish(&saved).await;
+        assert_eq!(page.status, 3, "{}", page.error_message);
+        assert_eq!(h.output(&page).await, HTML_BODY);
+    }
+
+    let mut spec = h.share_spec(None);
+    spec.file_name = "explicit.html".into();
+    spec.checksum.clear();
+    let task = h.engine.manager.create_task(spec).await.unwrap();
+    let page = h.finish(&task).await;
+    assert_eq!(page.status, 3, "{}", page.error_message);
+    assert_eq!(page.file_name, "explicit.html");
+    assert_eq!(h.output(&page).await, HTML_BODY);
+    h.cleanup().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn html_login_status_is_reported_and_invalid_html_replays_are_not_published() {
+    const HTML_HEADERS: &str = "Content-Type: text/html\r\n";
+    let mut h = Harness::new("html_login_status").await;
+    for (status, method, hint) in [
+        ("403 Forbidden", None, 0),
+        ("401 Unauthorized", Some("POST"), 0),
+        ("403 Forbidden", None, -1),
+    ] {
+        *h.server.share_response.lock().unwrap() = Some((status, HTML_HEADERS, HTML_BODY));
+        let mut spec = h.share_spec(method);
+        spec.hint_file_size = hint;
+        let original = h.engine.manager.create_task(spec).await.unwrap();
+        let failed = h.finish(&original).await;
+        assert_eq!(failed.status, 4);
+        assert!(
+            failed
+                .error_message
+                .starts_with("server returned HTML page (Content-Type: text/html)")
+        );
+        let (code, _) = status.split_once(' ').unwrap();
+        assert!(failed.error_message.contains(code));
+        assert!(!h.work_dir.join(failed.file_name).exists());
+
+        for (replay_status, headers, body) in [
+            (status, HTML_HEADERS, HTML_BODY),
+            ("200 OK", HTML_HEADERS, b"".as_slice()),
+            (
+                "206 Partial Content",
+                "Content-Type: text/html\r\nContent-Range: bytes 0-3/100\r\n",
+                b"<htm".as_slice(),
+            ),
+        ] {
+            *h.server.share_response.lock().unwrap() = Some((replay_status, headers, body));
+            let saved = h
+                .engine
+                .manager
+                .save_html_response(&original)
+                .await
+                .unwrap();
+            let replay = h.finish(&saved).await;
+            assert_eq!(replay.status, 4);
+            if replay_status != status {
+                assert!(
+                    replay
+                        .error_message
+                        .contains("did not return a complete HTML page")
+                );
+            }
+            assert!(!h.work_dir.join(replay.file_name).exists());
+        }
+    }
+    h.cleanup().await;
+}
+
 #[cfg(feature = "plugins")]
 #[tokio::test(flavor = "current_thread")]
 async fn save_html_after_restart_uses_stored_url_without_resolve_or_prepare() {
@@ -526,7 +642,11 @@ async fn save_html_after_restart_uses_stored_url_without_resolve_or_prepare() {
     let original = h.engine.manager.create_task(spec).await.unwrap();
     let failed = h.finish(&original).await;
     assert_eq!(failed.status, 4);
-    assert!(failed.error_message.starts_with("server returned HTML page"));
+    assert!(
+        failed
+            .error_message
+            .starts_with("server returned HTML page")
+    );
 
     let mut h = h.restart_engine().await;
     let dir = h.work_dir.join("plugin_src");
@@ -546,7 +666,10 @@ async fn save_html_after_restart_uses_stored_url_without_resolve_or_prepare() {
     tokio::fs::write(dir.join("manifest.json"), manifest)
         .await
         .unwrap();
-    let rewrite = format!(r#"async () => ({{ url: "http://{}{PLAIN_PATH}" }})"#, h.addr);
+    let rewrite = format!(
+        r#"async () => ({{ url: "http://{}{PLAIN_PATH}" }})"#,
+        h.addr
+    );
     tokio::fs::write(
         dir.join("resolve.js"),
         format!("globalThis.resolve = {rewrite};"),

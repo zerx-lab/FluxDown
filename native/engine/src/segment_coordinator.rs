@@ -5890,7 +5890,8 @@ async fn do_segment(
             }
         }
     };
-    let resp = resp.error_for_status()?;
+    let resp = spec.check_http_status(resp)?;
+    spec.check_html_response(&resp, url, &used.method)?;
     spec.confirm(&used);
     if reuse_redirect && direct.is_none() && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT {
         request_path.learn_redirect(url, resp.url().as_str());

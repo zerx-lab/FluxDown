@@ -59,7 +59,7 @@
 | **Remote Devices** | Optional FluxCloud account, settings sync and remote task management, plus LAN device pairing and direct connections |
 | **APIs & CLI** | REST/OpenAPI, aria2-compatible JSON-RPC, MCP with 12 tools, and a CLI for scripts or standalone downloads |
 
-On desktop, if a link returns a share or sign-in page instead of the requested file, open the failed task’s details and choose **Download HTML anyway**. Confirming creates a separate task that saves a fresh HTML response to a `.html` file without overwriting existing files or changing the original task.
+On desktop, if a link returns a share or sign-in page instead of the requested file, open the failed task’s details and choose **Download HTML anyway**. Confirming creates a separate task that reuses the original task’s stored URL, not a temporary link resolved by a plugin. It saves a non-empty, complete HTML response to a `.html` file without overwriting existing files or changing the original task. An HTTP error page is not saved.
 
 **Privacy:** local downloads do not require a FluxCloud account. Cloud features are optional. Anonymous installation and daily-active statistics are controlled by `analytics_enabled` and can be disabled; they do not collect download/task information. This is not a zero-telemetry application.
 

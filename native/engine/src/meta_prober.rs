@@ -30,12 +30,12 @@ pub struct ProbedMeta {
 impl ProbedMeta {
     /// 由下载器完整探测（HEAD ∥ Range GET，见 `downloader::resolve_file_info_with_ua_fallback`）
     /// 的结果派生启动序幕的名称 / 大小，规则与 [`probe_http_meta`] 一致：
-    /// - text/html / xhtml（登录页、错误页、中转页）的响应头不描述目标文件，不产出名字
-    ///   （大小也不采信）；下载器自己的 HTML 安全网随后照常拦截。
+    /// - HTML 响应（按 MIME 或文件名识别）不提供目标文件名或大小；
+    ///   下载器随后决定是否接受该页面。
     /// - 名字只有 Content-Disposition（含 URL 查询里的 CD）才算权威，其余（URL 段 /
     ///   Content-Type 推断 / `download` 兜底）标记 `name_inferred`，完成期可精修。
     pub(crate) fn from_file_info(info: &crate::downloader::FileInfo) -> Self {
-        if is_html_content_type(&info.content_type) {
+        if crate::downloader::html_evidence(&info.content_type, &info.file_name).is_some() {
             return Self::default();
         }
         Self {
@@ -47,17 +47,6 @@ impl ProbedMeta {
             total_bytes: info.total_bytes.max(0),
         }
     }
-}
-
-/// `Content-Type` 是否为 HTML 页面（text/html / application/xhtml+xml）。
-fn is_html_content_type(content_type: &str) -> bool {
-    let mime = content_type
-        .split(';')
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_ascii_lowercase();
-    mime == "text/html" || mime == "application/xhtml+xml"
 }
 
 /// 探测队列任务的文件名和大小。
@@ -251,25 +240,22 @@ async fn probe_http_meta(
     // 非 2xx（预签名 GET URL 对 HEAD 回 403、PHP 端点回 405、错误页……）的响应头不描述
     // 目标文件；拿它的 URL 段当名字落库，会让真正下载时 GET 拿到的 Content-Disposition
     // 被这个占位名压住。text/html 同理，多半是登录页 / 错误页（F020）。
-    let is_html = response
+    if !response.status().is_success() {
+        return ProbedMeta::default();
+    }
+    let content_type = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .map(|ct| {
-            let mime = ct
-                .split(';')
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_ascii_lowercase();
-            mime == "text/html" || mime == "application/xhtml+xml"
-        })
-        .unwrap_or(false);
-    if is_html || !response.status().is_success() {
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    if crate::downloader::html_evidence(content_type, "").is_some() {
         return ProbedMeta::default();
     }
     let (file_name, name_inferred) = if file_name.is_empty() {
         let resolved = extract_filename(response.headers(), url, response.url().as_str());
+        if crate::downloader::filename_looks_like_html(&resolved.name) {
+            return ProbedMeta::default();
+        }
         let inferred = !matches!(
             resolved.source,
             NameSource::Disposition | NameSource::QueryDisposition
