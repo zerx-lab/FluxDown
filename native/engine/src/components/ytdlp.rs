@@ -416,21 +416,36 @@ mod install {
         fn matching_tag<'a>(release: &'a Value, version: Option<&str>) -> Option<&'a str> {
             stable_tag(release).filter(|tag| version.is_none_or(|v| v == *tag))
         }
-        // 官网缓存的是列表：只选精确 tag，未指定时只选首个稳定条目。
-        let (release, tag) = if let Some(releases) = metadata.as_array() {
+        let releases = metadata.as_array();
+        let (tag, asset_url, sums_url) = if let (Some(releases), None) = (releases, version) {
+            // 未指定版本时，按缓存顺序找首个具备平台二进制和校验文件的稳定版。
             releases
                 .iter()
-                .find_map(|release| matching_tag(release, version).map(|tag| (release, tag)))
+                .find_map(|release| {
+                    let tag = stable_tag(release)?;
+                    let (asset_url, sums_url) = release_asset_urls(release, tag, asset).ok()?;
+                    Some((tag, asset_url, sums_url))
+                })
+                .ok_or_else(|| {
+                    ComponentError::NotFound(format!("stable yt-dlp releases for {asset}"))
+                })?
         } else {
-            matching_tag(metadata, version).map(|tag| (metadata, tag))
-        }
-        .ok_or_else(|| {
-            ComponentError::NotFound(match version {
-                Some(tag) => format!("yt-dlp release tag {tag}"),
-                None => "stable yt-dlp release".to_owned(),
-            })
-        })?;
-        let (asset_url, sums_url) = release_asset_urls(release, tag, asset)?;
+            let (release, tag) = if let Some(releases) = releases {
+                releases
+                    .iter()
+                    .find_map(|release| matching_tag(release, version).map(|tag| (release, tag)))
+            } else {
+                matching_tag(metadata, version).map(|tag| (metadata, tag))
+            }
+            .ok_or_else(|| {
+                ComponentError::NotFound(match version {
+                    Some(tag) => format!("yt-dlp release tag {tag}"),
+                    None => "stable yt-dlp release".to_owned(),
+                })
+            })?;
+            let (asset_url, sums_url) = release_asset_urls(release, tag, asset)?;
+            (tag, asset_url, sums_url)
+        };
         Ok(YtdlpDownload {
             version: tag.to_owned(),
             asset_url: asset_url.to_owned(),
@@ -538,6 +553,8 @@ mod install {
                         OFFICIAL => Ok(json!([
                             {"tag_name": "nightly", "prerelease": true},
                             {"tag_name": "draft", "draft": true},
+                            release("2026.07.07", &["yt-dlp_linux", CHECKSUM_ASSET]),
+                            release("2026.07.06", &[ASSET]),
                             cached(NEWER),
                             cached(TAG)
                         ])),
