@@ -544,7 +544,7 @@ impl ExtensionsView {
         let busy = stale || self.plugins.busy.contains(&plugin.identity);
         let load_failed = plugin.load_status == "Failed";
         let detail_identity = identity.clone();
-        let consent_pending = has_pending_consent(plugin);
+        let consent_pending = !load_failed && has_pending_consent(plugin);
         h_flex()
             .flex_none()
             .pl(tokens.spacing.md)
