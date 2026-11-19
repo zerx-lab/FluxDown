@@ -76,6 +76,24 @@ describe("mediaMagicMime", () => {
     expect(mediaMagicMime(jpeg)).toBeNull();
     expect(mediaMagicMime(new Uint8Array([0x47]))).toBeNull();
   });
+
+  test("图片头 + TS 的分片（1×1 PNG 前缀）按图片后的同步字节识别", () => {
+    const png = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+    const prefixed = new Uint8Array(70 + 4 * 188);
+    prefixed.set(png);
+    for (let i = 0; i < 4; i++) prefixed[70 + i * 188] = 0x47;
+    expect(mediaMagicMime(prefixed)).toBe("video/mp2t");
+    // 只有零星 0x47 的真图片不判为媒体
+    const image = new Uint8Array(4096);
+    image.set(png);
+    image[100] = 0x47;
+    image[288] = 0x47;
+    expect(mediaMagicMime(image)).toBeNull();
+    // 不是图片头时不在中段找同步字节
+    const plain = prefixed.slice();
+    plain.fill(0, 0, 8);
+    expect(mediaMagicMime(plain)).toBeNull();
+  });
 });
 
 const TS_LEN = 376;

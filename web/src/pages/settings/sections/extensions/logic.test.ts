@@ -12,6 +12,8 @@ import {
   localizedSettingField,
   pageOf,
   privateSearchVisible,
+  resolverUrlConflictNotice,
+  resolverUrlConflicts,
   safeHttpUrl,
   truncateChallengeText,
   validateField,
@@ -271,5 +273,47 @@ describe('liveDialogPlugins', () => {
 
   test('未打开的对话框恒为 null', () => {
     expect(liveDialogPlugins([plugin('a@x')], none)).toEqual(none)
+  })
+})
+
+describe('resolver URL overlap feedback', () => {
+  const pattern = 'magnet:*'
+  const otherIdentity = 'scoped@test'
+  const otherPattern = 'magnet:?xt=urn:btih:*'
+  const broad = {
+    identity: 'broad@test', enabled: true, resolverUrlConflicts: [
+      { pattern, otherIdentity, otherPattern },
+      { pattern, otherIdentity: 'unrelated@test', otherPattern: 'magnet:?dn=*' },
+    ],
+  } as PluginDto
+  const scoped = { identity: otherIdentity, enabled: false } as PluginDto
+  const unrelated = { identity: 'unrelated@test', enabled: true } as PluginDto
+  const title = 'URL patterns'
+  const pending = 'Potential overlap after authorization'
+  const active = 'Use a site default'
+  const messages: Record<string, string> = {
+    pluginResolverUrlConflictsTitle: title,
+    pluginResolverUrlPendingHint: pending,
+    pluginResolverUrlConflictsHint: active,
+  }
+  const translate = (key: string) => messages[key] ?? key
+
+  test('market install warns about its pending pair even when the other plugin owns it', () => {
+    const latest = [broad, scoped, unrelated]
+    expect(resolverUrlConflictNotice(latest, otherIdentity, translate)).toBe(
+      `${title}\n\n${pending}\nbroad@test: ${pattern}\n${otherIdentity}: ${otherPattern}`,
+    )
+    expect(resolverUrlConflicts(latest, otherIdentity)).toEqual([
+      { identity: broad.identity, pattern, otherIdentity, otherPattern, hint: 'pluginResolverUrlPendingHint' },
+    ])
+  })
+
+  test('enabling the last row reports the active pair from the new snapshot; unrelated overlap is silent', () => {
+    const before = [{ ...broad, resolverUrlConflicts: broad.resolverUrlConflicts?.slice(1) }, unrelated, scoped]
+    expect(resolverUrlConflictNotice(before, otherIdentity, translate)).toBeNull()
+    const latest = [broad, unrelated, { ...scoped, enabled: true }]
+    expect(resolverUrlConflictNotice(latest, otherIdentity, translate)).toBe(
+      `${title}\n\n${active}\nbroad@test: ${pattern}\n${otherIdentity}: ${otherPattern}`,
+    )
   })
 })

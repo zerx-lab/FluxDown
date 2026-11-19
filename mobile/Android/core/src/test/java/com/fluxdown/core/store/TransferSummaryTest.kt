@@ -1,6 +1,8 @@
 package com.fluxdown.core.store
 
+import com.fluxdown.core.model.HlsFragmentProgress
 import com.fluxdown.core.model.Task
+import com.fluxdown.core.model.TaskRuntime
 import com.fluxdown.core.model.TaskStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -39,6 +41,37 @@ class TransferSummaryTest {
         assertEquals(1f, t.fraction!!, 0f)
         val s = TransferSummary.of(listOf(t, transfer("b", 0, 100, 0)))
         assertEquals(0.5f, s.fraction!!, 1e-6f)
+    }
+
+    @Test fun projectsFragmentProgressWithOrWithoutEstimatedSize() {
+        val task = Task(
+            taskId = "vod", url = "https://example.com/vod.m3u8", originUrl = "",
+            fileName = "vod.mp4", saveDir = "/dl", status = TaskStatus.Downloading,
+            downloadedBytes = 8, totalBytes = 80,
+        )
+        val runtime = TaskRuntime(
+            taskId = task.taskId, sampleSequence = 1, activeTransfers = null, connectedPeers = null,
+            totalBytes = 80, segments = emptyList(), hlsFragments = HlsFragmentProgress(50, 100),
+        )
+        val state = HostState(connection = Connection.Live, tasks = listOf(task), runtime = mapOf(task.taskId to runtime))
+        assertEquals(0.5f, state.transfers().single().fraction!!, 1e-6f)
+        assertEquals(0.5f, state.copy(tasks = listOf(task.copy(totalBytes = 0))).transfers().single().fraction!!, 1e-6f)
+        assertEquals(0.1f, state.copy(runtime = emptyMap()).transfers().single().fraction!!, 1e-6f)
+        assertNull(state.copy(tasks = listOf(task.copy(totalBytes = 0)), runtime = emptyMap()).transfers().single().fraction)
+    }
+
+    @Test fun aggregatesFragmentCountsButDoesNotMixThemWithBytes() {
+        val a = transfer("a", 8, 80, 8).copy(hlsFragments = HlsFragmentProgress(50, 100))
+        val b = transfer("b", 2, 40, 2).copy(hlsFragments = HlsFragmentProgress(10, 20))
+        val c = transfer("c", 1, 0, 1).copy(hlsFragments = HlsFragmentProgress(0, 80))
+        val fragmentSummary = TransferSummary.of(listOf(a, b, c))
+        assertEquals(0.3f, fragmentSummary.fraction!!, 1e-6f)
+        assertNull(fragmentSummary.etaSeconds)
+
+        val mixed = TransferSummary.of(listOf(a, b.copy(hlsFragments = null)))
+        assertNull(mixed.fraction)
+        assertNull(mixed.etaSeconds)
+        assertEquals(10L, mixed.speedBps)
     }
 
     @Test fun projectsOnlyActiveTasksWhileLive() {

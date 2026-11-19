@@ -378,8 +378,8 @@ struct DownloadsRemoteRowsTests {
         // 分区头计数含远程行；汇总速度只算本机（r2 的 5000 不计入）。
         #expect(result.list.sections.map(\.count) == [3, 4])
         #expect(result.list.sections[0].downSpeed == 1000)
-        // 远程行不参与多选。
-        #expect(result.list.visibleIds == ["a", "f", "b"])
+        // 远程行参与多选 / 全选：行 id 与列表顺序一致（远程行带 `remote:` 前缀）。
+        #expect(result.list.visibleIds == ["a", "remote:r2", "remote:r1", "f", "remote:r3", "remote:r4", "b"])
     }
 
     @Test func remoteUnknownSortsWithPendingAndBothTiersSplitInflightFromHistory() {
@@ -447,7 +447,7 @@ struct DownloadsRemoteRowsTests {
         filter.remoteOnly = true
         let result = run(filter)
         #expect(ids(result) == ["remote:r2", "remote:r1", "remote:r3", "remote:r4"])
-        #expect(result.list.visibleIds.isEmpty)
+        #expect(result.list.visibleIds == ["remote:r2", "remote:r1", "remote:r3", "remote:r4"])
         #expect(result.facets.matching == 4)
         #expect(result.facets.remoteCount == 4)
         #expect(!result.list.isEmpty)
@@ -494,7 +494,9 @@ struct DownloadsRemoteRowsTests {
         let result = run(state: makeState([]))
         #expect(!result.list.isEmpty)
         #expect(result.list.sections.map(\.id) == ["flow", "history"])
-        #expect(result.list.visibleIds.isEmpty)
+        // 只有远程行时全选范围也是它们（`remote:` 前缀）。
+        #expect(!result.list.visibleIds.isEmpty)
+        #expect(result.list.visibleIds.allSatisfy { $0.hasPrefix(DownloadsRow.remoteIdPrefix) })
     }
 
     @Test func groupByStatusPlacesRemoteByMapping() {
@@ -505,8 +507,9 @@ struct DownloadsRemoteRowsTests {
         #expect(sections["status:4"] == ["f", "remote:r3"])
         #expect(sections["status:2"] == ["remote:r4"])
         #expect(sections["status:3"] == ["b"])
-        // 分组视图的 visibleIds 同样不含远程。
-        #expect(result.list.visibleIds == ["a", "f", "b"])
+        // 分组视图的 visibleIds 同样含远程行，顺序与分区行一致。
+        #expect(result.list.visibleIds == result.list.sections.flatMap { $0.rows.map(\.id) })
+        #expect(Set(result.list.visibleIds) == ["a", "f", "b", "remote:r1", "remote:r2", "remote:r3", "remote:r4"])
     }
 
     @Test func groupByDateUsesRemoteCreatedAt() throws {

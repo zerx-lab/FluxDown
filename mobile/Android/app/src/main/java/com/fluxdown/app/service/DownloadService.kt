@@ -177,8 +177,8 @@ private fun ensureChannel(context: Context) {
 
 /**
  * 进度通知：
- * - 1 个活跃任务：标题 = 文件名，进度条 = 该任务进度（大小未知为不确定态），正文 = 速度 · 已下 / 总量 · 剩余时间；
- * - 多个活跃任务：标题 = 「N 个任务下载中」，进度条 = 大小已知任务的聚合进度（[TransferSummary]），
+ * - 1 个活跃任务：进度条与正文优先使用分片进度，否则沿用字节进度与剩余时间；
+ * - 多个活跃任务：进度条汇总相同口径，混合分片与字节时为不确定态（[TransferSummary]），
  *   展开后逐行列出前 [DETAIL_LINES] 个任务的进度与速度，其余折叠为「等 N 个文件」；
  * - 只有排队 / 待重试：标题说明等待，无进度条。
  * 页眉副文本放百分比，折叠态也能一眼看到进度；点按单任务通知直达该任务详情。
@@ -200,12 +200,15 @@ private fun buildNotification(context: Context, a: LocalActivity): android.app.N
     when {
         single != null -> {
             val fraction = single.fraction
+            val fragments = single.hlsFragments
             builder.setContentTitle(single.fileName.ifEmpty { context.str(R.string.mobileDlNotifActive, "n" to 1) })
                 .setContentText(
                     listOfNotNull(
                         speedLabel(context, single.speedBps),
-                        sizeLabel(single.downloadedBytes, single.totalBytes),
-                        single.etaSeconds?.let { remainingLabel(context, it) },
+                        if (fragments != null) {
+                            context.str(R.string.hlsFragmentProgress, "done" to fragments.written, "total" to fragments.total)
+                        } else sizeLabel(single.downloadedBytes, single.totalBytes),
+                        if (fragments == null) single.etaSeconds?.let { remainingLabel(context, it) } else null,
                         waiting,
                     ).joinToString(SEP),
                 )
@@ -219,7 +222,12 @@ private fun buildNotification(context: Context, a: LocalActivity): android.app.N
                 waiting,
             ).joinToString(SEP)
             val lines = transfers.take(DETAIL_LINES).map { t ->
-                val progress = t.fraction?.let(::percentLabel) ?: Format.bytes(t.downloadedBytes).toString()
+                val fragments = t.hlsFragments
+                val progress = if (fragments != null) {
+                    context.str(R.string.hlsFragmentProgress, "done" to fragments.written, "total" to fragments.total)
+                } else {
+                    t.fraction?.let(::percentLabel) ?: Format.bytes(t.downloadedBytes).toString()
+                }
                 listOf(t.fileName, progress, Format.speedOrZero(t.speedBps).toString()).joinToString(SEP)
             }
             val more = transfers.size - DETAIL_LINES
@@ -253,7 +261,7 @@ private const val DETAIL_LINES = 5
 
 private const val PROGRESS_MAX = 1000
 
-/** 进度条 + 页眉百分比；大小未知为不确定态（不显示百分比）。 */
+/** 进度条 + 页眉百分比；无可用比例则显示不确定态（不显示百分比）。 */
 private fun applyProgress(builder: NotificationCompat.Builder, fraction: Float?) {
     if (fraction == null) {
         builder.setProgress(0, 0, true)

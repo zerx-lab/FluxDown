@@ -493,7 +493,7 @@ pub(crate) fn url_has_prefix(url: &str, prefixes: &[&str]) -> bool {
 }
 
 /// BT 任务源：`magnet:` 链接或 `torrent-file://` 本地种子哨兵。
-fn is_bt_url(url: &str) -> bool {
+pub(crate) fn is_bt_url(url: &str) -> bool {
     url_has_prefix(url, &["magnet:", "torrent-file://"])
 }
 
@@ -539,6 +539,10 @@ impl TaskMenuFacts {
     /// 本地已完成且产物仍在下载目录：「打开文件」「复制文件」的共同前提。
     pub(crate) fn has_product_on_disk(&self) -> bool {
         self.is_local && self.state == TaskState::Completed && !self.file_missing
+    }
+
+    pub(crate) fn can_clear_task_file(&self) -> bool {
+        self.has_product_on_disk() && !self.is_bt && !self.is_torrent_sentinel
     }
 
     /// 「复制下载地址」对单个任务有意义：有真实链接，且不与「复制磁力链接」重复
@@ -635,6 +639,7 @@ pub(crate) enum MenuEntry {
     Separator,
     Delete,
     DeleteWithFiles,
+    ClearTaskFile,
     /// 在主窗口停靠详情面板中查看（独立窗口经面板头部「在独立窗口打开」）。
     ShowDetail,
     /// 插件贡献的命令（下标对应 [`DownloadView`] 上的插件命令列表）。
@@ -747,6 +752,11 @@ pub(crate) fn context_menu_items(selection: &[TaskMenuFacts]) -> Vec<MenuEntry> 
     if selection.iter().any(|task| task.controllable) {
         items.push(MenuEntry::Delete);
         items.push(MenuEntry::DeleteWithFiles);
+    }
+    if let [only] = selection
+        && only.can_clear_task_file()
+    {
+        items.push(MenuEntry::ClearTaskFile);
     }
     if selection.iter().any(|task| task.is_local) {
         items.push(MenuEntry::ShowDetail);
@@ -3360,6 +3370,12 @@ impl DownloadTableDelegate {
                 self.strings.delete_task_and_file.clone(),
                 Box::new(crate::actions::DeleteSelectedWithFiles),
             ),
+            MenuEntry::ClearTaskFile => destructive_menu_item(
+                menu,
+                destructive,
+                self.strings.clear_task_file.clone(),
+                Box::new(crate::actions::ClearSelectedTaskFile),
+            ),
             MenuEntry::ShowDetail => menu.menu_with_icon(
                 self.strings.detail.clone(),
                 FluxIcon::PanelRight,
@@ -4633,7 +4649,8 @@ fn arm_reorder_timer(
 }
 
 impl DownloadView {
-    /// 选中集合 → 命令列表（远程任务走 `agent.remote.command`）。
+    /// 选中集合 → 命令列表（远程任务生成逐条 `agent.remote.command`，派发前由 `coalesce_commands`
+    /// 把同动作的多条合并为 `agent.remote.commandMany`）。
     pub(crate) fn commands_for_selection(
         &self,
         action: ToolbarCommand,
@@ -4720,8 +4737,8 @@ impl DownloadView {
     }
 
     /// 执行一批命令。本地多任务删除先拆出走分块删除（见 [`crate::deletion`]）；同类多任务
-    /// 的暂停 / 继续 / 远程删除先合并成批量 RPC
-    /// （见 [`coalesce_commands`]），其余命令按 [`MAX_IN_FLIGHT`] 限制并发；幂等命令被
+    /// 的暂停 / 继续 / 删除（本地与远程）先合并成批量 RPC
+    /// （见 [`coalesce_commands`]；远程为 `agent.remote.commandMany`），其余命令按 [`MAX_IN_FLIGHT`] 限制并发；幂等命令被
     /// agent 以可重试的 `Unavailable` 拒绝时退避重试。任一失败在页面横幅提示（按错误
     /// `reason` 给出原因，同一批里先失败的错误一直保留，后完成的成功不会冲掉它）。
     /// 单任务「继续」/「重新下载」在命令前登记旧状态、成功后确认开始；
@@ -4738,6 +4755,7 @@ impl DownloadView {
         }
         let interactive_start = match commands.as_slice() {
             [DownloadsCommand::Resume { task_id }] => Some((task_id.clone(), false)),
+            [DownloadsCommand::RestartMissingFile { task_id }] => Some((task_id.clone(), false)),
             [DownloadsCommand::Redownload(request, task_id)] if !request.start_paused => {
                 Some((task_id.clone(), true))
             }
@@ -6882,6 +6900,26 @@ mod context_menu_tests {
             let items = context_menu_items(&[stale]);
             assert!(items.contains(&MenuEntry::Boost));
             assert!(!items.contains(&MenuEntry::CancelBoost));
+        }
+    }
+
+    #[test]
+    fn clear_task_file_requires_one_local_completed_non_bt_product() {
+        assert!(
+            context_menu_items(&[task(true, TaskState::Completed)])
+                .contains(&MenuEntry::ClearTaskFile)
+        );
+        let mut bt = task(true, TaskState::Completed);
+        bt.is_bt = true;
+        let mut missing = task(true, TaskState::Completed);
+        missing.file_missing = true;
+        for ineligible in [
+            bt,
+            missing,
+            task(false, TaskState::Completed),
+            task(true, TaskState::Paused),
+        ] {
+            assert!(!context_menu_items(&[ineligible]).contains(&MenuEntry::ClearTaskFile));
         }
     }
 

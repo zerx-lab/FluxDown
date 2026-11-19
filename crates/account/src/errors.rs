@@ -111,11 +111,13 @@ pub(crate) fn reason_key(reason: ErrorReason, context: ErrorContext) -> Option<&
         ErrorReason::PeerOutdated => "errReasonPeerOutdated",
         ErrorReason::LinkUnavailable => "errReasonLinkUnavailable",
         ErrorReason::TargetDeviceOffline => "errReasonTargetDeviceOffline",
+        ErrorReason::RemoteTaskGone => "errReasonRemoteTaskGone",
         ErrorReason::TaskStateConflict => "errReasonTaskStateConflict",
         ErrorReason::TaskDeviceMismatch => "errReasonTaskDeviceMismatch",
         ErrorReason::SaveDirUnavailable => "errReasonSaveDirUnavailable",
         ErrorReason::TaskFilesInUse => "errReasonTaskFilesInUse",
         ErrorReason::TaskFilesNotDeleted => "errReasonTaskFilesNotDeleted",
+        ErrorReason::BrowserRequestRequired => "taskErrorPostOnlyResume",
         ErrorReason::PaymentDisabled
         | ErrorReason::PaymentGatewayFailed
         | ErrorReason::PlanNotPurchasable
@@ -439,6 +441,7 @@ mod tests {
             ErrorReason::PeerOutdated,
             ErrorReason::LinkUnavailable,
             ErrorReason::TargetDeviceOffline,
+            ErrorReason::RemoteTaskGone,
             ErrorReason::TaskStateConflict,
             ErrorReason::TaskDeviceMismatch,
             ErrorReason::SaveDirUnavailable,

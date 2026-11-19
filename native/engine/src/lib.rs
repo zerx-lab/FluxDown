@@ -338,6 +338,7 @@ impl Engine {
         // 播种内置队列（main 主队列 / later 稍后下载，幂等）并迁移存量
         // 空 queue_id 任务——必须先于宿主的 `manager.load_queues()`。
         db.seed_builtin_queues().await?;
+        download_manager::recover_pending_file_clears(&db).await?;
         // 组 GC：清理无成员的孤儿组行（重启后一次性清理；无事件——首次
         // send_all_groups 由宿主主动调用触发，此处不广播）。
         if let Err(error) = db.gc_empty_groups().await {

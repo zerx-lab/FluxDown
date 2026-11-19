@@ -127,29 +127,32 @@ fn is_installed(name: &str, cx: &App) -> bool {
         .is_some_and(|font| font.family.as_ref() == name)
 }
 
-/// 把当前主题的汉字回退链挂到每个窗口根节点上，子树（含对话框 / 通知等 Root 浮层）继承。
-struct HanFallbackLayer;
+/// 在窗口根节点设置正文默认字重与汉字回退链，内容和 Root 浮层一同继承。
+struct WindowTextLayer;
 
-impl Render for HanFallbackLayer {
+impl Render for WindowTextLayer {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         gpui::Empty
     }
 }
 
-impl RootPlugin for HanFallbackLayer {
+impl RootPlugin for WindowTextLayer {
     fn style(&self, surface: &mut gpui::Stateful<gpui::Div>, _window: &mut Window, cx: &mut App) {
         use gpui::Styled as _;
-        if let Some(fallbacks) = cx
-            .try_global::<crate::FluxThemeState>()
-            .and_then(|state| state.font_fallbacks().cloned())
-        {
-            surface.text_style().font_fallbacks = Some(fallbacks);
+        let Some(state) = cx.try_global::<crate::FluxThemeState>() else {
+            return;
+        };
+        if let Some(weight) = state.appearance().font_weight {
+            surface.text_style().font_weight = Some(gpui::FontWeight(f32::from(weight)));
+        }
+        if let Some(fallbacks) = state.font_fallbacks() {
+            surface.text_style().font_fallbacks = Some(fallbacks.clone());
         }
     }
 }
 
 pub(crate) fn register_root_plugin(cx: &mut App) {
-    gpui_base::Root::register_plugin::<HanFallbackLayer>(cx, |_, _| HanFallbackLayer);
+    gpui_base::Root::register_plugin::<WindowTextLayer>(cx, |_, _| WindowTextLayer);
 }
 
 #[cfg(test)]

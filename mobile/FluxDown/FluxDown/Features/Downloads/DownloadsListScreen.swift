@@ -30,7 +30,7 @@ struct DownloadsListScreen: View {
     @State private var confirmingClear = false
     @State private var pendingGroupDelete: GroupDeleteRequest?
     /// 多选底栏「删除」待确认的任务（确认 alert 由该按钮挂载）。
-    @State private var pendingSelectionDelete: TaskDeleteRequest?
+    @State private var pendingSelectionDelete: SelectionDeleteRequest?
     @State private var taskInfoExport: TaskInfoDocument?
     #if FULL_FLAVOR
     /// 待确认「忽略插件重试」的任务（`daemon.plugin.ignoreRetry`）。
@@ -117,7 +117,7 @@ struct DownloadsListScreen: View {
                             case let .task(item):
                                 self.row(item, style: style, editing: editing)
                             case let .remote(remote):
-                                DownloadsRemoteRow(task: remote.task, readOnly: model.chrome.isReadOnly)
+                                DownloadsRemoteRow(task: remote.task, readOnly: model.chrome.isReadOnly, selecting: editing)
                             }
                         }
                     } header: {
@@ -426,9 +426,9 @@ struct DownloadsListScreen: View {
             }
             ToolbarItemGroup(placement: .bottomBar) {
                 let caps = model.selectionCaps
-                Button(L("resume"), systemImage: FluxSymbol.resume) { actions.resume(caps.resumeIds) }
+                Button(L("resume"), systemImage: FluxSymbol.resume) { resumeSelected(caps) }
                     .disabled(!caps.canResume)
-                Button(L("pause"), systemImage: FluxSymbol.pause) { actions.pause(caps.pauseIds) }
+                Button(L("pause"), systemImage: FluxSymbol.pause) { pauseSelected(caps) }
                     .disabled(!caps.canPause)
                 Button(L("moveToQueueAction"), systemImage: FluxSymbol.queue) { actions.moveToQueue(caps.moveIds) }
                     .disabled(!caps.canMove)
@@ -443,7 +443,7 @@ struct DownloadsListScreen: View {
                     }
                 }
                 #endif
-                Button(L("copyUrl"), systemImage: FluxSymbol.copy) { copyLinks(model.selectedTasks()) }
+                Button(L("copyUrl"), systemImage: FluxSymbol.copy) { copySelectedLinks() }
                     .disabled(model.selection.isEmpty)
                 Button(L("exportTaskInfoTxt"), systemImage: "square.and.arrow.down") {
                     let selected = model.selectedTasks()
@@ -455,15 +455,13 @@ struct DownloadsListScreen: View {
                     }
                     if !rows.isEmpty { taskInfoExport = TaskInfoDocument(rows) }
                 }
-                .disabled(model.selection.isEmpty)
+                .disabled(!caps.hasLocal)
             }
             ToolbarSpacer(.flexible, placement: .bottomBar)
             ToolbarItem(placement: .bottomBar) {
-                Button(L("delete"), systemImage: FluxSymbol.delete, role: .destructive) {
-                    pendingSelectionDelete = actions.deleteRequest(model.selectedTasks()) { model.isSelecting = false }
-                }
-                .disabled(model.selection.isEmpty)
-                .taskDeleteDialog($pendingSelectionDelete)
+                Button(L("delete"), systemImage: FluxSymbol.delete, role: .destructive) { requestSelectionDelete() }
+                    .disabled(!model.selectionCaps.canDelete)
+                    .selectionDeleteDialog($pendingSelectionDelete, onConfirm: confirmSelectionDelete)
             }
         }
     }
@@ -515,10 +513,63 @@ struct DownloadsListScreen: View {
         }
     }
 
-    private func copyLinks(_ tasks: [DownloadTask]) {
-        guard !tasks.isEmpty else { return }
-        UIPasteboard.general.string = tasks.map(\.shareUrl).joined(separator: "\n")
+    /// 复制选中项的链接：本机任务 + 远程任务（空 url 跳过）。
+    private func copySelectedLinks() {
+        let links = model.selectedTasks().map(\.shareUrl) + model.selectedRemoteTasks().map(\.url).filter { !$0.isEmpty }
+        guard !links.isEmpty else { return }
+        UIPasteboard.general.string = links.joined(separator: "\n")
         toasts.show(text: L("urlCopied"), tone: .success, systemImage: FluxSymbol.copy)
+    }
+
+    // MARK: 多选批量（本机 → daemon；远程 → agent.remote.commandMany / 逐条回退）
+
+    private func resumeSelected(_ caps: SelectionCaps) {
+        guard actions.guardWritable() else { return }
+        if !caps.resumeIds.isEmpty { actions.resume(caps.resumeIds) }
+        runRemote(.resume, ids: caps.remoteResumeIds, quietOnSuccess: !caps.resumeIds.isEmpty)
+    }
+
+    private func pauseSelected(_ caps: SelectionCaps) {
+        guard actions.guardWritable() else { return }
+        if !caps.pauseIds.isEmpty { actions.pause(caps.pauseIds) }
+        runRemote(.pause, ids: caps.remotePauseIds, quietOnSuccess: !caps.pauseIds.isEmpty)
+    }
+
+    private func runRemote(_ action: RemoteCommandAction, ids: [String], quietOnSuccess: Bool) {
+        guard !ids.isEmpty else { return }
+        let wanted = Set(ids)
+        let tasks = model.selectedRemoteTasks().filter { wanted.contains($0.id) }
+        let devices = container.devices
+        Task {
+            let outcome = await devices.issueMany(action, tasks: tasks)
+            devices.report(outcome, quietOnSuccess: quietOnSuccess)
+        }
+    }
+
+    private func requestSelectionDelete() {
+        guard actions.guardWritable() else { return }
+        let deletable = Set(model.selectionCaps.remoteDeleteIds)
+        let request = SelectionDeleteRequest(
+            localTasks: model.selectedTasks(),
+            remoteTasks: model.selectedRemoteTasks().filter { deletable.contains($0.id) }
+        )
+        if request.count > 0 { pendingSelectionDelete = request }
+    }
+
+    private func confirmSelectionDelete(_ request: SelectionDeleteRequest, withFiles: Bool) {
+        guard actions.guardWritable() else { return }
+        let localIds = request.localTasks.map(\.taskId)
+        if !localIds.isEmpty {
+            actions.delete(localIds, withFiles: withFiles) { model.isSelecting = false }
+        }
+        guard !request.remoteTasks.isEmpty else { return }
+        let remote = request.remoteTasks
+        let devices = container.devices
+        Task {
+            let outcome = await devices.issueMany(.delete, tasks: remote, deleteFiles: withFiles)
+            devices.report(outcome, quietOnSuccess: !localIds.isEmpty)
+            if localIds.isEmpty { model.isSelecting = false }
+        }
     }
 
     /// 清除已完成任务：确认 → `deleteMany(deleteFiles: false)`（只移除记录，保留文件）。
@@ -622,11 +673,12 @@ private extension View {
 }
 
 /// 其他设备上执行的远程任务行（同 PC 下载页的远程行）：状态 / 进度由云端经 agent 实时推送，
-/// 控制（暂停 / 继续 / 取消 / 删除）走 `agent.remote.command`，与设备页共用 `DevicesModel` 的在途状态。
+/// 控制（暂停 / 继续 / 取消 / 删除）走 `agent.remote.command`，与设备页共用 `DevicesModel` 的在途状态；多选模式下行可被选中，批量动作见 `DevicesModel.issueMany`。
 /// 单独成视图：只有它读主机状态（目标设备名 / 在线），列表页 body 不随 10 Hz 状态重算。
 private struct DownloadsRemoteRow: View {
     let task: RemoteTaskDto
     let readOnly: Bool
+    let selecting: Bool
 
     @Environment(AppContainer.self) private var container
 
@@ -639,11 +691,10 @@ private struct DownloadsRemoteRow: View {
             targetName: target?.name ?? task.toDevice,
             targetOnline: devices.presenceKnown(state) ? target?.online : nil,
             busy: devices.isBusy(task),
-            readOnly: readOnly
+            readOnly: readOnly,
+            selecting: selecting
         ) { action, deleteFiles in
             devices.issue(action, to: task, deleteFiles: deleteFiles)
         }
-        // 远程行不参与多选（全选范围 / visibleIds 不含远程）。
-        .selectionDisabled()
     }
 }

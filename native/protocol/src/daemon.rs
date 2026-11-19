@@ -1139,7 +1139,7 @@ pub struct SetTaskSuperSeedingParams {
 pub struct BtPortStatusDto {
     /// BT 会话是否在运行（没有 BT 任务时会话不创建，也就没有映射）。
     pub running: bool,
-    /// 监听端口；未运行为 0。
+    /// 实际监听端口；0 表示未报告监听端口。
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub listen_port: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -2356,6 +2356,9 @@ pub struct PluginDto {
     /// manifest resolvers[0].match.urls（glob，语义见 url_glob_match）。
     #[serde(default)]
     pub resolver_urls: Vec<String>,
+    /// 已安装插件列表中的 resolver URL 重叠提示。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resolver_url_conflicts: Vec<PluginResolverUrlConflictDto>,
     /// `Loaded` / `Failed`；与 `enabled` 独立，手动禁用的插件仍可能已加载。
     #[serde(default = "default_plugin_load_status")]
     pub load_status: String,
@@ -2388,6 +2391,15 @@ pub struct PluginDto {
     /// （不受公开市场更新 / 撤回影响，由私有目录单独对账）。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct PluginResolverUrlConflictDto {
+    pub pattern: String,
+    pub other_identity: String,
+    pub other_pattern: String,
 }
 
 /// 插件贡献点（镜像 `engine::plugin::ContributesDecl`）。

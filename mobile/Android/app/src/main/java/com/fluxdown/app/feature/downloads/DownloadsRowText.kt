@@ -54,6 +54,11 @@ internal class RowText(c: Context) {
     private val relMinutesFmt = c.getString(R.string.mobileTimeMinutesAgo)
     private val relHoursFmt = c.getString(R.string.mobileTimeHoursAgo)
     private val relDaysFmt = c.getString(R.string.mobileTimeDaysAgo)
+    private val hlsFragmentsFmt = c.getString(R.string.hlsFragmentProgress)
+    private val writtenBytesLabel = c.str(R.string.infoWrittenBytes)
+
+    fun hlsProgress(written: Long, total: Long): String = hlsFragmentsFmt.fill("done" to written, "total" to total)
+    fun writtenBytes(bytes: Long): String = "$writtenBytesLabel: ${Format.bytes(bytes)}"
 
     private val mainQueue = c.str(R.string.mainQueue)
     private val laterQueue = c.str(R.string.downloadLater)
@@ -62,7 +67,7 @@ internal class RowText(c: Context) {
     val ringResume = c.str(R.string.resume)
     val ringRetry = c.str(R.string.mobileRetry)
     val ringRedownload = c.str(R.string.redownloadTask)
-    val ringSeeding = c.str(R.string.statusSeeding)
+    val select = c.str(R.string.selectTasks)
     val ringOpen = c.str(R.string.mobileOpenFile)
 
     val boost = c.str(R.string.boostDownload)
@@ -146,36 +151,53 @@ internal fun buildRowMeta(
     val showSpeed = CardField.Speed in fields
     val showEta = CardField.Eta in fields
     val total = task.totalBytes
-    val progress = task.progress
-    val pct = progress?.let(Format::percent).orEmpty()
-    val doneOfTotal = if (total > 0) "${Format.bytes(task.downloadedBytes)}/${Format.bytes(total)}" else Format.bytes(task.downloadedBytes).toString()
+    val fragments = item.hlsFragments
+    val progressText = if (fragments != null) {
+        t.hlsProgress(fragments.written, fragments.total)
+    } else item.progress?.let(Format::percent).orEmpty()
+    val doneOfTotal = if (showSize) when {
+        fragments != null -> t.writtenBytes(task.downloadedBytes)
+        total > 0 -> "${Format.bytes(task.downloadedBytes)}/${Format.bytes(total)}"
+        else -> Format.bytes(task.downloadedBytes).toString()
+    } else ""
     val totalSize = if (total > 0) Format.bytes(total).toString() else ""
     val upText = if (item.speedUp > 0) "↑ ${Format.speed(item.speedUp)}" else ""
 
     when (item.visual) {
         TaskVisualState.Downloading -> {
             if (showSpeed && item.speedDown > 0) part(Format.speed(item.speedDown).toString(), MetaTone.Accent)
-            if (showEta) part(item.eta?.let(t::eta) ?: "—")
-            part(pct)
-            if (showSize) part(doneOfTotal)
+            if (showEta && fragments == null) part(item.eta?.let(t::eta) ?: "—")
+            part(progressText)
+            part(doneOfTotal)
             if (showSpeed) part(upText)
         }
         TaskVisualState.Paused -> {
             part(t.paused)
-            part(pct)
-            if (showSize && total > 0) part(doneOfTotal)
+            part(progressText)
+            if (fragments != null || total > 0) part(doneOfTotal)
         }
         TaskVisualState.Queued -> {
             part(t.queued(queuePosition))
+            if (fragments != null) part(progressText)
             if (showSize) part(totalSize)
         }
         TaskVisualState.Pending -> {
             part(t.pending)
+            if (fragments != null) part(progressText)
             if (showSize) part(totalSize)
         }
-        TaskVisualState.Preparing -> part(t.preparing)
-        TaskVisualState.Verifying -> part(t.verifying)
-        TaskVisualState.Failed -> part(firstLine(t.taskError(task.errorMessage)) ?: t.failed, MetaTone.Coral)
+        TaskVisualState.Preparing -> {
+            part(t.preparing)
+            if (fragments != null) part(progressText)
+        }
+        TaskVisualState.Verifying -> {
+            part(t.verifying)
+            if (fragments != null) part(progressText)
+        }
+        TaskVisualState.Failed -> {
+            part(firstLine(t.taskError(task.errorMessage)) ?: t.failed, MetaTone.Coral)
+            if (fragments != null) part(progressText, MetaTone.Coral)
+        }
         TaskVisualState.Missing -> {
             part(t.missing, MetaTone.Amber)
             if (showSize) part(totalSize)

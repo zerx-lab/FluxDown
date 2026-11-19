@@ -3,6 +3,7 @@
 
 import type { PowerAction, PowerLowSpeedCondition, RemoteTaskDto } from './agent';
 import type { JsonValue } from './common';
+import type { RpcErrorData } from './error';
 import type { ComponentKind, ComponentStatusDto } from './plugin';
 import type { ServiceHello } from './rpc';
 import type { CreateTaskRequest, DownloadRequest } from './task';
@@ -491,6 +492,27 @@ export interface RemoteCommandParams {
   commandId?: string;
   /** 仅 `delete`：目标设备同时删除已下载文件。 */
   deleteFiles?: boolean;
+}
+
+/** `agent.remote.commandMany` 单次请求的任务数上限（镜像 `REMOTE_COMMAND_MANY_MAX`），客户端按此分块。 */
+export const REMOTE_COMMAND_MANY_MAX = 1000;
+
+export interface RemoteCommandManyParams {
+  taskIds: string[];
+  action: 'pause' | 'resume' | 'delete' | 'cancel';
+  /** 仅 `delete`：目标设备同时删除已下载文件。 */
+  deleteFiles?: boolean;
+}
+
+export interface RemoteCommandFailure {
+  taskId: string;
+  error: RpcErrorData;
+}
+
+/** `succeeded` 与 `failed` 互斥，合起来覆盖去重后的全部 id。 */
+export interface RemoteCommandManyResult {
+  succeeded: string[];
+  failed: RemoteCommandFailure[];
 }
 
 export interface SyncLocalOnlyParams {

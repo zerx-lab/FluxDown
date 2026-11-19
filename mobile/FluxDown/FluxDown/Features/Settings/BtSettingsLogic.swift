@@ -66,7 +66,7 @@ nonisolated enum BtSettingsSection: CaseIterable {
 nonisolated enum BtSettingsRow: String, CaseIterable, Identifiable {
     case enabled
     case pieceOrder, firstLastPiecesFirst, selectionAutoDefault
-    case portStart, portEnd, upnp
+    case portStart, portEnd, listenerStatus, upnp
     case utp, utpCongestion, mseMode, uploadSlots
     case dht, lsd, webseed
     case maxConnections, maxConnectionsPerTorrent
@@ -82,7 +82,7 @@ nonisolated enum BtSettingsRow: String, CaseIterable, Identifiable {
         switch self {
         case .enabled: .basic
         case .pieceOrder, .firstLastPiecesFirst, .selectionAutoDefault: .newTasks
-        case .portStart, .portEnd, .upnp: .listen
+        case .portStart, .portEnd, .listenerStatus, .upnp: .listen
         case .utp, .utpCongestion, .mseMode, .uploadSlots: .transport
         case .dht, .lsd, .webseed: .sources
         case .maxConnections, .maxConnectionsPerTorrent: .limits
@@ -99,7 +99,7 @@ nonisolated enum BtSettingsRow: String, CaseIterable, Identifiable {
 
     var configKey: String {
         switch self {
-        case .enabled: "bt_enabled"
+        case .enabled, .listenerStatus: "bt_enabled"
         case .pieceOrder: "bt_piece_order"
         case .firstLastPiecesFirst: "bt_first_last_pieces_first"
         case .selectionAutoDefault: "bt_selection_auto_default"
@@ -163,6 +163,7 @@ nonisolated enum BtSettingsRow: String, CaseIterable, Identifiable {
         case .selectionAutoDefault: "btSelectionAutoDefault"
         case .portStart: "btListenPortStart"
         case .portEnd: "btListenPortEnd"
+        case .listenerStatus: "btListenerStatus"
         case .upnp: "btEnableUpnp"
         case .utp: "btEnableUtp"
         case .utpCongestion: "btUtpCongestion"
@@ -203,6 +204,7 @@ nonisolated enum BtSettingsRow: String, CaseIterable, Identifiable {
         case .firstLastPiecesFirst: "btFirstLastPiecesFirstDefaultDesc"
         case .selectionAutoDefault: "btSelectionAutoDefaultDesc"
         case .portStart: "btListenPortDesc"
+        case .listenerStatus: "btReachabilityUnverified"
         case .upnp: "btEnableUpnpDesc"
         case .utp: "btEnableUtpDesc"
         case .utpCongestion: "btUtpCongestionDesc"

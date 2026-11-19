@@ -239,6 +239,9 @@ public enum HostMethod {
     public static let agentRemoteList = "agent.remote.list"
     public static let agentRemoteDispatch = "agent.remote.dispatch"
     public static let agentRemoteCommand = "agent.remote.command"
+    /// `RemoteCommandManyParams` → `RemoteCommandManyResult`：对同一动作批量下发（≤ `RemoteCommandManyParams.maxIds` 个任务 / 次）。
+    /// 主机需声明能力 `agent.remoteBatch`。
+    public static let agentRemoteCommandMany = "agent.remote.commandMany"
     /// 局域网直连（L1）：展示本机配对码并开始广播 → `LinkPairingCodeDto`。
     public static let agentLinkPairingCode = "agent.link.pairingCode"
     /// 停止展示配对码 / 停止配对广播。
@@ -346,6 +349,8 @@ public enum HostCapability {
     public static let agentAuth = "agent.auth"
     public static let agentSync = "agent.sync"
     public static let agentRemoteTasks = "agent.remoteTasks"
+    /// 支持 `agent.remote.commandMany` 与错误原因 `remoteTaskGone`（云端已无该远程任务，agent 已移除对应行）。
+    public static let agentRemoteBatch = "agent.remoteBatch"
     public static let agentBilling = "agent.billing"
     public static let agentReferrals = "agent.referrals"
     public static let agentDeviceLink = "agent.deviceLink"

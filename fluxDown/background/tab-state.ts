@@ -216,6 +216,14 @@ export function isCurrentPage(tabId: number, pageUrl: string): boolean {
   return state.pageKeys.has(pageUrlKey(pageUrl));
 }
 
+/**
+ * 帧上报所属页面是否属于当前嗅探投影：只校验顶层帧。子帧（嵌入播放器）的 `location.href`
+ * 本就不是 tab 页面 URL，按顶层投影判定会把 iframe 里的上报一律当作旧页面丢弃。
+ */
+export function isCurrentFramePage(tabId: number, frameId: number, pageUrl: string): boolean {
+  return frameId !== 0 || isCurrentPage(tabId, pageUrl);
+}
+
 /** 关闭 tab：丢弃内存状态、取消待写的持久化并清掉会话快照。不通知变更订阅者（tab 已不存在，无视图可刷新）。 */
 export function removeTab(tabId: number): void {
   tabs.delete(tabId);

@@ -32,6 +32,9 @@ pub const DAEMON_TASK_EDIT_INFO: &str = "daemon.task.editInfo";
 /// Validate and atomically apply a unified task property update.
 pub const DAEMON_TASK_EDIT: &str = "daemon.task.edit";
 pub const DAEMON_TASK_DELETE: &str = "daemon.task.delete";
+pub const DAEMON_TASK_CLEAR_FILE: &str = "daemon.task.clearFile";
+/// Redownload a completed non-BT task with missing output (`{taskId}`).
+pub const DAEMON_TASK_RESTART_FILE: &str = "daemon.task.restartFile";
 pub const DAEMON_TASK_PAUSE_ALL: &str = "daemon.task.pauseAll";
 pub const DAEMON_TASK_RESUME_ALL: &str = "daemon.task.resumeAll";
 pub const DAEMON_TASK_RESCAN: &str = "daemon.task.rescan";
@@ -316,6 +319,9 @@ pub const AGENT_CLOUD_ENDPOINT_SET: &str = "agent.cloud.endpointSet";
 pub const AGENT_REMOTE_LIST: &str = "agent.remote.list";
 pub const AGENT_REMOTE_DISPATCH: &str = "agent.remote.dispatch";
 pub const AGENT_REMOTE_COMMAND: &str = "agent.remote.command";
+/// 批量远程指令（`RemoteCommandManyParams` → `RemoteCommandManyResult`）；宿主声明
+/// [`CAPABILITY_AGENT_REMOTE_BATCH`] 时可用，旧宿主逐条回退 `agent.remote.command`。
+pub const AGENT_REMOTE_COMMAND_MANY: &str = "agent.remote.commandMany";
 /// 局域网直连（L1）：展示本机配对码并开始广播 → `LinkPairingCodeDto`。
 pub const AGENT_LINK_PAIRING_CODE: &str = "agent.link.pairingCode";
 /// 停止展示配对码 / 停止配对广播。
@@ -457,6 +463,8 @@ pub const CAPABILITY_AGENT_GATEWAY: &str = "agent.gateway";
 pub const CAPABILITY_AGENT_AUTH: &str = "agent.auth";
 pub const CAPABILITY_AGENT_SYNC: &str = "agent.sync";
 pub const CAPABILITY_AGENT_REMOTE_TASKS: &str = "agent.remoteTasks";
+/// 宿主支持 `agent.remote.commandMany`（批量远程指令）与 `remoteTaskGone` 原因。
+pub const CAPABILITY_AGENT_REMOTE_BATCH: &str = "agent.remoteBatch";
 pub const CAPABILITY_AGENT_BILLING: &str = "agent.billing";
 pub const CAPABILITY_AGENT_REFERRALS: &str = "agent.referrals";
 pub const CAPABILITY_AGENT_DEVICE_LINK: &str = "agent.deviceLink";
@@ -494,6 +502,8 @@ pub const ALL_METHODS: &[&str] = &[
     DAEMON_TASK_EDIT_INFO,
     DAEMON_TASK_EDIT,
     DAEMON_TASK_DELETE,
+    DAEMON_TASK_CLEAR_FILE,
+    DAEMON_TASK_RESTART_FILE,
     DAEMON_TASK_PAUSE_ALL,
     DAEMON_TASK_RESUME_ALL,
     DAEMON_TASK_RESCAN,
@@ -669,6 +679,7 @@ pub const ALL_METHODS: &[&str] = &[
     AGENT_REMOTE_LIST,
     AGENT_REMOTE_DISPATCH,
     AGENT_REMOTE_COMMAND,
+    AGENT_REMOTE_COMMAND_MANY,
     AGENT_LINK_PAIRING_CODE,
     AGENT_LINK_STOP_PAIRING,
     AGENT_LINK_DISCOVERY_SET,
@@ -778,6 +789,8 @@ pub const SLOW_DAEMON_METHODS: &[&str] = &[
     DAEMON_TASK_HASH,
     DAEMON_TASK_SEED_LOCAL,
     DAEMON_TASK_MOVE_STORAGE,
+    DAEMON_TASK_CLEAR_FILE,
+    DAEMON_TASK_RESTART_FILE,
     DAEMON_TASK_EDIT,
     DAEMON_EGRESS_PLAN,
 ];
@@ -812,6 +825,7 @@ pub const AGENT_CAPABILITIES: &[&str] = &[
     CAPABILITY_AGENT_AUTH,
     CAPABILITY_AGENT_SYNC,
     CAPABILITY_AGENT_REMOTE_TASKS,
+    CAPABILITY_AGENT_REMOTE_BATCH,
     CAPABILITY_AGENT_BILLING,
     CAPABILITY_AGENT_REFERRALS,
     CAPABILITY_AGENT_DEVICE_LINK,

@@ -96,7 +96,7 @@ internal class NewDownloadState(
     prefill: String,
     defaultSaveDir: String,
     /** 表单首次给出的、未经分类预填的保存目录；仅自动路由时随请求提交。 */
-    private val offeredSaveDir: String,
+    offeredSaveDir: String,
     defaultQueueId: String,
     defaultSegments: Int,
     /** 打开时预选的「下载到」目标（[DispatchTarget.id]）；null = 当前主机。 */
@@ -137,6 +137,7 @@ internal class NewDownloadState(
     val advanced = AdvancedState()
 
     private val initialSaveDir = defaultSaveDir
+    private var offeredSaveDir = offeredSaveDir
     /** 表单最近一次由程序写入目录框的值（自动跟随 / 切换模式）；null = 尚未写过。 */
     private var lastWritten: String? = null
     private var manuallySelectedSaveDir = false
@@ -273,6 +274,17 @@ internal class NewDownloadState(
         val target = predictedDir() ?: offeredSaveDir.trim()
         if (saveDir != target) saveDir = target
         lastWritten = target
+    }
+
+    /** 更新全局默认目录；不覆盖本任务手选目录或分类目录。 */
+    fun adoptDefaultSaveDir(dir: String) {
+        val useDefault = !manuallySelectedSaveDir && mode !is SaveDirMode.Category && untouched()
+        offeredSaveDir = dir
+        if (useDefault) {
+            val target = if (mode == SaveDirMode.Auto) predictedDir() ?: dir else dir
+            saveDir = target
+            lastWritten = target
+        }
     }
 
     /** 保存目录由用户键入或浏览选择；其值不再被自动预测覆盖，也不触发自动分类路由。 */
