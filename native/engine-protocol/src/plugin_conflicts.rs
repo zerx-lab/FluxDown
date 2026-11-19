@@ -87,34 +87,7 @@ fn normalize(pattern: &str) -> String {
     normalized
 }
 
-// Scope wildcards to scheme, authority and the rest of the URL for this advisory check.
-// In particular, a wildcard in one component cannot absorb another scheme/authority.
-fn components(pattern: &str) -> Option<(&str, &str, &str)> {
-    let (scheme, rest) = pattern.split_once("://")?;
-    let (authority, tail) = rest.split_at(rest.find(['/', '?', '#']).unwrap_or(rest.len()));
-    // Without a path delimiter, a trailing star can consume both the rest
-    // of the authority and the tail.
-    let tail = if tail.is_empty() && authority.ends_with('*') {
-        "*"
-    } else {
-        tail
-    };
-    (!scheme.is_empty() && !authority.is_empty()).then_some((scheme, authority, tail))
-}
-
 fn overlaps(left: &str, right: &str) -> bool {
-    if left == right || left == "*" || right == "*" {
-        return true;
-    }
-    match (components(left), components(right)) {
-        (Some((ls, lh, lt)), Some((rs, rh, rt))) => {
-            component_overlaps(ls, rs) && component_overlaps(lh, rh) && component_overlaps(lt, rt)
-        }
-        _ => false,
-    }
-}
-
-fn component_overlaps(left: &str, right: &str) -> bool {
     let Some((lp, ltail)) = left.split_once('*') else {
         return if right.contains('*') {
             url_glob_match(right, left)
@@ -127,13 +100,15 @@ fn component_overlaps(left: &str, right: &str) -> bool {
     };
     let ls = ltail.rsplit('*').next().unwrap_or(ltail);
     let rs = rtail.rsplit('*').next().unwrap_or(rtail);
-    // For two star globs a common string can concatenate both sets of interior literals
-    // between the longer prefix and the longer suffix, if both anchors agree.
+    // Match the whole URL, as the resolver does. When both globs have a star,
+    // a shared string exists if their prefixes and suffixes are compatible:
+    // put both sets of interior literals between the longer anchors.
     (lp.starts_with(rp) || rp.starts_with(lp)) && (ls.ends_with(rs) || rs.ends_with(ls))
 }
 
 #[cfg(test)]
 mod tests {
+    use fluxdown_engine::plugin::manifest::url_glob_match;
     use fluxdown_protocol::daemon::PluginDto;
     use serde_json::json;
 
@@ -154,7 +129,7 @@ mod tests {
             "generic@test",
             true,
             "None",
-            &["*://x.test/*", "*://X.test/**"],
+            &["https://x.test/*", "HTTPS://X.test/**"],
         );
         let specific = plugin(
             "specific@test",
@@ -162,14 +137,14 @@ mod tests {
             "ConsentRequired",
             &["https://x.test/watch*", "https://x.test/shorts/*"],
         );
-        let unrelated = plugin("other@test", true, "None", &["*://y.test/*"]);
+        let unrelated = plugin("other@test", true, "None", &["https://y.test/*"]);
         let mut plugins = annotate(vec![generic, specific, unrelated]);
         let wire = serde_json::to_value(&plugins).unwrap();
         assert_eq!(
             wire[0]["resolverUrlConflicts"],
             json!([
-                {"pattern": "*://x.test/*", "otherIdentity": "generic@test", "otherPattern": "*://X.test/**"},
-                {"pattern": "*://x.test/*", "otherIdentity": "specific@test", "otherPattern": "https://x.test/watch*"}
+                {"pattern": "https://x.test/*", "otherIdentity": "generic@test", "otherPattern": "HTTPS://X.test/**"},
+                {"pattern": "https://x.test/*", "otherIdentity": "specific@test", "otherPattern": "https://x.test/watch*"}
             ])
         );
         assert!(wire[1].get("resolverUrlConflicts").is_none());
@@ -185,14 +160,22 @@ mod tests {
     }
 
     #[test]
-    fn same_site_overlap_requires_compatible_scheme_authority_and_tail() {
+    fn overlap_follows_whole_url_glob_semantics() {
+        let witness = "https://x.test/a/download";
+        for pattern in ["https://*/download", "https://x.test/*/download"] {
+            assert!(url_glob_match(pattern, witness));
+        }
         for (left, right, expected) in [
+            ("https://*/download", "https://x.test/*/download", true),
+            ("https://*/download", "https://x.test/*/upload", false),
+            ("https://*/download", "HTTPS://x.test/a/download", true),
+            ("https://*/download", "https://x.test/a/upload", false),
             ("*://x.test/*", "https://X.test/watch*", true),
             ("https://x.test*", "https://x.test/path", true),
             ("https://*.test/a*end", "*://x.test/*b*end", true),
             ("https://x.test/a*b", "https://x.test/a*bc", false),
             ("https://x.test/watch*", "https://x.test/shorts/*", false),
-            ("*://x.test/*", "*://y.test/*", false),
+            ("https://x.test/*", "https://y.test/*", false),
             ("https://x.test/*", "http://x.test/*", false),
             ("https://x.test/*", "https://x.test:8443/*", false),
             ("*", "https://x.test/path", true),

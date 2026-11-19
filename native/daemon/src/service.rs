@@ -3571,7 +3571,6 @@ mod plugin_consent_audit_tests {
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
-    use fluxdown_engine::events::{EngineEvent, EventSink};
     use fluxdown_engine::plugin::PluginManager;
     use fluxdown_engine::plugin::quickjs::QuickJsScriptRuntime;
     use fluxdown_engine::plugin::runtime::{
@@ -3581,6 +3580,7 @@ mod plugin_consent_audit_tests {
     use serde_json::{Value, json};
 
     use super::DaemonService;
+    use crate::event_hub::{DaemonEngineEventSink, DaemonEventHub};
 
     const ID: &str = "acme@demo";
 
@@ -3608,12 +3608,6 @@ mod plugin_consent_audit_tests {
         }
         fn log(&self, _plugin_id: &str, _level: PluginLogLevel, _message: &str) {}
         fn request_retry(&self, _plugin_id: &str, _task_id: &str, _delay_ms: u64) {}
-    }
-
-    struct NullSink;
-
-    impl EventSink for NullSink {
-        fn emit(&self, _event: EngineEvent) {}
     }
 
     struct Fixture {
@@ -3653,15 +3647,15 @@ mod plugin_consent_audit_tests {
         let db = fluxdown_engine::db::Db::connect("sqlite::memory:")
             .await
             .unwrap();
+        let events = DaemonEventHub::new(Default::default(), 32);
         let manager = Arc::new(PluginManager::new(
             Arc::new(QuickJsScriptRuntime::new(1).unwrap()),
             Arc::new(NullBridge),
             db.clone(),
             root.clone(),
             "1.0.0".to_owned(),
-            Arc::new(NullSink),
+            Arc::new(DaemonEngineEventSink(events.clone())),
         ));
-        let events = crate::event_hub::DaemonEventHub::new(Default::default(), 32);
         let selections = crate::selection::DaemonSelection::new(events.clone());
         let blobs = Arc::new(
             crate::blob_store::BlobStore::open(base.join("blobs"))
@@ -3695,6 +3689,95 @@ mod plugin_consent_audit_tests {
         f.service
             .call_inner("plugin-test", true, method, Some(params))
             .await
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plugin_conflicts_follow_install_and_enable_state_in_events_and_list() {
+        use fluxdown_protocol::{DaemonEvent, ServiceEvent, method};
+
+        const BROAD: &str = "broad@test";
+        const SCOPED: &str = "scoped@test";
+        const BROAD_PATTERN: &str = "https://*/download";
+        const SCOPED_PATTERN: &str = "https://x.test/*/download";
+
+        let f = fixture().await;
+        let install = |identity, pattern| {
+            let src = f.base.join(identity);
+            std::fs::create_dir_all(&src).unwrap();
+            std::fs::write(
+                src.join("manifest.json"),
+                json!({
+                    "identity": identity, "name": identity, "version": "1.0.0",
+                    "resolvers": [{
+                        "entry": "resolve.js",
+                        "match": { "urls": [pattern] }
+                    }]
+                })
+                .to_string(),
+            )
+            .unwrap();
+            std::fs::write(
+                src.join("resolve.js"),
+                "globalThis.resolve = async () => ({ url: 'https://x.test/file' });",
+            )
+            .unwrap();
+            json!({ "dirPath": src })
+        };
+        call(
+            &f,
+            method::DAEMON_PLUGIN_INSTALL_DEV,
+            install(BROAD, BROAD_PATTERN),
+        )
+        .await
+        .unwrap();
+
+        for (action, params, enabled) in [
+            (
+                method::DAEMON_PLUGIN_INSTALL_DEV,
+                install(SCOPED, SCOPED_PATTERN),
+                true,
+            ),
+            (
+                method::DAEMON_PLUGIN_SET_ENABLED,
+                json!({ "identity": SCOPED, "enabled": false }),
+                false,
+            ),
+            (
+                method::DAEMON_PLUGIN_SET_ENABLED,
+                json!({ "identity": SCOPED, "enabled": true }),
+                true,
+            ),
+        ] {
+            let mut events = f.service.events.subscribe();
+            call(&f, action, params).await.unwrap();
+            let event_plugins = loop {
+                let frame = events
+                    .try_recv()
+                    .expect("plugin change event after mutation");
+                if let ServiceEvent::Daemon(DaemonEvent::PluginsChanged(plugins)) = &frame.event {
+                    break serde_json::to_value(plugins).unwrap();
+                }
+            };
+            let list = call(&f, method::DAEMON_PLUGIN_LIST, json!({})).await.unwrap();
+            assert_eq!(event_plugins, list);
+            assert_eq!(list[0]["identity"], BROAD);
+            assert_eq!(list[0]["enabled"], true);
+            assert_eq!(list[1]["identity"], SCOPED);
+            assert_eq!(list[1]["enabled"], enabled);
+            if enabled {
+                assert_eq!(
+                    list[0]["resolverUrlConflicts"],
+                    json!([{
+                        "pattern": BROAD_PATTERN,
+                        "otherIdentity": SCOPED,
+                        "otherPattern": SCOPED_PATTERN,
+                    }])
+                );
+            } else {
+                assert!(list[0].get("resolverUrlConflicts").is_none());
+            }
+            assert!(list[1].get("resolverUrlConflicts").is_none());
+        }
     }
 
     async fn plugin(f: &Fixture) -> Value {

@@ -59,7 +59,7 @@
 | **Remote Devices** | Optional FluxCloud account, settings sync and remote task management, plus LAN device pairing and direct connections |
 | **APIs & CLI** | REST/OpenAPI, aria2-compatible JSON-RPC, MCP with 12 tools, and a CLI for scripts or standalone downloads |
 
-In **Settings → Extensions**, the installed plugin list warns about resolver URL patterns that overlap on the same site or repeat. It shows an example for each conflicting plugin pair so you can decide which plugin to keep enabled. The warning does not change download routing or cover every runtime match.
+In **Settings → Extensions**, the installed plugin list warns about overlapping or repeated resolver URL patterns. It checks the whole URL, just like resolver matching: `*` can span delimiters such as `/`. The list shows the original patterns for each conflicting plugin pair so you can choose which plugin to keep enabled. Warnings do not change download routing.
 
 **Privacy:** local downloads do not require a FluxCloud account. Cloud features are optional. Anonymous installation and daily-active statistics are controlled by `analytics_enabled` and can be disabled; they do not collect download/task information. This is not a zero-telemetry application.
 
