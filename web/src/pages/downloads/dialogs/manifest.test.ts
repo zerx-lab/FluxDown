@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { PreviewItemDto } from '../../../lib/rpc'
-import { manifestExportRows, manifestRowsAt } from './manifest'
+import { manifestExportRows, manifestRowsAt, manifestSelectionStat } from './manifest'
 
 const item = (id: string, name: string, path = ''): PreviewItemDto => ({ id, name, path, size: 1, variants: [] })
 
@@ -63,4 +63,8 @@ test('exports only checked files with relative paths and default sizes', () => {
     { name: 'root.bin', url: '', originUrl: '', sizeBytes: 1 },
   ])
   expect(manifestExportRows(items, new Set())).toEqual([])
+  // A replaced preview can leave checked IDs that no longer have a file to export.
+  const missing = new Set(['removed'])
+  expect(manifestSelectionStat(items, missing).count).toBe(0)
+  expect(manifestExportRows(items, missing)).toEqual([])
 })
