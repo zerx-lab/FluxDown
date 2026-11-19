@@ -1,4 +1,4 @@
-import { describe, expect, spyOn, test } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { batchEntryName, parseEntries } from '../dialogs/model'
 import { canCopyUrls, canShareTorrent, exportTaskInfo, taskInfoText, torrentFileName } from './actions'
 import type { DownloadTaskView } from './task'
@@ -51,10 +51,11 @@ test('task info keeps rows without links and escapes cell boundaries', () => {
 
 test('downloaded TXT preserves task fields and the complete parsed batch', async () => {
   const blobs: Blob[] = []
-  const createUrl = spyOn(URL, 'createObjectURL').mockImplementation((blob) => {
+  const originalCreateUrl = URL.createObjectURL
+  URL.createObjectURL = (blob: Blob | MediaSource) => {
     if (blob instanceof Blob) blobs.push(blob)
     return `blob:task-export-${blobs.length}`
-  })
+  }
   const downloaded: string[] = []
   const anchor = { download: '', setAttribute() {}, click() { downloaded.push(this.download) }, remove() {} }
   const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'document')
@@ -67,7 +68,7 @@ test('downloaded TXT preserves task fields and the complete parsed batch', async
       { name: '=报告\\x\tpart\r\n2', url: 'https://example.com/resolved', originUrl: 'https://example.com/original', sizeBytes: 4294967296 },
       { name: 'file.bin', url: 'torrent-file://local', originUrl: '', sizeBytes: 0 },
     ])
-    const entries = parseEntries('https://example.com/a%20b.zip?key=v\nftp://example.com/f\n  out=报告.zip\nhttps://example.com/')
+    const entries = parseEntries('https://example.com/a%20b.zip?key=v\nftp://example.com/f\n  out=报告.zip\nhttps://example.com/', false)
     exportTaskInfo(entries.map((entry) => ({
       name: batchEntryName(entry), url: entry.url, originUrl: '', sizeBytes: 0,
     })))
@@ -88,7 +89,7 @@ test('downloaded TXT preserves task fields and the complete parsed batch', async
       ['', 'https://example.com/', ''],
     ])
   } finally {
-    createUrl.mockRestore()
+    URL.createObjectURL = originalCreateUrl
     if (documentDescriptor) Object.defineProperty(globalThis, 'document', documentDescriptor)
     else Reflect.deleteProperty(globalThis, 'document')
   }
