@@ -755,13 +755,22 @@ impl SelectionView {
             .children(order.iter(files).map(|file| {
                 let checked = selected.contains(&file.index);
                 let index = file.index;
-                let depth = file.path.matches('/').count().min(4) as f32;
-                let name = file
-                    .path
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&file.path)
-                    .to_owned();
+                // 非原始顺序下目录分组被打散：缩进归零并显示相对路径，避免同名文件无法区分。
+                let sorted = order.sort != BtFileSort::Original;
+                let depth = if sorted {
+                    0.0
+                } else {
+                    file.path.matches('/').count().min(4) as f32
+                };
+                let name = if sorted {
+                    file.path.clone()
+                } else {
+                    file.path
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(&file.path)
+                        .to_owned()
+                };
                 let this = cx.weak_entity();
                 check_row(
                     ("bt-file", index as usize),
