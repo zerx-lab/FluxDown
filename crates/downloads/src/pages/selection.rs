@@ -18,7 +18,7 @@ use fluxdown_protocol::{
 use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     BusyExt as _, CheckState, ControlExt as _, FluxIcon, check_mark, check_row, field_hint,
-    form_field, input_with_action, tabular_numbers,
+    form_field, input_with_action, tabular_numbers, tooltip_view,
 };
 use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_theme::active_theme;
@@ -36,6 +36,7 @@ use gpui_component::{
     v_flex,
 };
 
+use super::download_name::DownloadName;
 use crate::{
     controller::{DownloadsCommand, DownloadsPort},
     model::format_bytes,
@@ -46,13 +47,14 @@ mod plugin_choice;
 pub struct SelectionView {
     strings: SelectionStrings,
     request: SelectionRequestDto,
-    task_name: String,
+    task_name: SharedString,
     port: Arc<dyn DownloadsPort>,
     state: SelectionState,
     /// BT 保存目录输入；其它选择种类没有。
     save_dir_input: Option<Entity<InputState>>,
     /// BT 名称输入，预填任务当前名称；其它选择种类没有。
     name_input: Option<Entity<InputState>>,
+    download_name: DownloadName,
     /// 系统目录选择器打开中，避免重入。
     picking_save_dir: bool,
     submitting: bool,
@@ -64,8 +66,9 @@ enum SelectionState {
         selected: i32,
     },
     Bt {
-        files: Vec<BtFileDto>,
+        files: Vec<BtFile>,
         selected: HashSet<i32>,
+        order: BtFileOrder,
         /// 请求预填的当前保存目录。空串 = 旧 daemon 未带目录。
         save_dir: String,
     },
@@ -84,6 +87,92 @@ enum SelectionState {
     },
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum BtFileSort {
+    #[default]
+    Original,
+    Type,
+    Size,
+}
+
+struct BtFile {
+    index: i32,
+    size: i64,
+    path: SharedString,
+    leaf: SharedString,
+    depth: f32,
+}
+
+impl From<&BtFileDto> for BtFile {
+    fn from(file: &BtFileDto) -> Self {
+        let path = SharedString::from(file.path.as_str());
+        let depth = file.path.matches('/').count().min(4) as f32;
+        let leaf = match file.path.rsplit_once('/') {
+            Some((_, leaf)) => SharedString::from(leaf),
+            None => path.clone(),
+        };
+        Self {
+            index: file.index,
+            size: file.size,
+            path,
+            leaf,
+            depth,
+        }
+    }
+}
+
+impl BtFile {
+    fn label(&self, sort: BtFileSort) -> (f32, &SharedString) {
+        if sort == BtFileSort::Original {
+            (self.depth, &self.leaf)
+        } else {
+            (0.0, &self.path)
+        }
+    }
+}
+
+#[derive(Default)]
+struct BtFileOrder {
+    sort: BtFileSort,
+    // Positions in the original payload, not torrent file IDs.
+    positions: Vec<usize>,
+}
+
+impl BtFileOrder {
+    fn set_sort(&mut self, sort: BtFileSort, files: &[BtFile]) {
+        self.sort = sort;
+        self.positions.clear();
+        if sort == BtFileSort::Original {
+            return;
+        }
+        self.positions.extend(0..files.len());
+        self.positions.sort_unstable_by(|&a, &b| {
+            let left = &files[a];
+            let right = &files[b];
+            let comparison = match sort {
+                BtFileSort::Original => std::cmp::Ordering::Equal,
+                BtFileSort::Type => {
+                    extension_bytes(left.leaf.as_str()).cmp(extension_bytes(right.leaf.as_str()))
+                }
+                BtFileSort::Size => right.size.cmp(&left.size),
+            };
+            comparison.then_with(|| a.cmp(&b))
+        });
+    }
+
+    fn iter<'a>(&'a self, files: &'a [BtFile]) -> impl Iterator<Item = &'a BtFile> {
+        (0..files.len()).map(|i| &files[self.positions.get(i).copied().unwrap_or(i)])
+    }
+}
+
+fn extension_bytes(name: &str) -> impl Iterator<Item = u8> + '_ {
+    let extension = match name.rsplit_once('.') {
+        Some((stem, extension)) if !stem.is_empty() => extension,
+        _ => "",
+    };
+    extension.bytes().map(|byte| byte.to_ascii_lowercase())
+}
+
 /// 单请求选择窗口（HLS 画质 / BT 文件 / 插件变体）能承载的请求及其默认选择。
 /// `FileExists` 由聚合的「文件已存在」窗口承载（见 [`crate::FileConflictView`]），没有计划。
 pub struct SelectionPlan {
@@ -93,13 +182,16 @@ pub struct SelectionPlan {
 impl SelectionPlan {
     #[must_use]
     pub fn for_request(request: &SelectionRequestDto) -> Option<Self> {
-        let state = match request.kind.clone() {
+        let state = match &request.kind {
             SelectionKind::Hls { options } => {
                 let selected = match request.default_choice {
                     SelectionOutcome::Hls { index } => index,
                     _ => options.first().map_or(0, |option| option.index),
                 };
-                SelectionState::Hls { options, selected }
+                SelectionState::Hls {
+                    options: options.clone(),
+                    selected,
+                }
             }
             SelectionKind::Bt { files, save_dir } => {
                 let selected = match &request.default_choice {
@@ -109,9 +201,10 @@ impl SelectionPlan {
                     _ => files.iter().map(|file| file.index).collect(),
                 };
                 SelectionState::Bt {
-                    files,
+                    files: files.iter().map(BtFile::from).collect(),
                     selected,
-                    save_dir,
+                    order: BtFileOrder::default(),
+                    save_dir: save_dir.clone(),
                 }
             }
             SelectionKind::Variant { options } => {
@@ -119,7 +212,10 @@ impl SelectionPlan {
                     SelectionOutcome::Variant { index } => index,
                     _ => options.first().map_or(0, |option| option.index),
                 };
-                SelectionState::Variant { options, selected }
+                SelectionState::Variant {
+                    options: options.clone(),
+                    selected,
+                }
             }
             SelectionKind::Plugin {
                 site,
@@ -127,14 +223,14 @@ impl SelectionPlan {
                 candidates,
             } => {
                 let selected =
-                    plugin_choice::initial_selection(&candidates, &request.default_choice);
+                    plugin_choice::initial_selection(candidates, &request.default_choice);
                 SelectionState::Plugin {
-                    site,
-                    url,
+                    site: site.clone(),
+                    url: url.clone(),
                     default_identity: selected.clone(),
                     selected,
                     remember: false,
-                    candidates,
+                    candidates: candidates.clone(),
                 }
             }
             SelectionKind::FileExists { .. } => return None,
@@ -177,6 +273,8 @@ impl SelectionView {
             }
             _ => None,
         };
+        let task_name = SharedString::from(task_name);
+        let download_name = DownloadName::new(task_name.clone());
         let name_input = matches!(state, SelectionState::Bt { .. }).then(|| {
             let initial = task_name.clone();
             cx.new(|cx| InputState::new(window, cx).default_value(initial))
@@ -212,6 +310,7 @@ impl SelectionView {
             state,
             save_dir_input,
             name_input,
+            download_name,
             picking_save_dir: false,
             submitting: false,
         }
@@ -255,7 +354,7 @@ impl SelectionView {
             } => SelectionOutcome::Bt {
                 indices: selected.iter().copied().collect(),
                 save_dir: bt_save_dir_outcome(save_dir, &self.save_dir_input_value(cx)),
-                custom_name: bt_name_outcome(&self.task_name, &self.name_input_value(cx)),
+                custom_name: self.name_override(cx),
             },
             SelectionState::Variant { selected, .. } => {
                 SelectionOutcome::Variant { index: *selected }
@@ -308,11 +407,9 @@ impl SelectionView {
         .detach();
     }
 
-    fn name_input_value(&self, cx: &App) -> SharedString {
-        self.name_input
-            .as_ref()
-            .map(|input| input.read(cx).value())
-            .unwrap_or_default()
+    fn name_override(&self, cx: &App) -> Option<String> {
+        let input = self.name_input.as_ref()?;
+        self.download_name.override_name(input.read(cx))
     }
 
     fn save_dir_input_value(&self, cx: &App) -> SharedString {
@@ -371,10 +468,38 @@ impl SelectionView {
     /// 名称：单文件种子是文件名，多文件种子是外层目录名。
     fn render_name(&self, cx: &mut Context<Self>) -> Option<Div> {
         let input = self.name_input.as_ref()?;
+        let this = cx.weak_entity();
+        let auto = check_row(
+            "bt-auto-name",
+            self.download_name.is_auto(),
+            self.strings.auto_name.clone(),
+            move |checked, window, cx| {
+                let Ok(()) = this.update(cx, |this, cx| {
+                    if let Some(input) = &this.name_input {
+                        this.download_name.set_auto(checked, input, window, cx);
+                    }
+                    cx.notify();
+                }) else {
+                    return;
+                };
+            },
+            cx,
+        )
+        .flex_none();
         Some(
             form_field(
                 self.strings.name.clone(),
-                Input::new(input).control(cx).w_full(),
+                h_flex()
+                    .w_full()
+                    .gap(active_theme(cx).tokens().spacing.sm)
+                    .child(
+                        Input::new(input)
+                            .control(cx)
+                            .flex_1()
+                            .min_w_0()
+                            .disabled(self.download_name.is_auto()),
+                    )
+                    .child(auto),
                 None,
                 cx,
             )
@@ -474,8 +599,13 @@ impl SelectionView {
                 .child(self.render_hls(options, *selected, cx))
                 .into_any_element(),
             SelectionState::Bt {
-                files, selected, ..
-            } => self.render_bt(files, selected, cx).into_any_element(),
+                files,
+                selected,
+                order,
+                ..
+            } => self
+                .render_bt(files, selected, order, cx)
+                .into_any_element(),
             SelectionState::Variant { options, selected } => div()
                 .id("selection-variant-scroll")
                 .size_full()
@@ -600,10 +730,46 @@ impl SelectionView {
             }))
     }
 
+    fn render_bt_sort(&self, order: &BtFileOrder, cx: &mut Context<Self>) -> Div {
+        let spacing = active_theme(cx).tokens().spacing.xs;
+        let options = [
+            (
+                BtFileSort::Original,
+                "bt-sort-original",
+                &self.strings.sort_original,
+            ),
+            (BtFileSort::Type, "bt-sort-type", &self.strings.sort_type),
+            (BtFileSort::Size, "bt-sort-size", &self.strings.sort_size),
+        ];
+        h_flex()
+            .flex_wrap()
+            .gap(spacing)
+            .children(options.into_iter().map(|(sort, id, label)| {
+                let button = Button::new(id);
+                let button = if order.sort == sort {
+                    button.primary()
+                } else {
+                    button.outline()
+                };
+                button
+                    .control(cx)
+                    .label(label.clone())
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        if let SelectionState::Bt { files, order, .. } = &mut this.state
+                            && order.sort != sort
+                        {
+                            order.set_sort(sort, files);
+                            cx.notify();
+                        }
+                    }))
+            }))
+    }
+
     fn render_bt(
         &self,
-        files: &[BtFileDto],
+        files: &[BtFile],
         selected: &HashSet<i32>,
+        order: &BtFileOrder,
         cx: &mut Context<Self>,
     ) -> Div {
         let tokens = active_theme(cx).tokens().clone();
@@ -661,16 +827,11 @@ impl SelectionView {
         let list = v_flex()
             .flex_1()
             .min_h_0()
-            .children(files.iter().map(|file| {
+            .children(order.iter(files).map(|file| {
                 let checked = selected.contains(&file.index);
                 let index = file.index;
-                let depth = file.path.matches('/').count().min(4) as f32;
-                let name = file
-                    .path
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&file.path)
-                    .to_owned();
+                let (depth, label) = file.label(order.sort);
+                let full_path = file.path.clone();
                 let this = cx.weak_entity();
                 check_row(
                     ("bt-file", index as usize),
@@ -683,8 +844,10 @@ impl SelectionView {
                             div()
                                 .flex_1()
                                 .min_w_0()
-                                .truncate()
-                                .child(SharedString::from(name)),
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis_middle()
+                                .child(label.clone()),
                         )
                         .child(
                             div()
@@ -714,6 +877,7 @@ impl SelectionView {
                 .pl(tokens.spacing.xs + tokens.spacing.lg * depth)
                 .pr(tokens.spacing.sm)
                 .when(checked, |row| row.bg(tokens.colors.accent))
+                .tooltip(move |window, cx| tooltip_view(full_path.clone(), window, cx))
             }))
             .overflow_y_scrollbar();
         // 保存目录在全选工具栏之上，不进文件列表的滚动区。
@@ -725,6 +889,9 @@ impl SelectionView {
             .children(self.render_name(cx))
             .children(self.render_save_dir(cx))
             .child(toolbar)
+            .when(files.len() > 1, |body| {
+                body.child(self.render_bt_sort(order, cx))
+            })
             .child(div().flex_1().min_h_0().child(list))
     }
 
@@ -838,8 +1005,12 @@ struct SelectionStrings {
     plugin_confirm: SharedString,
     select_all: SharedString,
     deselect_all: SharedString,
+    sort_original: SharedString,
+    sort_type: SharedString,
+    sort_size: SharedString,
     selected_count: SharedString,
     name: SharedString,
+    auto_name: SharedString,
     save_dir: SharedString,
     save_dir_placeholder: SharedString,
     browse: SharedString,
@@ -869,8 +1040,12 @@ impl SelectionStrings {
             plugin_confirm: shared(translator.text("pluginChoiceConfirm")),
             select_all: shared(translator.text("btFileSelectAll")),
             deselect_all: shared(translator.text("deselectAll")),
+            sort_original: shared(translator.text("btFileSortOriginal")),
+            sort_type: shared(translator.text("btFileSortType")),
+            sort_size: shared(translator.text("btFileSortSize")),
             selected_count: shared(translator.text("selectedCount")),
             name: shared(translator.text("btFileColumnName")),
+            auto_name: shared(translator.text("auto")),
             save_dir: shared(translator.text("saveDir")),
             save_dir_placeholder: shared(translator.text("selectSaveDir")),
             browse: shared(translator.text("browse")),
@@ -910,14 +1085,6 @@ fn cancel_command(state: &SelectionState, request: &SelectionRequestDto) -> Down
     }
 }
 
-/// 把名称输入收成 [`SelectionOutcome::Bt`] 的 `custom_name`：去首尾空白后非空且与预填名不同
-/// 才下发；未改或清空都是 `None`（沿用种子内名称）。清洗由引擎按文件名规则做。
-#[must_use]
-fn bt_name_outcome(initial: &str, input: &str) -> Option<String> {
-    let trimmed = input.trim();
-    (!trimmed.is_empty() && trimmed != initial.trim()).then(|| trimmed.to_owned())
-}
-
 /// 保存目录输入是否允许确认。
 ///
 /// 请求带了当前目录时，去空白后必须非空（清空不能确认，避免空路径开下）。
@@ -944,17 +1111,20 @@ fn bt_save_dir_outcome(initial: &str, input: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::{collections::HashSet, sync::Arc};
 
     use fluxdown_protocol::{
-        SELECTION_NO_DEADLINE, SelectionKind, SelectionOutcome, SelectionRequestDto,
+        ApplicationErrorCode, BtFileDto, RpcErrorData, SELECTION_NO_DEADLINE, SelectionKind,
+        SelectionOutcome, SelectionRequestDto,
     };
+    use fluxdown_ui_i18n::I18nCatalog;
+    use gpui::{AppContext as _, TestApp};
 
     use super::{
-        SelectionState, bt_name_outcome, bt_save_dir_confirmable, bt_save_dir_outcome,
-        cancel_command,
+        BtFile, BtFileOrder, BtFileSort, SelectionPlan, SelectionState, SelectionView,
+        bt_save_dir_confirmable, bt_save_dir_outcome, cancel_command,
     };
-    use crate::controller::DownloadsCommand;
+    use crate::controller::{DownloadsCommand, DownloadsPort, DownloadsResult, PortFuture};
 
     fn request(kind: SelectionKind) -> SelectionRequestDto {
         SelectionRequestDto {
@@ -971,6 +1141,7 @@ mod tests {
         let state = SelectionState::Bt {
             files: Vec::new(),
             selected: HashSet::new(),
+            order: BtFileOrder::default(),
             save_dir: String::new(),
         };
         let request = request(SelectionKind::Bt {
@@ -1001,15 +1172,146 @@ mod tests {
     }
 
     #[test]
-    fn name_is_sent_only_when_changed() {
-        assert_eq!(bt_name_outcome("Pack", "Pack"), None);
-        assert_eq!(bt_name_outcome("Pack", "  Pack "), None);
-        assert_eq!(bt_name_outcome("Pack", "   "), None);
+    fn bt_file_sort_keeps_torrent_ids_and_original_tie_order() {
+        let files = [
+            (9, "dir.mp4/README", 5),
+            (3, "one.MKV", 10),
+            (7, "two.mkv", 20),
+            (0, ".txt", 20),
+            (4, "notes.txt", 1),
+        ]
+        .map(|(index, path, size)| {
+            BtFile::from(&BtFileDto {
+                index,
+                path: path.to_owned(),
+                size,
+            })
+        });
+        let mut order = BtFileOrder::default();
+        let ids = |order: &BtFileOrder| {
+            order
+                .iter(&files)
+                .map(|file| file.index)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&order), [9, 3, 7, 0, 4]);
+        order.set_sort(BtFileSort::Type, &files);
+        assert_eq!(ids(&order), [9, 0, 3, 7, 4]);
+        order.set_sort(BtFileSort::Size, &files);
+        assert_eq!(ids(&order), [7, 0, 3, 9, 4]);
+        order.set_sort(BtFileSort::Original, &files);
+        assert_eq!(ids(&order), [9, 3, 7, 0, 4]);
+    }
+
+    #[test]
+    fn sorted_bt_rows_keep_the_full_path_for_equal_size_files() {
+        let prefix = "collection/season/bonus/features/a-very-long-common-directory";
+        let alpha = format!("{prefix}/a-very-long-common-file-name-alpha.mkv");
+        let beta = format!("{prefix}/a-very-long-common-file-name-beta.mkv");
+        let files = [
+            (14, alpha.as_str(), 10),
+            (2, "notes.txt", 20),
+            (39, beta.as_str(), 10),
+        ]
+        .map(|(index, path, size)| {
+            BtFile::from(&BtFileDto {
+                index,
+                path: path.to_owned(),
+                size,
+            })
+        });
+        let mut order = BtFileOrder::default();
+        fn rows<'a>(order: &'a BtFileOrder, files: &'a [BtFile]) -> Vec<(i32, (f32, &'a str))> {
+            order
+                .iter(files)
+                .map(|file| {
+                    let (depth, label) = file.label(order.sort);
+                    (file.index, (depth, label.as_str()))
+                })
+                .collect()
+        }
         assert_eq!(
-            bt_name_outcome("Pack", " 我的剧集 "),
-            Some("我的剧集".to_owned())
+            rows(&order, &files),
+            [
+                (14, (4.0, "a-very-long-common-file-name-alpha.mkv")),
+                (2, (0.0, "notes.txt")),
+                (39, (4.0, "a-very-long-common-file-name-beta.mkv")),
+            ]
         );
-        assert_eq!(bt_name_outcome("", "Pack"), Some("Pack".to_owned()));
+        order.set_sort(BtFileSort::Type, &files);
+        assert_eq!(
+            rows(&order, &files),
+            [
+                (14, (0.0, alpha.as_str())),
+                (39, (0.0, beta.as_str())),
+                (2, (0.0, "notes.txt")),
+            ]
+        );
+        order.set_sort(BtFileSort::Size, &files);
+        assert_eq!(
+            rows(&order, &files),
+            [
+                (2, (0.0, "notes.txt")),
+                (14, (0.0, alpha.as_str())),
+                (39, (0.0, beta.as_str())),
+            ]
+        );
+    }
+
+    #[test]
+    fn automatic_bt_name_is_displayed_without_losing_a_manual_draft() {
+        struct Offline;
+
+        impl DownloadsPort for Offline {
+            fn execute(&self, _: DownloadsCommand) -> PortFuture<DownloadsResult> {
+                Box::pin(async { Err(RpcErrorData::new(ApplicationErrorCode::Internal, false)) })
+            }
+        }
+
+        let mut app = TestApp::new();
+        let translator = app.update(|cx| {
+            gpui_component::init(cx);
+            fluxdown_ui_theme::init(cx);
+            let catalog = I18nCatalog::load_embedded().expect("catalog");
+            cx.new(|_| catalog.translator("en"))
+        });
+        let mut win = app.open_window(|window, cx| {
+            let request = request(SelectionKind::Bt {
+                files: vec![BtFileDto {
+                    index: 0,
+                    path: "movie.mkv".to_owned(),
+                    size: 10,
+                }],
+                save_dir: String::new(),
+            });
+            let plan = SelectionPlan::for_request(&request).expect("BT selection plan");
+            SelectionView::new(
+                translator,
+                request,
+                plan,
+                "movie.mkv".to_owned(),
+                Arc::new(Offline),
+                window,
+                cx,
+            )
+        });
+        win.update(|view, window, cx| {
+            let input = view.name_input.as_ref().expect("BT name input");
+            assert_eq!(view.name_override(cx), None);
+            view.download_name.set_auto(false, input, window, cx);
+            for unchanged in ["  movie.mkv ", "   "] {
+                input.update(cx, |input, cx| input.set_value(unchanged, window, cx));
+                assert_eq!(view.name_override(cx), None);
+            }
+            input.update(cx, |input, cx| input.set_value("  My Movie  ", window, cx));
+            assert_eq!(view.name_override(cx).as_deref(), Some("My Movie"));
+            view.download_name.set_auto(true, input, window, cx);
+            assert_eq!(&*input.read(cx).value(), "movie.mkv");
+            assert_eq!(view.name_override(cx), None);
+            view.download_name.set_auto(false, input, window, cx);
+            assert_eq!(&*input.read(cx).value(), "  My Movie  ");
+            assert_eq!(view.name_override(cx).as_deref(), Some("My Movie"));
+        });
     }
 
     #[test]
