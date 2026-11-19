@@ -267,6 +267,7 @@ const zhTW = {
   "popup.tasks.empty": "尚無下載任務",
   "popup.tasks.appNotRunning": "FluxDown 未執行",
   "popup.tasks.startApp": "啟動 FluxDown",
+  "popup.tasks.downloadApp": "尚未安裝？下載 FluxDown",
   "popup.tasks.starting": "啟動中…",
   "popup.tasks.statsToday": "今日：",
   "popup.tasks.statsLineTitle": "開啟設定檢視更多",

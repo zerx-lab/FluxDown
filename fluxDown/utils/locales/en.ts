@@ -278,6 +278,7 @@ const en: Record<MessageKey, string> = {
   "popup.tasks.empty": "No download tasks",
   "popup.tasks.appNotRunning": "FluxDown is not running",
   "popup.tasks.startApp": "Start FluxDown",
+  "popup.tasks.downloadApp": "Not installed? Get FluxDown",
   "popup.tasks.starting": "Starting…",
   "popup.tasks.statsToday": "Today:",
   "popup.tasks.statsLineTitle": "Open settings for details",
