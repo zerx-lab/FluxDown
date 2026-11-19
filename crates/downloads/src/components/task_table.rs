@@ -2552,7 +2552,7 @@ impl DownloadTableDelegate {
         let mut parts: Vec<String> = Vec::with_capacity(4);
         if task.state == TaskState::Completed {
             if task.size_bytes > 0 {
-                parts.push(task.size.clone());
+                parts.push(format_bytes(task.size_bytes));
             }
             parts.push(self.kind_label(task.kind).to_string());
         } else {
@@ -2949,7 +2949,7 @@ impl DownloadTableDelegate {
             DownloadColumnKind::FileName => self.render_file_cell(task, cx),
             DownloadColumnKind::Progress => self.render_progress_cell(task, cx),
             DownloadColumnKind::Size if task.size_bytes > 0 => {
-                meta_cell(task.size.clone(), muted, true, cx)
+                meta_cell(format_bytes(task.size_bytes), muted, true, cx)
             }
             DownloadColumnKind::Status => self.render_status_cell(task, cx),
             DownloadColumnKind::Speed => match task
@@ -4405,7 +4405,11 @@ fn seeding_upload_speed(task: &DownloadTaskView) -> Option<u64> {
 /// 已下 / 总量；总量未知时只给已下。
 fn bytes_progress(task: &DownloadTaskView) -> String {
     if task.size_bytes > 0 {
-        format!("{} / {}", format_bytes(task.downloaded_bytes), task.size)
+        format!(
+            "{} / {}",
+            format_bytes(task.downloaded_bytes),
+            format_bytes(task.size_bytes)
+        )
     } else {
         format_bytes(task.downloaded_bytes)
     }

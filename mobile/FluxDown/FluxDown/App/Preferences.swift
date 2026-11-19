@@ -28,6 +28,7 @@ final class AppearanceStore {
         static let mode = "appearance.theme_mode"
         static let scheme = "appearance.color_scheme"
         static let custom = "appearance.custom_color"
+        static let fileSizeUnits = "appearance.file_size_units"
     }
 
     @ObservationIgnored private let defaults: UserDefaults
@@ -37,12 +38,20 @@ final class AppearanceStore {
     var scheme: String { didSet { defaults.set(scheme, forKey: Key.scheme) } }
     /// 自定义强调色（0xRRGGBB）。
     var customColor: UInt32 { didSet { defaults.set(Int(customColor), forKey: Key.custom) } }
+    var fileSizeUnits: FileSizeUnits {
+        didSet {
+            defaults.set(fileSizeUnits.rawValue, forKey: Key.fileSizeUnits)
+            Format.setFileSizeUnits(fileSizeUnits)
+        }
+    }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         mode = ThemeMode(rawValue: defaults.string(forKey: Key.mode) ?? "") ?? .system
         scheme = defaults.string(forKey: Key.scheme) ?? FluxAccent.blue.id
         customColor = UInt32(truncatingIfNeeded: defaults.object(forKey: Key.custom) as? Int ?? Int(FluxAccent.blue.rgb))
+        fileSizeUnits = FileSizeUnits(rawValue: defaults.string(forKey: Key.fileSizeUnits) ?? "") ?? .legacy
+        Format.setFileSizeUnits(fileSizeUnits)
     }
 
     /// 当前强调色：自定义 > 预设。

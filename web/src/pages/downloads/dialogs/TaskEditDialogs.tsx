@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
+import { byteUnit, useFileSizeUnits } from '../../../lib/fileSizeUnits'
 import { useT } from '../../../i18n'
 import { RpcError, TASK_STATUS, rpc, useTask, useTasksLoading } from '../../../lib/rpc'
 import { rpcErrorText } from '../../../lib/rpcErrorText'
@@ -312,6 +313,7 @@ export function TaskLimitsDialog({ taskId }: { taskId: string }) {
 
 /** 任务级限速（KiB/s，0 = 不限）：初值取任务当前值，只下发改动的字段；未改直接关闭。 */
 function TaskLimitsBody({ taskId, initial }: { taskId: string; initial: readonly [string, string] }) {
+  const units = useFileSizeUnits()
   const t = useT()
   // 初值只在首次渲染时取：轮询 / 事件刷新任务行时不覆盖正在编辑的输入。
   const [first] = useState(initial)
@@ -356,7 +358,7 @@ function TaskLimitsBody({ taskId, initial }: { taskId: string; initial: readonly
             setError('')
           }}
         />
-        <span className="shrink-0 text-sm text-muted-foreground">{t('btGuardUnitKibps')}</span>
+        <span className="shrink-0 text-sm text-muted-foreground">{byteUnit(1, units)}/s</span>
       </div>
     </FormField>
   )

@@ -547,20 +547,7 @@ fn bytes_text(bytes: i64) -> String {
     if bytes <= 0 {
         return String::new();
     }
-    let mut size = bytes as f64;
-    let mut unit = "B";
-    for next in ["KiB", "MiB", "GiB", "TiB"] {
-        if size < 1024. {
-            break;
-        }
-        size /= 1024.;
-        unit = next;
-    }
-    if unit == "B" {
-        format!("{bytes} B")
-    } else {
-        format!("{size:.1} {unit}")
-    }
+    fluxdown_ui_components::size_units::format_bytes(bytes as u64, 4)
 }
 
 impl RssView {

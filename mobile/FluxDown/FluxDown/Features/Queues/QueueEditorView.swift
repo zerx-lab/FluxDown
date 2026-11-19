@@ -162,9 +162,10 @@ struct QueueEditorView: View {
     }
 
     private func limitsSection(draft: Binding<QueueDraft>, issue: QueueDraft.Issue?) -> some View {
-        Section {
-            numberRow(L("queueSpeedLimit"), hint: L("queueSpeedLimitHint"), text: draft.speedLimit, field: .speed)
-            numberRow(L("queueUploadLimit"), hint: L("queueUploadLimitDesc"), text: draft.uploadLimit, field: .upload)
+        let speedUnit = SettingsRateUnit.kb.unitLabel(iec: container.appearance.fileSizeUnits == .iec)
+        return Section {
+            numberRow(L("queueDownloadLimitWithUnit", ["unit": speedUnit]), hint: L("queueSpeedLimitHint"), text: draft.speedLimit, field: .speed)
+            numberRow(L("queueUploadLimitWithUnit", ["unit": speedUnit]), hint: L("queueUploadLimitDesc"), text: draft.uploadLimit, field: .upload)
             numberRow(L("queueMaxConcurrent"), hint: L("queueMaxConcurrentHint"), text: draft.maxConcurrent, field: .concurrent)
             numberRow(L("queueDefaultSegments"), hint: L("queueDefaultSegmentsHint"), text: draft.segments, field: .segments)
         } footer: {

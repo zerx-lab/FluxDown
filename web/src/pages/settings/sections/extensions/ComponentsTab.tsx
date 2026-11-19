@@ -1,3 +1,4 @@
+import { useByteFormatter } from '../../../../lib/fileSizeUnits'
 // 受管组件子页：每个组件（ffmpeg / yt-dlp）一张卡片 —— 生效状态、系统 PATH、
 // 手动路径、托管安装（版本列表 / 安装 / 更新 / 卸载 / 下载进度）。
 
@@ -88,6 +89,7 @@ interface InstallProgress {
 }
 
 function ComponentCard({ kind, stale }: { kind: ComponentKind; stale: boolean }) {
+  const fmtBytes = useByteFormatter(formatBytes)
   const t = useT()
   const title = t(TITLE_KEYS[kind])
   const components = useDaemon(selectComponents, EMPTY_COMPONENTS)
@@ -395,8 +397,8 @@ function ComponentCard({ kind, stale }: { kind: ComponentKind; stale: boolean })
               <ProgressBar value={fraction} />
               <div className="tabular text-caption text-muted-foreground">
                 {fraction === null
-                  ? `${formatBytes(progress.downloaded)} · ${t('componentsInstallUnknownSize')}`
-                  : `${(fraction * 100).toFixed(1)}%  ${formatBytes(progress.downloaded)} / ${formatBytes(progress.total)}`}
+                  ? `${fmtBytes(progress.downloaded)} · ${t('componentsInstallUnknownSize')}`
+                  : `${(fraction * 100).toFixed(1)}%  ${fmtBytes(progress.downloaded)} / ${fmtBytes(progress.total)}`}
               </div>
             </div>
           ) : null}

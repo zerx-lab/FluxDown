@@ -112,13 +112,12 @@ struct LimitsForm {
     initial: [String; 2],
     download_label: SharedString,
     upload_label: SharedString,
-    unit: SharedString,
     hint: SharedString,
 }
 
 impl LimitsForm {
     fn new(
-        labels: [SharedString; 4],
+        labels: [SharedString; 3],
         initial: [String; 2],
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -135,24 +134,22 @@ impl LimitsForm {
         };
         let download = input(&initial[0]);
         let upload = input(&initial[1]);
-        let [download_label, upload_label, unit, hint] = labels;
+        let [download_label, upload_label, hint] = labels;
         Self {
             download,
             upload,
             initial,
             download_label,
             upload_label,
-            unit,
             hint,
         }
     }
 
-    /// 对话框标签：下载 / 上传 / 单位 / 说明。
-    fn labels(translator: &Translator) -> [SharedString; 4] {
+    /// 对话框标签：下载 / 上传 / 说明。
+    fn labels(translator: &Translator) -> [SharedString; 3] {
         [
             "btTaskLimitDownload",
             "btTaskLimitUpload",
-            "btGuardUnitKibps",
             "btTaskLimitHint",
         ]
         .map(|key| SharedString::from(translator.text(key).to_owned()))
@@ -186,7 +183,11 @@ impl LimitsForm {
                         .min_w_0()
                         .child(Input::new(state).control(cx).w_full()),
                 )
-                .child(div().flex_shrink_0().child(self.unit.clone())),
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .child(fluxdown_ui_components::size_units::rate_labels()[1]),
+                ),
             None,
             cx,
         )

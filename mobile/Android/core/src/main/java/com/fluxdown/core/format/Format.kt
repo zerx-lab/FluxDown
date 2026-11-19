@@ -9,15 +9,35 @@ data class Measure(val value: String, val unit: String) {
     override fun toString(): String = "$value $unit"
 }
 
+enum class FileSizeUnits(val wire: String) {
+    Legacy("legacy"), Iec("iec");
+
+    companion object {
+        fun of(value: String?): FileSizeUnits = entries.firstOrNull { it.wire == value } ?: Legacy
+    }
+}
+
 object Format {
-    private val UNITS = arrayOf("B", "KB", "MB", "GB", "TB")
+    @Volatile
+    var fileSizeUnits: FileSizeUnits = FileSizeUnits.Legacy
+        private set
+
+    fun setFileSizeUnits(units: FileSizeUnits) {
+        fileSizeUnits = units
+    }
+
+    private val LEGACY_UNITS = arrayOf("B", "KB", "MB", "GB", "TB")
+    private val IEC_UNITS = arrayOf("B", "KiB", "MiB", "GiB", "TiB")
 
     /** 1024 进制；≥100 不保留小数、≥10 保留 1 位、否则 2 位；B 不带小数；≤0 → "0 B"。 */
-    fun bytes(n: Long): Measure {
+    fun bytes(n: Long): Measure = bytes(n, fileSizeUnits)
+
+    fun bytes(n: Long, style: FileSizeUnits): Measure {
         if (n <= 0) return Measure("0", "B")
         var v = n.toDouble()
         var i = 0
-        while (v >= 1024 && i < UNITS.lastIndex) {
+        val units = if (style == FileSizeUnits.Iec) IEC_UNITS else LEGACY_UNITS
+        while (v >= 1024 && i < units.lastIndex) {
             v /= 1024
             i++
         }
@@ -27,11 +47,14 @@ object Format {
             v >= 10 -> 1
             else -> 2
         }
-        return Measure(String.format(Locale.ROOT, "%.${digits}f", v), UNITS[i])
+        return Measure(String.format(Locale.ROOT, "%.${digits}f", v), units[i])
     }
 
     /** 速度 >0 → "{bytes}/s"；否则 null（UI 显示「—」）。 */
-    fun speed(bps: Long): Measure? = if (bps > 0) bytes(bps).let { Measure(it.value, it.unit + "/s") } else null
+    fun speed(bps: Long): Measure? = speed(bps, fileSizeUnits)
+
+    fun speed(bps: Long, style: FileSizeUnits): Measure? =
+        if (bps > 0) bytes(bps, style).let { Measure(it.value, it.unit + "/s") } else null
 
     /** 速度仪表：空闲显示 0 B/s。 */
     fun speedOrZero(bps: Long): Measure = speed(bps) ?: Measure("0", "B/s")

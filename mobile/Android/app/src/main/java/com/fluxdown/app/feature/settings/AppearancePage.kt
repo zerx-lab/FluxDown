@@ -45,11 +45,14 @@ import com.fluxdown.fluxui.controls.FluxListRow
 import com.fluxdown.fluxui.controls.FluxSwitchRow
 import com.fluxdown.fluxui.controls.GlassSection
 import com.fluxdown.fluxui.icons.FluxIcon
+import com.fluxdown.core.format.FileSizeUnits
 import com.fluxdown.fluxui.icons.FluxIcons
 import com.fluxdown.fluxui.material.rememberFlowInGate
 import com.fluxdown.fluxui.overlay.FluxToastKind
 import com.fluxdown.fluxui.overlay.LocalFluxOverlays
 import com.fluxdown.fluxui.theme.FluxText
+import com.fluxdown.fluxui.controls.FluxSegmented
+import com.fluxdown.fluxui.controls.SegOption
 import com.fluxdown.fluxui.theme.FluxTheme
 import com.fluxdown.fluxui.theme.wallpaperAccent
 import kotlinx.coroutines.delay
@@ -223,6 +226,23 @@ internal fun AppearancePage() {
                         },
                     )
                 }
+                row {
+                    Column(
+                        Modifier.fillMaxWidth().settingsFocus("appearance.fileSizeUnits"),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        FluxText(str(R.string.fileSizeUnits), style = FluxTheme.type.sm, color = FluxTheme.colors.ink)
+                        FluxText(str(R.string.fileSizeUnitsDesc), style = FluxTheme.type.micro, color = FluxTheme.colors.inkMuted)
+                        FluxSegmented(
+                            options = listOf(
+                                SegOption(FileSizeUnits.Legacy, str(R.string.fileSizeUnitsLegacy)),
+                                SegOption(FileSizeUnits.Iec, str(R.string.fileSizeUnitsIec)),
+                            ),
+                            selected = appearance.fileSizeUnits,
+                            onSelect = { units -> if (units != appearance.fileSizeUnits) write { repo.setFileSizeUnits(units) } },
+                        )
+                    }
+                }
             }
         }
     }
@@ -288,6 +308,13 @@ internal fun appearanceSearchEntries(ctx: SettingsSearchContext): List<SettingsE
                 "appearance.textSize", SettingsPage.Appearance, "interface", R.string.mobileSystemTextSize,
                 R.string.mobileSystemTextSizeDesc, ctx.crumb(R.string.settingsCatAppearance, R.string.settingsGroupInterface),
                 FluxIcons.Type,
+            ),
+        )
+        add(
+            ctx.entry(
+                "appearance.fileSizeUnits", SettingsPage.Appearance, "interface", R.string.fileSizeUnits,
+                R.string.fileSizeUnitsDesc, ctx.crumb(R.string.settingsCatAppearance, R.string.settingsGroupInterface),
+                FluxIcons.HardDrive,
             ),
         )
     }

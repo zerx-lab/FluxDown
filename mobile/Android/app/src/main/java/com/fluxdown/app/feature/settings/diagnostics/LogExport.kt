@@ -4,7 +4,7 @@ import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
-import android.text.format.Formatter
+import com.fluxdown.core.format.Format
 import android.util.Log
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -49,6 +49,8 @@ import com.fluxdown.fluxui.controls.FluxActionRow
 import com.fluxdown.fluxui.controls.FluxKeyValue
 import com.fluxdown.fluxui.controls.GlassSection
 import com.fluxdown.fluxui.icons.FluxIcons
+import com.fluxdown.app.data.AppearanceState
+import com.fluxdown.core.format.FileSizeUnits
 import com.fluxdown.fluxui.overlay.FluxToastKind
 import com.fluxdown.fluxui.overlay.LocalFluxOverlays
 import com.fluxdown.fluxui.theme.FluxText
@@ -150,7 +152,7 @@ internal class LogExportModel(private val context: Context, private val containe
         sizeText = try {
             val paths = LogPathsDto.fromJson(container.session.callJson(HostMethod.agentDiagnosticsLogPaths))
             val total = withContext(Dispatchers.IO) { totalSize(listOf(paths.agentLogDir, paths.daemonLogDir)) }
-            total?.let { Formatter.formatShortFileSize(context, it) }
+            total?.let { Format.bytes(it).toString() }
         } catch (e: CancellationException) {
             throw e
         } catch (e: HostException) {
@@ -312,6 +314,7 @@ internal fun LogsSection(ctx: SettingsCtx, model: LogExportModel, scope: Corouti
     val container = LocalAppContainer.current
     val overlays = LocalFluxOverlays.current
     val actions = LocalTaskActions.current
+    val appearance by container.appearance.state.collectAsStateWithLifecycle(AppearanceState())
     val c = FluxTheme.colors
     val hostRef by container.host.collectAsStateWithLifecycle()
     val state = hostState()
@@ -329,7 +332,12 @@ internal fun LogsSection(ctx: SettingsCtx, model: LogExportModel, scope: Corouti
     GlassSection(title = str(R.string.mobileLogsTitle), footer = footer) {
         settingNumber(
             ctx, "log_max_size_mb", R.string.logMaxSize, R.string.logMaxSizeDesc,
-            range = 1L..1024L, default = 10L, unit = R.string.mobileLogSizeUnit, id = "logs.maxSize",
+            range = 1L..1024L, default = 10L,
+            unitLabel = str(
+                R.string.mobileLogSizeUnitLabel,
+                "unit" to if (appearance.fileSizeUnits == FileSizeUnits.Iec) "MiB" else "MB",
+            ),
+            id = "logs.maxSize",
         )
         model.sizeText?.let { size ->
             row {

@@ -116,6 +116,14 @@ struct AppearancePage: View {
                     color: .gray
                 )
                 .settingsRow("appearance.textSize")
+
+                Picker(L("fileSizeUnits"), selection: fileSizeUnitsBinding) {
+                    Text(L("fileSizeUnitsLegacy")).tag(FileSizeUnits.legacy)
+                    Text(L("fileSizeUnitsIec")).tag(FileSizeUnits.iec)
+                }
+                .settingsRow("appearance.fileSizeUnits")
+            } footer: {
+                Text(L("fileSizeUnitsDesc"))
             }
         }
         .onAppear { syncCustomFromStore() }
@@ -134,6 +142,10 @@ struct AppearancePage: View {
             appearance.mode = newMode
             AppearanceSync.shared.modeChanged(newMode)
         })
+    }
+
+    private var fileSizeUnitsBinding: Binding<FileSizeUnits> {
+        Binding(get: { appearance.fileSizeUnits }, set: { appearance.fileSizeUnits = $0 })
     }
 
     private func selectPreset(_ id: String) {
@@ -245,6 +257,11 @@ extension AppearancePage {
                 id: "appearance.textSize", route: .appearance, title: L("mobileSystemTextSize"),
                 detail: L("mobileSystemTextSizeDesc"), breadcrumb: "\(name) › \(L("settingsGroupInterface"))",
                 symbol: "textformat.size"
+            ),
+            SettingsEntry(
+                id: "appearance.fileSizeUnits", route: .appearance, title: L("fileSizeUnits"),
+                detail: L("fileSizeUnitsDesc"), breadcrumb: "\(name) › \(L("settingsGroupInterface"))",
+                symbol: "internaldrive"
             ),
         ]
     }

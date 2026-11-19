@@ -935,7 +935,11 @@ impl ProgressWindowView {
     /// 进度视图标题下的元信息行：协议 · 已下载 / 总大小。
     fn progress_meta(row: &DownloadTaskView) -> String {
         let size_label = if row.size_bytes > 0 {
-            format!("{} / {}", format_bytes(row.downloaded_bytes), row.size)
+            format!(
+                "{} / {}",
+                format_bytes(row.downloaded_bytes),
+                format_bytes(row.size_bytes)
+            )
         } else {
             format_bytes(row.downloaded_bytes)
         };
@@ -945,7 +949,7 @@ impl ProgressWindowView {
     /// 完成视图的元信息行：大小 · 耗时（耗时未知时只有大小）。
     fn completed_meta(&self, row: &DownloadTaskView, cx: &App) -> String {
         let size = if row.size_bytes > 0 {
-            row.size.clone()
+            format_bytes(row.size_bytes)
         } else {
             format_bytes(row.downloaded_bytes)
         };

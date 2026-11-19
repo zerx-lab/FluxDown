@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -22,6 +23,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.fluxdown.app.R
+import com.fluxdown.app.data.AppearanceState
+import com.fluxdown.app.shell.LocalAppContainer
 import com.fluxdown.app.actions.LocalTaskActions
 import com.fluxdown.app.feature.settings.PickerSpec
 import com.fluxdown.app.feature.settings.SettingsCtx
@@ -356,6 +359,8 @@ private fun RulesSection(ctx: SettingsCtx) {
 @Composable
 private fun ThresholdsSection(ctx: SettingsCtx) {
     val form = ctx.form
+    val appearance by LocalAppContainer.current.appearance.state.collectAsState(initial = AppearanceState())
+    val iec = appearance.fileSizeUnits == com.fluxdown.core.format.FileSizeUnits.Iec
     GlassSection(title = str(R.string.btGuardSectionThresholds)) {
         if (BtSettingsRow.GuardExcessRatio.isVisible(form)) {
             settingNumber(
@@ -366,7 +371,7 @@ private fun ThresholdsSection(ctx: SettingsCtx) {
         if (BtSettingsRow.GuardMinTorrent.isVisible(form)) {
             settingNumber(
                 ctx, BtSettingsRow.GuardMinTorrent.configKey, R.string.btGuardMinTorrent, R.string.btGuardMinTorrentDesc,
-                range = 0L..1_048_576L, default = 64L, unit = R.string.btGuardUnitMib, id = BtSettingsRow.GuardMinTorrent.id,
+                range = 0L..1_048_576L, default = 64L, unitLabel = if (iec) str(R.string.btGuardUnitMib) else "MB", id = BtSettingsRow.GuardMinTorrent.id,
             )
         }
         if (BtSettingsRow.GuardRewindTolerance.isVisible(form)) {
@@ -387,6 +392,8 @@ private fun ThresholdsSection(ctx: SettingsCtx) {
 @Composable
 private fun ActionsSection(ctx: SettingsCtx) {
     val form = ctx.form
+    val appearance by LocalAppContainer.current.appearance.state.collectAsState(initial = AppearanceState())
+    val iec = appearance.fileSizeUnits == com.fluxdown.core.format.FileSizeUnits.Iec
     val observe = str(R.string.btGuardDownloadingActionObserve)
     val throttle = str(R.string.btGuardDownloadingActionThrottle)
     val choke = str(R.string.btGuardDownloadingActionChoke)
@@ -395,7 +402,7 @@ private fun ActionsSection(ctx: SettingsCtx) {
         if (BtSettingsRow.GuardThrottle.isVisible(form)) {
             settingNumber(
                 ctx, BtSettingsRow.GuardThrottle.configKey, R.string.btGuardThrottleKib, R.string.btGuardThrottleKibDesc,
-                range = 1L..1_048_576L, default = 32L, unit = R.string.btGuardUnitKibps, id = BtSettingsRow.GuardThrottle.id,
+                range = 1L..1_048_576L, default = 32L, unitLabel = if (iec) str(R.string.btGuardUnitKibps) else "KB/s", id = BtSettingsRow.GuardThrottle.id,
             )
         }
         if (BtSettingsRow.GuardBanBase.isVisible(form)) {

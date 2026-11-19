@@ -19,13 +19,20 @@ nonisolated enum SettingsRateUnit: String, CaseIterable, Identifiable, Sendable 
         }
     }
 
-    /// 单位符号（走 i18n，便于各语言按习惯书写）。
-    var label: String {
-        switch self {
-        case .kb: L("speedUnitKbps")
-        case .mb: L("speedUnitMbps")
-        case .gb: L("speedUnitGbps")
+    /// Display unit label follows the local appearance preference; the byte multiplier stays binary.
+    func unitLabel(iec: Bool) -> String {
+        switch (self, iec) {
+        case (.kb, false): "KB/s"
+        case (.mb, false): "MB/s"
+        case (.gb, false): "GB/s"
+        case (.kb, true): "KiB/s"
+        case (.mb, true): "MiB/s"
+        case (.gb, true): "GiB/s"
         }
+    }
+
+    func label(iec: Bool) -> String {
+        L("speedLimitUnitLabel", ["unit": unitLabel(iec: iec)])
     }
 
     /// `Stepper` 步长：KB = 64，MB / GB = 1（03-settings §2.3）。

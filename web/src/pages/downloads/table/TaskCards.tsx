@@ -5,6 +5,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { ChevronDown, ChevronRight, Ellipsis, Folder } from 'lucide-react'
 import { memo, useCallback, useRef } from 'react'
 import { useT } from '../../../i18n'
+import { useFileSizeUnits } from '../../../lib/fileSizeUnits'
 import { cn } from '../../../lib/cn'
 import { usePrefBool } from '../../../lib/rpc'
 import { ActionMenu, Checkbox, ContextMenuArea, Icon } from '../../../ui'
@@ -50,9 +51,10 @@ interface CardProps {
 }
 
 const TaskCard = memo(function TaskCard({ t, view, depth, conflict, selected, anySelected, onTap, onToggle, getMenu, onContext }: CardProps) {
-  const detail = statusDetail(t, view)
+  const units = useFileSizeUnits()
+  const detail = statusDetail(t, view, units)
   const hideSource = usePrefBool(HIDE_TASK_SOURCE_PREF, false)
-  const meta = cardMeta(t, view, hideSource)
+  const meta = cardMeta(t, view, hideSource, units)
   return (
     <ContextMenuArea entries={() => getMenu(view)} title={view.name} className="h-full">
       <div
@@ -96,7 +98,7 @@ const TaskCard = memo(function TaskCard({ t, view, depth, conflict, selected, an
             </div>
           ) : null}
           <div className="tabular mt-1 flex min-w-0 items-center gap-1.5 text-xs">
-            <span className={cn('shrink-0', taskStatusClass(view))}>{statusLabel(t, view)}</span>
+            <span className={cn('shrink-0', taskStatusClass(view))}>{statusLabel(t, view, units)}</span>
             {conflict ? <ConflictBadge t={t} /> : null}
             {view.state === 'completed' ? (
               <span className="truncate text-text-tertiary">{meta}</span>

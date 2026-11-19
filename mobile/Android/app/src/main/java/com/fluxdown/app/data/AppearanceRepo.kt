@@ -6,6 +6,8 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import com.fluxdown.core.format.FileSizeUnits
+import com.fluxdown.core.format.Format
 import com.fluxdown.fluxui.theme.FluxAccent
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -27,6 +29,8 @@ data class AppearanceState(
     val customColor: Int = FluxAccent.DEFAULT_CUSTOM,
     /** 设备本地：跟随壁纸取色（只替换强调色槽位）。 */
     val dynamicColor: Boolean = false,
+    /** 设备本地，不随主机切换或同步。 */
+    val fileSizeUnits: FileSizeUnits = FileSizeUnits.Legacy,
 ) {
     /** 优先级：壁纸 > 自定义 > 预设。 */
     val accent: FluxAccent
@@ -39,7 +43,7 @@ data class AppearanceState(
 
 /**
  * 外观偏好。`theme_mode / color_scheme / custom_color` 属于云同步键（接入 agent 后经
- * `agent.preferences.patch` 同步）；`dynamic_color` 为设备本地新增键。
+ * `agent.preferences.patch` 同步）；`dynamic_color` 与 `file_size_units` 为设备本地键。
  */
 class AppearanceRepo(private val ds: DataStore<Preferences>) {
     private object K {
@@ -47,14 +51,18 @@ class AppearanceRepo(private val ds: DataStore<Preferences>) {
         val scheme = stringPreferencesKey("appearance.color_scheme")
         val custom = intPreferencesKey("appearance.custom_color")
         val dynamic = booleanPreferencesKey("appearance.dynamic_color")
+        val fileSizeUnits = stringPreferencesKey("appearance.file_size_units")
     }
 
     val state: Flow<AppearanceState> = ds.data.map { p ->
+        val units = FileSizeUnits.of(p[K.fileSizeUnits])
+        Format.setFileSizeUnits(units)
         AppearanceState(
             mode = ThemeMode.of(p[K.mode]),
             scheme = p[K.scheme] ?: "blue",
             customColor = p[K.custom] ?: FluxAccent.DEFAULT_CUSTOM,
             dynamicColor = p[K.dynamic] ?: false,
+            fileSizeUnits = units,
         )
     }
 
@@ -72,4 +80,7 @@ class AppearanceRepo(private val ds: DataStore<Preferences>) {
         scheme?.let { s -> it[K.scheme] = s }
     }
     suspend fun setDynamicColor(enabled: Boolean) = ds.edit { it[K.dynamic] = enabled }
+    suspend fun setFileSizeUnits(units: FileSizeUnits) = ds.edit {
+        it[K.fileSizeUnits] = units.wire
+    }
 }

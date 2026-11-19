@@ -104,6 +104,9 @@ class AppContainer(context: Context) {
     private val storeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1))
 
     val appearance = AppearanceRepo(context.prefs)
+    init {
+        appScope.launch { appearance.state.first() }
+    }
     val viewPrefs = ViewPrefsRepo(context.prefs)
 
     /** 批量导入（进程级：关闭「新建下载」Sheet 后仍继续，进度显示在下载页）。 */

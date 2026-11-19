@@ -1195,7 +1195,7 @@ impl TaskDetailView {
         let tokens = theme.tokens().clone();
         let extended = theme.extended().clone();
         let size = if row.size_bytes > 0 {
-            row.size.clone()
+            format_bytes(row.size_bytes)
         } else {
             format_bytes(row.downloaded_bytes)
         };
@@ -1292,7 +1292,11 @@ impl TaskDetailView {
             .filter(|_| downloading)
             .map(|seconds| self.strings.format_eta(seconds));
         let size_label = SharedString::from(if row.size_bytes > 0 {
-            format!("{} / {}", format_bytes(row.downloaded_bytes), row.size)
+            format!(
+                "{} / {}",
+                format_bytes(row.downloaded_bytes),
+                format_bytes(row.size_bytes)
+            )
         } else {
             format_bytes(row.downloaded_bytes)
         });
@@ -1459,7 +1463,7 @@ impl TaskDetailView {
                     .when(row.size_bytes > 0, |this| {
                         this.child(detail_row(
                             self.t(cx, "infoSize"),
-                            SharedString::from(row.size.clone()),
+                            SharedString::from(format_bytes(row.size_bytes)),
                             cx,
                         ))
                     })
@@ -2198,7 +2202,11 @@ impl TaskDetailView {
     /// 上传限速字段（KB/s）：始终可编辑的数字输入，0 = 不限速。
     fn render_seed_upload_field(&self, cx: &mut Context<Self>) -> AnyElement {
         form_field(
-            self.t(cx, "btSeedUploadLimit"),
+            SharedString::from(format!(
+                "{} ({})",
+                self.t(cx, "btSeedUploadLimit"),
+                fluxdown_ui_components::size_units::rate_labels()[1]
+            )),
             NumberInput::new(&self.seed_upload_limit)
                 .control(cx)
                 .w_full(),
