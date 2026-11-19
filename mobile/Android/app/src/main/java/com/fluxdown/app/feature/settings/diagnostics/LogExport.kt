@@ -324,6 +324,10 @@ internal fun LogsSection(ctx: SettingsCtx, model: LogExportModel, scope: Corouti
     LaunchedEffect(hostRef, live) { model.refreshSize() }
 
     val exportDesc = str(R.string.logExportDesc)
+    val sizeUnitHint = str(
+        R.string.mobileLogSizeUnitLabel,
+        "unit" to if (appearance.fileSizeUnits == FileSizeUnits.Iec) "MiB" else "MB",
+    )
     val footer = if (ctx.form.has("log_max_size_mb") && ctx.synced("log_max_size_mb")) {
         exportDesc + "\n" + str(R.string.settingsSyncLegend)
     } else {
@@ -333,10 +337,7 @@ internal fun LogsSection(ctx: SettingsCtx, model: LogExportModel, scope: Corouti
         settingNumber(
             ctx, "log_max_size_mb", R.string.logMaxSize, R.string.logMaxSizeDesc,
             range = 1L..1024L, default = 10L,
-            unitLabel = str(
-                R.string.mobileLogSizeUnitLabel,
-                "unit" to if (appearance.fileSizeUnits == FileSizeUnits.Iec) "MiB" else "MB",
-            ),
+            unitLabel = sizeUnitHint,
             id = "logs.maxSize",
         )
         model.sizeText?.let { size ->

@@ -398,8 +398,7 @@ internal enum class SpeedUnit(val legacy: String, val iec: String, val factor: L
     MB("MB/s", "MiB/s", 1024L * 1024L),
     GB("GB/s", "GiB/s", 1024L * 1024L * 1024L);
 
-    fun label(iecUnits: Boolean): String =
-        str(R.string.speedLimitUnitLabel, "unit" to if (iecUnits) iec else legacy)
+    fun label(iecUnits: Boolean): String = if (iecUnits) iec else legacy
 }
 
 /** 快捷档位：0 = 不限制，其余 (数值, 单位)。 */
