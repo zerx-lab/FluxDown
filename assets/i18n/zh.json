@@ -1978,7 +1978,7 @@
   "pluginsSectionTitle": "已安装插件",
   "pluginsEmpty": "暂无已安装插件",
   "pluginResolverUrlConflictsTitle": "解析器 URL 模式冲突",
-  "pluginResolverUrlConflictsHint": "下列模式在同一站点上重叠，或存在重复声明。若两个插件冲突，请仅启用你想使用的插件。此处无法检测所有运行时重叠。",
+  "pluginResolverUrlConflictsHint": "下列模式在同一站点上重叠，或存在重复声明。多个已启用插件匹配同一链接时，下载开始时会让你选择，或使用该站点的默认插件；也可以仅保留所需插件启用。此处无法检测所有运行时重叠。",
   "pluginCommonLoading": "加载中…",
   "pluginInstallZipButton": "安装 .fxplug / .zip 插件",
   "pluginInstallZipFailed": "插件安装失败：{error}",

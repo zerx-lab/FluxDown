@@ -1978,7 +1978,7 @@
   "pluginsSectionTitle": "Installed Plugins",
   "pluginsEmpty": "No plugins installed yet",
   "pluginResolverUrlConflictsTitle": "Resolver URL pattern conflicts",
-  "pluginResolverUrlConflictsHint": "These patterns overlap on the same site or are duplicates. If two plugins overlap, keep only the one you want enabled. Not all runtime overlaps can be detected here.",
+  "pluginResolverUrlConflictsHint": "These patterns overlap on the same site or are duplicates. When several enabled plugins match a link, you are asked to choose one when the download starts, or the site default is used. You can also keep only the plugins you need enabled. Not all runtime overlaps can be detected here.",
   "pluginCommonLoading": "Loading…",
   "pluginInstallZipButton": "Install .fxplug / .zip plugin",
   "pluginInstallZipFailed": "Plugin installation failed: {error}",
