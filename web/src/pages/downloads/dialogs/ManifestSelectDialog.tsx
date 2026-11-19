@@ -21,6 +21,7 @@ import {
   buildManifestGroupItems,
   manifestDefaultGroupName,
   manifestDirRowCheckState,
+  manifestExportRows,
   manifestInvertVisibleSelection,
   manifestRowsAt,
   manifestSelectAllVisible,
@@ -172,9 +173,7 @@ export function ManifestSelectDialog({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <FieldHint className="tabular min-w-0 truncate">{summary}</FieldHint>
             <DialogFooter className="ml-auto flex-wrap">
-              <Button variant="outline" disabled={submitting} onClick={() => exportTaskInfo(items.map(({ name, size }) => ({
-                name, url: '', originUrl: '', sizeBytes: size,
-              })))}>
+              <Button variant="outline" disabled={stat.count === 0 || submitting} onClick={() => exportTaskInfo(manifestExportRows(items, selected))}>
                 {t('exportTaskInfoTxt')}
               </Button>
               <Button variant="outline" className="mobile:hidden" disabled={submitting} onClick={onCancel}>

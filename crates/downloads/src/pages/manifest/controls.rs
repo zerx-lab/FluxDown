@@ -271,18 +271,12 @@ impl ManifestView {
                     .outline()
                     .control(cx)
                     .label(self.t("exportTaskInfoTxt", cx))
-                    .disabled(self.submitting)
+                    .disabled(count == 0 || self.submitting)
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         // The resolver returns item IDs, not direct download URLs.
-                        let rows = this.selection.items().iter().map(|item| {
-                            (
-                                item.name.as_str(),
-                                "",
-                                u64::try_from(item.size).unwrap_or_default(),
-                            )
-                        });
+                        let text = export_task_info_text(this.selection.selected_export_rows());
                         let failed = this.t("taskInfoExportFailed", cx).to_string();
-                        save_task_info(export_task_info_text(rows), failed, window, cx);
+                        save_task_info(text, failed, window, cx);
                     })),
             )
             .child(

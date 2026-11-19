@@ -135,6 +135,23 @@ struct GroupsProtocolTests {
         #expect(selection.selected.isEmpty)
     }
 
+    @Test func exportRowsIncludeOnlyCheckedFilesWithRelativePathsAndEffectiveSizes() {
+        var selection = ManifestSelection(items: [
+            PreviewItemDto(id: "a", name: "same.bin", path: "first", size: 50, variants: [
+                PreviewVariantDto(id: "large", label: "Large", size: 150),
+            ]),
+            PreviewItemDto(id: "b", name: "same.bin", path: "second/nested", size: 0),
+            PreviewItemDto(id: "unchecked", name: "skip.bin", size: 20),
+            PreviewItemDto(id: "root", name: "root.bin", size: 1),
+        ])
+        #expect(selection.selectedExportRows().isEmpty)
+        selection.toggleAll(in: ["root", "b", "a"])
+        selection.chooseVariant("large", for: "a")
+        let rows = selection.selectedExportRows()
+        #expect(rows.map { $0.name } == ["first/same.bin", "second/nested/same.bin", "root.bin"])
+        #expect(rows.map { $0.size } == [150, 0, 1])
+    }
+
     @Test func requestItemsComposeResolverItemWithVariant() {
         var selection = ManifestSelection(items: items())
         selection.toggle("a")

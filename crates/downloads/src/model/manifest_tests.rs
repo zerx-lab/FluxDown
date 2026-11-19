@@ -212,6 +212,29 @@ fn drilldown_collapses_transition_directories_and_up_skips_them() {
 }
 
 #[test]
+fn export_includes_checked_files_outside_search_with_paths_and_effective_sizes() {
+    use crate::components::selection_bar::export_task_info_text;
+
+    let mut first = file("first", "same.bin", "first", 50);
+    first.variants.push(variant("large", 150));
+    let mut model = ManifestSelection::new(vec![
+        first,
+        file("second", "same.bin", "second/nested", 0),
+        file("unchecked", "skip.bin", "", 20),
+    ]);
+    model.toggle_file(2);
+    assert!(model.set_variant(0, Some("large")));
+    model.set_search("skip.bin");
+
+    assert_eq!(
+        export_task_info_text(model.selected_export_rows()),
+        "Name\tURL\tSize (bytes)\nfirst/same.bin\t\t150\nsecond/nested/same.bin\t\t"
+    );
+    model.clear();
+    assert_eq!(model.selected_export_rows().count(), 0);
+}
+
+#[test]
 fn explicit_variant_controls_token_size_and_unknown_statistics_only_for_its_item() {
     let mut item = file("opaque-episode", "original.bin", "folder", 50);
     item.variants = vec![variant("large", 150), variant("unknown", 0)];

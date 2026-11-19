@@ -404,6 +404,15 @@ public struct ManifestSelection: Sendable, Hashable {
 
     public var selectedItems: [PreviewItemDto] { items.filter { selected.contains($0.id) } }
 
+    /// Checked files in manifest order, independent of the active search.
+    public func selectedExportRows() -> [(name: String, size: Int64)] {
+        items.compactMap { item in
+            guard selected.contains(item.id) else { return nil }
+            let name = item.path.isEmpty ? item.name : "\(item.path)/\(item.name)"
+            return (name, effectiveSize(of: item))
+        }
+    }
+
     /// 已选总大小（字节，未知条目计 0）与未知大小条目数。
     public var selectedSize: (bytes: Int64, unknown: Int) {
         var bytes: Int64 = 0

@@ -187,7 +187,9 @@ struct ManifestSelectView: View {
 
     var body: some View {
         readyList
-            .taskInfoExporter($taskInfoExport)
+            .background {
+                Color.clear.taskInfoExporter($taskInfoExport)
+            }
             .navigationTitle(L("manifestDialogTitle"))
             .navigationBarTitleDisplayMode(.inline)
             .navigationBarBackButtonHidden(model.submitting)
@@ -307,11 +309,11 @@ struct ManifestSelectView: View {
                 .accessibilityLabel(L("manifestSelectAll"))
             }
             Button(L("exportTaskInfoTxt"), systemImage: "square.and.arrow.down") {
-                taskInfoExport = TaskInfoDocument(model.selection.items.map {
+                taskInfoExport = TaskInfoDocument(model.selection.selectedExportRows().map {
                     TaskInfoRow(name: $0.name, url: "", size: $0.size)
                 })
             }
-            .disabled(model.submitting)
+            .disabled(model.selection.count == 0 || model.submitting)
         }
     }
 

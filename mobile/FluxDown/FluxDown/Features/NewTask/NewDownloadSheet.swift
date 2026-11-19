@@ -104,6 +104,9 @@ private struct NewDownloadContent: View {
                     }
                 }
             }
+            .background {
+                Color.clear.taskInfoExporter($taskInfoExport)
+            }
             .navigationTitle(L("newDownload"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -134,7 +137,6 @@ private struct NewDownloadContent: View {
                 }
             }
         }
-        .taskInfoExporter($taskInfoExport)
         .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
             handleDrop(providers)
         }

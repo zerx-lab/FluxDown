@@ -85,12 +85,12 @@ pub(crate) fn batch_link_info_text<'a>(
     text
 }
 
-pub(crate) fn export_task_info_text<'a>(
-    rows: impl IntoIterator<Item = (&'a str, &'a str, u64)>,
+pub(crate) fn export_task_info_text(
+    rows: impl IntoIterator<Item = (impl AsRef<str>, u64)>,
 ) -> String {
     let mut text = TASK_INFO_HEADER.to_owned();
-    for (name, url, size) in rows {
-        push_task_info_row(&mut text, name, url, size, false);
+    for (name, size) in rows {
+        push_task_info_row(&mut text, name.as_ref(), "", size, false);
     }
     text
 }

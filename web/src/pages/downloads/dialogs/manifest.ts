@@ -453,6 +453,16 @@ export function buildManifestGroupItems(items: PreviewItemDto[], selectedItemIds
   return result
 }
 
+/** Export the checked set regardless of the current search or directory. The Web picker uses plugin defaults. */
+export function manifestExportRows(items: PreviewItemDto[], selectedItemIds: Set<string>) {
+  return items.filter((item) => selectedItemIds.has(item.id)).map(({ name, path, size }) => ({
+    name: path ? `${path}/${name}` : name,
+    url: '',
+    originUrl: '',
+    sizeBytes: size,
+  }))
+}
+
 // =============================================================================
 // 11. 面包屑分段模型——深度的唯一去处
 // =============================================================================
