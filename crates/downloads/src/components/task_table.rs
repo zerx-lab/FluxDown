@@ -1948,6 +1948,25 @@ impl DownloadTableDelegate {
             .collect()
     }
 
+    pub(crate) fn selected_rows_in_order(&self) -> Vec<std::cell::Ref<'_, DownloadTaskView>> {
+        let mut rows: Vec<_> = self
+            .visible_task_ids()
+            .filter_map(|id| {
+                let row = self.store.row(id)?;
+                self.selected_tasks.contains(&row.key).then_some(row)
+            })
+            .collect();
+        if rows.len() < self.selected_tasks.len() {
+            // A collapsed bucket or directory can still contain selected tasks.
+            let shown: HashSet<_> = rows.iter().map(|row| row.key.clone()).collect();
+            rows.extend(self.sorted_rows.iter().filter_map(|&id| {
+                let row = self.store.row(id)?;
+                (self.selected_tasks.contains(&row.key) && !shown.contains(&row.key)).then_some(row)
+            }));
+        }
+        rows
+    }
+
     /// 可见任务行里（选中数, 总数）；不分配。
     fn visible_selection_counts(&self) -> (usize, usize) {
         let mut selected = 0;
@@ -5486,6 +5505,14 @@ mod tests {
         // 折叠的组也在「全选」范围内。
         delegate.select_all_tasks();
         assert_eq!(delegate.selection_summary().count, 4);
+        assert_eq!(
+            delegate
+                .selected_rows_in_order()
+                .iter()
+                .map(|row| row.key.clone())
+                .collect::<Vec<_>>(),
+            delegate.visible_task_keys()
+        );
 
         // Cmd/Ctrl 单击整组移出 / 并入选区。
         delegate.select_group(
@@ -6432,6 +6459,23 @@ mod tests {
         let t0 = RowKey::Local("t0".into());
         let t1 = RowKey::Local("t1".into());
         assert_eq!(delegate.visible_task_keys(), [t1.clone(), t0.clone()]);
+        // Select in the reverse of the displayed order, using the real row action.
+        delegate.select_task(t0.clone(), SelectModifiers::default());
+        delegate.select_task(
+            t1.clone(),
+            SelectModifiers {
+                toggle: true,
+                ..SelectModifiers::default()
+            },
+        );
+        assert_eq!(
+            delegate
+                .selected_rows_in_order()
+                .iter()
+                .map(|row| row.key.clone())
+                .collect::<Vec<_>>(),
+            [t1.clone(), t0.clone()]
+        );
 
         let now = Instant::now();
         delegate.row_order.note_interaction(now);
@@ -6447,6 +6491,14 @@ mod tests {
         delegate.view_dirty = true;
         assert!(delegate.refresh_view_at(deadline));
         assert_eq!(delegate.visible_task_keys(), [t0, t1]);
+        assert_eq!(
+            delegate
+                .selected_rows_in_order()
+                .iter()
+                .map(|row| row.key.clone())
+                .collect::<Vec<_>>(),
+            delegate.visible_task_keys()
+        );
         assert_eq!(delegate.reorder_deadline(), None);
         Ok(())
     }

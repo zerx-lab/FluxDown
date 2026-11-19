@@ -24,7 +24,10 @@ use std::{
 
 use super::download_name::DownloadName;
 use crate::{
-    components::threads_risk::threads_risk_callout,
+    components::{
+        selection_bar::{batch_link_info_text, save_task_info},
+        threads_risk::threads_risk_callout,
+    },
     controller::{
         CATEGORY_SAVE_DIR_HISTORY_PREF, DownloadsCommand, DownloadsPort, DownloadsResult,
         LAST_CATEGORY_MODE_PREF, LAST_DOWNLOAD_TARGET_PREF, LAST_SAVE_DIR_PREF,
@@ -2448,6 +2451,27 @@ impl NewDownloadView {
             .bg(theme.extended().colors.chrome)
             .border_t(theme.extended().stroke.thin)
             .border_color(theme.extended().colors.hairline)
+            .when(self.entries.len() > 1, |footer| {
+                footer.child(
+                    Button::new("new-download-export-info")
+                        .outline()
+                        .label(
+                            self.translator
+                                .read(cx)
+                                .text("exportTaskInfoTxt")
+                                .to_owned(),
+                        )
+                        .control(cx)
+                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                            let failed = this
+                                .translator
+                                .read(cx)
+                                .text("taskInfoExportFailed")
+                                .to_owned();
+                            save_task_info(batch_link_info_text(&this.entries), failed, window, cx);
+                        })),
+                )
+            })
             .child(
                 Button::new("new-download-cancel")
                     .outline()

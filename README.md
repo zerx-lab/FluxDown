@@ -55,9 +55,20 @@
 | **Persistence & Resume** | SQLite with WAL by default; server deployments can use PostgreSQL; recover downloads from persisted state |
 | **Browser Integration** | Download interception, streaming media sniffing, Alt+Click bypass, right-click send and connection diagnostics |
 | **Desktop & Web UI** | GPUI desktop and React Web management, light/dark themes, custom themes, task details and segment visualization; desktop tray keeps the service available after the UI closes |
+| **Batch TXT Export** | Select tasks or select all in the download list, or use **Export task information (.txt)** from the new-download batch or resolved file list. Available in desktop, Web, Android, and iOS; resolved plugin lists are available in desktop, Web, and full iOS. |
 | **RSS & Automation** | Feed filters, unattended downloads, JavaScript plugins, managed FFmpeg/yt-dlp components and task-event webhooks |
 | **Remote Devices** | Optional FluxCloud account, settings sync and remote task management, plus LAN device pairing and direct connections |
 | **APIs & CLI** | REST/OpenAPI, aria2-compatible JSON-RPC, MCP with 12 tools, and a CLI for scripts or standalone downloads |
+
+Download-list exports include selected tasks from the current host and selected FluxCloud remote tasks, even when only remote tasks are selected.
+The URL column for a FluxCloud remote task is available only if its source device shares download URLs.
+
+Task exports are UTF-8 text with `Name`, `URL`, and `Size (bytes)` columns separated by tabs. Decode `\\`, `\t`, `\r`, and `\n` as a backslash, tab, carriage return, and line feed respectively, in a single pass after splitting fields. Unknown values are blank; resolved plugin lists do not expose direct per-file URLs. The desktop and Web clipboard action additionally prefixes text starting with spreadsheet formula markers or a quote (after leading whitespace) with an apostrophe; TXT files do not add that prefix.
+
+New-download batches use explicit `out=` names first, then available names from the link itself (HTTP(S)/FTP file paths, magnet `dn`, or eD2k file names). Links without a known name leave that field blank.
+A new-download batch exports the byte size declared by an eD2k file link, including `0` for a valid empty file. Links without known size metadata leave the size blank.
+
+Resolved plugin lists export only checked files, including checked files hidden by the current search or filter. The name column contains each file's relative path. Where variant selection is available, an explicitly chosen variant with unknown size leaves the size blank, even if the default item size is known.
 
 **Privacy:** local downloads do not require a FluxCloud account. Cloud features are optional. Anonymous installation and daily-active statistics are controlled by `analytics_enabled` and can be disabled; they do not collect download/task information. This is not a zero-telemetry application.
 

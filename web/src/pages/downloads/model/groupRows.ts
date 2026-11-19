@@ -113,6 +113,26 @@ export function keysInVisualSpan(rows: readonly VisibleRow[], from: number, to: 
   return keys
 }
 
+export function selectedTaskViewsInOrder(
+  rows: readonly VisibleRow[],
+  sortedTasks: readonly TaskRow[],
+  selected: ReadonlySet<RowKey>,
+): DownloadTaskView[] {
+  const remaining = new Set(selected)
+  const result: DownloadTaskView[] = []
+  const add = (row: TaskRow) => {
+    if (remaining.delete(row.key)) result.push(row.view)
+  }
+  for (const row of rows) {
+    if (remaining.size === 0) break
+    if (row.type === 'task') add(row)
+    else if (row.type === 'group') row.orderedRows().forEach(add)
+  }
+  // Collapsing a bucket or directory does not clear its selection.
+  if (remaining.size > 0) for (const row of sortedTasks) add(row)
+  return result
+}
+
 export const groupRowKey = (groupId: string): string => `g:${groupId}`
 
 /** 目录折叠状态的集合键。 */

@@ -266,6 +266,61 @@ export function copyUrls(views: readonly DownloadTaskView[]): void {
   toast.key('urlCopied', 'success')
 }
 
+function taskInfoCell(value: string, clipboard: boolean): string {
+  // Keep spreadsheet pastes from interpreting untrusted text as formulas or quoted cells.
+  const prefix = clipboard && /^[=+\-@"]/.test(value.trimStart()) ? "'" : ''
+  return prefix + value.replaceAll('\\', '\\\\').replaceAll('\t', '\\t').replaceAll('\n', '\\n').replaceAll('\r', '\\r')
+}
+
+type TaskInfoFields = Pick<DownloadTaskView, 'name' | 'url' | 'originUrl' | 'sizeBytes'>
+type TaskInfoRow = Omit<TaskInfoFields, 'sizeBytes'> & { sizeBytes: number | null }
+
+export function taskInfoRow({ name, url, originUrl, sizeBytes }: TaskInfoFields): TaskInfoRow {
+  return { name, url, originUrl, sizeBytes: sizeBytes > 0 ? sizeBytes : null }
+}
+
+export function taskInfoText(
+  views: readonly TaskInfoRow[],
+  clipboard = true,
+): string {
+  return [
+    'Name\tURL\tSize (bytes)',
+    ...views.map((view) =>
+      `${taskInfoCell(view.name, clipboard)}\t${taskInfoCell(copyableShareUrl(view), clipboard)}\t${view.sizeBytes ?? ''}`,
+    ),
+  ].join('\n')
+}
+
+export function exportTaskInfo(views: Parameters<typeof taskInfoText>[0]): void {
+  if (views.length === 0) return
+  try {
+    const url = URL.createObjectURL(new Blob([taskInfoText(views, false)], { type: 'text/plain;charset=utf-8' }))
+    let anchor: HTMLAnchorElement | undefined
+    try {
+      anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = 'fluxdown-tasks.txt'
+      anchor.setAttribute('data-fluxdown-skip', '1')
+      document.body.append(anchor)
+      anchor.click()
+    } finally {
+      setTimeout(() => URL.revokeObjectURL(url), 10_000)
+      anchor?.remove()
+    }
+  } catch {
+    toast.key('taskInfoExportFailed', 'error')
+  }
+}
+
+export async function copyTaskInfo(views: readonly DownloadTaskView[]): Promise<void> {
+  if (views.length === 0) return
+  if (await copyText(taskInfoText(views.map(taskInfoRow)))) {
+    toast.key('taskInfoCopied', 'success')
+  } else {
+    toast.key('copyFileFailed', 'error')
+  }
+}
+
 /**
  * 「复制下载地址」可见（GPUI `copy_url_visible`）：单选要求有真实链接，且本机 BT 的磁力原文
  * 交给「复制磁力链接」不重复显示；多选没有「复制磁力链接」，有一项可复制即显示。
