@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sync open PR title prefixes from Roost reviews, merge conflicts and CI failures."""
+"""Sync open PR title prefixes from Roost reviews and GitHub merge readiness."""
 
 import argparse
 import json
@@ -12,7 +12,9 @@ BLOCKED = "待处理"
 READY = "待合并"
 PREFIX = re.compile(r"^(?:【(?:待处理|待合并)】\s*)+")
 GATE = re.compile(r"^<!--\s*roost:gate:(pass|fail):[0-9a-f]{40}\s*-->")
-CONCLUSION = re.compile(r"^(?:结论|conclusion|verdict|review summary)\s*[：:]?\s*", re.I)
+CONCLUSION = re.compile(
+    r"^(?:审查结论|结论|conclusion|verdict|review summary)(?:\s*[：:]\s*|\s+|$)", re.I
+)
 BLOCKER_HEADING = re.compile(
     r"^(?:\d+[.、]\s*)?(?:阻塞(?:项|问题|缺陷)?|blocking (?:issues?|findings)|blockers?)"
     r"(?:[：:]|\s|$)", re.I
@@ -43,6 +45,7 @@ query($owner: String!, $name: String!, $number: Int!) {
       state
       title
       mergeable
+      mergeStateStatus
       commits(last: 1) {
         nodes {
           commit {
@@ -60,6 +63,7 @@ query($owner: String!, $name: String!, $number: Int!) {
 }
 """
 CI_ERRORS = {"FAILURE", "ERROR", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED"}
+CI_PASS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 
 
 def review_status(entry):
@@ -93,19 +97,24 @@ def text_verdict(body, *, is_review):
     lines = [line.strip().replace("**", "") for line in body.splitlines() if line.strip()]
     if not lines:
         return None
-    first = lines[0].lstrip("# ")
-    conclusion = CONCLUSION.match(first)
-    if conclusion:
-        summary = [first[conclusion.end():]]
-        for line in lines[1:]:
-            if line.startswith("#"):
-                break
-            summary.append(line)
-        summary = " ".join(summary)
-    elif is_review:
-        summary = first
-    else:
-        return None  # Ordinary PR comments need an explicit review conclusion.
+    summary = None
+    for i, line in enumerate(lines):
+        if i and not line.startswith("#"):
+            continue
+        heading = line.lstrip("# ")
+        conclusion = CONCLUSION.match(heading)
+        if conclusion or (is_review and line.startswith("#") and NONBLOCKING.match(heading)):
+            section = [heading[conclusion.end():] if conclusion else heading]
+            for detail in lines[i + 1:]:
+                if detail.startswith("#"):
+                    break
+                section.append(detail)
+            summary = " ".join(section)
+            break
+    if summary is None:
+        if not is_review:
+            return None  # Ordinary PR comments need an explicit review conclusion.
+        summary = lines[0].lstrip("# ")
 
     empty_blockers = False
     for i, line in enumerate(lines):
@@ -153,14 +162,20 @@ def status_with_checks(review, pr):
     if pr["mergeable"] == "CONFLICTING":
         return BLOCKED
     # Read the current head's complete rollup, not CI history from older commits.
+    states = set()
     for node in pr["commits"]["nodes"]:
         rollup = node["commit"]["statusCheckRollup"]
         if rollup:
             for field in ("checkRunCountsByState", "statusContextCountsByState"):
-                if any(row["count"] and row["state"] in CI_ERRORS for row in rollup["contexts"][field]):
-                    return BLOCKED
-    if review == READY and pr["mergeable"] == "UNKNOWN":
-        return None  # Don't promote while GitHub is still computing mergeability.
+                states.update(row["state"] for row in rollup["contexts"][field] if row["count"])
+    if states & CI_ERRORS:
+        return BLOCKED
+    if review == READY and (
+        pr["mergeable"] != "MERGEABLE" or pr["mergeStateStatus"] != "CLEAN"
+        or not states or states - CI_PASS
+    ):
+        # GitHub enforces branch rules; also wait for this repo's CI even if it is not required.
+        return BLOCKED
     return review
 
 

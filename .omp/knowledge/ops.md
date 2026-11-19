@@ -123,6 +123,8 @@ iOS job 跑在 `runs-on: xcode-27`（GitHub 的 Xcode 27 镜像）：工程是 X
 - **omp 每日自动更新**：宿主机 systemd 定时器 `fd-omp-update.timer`（每天 05:10 UTC+8，落在不合并时段）执行 `bin/omp-auto-update.sh`：`omp update --check` → 备份 → `omp update` → 核对宿主机与容器版本 → 容器内 sonnet / opus 各一次真实请求冒烟 → 失败回滚到备份 → 只保留当前版本的 natives（每版约 365MB，宿主机与容器各一份）；只有升级或失败才发信，日志 `data/fd-omp-update.log`。容器经目录挂载 `/root/.local/bin → /opt/omp-host` + `bin/omp-shim` 使用宿主机同一份二进制（`omp update` 以替换文件方式升级，单文件挂载会一直指向旧 inode），新会话立即用新版本，无需重启容器。
 - **跨系统同步点**：改 `.github/workflows/ci.yml` 的 paths-filter 分组或 job 名，要同步服务器 `classify.py` 的 `CI_GROUPS` / `CI_JOBS`（否则合并门会误判 CI 覆盖）；新增 GPUI crate / 页面目录时同步 `classify.py` 的 UI / 纯逻辑路径表。
 
+**PR 标题前缀**（`.github/workflows/pr-review-title.yml` → `.github/scripts/pr_review_title.py`）：手动或定时同步开放 PR 的 `【待处理】` / `【待合并】`，不改 GitHub Labels、不执行合并。审查结论可写在范围段之后的 Markdown 标题中。审查放行后，还要等 GitHub 合并状态为 `CLEAN`，且当前提交已有检查结果、没有失败或未完成的检查；路径过滤跳过的检查不拦截。排查用 `GH_REPO=zerx-lab/FluxDown python3 .github/scripts/pr_review_title.py --dry-run`。
+
 ---
 
 ## 设计文档实现状态（`docs/`）
