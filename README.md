@@ -113,6 +113,10 @@ docker compose -f docker/docker-compose.yml up -d
 
 Open `http://<server>:17800/` and set an access key in the first-run wizard. The key must contain 8–128 visible ASCII characters, including both a letter and a digit. Set it up on a trusted network before exposing the service; use an HTTPS reverse proxy for remote access.
 
+**Browser extension:** Viewing remote progress and removing tasks requires the host’s Management API. If an existing Docker deployment can accept downloads but cannot list tasks, open the server’s Web UI, enable **Settings → API Service → Management API**, then test the connection again in the extension. If you use a reverse proxy, make sure it forwards `/api/v1/` requests. Remote Only shows the server automatically; in Desktop First, select Remote server in the task panel. Removing tasks does not delete downloaded files.
+
+**iOS:** In FluxDown, go to Devices → Add Host switch the mode to **Access key** (the default is LAN pairing), then enter the server address and access key. Switch to that host, then use Downloads to add tasks, check progress, or remove tasks.
+
 - Server mode listens on `[::]:17800` (IPv4 + IPv6, falling back to `0.0.0.0` without IPv6) by default; override it with `FLUXDOWN_BIND`.
 - For unattended setup, supply `FLUXDOWN_TOKEN` through your deployment environment or secret manager, not a committed file. It initializes the key only if one has not already been set.
 - Persist `/data` for the database, logs and access key, and `/root/Downloads` for downloads. The supplied Compose file uses a named data volume and `docker/downloads/` on the host.

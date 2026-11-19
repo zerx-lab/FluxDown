@@ -1,5 +1,5 @@
 // 下载页命令：对应 GPUI 的 DownloadsCommand（downloads_port.rs），全部走 agent /rpc。
-// 本地任务 → `daemon.*`；远程任务 → `agent.remote.command`。失败统一 toast。
+// 本地任务 → `daemon.*`；远程任务 → `agent.remote.commandMany`（宿主带 `agent.remoteBatch`）或逐条 `agent.remote.command`。失败统一 toast。
 // 「打开文件 / 在文件夹中显示」只在连接带 `agent.openTaskFiles` 能力（agent 与浏览器同机）时提供，
 // 其余情况由浏览器下载已完成文件替代；「复制文件」另需 `agent.copyTaskFiles`（同机桌面会话），
 // 远程 / NAS 连接不提供（浏览器 Clipboard API 不能写入文件），同样以浏览器下载替代。
@@ -9,6 +9,7 @@ import { t } from '../../../i18n'
 import {
   CAPABILITY_AGENT_COPY_TASK_FILES,
   CAPABILITY_AGENT_OPEN_TASK_FILES,
+  CAPABILITY_AGENT_REMOTE_BATCH,
   RpcError,
   downloadTaskFile,
   rpc,
@@ -18,7 +19,7 @@ import type { CreateTaskRequest, RemoteCommandParams } from '../../../lib/rpc'
 import { confirmDialog, toast } from '../../../ui'
 import { toastRpcError } from '../../../lib/rpcToast'
 import { rpcErrorKind, rpcErrorText } from '../../../lib/rpcErrorText'
-import { planTaskCommand } from './batchPlan'
+import { planTaskCommand, remoteTaskIds, runRemoteCommands, summarizeRemote } from './batchPlan'
 import { folderAnchorMember } from './groupTree'
 import { PLUGIN_ERROR_PREFIX, copyableShareUrl } from './task'
 import { pieceEndsParams, pieceOrderTargets, pieceSequentialParams, superSeedingTargets } from './taskEdit'
@@ -45,11 +46,31 @@ async function guardedAll(jobs: readonly (() => Promise<unknown>)[]): Promise<bo
   return true
 }
 
-function remoteCommand(view: DownloadTaskView, action: RemoteCommandParams['action'], deleteFiles = false) {
-  return () =>
-    rpc.agent.remote.command(
-      action === 'delete' ? { taskId: view.taskId, action, deleteFiles } : { taskId: view.taskId, action },
-    )
+/**
+ * 本地任务（批量 / 单个 RPC）与远程任务同时下发；本地失败取第一个错误 toast，
+ * 远程失败聚合为一条 toast（见 `summarizeRemote`）。远程行由 agent 投影即时更新，这里不做乐观改动。
+ */
+async function runTaskCommand(
+  localJobs: readonly (() => Promise<unknown>)[],
+  remoteViews: readonly DownloadTaskView[],
+  action: RemoteCommandParams['action'],
+  deleteFiles = false,
+): Promise<boolean> {
+  const batch = rpcStore.peek().hello?.capabilities.includes(CAPABILITY_AGENT_REMOTE_BATCH) ?? false
+  const ids = remoteTaskIds(remoteViews)
+  const [localResults, remote] = await Promise.all([
+    Promise.allSettled(localJobs.map((job) => job())),
+    runRemoteCommands(ids, action, deleteFiles, {
+      batch,
+      command: (params) => rpc.agent.remote.command(params),
+      commandMany: (params) => rpc.agent.remote.commandMany(params),
+    }),
+  ])
+  const localFailed = localResults.find((result) => result.status === 'rejected')
+  if (localFailed && localFailed.status === 'rejected') toastRpcError(localFailed.reason)
+  const summary = summarizeRemote(remote, t)
+  if (summary) toast[summary.level](summary.text)
+  return !localFailed && remote.failed.length === 0
 }
 
 export function pauseViews(views: readonly DownloadTaskView[]): Promise<boolean> {
@@ -60,7 +81,7 @@ export function pauseViews(views: readonly DownloadTaskView[]): Promise<boolean>
     : only !== undefined
       ? [() => rpc.daemon.task.pause({ taskId: only })]
       : []
-  return guardedAll([...local, ...plan.remote.map((view) => remoteCommand(view, 'pause'))])
+  return runTaskCommand(local, plan.remote, 'pause')
 }
 
 /** 继续（失败任务同为 resume，UI 上叫重试）。 */
@@ -72,7 +93,7 @@ export function resumeViews(views: readonly DownloadTaskView[]): Promise<boolean
     : only !== undefined
       ? [() => rpc.daemon.task.resume({ taskId: only })]
       : []
-  return guardedAll([...local, ...plan.remote.map((view) => remoteCommand(view, 'resume'))])
+  return runTaskCommand(local, plan.remote, 'resume')
 }
 
 export const pauseAll = () => guarded(() => rpc.daemon.task.pauseAll())
@@ -86,7 +107,7 @@ export function deleteViews(views: readonly DownloadTaskView[], deleteFiles: boo
     : only !== undefined
       ? [() => rpc.daemon.task.delete({ taskId: only, deleteFiles })]
       : []
-  return guardedAll([...local, ...plan.remote.map((view) => remoteCommand(view, 'delete', deleteFiles))])
+  return runTaskCommand(local, plan.remote, 'delete', deleteFiles)
 }
 
 /** 「删除任务及文件」二次确认；确认后执行。 */

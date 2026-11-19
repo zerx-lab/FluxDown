@@ -93,6 +93,8 @@ import type {
   LinkPairFinishResponse,
   LinkRenameParams,
   LinkPairingCodeDto,
+  RemoteCommandManyParams,
+  RemoteCommandManyResult,
   RemoteCommandParams,
   RemoteDispatchParams,
   RemoteDispatchResult,
@@ -224,6 +226,8 @@ const remote = {
   dispatch: (params: RemoteDispatchParams) =>
     call<RemoteDispatchResult>(METHOD.AGENT_REMOTE_DISPATCH, params),
   command: (params: RemoteCommandParams) => call<OkResult>(METHOD.AGENT_REMOTE_COMMAND, params),
+  commandMany: (params: RemoteCommandManyParams) =>
+    call<RemoteCommandManyResult>(METHOD.AGENT_REMOTE_COMMAND_MANY, params),
 };
 
 const plan = {

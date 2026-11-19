@@ -21,6 +21,7 @@ fn canonical_capability_literals_are_exact_and_unique() {
         "agent.auth",
         "agent.sync",
         "agent.remoteTasks",
+        "agent.remoteBatch",
         "agent.billing",
         "agent.referrals",
         "agent.deviceLink",

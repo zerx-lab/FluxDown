@@ -4630,7 +4630,8 @@ fn arm_reorder_timer(
 }
 
 impl DownloadView {
-    /// 选中集合 → 命令列表（远程任务走 `agent.remote.command`）。
+    /// 选中集合 → 命令列表（远程任务生成逐条 `agent.remote.command`，派发前由 `coalesce_commands`
+    /// 把同动作的多条合并为 `agent.remote.commandMany`）。
     pub(crate) fn commands_for_selection(
         &self,
         action: ToolbarCommand,
@@ -4717,8 +4718,8 @@ impl DownloadView {
     }
 
     /// 执行一批命令。本地多任务删除先拆出走分块删除（见 [`crate::deletion`]）；同类多任务
-    /// 的暂停 / 继续 / 远程删除先合并成批量 RPC
-    /// （见 [`coalesce_commands`]），其余命令按 [`MAX_IN_FLIGHT`] 限制并发；幂等命令被
+    /// 的暂停 / 继续 / 删除（本地与远程）先合并成批量 RPC
+    /// （见 [`coalesce_commands`]；远程为 `agent.remote.commandMany`），其余命令按 [`MAX_IN_FLIGHT`] 限制并发；幂等命令被
     /// agent 以可重试的 `Unavailable` 拒绝时退避重试。任一失败在页面横幅提示（按错误
     /// `reason` 给出原因，同一批里先失败的错误一直保留，后完成的成功不会冲掉它）。
     /// 单任务「继续」/「重新下载」在命令前登记旧状态、成功后确认开始；

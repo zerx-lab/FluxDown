@@ -8,9 +8,9 @@ use std::{
 
 use fluxdown_protocol::{
     AgentEvent, AgentSnapshot, CloudDevice, DaemonEvent, DaemonRuntimeStatsDto, DaemonSnapshot,
-    GroupDto, LinkDeviceInfo, LinkDispatchParams, QueueDto, RemoteCommandParams,
-    RemoteDispatchParams, RemoteTaskDto, ServiceEvent, TaskActivityPage, TaskActivityQuery,
-    TaskDto, TaskRuntimeDto, WsServerMsg,
+    GroupDto, LinkDeviceInfo, LinkDispatchParams, QueueDto, RemoteCommandManyParams,
+    RemoteCommandParams, RemoteDispatchParams, RemoteTaskDto, ServiceEvent, TaskActivityPage,
+    TaskActivityQuery, TaskDto, TaskRuntimeDto, WsServerMsg,
 };
 
 use crate::model::{
@@ -318,6 +318,9 @@ pub enum DownloadsCommand {
     LinkDispatch(LinkDispatchParams),
     /// 远程任务控制（`agent.remote.command`）。
     RemoteCommand(RemoteCommandParams),
+    /// 批量远程任务控制（`agent.remote.commandMany`）：同一动作作用于多条远程任务（每批至多
+    /// `REMOTE_COMMAND_MANY_MAX` 个）。任一条失败即以首个失败的错误作为命令结果。
+    RemoteCommandMany(RemoteCommandManyParams),
     OpenTask {
         task_id: String,
     },

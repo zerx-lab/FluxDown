@@ -1114,6 +1114,7 @@ pub(crate) fn error_text(
     use fluxdown_protocol::{ApplicationErrorCode, ErrorReason};
     let reason_key = error.reason.and_then(|reason| match reason {
         ErrorReason::TargetDeviceOffline => Some("errReasonTargetDeviceOffline"),
+        ErrorReason::RemoteTaskGone => Some("errReasonRemoteTaskGone"),
         ErrorReason::TaskStateConflict => Some("errReasonTaskStateConflict"),
         ErrorReason::TaskDeviceMismatch => Some("errReasonTaskDeviceMismatch"),
         ErrorReason::SaveDirUnavailable => Some("errReasonSaveDirUnavailable"),
