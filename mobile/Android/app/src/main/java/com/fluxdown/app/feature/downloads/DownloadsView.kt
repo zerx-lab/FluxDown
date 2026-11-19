@@ -11,12 +11,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import com.fluxdown.app.AppContainer
 import com.fluxdown.app.data.ViewPrefs
@@ -25,7 +23,6 @@ import com.fluxdown.app.shell.hostState
 import com.fluxdown.core.protocol.FilterBarVisibility
 import com.fluxdown.core.protocol.HostSection
 import com.fluxdown.core.protocol.preferences
-import com.fluxdown.core.format.FileSizeUnits
 import com.fluxdown.core.format.Format
 import com.fluxdown.core.format.Measure
 import com.fluxdown.core.model.FileConflicts
@@ -258,7 +255,6 @@ class DownloadsView internal constructor(private val container: AppContainer) {
 }
 
 val LocalDownloadsView = staticCompositionLocalOf<DownloadsView> { error("DownloadsView missing") }
-internal val LocalDownloadSizeUnits = compositionLocalOf<FileSizeUnits?> { null }
 
 /** 创建并提供下载页共享视图状态（Tab 之间、Rail、选择坞、Sheet 共用一份）。 */
 @Composable
@@ -270,11 +266,9 @@ fun ProvideDownloadsView(content: @Composable () -> Unit) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { view.run() }
     }
     val rowText = rememberRowText()
-    val appearance by container.appearanceState.collectAsStateWithLifecycle()
     CompositionLocalProvider(
         LocalDownloadsView provides view,
         LocalRowText provides rowText,
-        LocalDownloadSizeUnits provides appearance?.fileSizeUnits,
     ) {
         content()
     }

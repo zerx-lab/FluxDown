@@ -33,6 +33,7 @@ import com.fluxdown.app.feature.settings.SettingsSearchContext
 import com.fluxdown.app.feature.settings.settingNumber
 import com.fluxdown.app.i18n.str
 import com.fluxdown.app.nav.SettingsPage
+import com.fluxdown.app.shell.LocalAppearance
 import com.fluxdown.app.shell.LocalAppContainer
 import com.fluxdown.app.shell.hostState
 import com.fluxdown.core.host.HostErrorCode
@@ -311,7 +312,7 @@ internal fun LogsSection(ctx: SettingsCtx, model: LogExportModel, scope: Corouti
     val container = LocalAppContainer.current
     val overlays = LocalFluxOverlays.current
     val actions = LocalTaskActions.current
-    val appearance by container.appearanceState.collectAsStateWithLifecycle()
+    val units = LocalAppearance.current.fileSizeUnits
     val hostRef by container.host.collectAsStateWithLifecycle()
     val state = hostState()
     val live by remember { derivedStateOf { state.value.connection == Connection.Live } }
@@ -320,9 +321,7 @@ internal fun LogsSection(ctx: SettingsCtx, model: LogExportModel, scope: Corouti
     LaunchedEffect(hostRef, live) { model.refreshSize() }
 
     val exportDesc = str(R.string.logExportDesc)
-    val sizeUnitHint = appearance?.let {
-        str(R.string.mobileLogSizeUnitLabel, "unit" to it.fileSizeUnits.byteLabel(2))
-    }.orEmpty()
+    val sizeUnitHint = str(R.string.mobileLogSizeUnitLabel, "unit" to units.byteLabel(2))
     val footer = if (ctx.form.has("log_max_size_mb") && ctx.synced("log_max_size_mb")) {
         exportDesc + "\n" + str(R.string.settingsSyncLegend)
     } else {
@@ -335,15 +334,13 @@ internal fun LogsSection(ctx: SettingsCtx, model: LogExportModel, scope: Corouti
             unitLabel = sizeUnitHint,
             id = "logs.maxSize",
         )
-        appearance?.let { currentAppearance ->
-            model.sizeBytes?.let { bytes ->
-                row {
-                    SettingRowBox(ctx, "logs.currentSize", null) {
-                        FluxKeyValue(
-                            key = str(R.string.mobileLogCurrentSize),
-                            value = Format.bytes(bytes, currentAppearance.fileSizeUnits).toString(),
-                        )
-                    }
+        model.sizeBytes?.let { bytes ->
+            row {
+                SettingRowBox(ctx, "logs.currentSize", null) {
+                    FluxKeyValue(
+                        key = str(R.string.mobileLogCurrentSize),
+                        value = Format.bytes(bytes, units).toString(),
+                    )
                 }
             }
         }

@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -23,7 +22,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.fluxdown.app.R
-import com.fluxdown.app.shell.LocalAppContainer
 import com.fluxdown.app.actions.LocalTaskActions
 import com.fluxdown.app.feature.settings.PickerSpec
 import com.fluxdown.app.feature.settings.SettingsCtx
@@ -33,6 +31,7 @@ import com.fluxdown.app.feature.settings.settingNumber
 import com.fluxdown.app.feature.settings.settingSwitch
 import com.fluxdown.app.i18n.str
 import com.fluxdown.app.i18n.fill
+import com.fluxdown.app.shell.LocalAppearance
 import com.fluxdown.core.format.Format
 import com.fluxdown.core.host.HostException
 import com.fluxdown.core.protocol.BtGuardAction
@@ -358,9 +357,7 @@ private fun RulesSection(ctx: SettingsCtx) {
 @Composable
 private fun ThresholdsSection(ctx: SettingsCtx) {
     val form = ctx.form
-    val container = LocalAppContainer.current
-    val appearance by container.appearanceState.collectAsState()
-    val sizeUnit = appearance?.fileSizeUnits?.byteLabel(2).orEmpty()
+    val sizeUnit = LocalAppearance.current.fileSizeUnits.byteLabel(2)
     GlassSection(title = str(R.string.btGuardSectionThresholds)) {
         if (BtSettingsRow.GuardExcessRatio.isVisible(form)) {
             settingNumber(
@@ -392,9 +389,7 @@ private fun ThresholdsSection(ctx: SettingsCtx) {
 @Composable
 private fun ActionsSection(ctx: SettingsCtx) {
     val form = ctx.form
-    val container = LocalAppContainer.current
-    val appearance by container.appearanceState.collectAsState()
-    val rateUnit = appearance?.fileSizeUnits?.rateLabel(1).orEmpty()
+    val rateUnit = LocalAppearance.current.fileSizeUnits.rateLabel(1)
     val observe = str(R.string.btGuardDownloadingActionObserve)
     val throttle = str(R.string.btGuardDownloadingActionThrottle)
     val choke = str(R.string.btGuardDownloadingActionChoke)

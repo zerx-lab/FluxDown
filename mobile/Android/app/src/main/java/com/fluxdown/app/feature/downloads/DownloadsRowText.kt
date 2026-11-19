@@ -146,11 +146,11 @@ internal fun buildRowMeta(
     fields: Set<CardField>,
     nowSec: Long,
     queuePosition: Int,
-    sizeUnits: FileSizeUnits?,
+    sizeUnits: FileSizeUnits,
 ): AnnotatedString = colors.buildTaskMeta {
     val task = item.task
-    val showSize = sizeUnits != null && CardField.Size in fields
-    val showSpeed = sizeUnits != null && CardField.Speed in fields
+    val showSize = CardField.Size in fields
+    val showSpeed = CardField.Speed in fields
     val showEta = CardField.Eta in fields
     val total = task.totalBytes
     val fragments = item.hlsFragments
@@ -158,16 +158,16 @@ internal fun buildRowMeta(
         t.hlsProgress(fragments.written, fragments.total)
     } else item.progress?.let(Format::percent).orEmpty()
     val doneOfTotal = if (showSize) when {
-        fragments != null -> t.writtenBytes(task.downloadedBytes, requireNotNull(sizeUnits))
-        total > 0 -> "${Format.bytes(task.downloadedBytes, requireNotNull(sizeUnits))}/${Format.bytes(total, requireNotNull(sizeUnits))}"
-        else -> Format.bytes(task.downloadedBytes, requireNotNull(sizeUnits)).toString()
+        fragments != null -> t.writtenBytes(task.downloadedBytes, sizeUnits)
+        total > 0 -> "${Format.bytes(task.downloadedBytes, sizeUnits)}/${Format.bytes(total, sizeUnits)}"
+        else -> Format.bytes(task.downloadedBytes, sizeUnits).toString()
     } else ""
-    val totalSize = if (showSize && total > 0) Format.bytes(total, requireNotNull(sizeUnits)).toString() else ""
-    val upText = if (item.speedUp > 0 && sizeUnits != null) "↑ ${Format.speed(item.speedUp, sizeUnits)}" else ""
+    val totalSize = if (showSize && total > 0) Format.bytes(total, sizeUnits).toString() else ""
+    val upText = Format.speed(item.speedUp, sizeUnits)?.let { "↑ $it" }.orEmpty()
 
     when (item.visual) {
         TaskVisualState.Downloading -> {
-            if (showSpeed && item.speedDown > 0) part(Format.speed(item.speedDown, requireNotNull(sizeUnits)).toString(), MetaTone.Accent)
+            if (showSpeed) Format.speed(item.speedDown, sizeUnits)?.let { part(it.toString(), MetaTone.Accent) }
             if (showEta && fragments == null) part(item.eta?.let(t::eta) ?: "—")
             part(progressText)
             part(doneOfTotal)

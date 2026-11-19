@@ -36,6 +36,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fluxdown.app.R
 import com.fluxdown.app.i18n.fill
 import com.fluxdown.app.i18n.str
+import com.fluxdown.app.shell.LocalAppearance
 import com.fluxdown.app.shell.LocalAppContainer
 import com.fluxdown.app.shell.hostState
 import com.fluxdown.core.model.HostRef
@@ -441,9 +442,7 @@ internal fun SpeedLimitControl(
     name: String,
     openPicker: (PickerSpec) -> Unit,
 ) {
-    val container = LocalAppContainer.current
-    val appearance by container.appearanceState.collectAsStateWithLifecycle()
-    val units = appearance?.fileSizeUnits
+    val units = LocalAppearance.current.fileSizeUnits
     var preferred by rememberSaveable(name) { mutableStateOf(SpeedUnit.MB) }
     val unit = effectiveUnit(bytes, preferred)
     var draft by remember(bytes, unit) { mutableStateOf(speedText(bytes, unit)) }
@@ -483,7 +482,6 @@ internal fun SpeedLimitControl(
             }),
             onFocusChange = { focused -> if (!focused) commit(draft, unit) },
         )
-        if (units == null) return@Row
         FluxSelect(
             value = unit.label(units),
             onClick = {
@@ -506,7 +504,6 @@ internal fun SpeedLimitControl(
             enabled = enabled,
         )
     }
-    if (units == null) return
     Row(
         Modifier.horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(8.dp),

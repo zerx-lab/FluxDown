@@ -32,6 +32,7 @@ import com.fluxdown.app.data.CardField
 import com.fluxdown.app.data.Density
 import com.fluxdown.app.nav.LocalNavigator
 import com.fluxdown.app.nav.Route
+import com.fluxdown.app.shell.LocalAppearance
 import com.fluxdown.app.ui.TaskVisualState
 import com.fluxdown.app.ui.fileCategory
 import com.fluxdown.app.ui.ringKind
@@ -135,7 +136,7 @@ internal fun DownloadRow(
 
     // 排队名次在组合里按稳定键二分取（只读 queueOrder 的可见排队行随顺序变化重组）；非排队行不读它。
     val queuePosition = if (item.visual == TaskVisualState.Queued) view.queueOrder.rank(id) else 0
-    val sizeUnits = LocalDownloadSizeUnits.current
+    val sizeUnits = LocalAppearance.current.fileSizeUnits
     val meta = remember(item, style.fields, colors, text, queuePosition, sizeUnits) {
         buildRowMeta(colors, text, item, style.fields, System.currentTimeMillis() / 1000, queuePosition, sizeUnits)
     }

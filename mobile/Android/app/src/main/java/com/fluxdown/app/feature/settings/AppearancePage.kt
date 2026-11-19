@@ -17,7 +17,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -32,11 +31,11 @@ import com.fluxdown.fluxui.controls.FluxDivider
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.fluxdown.app.R
-import com.fluxdown.app.data.AppearanceState
 import com.fluxdown.app.data.ThemeMode
 import com.fluxdown.app.i18n.str
 import com.fluxdown.app.nav.SettingsPage
 import com.fluxdown.app.nav.LocalNavigator
+import com.fluxdown.app.shell.LocalAppearance
 import com.fluxdown.app.shell.LocalAppContainer
 import com.fluxdown.fluxui.controls.ButtonSize
 import com.fluxdown.fluxui.controls.ButtonVariant
@@ -73,7 +72,7 @@ internal fun AppearancePage() {
     val context = LocalContext.current
     val haptics = FluxTheme.haptics
     val repo = container.appearance
-    val appearance by repo.state.collectAsState(initial = AppearanceState())
+    val appearance = LocalAppearance.current
     val gate = rememberFlowInGate()
     val motion = FluxTheme.motion
     val animateSize = Modifier.animateContentSize(motion.of(motion.fluid))
