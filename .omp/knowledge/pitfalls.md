@@ -209,6 +209,7 @@
 
 ## Android
 
+- **`repeatOnLifecycle` 的轮询块正常返回后不会在同一次 `STARTED` 内重启**：BT 监听状态遇到一次 RPC 超时不能退出轮询；保留旧快照，按原间隔重试，仅 `Unsupported` 停止，连接失效或换主机则清掉旧快照 → `mobile/Android/app/src/main/java/com/fluxdown/app/feature/settings/bt/BtPage.kt::BtPage`。
 - **前台服务停止必须用 `stopSelfResult(lastStartId)`，并在每次启动请求重新计时空闲宽限**：用 `stopSelf()` 会拆掉在途、尚未来得及 `startForeground` 的启动请求，系统以 `ForegroundServiceDidNotStartInTimeException` 杀整个进程；外部唤起建任务后也不能被旧计时停掉 → `mobile/Android/app/src/main/java/com/fluxdown/app/service/DownloadService.kt::stopIfIdle`。
 - **FileProvider 要声明 `root-path` 覆盖 `/storage/`**：可移动存储卡上的文件（`/storage/6BF9-89B3/...`）否则生成不了 content URI，打开已下载文件会崩；文件不在声明根内时提示失败而不是抛异常 → `mobile/Android/app/src/main/res/xml/file_paths.xml`（`storage_volumes`）。
 - **叠层返回键的优先级：菜单 / 对话框在 Sheet 之上**：后注册的 Sheet 返回处理器会抢先，菜单打开时返回键应交给 `FluxOverlayHost` → `mobile/Android/fluxui/src/main/java/com/fluxdown/fluxui/overlay/FluxSheet.kt`（`canGoBack` 条件）。

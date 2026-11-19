@@ -84,7 +84,7 @@ class BtSettingsTest {
         assertTrue(Ed2kSettingsRow.entries.none { it.isVisible(unloaded) })
         val loaded = form(mapOf("bt_enable_dht" to "true"))
         assertEquals(4, BtSettingsRow.visible(BtSettingsTab.General, loaded).size)
-        assertEquals(14, BtSettingsRow.visible(BtSettingsTab.Connection, loaded).size)
+        assertEquals(15, BtSettingsRow.visible(BtSettingsTab.Connection, loaded).size)
         assertEquals(4, Ed2kSettingsRow.visible(Ed2kSettingsTab.General, loaded).size)
         assertEquals(4, Ed2kSettingsRow.visible(Ed2kSettingsTab.Servers, loaded).size)
         assertEquals(
@@ -105,6 +105,7 @@ class BtSettingsTest {
 
     @Test fun searchTargetsMapToTheirTab() {
         assertEquals(BtSettingsTab.Tracker, BtSettingsRow.tabForRowId("bt.trackerSubUrls"))
+        assertEquals(BtSettingsTab.Connection, BtSettingsRow.tabForRowId("bt.listenerStatus"))
         assertEquals(BtSettingsTab.Seeding, BtSettingsRow.tabForRowId("bt.seedThenAction"))
         assertNull(BtSettingsRow.tabForRowId("download.maxConcurrent"))
         assertEquals(Ed2kSettingsTab.Servers, Ed2kSettingsRow.tabForRowId("ed2k.serverSubStatus"))
@@ -118,7 +119,8 @@ class BtSettingsTest {
         val on = form(mapOf("bt_enabled" to "true", "bt_i2p_enabled" to "true"))
         assertEquals(
             listOf(
-                BtSettingsRow.PortStart, BtSettingsRow.PortEnd, BtSettingsRow.Upnp, BtSettingsRow.PortMappingStatus,
+                BtSettingsRow.PortStart, BtSettingsRow.PortEnd, BtSettingsRow.ListenerStatus,
+                BtSettingsRow.Upnp, BtSettingsRow.PortMappingStatus,
                 BtSettingsRow.Utp, BtSettingsRow.UtpCongestion, BtSettingsRow.MseMode, BtSettingsRow.UploadSlots,
                 BtSettingsRow.Dht, BtSettingsRow.Lsd, BtSettingsRow.Webseed,
                 BtSettingsRow.MaxConnections, BtSettingsRow.MaxConnectionsPerTorrent,
@@ -144,6 +146,7 @@ class BtSettingsTest {
             mapOf("bt_enable_upnp" to "false", "bt_enable_utp" to "false", "bt_i2p_enabled" to "false"),
         )
         val rows = BtSettingsRow.visible(BtSettingsTab.Connection, off)
+        assertTrue(BtSettingsRow.ListenerStatus in rows)
         assertFalse(BtSettingsRow.PortMappingStatus in rows)
         assertFalse(BtSettingsRow.UtpCongestion in rows)
         assertFalse(BtSettingsRow.I2pSamHost in rows)
