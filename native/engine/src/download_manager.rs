@@ -2075,7 +2075,8 @@ async fn finalize_start_file_name(
         return StartPrelude::Proceed(None);
     }
     let save_path = std::path::PathBuf::from(&params.save_dir);
-    if !ctx.html_only && let Some(candidate) = task_target_path(&params.save_dir, &params.file_name)
+    if !ctx.html_only
+        && let Some(candidate) = task_target_path(&params.save_dir, &params.file_name)
     {
         let existing = match tokio::fs::metadata(&candidate).await {
             Ok(metadata) if metadata.is_file() => Some(metadata),
@@ -2476,7 +2477,8 @@ async fn run_http_family_task(run: HttpFamilyRun) {
         return;
     }
     if html_only {
-        if !reqwest::Url::parse(&params.url).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
+        if !reqwest::Url::parse(&params.url)
+            .is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
             || !downloader::filename_looks_like_html(&params.file_name)
         {
             let message = "saving a web page requires an HTTP(S) URL and an HTML file name";
@@ -9646,7 +9648,9 @@ impl DownloadManager {
             .ok_or("not-found")?;
         if source.status != 4
             || source.html_only
-            || !source.error_message.starts_with(downloader::UNEXPECTED_HTML_PREFIX)
+            || !source
+                .error_message
+                .starts_with(downloader::UNEXPECTED_HTML_PREFIX)
             || crate::auth::site_key(&source.url).is_none()
         {
             return Err("not-an-html-failure".into());
@@ -9693,24 +9697,19 @@ impl DownloadManager {
         Ok(new_id)
     }
 
-    async fn insert_html_task(&self, mut source: TaskInfo, method: &str) -> Result<TaskInfo, String> {
+    async fn insert_html_task(
+        &self,
+        mut source: TaskInfo,
+        method: &str,
+    ) -> Result<TaskInfo, String> {
         let db_error = |error: DbError| format!("db: {error:#}");
-        let resolver = self
-            .db
-            .get_task_resolver(&source.task_id)
-            .await
-            .map_err(db_error)?;
-        let resolver_item = self
-            .db
-            .get_task_resolver_item(&source.task_id)
-            .await
-            .map_err(db_error)?;
         let (mut cookies, referrer, mut headers) =
             crate::task_edit::stored_context(&self.db, &source)
                 .await
                 .map_err(db_error)?;
         source.task_id = Uuid::now_v7().to_string();
-        let profile = crate::task_edit::protect_request_context(&source, &mut cookies, &mut headers);
+        let profile =
+            crate::task_edit::protect_request_context(&source, &mut cookies, &mut headers);
         let properties = crate::task_edit::TaskProperties {
             user_agent: source.properties.user_agent,
             auth_ref: source.properties.auth_ref,
@@ -9741,8 +9740,9 @@ impl DownloadManager {
             referrer: &referrer,
             extra_headers_json: &headers,
             origin_url: &source.origin_url,
-            resolver_plugin_id: &resolver,
-            resolver_item: &resolver_item,
+            // Replay the stored request as-is: no resolver binding, so resume never re-resolves.
+            resolver_plugin_id: "",
+            resolver_item: "",
             request_method: method,
             html_only: true,
             edit_properties: Some(&properties),
@@ -12806,7 +12806,8 @@ impl DownloadManager {
         } else {
             audio_url
         };
-        let use_dash = !html_only && (dash_downloader::is_dash_url(&task.url) || audio_url.is_some());
+        let use_dash =
+            !html_only && (dash_downloader::is_dash_url(&task.url) || audio_url.is_some());
         let use_bt = !html_only && is_bt_url(&task.url);
         if use_bt && !self.bt_config.enabled {
             crate::log_warn!(
