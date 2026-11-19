@@ -2131,8 +2131,8 @@ async fn finalize_start_file_name(
     }
     let save_path = std::path::PathBuf::from(&params.save_dir);
     let is_hls = hls_downloader::is_hls_url(&params.url);
-    let companion_audio = ctx.restart_missing
-        && (is_hls || dash_downloader::is_dash_url(&params.url) || params.audio_url.is_some());
+    let companion_audio = params.audio_url.is_some()
+        || (ctx.restart_missing && (is_hls || dash_downloader::is_dash_url(&params.url)));
     if let Some(candidate) = task_target_path(&params.save_dir, &params.file_name) {
         let existing = match tokio::fs::metadata(&candidate).await {
             Ok(metadata) if metadata.is_file() => Some(metadata),
@@ -24324,6 +24324,62 @@ mod tests {
             }
         });
         (base, server)
+    }
+
+    #[tokio::test]
+    async fn fresh_dash_track_pair_avoids_existing_audio_output() {
+        let (base, server) = redownload_test_server().await;
+        let dir = unique_filetrack_test_dir("fresh_dash_audio_conflict");
+        std::fs::create_dir_all(&dir).expect("create save directory");
+        let existing_audio = dir.join("video.audio.m4a");
+        std::fs::write(&existing_audio, b"existing audio").expect("seed audio output");
+        // Force the two-file fallback regardless of whether system ffmpeg is installed.
+        let unusable_ffmpeg = dir.join("unusable-ffmpeg");
+        std::fs::write(&unusable_ffmpeg, b"not an executable").expect("ffmpeg fixture");
+        let db = Db::connect("sqlite::memory:").await.expect("test database");
+        db.set_config(
+            crate::components::CONFIG_FFMPEG_PATH,
+            &unusable_ffmpeg.to_string_lossy(),
+        )
+        .await
+        .expect("configure ffmpeg");
+        let mut manager = sched_manager(&db, 1);
+        let mut done_rx = manager.take_done_rx().expect("done receiver");
+        let id = manager
+            .create_task(NewTaskSpec {
+                url: format!("{base}/video"),
+                audio_url: Some(format!("{base}/audio")),
+                file_name: "video.mp4".to_owned(),
+                save_dir: dir.to_string_lossy().into_owned(),
+                hint_file_size: 9,
+                ..Default::default()
+            })
+            .await
+            .expect("create track pair");
+        let done = tokio::time::timeout(Duration::from_secs(15), done_rx.recv())
+            .await
+            .expect("download timed out")
+            .expect("task done");
+        assert_eq!(done.task_id, id);
+        let task = db
+            .load_task_by_id(&id)
+            .await
+            .expect("load task")
+            .expect("task exists");
+        assert_eq!(task.status, 3, "{}", task.error_message);
+        assert_eq!(task.file_name, "video (1).mp4");
+        assert_eq!(
+            std::fs::read(dir.join(&task.file_name)).unwrap(),
+            b"new video"
+        );
+        assert_eq!(
+            std::fs::read(dir.join("video (1).audio.m4a")).unwrap(),
+            b"new audio"
+        );
+        assert_eq!(std::fs::read(existing_audio).unwrap(), b"existing audio");
+        assert!(!dir.join("video.mp4").exists());
+        server.abort();
+        std::fs::remove_dir_all(dir).expect("remove test directory");
     }
 
     #[tokio::test]
