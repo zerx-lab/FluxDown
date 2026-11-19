@@ -252,7 +252,7 @@ impl SettingsView {
         cx.notify();
     }
 
-    /// 端口映射状态行可见时每 [`PORT_STATUS_POLL_INTERVAL`] 拉一次，不可见即停。
+    /// BT「连接」页签可见时每 [`PORT_STATUS_POLL_INTERVAL`] 拉一次，不可见即停。
     /// 重叠请求由 store 的在途标记挡掉。
     fn sync_port_status_poll(&mut self, visible: bool, cx: &mut Context<Self>) {
         if !visible {
@@ -539,11 +539,8 @@ impl Render for SettingsView {
             .iter()
             .find(|page| self.selected == page.key)
             .or_else(|| pages.first());
-        let port_status_visible = active.is_some_and(|page| {
-            page.key == "bt"
-                && self.active_tab_id(page) == "connection"
-                && self.store.read(cx).daemon_bool("bt_enable_upnp")
-        });
+        let port_status_visible =
+            active.is_some_and(|page| page.key == "bt" && self.active_tab_id(page) == "connection");
         self.sync_port_status_poll(port_status_visible, cx);
 
         v_flex()

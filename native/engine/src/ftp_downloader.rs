@@ -61,6 +61,7 @@ fn ftp_runtime(
             })
             .collect(),
         source_bytes: None,
+        hls_fragments: None,
     }
 }
 

@@ -19,6 +19,43 @@ pub const DAEMON_ENDPOINT_FILE: &str = "daemon-endpoint.json";
 /// agent 启动失败记录：写在 `agent.token` 同目录；agent 开始提供服务后删除。
 pub const AGENT_STARTUP_FAILURE_FILE: &str = "agent-startup-failure.json";
 
+/// agent UI Gateway 的本机 IPC 端点（Unix domain socket）文件名：位于 `agent.token` 同目录。
+/// 目录本身只有当前用户可进入；监听方另把 socket 设为 0600 并校验对端 uid。
+pub const GATEWAY_IPC_SOCKET_FILE: &str = "gateway.sock";
+
+/// agent UI Gateway 的本机 IPC 端点（Windows Named Pipe）名：
+/// `\\.\pipe\fluxdown-gateway-<16 位十六进制>`，十六进制为规范化端点目录（`agent.token`
+/// 所在目录）的 FNV-1a 64 散列。
+///
+/// 规范化：去掉 `\\?\` 前缀、`/` 换成 `\`、去掉结尾分隔符、转小写。监听方（agent）与拨号方
+/// （桌面界面）各自由同一目录推导，不经文件交换；目录不同（另一用户、另一数据目录）即名字不同。
+/// IPC 只是首选通道：推导不一致或端点不可用时，拨号方照常走 [`GATEWAY_ENDPOINT_FILE`] 发布的
+/// 回环地址。
+///
+/// ```
+/// use fluxdown_protocol::local_service::gateway_pipe_name;
+///
+/// assert_eq!(
+///     gateway_pipe_name(r"\\?\C:\Users\Me\AppData\Roaming\FluxDown\agent\"),
+///     gateway_pipe_name("c:/users/me/appdata/roaming/fluxdown/agent"),
+/// );
+/// ```
+#[must_use]
+pub fn gateway_pipe_name(endpoint_dir: &str) -> String {
+    let trimmed = match endpoint_dir.strip_prefix(r"\\?\") {
+        Some(rest) => rest,
+        None => endpoint_dir,
+    };
+    let normalized = trimmed.replace('/', "\\").to_lowercase();
+    let normalized = normalized.trim_end_matches('\\');
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in normalized.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!(r"\\.\pipe\fluxdown-gateway-{hash:016x}")
+}
+
 /// 已发布的本机 RPC 端点（无凭据）。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,7 +92,25 @@ pub struct AgentStartupFailure {
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentStartupFailure, AgentStartupFailureKind};
+    use super::{AgentStartupFailure, AgentStartupFailureKind, gateway_pipe_name};
+
+    /// 两侧各自推导管道名：同一目录的不同写法必须得到同一名字，不同目录不得相同。
+    #[test]
+    fn pipe_name_is_stable_across_spellings_of_one_directory() {
+        let canonical = gateway_pipe_name(r"C:\Users\Me\AppData\Roaming\FluxDown\agent");
+        assert_eq!(canonical, r"\\.\pipe\fluxdown-gateway-90507e7cb547adb8");
+        for spelling in [
+            r"\\?\C:\Users\Me\AppData\Roaming\FluxDown\agent",
+            r"c:\users\me\appdata\roaming\fluxdown\agent\",
+            "C:/Users/Me/AppData/Roaming/FluxDown/agent/",
+        ] {
+            assert_eq!(gateway_pipe_name(spelling), canonical, "{spelling}");
+        }
+        assert_ne!(
+            gateway_pipe_name(r"C:\Users\Other\AppData\Roaming\FluxDown\agent"),
+            canonical
+        );
+    }
 
     /// 新版 agent 写入的未知环节在旧版界面里按「其它」展示，而不是整条记录解析失败。
     #[test]

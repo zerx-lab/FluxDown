@@ -100,7 +100,7 @@ class MappingTest {
 
     @Test
     fun unsignedFieldsConvertToLong() {
-        val runtime = TaskRuntimeDto("t", ULong.MAX_VALUE.shr(1), 3u, null, 10, emptyList()).toCore()
+        val runtime = TaskRuntimeDto("t", ULong.MAX_VALUE.shr(1), 3u, null, 10, emptyList(), null).toCore()
         assertEquals(Long.MAX_VALUE, runtime.sampleSequence)
         assertEquals(3, runtime.activeTransfers)
         assertNull(runtime.connectedPeers)
@@ -108,6 +108,12 @@ class MappingTest {
         val config = HostEventDto.ConfigChanged(mapOf("k" to "v"), 42uL).toCore() as HostEvent.ConfigChanged
         assertEquals(42L, config.revision)
         assertEquals(mapOf("k" to "v"), config.values)
+    }
+
+    @Test
+    fun hlsFragmentProgressUsesCountsEvenWithoutAByteEstimate() {
+        val runtime = TaskRuntimeDto("t", 1uL, null, null, 0, emptyList(), HlsFragmentProgressDto(2uL, 8uL)).toCore()
+        assertEquals(0.25f, runtime.hlsFragments?.fraction)
     }
 
     @Test

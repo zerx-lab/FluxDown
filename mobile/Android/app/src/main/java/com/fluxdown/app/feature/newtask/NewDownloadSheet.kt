@@ -40,6 +40,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import com.fluxdown.app.R
 import com.fluxdown.app.actions.LocalTaskActions
+import com.fluxdown.app.data.DeviceSettings
 import com.fluxdown.core.capture.TorrentFile
 import com.fluxdown.app.feature.settings.general.categoryDisplayName
 import com.fluxdown.app.feature.settings.general.categoryIcon
@@ -47,9 +48,11 @@ import com.fluxdown.app.i18n.str
 import com.fluxdown.app.nav.SheetRoute
 import com.fluxdown.app.shell.LocalAppContainer
 import com.fluxdown.app.shell.hostState
+import com.fluxdown.app.ui.defaultLocalSaveDir
 import com.fluxdown.app.ui.fileCategory
 import com.fluxdown.app.ui.label
 import com.fluxdown.app.ui.launchDocumentPicker
+import com.fluxdown.app.ui.rememberLocalDirectoryPicker
 import com.fluxdown.core.host.ImportRules
 import com.fluxdown.core.host.groupImportBatches
 import com.fluxdown.core.host.isError
@@ -464,13 +467,33 @@ private fun NewDownloadContent(
             }
         }
     }
-    val pickDirectory = com.fluxdown.app.ui.rememberLocalDirectoryPicker { path ->
+    val pickDirectory = rememberLocalDirectoryPicker { path ->
         if (container.host.value is HostRef.Local && target == null && !form.submitting) {
             form.setSaveDirManually(path)
         }
     }
 
     Column(Modifier.padding(top = 2.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        if (hostRef is HostRef.Local && target == null) {
+            val settings = remember(context) { DeviceSettings.of(context) }
+            val appDir = remember(context) { defaultLocalSaveDir(context).path }
+            if (host.value.needsPublicDownloadGuide(hostRef, settings.downloadFolderGuideDone, appDir)) {
+                PublicDownloadGuide(
+                    enabled = !busy && !importingTorrent,
+                    onSavingChange = { form.submitting = it },
+                    onSaved = form::adoptDefaultSaveDir,
+                    onSkip = {
+                        if (!form.submitting && !importingTorrent) {
+                            container.store.state.value.skipPublicDownloadGuide(
+                                container.host.value, settings.downloadFolderGuideDone, appDir,
+                                settings::finishDownloadFolderGuide,
+                            )
+                        }
+                    },
+                )
+            }
+        }
+
         FluxText(str(R.string.batchDownloadDesc), style = type.sm, color = c.inkMuted)
 
         // 链接区

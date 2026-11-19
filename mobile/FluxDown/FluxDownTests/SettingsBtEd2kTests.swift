@@ -65,7 +65,7 @@ struct SettingsBtEd2kTests {
         #expect(BtSettingsRow.visible(in: .general, loaded) == [.enabled, .pieceOrder, .firstLastPiecesFirst, .selectionAutoDefault])
         // 默认 uTP 开（拥塞控制可见）、I2P 关（SAM 三行隐藏）。
         #expect(BtSettingsRow.visible(in: .connection, loaded) == [
-            .portStart, .portEnd, .upnp,
+            .portStart, .portEnd, .listenerStatus, .upnp,
             .utp, .utpCongestion, .mseMode, .uploadSlots,
             .dht, .lsd, .webseed,
             .maxConnections, .maxConnectionsPerTorrent,
@@ -81,7 +81,9 @@ struct SettingsBtEd2kTests {
         let i2pOn = form(["bt_i2p_enabled": "true"])
         #expect(BtSettingsRow.visible(inSection: .i2p, i2pOn) == [.i2pEnabled, .i2pSamHost, .i2pSamPort, .i2pMixed])
         #expect(BtSettingsRow.showsPortMappingStatus(in: form(["bt_enable_upnp": "true"])))
-        #expect(!BtSettingsRow.showsPortMappingStatus(in: form(["bt_enable_upnp": "false"])))
+        let mappingOff = form(["bt_enable_upnp": "false"])
+        #expect(!BtSettingsRow.showsPortMappingStatus(in: mappingOff))
+        #expect(BtSettingsRow.visible(inSection: .listen, mappingOff).contains(.listenerStatus))
         #expect(!BtSettingsRow.showsPortMappingStatus(in: form(["bt_enabled": "false", "bt_enable_upnp": "true"])))
         #expect(!BtSettingsRow.showsPortMappingStatus(in: form([:])))
     }
@@ -113,6 +115,7 @@ struct SettingsBtEd2kTests {
     @Test func btDisabledHidesEverythingButTheToggle() {
         let off = form(["bt_enabled": "false", "bt_seed_enabled": "true"])
         #expect(BtSettingsRow.visible(in: .general, off) == [.enabled])
+        #expect(BtSettingsRow.visible(in: .connection, off).isEmpty)
         #expect(BtSettingsRow.visible(in: .tracker, off).isEmpty)
         #expect(BtSettingsRow.visible(in: .seeding, off).isEmpty)
         #expect(BtSettingsRow.availableTabs(in: off) == [.general])
@@ -137,6 +140,7 @@ struct SettingsBtEd2kTests {
         #expect(BtSettingsRow.tab(forRowID: "bt.trackerSubUrls") == .tracker)
         #expect(BtSettingsRow.tab(forRowID: "bt.announceAllTiers") == .tracker)
         #expect(BtSettingsRow.tab(forRowID: "bt.portStart") == .connection)
+        #expect(BtSettingsRow.tab(forRowID: "bt.listenerStatus") == .connection)
         #expect(BtSettingsRow.tab(forRowID: BtSettingsRow.portMappingStatusID) == .connection)
         #expect(BtSettingsRow.tab(forRowID: "bt.seedThenAction") == .seeding)
         #expect(BtSettingsRow.tab(forRowID: "download.maxConcurrent") == nil)

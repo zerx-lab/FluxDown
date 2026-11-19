@@ -194,7 +194,7 @@ struct DownloadsDeriver {
                     collapsed: closed,
                     rows: closed ? [] : group.rows
                 ))
-                if !closed { visible.append(contentsOf: group.rows.compactMap { $0.item?.id }) }
+                if !closed { visible.append(contentsOf: group.rows.map(\.id)) }
             }
         }
 
@@ -560,7 +560,7 @@ struct DownloadsDeriver {
                 // 汇总速度只算本机：远程速度是别的设备的吞吐。
                 downSpeed: inflight.reduce(0) { $0 + ($1.item?.speedDown ?? 0) }, collapsed: false, rows: inflight
             ))
-            visible.append(contentsOf: inflight.compactMap { $0.item?.id })
+            visible.append(contentsOf: inflight.map(\.id))
         }
         if !history.isEmpty {
             let named: StatusFolder? = (folder == .completed || folder == .seeding || folder == .failed || folder == .paused) ? folder : nil
@@ -568,7 +568,7 @@ struct DownloadsDeriver {
                 id: "history", kind: .history, title: .history(named), count: history.count, doneOfTotal: nil,
                 downSpeed: 0, collapsed: false, rows: history
             ))
-            visible.append(contentsOf: history.compactMap { $0.item?.id })
+            visible.append(contentsOf: history.map(\.id))
         }
     }
 

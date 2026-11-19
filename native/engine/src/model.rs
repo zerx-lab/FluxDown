@@ -120,6 +120,22 @@ pub struct ArchiveDirectories {
     pub category: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileClearState {
+    None,
+    Cleared,
+    Pending,
+    /// Redownload queued after file removal; the old path is not owned by this task.
+    RestartPending,
+}
+
+impl FileClearState {
+    /// The stored path is a download preference, not an owned output.
+    pub(crate) fn retains_path_only(self) -> bool {
+        matches!(self, Self::Cleared | Self::RestartPending)
+    }
+}
+
 /// 持久化任务信息。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskInfo {
@@ -146,6 +162,7 @@ pub struct TaskInfo {
     /// 由引擎按需扫描计算并落库（见 `crate::download_manager::DownloadManager::spawn_file_scan`）；
     /// 仅对 status=3 语义有效，默认 false。
     pub file_missing: bool,
+    pub file_clear_state: FileClearState,
     /// 任务结束时间，Unix seconds 时间戳（空 = 尚未完成）。
     /// 记录下载真正完成（status→3）的时刻，不含插件 hook 后处理耗时。
     pub completed_at: String,

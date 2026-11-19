@@ -440,7 +440,8 @@ pub(crate) async fn prepare(db: &Db, patch: EditTask) -> Result<PreparedEdit, St
         || old_context.0 != cookies
         || old_context.1 != referrer
         || old_context.2 != headers;
-    let relocate = original.save_dir != updated.save_dir || original.file_name != updated.file_name;
+    let relocate = !original.file_clear_state.retains_path_only()
+        && (original.save_dir != updated.save_dir || original.file_name != updated.file_name);
     let profile = protect_request_context(&updated, &mut cookies, &mut headers);
     updated.properties.credential_ref = profile
         .as_ref()
@@ -484,7 +485,11 @@ pub(crate) fn validate_proxy(value: &str) -> Result<(), String> {
 }
 
 impl Db {
-    pub(crate) async fn commit_task_edit(&self, edit: &PreparedEdit) -> Result<(), DbError> {
+    pub(crate) async fn commit_task_edit(
+        &self,
+        edit: &PreparedEdit,
+        moved: &[(std::path::PathBuf, std::path::PathBuf)],
+    ) -> Result<(), DbError> {
         let props = serde_json::to_string(&edit.updated.properties)
             .map_err(|_| DbError::InvalidConfig("task properties encoding failed".into()))?;
         let headers = serde_json::to_string(&edit.headers)
@@ -500,6 +505,9 @@ impl Db {
             .bind(edit.updated.bt_download_limit_bps).bind(&edit.updated.task_id).execute(&mut *tx).await?;
         if result.rows_affected() != 1 {
             return Err(sqlx::Error::RowNotFound.into());
+        }
+        for (old, new) in moved {
+            Self::rename_registered_artifact(&mut tx, &edit.updated.task_id, old, new).await?;
         }
         if let Some(profile) = &edit.profile {
             insert_inline_credential(&mut tx, profile).await?;

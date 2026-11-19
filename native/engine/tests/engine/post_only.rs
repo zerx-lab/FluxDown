@@ -326,6 +326,45 @@ async fn captured_post_downloads_with_a_single_submission() {
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "binds a local port; run with --ignored"]
+async fn redownloading_a_cleared_post_task_requires_a_new_browser_request() {
+    let mut h = Harness::new("redownload_cleared").await;
+    let spec = h.spec(Some("POST"), false);
+    let task_id = h.engine.manager.create_task(spec).await.expect("create");
+    let completed = h.finish(&task_id).await;
+    assert_eq!(completed.status, 3, "error={}", completed.error_message);
+    h.engine.manager.clear_task_file(&task_id).await.unwrap();
+    assert!(!h.work_dir.join(&completed.file_name).exists());
+
+    h.clear_requests();
+    for restart_engine in [false, true] {
+        if restart_engine {
+            h = h.restart_engine().await;
+        }
+        let error = h
+            .engine
+            .manager
+            .restart_missing_task_file(&task_id)
+            .await
+            .expect_err("a completed POST must not be replayed, even in the same engine");
+        assert_eq!(error.to_string(), POST_ONLY_RESUME_MESSAGE);
+        let retained = h
+            .engine
+            .db
+            .load_task_by_id(&task_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(retained.status, 3);
+        assert!(retained.file_missing);
+        assert_eq!(retained.downloaded_bytes, completed.downloaded_bytes);
+        assert_eq!(retained.completed_at, completed.completed_at);
+        assert!(h.requests().is_empty());
+    }
+    h.cleanup().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "binds a local port; run with --ignored"]
 async fn retrying_a_post_task_replays_the_request_from_scratch() {
     let mut h = Harness::new("retry").await;
     h.server.truncate_next_zip.store(true, Ordering::SeqCst);

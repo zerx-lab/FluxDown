@@ -9,6 +9,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -22,11 +23,16 @@ import com.fluxdown.app.shell.hostState
 import com.fluxdown.app.ui.label
 import com.fluxdown.core.model.Task
 import com.fluxdown.core.model.TaskStatus
+import com.fluxdown.core.protocol.HostCapability
+import com.fluxdown.core.protocol.RemoteCommandAction
+import com.fluxdown.core.protocol.RemoteTaskRules
+import com.fluxdown.core.protocol.has
 import com.fluxdown.fluxui.chrome.FluxRailHeader
 import com.fluxdown.fluxui.chrome.FluxRailItem
 import com.fluxdown.fluxui.chrome.SelectionDock
 import com.fluxdown.fluxui.chrome.SelectionDockAction
 import com.fluxdown.fluxui.icons.FluxIcons
+import com.fluxdown.fluxui.overlay.LocalFluxOverlays
 import com.fluxdown.fluxui.theme.FluxTheme
 import com.fluxdown.fluxui.theme.FluxWindowClass
 import kotlinx.coroutines.launch
@@ -129,15 +135,16 @@ private fun RailCategoryItems(view: DownloadsView, nested: Boolean) {
 }
 
 @Immutable
-private data class SelectionCaps(val canResume: Boolean, val canPause: Boolean) {
+private data class SelectionCaps(val canResume: Boolean, val canPause: Boolean, val hasLocal: Boolean) {
     companion object {
-        val None = SelectionCaps(false, false)
+        val None = SelectionCaps(false, false, false)
     }
 }
 
 /**
- * 多选模式的选择坞（D2）：计数 / 全选（范围 = 可见任务）· 继续 · 暂停 · 移动到队列 · 删除。
- * 选中项因删除 / 主机切换消失时自动剔除；选择归零（取消全选 / 逐个取消 / 删除后）自动退出。
+ * 多选模式的选择坞（D2）：计数 / 全选（范围 = 可见任务，含远程行）· 继续 · 暂停 · 移动到队列（仅本地项）· 删除。
+ * 选择集合里本地项（任务 id）走守护进程，远程项（[RemoteItem.id]）经 [SelectionBatch] 走 `agent.remote.commandMany`。
+ * 选中项因删除 / 主机切换 / 云端移除而消失时自动剔除；选择归零（取消全选 / 逐个取消 / 删除后）自动退出。
  */
 @Composable
 fun DownloadsSelectionDock(modifier: Modifier) {
@@ -158,24 +165,34 @@ private fun SelectionDockContent(modifier: Modifier, reservedEnd: Dp) {
     val actions = LocalTaskActions.current
     val haptics = FluxTheme.haptics
     val host = hostState()
+    val context = LocalContext.current
+    val overlays = LocalFluxOverlays.current
+    val batch = remember(context, view, nav, overlays, haptics) { SelectionBatch(context, view, nav, overlays, haptics) }
 
     val selecting = nav.selecting
     val count = nav.selection.size
     val total by remember(view) { derivedStateOf { view.list.visibleIds.size } }
-    val caps by remember(host, nav) {
+    val caps by remember(host, nav, view) {
         derivedStateOf {
             if (!nav.selecting || nav.selection.isEmpty()) {
                 SelectionCaps.None
             } else {
                 var resume = false
                 var pause = false
+                var local = false
                 val sel = nav.selection
                 for (t in host.value.tasks) {
                     if (t.taskId !in sel) continue
+                    local = true
                     if (t.canResume) resume = true
                     if (t.canPause) pause = true
                 }
-                SelectionCaps(resume, pause)
+                for (r in batch.selected()) {
+                    val online = view.remoteTargets[r.toDevice]?.online
+                    if (RemoteTaskRules.canIssue(RemoteCommandAction.Resume, r, online)) resume = true
+                    if (RemoteTaskRules.canIssue(RemoteCommandAction.Pause, r, online)) pause = true
+                }
+                SelectionCaps(resume, pause, local)
             }
         }
     }
@@ -192,8 +209,17 @@ private fun SelectionDockContent(modifier: Modifier, reservedEnd: Dp) {
             // 任务表载入中列表是空的，不能据此判定“已选任务都被删除了”。
             if (nav.selection.isEmpty() || s.tasksLoading) return@collect
             val ids = if (nav.selection.size > 8) s.tasks.mapTo(HashSet()) { it.taskId } else null
-            val gone = nav.selection.filter { id -> if (ids != null) id !in ids else s.tasks.none { it.taskId == id } }
+            val gone = nav.selection.filter { id ->
+                !isRemoteSelectionId(id) && if (ids != null) id !in ids else s.tasks.none { it.taskId == id }
+            }
             if (gone.isNotEmpty()) nav.selection.removeAll(gone.toSet())
+            // 远程项：云端记录被移除（agent 已删行）后剔除；派生列表尚未载入 / 主机无远程能力时不据此判定。
+            val list = view.list
+            if (list.loaded && s.has(HostCapability.agentRemoteTasks)) {
+                val live = list.remote.mapTo(HashSet()) { it.id }
+                val goneRemote = nav.selection.filter { isRemoteSelectionId(it) && it !in live }
+                if (goneRemote.isNotEmpty()) nav.selection.removeAll(goneRemote.toSet())
+            }
         }
     }
 
@@ -202,28 +228,53 @@ private fun SelectionDockContent(modifier: Modifier, reservedEnd: Dp) {
         return container.store.state.value.tasks.filter { it.taskId in sel }
     }
 
+    fun resumeSelected() {
+        val local = selectedTasks().map { it.taskId }
+        val remote = batch.eligible(RemoteCommandAction.Resume)
+        if (local.isEmpty() && remote.isEmpty()) return
+        if (!actions.guard()) return
+        if (local.isNotEmpty()) actions.resume(local)
+        batch.run(RemoteCommandAction.Resume, remote, announceDone = local.isEmpty())
+    }
+
+    fun pauseSelected() {
+        val local = selectedTasks().map { it.taskId }
+        val remote = batch.eligible(RemoteCommandAction.Pause)
+        if (local.isEmpty() && remote.isEmpty()) return
+        if (!actions.guard()) return
+        if (local.isNotEmpty()) actions.pause(local)
+        batch.run(RemoteCommandAction.Pause, remote, announceDone = local.isEmpty())
+    }
+
+    fun deleteSelected() {
+        val local = selectedTasks()
+        val remote = batch.eligible(RemoteCommandAction.Delete)
+        if (remote.isEmpty()) {
+            actions.confirmDelete(local) { nav.exitSelection() }
+            return
+        }
+        if (!actions.guard()) return
+        val localIds = local.map { it.taskId }
+        batch.confirmDelete(localIds.size, remote) { withFiles ->
+            actions.deleteNow(localIds, withFiles) { nav.selection.removeAll(localIds.toSet()) }
+        }
+    }
+
     val resumeLabel = stringResource(R.string.resume)
     val pauseLabel = stringResource(R.string.pause)
     val moveLabel = stringResource(R.string.mobileDockMove)
     val deleteLabel = stringResource(R.string.delete)
     val selectedFmt = stringResource(R.string.selectedCount)
 
-    val dockActions = remember(caps, actions, resumeLabel, pauseLabel, moveLabel, deleteLabel) {
+    val dockActions = remember(caps, actions, batch, resumeLabel, pauseLabel, moveLabel, deleteLabel) {
         buildList {
-            if (caps.canResume) {
-                add(SelectionDockAction("resume", resumeLabel, FluxIcons.Play, { actions.resume(selectedTasks().map { it.taskId }) }))
+            if (caps.canResume) add(SelectionDockAction("resume", resumeLabel, FluxIcons.Play, ::resumeSelected))
+            if (caps.canPause) add(SelectionDockAction("pause", pauseLabel, FluxIcons.Pause, ::pauseSelected))
+            // 队列是本机概念：只含远程项时不提供「移动到队列」。
+            if (caps.hasLocal) {
+                add(SelectionDockAction("move", moveLabel, FluxIcons.Rows3, { actions.moveToQueue(selectedTasks().map { it.taskId }) }))
             }
-            if (caps.canPause) {
-                add(SelectionDockAction("pause", pauseLabel, FluxIcons.Pause, { actions.pause(selectedTasks().map { it.taskId }) }))
-            }
-            add(SelectionDockAction("move", moveLabel, FluxIcons.Rows3, { actions.moveToQueue(selectedTasks().map { it.taskId }) }))
-            add(
-                SelectionDockAction(
-                    "delete", deleteLabel, FluxIcons.Trash2,
-                    { actions.confirmDelete(selectedTasks()) { nav.exitSelection() } },
-                    danger = true,
-                ),
-            )
+            add(SelectionDockAction("delete", deleteLabel, FluxIcons.Trash2, ::deleteSelected, danger = true))
         }
     }
 

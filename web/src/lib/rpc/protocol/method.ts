@@ -51,6 +51,8 @@ export const METHOD = {
   /** 立即向 tracker 重新汇报（`TaskIdParams`）；任务未运行 → `taskStateConflict`。 */
   DAEMON_TASK_REANNOUNCE: 'daemon.task.reannounce',
   DAEMON_TASK_DELETE: 'daemon.task.delete',
+  DAEMON_TASK_CLEAR_FILE: 'daemon.task.clearFile',
+  DAEMON_TASK_RESTART_FILE: 'daemon.task.restartFile',
   DAEMON_TASK_PAUSE_ALL: 'daemon.task.pauseAll',
   DAEMON_TASK_RESUME_ALL: 'daemon.task.resumeAll',
   DAEMON_TASK_RESCAN: 'daemon.task.rescan',
@@ -249,6 +251,7 @@ export const METHOD = {
   AGENT_REMOTE_LIST: 'agent.remote.list',
   AGENT_REMOTE_DISPATCH: 'agent.remote.dispatch',
   AGENT_REMOTE_COMMAND: 'agent.remote.command',
+  AGENT_REMOTE_COMMAND_MANY: 'agent.remote.commandMany',
 
   AGENT_PLAN_LIST: 'agent.plan.list',
   AGENT_ORDER_CREATE: 'agent.order.create',
@@ -333,6 +336,8 @@ export const CAPABILITY_AGENT_GATEWAY = 'agent.gateway';
 export const CAPABILITY_AGENT_AUTH = 'agent.auth';
 export const CAPABILITY_AGENT_SYNC = 'agent.sync';
 export const CAPABILITY_AGENT_REMOTE_TASKS = 'agent.remoteTasks';
+/** 宿主支持 `agent.remote.commandMany`（批量远程指令）与 `remoteTaskGone` 原因；旧宿主逐条回退 `agent.remote.command`。 */
+export const CAPABILITY_AGENT_REMOTE_BATCH = 'agent.remoteBatch';
 export const CAPABILITY_AGENT_BILLING = 'agent.billing';
 export const CAPABILITY_AGENT_REFERRALS = 'agent.referrals';
 export const CAPABILITY_AGENT_DEVICE_LINK = 'agent.deviceLink';

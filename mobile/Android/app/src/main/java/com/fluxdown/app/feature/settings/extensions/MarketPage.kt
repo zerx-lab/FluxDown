@@ -88,6 +88,8 @@ internal fun PluginMarketPage() {
     val latest = model.marketLatest
     val filtered = remember(latest, query) { PluginMarket.filter(latest, query) }
     val installedById = remember(plugins) { plugins.associateBy { it.identity } }
+    val marketIds = remember(latest) { latest.mapTo(mutableSetOf()) { it.pluginId } }
+    val conflicts = rememberResolverUrlConflicts(plugins, marketIds)
     val phase = model.marketPhase
 
     Box(Modifier.fillMaxSize()) {
@@ -97,6 +99,9 @@ internal fun PluginMarketPage() {
                 flowItem(index++, gate, "banner") {
                     FluxBanner(str(R.string.localServiceDisconnected), kind = FluxBannerKind.Warn, slim = true)
                 }
+            }
+            if (conflicts.isNotEmpty()) {
+                flowItem(index++, gate, "resolverUrlConflicts") { ResolverUrlConflictSection(conflicts) }
             }
             flowItem(index++, gate, "search") {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -286,7 +291,11 @@ private fun MarketDetailSheet(
                 }
             },
         ) {
-            if (shown != null) PluginInfoBlock(PluginDetail.of(shown), env)
+            if (shown != null) {
+                val identities = remember(shown.pluginId) { setOf(shown.pluginId) }
+                ResolverUrlConflictSection(rememberResolverUrlConflicts(plugins, identities))
+                PluginInfoBlock(PluginDetail.of(shown), env)
+            }
         }
     }
 }

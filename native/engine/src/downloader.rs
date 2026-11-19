@@ -42,6 +42,8 @@ pub enum DownloadError {
     Db(#[from] crate::db::DbError),
     #[error("cancelled")]
     Cancelled,
+    #[error("{}", POST_ONLY_RESUME_MESSAGE)]
+    BrowserRequestRequired,
     #[error("checksum mismatch: {0}")]
     ChecksumMismatch(String),
     /// Server does not honour `Range` requests — returned the enclosed HTTP
@@ -313,6 +315,8 @@ pub struct ProgressUpdate {
     pub task_id: String,
     /// Observed active reads and byte-range geometry; absent when not sampled.
     pub runtime: Option<crate::transfer_activity::TaskRuntime>,
+    /// Cache `runtime` for the next terminal frame without publishing a status.
+    pub cache_runtime_only: bool,
     pub downloaded_bytes: i64,
     /// Restored/truncated counter before body reads. Unlike an ordinary lower
     /// progress sample, this explicitly resets host traffic measurement.
@@ -3282,9 +3286,20 @@ pub async fn dedup_filename(
     avoid: &std::collections::HashSet<String>,
     overwrite: &crate::file_exists::OverwritePolicy,
 ) -> String {
+    dedup_output_name(dir, name, Some(reserved), avoid, overwrite, false).await
+}
+
+pub(crate) async fn dedup_output_name(
+    dir: &Path,
+    name: &str,
+    reserved: Option<&std::collections::HashSet<PathBuf>>,
+    avoid: &std::collections::HashSet<String>,
+    overwrite: &crate::file_exists::OverwritePolicy,
+    companion_audio: bool,
+) -> String {
+    let reserved = reserved.cloned();
     let dir_owned = dir.to_path_buf();
     let name_owned = name.to_string();
-    let reserved = reserved.clone();
     let avoid = avoid.clone();
     let allow_overwrite = overwrite.permits(name);
     // 磁盘探测是同步 stat(重度冲突时退化为一次目录扫描),放进阻塞池,
@@ -3294,10 +3309,11 @@ pub async fn dedup_filename(
             &dir_owned,
             &name_owned,
             &DedupRules {
-                reserved: Some(&reserved),
+                reserved: reserved.as_ref(),
                 avoid: Some(&avoid),
                 allow_overwrite,
                 companion_mp4: false,
+                companion_audio,
             },
         )
     })
@@ -3336,6 +3352,8 @@ pub(crate) struct DedupRules<'a> {
     pub allow_overwrite: bool,
     /// HLS:成品是 `<stem>.mp4`,同 stem 的 `.mp4` 已存在同样算冲突。
     pub companion_mp4: bool,
+    /// A separate audio track and its temporary file must both be unoccupied.
+    pub companion_audio: bool,
 }
 
 /// `name` 的 `.mp4` 伴生名(同 stem)。
@@ -3404,6 +3422,14 @@ fn candidate_taken_by_probe(
         return Ok(true);
     }
     let final_path = dir.join(candidate);
+    if rules.companion_audio {
+        let audio = crate::dash_downloader::build_audio_path(&final_path);
+        let mut audio_temp = audio.as_os_str().to_os_string();
+        audio_temp.push(TEMP_EXT);
+        if entry_exists(Path::new(&audio_temp))? || entry_exists(&audio)? {
+            return Ok(true);
+        }
+    }
     let companion = rules
         .companion_mp4
         .then(|| dir.join(companion_mp4_name(candidate)));
@@ -3443,6 +3469,11 @@ fn candidate_taken_in_scan(
         || existing.contains(&folded)
         || existing.contains(&temp_name.to_lowercase())
         || (rules.companion_mp4 && existing.contains(&companion_mp4_name(candidate).to_lowercase()))
+        || (rules.companion_audio && {
+            let audio = crate::dash_downloader::build_audio_path(Path::new(&folded));
+            let audio = audio.to_string_lossy();
+            existing.contains(audio.as_ref()) || existing.contains(&format!("{audio}{TEMP_EXT}"))
+        })
 }
 
 /// 目录条目名集合(小写折叠)。目录不存在 = 空集。
@@ -3565,16 +3596,10 @@ pub(crate) fn dedup_name_by_probe(
 pub(crate) fn name_free_on_disk(
     dir: &Path,
     candidate: &str,
+    rules: &DedupRules<'_>,
     allow_overwrite: bool,
-    companion_mp4: bool,
 ) -> std::io::Result<bool> {
-    let rules = DedupRules {
-        reserved: None,
-        avoid: None,
-        allow_overwrite,
-        companion_mp4,
-    };
-    candidate_taken_by_probe(dir, candidate, &rules, allow_overwrite).map(|taken| !taken)
+    candidate_taken_by_probe(dir, candidate, rules, allow_overwrite).map(|taken| !taken)
 }
 
 /// 旧算法的参照实现(整目录 `read_dir`、条目名小写折叠、编号 1..=9999),仅供
@@ -3678,7 +3703,28 @@ pub(crate) async fn claim_final_name(
     overwrite: &crate::file_exists::OverwritePolicy,
     avoid: &std::collections::HashSet<String>,
 ) -> Result<String, DownloadError> {
+    claim_output_name(src, save_dir, name, overwrite, avoid, false).await
+}
+
+pub(crate) async fn claim_output_name(
+    src: &Path,
+    save_dir: &Path,
+    name: &str,
+    overwrite: &crate::file_exists::OverwritePolicy,
+    avoid: &std::collections::HashSet<String>,
+    companion_audio: bool,
+) -> Result<String, DownloadError> {
     let mut chosen = name.to_string();
+    if companion_audio {
+        let audio = crate::dash_downloader::build_audio_path(&save_dir.join(name));
+        match tokio::fs::symlink_metadata(&audio).await {
+            Ok(_) => {
+                chosen = dedup_output_name(save_dir, name, None, avoid, overwrite, true).await;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
     let mut overwrite_attempted = false;
     let mut attempt = 0u32;
     loop {
@@ -3704,12 +3750,13 @@ pub(crate) async fn claim_final_name(
                         continue;
                     }
                 }
-                chosen = dedup_filename(
+                chosen = dedup_output_name(
                     save_dir,
                     name,
-                    &std::collections::HashSet::new(),
+                    None,
                     avoid,
                     &crate::file_exists::OverwritePolicy::Never,
+                    companion_audio,
                 )
                 .await;
             }
@@ -5485,6 +5532,7 @@ fn single_runtime(task_id: &str, downloaded: i64, total: i64, active: bool) -> T
             Vec::new()
         },
         source_bytes: None,
+        hls_fragments: None,
     }
 }
 

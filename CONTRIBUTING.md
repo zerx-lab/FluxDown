@@ -21,6 +21,9 @@ PRs are reviewed automatically by [@ZerxLabBot](https://github.com/ZerxLabBot): 
 不涉及 UI、改动规模适中且 CI 全绿的 PR，在审查与独立复核都通过后会进入短暂的等待期，然后自动合并；涉及界面、构建 / 发布流程、依赖或 CI 覆盖不到的平台代码时，交由维护者人工审查。勾选 PR 侧栏的 “Allow edits by maintainers” 后，与 `main` 的合并冲突可由机器人代为解决。
 Non-UI PRs of moderate size with green CI are merged automatically after the review and an independent second check pass, following a short waiting period. Changes touching the UI, build/release tooling, dependencies, or platform code that CI cannot build go to a maintainer. Enabling “Allow edits by maintainers” lets the bot resolve merge conflicts with `main` for you.
 
+`PR Review Title` 每 10 分钟同步已有 `roost-bot[bot]` 有效审核的开放 PR。最近一次审核有阻塞问题、有合并冲突，或 PR 当前提交的 CI 有失败，任一成立即标 `【待处理】`；否则，审核只有非阻塞问题或没有问题时标 `【待合并】`。自动修订通知不算审核。CI 仍在跑不算失败，`【待合并】` 不代表 CI 已通过或 PR 已获准合并。
+Every 10 minutes, `PR Review Title` updates open PRs that have a substantive `roost-bot[bot]` review. A blocking review finding, a merge conflict, or a CI failure on the current head means `【待处理】`. Otherwise, a review with only non-blocking findings or none means `【待合并】`. Automation notices are not reviews. Running checks are not failures, and `【待合并】` does not imply passing CI or approval to merge.
+
 ## GPUI 桌面开发 / GPUI Desktop Development
 
 ```bash

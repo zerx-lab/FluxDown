@@ -184,6 +184,21 @@ async fn run_agent(
             .await
             .map_err(|error| StartupError::new(AgentStartupFailureKind::DataDir, error))?;
     }
+    // 本机 IPC 端点紧跟 TCP 之后建立（早于 daemon 与各服务装配）：界面在装配期间发起的连接
+    // 由内核排队。建不起来只记录原因，界面照常走 TCP。
+    let ipc = match &endpoint_dir {
+        Some(directory) => match crate::gateway::IpcListener::bind(directory).await {
+            Ok(ipc) => {
+                tracing::info!(endpoint = %ipc.describe(), "fluxdown-agent gateway IPC listening");
+                Some(ipc)
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "gateway IPC endpoint unavailable; serving loopback TCP only");
+                None
+            }
+        },
+        None => None,
+    };
     tracing::info!(address = %bound, "fluxdown-agent gateway listening");
 
     // daemon：显式 `FLUXDOWN_DAEMON_URL` 时只连该地址并让 daemon 严格绑定它；否则 daemon 用
@@ -577,6 +592,7 @@ async fn run_agent(
     // NMH 只服务浏览器扩展：其端点故障只记日志，不拖垮 agent；正常退出也不是故障。
     let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = crate::gateway::serve(
         listener,
+        ipc,
         gateway_service,
         api_host,
         api_config,
