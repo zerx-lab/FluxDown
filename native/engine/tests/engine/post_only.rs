@@ -463,7 +463,11 @@ async fn save_html_keeps_original_and_existing_file_and_rejects_changed_response
     let original = h.engine.manager.create_task(spec).await.unwrap();
     let failed = h.finish(&original).await;
     assert_eq!(failed.status, 4);
-    assert!(failed.error_message.contains("instead of the expected file"));
+    assert!(
+        failed
+            .error_message
+            .contains("instead of the expected file")
+    );
     assert!(!h.work_dir.join("OneDrive.zip").exists());
     let existing_page = h.work_dir.join("OneDrive.html");
     tokio::fs::write(&existing_page, b"keep").await.unwrap();
@@ -471,7 +475,12 @@ async fn save_html_keeps_original_and_existing_file_and_rejects_changed_response
         .manager
         .set_file_exists_behavior(FileExistsBehavior::Overwrite);
     h.clear_requests();
-    let saved = h.engine.manager.save_html_response(&original).await.unwrap();
+    let saved = h
+        .engine
+        .manager
+        .save_html_response(&original)
+        .await
+        .unwrap();
     let page = h.finish(&saved).await;
     assert_ne!(saved, original);
     assert_eq!(page.status, 3, "{}", page.error_message);
@@ -489,8 +498,15 @@ async fn save_html_keeps_original_and_existing_file_and_rejects_changed_response
     );
 
     assert!(h.engine.manager.save_html_response(&saved).await.is_err());
-    h.server.return_binary_for_share.store(true, Ordering::SeqCst);
-    let changed = h.engine.manager.save_html_response(&original).await.unwrap();
+    h.server
+        .return_binary_for_share
+        .store(true, Ordering::SeqCst);
+    let changed = h
+        .engine
+        .manager
+        .save_html_response(&original)
+        .await
+        .unwrap();
     let changed = h.finish(&changed).await;
     assert_eq!(changed.status, 4);
     assert!(
@@ -514,7 +530,12 @@ async fn save_html_replays_post_and_refuses_to_guess_after_restart() {
     assert_eq!(h.requests(), [format!("POST {HTML_PATH}")]);
 
     h.clear_requests();
-    let saved = h.engine.manager.save_html_response(&original).await.unwrap();
+    let saved = h
+        .engine
+        .manager
+        .save_html_response(&original)
+        .await
+        .unwrap();
     let page = h.finish(&saved).await;
     assert_eq!(page.status, 3, "{}", page.error_message);
     assert_eq!(h.output(&page).await, HTML_BODY);
@@ -523,7 +544,11 @@ async fn save_html_replays_post_and_refuses_to_guess_after_restart() {
     let mut h = h.restart_engine().await;
     h.clear_requests();
     assert_eq!(
-        h.engine.manager.save_html_response(&original).await.unwrap_err(),
+        h.engine
+            .manager
+            .save_html_response(&original)
+            .await
+            .unwrap_err(),
         "browser-request-unavailable"
     );
     assert!(h.requests().is_empty());

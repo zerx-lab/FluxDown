@@ -1006,7 +1006,9 @@ impl TaskDetailView {
         }
         self.saving_html = true;
         cx.notify();
-        let request = self.port.execute(DownloadsCommand::SaveHtmlResponse { task_id });
+        let request = self
+            .port
+            .execute(DownloadsCommand::SaveHtmlResponse { task_id });
         cx.spawn_in(window, async move |this, cx| {
             let result = request.await;
             let Ok(()) = this.update_in(cx, |this, window, cx| {
