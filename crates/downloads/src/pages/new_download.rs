@@ -2427,7 +2427,12 @@ impl NewDownloadView {
                 footer.child(
                     Button::new("new-download-export-info")
                         .outline()
-                        .label(self.translator.read(cx).text("exportTaskInfoTxt").to_owned())
+                        .label(
+                            self.translator
+                                .read(cx)
+                                .text("exportTaskInfoTxt")
+                                .to_owned(),
+                        )
                         .control(cx)
                         .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                             let failed = this

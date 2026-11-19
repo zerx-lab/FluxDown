@@ -159,7 +159,11 @@ fn retain_stale_tasks(store: &TaskStore, keys: &mut Vec<RowKey>) {
 
 impl DownloadView {
     fn copy_selected_task_info(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let rows = self.table_state.read(cx).delegate().selected_rows_in_order();
+        let rows = self
+            .table_state
+            .read(cx)
+            .delegate()
+            .selected_rows_in_order();
         if let Some(text) = task_info_text(rows, true) {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
             let label = self.translator.read(cx).text("taskInfoCopied").to_owned();
@@ -168,9 +172,17 @@ impl DownloadView {
     }
 
     fn export_selected_task_info(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let rows = self.table_state.read(cx).delegate().selected_rows_in_order();
+        let rows = self
+            .table_state
+            .read(cx)
+            .delegate()
+            .selected_rows_in_order();
         if let Some(text) = task_info_text(rows, false) {
-            let failed = self.translator.read(cx).text("taskInfoExportFailed").to_owned();
+            let failed = self
+                .translator
+                .read(cx)
+                .text("taskInfoExportFailed")
+                .to_owned();
             save_task_info(text, failed, window, cx);
         }
     }
@@ -437,8 +449,12 @@ impl DownloadView {
             Self::copy_selected_task_info,
             cx,
         ));
-        let export_label =
-            SharedString::from(self.translator.read(cx).text("exportTaskInfoTxt").to_owned());
+        let export_label = SharedString::from(
+            self.translator
+                .read(cx)
+                .text("exportTaskInfoTxt")
+                .to_owned(),
+        );
         actions.push(self.icon_action(
             "download-selection-export-info",
             export_label,
