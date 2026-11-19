@@ -1,8 +1,10 @@
 package com.fluxdown.app.feature.newtask
 
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.snapshots.Snapshot
 import com.fluxdown.app.ExternalTorrentGuide
+import com.fluxdown.app.cancelPendingTorrent
 import com.fluxdown.core.host.HostErrorCode
 import com.fluxdown.core.host.HostException
 import com.fluxdown.core.model.HostRef
@@ -23,6 +25,23 @@ class PublicDownloadGuideTest {
     private val appDir = "/storage/emulated/0/Android/data/com.fluxdown.app/files/Download"
     private val local = HostRef.Local("Android")
     private val ready = HostState(connection = Connection.Live, config = mapOf("default_save_dir" to appDir))
+
+    @Test fun cancellingDisplayedTorrentPreservesLaterImportsInOrder() {
+        data class Import(val uri: String)
+        val displayed = Import("first.torrent")
+        val repeated = Import("first.torrent")
+        val last = Import("last.torrent")
+        val queue = mutableStateListOf(displayed)
+        queue.add(repeated)
+        queue.add(last)
+
+        assertTrue(queue.cancelPendingTorrent(displayed))
+        // A second dismissal from the old sheet must not cancel an identical later intent.
+        assertFalse(queue.cancelPendingTorrent(displayed))
+        assertEquals(listOf(repeated, last), queue.toList())
+        assertTrue(queue.cancelPendingTorrent(repeated))
+        assertEquals(listOf(last), queue.toList())
+    }
 
     @Test fun partialTaskTableDoesNotSuppressGuide() {
         val torrent = Task("1", "torrent-file://test", "", "test.iso", appDir, TaskStatus.Completed, 1, 1)

@@ -15,6 +15,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -164,10 +165,10 @@ class ExternalDownloadActivity : ComponentActivity() {
         }
     }
 
-    private fun cancelTorrentImport() {
-        torrents.clear()
+    private fun cancelTorrentImport(head: PendingTorrent) {
+        if (!torrents.cancelPendingTorrent(head)) return
         closeJob?.cancel()
-        if (navigator.sheet == null) finishAndRemoveTask()
+        if (navigator.sheet == null && torrents.isEmpty()) finishAndRemoveTask()
     }
 
     /** VIEW 一个 content / file 种子：MIME 为 `application/x-bittorrent`，或（octet-stream 兜底）文件名以 `.torrent` 结尾。 */
@@ -252,6 +253,13 @@ class ExternalDownloadActivity : ComponentActivity() {
 /** 待导入的种子；按引用区分（同一 URI 连续唤起两次也各处理一次）。 */
 private class PendingTorrent(val uri: Uri)
 
+/** A closing sheet can only cancel the exact import it was displaying. */
+internal fun <T : Any> MutableList<T>.cancelPendingTorrent(head: T): Boolean {
+    if (firstOrNull() !== head) return false
+    removeAt(0)
+    return true
+}
+
 /** 只为已确认符合引导条件的种子创建；断连不取消已经展示的引导。 */
 internal class ExternalTorrentGuide(
     private val appDir: String,
@@ -299,26 +307,26 @@ internal class ExternalTorrentGuide(
 
 @Composable
 private fun ExternalTorrentGuideSheet(
-    guide: ExternalTorrentGuide,
+    guide: ExternalTorrentGuide?,
     state: HostState,
     host: HostRef,
     onSkip: () -> Unit,
     onCancel: () -> Unit,
 ) {
-    val resolved = guide.resolved
+    val resolved = guide?.resolved != false
     FluxSheet(
         visible = !resolved || state.isReadOnly,
         onDismissRequest = if (resolved) onCancel else onSkip,
-        dismissible = !guide.saving,
+        dismissible = guide?.saving != true,
         title = str(if (resolved) R.string.mobileTorrentImportPending else R.string.defaultSaveDir),
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (resolved) {
                 if (state.isReadOnly) {
                     FluxBanner(str(R.string.mobileTorrentImportWaitingForHost), kind = FluxBannerKind.Warn)
-                    FluxButton(str(R.string.cancel), onClick = onCancel, enabled = !guide.saving)
+                    FluxButton(str(R.string.cancel), onClick = onCancel, enabled = guide?.saving != true)
                 }
-            } else {
+            } else if (guide != null) {
                 if (state.isReadOnly) {
                     FluxBanner(str(R.string.mobileDownloadGuideDisconnected), kind = FluxBannerKind.Warn)
                 }
@@ -342,7 +350,7 @@ private fun ExternalDownloadStage(
     onFailureShown: () -> Unit,
     onSubmitted: () -> Unit,
     onTorrentDone: (PendingTorrent) -> Unit,
-    onTorrentCancelled: () -> Unit,
+    onTorrentCancelled: (PendingTorrent) -> Unit,
     onClosed: () -> Unit,
 ) {
     val container = LocalAppContainer.current
@@ -363,23 +371,28 @@ private fun ExternalDownloadStage(
     val settings = remember(context) { DeviceSettings.of(context) }
     val appDir = remember(context) { defaultLocalSaveDir(context).path }
     var guide by remember(head) { mutableStateOf<ExternalTorrentGuide?>(null) }
+    var waitingForHost by remember(head) { mutableStateOf(false) }
     CompositionLocalProvider(LocalFluxOverlays provides overlays, LocalTaskActions provides actions) {
         Box(Modifier.fillMaxSize()) {
             NewDownloadSheet(route = nav.sheet as? SheetRoute.NewDownload, onDismiss = nav::closeSheet, onSubmitted = onSubmitted)
-            guide?.let { activeGuide ->
+            val activeGuide = guide
+            if (head != null && (activeGuide != null || waitingForHost)) key(head) {
                 ExternalTorrentGuideSheet(
                     guide = activeGuide,
                     state = state.value,
                     host = host.value,
                     onSkip = {
-                        if (guide === activeGuide) {
+                        if (activeGuide != null && guide === activeGuide) {
                             activeGuide.dismiss(container.store.state.value, container.host.value)
                         }
                     },
                     onCancel = {
-                        if (guide === activeGuide && !activeGuide.saving) {
+                        if (guide === activeGuide && activeGuide?.saving != true &&
+                            (activeGuide != null || waitingForHost)
+                        ) {
                             guide = null
-                            onTorrentCancelled()
+                            waitingForHost = false
+                            onTorrentCancelled(head)
                         }
                     },
                 )
@@ -406,7 +419,14 @@ private fun ExternalDownloadStage(
     // 种子逐个提交；本机首次使用应用默认目录时等用户选定目录或明确跳过。
     LaunchedEffect(head) {
         if (head == null) return@LaunchedEffect
-        val ready = awaitReady(container.store)
+        var ready = awaitReady(container.store)
+        if (ready.isReadOnly) {
+            // A later intent must survive a disconnect even if the preceding guide was skipped or cancelled.
+            waitingForHost = true
+            ready = container.store.state.first { !it.isReadOnly }
+            if (torrents.firstOrNull() !== head) return@LaunchedEffect
+            waitingForHost = false
+        }
         suspend fun submit(saveDir: String) {
             if (torrents.firstOrNull() !== head) return
             guide = null
