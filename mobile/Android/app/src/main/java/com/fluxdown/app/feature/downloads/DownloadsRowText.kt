@@ -14,6 +14,7 @@ import com.fluxdown.app.i18n.fill
 import com.fluxdown.app.i18n.str
 import com.fluxdown.app.ui.TaskVisualState
 import com.fluxdown.core.format.Format
+import com.fluxdown.core.format.FileSizeUnits
 import com.fluxdown.core.model.Queue
 import com.fluxdown.core.model.SeedingStatus
 import com.fluxdown.core.model.TaskErrorMessage
@@ -58,7 +59,7 @@ internal class RowText(c: Context) {
     private val writtenBytesLabel = c.str(R.string.infoWrittenBytes)
 
     fun hlsProgress(written: Long, total: Long): String = hlsFragmentsFmt.fill("done" to written, "total" to total)
-    fun writtenBytes(bytes: Long): String = "$writtenBytesLabel: ${Format.bytes(bytes)}"
+    fun writtenBytes(bytes: Long, units: FileSizeUnits): String = "$writtenBytesLabel: ${Format.bytes(bytes, units)}"
 
     private val mainQueue = c.str(R.string.mainQueue)
     private val laterQueue = c.str(R.string.downloadLater)
@@ -145,10 +146,11 @@ internal fun buildRowMeta(
     fields: Set<CardField>,
     nowSec: Long,
     queuePosition: Int,
+    sizeUnits: FileSizeUnits?,
 ): AnnotatedString = colors.buildTaskMeta {
     val task = item.task
-    val showSize = CardField.Size in fields
-    val showSpeed = CardField.Speed in fields
+    val showSize = sizeUnits != null && CardField.Size in fields
+    val showSpeed = sizeUnits != null && CardField.Speed in fields
     val showEta = CardField.Eta in fields
     val total = task.totalBytes
     val fragments = item.hlsFragments
@@ -156,16 +158,16 @@ internal fun buildRowMeta(
         t.hlsProgress(fragments.written, fragments.total)
     } else item.progress?.let(Format::percent).orEmpty()
     val doneOfTotal = if (showSize) when {
-        fragments != null -> t.writtenBytes(task.downloadedBytes)
-        total > 0 -> "${Format.bytes(task.downloadedBytes)}/${Format.bytes(total)}"
-        else -> Format.bytes(task.downloadedBytes).toString()
+        fragments != null -> t.writtenBytes(task.downloadedBytes, requireNotNull(sizeUnits))
+        total > 0 -> "${Format.bytes(task.downloadedBytes, requireNotNull(sizeUnits))}/${Format.bytes(total, requireNotNull(sizeUnits))}"
+        else -> Format.bytes(task.downloadedBytes, requireNotNull(sizeUnits)).toString()
     } else ""
-    val totalSize = if (total > 0) Format.bytes(total).toString() else ""
-    val upText = if (item.speedUp > 0) "↑ ${Format.speed(item.speedUp)}" else ""
+    val totalSize = if (showSize && total > 0) Format.bytes(total, requireNotNull(sizeUnits)).toString() else ""
+    val upText = if (item.speedUp > 0 && sizeUnits != null) "↑ ${Format.speed(item.speedUp, sizeUnits)}" else ""
 
     when (item.visual) {
         TaskVisualState.Downloading -> {
-            if (showSpeed && item.speedDown > 0) part(Format.speed(item.speedDown).toString(), MetaTone.Accent)
+            if (showSpeed && item.speedDown > 0) part(Format.speed(item.speedDown, requireNotNull(sizeUnits)).toString(), MetaTone.Accent)
             if (showEta && fragments == null) part(item.eta?.let(t::eta) ?: "—")
             part(progressText)
             part(doneOfTotal)
@@ -174,7 +176,7 @@ internal fun buildRowMeta(
         TaskVisualState.Paused -> {
             part(t.paused)
             part(progressText)
-            if (fragments != null || total > 0) part(doneOfTotal)
+            if (showSize && (fragments != null || total > 0)) part(doneOfTotal)
         }
         TaskVisualState.Queued -> {
             part(t.queued(queuePosition))

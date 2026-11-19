@@ -2,6 +2,8 @@ import { useCallback, useSyncExternalStore } from 'react'
 
 export type FileSizeUnits = 'legacy' | 'iec'
 
+// This is a display preference of the visiting browser, not of the download host.
+// Unlike GPUI's agent-local preference, it must not affect other browsers on the same NAS.
 export const FILE_SIZE_UNITS_PREF = 'appearance.file_size_units'
 const CHANGE_EVENT = 'fluxdown:file-size-units-change'
 const LEGACY_UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'] as const

@@ -145,7 +145,7 @@ struct AppearancePage: View {
     }
 
     private var fileSizeUnitsBinding: Binding<FileSizeUnits> {
-        Binding(get: { appearance.fileSizeUnits }, set: { appearance.fileSizeUnits = $0 })
+        Binding(get: { appearance.fileSizeUnits }, set: { container.setFileSizeUnits($0) })
     }
 
     private func selectPreset(_ id: String) {

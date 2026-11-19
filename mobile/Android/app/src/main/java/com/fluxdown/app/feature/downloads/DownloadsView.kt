@@ -19,7 +19,6 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import com.fluxdown.app.AppContainer
-import com.fluxdown.app.data.AppearanceState
 import com.fluxdown.app.data.ViewPrefs
 import com.fluxdown.app.shell.LocalAppContainer
 import com.fluxdown.app.shell.hostState
@@ -259,7 +258,7 @@ class DownloadsView internal constructor(private val container: AppContainer) {
 }
 
 val LocalDownloadsView = staticCompositionLocalOf<DownloadsView> { error("DownloadsView missing") }
-internal val LocalDownloadSizeUnits = compositionLocalOf { FileSizeUnits.Legacy }
+internal val LocalDownloadSizeUnits = compositionLocalOf<FileSizeUnits?> { null }
 
 /** 创建并提供下载页共享视图状态（Tab 之间、Rail、选择坞、Sheet 共用一份）。 */
 @Composable
@@ -271,11 +270,11 @@ fun ProvideDownloadsView(content: @Composable () -> Unit) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { view.run() }
     }
     val rowText = rememberRowText()
-    val appearance by container.appearance.state.collectAsStateWithLifecycle(AppearanceState())
+    val appearance by container.appearanceState.collectAsStateWithLifecycle()
     CompositionLocalProvider(
         LocalDownloadsView provides view,
         LocalRowText provides rowText,
-        LocalDownloadSizeUnits provides appearance.fileSizeUnits,
+        LocalDownloadSizeUnits provides appearance?.fileSizeUnits,
     ) {
         content()
     }

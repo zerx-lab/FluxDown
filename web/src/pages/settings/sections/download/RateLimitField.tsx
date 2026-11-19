@@ -1,12 +1,11 @@
 // 速率限制控件：数字 + 单位下拉（KB/s / MB/s / GB/s），落库为字节/秒。
 
+import { useState } from 'react'
 import { useT } from '../../../../i18n'
 import { byteUnit, useFileSizeUnits } from '../../../../lib/fileSizeUnits'
-import { useState } from 'react'
 import { DropdownField, NumberField, SettingsRow, setDaemonNumber, useDaemonNumber } from '../../kit'
 import { RATE_UNITS, RATE_UNIT_FACTOR, RATE_UNIT_STEP, effectiveUnit, switchTarget, toBytes, toDisplay } from './rate'
 import type { RateUnit } from './rate'
-
 
 export function RateLimitRow({ configKey, title, description }: { configKey: string; title: string; description?: string | undefined }) {
   const t = useT()
@@ -40,6 +39,7 @@ export function RateLimitRow({ configKey, title, description }: { configKey: str
           aria-label={title}
           className="w-28 shrink-0 mobile:w-28 desktop:w-28 desktop:min-w-0"
           onValueChange={(next) => {
+            if (next === unit) return
             setDaemonNumber(configKey, switchTarget(bytes, unit, next))
             setChosen(next)
           }}

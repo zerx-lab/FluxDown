@@ -1,3 +1,4 @@
+import FluxDomain
 import FluxUI
 import Foundation
 import SwiftUI
@@ -38,11 +39,9 @@ final class AppearanceStore {
     var scheme: String { didSet { defaults.set(scheme, forKey: Key.scheme) } }
     /// 自定义强调色（0xRRGGBB）。
     var customColor: UInt32 { didSet { defaults.set(Int(customColor), forKey: Key.custom) } }
+    /// Size labels are device-local and are not part of appearance sync.
     var fileSizeUnits: FileSizeUnits {
-        didSet {
-            defaults.set(fileSizeUnits.rawValue, forKey: Key.fileSizeUnits)
-            Format.setFileSizeUnits(fileSizeUnits)
-        }
+        didSet { defaults.set(fileSizeUnits.rawValue, forKey: Key.fileSizeUnits) }
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -51,7 +50,6 @@ final class AppearanceStore {
         scheme = defaults.string(forKey: Key.scheme) ?? FluxAccent.blue.id
         customColor = UInt32(truncatingIfNeeded: defaults.object(forKey: Key.custom) as? Int ?? Int(FluxAccent.blue.rgb))
         fileSizeUnits = FileSizeUnits(rawValue: defaults.string(forKey: Key.fileSizeUnits) ?? "") ?? .legacy
-        Format.setFileSizeUnits(fileSizeUnits)
     }
 
     /// 当前强调色：自定义 > 预设。

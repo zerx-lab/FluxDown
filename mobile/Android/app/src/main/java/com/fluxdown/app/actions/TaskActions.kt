@@ -17,7 +17,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.core.content.FileProvider
-import com.fluxdown.app.data.AppearanceState
 import com.fluxdown.app.shell.LocalAppContainer
 import com.fluxdown.app.R
 import com.fluxdown.app.i18n.str
@@ -539,8 +538,9 @@ class TaskActions(
     private fun ColumnScope.TaskLimitsPrompt(task: Task) {
         var down by remember { mutableStateOf(BtTaskLimits.kibText(task.btDownloadLimitBps)) }
         var up by remember { mutableStateOf(BtTaskLimits.kibText(task.seedUploadLimitBps)) }
-        val appearance by LocalAppContainer.current.appearance.state.collectAsState(initial = AppearanceState())
-        val unit = if (appearance.fileSizeUnits == com.fluxdown.core.format.FileSizeUnits.Iec) str(R.string.btGuardUnitKibps) else "KB/s"
+        val container = LocalAppContainer.current
+        val appearance by container.appearanceState.collectAsState()
+        val unit = appearance?.fileSizeUnits?.rateLabel(1).orEmpty()
         val numeric = KeyboardOptions(keyboardType = KeyboardType.Number)
         FluxField(value = down, onValueChange = { down = limitDigits(it) }, label = str(R.string.btTaskLimitDownload), suffix = unit, mono = true, keyboardOptions = numeric)
         FluxField(value = up, onValueChange = { up = limitDigits(it) }, label = str(R.string.btTaskLimitUpload), suffix = unit, mono = true, keyboardOptions = numeric)

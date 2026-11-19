@@ -7,7 +7,6 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.fluxdown.core.format.FileSizeUnits
-import com.fluxdown.core.format.Format
 import com.fluxdown.fluxui.theme.FluxAccent
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -56,7 +55,6 @@ class AppearanceRepo(private val ds: DataStore<Preferences>) {
 
     val state: Flow<AppearanceState> = ds.data.map { p ->
         val units = FileSizeUnits.of(p[K.fileSizeUnits])
-        Format.setFileSizeUnits(units)
         AppearanceState(
             mode = ThemeMode.of(p[K.mode]),
             scheme = p[K.scheme] ?: "blue",

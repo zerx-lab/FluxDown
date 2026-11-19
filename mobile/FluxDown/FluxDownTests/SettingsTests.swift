@@ -549,9 +549,10 @@ struct ConfigEditorTests {
 
 @MainActor
 struct FileSizeUnitsPreferenceTests {
-    @Test func appearancePreferenceIsDeviceLocalAndDrivesBinaryLabels() {
-        let defaults = UserDefaults(suiteName: "FileSizeUnitsPreferenceTests")!
-        defaults.removePersistentDomain(forName: "FileSizeUnitsPreferenceTests")
+    @Test func fileSizeUnitsRoundTripThroughDeviceDefaults() throws {
+        let suiteName = "FileSizeUnitsPreferenceTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
         let appearance = AppearanceStore(defaults: defaults)
         #expect(appearance.fileSizeUnits == .legacy)
         #expect(Format.bytes(1536, style: .legacy).description == "1.50 KB")
@@ -559,7 +560,7 @@ struct FileSizeUnitsPreferenceTests {
         #expect(defaults.string(forKey: "appearance.file_size_units") == "iec")
         #expect(Format.bytes(1536, style: .iec).description == "1.50 KiB")
         #expect(Format.speed(1536, style: .iec)?.description == "1.50 KiB/s")
-        appearance.fileSizeUnits = .legacy
-        defaults.removePersistentDomain(forName: "FileSizeUnitsPreferenceTests")
+        let reloaded = AppearanceStore(defaults: defaults)
+        #expect(reloaded.fileSizeUnits == .iec)
     }
 }

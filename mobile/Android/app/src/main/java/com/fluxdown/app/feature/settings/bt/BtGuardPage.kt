@@ -23,7 +23,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.fluxdown.app.R
-import com.fluxdown.app.data.AppearanceState
 import com.fluxdown.app.shell.LocalAppContainer
 import com.fluxdown.app.actions.LocalTaskActions
 import com.fluxdown.app.feature.settings.PickerSpec
@@ -359,9 +358,9 @@ private fun RulesSection(ctx: SettingsCtx) {
 @Composable
 private fun ThresholdsSection(ctx: SettingsCtx) {
     val form = ctx.form
-    val appearance by LocalAppContainer.current.appearance.state.collectAsState(initial = AppearanceState())
-    val iec = appearance.fileSizeUnits == com.fluxdown.core.format.FileSizeUnits.Iec
-    val sizeUnit = if (iec) str(R.string.btGuardUnitMib) else "MB"
+    val container = LocalAppContainer.current
+    val appearance by container.appearanceState.collectAsState()
+    val sizeUnit = appearance?.fileSizeUnits?.byteLabel(2).orEmpty()
     GlassSection(title = str(R.string.btGuardSectionThresholds)) {
         if (BtSettingsRow.GuardExcessRatio.isVisible(form)) {
             settingNumber(
@@ -393,9 +392,9 @@ private fun ThresholdsSection(ctx: SettingsCtx) {
 @Composable
 private fun ActionsSection(ctx: SettingsCtx) {
     val form = ctx.form
-    val appearance by LocalAppContainer.current.appearance.state.collectAsState(initial = AppearanceState())
-    val iec = appearance.fileSizeUnits == com.fluxdown.core.format.FileSizeUnits.Iec
-    val rateUnit = if (iec) str(R.string.btGuardUnitKibps) else "KB/s"
+    val container = LocalAppContainer.current
+    val appearance by container.appearanceState.collectAsState()
+    val rateUnit = appearance?.fileSizeUnits?.rateLabel(1).orEmpty()
     val observe = str(R.string.btGuardDownloadingActionObserve)
     val throttle = str(R.string.btGuardDownloadingActionThrottle)
     val choke = str(R.string.btGuardDownloadingActionChoke)

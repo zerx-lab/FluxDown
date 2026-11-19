@@ -49,8 +49,6 @@ import com.fluxdown.fluxui.controls.FluxActionRow
 import com.fluxdown.fluxui.controls.FluxKeyValue
 import com.fluxdown.fluxui.controls.GlassSection
 import com.fluxdown.fluxui.icons.FluxIcons
-import com.fluxdown.app.data.AppearanceState
-import com.fluxdown.core.format.FileSizeUnits
 import com.fluxdown.fluxui.overlay.FluxToastKind
 import com.fluxdown.fluxui.overlay.LocalFluxOverlays
 import com.fluxdown.fluxui.theme.FluxText
@@ -138,21 +136,20 @@ internal class LogExportModel(private val context: Context, private val containe
     var failure by mutableStateOf<String?>(null)
         private set
 
-    /** 本机日志总大小；远端主机 / 目录不在本机 → null（不显示该行）。 */
-    var sizeText by mutableStateOf<String?>(null)
+    /** 本机日志总大小（字节）；远端主机 / 目录不在本机 → null。 */
+    var sizeBytes by mutableStateOf<Long?>(null)
         private set
 
     /** 刷新当前日志大小：只在本机主机上统计（日志目录路径来自 `agent.diagnostics.logPaths`）。 */
     suspend fun refreshSize() {
         val live = container.store.state.value.connection == Connection.Live
         if (container.host.value !is HostRef.Local || !live) {
-            sizeText = null
+            sizeBytes = null
             return
         }
-        sizeText = try {
+        sizeBytes = try {
             val paths = LogPathsDto.fromJson(container.session.callJson(HostMethod.agentDiagnosticsLogPaths))
-            val total = withContext(Dispatchers.IO) { totalSize(listOf(paths.agentLogDir, paths.daemonLogDir)) }
-            total?.let { Format.bytes(it).toString() }
+            withContext(Dispatchers.IO) { totalSize(listOf(paths.agentLogDir, paths.daemonLogDir)) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: HostException) {
@@ -314,8 +311,7 @@ internal fun LogsSection(ctx: SettingsCtx, model: LogExportModel, scope: Corouti
     val container = LocalAppContainer.current
     val overlays = LocalFluxOverlays.current
     val actions = LocalTaskActions.current
-    val appearance by container.appearance.state.collectAsStateWithLifecycle(AppearanceState())
-    val c = FluxTheme.colors
+    val appearance by container.appearanceState.collectAsStateWithLifecycle()
     val hostRef by container.host.collectAsStateWithLifecycle()
     val state = hostState()
     val live by remember { derivedStateOf { state.value.connection == Connection.Live } }
@@ -324,10 +320,9 @@ internal fun LogsSection(ctx: SettingsCtx, model: LogExportModel, scope: Corouti
     LaunchedEffect(hostRef, live) { model.refreshSize() }
 
     val exportDesc = str(R.string.logExportDesc)
-    val sizeUnitHint = str(
-        R.string.mobileLogSizeUnitLabel,
-        "unit" to if (appearance.fileSizeUnits == FileSizeUnits.Iec) "MiB" else "MB",
-    )
+    val sizeUnitHint = appearance?.let {
+        str(R.string.mobileLogSizeUnitLabel, "unit" to it.fileSizeUnits.byteLabel(2))
+    }.orEmpty()
     val footer = if (ctx.form.has("log_max_size_mb") && ctx.synced("log_max_size_mb")) {
         exportDesc + "\n" + str(R.string.settingsSyncLegend)
     } else {
@@ -340,10 +335,15 @@ internal fun LogsSection(ctx: SettingsCtx, model: LogExportModel, scope: Corouti
             unitLabel = sizeUnitHint,
             id = "logs.maxSize",
         )
-        model.sizeText?.let { size ->
-            row {
-                SettingRowBox(ctx, "logs.currentSize", null) {
-                    FluxKeyValue(key = str(R.string.mobileLogCurrentSize), value = size)
+        appearance?.let { currentAppearance ->
+            model.sizeBytes?.let { bytes ->
+                row {
+                    SettingRowBox(ctx, "logs.currentSize", null) {
+                        FluxKeyValue(
+                            key = str(R.string.mobileLogCurrentSize),
+                            value = Format.bytes(bytes, currentAppearance.fileSizeUnits).toString(),
+                        )
+                    }
                 }
             }
         }

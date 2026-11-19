@@ -40,7 +40,6 @@ import com.fluxdown.app.shell.LocalAppContainer
 import com.fluxdown.app.shell.hostState
 import com.fluxdown.core.model.HostRef
 import com.fluxdown.core.protocol.SettingsCatalog
-import com.fluxdown.app.data.AppearanceState
 import com.fluxdown.core.format.FileSizeUnits
 import com.fluxdown.core.protocol.SettingsForm
 import com.fluxdown.core.protocol.preferences
@@ -393,12 +392,12 @@ internal fun CommitTextField(
     }
 }
 
-internal enum class SpeedUnit(val legacy: String, val iec: String, val factor: Long) {
-    KB("KB/s", "KiB/s", 1024L),
-    MB("MB/s", "MiB/s", 1024L * 1024L),
-    GB("GB/s", "GiB/s", 1024L * 1024L * 1024L);
+internal enum class SpeedUnit(private val power: Int, val factor: Long) {
+    KB(1, 1024L),
+    MB(2, 1024L * 1024L),
+    GB(3, 1024L * 1024L * 1024L);
 
-    fun label(iecUnits: Boolean): String = if (iecUnits) iec else legacy
+    fun label(units: FileSizeUnits): String = units.rateLabel(power)
 }
 
 /** 快捷档位：0 = 不限制，其余 (数值, 单位)。 */
@@ -443,8 +442,8 @@ internal fun SpeedLimitControl(
     openPicker: (PickerSpec) -> Unit,
 ) {
     val container = LocalAppContainer.current
-    val appearance by container.appearance.state.collectAsStateWithLifecycle(AppearanceState())
-    val iecUnits = appearance.fileSizeUnits == FileSizeUnits.Iec
+    val appearance by container.appearanceState.collectAsStateWithLifecycle()
+    val units = appearance?.fileSizeUnits
     var preferred by rememberSaveable(name) { mutableStateOf(SpeedUnit.MB) }
     val unit = effectiveUnit(bytes, preferred)
     var draft by remember(bytes, unit) { mutableStateOf(speedText(bytes, unit)) }
@@ -484,13 +483,14 @@ internal fun SpeedLimitControl(
             }),
             onFocusChange = { focused -> if (!focused) commit(draft, unit) },
         )
+        if (units == null) return@Row
         FluxSelect(
-            value = unit.label(iecUnits),
+            value = unit.label(units),
             onClick = {
                 openPicker(
                     PickerSpec(
                         title = unitTitle,
-                        options = SpeedUnit.entries.map { SelectOption(it.name, it.label(iecUnits)) },
+                        options = SpeedUnit.entries.map { SelectOption(it.name, it.label(units)) },
                         selected = unit.name,
                         onSelect = { id ->
                             val picked = SpeedUnit.valueOf(id)
@@ -502,10 +502,11 @@ internal fun SpeedLimitControl(
                 )
             },
             modifier = Modifier.width(120.dp),
-            placeholder = unit.label(iecUnits),
+            placeholder = unit.label(units),
             enabled = enabled,
         )
     }
+    if (units == null) return
     Row(
         Modifier.horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -513,7 +514,7 @@ internal fun SpeedLimitControl(
         for ((n, u) in SpeedPresets) {
             val value = n * u.factor
             FluxPill(
-                text = if (n == 0) unlimited else "$n ${u.label(iecUnits)}",
+                text = if (n == 0) unlimited else "$n ${u.label(units)}",
                 selected = bytes == value,
                 onClick = {
                     if (enabled) {
