@@ -111,8 +111,10 @@ internal fun GeneralTab(modelOf: () -> DetailModel?) {
         row { FluxKeyValue(str(R.string.infoStatus), statusWord(model.visual, model.queuePosition)) }
         if (task.totalBytes > 0) row { FluxKeyValue(str(R.string.infoSize), Format.bytes(task.totalBytes).toString()) }
         if (unfinished) row {
-            val pct = task.progress?.let { " · " + Format.percent(it) }.orEmpty()
-            FluxKeyValue(str(R.string.infoDownloaded), Format.bytes(task.downloadedBytes).toString() + pct)
+            val usesFragments = model.hlsFragments != null
+            val pct = if (usesFragments) "" else task.progress?.let { " · " + Format.percent(it) }.orEmpty()
+            val label = if (usesFragments) R.string.infoWrittenBytes else R.string.infoDownloaded
+            FluxKeyValue(str(label), Format.bytes(task.downloadedBytes).toString() + pct)
         }
         if (model.isTransferring) {
             row { FluxKeyValue(str(R.string.infoSpeed), Format.speed(model.speedDown)?.toString() ?: "—") }

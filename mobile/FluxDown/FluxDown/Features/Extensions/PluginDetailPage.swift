@@ -16,11 +16,12 @@ struct PluginDetailPage: View {
 
     var body: some View {
         let state = store.state
-        let plugin = plugins.value(state.sections[HostSection.daemonPlugins]).first { $0.identity == identity }
+        let list = plugins.value(state.sections[HostSection.daemonPlugins])
+        let plugin = list.first { $0.identity == identity }
         let readOnly = state.isReadOnly
         Group {
             if let plugin {
-                content(plugin, readOnly: readOnly)
+                content(plugin, plugins: list, readOnly: readOnly)
             } else {
                 Color.clear
             }
@@ -31,10 +32,12 @@ struct PluginDetailPage: View {
         .onChange(of: model.popRequest) { _, _ in dismiss() }
     }
 
-    private func content(_ plugin: PluginDto, readOnly: Bool) -> some View {
+    private func content(_ plugin: PluginDto, plugins: [PluginDto], readOnly: Bool) -> some View {
         let busy = readOnly || model.busy.contains(plugin.identity)
         let yanked = PluginMarket.installedVersionYanked(model.marketEntries, plugin: plugin)
         return Form {
+            ResolverUrlConflictSection(plugins: plugins, identities: [plugin.identity])
+
             Section {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {

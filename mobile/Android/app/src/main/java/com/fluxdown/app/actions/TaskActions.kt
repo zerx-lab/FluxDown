@@ -142,6 +142,9 @@ class TaskActions(
         )
     }
 
+    /** 无确认删除（调用方已确认；选择坞含远程项时的本地部分）。 */
+    fun deleteNow(ids: List<String>, withFiles: Boolean, onDone: () -> Unit = {}) = delete(ids, withFiles, onDone)
+
     private fun delete(ids: List<String>, withFiles: Boolean, onDone: () -> Unit) = run({
         haptics.confirm()
         val msg = when {

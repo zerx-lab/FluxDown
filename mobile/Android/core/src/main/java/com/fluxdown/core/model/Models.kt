@@ -133,6 +133,12 @@ data class Segment(
     val active: Boolean?,
 )
 
+/** HLS 点播媒体分片计数，独立于下载字节数。 */
+data class HlsFragmentProgress(val written: Long, val total: Long) {
+    val fraction: Float?
+        get() = if (total > 0 && written in 0..total) (written.toDouble() / total).toFloat() else null
+}
+
 /** `TaskRuntimeDto`。 */
 data class TaskRuntime(
     val taskId: String,
@@ -141,6 +147,7 @@ data class TaskRuntime(
     val connectedPeers: Int?,
     val totalBytes: Long,
     val segments: List<Segment>,
+    val hlsFragments: HlsFragmentProgress? = null,
 )
 
 /** `QueueDto`。 */

@@ -5582,6 +5582,13 @@
             },
             "description": "manifest 声明的能力权限（如 `[\"ffmpeg\"]`，供 UI 展示授权徽章）。"
           },
+          "resolverUrlConflicts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PluginResolverUrlConflictDto"
+            },
+            "description": "已安装插件列表中的 resolver URL 重叠提示。"
+          },
           "resolverUrls": {
             "type": "array",
             "items": {
@@ -5650,6 +5657,25 @@
           "world": {
             "type": "string",
             "description": "`isolated` / `main`。"
+          }
+        }
+      },
+      "PluginResolverUrlConflictDto": {
+        "type": "object",
+        "required": [
+          "pattern",
+          "otherIdentity",
+          "otherPattern"
+        ],
+        "properties": {
+          "otherIdentity": {
+            "type": "string"
+          },
+          "otherPattern": {
+            "type": "string"
+          },
+          "pattern": {
+            "type": "string"
           }
         }
       },

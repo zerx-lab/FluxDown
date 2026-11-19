@@ -1853,7 +1853,7 @@ impl SharedBtSession {
     pub fn port_status(&self) -> crate::bt_status::BtPortStatusView {
         crate::bt_status::BtPortStatusView {
             running: true,
-            listen_port: self.session.announce_port().unwrap_or(0),
+            listen_port: self.session.listen_addr().map_or(0, |addr| addr.port()),
             mappings: self
                 .session
                 .port_mappings()
@@ -3804,6 +3804,7 @@ fn bt_runtime(
         total_bytes,
         segments: Vec::new(),
         source_bytes: None,
+        hls_fragments: None,
     }
 }
 
@@ -7134,7 +7135,7 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<BtInnerExit, DownloadErro
                     seeding_status,
                     seeding_message: seeding_message.to_string(),
                     seeding_time_secs: seed_time_base,
-                    deleted_tasks: Vec::new(),
+                    ..Default::default()
                 })
                 .await
                 .is_err()
@@ -7541,6 +7542,10 @@ mod tests {
             .expect("a configured BT listener must expose its bound address");
 
         assert_eq!(listen_addr.port(), port_end);
+        let status = session.port_status();
+        assert!(status.running);
+        assert_eq!(status.listen_port, port_end);
+        assert!(status.mappings.is_empty());
         drop(session);
         drop(occupied);
         std::fs::remove_dir_all(work).expect("the BT session test directory must be removable");

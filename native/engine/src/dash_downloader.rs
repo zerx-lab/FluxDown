@@ -39,6 +39,7 @@ fn dash_runtime(task_id: &str, state: &ProgressState) -> TaskRuntime {
             })
             .collect(),
         source_bytes: None,
+        hls_fragments: None,
     }
 }
 

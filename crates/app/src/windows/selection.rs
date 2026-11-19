@@ -166,9 +166,27 @@ fn open(cx: &mut App, request: SelectionRequestDto) {
                 cx,
             )
         });
+        let close_content = content.downgrade();
         let window_view = cx.new(|cx| {
-            AuxiliaryWindowView::new(translator.clone(), title_key, content.into(), cx)
-                .resizable(is_bt)
+            let view = AuxiliaryWindowView::new(translator.clone(), title_key, content.into(), cx)
+                .resizable(is_bt);
+            if is_bt {
+                view.on_close_requested(
+                    move |window, cx| {
+                        if let Err(error) =
+                            close_content.update(cx, |view, cx| view.cancel(window, cx))
+                        {
+                            log::debug!(
+                                "BT selection view released before cancellation: {error:#}"
+                            );
+                        }
+                    },
+                    window,
+                    cx,
+                )
+            } else {
+                view
+            }
         });
         let root = cx.new(|cx| Root::new(window_view, window, cx));
         if is_bt {

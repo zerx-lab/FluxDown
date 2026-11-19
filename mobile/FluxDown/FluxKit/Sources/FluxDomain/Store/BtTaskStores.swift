@@ -78,7 +78,7 @@ public final class BtFilesStore {
 @MainActor
 @Observable
 public final class BtPortStatusStore {
-    /// 最近一次成功的快照；首轮在途 / 旧 daemon 无此方法时为 nil（行内留空）。
+    /// 最近一次成功的快照；尚未查询成功或主机不支持此方法时为 nil。
     public private(set) var status: BtPortStatus?
 
     @ObservationIgnored private var generation = 0
@@ -88,16 +88,17 @@ public final class BtPortStatusStore {
 
     public init() {}
 
-    /// 失败（含旧 daemon 的 method-not-found）静默保留旧值：状态行是只读读数，不弹 Toast（同 GPUI）。
+    /// 瞬态错误保留旧快照，不弹 Toast。
     public func load(_ session: any HostSession) async {
         generation += 1
         let mine = generation
         do throws(HostError) {
             let next: BtPortStatus = try await session.call(HostMethod.daemonBtPortStatus)
-            guard mine == generation else { return }
+            guard mine == generation, !Task.isCancelled else { return }
             status = next
         } catch {
-            return
+            guard mine == generation, !Task.isCancelled, error.code == .unsupported else { return }
+            status = nil
         }
     }
 

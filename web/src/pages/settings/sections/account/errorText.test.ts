@@ -19,6 +19,10 @@ describe('错误 → 文案键', () => {
     expect(accountErrorKey(err('conflict', 'emailTaken'))).not.toBe(accountErrorKey(err('conflict', 'taskStateConflict')))
   })
 
+  test('remoteTaskGone 映射到 errReasonRemoteTaskGone（notFound 码不再回退通用文案）', () => {
+    expect(accountErrorKey(err('notFound', 'remoteTaskGone'))).toBe('errReasonRemoteTaskGone')
+  })
+
   test('无 reason 或 reason 未映射时按 code 回退，且不再猜测语义', () => {
     expect(accountErrorKey(err('unauthorized'), 'login')).toBe('localServiceActionFailed')
     expect(accountErrorKey(err('unsupported'), 'register')).toBe('settingsUnsupportedOnPlatform')

@@ -9,9 +9,9 @@ use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_theme::{
     AccentScheme, AppearancePreferences, BuiltinThemeId, COLOR_SCHEME_KEY, CUSTOM_COLOR_KEY,
     ColorTokens, DARK_THEME_KEY, ExportMode, ExtendedTokens, FONT_SIZE_KEY, FONT_SIZE_RANGE,
-    FONT_SIZES, LIGHT_THEME_KEY, THEME_MODE_KEY, ThemeMode, ThemePreference, ThemeSelection,
-    UI_SCALE_KEY, UI_SCALE_PERCENTS, active_theme, argb_color, color_argb, foreground_for,
-    normalize_ui_scale_percent,
+    FONT_SIZES, FONT_WEIGHT_KEY, LIGHT_THEME_KEY, THEME_MODE_KEY, ThemeMode, ThemePreference,
+    ThemeSelection, UI_SCALE_KEY, UI_SCALE_PERCENTS, active_theme, argb_color, color_argb,
+    foreground_for, normalize_ui_scale_percent,
 };
 use gpui::{
     Anchor, App, AppContext as _, Entity, Hsla, InteractiveElement as _, IntoElement as _,
@@ -85,6 +85,7 @@ pub(crate) fn page(ctx: &SectionContext, _cx: &mut App) -> SettingsPage {
                 Some("fontFamilyDesktopHint"),
                 super::font_family::field(ctx),
             ))
+            .row(ctx.item("fontWeight", Some("fontWeightDesc"), font_weight_field(ctx)))
             .row(ctx.item("fontSize", Some("fontSizeDesc"), font_size_field(ctx)))
             .row(super::app_icon::item(ctx)),
     ])
@@ -893,6 +894,47 @@ fn font_size_field(ctx: &SectionContext) -> Control {
                 Err(_) => serde_json::Value::Null,
             };
             store.update(cx, |store, cx| store.set_pref(FONT_SIZE_KEY, pref, cx));
+        },
+    )
+}
+
+fn font_weight_field(ctx: &SectionContext) -> Control {
+    const THEME_DEFAULT: &str = "theme";
+    let options = [
+        (THEME_DEFAULT, "fontSizeFollowTheme"),
+        ("100", "fontWeightThin"),
+        ("200", "fontWeightExtraLight"),
+        ("300", "fontWeightLight"),
+        ("400", "fontWeightRegular"),
+        ("500", "fontWeightMedium"),
+        ("600", "fontWeightSemibold"),
+        ("700", "fontWeightBold"),
+        ("800", "fontWeightExtraBold"),
+        ("900", "fontWeightHeavy"),
+    ]
+    .into_iter()
+    .map(|(value, label)| (SharedString::from(value), ctx.t(label)))
+    .collect();
+    let store = ctx.store();
+    Control::dropdown(
+        options,
+        |cx: &App| {
+            active_theme(cx)
+                .appearance()
+                .font_weight
+                .map_or(SharedString::from(THEME_DEFAULT), |weight| {
+                    SharedString::from(weight.to_string())
+                })
+        },
+        move |value: SharedString, cx: &mut App| {
+            let pref = if value.as_ref() == THEME_DEFAULT {
+                serde_json::Value::Null
+            } else if let Ok(weight) = value.parse::<u16>() {
+                serde_json::Value::from(weight)
+            } else {
+                return;
+            };
+            store.update(cx, |store, cx| store.set_pref(FONT_WEIGHT_KEY, pref, cx));
         },
     )
 }

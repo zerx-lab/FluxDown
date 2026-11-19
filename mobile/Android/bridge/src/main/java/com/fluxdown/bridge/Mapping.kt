@@ -16,6 +16,7 @@ import com.fluxdown.core.model.BtFile
 import com.fluxdown.core.model.Category
 import com.fluxdown.core.model.CloudDevice
 import com.fluxdown.core.model.FileExistsAction
+import com.fluxdown.core.model.HlsFragmentProgress
 import com.fluxdown.core.model.HlsOption
 import com.fluxdown.core.model.PluginCandidate
 import com.fluxdown.core.model.HostInfo
@@ -196,6 +197,7 @@ internal fun TaskRuntimeDto.toCore() = TaskRuntime(
     connectedPeers = connectedPeers?.toInt(),
     totalBytes = totalBytes,
     segments = segments.map { it.toCore() },
+    hlsFragments = hlsFragments?.let { HlsFragmentProgress(it.written.toLong(), it.total.toLong()) },
 )
 
 internal fun QueueDto.toCore() = Queue(

@@ -338,7 +338,7 @@ private fun DetailHero(modelOf: () -> DetailModel?, gate: FlowInGate) {
             segments = model.flowSegments,
             state = model.flowState,
             height = FlowStripHeight.Lg,
-            semanticsLabel = task.progress?.let { Format.percent(it) },
+            semanticsLabel = model.progress?.let { Format.percent(it) },
         )
         Spacer(Modifier.height(16.dp))
         ReadoutRow(model)
@@ -455,7 +455,7 @@ private fun ReadoutRow(model: DetailModel) {
     val type = FluxTheme.type
     val task = model.task
     val done = model.visual == TaskVisualState.Completed || model.visual == TaskVisualState.Seeding || model.visual == TaskVisualState.Missing
-    val progress = task.progress
+    val progress = model.progress
     val pct = when {
         done -> "100.0"
         progress == null -> "—"
@@ -471,14 +471,24 @@ private fun ReadoutRow(model: DetailModel) {
         }
         Spacer(Modifier.weight(1f))
         Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            val totalText = if (task.totalBytes > 0) Format.bytes(task.totalBytes).toString() else str(R.string.unknownSize)
-            val sizeLine = remember(task.downloadedBytes, totalText, c) {
-                buildAnnotatedString {
-                    withStyle(SpanStyle(color = c.ink, fontWeight = FontWeight.SemiBold)) { append(Format.bytes(task.downloadedBytes).toString()) }
-                    withStyle(SpanStyle(color = c.inkMuted)) { append(" / $totalText") }
+            val fragments = if (done) null else model.hlsFragments
+            if (fragments != null) {
+                FluxText(
+                    str(R.string.hlsFragmentProgress, "done" to fragments.written, "total" to fragments.total),
+                    style = type.monoS,
+                    color = c.inkMuted,
+                    maxLines = 1,
+                )
+            } else {
+                val totalText = if (task.totalBytes > 0) Format.bytes(task.totalBytes).toString() else str(R.string.unknownSize)
+                val sizeLine = remember(task.downloadedBytes, totalText, c) {
+                    buildAnnotatedString {
+                        withStyle(SpanStyle(color = c.ink, fontWeight = FontWeight.SemiBold)) { append(Format.bytes(task.downloadedBytes).toString()) }
+                        withStyle(SpanStyle(color = c.inkMuted)) { append(" / $totalText") }
+                    }
                 }
+                BasicText(sizeLine, style = type.mono, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            BasicText(sizeLine, style = type.mono, maxLines = 1, overflow = TextOverflow.Ellipsis)
             val speed = when {
                 model.visual == TaskVisualState.Downloading && model.speedDown > 0 -> "↓ ${Format.speed(model.speedDown)}" to c.accentHi
                 model.visual == TaskVisualState.Seeding && model.speedUp > 0 -> "↑ ${Format.speed(model.speedUp)}" to c.mintText
@@ -496,8 +506,10 @@ private fun heroChips(model: DetailModel): List<Pair<String, String>> {
     val task = model.task
     val out = ArrayList<Pair<String, String>>(4)
     if (model.isTransferring) {
-        val eta = Format.etaSeconds(task.downloadedBytes, task.totalBytes, model.speedDown)
-        out += str(R.string.infoRemaining) to etaText(eta)
+        if (model.hlsFragments == null) {
+            val eta = Format.etaSeconds(task.downloadedBytes, task.totalBytes, model.speedDown)
+            out += str(R.string.infoRemaining) to etaText(eta)
+        }
         model.runtime?.activeTransfers?.let { out += str(R.string.detailActiveTransfers) to it.toString() }
     }
     if (task.protocol == TaskProtocol.Bt) {

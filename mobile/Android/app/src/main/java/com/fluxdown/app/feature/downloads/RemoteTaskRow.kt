@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -24,28 +25,38 @@ import com.fluxdown.app.data.Density
 import com.fluxdown.app.feature.settings.account.AccountText
 import com.fluxdown.app.feature.task.copyText
 import com.fluxdown.app.i18n.str
+import com.fluxdown.app.nav.LocalNavigator
 import com.fluxdown.app.ui.fileCategory
 import com.fluxdown.app.ui.tileIcon
 import com.fluxdown.core.format.Format
+import com.fluxdown.core.host.HostErrorCode
 import com.fluxdown.core.host.HostException
+import com.fluxdown.core.host.HostSession
 import com.fluxdown.core.model.CloudDevice
 import com.fluxdown.core.model.TaskErrorMessage
 import com.fluxdown.core.protocol.CloudConnectionDto
 import com.fluxdown.core.protocol.CloudPresence
+import com.fluxdown.core.protocol.HostCapability
 import com.fluxdown.core.protocol.HostMethod
 import com.fluxdown.core.protocol.Json
+import com.fluxdown.core.protocol.RemoteBatch
+import com.fluxdown.core.protocol.RemoteBatchOutcome
 import com.fluxdown.core.protocol.RemoteCommandAction
+import com.fluxdown.core.protocol.RemoteCommandManyResult
 import com.fluxdown.core.protocol.RemoteCommandParams
 import com.fluxdown.core.protocol.RemoteTaskDto
 import com.fluxdown.core.protocol.RemoteTaskRules
 import com.fluxdown.core.protocol.RemoteTaskStatus
+import com.fluxdown.core.protocol.callJson
 import com.fluxdown.core.protocol.callUnit
+import com.fluxdown.core.protocol.has
 import com.fluxdown.fluxui.data.FlowSegmentUi
 import com.fluxdown.fluxui.data.FlowStripState
 import com.fluxdown.fluxui.data.MetaTone
 import com.fluxdown.fluxui.data.RingKind
 import com.fluxdown.fluxui.data.TaskRow
 import com.fluxdown.fluxui.data.TaskRowDensity
+import com.fluxdown.fluxui.data.TaskRowSelection
 import com.fluxdown.fluxui.data.buildTaskMeta
 import com.fluxdown.fluxui.icons.FluxIcons
 import com.fluxdown.fluxui.overlay.FluxDialogButton
@@ -105,6 +116,8 @@ internal class RemoteCommands(private val container: AppContainer) {
                 session.callUnit(HostMethod.agentRemoteCommand, RemoteCommandParams(id, action, deleteFiles = deleteFiles).toJson())
             } catch (e: HostException) {
                 inFlight = inFlight - id
+                // 旧主机对「云端已无此记录」只回裸 notFound 且不移除该行：重新同步一次（失败忽略）。
+                if (e.reason == null && e.code == HostErrorCode.NotFound) resync(session)
                 onError(e)
                 return@launch
             }
@@ -112,6 +125,51 @@ internal class RemoteCommands(private val container: AppContainer) {
             settling = settling + (id to before)
             delay(SETTLE_MS)
             if (settling[id] === before) settling = settling - id
+        }
+    }
+
+    /**
+     * 批量命令：对 [tasks] 逐一应用 [action]（适用性由调用方经 [RemoteTaskRules.canIssue] 过滤；在途的任务跳过）。
+     * 主机声明 `agent.remoteBatch` 时走 `agent.remote.commandMany`（按 1000 分块），否则逐条回退（并发 4）。
+     * 成功的任务进入与单条命令相同的过渡态；[onDone] 收到完整结果（含每个失败的原因）。
+     */
+    fun issueMany(
+        action: RemoteCommandAction,
+        tasks: List<RemoteTaskDto>,
+        deleteFiles: Boolean,
+        onDone: (RemoteBatchOutcome) -> Unit,
+    ) {
+        val todo = tasks.filter { it.id !in inFlight }.distinctBy { it.id }
+        if (todo.isEmpty()) return
+        val ids = todo.map { it.id }
+        val before = todo.associate { it.id to Settling(it.status, it.updatedAt) }
+        inFlight = inFlight + ids
+        settling = settling - ids.toSet()
+        val session = container.session
+        val batch = container.store.state.value.has(HostCapability.agentRemoteBatch)
+        container.appScope.launch {
+            val outcome = RemoteBatch.run(
+                ids, action, deleteFiles, batch,
+                many = { p -> RemoteCommandManyResult.fromJson(session.callJson(HostMethod.agentRemoteCommandMany, p.toJson())) },
+                single = { p -> session.callUnit(HostMethod.agentRemoteCommand, p.toJson()) },
+            )
+            inFlight = inFlight - ids.toSet()
+            val settled = outcome.succeeded.mapNotNull { id -> before[id]?.let { id to it } }.toMap()
+            settling = settling + settled
+            if (outcome.legacyNotFound || outcome.failed.any { it.isLegacyNotFound }) resync(session)
+            onDone(outcome)
+            delay(SETTLE_MS)
+            settled.forEach { (id, pending) -> if (settling[id] === pending) settling = settling - id }
+        }
+    }
+
+    /** 请求一次 `agent.remote.list` 重新同步分区（fire-and-forget，失败忽略）。 */
+    private fun resync(session: HostSession) {
+        container.appScope.launch {
+            try {
+                session.callUnit(HostMethod.agentRemoteList)
+            } catch (_: HostException) {
+            }
         }
     }
 
@@ -125,13 +183,14 @@ internal class RemoteCommands(private val container: AppContainer) {
  * 其他设备上执行的远程任务行（同 iOS `RemoteTaskRow` / PC 下载页远程行）：与本地行同一列表、同一分区样式；
  * `→ 目标设备` + 状态 + 进度 / 字节 / 速度；环 = 暂停 / 继续（命令在途旋转；没有主操作时打开动作菜单），
  * 滑动取消 / 删除，长按含全部可用动作。控制矩阵只走 [RemoteTaskRules.canIssue]；未知状态没有任何控制。
- * 不参与多选，没有详情页。
+ * 参与多选（点击 / 长按切换勾选），没有详情页。
  */
 @Composable
 internal fun RemoteTaskRow(entry: RemoteRowEntry, style: RowStyle, flowIndex: Int, gate: FlowInGate, a11y: Boolean) {
     val item = entry.item
     val task = item.task
     val view = LocalDownloadsView.current
+    val nav = LocalNavigator.current
     val overlays = LocalFluxOverlays.current
     val haptics = FluxTheme.haptics
     val colors = FluxTheme.colors
@@ -146,6 +205,15 @@ internal fun RemoteTaskRow(entry: RemoteRowEntry, style: RowStyle, flowIndex: In
     val readOnly = view.readOnly
     val latest by rememberUpdatedState(task)
 
+    val id = item.id
+    val selecting = nav.selecting
+    val selected by remember(id, nav) { derivedStateOf { id in nav.selection } }
+    val selection = when {
+        !selecting -> TaskRowSelection.None
+        selected -> TaskRowSelection.Selected
+        else -> TaskRowSelection.Unselected
+    }
+
     val s = RemoteRowStrings(
         pause = str(R.string.pause),
         resume = str(R.string.resume),
@@ -153,6 +221,7 @@ internal fun RemoteTaskRow(entry: RemoteRowEntry, style: RowStyle, flowIndex: In
         delete = str(R.string.delete),
         copyLink = str(R.string.mobileSwipeCopyLink),
         more = str(R.string.moreActions),
+        select = str(R.string.mobileMenuSelect),
         offline = str(R.string.errReasonTargetDeviceOffline),
         urlCopied = str(R.string.urlCopied),
         deleteTask = str(R.string.deleteTask),
@@ -175,7 +244,7 @@ internal fun RemoteTaskRow(entry: RemoteRowEntry, style: RowStyle, flowIndex: In
         haptics.tick()
         view.remoteCommands.issue(action, latest, deleteFiles) { e ->
             haptics.reject()
-            overlays.toast(AccountText.error(context, e), FluxToastKind.Error)
+            overlays.toast(AccountText.remoteError(context, e), FluxToastKind.Error)
         }
     }
 
@@ -230,6 +299,7 @@ internal fun RemoteTaskRow(entry: RemoteRowEntry, style: RowStyle, flowIndex: In
         }
         if (allows(RemoteCommandAction.Cancel)) add(FluxMenuItem.Action(s.cancel, { issue(RemoteCommandAction.Cancel) }, icon = FluxIcons.X))
         if (latest.url.isNotEmpty()) add(FluxMenuItem.Action(s.copyLink, ::copyLink, icon = FluxIcons.Copy))
+        add(FluxMenuItem.Action(s.select, { nav.enterSelection(id) }, icon = FluxIcons.CheckCheck))
         if (allows(RemoteCommandAction.Delete)) {
             add(FluxMenuItem.Divider)
             add(FluxMenuItem.Action(s.delete, ::confirmDelete, icon = FluxIcons.Trash2, destructive = true))
@@ -292,8 +362,14 @@ internal fun RemoteTaskRow(entry: RemoteRowEntry, style: RowStyle, flowIndex: In
         else -> RingKind.More
     }
 
+    fun toggleSelected() {
+        nav.toggleSelected(id)
+        haptics.tick()
+    }
+
     fun onRing() {
         when {
+            selecting -> toggleSelected()
             busy || readOnly -> Unit
             primary != null && allows(primary) -> issue(primary)
             primary != null -> {
@@ -341,7 +417,7 @@ internal fun RemoteTaskRow(entry: RemoteRowEntry, style: RowStyle, flowIndex: In
                 .rowDecor(entry.zone, entry.first, entry.last, inset, noPane)
                 .onGloballyPositioned { coords[0] = it },
         ) {
-            SwipeReveal(startActions = startActions, endActions = endActions, enabled = !readOnly) {
+            SwipeReveal(startActions = startActions, endActions = endActions, enabled = !selecting && !readOnly) {
                 TaskRow(
                     fileName = item.name,
                     meta = meta,
@@ -350,13 +426,21 @@ internal fun RemoteTaskRow(entry: RemoteRowEntry, style: RowStyle, flowIndex: In
                     ringKind = ringKind,
                     ringProgress = if (showFlow || busy) progress else null,
                     ringContentDescription = primaryLabel,
-                    onClick = ::openMenu,
-                    onLongClick = ::openMenu,
+                    onClick = { if (selecting) toggleSelected() else openMenu() },
+                    onLongClick = { if (selecting) nav.toggleSelected(id) else openMenu() },
                     onRingClick = ::onRing,
-                    onTileClick = ::openMenu,
+                    onTileClick = {
+                        if (selecting) {
+                            toggleSelected()
+                        } else {
+                            haptics.longPress()
+                            nav.enterSelection(id)
+                        }
+                    },
                     flowSegments = if (showFlow) listOf(FlowSegmentUi(1f, progress, task.status == RemoteTaskStatus.Downloading)) else null,
                     flowState = flowState,
                     density = if (compact) TaskRowDensity.Compact else TaskRowDensity.Comfortable,
+                    selection = selection,
                     horizontalPadding = if (history) 20.dp else 18.dp,
                     onClickLabel = s.more,
                     customActions = customActions,
@@ -374,6 +458,7 @@ private data class RemoteRowStrings(
     val delete: String,
     val copyLink: String,
     val more: String,
+    val select: String,
     val offline: String,
     val urlCopied: String,
     val deleteTask: String,

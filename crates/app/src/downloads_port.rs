@@ -660,6 +660,12 @@ impl AgentDownloadsPort {
                 DownloadsCommand::RemoteCommand(params) => {
                     (method::AGENT_REMOTE_COMMAND, serialize(params)?)
                 }
+                DownloadsCommand::RemoteCommandMany(params) => {
+                    let result: fluxdown_protocol::RemoteCommandManyResult = client
+                        .call(method::AGENT_REMOTE_COMMAND_MANY, Some(params))
+                        .await?;
+                    return remote_many_outcome(result);
+                }
                 // Windows 由前台界面进程拉起一次性 agent 打开，系统才会把窗口置前（见 shell_open）。
                 #[cfg(windows)]
                 DownloadsCommand::OpenTask { task_id } => {
@@ -741,6 +747,17 @@ fn evidence_params(
     )
 }
 
+/// `agent.remote.commandMany` 结果 → 命令结果：全部成功为 `Unit`；有失败时以第一条失败的错误
+/// 返回（页面横幅按其 `reason` 给出原因；已成功的行由 agent 投影即时更新）。
+fn remote_many_outcome(
+    result: fluxdown_protocol::RemoteCommandManyResult,
+) -> Result<DownloadsResult, fluxdown_protocol::RpcErrorData> {
+    match result.failed.into_iter().next() {
+        Some(failure) => Err(failure.error),
+        None => Ok(DownloadsResult::Unit),
+    }
+}
+
 fn internal_error() -> fluxdown_protocol::RpcErrorData {
     fluxdown_protocol::RpcErrorData::new(fluxdown_protocol::ApplicationErrorCode::Internal, false)
 }
@@ -805,6 +822,51 @@ mod evidence_params_tests {
         assert_eq!(entries.contains_ip.as_deref(), Some("2001:db8::/64"));
         assert!(entries.query.is_none());
         assert_eq!(events.ip_group.as_deref(), Some("2001:db8::/64"));
+    }
+}
+
+#[cfg(test)]
+mod remote_many_tests {
+    use fluxdown_protocol::{
+        ApplicationErrorCode, ErrorReason, RemoteCommandFailure, RemoteCommandManyResult,
+        RpcErrorData,
+    };
+    use fluxdown_ui_downloads::DownloadsResult;
+
+    use super::remote_many_outcome;
+
+    #[test]
+    fn all_succeeded_is_unit() {
+        let result = RemoteCommandManyResult {
+            succeeded: vec!["a".to_owned(), "b".to_owned()],
+            failed: Vec::new(),
+        };
+        assert!(matches!(
+            remote_many_outcome(result),
+            Ok(DownloadsResult::Unit)
+        ));
+    }
+
+    #[test]
+    fn first_failure_becomes_the_command_error() {
+        let gone = RpcErrorData::new(ApplicationErrorCode::NotFound, false)
+            .with_reason(ErrorReason::RemoteTaskGone);
+        let offline = RpcErrorData::new(ApplicationErrorCode::Unavailable, false)
+            .with_reason(ErrorReason::TargetDeviceOffline);
+        let result = RemoteCommandManyResult {
+            succeeded: vec!["a".to_owned()],
+            failed: vec![
+                RemoteCommandFailure {
+                    task_id: "b".to_owned(),
+                    error: gone.clone(),
+                },
+                RemoteCommandFailure {
+                    task_id: "c".to_owned(),
+                    error: offline,
+                },
+            ],
+        };
+        assert!(matches!(remote_many_outcome(result), Err(error) if error == gone));
     }
 }
 

@@ -91,8 +91,14 @@ private struct ExtensionsContent: View {
             PermissionConfirmSheet(request: request)
                 .environment(model)
         }
+        .sheet(isPresented: Binding(
+            get: { model.conflictNotice != nil && model.permissionRequest == nil },
+            set: { _ in }
+        )) {
+            ResolverUrlConflictNotice(model: model)
+        }
         .alert(L("pluginDepsMissingTitle"), isPresented: Binding(
-            get: { model.missingComponents != nil },
+            get: { model.missingComponents != nil && model.conflictNotice == nil },
             set: { if !$0 { model.missingComponents = nil } }
         )) {
             Button(L("pluginDepsLater"), role: .cancel) {}
@@ -118,6 +124,7 @@ private struct ExtensionsContent: View {
 
     @ViewBuilder
     private func pluginSections(_ list: [PluginDto], readOnly: Bool) -> some View {
+        ResolverUrlConflictSection(plugins: list)
         Section {
             if list.isEmpty {
                 Label(L("pluginsEmpty"), systemImage: "puzzlepiece.extension")
@@ -483,6 +490,80 @@ struct PermissionRow: View {
                 .foregroundStyle(keys == nil ? Color.fdStatusWarningText : .secondary)
         }
         .accessibilityElement(children: .combine)
+    }
+}
+
+private struct ResolverUrlConflictNotice: View {
+    let model: ExtensionsModel
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if let notice = model.conflictNotice {
+                    ResolverUrlConflictSection(plugins: notice.plugins, identities: [notice.identity], showTitle: false)
+                }
+            }
+            .navigationTitle(L("pluginResolverUrlConflictsTitle"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(L("close")) { model.dismissConflictNotice() }
+                }
+            }
+        }
+        .interactiveDismissDisabled()
+    }
+}
+
+struct ResolverUrlConflictSection: View {
+    let plugins: [PluginDto]
+    var identities: Set<String>? = nil
+    var showTitle = true
+
+    private func matches(_ identity: String, _ otherIdentity: String) -> Bool {
+        guard let identities else { return true }
+        return identities.contains(identity) || identities.contains(otherIdentity)
+    }
+
+    var body: some View {
+        let enabled = Set(plugins.filter(\.enabled).map(\.identity))
+        let owners = plugins.filter { plugin in
+            plugin.resolverUrlConflicts.contains { matches(plugin.identity, $0.otherIdentity) }
+        }
+        if !owners.isEmpty {
+            Section {
+                if owners.contains(where: { plugin in
+                    plugin.resolverUrlConflicts.contains {
+                        plugin.enabled && enabled.contains($0.otherIdentity)
+                            && plugin.identity != $0.otherIdentity && matches(plugin.identity, $0.otherIdentity)
+                    }
+                }) {
+                    Text(L("pluginResolverUrlConflictsHint"))
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(owners) { plugin in
+                    ForEach(plugin.resolverUrlConflicts.filter {
+                        matches(plugin.identity, $0.otherIdentity)
+                    }, id: \.self) { conflict in
+                        VStack(alignment: .leading) {
+                            if plugin.identity == conflict.otherIdentity {
+                                Text(L("pluginResolverUrlDuplicateHint"))
+                                    .foregroundStyle(.secondary)
+                            } else if !plugin.enabled || !enabled.contains(conflict.otherIdentity) {
+                                Text(L("pluginResolverUrlPendingHint"))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text(verbatim: "\(plugin.identity): \(conflict.pattern)")
+                            Text(verbatim: "\(conflict.otherIdentity): \(conflict.otherPattern)")
+                        }
+                    }
+                }
+            } header: {
+                if showTitle {
+                    Label(L("pluginResolverUrlConflictsTitle"), systemImage: "exclamationmark.triangle")
+                }
+            }
+        }
     }
 }
 #endif

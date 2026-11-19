@@ -1,0 +1,28 @@
+name: PR Review Title
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '3-59/10 * * * *'
+
+permissions:
+  checks: read
+  contents: read
+  pull-requests: write
+  statuses: read
+
+concurrency: pr-review-title
+
+jobs:
+  sync:
+    if: github.repository == 'zerx-lab/FluxDown'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Sync title prefixes from Roost reviews and PR checks
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 .github/scripts/pr_review_title.py

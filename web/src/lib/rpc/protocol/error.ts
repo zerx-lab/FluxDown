@@ -57,6 +57,7 @@ export type ErrorReason =
   | 'passwordChanged'
   | 'cloudUnreachable'
   | 'targetDeviceOffline'
+  | 'remoteTaskGone'
   | 'taskStateConflict'
   | 'taskDeviceMismatch'
   | 'saveDirUnavailable'
