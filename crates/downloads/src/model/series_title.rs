@@ -10,21 +10,32 @@ static EPISODE: LazyLock<Option<Regex>> = LazyLock::new(|| {
     )
     .ok()
 });
+static SUBTITLE_LANGUAGE_SUFFIX: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r"\.[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$").ok());
 
 pub(crate) fn series_title(name: &str) -> Option<&str> {
     let mut name = name.rsplit(['/', '\\']).next()?.trim_start_matches(' ');
     while let Some((_, rest)) = name.strip_prefix('[').and_then(|tag| tag.split_once(']')) {
         name = rest.trim_start_matches(' ');
     }
-    // A dash-number marker must end the name, apart from release suffixes and media extensions.
     if name.contains(" - ")
         && let Some((stem, extension)) = name.rsplit_once('.')
-        && (FileKind::of_name(name) == FileKind::Video
-            || ["ass", "ssa", "srt", "vtt", "nfo"]
-                .iter()
-                .any(|suffix| extension.eq_ignore_ascii_case(suffix)))
     {
-        name = stem;
+        if ["ass", "ssa", "srt", "vtt"]
+            .iter()
+            .any(|suffix| extension.eq_ignore_ascii_case(suffix))
+        {
+            name = SUBTITLE_LANGUAGE_SUFFIX
+                .as_ref()
+                .and_then(|regex| regex.find(stem))
+                .and_then(|tag| stem.get(..tag.start()))
+                .unwrap_or(stem);
+        } else if extension.eq_ignore_ascii_case("nfo")
+            || FileKind::of_name(name) == FileKind::Video
+        {
+            // Video extensions follow assets/icon-packs/kinds.json on both clients.
+            name = stem;
+        }
     }
     let marker = EPISODE.as_ref()?.find(name)?;
     let title = name
