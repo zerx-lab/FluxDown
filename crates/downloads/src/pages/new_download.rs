@@ -59,8 +59,8 @@ use fluxdown_protocol::{
     AgentSnapshot, CloudDevice, LinkDeviceInfo, PendingCaptureDto, QueueDto, SiteAuthCredentialDto,
 };
 use fluxdown_ui_components::{
-    ControlExt as _, FluxIcon, IconControlExt as _, check_row, field_error, field_hint, field_label,
-    form, form_field, form_gap, form_row, input_with_action, option_group, option_row,
+    ControlExt as _, FluxIcon, IconControlExt as _, check_row, field_error, field_hint,
+    field_label, form, form_field, form_gap, form_row, input_with_action, option_group, option_row,
 };
 use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_theme::active_theme;

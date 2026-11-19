@@ -38,7 +38,7 @@
 
 - **Dynamic download acceleration** — Rust + Tokio engine with adaptive segmentation and slow-segment rescue
 - **Multi-protocol** — HTTP/HTTPS, FTP, BitTorrent, eD2K, HLS & DASH streaming
-- **Desktop torrent file selection** — Keep the original order, group by file extension, or show the largest files first without changing which files are selected.
+- **Desktop torrent file selection** — Keep the original order, group by file extension, or show the largest files first without changing which files are selected. In the sorted views, hover over a row to see its full path within the torrent.
   Leave **Auto** checked to keep the detected name, or uncheck it to edit the file name (single-file torrent) or outer folder name (multi-file torrent).
 - **One engine, multiple clients** — native GPUI desktop, Kotlin Android and SwiftUI iOS apps, React Web UI and CLI
 - **Browser integration** — Chrome / Edge / Firefox extension with a 3-layer interception engine, plus a userscript

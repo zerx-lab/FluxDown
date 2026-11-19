@@ -18,7 +18,7 @@ use fluxdown_protocol::{
 use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     BusyExt as _, CheckState, ControlExt as _, FluxIcon, check_mark, check_row, field_hint,
-    form_field, input_with_action, tabular_numbers,
+    form_field, input_with_action, tabular_numbers, tooltip_view,
 };
 use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_theme::active_theme;
@@ -123,6 +123,18 @@ impl BtFileOrder {
 
     fn iter<'a>(&'a self, files: &'a [BtFileDto]) -> impl Iterator<Item = &'a BtFileDto> {
         (0..files.len()).map(|i| &files[self.positions.get(i).copied().unwrap_or(i)])
+    }
+}
+
+fn bt_row_label(path: &str, sort: BtFileSort) -> (f32, &str) {
+    if sort == BtFileSort::Original {
+        (
+            path.matches('/').count().min(4) as f32,
+            path.rsplit('/').next().unwrap_or(path),
+        )
+    } else {
+        // 排序打散目录分组，显示不带缩进的完整相对路径。
+        (0.0, path)
     }
 }
 
@@ -786,22 +798,8 @@ impl SelectionView {
             .children(order.iter(files).map(|file| {
                 let checked = selected.contains(&file.index);
                 let index = file.index;
-                // 非原始顺序下目录分组被打散：缩进归零并显示相对路径，避免同名文件无法区分。
-                let sorted = order.sort != BtFileSort::Original;
-                let depth = if sorted {
-                    0.0
-                } else {
-                    file.path.matches('/').count().min(4) as f32
-                };
-                let name = if sorted {
-                    file.path.clone()
-                } else {
-                    file.path
-                        .rsplit('/')
-                        .next()
-                        .unwrap_or(&file.path)
-                        .to_owned()
-                };
+                let (depth, label) = bt_row_label(&file.path, order.sort);
+                let label = SharedString::from(label.to_owned());
                 let this = cx.weak_entity();
                 check_row(
                     ("bt-file", index as usize),
@@ -810,13 +808,7 @@ impl SelectionView {
                         .flex_1()
                         .min_w_0()
                         .gap(tokens.spacing.sm)
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .child(SharedString::from(name)),
-                        )
+                        .child(div().flex_1().min_w_0().truncate().child(label.clone()))
                         .child(
                             div()
                                 .flex_none()
@@ -845,6 +837,9 @@ impl SelectionView {
                 .pl(tokens.spacing.xs + tokens.spacing.lg * depth)
                 .pr(tokens.spacing.sm)
                 .when(checked, |row| row.bg(tokens.colors.accent))
+                .when(order.sort != BtFileSort::Original, |row| {
+                    row.tooltip(move |window, cx| tooltip_view(label.clone(), window, cx))
+                })
             }))
             .overflow_y_scrollbar();
         // 保存目录在全选工具栏之上，不进文件列表的滚动区。
@@ -1092,8 +1087,8 @@ mod tests {
     };
 
     use super::{
-        BtFileOrder, BtFileSort, SelectionState, bt_name_outcome, bt_save_dir_confirmable,
-        bt_save_dir_outcome, cancel_command,
+        BtFileOrder, BtFileSort, SelectionState, bt_name_outcome, bt_row_label,
+        bt_save_dir_confirmable, bt_save_dir_outcome, cancel_command,
     };
     use crate::controller::DownloadsCommand;
 
@@ -1170,6 +1165,56 @@ mod tests {
         assert_eq!(ids(&order), [7, 0, 3, 9, 4]);
         order.set_sort(BtFileSort::Original, &files);
         assert_eq!(ids(&order), [9, 3, 7, 0, 4]);
+    }
+
+    #[test]
+    fn sorted_bt_rows_keep_the_full_path_for_equal_size_files() {
+        let prefix = "collection/season/bonus/features/a-very-long-common-directory";
+        let alpha = format!("{prefix}/a-very-long-common-file-name-alpha.mkv");
+        let beta = format!("{prefix}/a-very-long-common-file-name-beta.mkv");
+        let files = [
+            (14, alpha.as_str(), 10),
+            (2, "notes.txt", 20),
+            (39, beta.as_str(), 10),
+        ]
+        .map(|(index, path, size)| BtFileDto {
+            index,
+            path: path.to_owned(),
+            size,
+        });
+        let mut order = BtFileOrder::default();
+        let rows = |order: &BtFileOrder| {
+            order
+                .iter(&files)
+                .map(|file| (file.index, bt_row_label(&file.path, order.sort)))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            rows(&order),
+            [
+                (14, (4.0, "a-very-long-common-file-name-alpha.mkv")),
+                (2, (0.0, "notes.txt")),
+                (39, (4.0, "a-very-long-common-file-name-beta.mkv")),
+            ]
+        );
+        order.set_sort(BtFileSort::Type, &files);
+        assert_eq!(
+            rows(&order),
+            [
+                (14, (0.0, alpha.as_str())),
+                (39, (0.0, beta.as_str())),
+                (2, (0.0, "notes.txt")),
+            ]
+        );
+        order.set_sort(BtFileSort::Size, &files);
+        assert_eq!(
+            rows(&order),
+            [
+                (2, (0.0, "notes.txt")),
+                (14, (0.0, alpha.as_str())),
+                (39, (0.0, beta.as_str())),
+            ]
+        );
     }
 
     #[test]
