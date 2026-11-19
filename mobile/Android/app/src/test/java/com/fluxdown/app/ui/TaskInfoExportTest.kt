@@ -1,9 +1,14 @@
 package com.fluxdown.app.ui
 
+import com.fluxdown.app.feature.downloads.REMOTE_ID_PREFIX
+import com.fluxdown.app.feature.downloads.selectedTaskInfoRows
 import com.fluxdown.app.feature.newtask.UrlEntry
 import com.fluxdown.app.feature.newtask.batchExportName
 import com.fluxdown.app.feature.newtask.batchExportSize
 import com.fluxdown.app.feature.newtask.parseEntries
+import com.fluxdown.core.model.Task
+import com.fluxdown.core.model.TaskStatus
+import com.fluxdown.core.protocol.RemoteTaskDto
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -11,6 +16,34 @@ import org.junit.rules.TemporaryFolder
 
 class TaskInfoExportTest {
     @get:Rule val temp = TemporaryFolder()
+
+    @Test
+    fun exportsMixedAndRemoteOnlySelectionsInListOrder() {
+        val local = Task(
+            taskId = "same-id",
+            url = "https://example.com/resolved",
+            originUrl = "https://example.com/original",
+            fileName = "local.bin",
+            saveDir = "",
+            status = TaskStatus.Pending,
+            downloadedBytes = 0,
+            totalBytes = 0,
+        )
+        val remote = RemoteTaskDto("same-id", fileName = "remote.bin", url = "https://example.com/remote", totalBytes = 42)
+        val hidden = RemoteTaskDto("hidden", fileName = "hidden.bin")
+        val visibleIds = listOf(REMOTE_ID_PREFIX + remote.id, local.taskId)
+        val header = "Name\tURL\tSize (bytes)"
+        val remoteLine = "\nremote.bin\thttps://example.com/remote\t42"
+
+        assertEquals(
+            "$header$remoteLine\nlocal.bin\thttps://example.com/original\t\nhidden.bin\t\t",
+            taskInfoText(selectedTaskInfoRows(listOf(local), listOf(hidden, remote), visibleIds)),
+        )
+        assertEquals(
+            "$header$remoteLine",
+            taskInfoText(selectedTaskInfoRows(emptyList(), listOf(remote), visibleIds)),
+        )
+    }
 
     @Test
     fun writesOrderedUtf8RowsWithUnknownFieldsBlank() {

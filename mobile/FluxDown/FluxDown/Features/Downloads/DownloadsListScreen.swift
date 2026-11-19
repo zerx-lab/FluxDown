@@ -446,16 +446,12 @@ struct DownloadsListScreen: View {
                 Button(L("copyUrl"), systemImage: FluxSymbol.copy) { copySelectedLinks() }
                     .disabled(model.selection.isEmpty)
                 Button(L("exportTaskInfoTxt"), systemImage: "square.and.arrow.down") {
-                    let selected = model.selectedTasks()
-                    var tasks = Dictionary(selected.map { ($0.taskId, $0) }, uniquingKeysWith: { first, _ in first })
-                    let visible = model.list.visibleIds.compactMap { tasks.removeValue(forKey: $0) }
-                    let remaining = selected.filter { tasks[$0.taskId] != nil }
-                    let rows = (visible + remaining).map {
-                        TaskInfoRow(name: $0.fileName, url: $0.shareUrl, size: $0.totalBytes > 0 ? $0.totalBytes : nil)
-                    }
+                    let rows = TaskInfoRow.selected(
+                        local: model.selectedTasks(), remote: model.selectedRemoteTasks(), visibleIds: model.list.visibleIds
+                    )
                     if !rows.isEmpty { taskInfoExport = TaskInfoDocument(rows) }
                 }
-                .disabled(!caps.hasLocal)
+                .disabled(!caps.canExport)
             }
             ToolbarSpacer(.flexible, placement: .bottomBar)
             ToolbarItem(placement: .bottomBar) {
@@ -602,6 +598,23 @@ nonisolated struct TaskInfoRow {
     let name: String
     let url: String
     var size: Int64? = nil
+
+    static func selected(local: [DownloadTask], remote: [RemoteTaskDto], visibleIds: [String]) -> [Self] {
+        var rows: [String: Self] = [:]
+        var ids: [String] = []
+        for task in local where rows[task.taskId] == nil {
+            rows[task.taskId] = Self(name: task.fileName, url: task.shareUrl, size: task.totalBytes > 0 ? task.totalBytes : nil)
+            ids.append(task.taskId)
+        }
+        for task in remote {
+            let id = DownloadsRow.remoteIdPrefix + task.id
+            guard rows[id] == nil else { continue }
+            rows[id] = Self(name: task.fileName, url: task.url, size: task.totalBytes.flatMap { $0 > 0 ? $0 : nil })
+            ids.append(id)
+        }
+        let visible = visibleIds.compactMap { rows.removeValue(forKey: $0) }
+        return visible + ids.compactMap { rows[$0] }
+    }
 }
 
 nonisolated struct TaskInfoDocument: FileDocument {

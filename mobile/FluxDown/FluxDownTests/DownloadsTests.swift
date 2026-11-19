@@ -13,6 +13,21 @@ import Testing
         "Name\tURL\tSize (bytes)\n=报告\\\\x\\tpart\\r\\n2\thttps://example.com/original\t4294967296\nfile.bin\t\t")
 }
 
+@MainActor @Test func taskInfoDocumentIncludesMixedAndRemoteOnlySelectionsInListOrder() {
+    let local = makeTask("same-id", .pending, name: "local.bin", url: "https://example.com/local")
+    let remote = RemoteTaskDto(id: "same-id", url: "https://example.com/remote", fileName: "remote.bin", totalBytes: 42)
+    let hidden = RemoteTaskDto(id: "hidden", fileName: "hidden.bin")
+    let visibleIds = [DownloadsRow.remoteIdPrefix + remote.id, local.taskId]
+    let header = "Name\tURL\tSize (bytes)"
+    let remoteLine = "\nremote.bin\thttps://example.com/remote\t42"
+
+    let mixed = TaskInfoDocument(TaskInfoRow.selected(local: [local], remote: [hidden, remote], visibleIds: visibleIds))
+    #expect(String(decoding: mixed.data, as: UTF8.self) == "\(header)\(remoteLine)\nlocal.bin\thttps://example.com/local\t\nhidden.bin\t\t")
+
+    let remoteOnly = TaskInfoDocument(TaskInfoRow.selected(local: [], remote: [remote], visibleIds: visibleIds))
+    #expect(String(decoding: remoteOnly.data, as: UTF8.self) == "\(header)\(remoteLine)")
+}
+
 @Test func batchTaskInfoDocumentExportsKnownNamesAndSizes() {
     let empty = "ed2k://|file|empty.txt|0|31D6CFE0D16AE931B73C59D7E0C089C0|/"
     let wrongHash = "ed2k://|file|invalid.txt|0|1555B7DCA052B5958EE68DB58A42408D|/"

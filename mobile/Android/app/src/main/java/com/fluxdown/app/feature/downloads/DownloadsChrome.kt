@@ -27,6 +27,7 @@ import com.fluxdown.core.model.Task
 import com.fluxdown.core.model.TaskStatus
 import com.fluxdown.core.protocol.HostCapability
 import com.fluxdown.core.protocol.RemoteCommandAction
+import com.fluxdown.core.protocol.RemoteTaskDto
 import com.fluxdown.core.protocol.RemoteTaskRules
 import com.fluxdown.core.protocol.has
 import com.fluxdown.fluxui.chrome.FluxRailHeader
@@ -137,10 +138,33 @@ private fun RailCategoryItems(view: DownloadsView, nested: Boolean) {
 }
 
 @Immutable
-private data class SelectionCaps(val canResume: Boolean, val canPause: Boolean, val hasLocal: Boolean) {
+private data class SelectionCaps(
+    val canResume: Boolean,
+    val canPause: Boolean,
+    val hasLocal: Boolean,
+    val canExport: Boolean,
+) {
     companion object {
-        val None = SelectionCaps(false, false, false)
+        val None = SelectionCaps(false, false, false, false)
     }
+}
+
+internal fun selectedTaskInfoRows(
+    local: List<Task>,
+    remote: List<RemoteTaskDto>,
+    visibleIds: List<String>,
+): List<TaskInfoRow> {
+    val rows = LinkedHashMap<String, TaskInfoRow>()
+    for (task in local) {
+        rows.putIfAbsent(task.taskId, TaskInfoRow(task.fileName, task.shareUrl, task.totalBytes.takeIf { it > 0 }))
+    }
+    for (task in remote) {
+        rows.putIfAbsent(
+            REMOTE_ID_PREFIX + task.id,
+            TaskInfoRow(task.fileName, task.url, task.totalBytes?.takeIf { it > 0 }),
+        )
+    }
+    return visibleIds.mapNotNull(rows::remove) + rows.values
 }
 
 /**
@@ -190,12 +214,13 @@ private fun SelectionDockContent(modifier: Modifier, reservedEnd: Dp) {
                     if (t.canResume) resume = true
                     if (t.canPause) pause = true
                 }
-                for (r in batch.selected()) {
+                val remote = batch.selected()
+                for (r in remote) {
                     val online = view.remoteTargets[r.toDevice]?.online
                     if (RemoteTaskRules.canIssue(RemoteCommandAction.Resume, r, online)) resume = true
                     if (RemoteTaskRules.canIssue(RemoteCommandAction.Pause, r, online)) pause = true
                 }
-                SelectionCaps(resume, pause, local)
+                SelectionCaps(resume, pause, local, canExport = local || remote.isNotEmpty())
             }
         }
     }
@@ -278,11 +303,9 @@ private fun SelectionDockContent(modifier: Modifier, reservedEnd: Dp) {
             if (caps.hasLocal) {
                 add(SelectionDockAction("move", moveLabel, FluxIcons.Rows3, { actions.moveToQueue(selectedTasks().map { it.taskId }) }))
             }
-            if (caps.hasLocal) {
+            if (caps.canExport) {
                 add(SelectionDockAction("export-info", exportLabel, FluxIcons.FileText, {
-                    val tasks = selectedTasks().associateByTo(LinkedHashMap()) { it.taskId }
-                    val ordered = view.list.visibleIds.mapNotNull(tasks::remove) + tasks.values
-                    exportTaskInfo(ordered.map { TaskInfoRow(it.fileName, it.shareUrl, it.totalBytes.takeIf { size -> size > 0 }) })
+                    exportTaskInfo(selectedTaskInfoRows(selectedTasks(), batch.selected(), view.list.visibleIds))
                 }))
             }
             add(SelectionDockAction("delete", deleteLabel, FluxIcons.Trash2, ::deleteSelected, danger = true))
