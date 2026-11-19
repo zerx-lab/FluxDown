@@ -178,6 +178,7 @@ class TaskActions(
     fun errorText(e: HostException): String = when (e.reason) {
         "taskFilesInUse" -> s(R.string.errReasonTaskFilesInUse)
         "taskFilesNotDeleted" -> s(R.string.errReasonTaskFilesNotDeleted)
+        "taskFileClearPending" -> s(R.string.errReasonTaskFileClearPending)
         "browserRequestRequired" -> s(R.string.taskErrorPostOnlyResume)
         else -> when (e.code) {
             HostErrorCode.Conflict -> s(R.string.localServiceConflict)

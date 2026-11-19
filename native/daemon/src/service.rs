@@ -2951,6 +2951,13 @@ fn actor_error(error: ActorCallError) -> RpcErrorObject {
             message,
             RpcErrorData::new(ApplicationErrorCode::Conflict, false),
         ),
+        ActorCallError::Operation(error @ ActorError::TaskFileClearPending) => {
+            RpcErrorObject::application(
+                error.to_string(),
+                RpcErrorData::new(ApplicationErrorCode::Conflict, false)
+                    .with_reason(fluxdown_protocol::ErrorReason::TaskFileClearPending),
+            )
+        }
         ActorCallError::Operation(ActorError::BrowserRequestRequired) => {
             RpcErrorObject::application(
                 fluxdown_engine::downloader::POST_ONLY_RESUME_MESSAGE,

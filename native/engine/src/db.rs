@@ -128,6 +128,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     orig_last_modified TEXT NOT NULL DEFAULT '',
     audio_url TEXT NOT NULL DEFAULT '',
     file_missing INTEGER NOT NULL DEFAULT 0,
+    file_clear_intent TEXT NOT NULL DEFAULT '',
     file_hash TEXT NOT NULL DEFAULT '',
     range_verified INTEGER NOT NULL DEFAULT 1,
     name_inferred INTEGER NOT NULL DEFAULT 0,
@@ -426,6 +427,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     orig_last_modified TEXT NOT NULL DEFAULT '',
     audio_url TEXT NOT NULL DEFAULT '',
     file_missing INTEGER NOT NULL DEFAULT 0,
+    file_clear_intent TEXT NOT NULL DEFAULT '',
     file_hash TEXT NOT NULL DEFAULT '',
     range_verified INTEGER NOT NULL DEFAULT 1,
     name_inferred INTEGER NOT NULL DEFAULT 0,
@@ -1778,6 +1780,8 @@ impl Db {
             .await?;
         self.add_column_if_missing("tasks", "edit_properties", "TEXT NOT NULL DEFAULT '{}'")
             .await?;
+        self.add_column_if_missing("tasks", "file_clear_intent", "TEXT NOT NULL DEFAULT ''")
+            .await?;
         Ok(())
     }
 
@@ -2380,10 +2384,16 @@ impl Db {
 
     // 0 = present, 1 = unexpectedly missing, 2 = explicitly cleared,
     // 3 = explicit unlink pending. The scanner may only write states 0 and 1.
-    pub(crate) async fn begin_task_file_clear(&self, id: &str) -> Result<bool, DbError> {
+    pub(crate) async fn begin_task_file_clear(
+        &self,
+        id: &str,
+        intent: &str,
+    ) -> Result<bool, DbError> {
         let result = sqlx::query(
-            "UPDATE tasks SET file_missing = 3 WHERE id = $1 AND status = 3 AND file_missing IN (0, 3)",
+            "UPDATE tasks SET file_missing = 3, file_clear_intent = $1
+             WHERE id = $2 AND status = 3 AND file_missing = 0",
         )
+        .bind(intent)
         .bind(id)
         .execute(&self.pool)
         .await?;
@@ -2396,13 +2406,23 @@ impl Db {
         removed: bool,
     ) -> Result<(), DbError> {
         sqlx::query(
-            "UPDATE tasks SET file_missing = $1 WHERE id = $2 AND status = 3 AND file_missing = 3",
+            "UPDATE tasks SET file_missing = $1, file_clear_intent = ''
+             WHERE id = $2 AND status = 3 AND file_missing = 3",
         )
         .bind(if removed { 2 } else { 0 })
         .bind(id)
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    pub(crate) async fn load_task_file_clear_intent(&self, id: &str) -> Result<String, DbError> {
+        Ok(
+            sqlx::query_scalar("SELECT file_clear_intent FROM tasks WHERE id = $1")
+                .bind(id)
+                .fetch_one(&self.pool)
+                .await?,
+        )
     }
 
     pub(crate) async fn pending_task_file_clears(
@@ -2446,8 +2466,7 @@ impl Db {
             .bind(id)
             .execute(&mut *tx)
             .await?;
-        // The new download must not inherit ownership of any old output, including
-        // artifacts left behind by best-effort cleanup.
+        // The new download must not inherit registrations from the previous transfer.
         sqlx::query("DELETE FROM task_artifacts WHERE task_id = $1")
             .bind(id)
             .execute(&mut *tx)
