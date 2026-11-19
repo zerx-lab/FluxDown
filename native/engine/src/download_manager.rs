@@ -6751,6 +6751,7 @@ impl DownloadManager {
                     // 代理地址在建会话时定死：手动来源取「代理」页的服务器（与当前代理模式
                     // 无关），系统来源在这里检测系统代理（macOS / Linux 会拉起子进程，所以
                     // 放在阻塞线程上）。没有可用服务器时直连，设置页有对应提示。
+                    let protocol_fixed = protocol_proxy.is_some();
                     let proxy_url = if let Some(proxy) = protocol_proxy {
                         config.proxy_peers = true;
                         config.proxy_enabled = proxy.mode != ProxyMode::None;
@@ -6772,7 +6773,11 @@ impl DownloadManager {
                             config.proxy_source
                         );
                     }
-                    let route = config.session_route(proxy_url.as_deref());
+                    let mut route = config.session_route(proxy_url.as_deref());
+                    if protocol_fixed && proxy_url.is_some() {
+                        // The endpoint came from the protocol override, not the BitTorrent page's source.
+                        route.0 = crate::protocol_proxy::PROXY_ROUTE;
+                    }
                     log_info!(
                         "[bt] 会话出口 route={} endpoint={}（对端与 DHT {}）",
                         route.0,

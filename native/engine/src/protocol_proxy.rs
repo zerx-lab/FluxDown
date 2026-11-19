@@ -10,8 +10,8 @@ pub const BT_KEY: &str = "proxy_protocol_bt";
 /// eD2K proxy override setting.
 pub const ED2K_KEY: &str = "proxy_protocol_ed2k";
 
-pub(crate) const DIRECT_ROUTE: &str = "protocol:direct";
-pub(crate) const PROXY_ROUTE: &str = "protocol:proxy";
+pub(crate) const DIRECT_ROUTE: &str = crate::auto_proxy::route::PROTOCOL_DIRECT;
+pub(crate) const PROXY_ROUTE: &str = crate::auto_proxy::route::PROTOCOL_PROXY;
 
 pub(crate) fn is_fixed_route(label: &str) -> bool {
     matches!(label, DIRECT_ROUTE | PROXY_ROUTE)

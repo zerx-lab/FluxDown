@@ -98,6 +98,10 @@ pub mod route {
     /// BT 全部流量走代理（含对端连接与 DHT），带来源后缀。
     pub const BT_ALL_MANUAL: &str = "bt:all:manual";
     pub const BT_ALL_SYSTEM: &str = "bt:all:system";
+    /// 协议代理覆盖（设置页「代理 · 按下载协议」）决定出口，实际直连（`direct://`）。
+    pub const PROTOCOL_DIRECT: &str = "protocol:direct";
+    /// 协议代理覆盖决定出口，经覆盖里配置的代理（HTTP 家族任务，或 BT 会话）。
+    pub const PROTOCOL_PROXY: &str = "protocol:proxy";
 
     /// 是否为站点规则标签（Auto 故障转移等 Auto 专属逻辑必须跳过这类任务）。
     pub fn is_rule_label(label: &str) -> bool {

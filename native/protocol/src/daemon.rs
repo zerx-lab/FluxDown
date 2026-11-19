@@ -1952,8 +1952,9 @@ pub struct TaskDto {
     /// 候选来源后缀 `:system`/`:manual`）；站点规则为 `rule:direct` /
     /// `rule:system` / `rule:manual` / `rule:custom`；全局代理为 `global:direct` /
     /// `global:bypass` / `global:manual` / `global:system` / `global:pac`；任务级代理为
-    /// `task:proxy` / `task:direct`；BT 会话为 `bt:direct` / `bt:trackers:{manual,system}` /
-    /// `bt:all:{manual,system}`。空串 = 尚未启动过（或出口构建失败退回全局直连）。
+    /// `task:proxy` / `task:direct`；协议代理覆盖为 `protocol:direct` / `protocol:proxy`；
+    /// BT 会话为 `bt:direct` / `bt:trackers:{manual,system}` / `bt:all:{manual,system}`
+    ///（BT 协议代理覆盖生效时为 `protocol:proxy`）。空串 = 尚未启动过（或出口构建失败退回全局直连）。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub auto_route: String,
     /// Non-secret task overrides from the unified property editor.
