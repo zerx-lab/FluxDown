@@ -265,10 +265,6 @@ cargo run -p fluxdown_cli -- ping
 
 Android 工程在 `mobile/Android`，iOS 工程在 `mobile/FluxDown`；共同使用 `native/mobile` 的 Rust 核心与 `assets/i18n` 共享翻译。
 
-Android 首次新建本机下载时，如果仍使用应用专属默认目录，会提供系统 Download 目录选项，不受已有任务影响。授予存储权限并确认可写目录后才会更改默认位置；也可以不授权，继续使用应用目录。从文件管理器打开 `.torrent` 时，关闭此引导会保留应用目录并继续导入。冷启动或暂时断连（包括读取种子时发生的断连）会显示可取消的等待页。取消只移除当前导入；终止性连接错误则结束所有排队导入，只提示一次。已配置的分类目录仍独立生效，默认位置之后可在下载设置中更改。
-
-单击已完成且对应普通文件的本机任务会用系统应用打开文件，长按可选择「打开文件」或「任务详情」；没有可打开本机文件的任务仍可单击进入详情。详情页确认是普通文件前，「打开文件」不可点击；目录任务仍可打开文件夹，标为文件缺失的任务可确认后重新下载。
-
 ```shell
 # Android：JAVA_HOME 指向 Android Studio 自带 JBR
 (cd mobile/Android && ./gradlew :core:testDebugUnitTest :bridge:testDebugUnitTest :app:assembleDebug)
