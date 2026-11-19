@@ -38,7 +38,7 @@ export interface DialogsState {
   moveStorage: string | null
   /** 「任务限速…」的 BT 任务 id。 */
   taskLimits: string | null
-  addWebSeed: string | null
+  addWebSeed: { taskId: string; session: number } | null
   seedLocal: boolean
 }
 
@@ -167,10 +167,13 @@ export function closeTaskLimits(): void {
 }
 
 export function openAddWebSeed(taskId: string): void {
-  publish({ addWebSeed: taskId })
+  counter += 1
+  publish({ addWebSeed: { taskId, session: counter } })
 }
 
-export function closeAddWebSeed(): void {
+export function closeAddWebSeed(session: number): void {
+  // 请求可以在面板关闭后完成，不能关闭后来打开的面板（即使是同一任务）。
+  if (state.addWebSeed?.session !== session) return
   publish({ addWebSeed: null })
 }
 

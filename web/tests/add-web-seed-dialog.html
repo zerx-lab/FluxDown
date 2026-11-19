@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Add Web Seed dialog regression</title>
+<pre id="result">Running…</pre>
+<div id="root"></div>
+<script type="module">
+  // Open this page at /tests/add-web-seed-dialog.html on the Vite dev server.
+  import { act, createElement } from 'react'
+  import { createRoot } from 'react-dom/client'
+  import { I18nContext } from '../src/i18n/runtime'
+  import { translate } from '../src/i18n/catalog'
+  import { rpc, rpcStore } from '../src/lib/rpc'
+  import { DownloadDialogsHost } from '../src/pages/downloads/dialogs/DownloadDialogsHost'
+  import { openAddWebSeed } from '../src/pages/downloads/dialogs/store'
+
+  const t = (key) => translate('en', key)
+  const result = document.querySelector('#result')
+  const root = createRoot(document.querySelector('#root'))
+  const original = rpc.daemon.task.addWebSeed
+  const requests = []
+  const dialog = () => document.querySelector('[role="dialog"]')
+  const input = () => dialog()?.querySelector('input')
+  const button = (key) => [...dialog().querySelectorAll('button')].find((node) => node.textContent.trim() === t(key))
+
+  function check(condition, message) {
+    if (!condition) throw new Error(message)
+  }
+
+  function enter(url) {
+    const field = input()
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(field, url)
+    field.dispatchEvent(new Event('input', { bubbles: true }))
+  }
+
+  async function submit(taskId, url) {
+    const index = requests.length
+    await act(() => { button('confirm').click() })
+    const request = requests[index]
+    check(requests.length === index + 1 && request.taskId === taskId && request.url === url,
+      `Expected one submission for ${taskId} with ${url}`)
+    return request
+  }
+
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true
+  try {
+    rpc.daemon.task.addWebSeed = ({ taskId, url }) => new Promise((resolve, reject) => {
+      requests.push({ taskId, url, resolve, reject })
+    })
+    rpcStore.update((state) => ({
+      ...state,
+      snapshot: {
+        pendingCaptures: [],
+        daemon: {
+          pendingSelections: [],
+          tasks: ['a', 'b'].map((taskId) => ({ taskId, url: `torrent-file://${taskId}`, fileName: `${taskId}.bin` })),
+        },
+      },
+    }), true)
+    await act(() => {
+      root.render(createElement(I18nContext.Provider, { value: { locale: 'en', t, languages: [] } },
+        createElement(DownloadDialogsHost)))
+    })
+
+    for (const nextTask of ['b', 'a']) {
+      const oldUrl = 'https://example.invalid/old'
+      const newUrl = 'https://example.invalid/new'
+      await act(() => { openAddWebSeed('a') })
+      await act(() => { enter(oldUrl) })
+      const old = await submit('a', oldUrl)
+      if (nextTask === 'a') {
+        // React may batch close and reopen: taskId alone would reuse the old form.
+        await act(() => { button('cancel').click(); openAddWebSeed(nextTask) })
+      } else {
+        await act(() => { button('cancel').click() })
+        check(!dialog(), 'Cancel must work while awaiting the RPC')
+        await act(() => { openAddWebSeed(nextTask) })
+      }
+      check(input()?.value === '', `Reopening ${nextTask} must start with an empty field`)
+      await act(() => { enter(newUrl) })
+      await act(() => { old.resolve({ ok: true }) })
+      check(input()?.value === newUrl, `A stale success closed or reset the dialog for ${nextTask}`)
+
+      const current = await submit(nextTask, newUrl)
+      await act(() => { current.reject(new Error('fixture failure')) })
+      check(dialog()?.querySelector('[role="alert"]')?.textContent === t('localServiceActionFailed'),
+        'The current RPC failure must be shown in the dialog')
+      check(input()?.value === newUrl, 'The current RPC failure must preserve the URL for retry')
+      const retry = await submit(nextTask, newUrl)
+      await act(() => { retry.resolve({ ok: true }) })
+      check(!dialog(), 'The current RPC success must close the dialog')
+    }
+    result.textContent = 'PASS: different-task and same-task reopen, current failure, retry, and success'
+  } catch (error) {
+    result.textContent = `FAIL: ${error.message}`
+    throw error
+  } finally {
+    await act(() => { root.unmount() })
+    rpc.daemon.task.addWebSeed = original
+    rpcStore.reset()
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT
+  }
+</script>
+</html>

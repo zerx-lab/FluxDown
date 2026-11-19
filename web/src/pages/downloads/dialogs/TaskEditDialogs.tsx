@@ -1,6 +1,6 @@
 // 重命名文件 / 更换下载链接 / 修改线程数 / BT 移动数据 / BT 任务限速：任务级小对话框，引擎稳定错误码映射为本地化文案。
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useT } from '../../../i18n'
 import { RpcError, TASK_STATUS, rpc, useTask, useTasksLoading } from '../../../lib/rpc'
@@ -118,12 +118,13 @@ function SingleFieldDialog({
   )
 }
 
-export function AddWebSeedDialog({ taskId }: { taskId: string }) {
+export function AddWebSeedDialog({ taskId, session }: { taskId: string; session: number }) {
   const t = useT()
+  const onClose = useCallback(() => closeAddWebSeed(session), [session])
   return (
     <TaskScoped
       taskId={taskId}
-      onClose={closeAddWebSeed}
+      onClose={onClose}
       render={() => (
         <SingleFieldDialog
           title={t('btAddWebSeedTitle')}
@@ -133,7 +134,7 @@ export function AddWebSeedDialog({ taskId }: { taskId: string }) {
           okLabel={t('confirm')}
           initial=""
           errors={{}}
-          onClose={closeAddWebSeed}
+          onClose={onClose}
           submit={(url) => rpc.daemon.task.addWebSeed({ taskId, url })}
         />
       )}
