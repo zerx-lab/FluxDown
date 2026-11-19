@@ -72,7 +72,7 @@ import {
   getRetiredElements,
   getTabPageUrl,
   ingestResources,
-  isCurrentPage,
+  isCurrentFramePage,
   registerSession,
   setContextTarget,
   setSessionHooks,
@@ -238,8 +238,7 @@ const handlers: { [A in MessageAction]: Handler<A> } = {
     // 批量上报有 200 ms 合批延迟：顶层帧里不属于当前嗅探投影的资源来自已离开的旧页面，
     // 直接丢弃；不能再用它去同步 tab 页面 URL（会把刚换页清空的状态又改回旧页并再次清空）。
     // replaceState 改写过的旧 URL 仍属于当前投影（见 syncTabPageUrl）。
-    const resources =
-      frameId === 0 ? req.resources.filter((r) => isCurrentPage(tabId, r.pageUrl ?? "")) : req.resources;
+    const resources = req.resources.filter((r) => isCurrentFramePage(tabId, frameId, r.pageUrl ?? ""));
     if (resources.length === 0) return { added: 0 };
     const pageUrl = resources.find((r) => r.pageUrl)?.pageUrl || sender.tab?.url || "";
     // 旧页面的 content script 可能仍在运行：开关关闭时丢弃。
@@ -257,7 +256,7 @@ const handlers: { [A in MessageAction]: Handler<A> } = {
     const tabId = senderTabId(sender);
     if (tabId === undefined || !(await sniffEnabled(tabId, req.pageUrl))) return { ok: false };
     const playlist = normalizeHlsPlaylist(req.playlist);
-    if (!playlist || !isCurrentPage(tabId, req.pageUrl)) return { ok: false };
+    if (!playlist || !isCurrentFramePage(tabId, sender.frameId ?? 0, req.pageUrl)) return { ok: false };
     addHlsPlaylist(tabId, req.url, playlist, req.pageUrl);
     return { ok: true };
   },
