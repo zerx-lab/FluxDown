@@ -37,7 +37,9 @@ impl Socks5 {
 
     async fn control(&self) -> Result<TcpStream, DownloadError> {
         let proxy = &self.0;
-        let mut stream = TcpStream::connect((proxy.host.as_str(), proxy.port)).await?;
+        // IPv6 hosts are stored bracketed ("[::1]"); a bracketed &str would go to getaddrinfo and fail.
+        let host = proxy.host.trim_matches(['[', ']']);
+        let mut stream = TcpStream::connect((host, proxy.port)).await?;
         let method = if proxy.username.is_empty() && proxy.password.is_empty() {
             0
         } else {
@@ -308,7 +310,7 @@ impl KadSocket {
 #[cfg(test)]
 mod tests {
     use super::{KadSocket, MAX_WRAPPED_KAD_REQUEST, Socks5, decode_udp, encode_udp};
-    use std::net::{Ipv4Addr, SocketAddr};
+    use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, UdpSocket};
 
@@ -359,6 +361,38 @@ mod tests {
         let mut data = [0; 4];
         stream.read_exact(&mut data).await.expect("peer data");
         assert_eq!(&data, b"peer");
+        server.await.expect("server task");
+    }
+
+    #[tokio::test]
+    async fn ipv6_literal_proxy_host_is_dialed_without_brackets() {
+        let listener = TcpListener::bind((Ipv6Addr::LOCALHOST, 0))
+            .await
+            .expect("ipv6 proxy");
+        let port = listener.local_addr().expect("proxy addr").port();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("control");
+            let mut greeting = [0; 3];
+            stream.read_exact(&mut greeting).await.expect("greeting");
+            assert_eq!(greeting, [5, 1, 0]);
+            stream.write_all(&[5, 0]).await.expect("method");
+            let mut head = [0; 5];
+            stream.read_exact(&mut head).await.expect("request head");
+            assert_eq!(head, [5, 1, 0, 3, 15]);
+            let mut rest = [0; 17];
+            stream.read_exact(&mut rest).await.expect("destination");
+            stream
+                .write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 1])
+                .await
+                .expect("connect reply");
+        });
+        let proxy = Socks5::parse(&format!("socks5h://[::1]:{port}"))
+            .expect("parse")
+            .expect("configured");
+        proxy
+            .connect("example.invalid", 4662)
+            .await
+            .expect("connect via bracketed IPv6 proxy host");
         server.await.expect("server task");
     }
 
