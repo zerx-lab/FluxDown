@@ -2955,6 +2955,13 @@ fn actor_error(error: ActorCallError) -> RpcErrorObject {
             message,
             RpcErrorData::new(ApplicationErrorCode::Conflict, false),
         ),
+        ActorCallError::Operation(ActorError::BrowserRequestRequired) => {
+            RpcErrorObject::application(
+                fluxdown_engine::downloader::POST_ONLY_RESUME_MESSAGE,
+                RpcErrorData::new(ApplicationErrorCode::Conflict, false)
+                    .with_reason(fluxdown_protocol::ErrorReason::BrowserRequestRequired),
+            )
+        }
         ActorCallError::Operation(ActorError::TaskStateConflict(message)) => {
             RpcErrorObject::application(
                 message,

@@ -4030,9 +4030,11 @@ pub struct DownloadManager {
     /// key = task_id，value = 已自动重试次数。
     /// 超过 `max_auto_retries` 后不再重试，保持 error 状态等用户手动恢复。
     auto_retry_counts: HashMap<String, u32>,
-    /// Browser non-GET requests for replay, including redownload after completion.
-    /// Bodies remain process-local and are removed when deleting the task or replacing its URL.
+    /// Process-local browser non-GET requests for resuming unfinished tasks.
+    /// Removed on completion, deletion, or URL replacement; never persisted.
     replayable_requests: HashMap<String, ReplayableRequest>,
+    /// Timed-out primary unlinks that may still be running on the blocking pool.
+    pending_file_unlinks: HashMap<String, JoinHandle<std::io::Result<()>>>,
     /// 拦截器 failed 阶段插件重试的独立额度账本（与 `auto_retry_counts` 互不影响）。
     #[cfg(feature = "plugins")]
     intercept_retry_counts: HashMap<String, u32>,
@@ -4289,6 +4291,7 @@ impl DownloadManager {
             auto_paused_ids: Vec::new(),
             auto_retry_counts: HashMap::new(),
             replayable_requests: HashMap::new(),
+            pending_file_unlinks: HashMap::new(),
             #[cfg(feature = "plugins")]
             intercept_retry_counts: HashMap::new(),
             #[cfg(feature = "plugins")]
@@ -8393,6 +8396,8 @@ impl DownloadManager {
             // （webhook task.completed 照常）。
             let adopted = task.status == 3 && self.skip_adopted(task_id).await;
             if task.status == 3 {
+                // Completed transactions must not retain request bodies that may carry credentials.
+                self.replayable_requests.remove(task_id);
                 #[cfg(all(feature = "bt", feature = "plugins"))]
                 if is_bt_url(&task.url)
                     && !adopted
@@ -12213,6 +12218,9 @@ impl DownloadManager {
             return Err(unavailable());
         }
         if pending {
+            if self.file_unlink_in_progress(task_id) {
+                return Err(unavailable());
+            }
             let removed = probe_pending_file_clear(&task.save_dir, &task.file_name)
                 .await
                 .ok_or_else(unavailable)?;
@@ -12226,6 +12234,8 @@ impl DownloadManager {
             )]));
         }
 
+        // Completion releases the in-memory transaction, but the method remains in the DB.
+        // Refuse a restart without the original request rather than falling back to GET.
         let method = self.db.load_task_request_method(task_id).await?;
         if !method.is_empty()
             && !self
@@ -12233,9 +12243,7 @@ impl DownloadManager {
                 .get(task_id)
                 .is_some_and(|request| request.method == method)
         {
-            return Err(downloader::DownloadError::Other(
-                downloader::POST_ONLY_RESUME_MESSAGE.into(),
-            ));
+            return Err(downloader::DownloadError::BrowserRequestRequired);
         }
 
         // Do not unlink anything here: the cleared name may now belong to another task.
@@ -12302,6 +12310,9 @@ impl DownloadManager {
         // An interrupted clear is resolved by observing the path only; it must never unlink
         // again, because the name may have been taken by another task in the meantime.
         if task.file_clear_state == FileClearState::Pending {
+            if self.file_unlink_in_progress(task_id) {
+                return Err(unavailable());
+            }
             match probe_pending_file_clear(&task.save_dir, &task.file_name).await {
                 Some(true) => {
                     self.db.finish_task_file_clear(task_id, true).await?;
@@ -12335,28 +12346,36 @@ impl DownloadManager {
         files.artifacts.retain(|artifact| artifact != &path);
 
         // Commit the intent first, then unlink the primary output: if it fails nothing else
-        // has been touched yet. An unlink that fails or times out is judged by observing the
-        // path, so an unreachable save drive stays Pending instead of looking cleared.
+        // has been touched yet. Probe only after the unlink worker has stopped.
         if !self.db.begin_task_file_clear(task_id).await? {
             return Err(unavailable());
         }
-        let unlinked =
-            tokio::time::timeout(DELETE_FILE_CLEANUP_TIMEOUT, tokio::fs::remove_file(&path)).await;
+        let mut unlink = tokio::task::spawn_blocking(move || std::fs::remove_file(path));
+        let unlinked = match tokio::time::timeout(DELETE_FILE_CLEANUP_TIMEOUT, &mut unlink).await {
+            Ok(result) => result.map_err(|error| {
+                downloader::DownloadError::Other(format!("output unlink worker failed: {error}"))
+            })?,
+            Err(elapsed) => {
+                // Abort prevents queued work from starting, but cannot stop a running syscall.
+                // Keep the intent and defer further probes until the worker has stopped.
+                unlink.abort();
+                self.pending_file_unlinks
+                    .retain(|_, unlink| !unlink.is_finished());
+                self.pending_file_unlinks.insert(task_id.to_owned(), unlink);
+                return Err(downloader::DownloadError::Other(format!(
+                    "removing output of task {task_id}: {elapsed}"
+                )));
+            }
+        };
         let (removed, unlink_error) = match unlinked {
-            Ok(Ok(())) => (Some(true), None),
-            Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => (
+            Ok(()) => (Some(true), None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (
                 probe_pending_file_clear(&files.save_dir, &files.file_name).await,
                 None,
             ),
-            Ok(Err(error)) => (
+            Err(error) => (
                 probe_pending_file_clear(&files.save_dir, &files.file_name).await,
                 Some(downloader::DownloadError::from(error)),
-            ),
-            Err(elapsed) => (
-                probe_pending_file_clear(&files.save_dir, &files.file_name).await,
-                Some(downloader::DownloadError::Other(format!(
-                    "removing output of task {task_id}: {elapsed}"
-                ))),
             ),
         };
         match (removed, unlink_error) {
@@ -12369,29 +12388,38 @@ impl DownloadManager {
             (None, error) => return Err(error.unwrap_or_else(unavailable)),
         }
 
-        for artifact in files.artifacts {
-            match tokio::time::timeout(
-                DELETE_FILE_CLEANUP_TIMEOUT,
-                tokio::fs::remove_file(&artifact),
-            )
-            .await
-            {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Ok(Err(error)) => crate::logger::report_warning(
-                    "download-manager",
-                    "clear derived output",
-                    &error,
-                ),
-                Err(elapsed) => crate::logger::report_warning(
-                    "download-manager",
-                    "clear derived output",
-                    &elapsed,
-                ),
+        let cleanup_artifacts = async {
+            for artifact in files.artifacts {
+                if let Err(error) = tokio::fs::remove_file(&artifact).await
+                    && error.kind() != std::io::ErrorKind::NotFound
+                {
+                    crate::logger::report_warning(
+                        "download-manager",
+                        "clear derived output",
+                        &error,
+                    );
+                }
             }
+        };
+        if let Err(elapsed) =
+            tokio::time::timeout(DELETE_FILE_CLEANUP_TIMEOUT, cleanup_artifacts).await
+        {
+            crate::logger::report_warning("download-manager", "clear derived outputs", &elapsed);
         }
         self.emit_task_file_cleared(task_id);
         Ok(())
+    }
+
+    fn file_unlink_in_progress(&mut self, task_id: &str) -> bool {
+        if self
+            .pending_file_unlinks
+            .get(task_id)
+            .is_some_and(|unlink| !unlink.is_finished())
+        {
+            return true;
+        }
+        self.pending_file_unlinks.remove(task_id);
+        false
     }
 
     fn emit_task_file_cleared(&self, task_id: &str) {
@@ -24131,6 +24159,25 @@ mod tests {
         assert_eq!(retained.file_clear_state, FileClearState::Pending);
 
         std::fs::rename(&detached, &save_dir).expect("restore save directory");
+        let (release, wait) = tokio::sync::oneshot::channel();
+        let worker = tokio::spawn(async move {
+            wait.await.expect("release unlink worker");
+            Ok(())
+        });
+        manager.pending_file_unlinks.insert(id.to_owned(), worker);
+        assert!(manager.try_restart_missing_task_file(id).await.is_err());
+        assert!(manager.clear_task_file(id).await.is_err());
+        let retained = db.load_task_by_id(id).await.unwrap().unwrap();
+        assert_eq!(retained.file_clear_state, FileClearState::Pending);
+
+        release.send(()).expect("unlink worker still waiting");
+        manager
+            .pending_file_unlinks
+            .get_mut(id)
+            .expect("retained unlink worker")
+            .await
+            .expect("join unlink worker")
+            .expect("unlink completed");
         assert!(
             manager
                 .try_restart_missing_task_file(id)

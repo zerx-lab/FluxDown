@@ -107,6 +107,8 @@ pub enum ErrorReason {
     TaskFilesInUse,
     /// 删除任务：任务文件无法删除（权限 / 磁盘 / 清理超时等）；任务记录已保留。
     TaskFilesNotDeleted,
+    /// 重新下载：浏览器接管的请求必须由浏览器重新发起。
+    BrowserRequestRequired,
     /// 局域网配对：配对码错误或已过期。
     PairingCodeInvalid,
     /// 局域网配对：配对会话不存在或已过期。

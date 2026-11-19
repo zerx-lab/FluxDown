@@ -406,6 +406,8 @@ pub enum ActorError {
     /// 删除被拒：任务文件删不掉，任务记录已保留（`in_use` = 文件正被其他程序占用）。
     #[error("{message}")]
     TaskFilesKept { in_use: bool, message: String },
+    #[error("{}", fluxdown_engine::downloader::POST_ONLY_RESUME_MESSAGE)]
+    BrowserRequestRequired,
 }
 
 /// daemon actor 命令。
@@ -1735,7 +1737,7 @@ async fn execute_operation(
                     .manager
                     .try_restart_missing_task_file(&task_id)
                     .await
-                    .map_err(|error| ActorError::Operation(format!("{error:#}")))?;
+                    .map_err(restart_file_error)?;
                 if restarted {
                     return Ok(ActorResult::Boolean(false));
                 }
@@ -1749,7 +1751,7 @@ async fn execute_operation(
                 .manager
                 .restart_missing_task_file(&task_id)
                 .await
-                .map_err(|error| ActorError::Operation(format!("{error:#}")))?;
+                .map_err(restart_file_error)?;
         }
         ActorOperation::PauseAll => {
             let mut ids = pause_all_task_ids(&engine.db).await?;
@@ -3547,6 +3549,15 @@ fn delete_task_error(error: fluxdown_engine::download_manager::DeleteTaskError) 
             message: format!("task kept: {error}"),
         },
         DeleteTaskError::Record(_) => ActorError::Operation(error.to_string()),
+    }
+}
+
+fn restart_file_error(error: fluxdown_engine::downloader::DownloadError) -> ActorError {
+    match error {
+        fluxdown_engine::downloader::DownloadError::BrowserRequestRequired => {
+            ActorError::BrowserRequestRequired
+        }
+        _ => ActorError::Operation(format!("{error:#}")),
     }
 }
 

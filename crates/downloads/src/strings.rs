@@ -1119,6 +1119,7 @@ pub(crate) fn error_text(
         ErrorReason::SaveDirUnavailable => Some("errReasonSaveDirUnavailable"),
         ErrorReason::TaskFilesInUse => Some("errReasonTaskFilesInUse"),
         ErrorReason::TaskFilesNotDeleted => Some("errReasonTaskFilesNotDeleted"),
+        ErrorReason::BrowserRequestRequired => Some("taskErrorPostOnlyResume"),
         ErrorReason::CloudUnreachable => Some("accountErrorNetwork"),
         ErrorReason::SessionExpired => Some("errReasonSessionExpired"),
         ErrorReason::DeviceUntrusted => Some("accountSessionRevokedUntrusted"),
@@ -1261,6 +1262,15 @@ mod tests {
         );
         assert_eq!(
             strings.task_error_text(&format!("{}\n", super::POST_ONLY_RESUME_MESSAGE)),
+            translator.text("taskErrorPostOnlyResume")
+        );
+        let error = fluxdown_protocol::RpcErrorData::new(
+            fluxdown_protocol::ApplicationErrorCode::Conflict,
+            false,
+        )
+        .with_reason(fluxdown_protocol::ErrorReason::BrowserRequestRequired);
+        assert_eq!(
+            super::error_text(&translator, &error),
             translator.text("taskErrorPostOnlyResume")
         );
         assert_eq!(strings.task_error_text("disk full"), "disk full");

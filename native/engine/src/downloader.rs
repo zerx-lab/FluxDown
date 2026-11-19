@@ -36,6 +36,8 @@ pub enum DownloadError {
     Db(#[from] crate::db::DbError),
     #[error("cancelled")]
     Cancelled,
+    #[error("{}", POST_ONLY_RESUME_MESSAGE)]
+    BrowserRequestRequired,
     #[error("checksum mismatch: {0}")]
     ChecksumMismatch(String),
     /// Server does not honour `Range` requests — returned the enclosed HTTP
