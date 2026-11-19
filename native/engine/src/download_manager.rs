@@ -1370,6 +1370,8 @@ struct DeleteFiles {
     url: String,
     is_bt: bool,
     delete_files: bool,
+    /// 非 BT 的临时路径仍归本任务；清理历史中的旧名字不再持有这些路径。
+    cleanup_named_temps: bool,
     /// 最终产物归本任务所有（已完成、未被批外任务登记、非「采纳」既有文件）。
     owns_final: bool,
     /// 任务启动过（且非采纳）：独立音轨成品可随任务删除。
@@ -1453,7 +1455,7 @@ async fn run_delete_cleanup(job: DeleteCleanup) -> Result<(), downloader::Downlo
         }
     };
     // F010：下载未按时退出时可能仍在写盘，延迟二次清理兜底孤立文件，与单任务路径一致。
-    if handle_timed_out {
+    if handle_timed_out && (files.is_bt || files.cleanup_named_temps) {
         let deferred_delete_files = if files.is_bt {
             files.delete_files && files.owns_final
         } else {
@@ -1559,7 +1561,7 @@ async fn remove_deleted_task_files(
                 );
             }
         }
-    } else {
+    } else if files.cleanup_named_temps {
         let temp_path = PathBuf::from(format!("{}{}", path.display(), downloader::TEMP_EXT));
         keep_first_cleanup_error(&mut first_error, tokio::fs::remove_file(&temp_path).await);
         if files.has_audio_sidecar {
@@ -13671,7 +13673,9 @@ impl DownloadManager {
             }
         };
         if let Some(t) = task {
-            let delete_files = delete_files && t.file_clear_state == FileClearState::None;
+            // 清理或重新绑定前保留的旧名字不能用于删除临时文件或释放预订。
+            let cleanup_named_temps = t.file_clear_state == FileClearState::None;
+            let delete_files = delete_files && cleanup_named_temps;
             // 最终产物认领判定（详见 task_owns_final_file）：未完成任务的
             // save_dir/file_name 可能是未 dedup 的原始名，指向早前同名任务
             // 留下的成品，删除文件时必须跳过。
@@ -13687,7 +13691,10 @@ impl DownloadManager {
             let owns_final = task_owns_final_file(t.status) && !claimed_by_other && !adopted;
             let has_started = task_has_started(t.status, t.downloaded_bytes) && !adopted;
             // 若 handle 超时且文件名已知，记录信息以便后续延迟清理
-            if handle_timed_out && !t.file_name.is_empty() {
+            if handle_timed_out
+                && !t.file_name.is_empty()
+                && (is_bt_url(&t.url) || cleanup_named_temps)
+            {
                 // BT 的最终路径同样只归完成任务所有（dedup 在完成期），
                 // 延迟清理沿用同一守卫；非 BT 走到这里必然启动过（有
                 // handle），file_name 已 dedup，最终路径归本任务命名空间。
@@ -13834,8 +13841,8 @@ impl DownloadManager {
                         }
                     }
                 }
-            } else {
-                // HTTP / FTP / HLS / DASH: always clean up the in-progress temp file
+            } else if cleanup_named_temps {
+                // HTTP / FTP / HLS / DASH: clean up the task's in-progress temp file.
                 let temp_path =
                     PathBuf::from(format!("{}{}", path.display(), downloader::TEMP_EXT));
                 if let Err(e) = tokio::fs::remove_file(&temp_path).await
@@ -14088,15 +14095,16 @@ impl DownloadManager {
             if let Some(files) = &files
                 && !files.is_bt
             {
-                // abort 超时时 on_task_done 不会执行，预订与重试计数在此（&mut self 上下文）
-                // 主动释放；HashSet::remove 幂等。
-                let reserved = PathBuf::from(&files.save_dir).join(format!(
-                    "{}{}",
-                    files.file_name,
-                    downloader::TEMP_EXT
-                ));
-                lock_reserved(&self.reserved_temp_paths).remove(&reserved);
                 self.auto_retry_counts.remove(task_id.as_str());
+                if files.cleanup_named_temps {
+                    // abort 超时时 on_task_done 不会执行，在这里主动释放本任务的预订。
+                    let reserved = PathBuf::from(&files.save_dir).join(format!(
+                        "{}{}",
+                        files.file_name,
+                        downloader::TEMP_EXT
+                    ));
+                    lock_reserved(&self.reserved_temp_paths).remove(&reserved);
+                }
             }
             let job = DeleteCleanup {
                 task_id: task_id.clone(),
@@ -14240,7 +14248,8 @@ impl DownloadManager {
         };
         let mut plans = HashMap::with_capacity(tasks.len());
         for task in tasks {
-            let delete_files = delete_files && task.file_clear_state == FileClearState::None;
+            let cleanup_named_temps = task.file_clear_state == FileClearState::None;
+            let delete_files = delete_files && cleanup_named_temps;
             // 采纳了既有文件（逐任务决定为跳过）的任务不拥有该文件。
             let adopted = facts
                 .exists_decisions
@@ -14269,6 +14278,7 @@ impl DownloadManager {
             let files = DeleteFiles {
                 is_bt: is_bt_url(&task.url),
                 delete_files,
+                cleanup_named_temps,
                 owns_final: task_owns_final_file(task.status) && !claimed && !adopted,
                 has_started: task_has_started(task.status, task.downloaded_bytes) && !adopted,
                 claimed_by_other: claimed,
@@ -24975,6 +24985,59 @@ mod tests {
                 std::fs::read(dir.join(format!("{id}.bin"))).expect("read replacement"),
                 b"replacement"
             );
+        }
+        std::fs::remove_dir_all(&dir).expect("remove test directory");
+    }
+
+    #[tokio::test]
+    async fn deleting_cleared_tasks_preserves_reused_partials() {
+        let dir = unique_filetrack_test_dir("delete_cleared_reused_partials");
+        std::fs::create_dir_all(&dir).expect("create test directory");
+        let save_dir = dir.to_string_lossy();
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        let mut manager = sched_manager(&db, 1);
+        let cases = [("single", "new-single"), ("batch", "new-batch")];
+        for (history, replacement) in cases {
+            let name = format!("{history}.mp4");
+            let path = dir.join(&name);
+            std::fs::write(&path, b"completed").expect("seed output");
+            insert_task_at_status(&db, history, &save_dir, &name, 3).await;
+            db.save_audio_url(history, "http://example.com/audio.m4a")
+                .await
+                .expect("set companion audio URL");
+            manager
+                .clear_task_file(history)
+                .await
+                .expect("clear output");
+            insert_task_at_status(&db, replacement, &save_dir, &name, 2).await;
+            let audio_path = dash_downloader::build_audio_path(&path);
+            for (output, bytes) in [(&path, b"video"), (&audio_path, b"audio")] {
+                let temp = format!("{}{}", output.display(), downloader::TEMP_EXT);
+                std::fs::write(temp, bytes).expect("seed replacement partial");
+            }
+        }
+
+        manager
+            .delete_task("single", false)
+            .await
+            .expect("delete single history record");
+        let batch = manager
+            .delete_tasks_batch(&["batch".to_owned()], false)
+            .await
+            .expect("delete batch history record");
+        assert_eq!(batch.deleted, 1);
+        for (history, replacement) in cases {
+            assert!(db.load_task_by_id(history).await.unwrap().is_none());
+            assert!(db.load_task_by_id(replacement).await.unwrap().is_some());
+            let path = dir.join(format!("{history}.mp4"));
+            let audio_path = dash_downloader::build_audio_path(&path);
+            for (output, bytes) in [(&path, b"video"), (&audio_path, b"audio")] {
+                let temp = format!("{}{}", output.display(), downloader::TEMP_EXT);
+                let actual = std::fs::read(temp).expect("read replacement partial");
+                assert_eq!(actual.as_slice(), bytes);
+            }
         }
         std::fs::remove_dir_all(&dir).expect("remove test directory");
     }
