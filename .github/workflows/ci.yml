@@ -338,10 +338,27 @@ jobs:
           tool: cargo-ndk
       # NDK：runner 预装于 $ANDROID_HOME/ndk/<版本>，:bridge 自动取最高版本。
       - name: Gradle test + assemble + lint
-        run: >-
-          ./gradlew --no-daemon -Pfluxdown.abis=arm64-v8a
-          :core:testDebugUnitTest :fluxui:testDebugUnitTest :bridge:testDebugUnitTest
-          :app:assembleDebug :app:lintDebug
+        run: |
+          set -o pipefail
+          log=$(mktemp)
+          trap 'rm -f "$log"' EXIT
+          run_gradle() {
+            ./gradlew --no-daemon -Pfluxdown.abis=arm64-v8a "$@" \
+              :core:testDebugUnitTest :fluxui:testDebugUnitTest :bridge:testDebugUnitTest \
+              :app:testDebugUnitTest :app:assembleDebug :app:lintDebug
+          }
+          if run_gradle 2>&1 | tee "$log"; then
+            exit 0
+          fi
+          # Hosted runners can receive false negatives from Maven Central while resolving the buildscript.
+          # Refresh remote metadata once; never retry compilation, test or lint failures.
+          if grep -Fq "Could not resolve all artifacts for configuration 'classpath'." "$log" &&
+             grep -Fq 'https://repo.maven.apache.org/maven2/' "$log"; then
+            echo '::warning::Gradle classpath resolution failed; retrying once with refreshed dependency metadata.'
+            run_gradle --refresh-dependencies
+          else
+            exit 1
+          fi
 
   # 发布对齐：iOS 核心（fluxdown_mobile）只在 ios-sideload / ios-testflight 打包时交叉编译，
   # Linux 门禁覆盖不到 Apple 移动目标的 cfg（librqbit 等依赖在 iOS 上的条件编译）。两种 flavor 与 build-core.sh 同参数，

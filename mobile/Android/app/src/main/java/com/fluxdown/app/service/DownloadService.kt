@@ -72,6 +72,7 @@ private const val WAKE_LOCK_TIMEOUT_MS = 10L * 60L * 1000L
 class DownloadService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var watcher: Job? = null
+    private var notificationRefresh: Job? = null
     private var lastShownAtMs = 0L
     private val notificationManager by lazy { checkNotNull(getSystemService(NotificationManager::class.java)) }
     private val taskProgressSelection = TaskProgressSelection()
@@ -90,13 +91,11 @@ class DownloadService : Service() {
                 NotificationManager.ACTION_NOTIFICATION_CHANNEL_BLOCK_STATE_CHANGED -> {
                     if (intent.getStringExtra(NotificationManager.EXTRA_NOTIFICATION_CHANNEL_ID) != TASK_PROGRESS_CHANNEL) return
                 }
+                NotificationManager.ACTION_APP_BLOCK_STATE_CHANGED -> Unit
                 else -> return
             }
-            // Restore the summary or fill a vacancy even if download progress is stalled.
-            if (watcher?.isActive == true) {
-                val activity = (application as FluxApplication).container.localActivity.value
-                if (activity.busy) show(activity)
-            }
+            // Use the same refresh budget as engine updates, including when progress is stalled.
+            if (watcher?.isActive == true) requestNotificationRefresh()
         }
     }
 
@@ -116,7 +115,9 @@ class DownloadService : Service() {
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             ContextCompat.registerReceiver(
-                this, notificationReceiver, IntentFilter(NotificationManager.ACTION_NOTIFICATION_CHANNEL_BLOCK_STATE_CHANGED),
+                this, notificationReceiver, IntentFilter(NotificationManager.ACTION_NOTIFICATION_CHANNEL_BLOCK_STATE_CHANGED).apply {
+                    addAction(NotificationManager.ACTION_APP_BLOCK_STATE_CHANGED)
+                },
                 ContextCompat.RECEIVER_NOT_EXPORTED,
             )
         }
@@ -131,6 +132,7 @@ class DownloadService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         lastStartId = startId
+        notificationRefresh?.cancel()
         // startForegroundService 之后必须在数秒内 startForeground：先用当前量发出，再进入观察
         val container = (application as FluxApplication).container
         show(container.localActivity.value)
@@ -146,19 +148,28 @@ class DownloadService : Service() {
     private suspend fun watch(container: AppContainer) {
         container.localActivity.collectLatest { activity ->
             if (activity.busy) {
-                val wait = THROTTLE_MS - (SystemClock.elapsedRealtime() - lastShownAtMs)
-                if (wait > 0) delay(wait)
-                show(activity)
+                requestNotificationRefresh()
                 if (activity.stale) {
                     delay(STALE_KEEP_MS)
                     stopIfIdle("local session stale for ${STALE_KEEP_MS}ms")
                 }
             } else {
+                notificationRefresh?.cancel()
                 taskProgressSelection.select(emptyList(), emptySet())
                 clearTaskNotifications()
                 delay(IDLE_GRACE_MS)
                 stopIfIdle("idle")
             }
+        }
+    }
+
+    private fun requestNotificationRefresh() {
+        if (notificationRefresh?.isActive == true) return
+        notificationRefresh = scope.launch {
+            val wait = THROTTLE_MS - (SystemClock.elapsedRealtime() - lastShownAtMs)
+            if (wait > 0) delay(wait)
+            val activity = (application as FluxApplication).container.localActivity.value
+            if (activity.busy) show(activity)
         }
     }
 
@@ -176,12 +187,14 @@ class DownloadService : Service() {
         releaseWakeLock()
         stopForeground(STOP_FOREGROUND_REMOVE)
         watcher?.cancel()
+        notificationRefresh?.cancel()
     }
 
     /** Android 15+：dataSync 前台服务 24h 内累计 6 小时上限；系统回调后必须立即停止，回到前台时由 [DownloadServiceEffect] 重新拉起。 */
     override fun onTimeout(startId: Int, fgsType: Int) {
         AppDiagnostics.event("download service timed out (type=$fgsType); stopping until the app returns to foreground")
         watcher?.cancel()
+        notificationRefresh?.cancel()
         releaseWakeLock()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -220,9 +233,16 @@ class DownloadService : Service() {
             notice.release()
             posted.remove()
         }
+        var activeIds: Set<String>? = null
         for (transfer in transfers) {
             val notice = shownTasks.getOrPut(transfer.taskId) { newTaskProgressNotice(transfer.taskId) }
-            if (notice.transfer == transfer) continue
+            if (notice.transfer == transfer) {
+                // A notice can disappear without a delete intent. Only check on an event, never poll.
+                val ids = activeIds ?: notificationManager.activeNotifications.mapNotNullTo(HashSet(shownTasks.size)) {
+                    if (it.id == TASK_PROGRESS_ID && it.notification.channelId == TASK_PROGRESS_CHANNEL) it.tag else null
+                }.also { activeIds = it }
+                if (transfer.taskId in ids) continue
+            }
             val builder = progressBuilder(this, TASK_PROGRESS_CHANNEL)
                 .setContentIntent(notice.open)
                 .setDeleteIntent(notice.dismiss)
