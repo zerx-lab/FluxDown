@@ -13,7 +13,7 @@ internal class TaskProgressSelection {
         dismissedIds.add(taskId)
     }
 
-    fun select(transfers: List<Transfer>): List<Transfer> {
+    fun select(transfers: List<Transfer>, shownIds: Set<String>): List<Transfer> {
         if (transfers.isEmpty()) {
             dismissedIds.clear()
             return emptyList()
@@ -25,8 +25,16 @@ internal class TaskProgressSelection {
         }
         // Preparing contributes to the foreground summary, but has no individual download progress yet.
         return buildList(MAX_TASK_PROGRESS_NOTIFICATIONS) {
+            // A new task or a queue reorder must not evict an already visible download.
+            if (shownIds.isNotEmpty()) {
+                for (transfer in transfers) {
+                    if (transfer.status != TaskStatus.Downloading || transfer.taskId !in shownIds || transfer.taskId in dismissedIds) continue
+                    add(transfer)
+                    if (size == MAX_TASK_PROGRESS_NOTIFICATIONS) return@buildList
+                }
+            }
             for (transfer in transfers) {
-                if (transfer.status != TaskStatus.Downloading || transfer.taskId in dismissedIds) continue
+                if (transfer.status != TaskStatus.Downloading || transfer.taskId in shownIds || transfer.taskId in dismissedIds) continue
                 add(transfer)
                 if (size == MAX_TASK_PROGRESS_NOTIFICATIONS) break
             }

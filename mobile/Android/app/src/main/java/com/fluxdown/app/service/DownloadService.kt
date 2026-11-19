@@ -76,14 +76,27 @@ class DownloadService : Service() {
     private val notificationManager by lazy { checkNotNull(getSystemService(NotificationManager::class.java)) }
     private val taskProgressSelection = TaskProgressSelection()
     private val shownTasks = mutableMapOf<String, TaskProgressNotice>()
-    private val dismissReceiver = object : BroadcastReceiver() {
+    private val notificationReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            val taskId = intent.data?.lastPathSegment ?: return
-            val notice = shownTasks.remove(taskId) ?: return
-            taskProgressSelection.dismiss(taskId)
-            // A progress update can slip in between the swipe and delivery of its delete intent.
-            notificationManager.cancel(taskId, TASK_PROGRESS_ID)
-            notice.release()
+            when (intent.action) {
+                ACTION_DISMISS_TASK_PROGRESS -> {
+                    val taskId = intent.data?.lastPathSegment ?: return
+                    val notice = shownTasks.remove(taskId) ?: return
+                    taskProgressSelection.dismiss(taskId)
+                    // A progress update can slip in between the swipe and delivery of its delete intent.
+                    notificationManager.cancel(taskId, TASK_PROGRESS_ID)
+                    notice.release()
+                }
+                NotificationManager.ACTION_NOTIFICATION_CHANNEL_BLOCK_STATE_CHANGED -> {
+                    if (intent.getStringExtra(NotificationManager.EXTRA_NOTIFICATION_CHANNEL_ID) != TASK_PROGRESS_CHANNEL) return
+                }
+                else -> return
+            }
+            // Restore the summary or fill a vacancy even if download progress is stalled.
+            if (watcher?.isActive == true) {
+                val activity = (application as FluxApplication).container.localActivity.value
+                if (activity.busy) show(activity)
+            }
         }
     }
 
@@ -98,9 +111,15 @@ class DownloadService : Service() {
         ensureChannel(CHANNEL_ID, R.string.mobileDlNotifChannel, R.string.mobileDlNotifChannelDesc)
         ensureChannel(TASK_PROGRESS_CHANNEL, R.string.mobileDlNotifTaskChannel, R.string.mobileDlNotifTaskChannelDesc)
         ContextCompat.registerReceiver(
-            this, dismissReceiver, IntentFilter(ACTION_DISMISS_TASK_PROGRESS).apply { addDataScheme("fluxdown") },
+            this, notificationReceiver, IntentFilter(ACTION_DISMISS_TASK_PROGRESS).apply { addDataScheme("fluxdown") },
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            ContextCompat.registerReceiver(
+                this, notificationReceiver, IntentFilter(NotificationManager.ACTION_NOTIFICATION_CHANNEL_BLOCK_STATE_CHANGED),
+                ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+        }
         // 前台服务异常退出时系统可能仍保留普通通知；重新启动后按当前任务重建。
         for (entry in notificationManager.activeNotifications) {
             if (entry.id == TASK_PROGRESS_ID && entry.notification.channelId == TASK_PROGRESS_CHANNEL) {
@@ -135,7 +154,7 @@ class DownloadService : Service() {
                     stopIfIdle("local session stale for ${STALE_KEEP_MS}ms")
                 }
             } else {
-                taskProgressSelection.select(emptyList())
+                taskProgressSelection.select(emptyList(), emptySet())
                 clearTaskNotifications()
                 delay(IDLE_GRACE_MS)
                 stopIfIdle("idle")
@@ -173,14 +192,14 @@ class DownloadService : Service() {
         releaseWakeLock()
         scope.cancel()
         clearTaskNotifications()
-        unregisterReceiver(dismissReceiver)
+        unregisterReceiver(notificationReceiver)
         super.onDestroy()
     }
 
     /** 重复调用 `startForeground` 即更新通知，且不受通知权限影响；服务类型参数 Android 10 以下由 ServiceCompat 忽略。 */
     private fun show(activity: LocalActivity) {
         lastShownAtMs = SystemClock.elapsedRealtime()
-        val selected = if (activity.stale) emptyList() else taskProgressSelection.select(activity.transfers)
+        val selected = if (activity.stale) emptyList() else taskProgressSelection.select(activity.transfers, shownTasks.keys)
         val visible = if (selected.isNotEmpty() && notificationManager.areNotificationsEnabled() &&
             notificationManager.getNotificationChannel(TASK_PROGRESS_CHANNEL)?.importance != NotificationManager.IMPORTANCE_NONE
         ) selected else emptyList()
@@ -264,7 +283,7 @@ class DownloadService : Service() {
 
 /**
  * 进度通知：
- * - 1 个活跃任务：进度条与正文优先使用分片进度，否则沿用字节进度与剩余时间；
+ * - 1 个活跃任务：有逐任务通知时仅显示任务数量与等待数；否则优先使用分片进度，再回退字节进度；
  * - 多个活跃任务：进度条汇总相同口径，混合分片与字节时为不确定态（[TransferSummary]），
  *   展开后逐行列出前 [DETAIL_LINES] 个任务的进度与速度，其余折叠为「等 N 个文件」；
  * - 只有排队 / 待重试：标题说明等待，无进度条。
@@ -280,10 +299,8 @@ private fun buildNotification(context: Context, a: LocalActivity, hasIndividual:
         .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
     val waiting = if (a.waiting > 0) context.str(R.string.mobileDlNotifWaiting, "n" to a.waiting) else null
     when {
-        single != null -> {
-            showTransfer(context, builder, single, waiting)
-            if (hasIndividual) builder.setContentTitle(context.str(R.string.mobileDlNotifActive, "n" to 1))
-        }
+        hasIndividual -> builder.setContentTitle(context.str(R.string.mobileDlNotifActive, "n" to 1)).setContentText(waiting)
+        single != null -> showTransfer(context, builder, single, waiting)
         transfers.isNotEmpty() -> {
             val summary = TransferSummary.of(transfers)
             val headline = listOfNotNull(
