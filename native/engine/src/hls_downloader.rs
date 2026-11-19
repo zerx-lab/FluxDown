@@ -50,7 +50,7 @@ use crate::dash_downloader::{
 };
 use crate::downloader::{
     DB_SAVE_INTERVAL_SECS, DownloadError, DownloadParams, DownloadSpec, ProgressUpdate,
-    RequestSpec, TEMP_EXT, claim_final_name, dedup_filename,
+    RequestSpec, TEMP_EXT, claim_final_name, claim_output_name, dedup_output_name,
 };
 use crate::events::EventSink;
 use crate::intercept::ctx::{
@@ -2710,6 +2710,7 @@ async fn finalize_recording(
 
     // 独立音轨:两份 temp 直接 ffmpeg 流复制成 mp4,产物取代 .ts 输出。mux 过程中
     // 暂停/取消时 temp 与两个续传检查点原样保留,恢复后只需重做 mux。
+    let mut separate_audio = None;
     if let Some(audio_temp) = audio_temp_path.as_deref()
         && let Some(ffmpeg_bin) = ffmpeg.as_deref()
     {
@@ -2755,51 +2756,7 @@ async fn finalize_recording(
                 return Ok(mp4_size);
             }
             Err(DownloadError::Cancelled) => return Err(DownloadError::Cancelled),
-            Err(e) => {
-                // 合并失败:退回仅视频输出,音轨保留为 sidecar 并留下 warning 活动。
-                let sidecar = build_audio_path(&dest_path);
-                let moved = if p.is_resume {
-                    tokio::fs::rename(audio_temp, &sidecar).await
-                } else {
-                    crate::downloader::claim_rename(audio_temp, &sidecar).await
-                }
-                .is_ok();
-                crate::log_warn!(
-                    "[hls-download] task {} audio/video mux failed: {}; keeping video only",
-                    p.task_id,
-                    e
-                );
-                let message = if moved {
-                    format!(
-                        "音频轨与视频合并失败（{e}），输出仅含视频；音频轨已保存为 {}",
-                        sidecar.display()
-                    )
-                } else {
-                    format!("音频轨与视频合并失败（{e}），输出仅含视频，输出文件可能没有声音")
-                };
-                if let Err(journal_error) = crate::task_activity::record(
-                    &p.db,
-                    p.sink.as_ref(),
-                    &p.task_id,
-                    "warning",
-                    message,
-                    None,
-                )
-                .await
-                {
-                    crate::log_error!(
-                        "[task-activity] failed to persist warning: {}",
-                        journal_error
-                    );
-                }
-                if let Err(error) = p.db.delete_config(&audio_resume_key(&p.task_id)).await {
-                    crate::logger::report_warning(
-                        "hls-download",
-                        "remove_audio_checkpoint",
-                        &error,
-                    );
-                }
-            }
+            Err(error) => separate_audio = Some((audio_temp, error)),
         }
     }
 
@@ -2811,16 +2768,23 @@ async fn finalize_recording(
     // 完成期占名:与 HTTP/ED2K 相同的 create_new 不覆盖语义。原名被占用时
     // dedup 换名(overwrite 策略只对原名删除旧文件),并把最终文件名写回 DB。
     let avoid = sibling_avoid(p).await;
-    let chosen = claim_final_name(&temp_path, &save_dir, &actual_name, &p.overwrite, &avoid)
-        .await
-        .map_err(|e| {
-            DownloadError::Other(format!(
-                "failed to rename {} -> {}: {}",
-                temp_path.display(),
-                dest_path.display(),
-                e
-            ))
-        })?;
+    let chosen = claim_output_name(
+        &temp_path,
+        &save_dir,
+        &actual_name,
+        &p.overwrite,
+        &avoid,
+        separate_audio.is_some(),
+    )
+    .await
+    .map_err(|e| {
+        DownloadError::Other(format!(
+            "failed to rename {} -> {}: {}",
+            temp_path.display(),
+            dest_path.display(),
+            e
+        ))
+    })?;
     let dest_path = if chosen == actual_name {
         dest_path
     } else {
@@ -2875,6 +2839,7 @@ async fn finalize_recording(
         is_fmp4,
         ffmpeg.as_deref(),
         cancel,
+        separate_audio.is_some(),
     )
     .await
     {
@@ -2917,6 +2882,9 @@ async fn finalize_recording(
                 {
                     tracing::debug!("download progress receiver closed");
                 }
+                if let Some((audio_temp, error)) = separate_audio {
+                    retain_separate_audio(p, audio_temp, &mp4_path, &avoid, error).await?;
+                }
                 return Ok(mp4_size);
             }
             Err(e) => {
@@ -2938,7 +2906,54 @@ async fn finalize_recording(
         }
     }
 
+    if let Some((audio_temp, error)) = separate_audio {
+        retain_separate_audio(p, audio_temp, &dest_path, &avoid, error).await?;
+    }
     Ok(downloaded_bytes)
+}
+
+async fn retain_separate_audio(
+    p: &DownloadParams,
+    audio_temp: &Path,
+    video: &Path,
+    avoid: &std::collections::HashSet<String>,
+    mux_error: DownloadError,
+) -> Result<(), DownloadError> {
+    let desired = build_audio_path(video);
+    let (Some(dir), Some(name)) = (
+        desired.parent(),
+        desired.file_name().and_then(|n| n.to_str()),
+    ) else {
+        return Err(DownloadError::Other(format!(
+            "invalid audio output: {}",
+            desired.display()
+        )));
+    };
+    let audio = claim_final_name(
+        audio_temp,
+        dir,
+        name,
+        &crate::file_exists::OverwritePolicy::Never,
+        avoid,
+    )
+    .await?;
+    let audio = dir.join(audio);
+    crate::dash_downloader::record_audio_output(p, &audio).await?;
+    if let Err(error) = p.db.delete_config(&audio_resume_key(&p.task_id)).await {
+        crate::logger::report_warning("hls-download", "remove_audio_checkpoint", &error);
+    }
+    let message = format!(
+        "音频轨与视频合并失败（{mux_error}），输出仅含视频；音频轨已保存为 {}",
+        audio.display()
+    );
+    log_warn!("[hls-download] task {} {}", p.task_id, message);
+    if let Err(error) =
+        crate::task_activity::record(&p.db, p.sink.as_ref(), &p.task_id, "warning", message, None)
+            .await
+    {
+        crate::logger::report_warning("task-activity", "persist audio mux warning", &error);
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -2974,6 +2989,7 @@ async fn remux_ts_to_mp4(
     is_fmp4: bool,
     ffmpeg: Option<&std::path::Path>,
     cancel: &tokio_util::sync::CancellationToken,
+    companion_audio: bool,
 ) -> Option<PathBuf> {
     let ext = ts_path.extension().and_then(|e| e.to_str()).unwrap_or("");
     if !ext.eq_ignore_ascii_case("ts") {
@@ -3006,14 +3022,14 @@ async fn remux_ts_to_mp4(
     let stem = ts_path.file_stem().and_then(|s| s.to_str())?;
     let desired_name = format!("{}.mp4", stem);
     let allow_overwrite = overwrite.permits(&desired_name);
-    let unique_name = dedup_filename(
-        parent,
-        &desired_name,
-        &std::collections::HashSet::new(),
-        &std::collections::HashSet::new(),
-        overwrite,
-    )
-    .await;
+    let avoid = std::collections::HashSet::new();
+    let mut unique_name =
+        dedup_output_name(parent, &desired_name, None, &avoid, overwrite, false).await;
+    // For the original stem the audio temp belongs to this recording. A different
+    // stem must also be free of audio outputs and temps from other recordings.
+    if companion_audio && unique_name != desired_name {
+        unique_name = dedup_output_name(parent, &desired_name, None, &avoid, overwrite, true).await;
+    }
     let mp4_path = parent.join(&unique_name);
 
     let ts_owned = ts_path.to_owned();
@@ -3072,6 +3088,7 @@ async fn remux_ts_to_mp4(
                 // AlreadyExists——删除旧文件后重试占名一次(覆盖旧文件)。目标是
                 // 目录、删除失败或二次抢占时维持既有失败路径(保留 .ts)。
                 let overwrote = allow_overwrite
+                    && unique_name == desired_name
                     && e.kind() == std::io::ErrorKind::AlreadyExists
                     && mp4_owned.is_file()
                     && std::fs::remove_file(&mp4_owned).is_ok()
@@ -6905,6 +6922,7 @@ v360.m3u8\n\
             false,
             Some(ffmpeg.as_path()),
             &cancel,
+            false,
         )
         .await;
 
@@ -6966,6 +6984,7 @@ v360.m3u8\n\
             false,
             None,
             &cancel,
+            false,
         )
         .await;
 

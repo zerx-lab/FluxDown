@@ -2131,8 +2131,10 @@ async fn finalize_start_file_name(
     }
     let save_path = std::path::PathBuf::from(&params.save_dir);
     let is_hls = hls_downloader::is_hls_url(&params.url);
-    let companion_audio = params.audio_url.is_some()
-        || (ctx.restart_missing && (is_hls || dash_downloader::is_dash_url(&params.url)));
+    // Overwrite authorizes the primary output, not an existing audio companion.
+    // A manifest can declare separate audio even when audio_url is absent.
+    let companion_audio =
+        params.audio_url.is_some() || is_hls || dash_downloader::is_dash_url(&params.url);
     if let Some(candidate) = task_target_path(&params.save_dir, &params.file_name) {
         let existing = match tokio::fs::metadata(&candidate).await {
             Ok(metadata) if metadata.is_file() => Some(metadata),
@@ -2172,6 +2174,7 @@ async fn finalize_start_file_name(
             };
             if ctx.restart_missing {
                 // Explicit redownload cannot adopt an unrelated file as its result.
+                // An explicit Overwrite still follows the normal new-download policy.
                 if facts.decision == crate::file_exists::ExistsDecision::Skip {
                     facts.decision = crate::file_exists::ExistsDecision::Rename;
                 }
@@ -12400,14 +12403,8 @@ impl DownloadManager {
             return Err(unavailable());
         }
         let path = PathBuf::from(&files.save_dir).join(&files.file_name);
-        if files.has_audio_sidecar {
-            let audio = dash_downloader::build_audio_path(&path);
-            if let Some(name) = audio.file_name().and_then(|name| name.to_str())
-                && !file_name_claimed_by_others(&self.db, &files.save_dir, name, &ids).await
-            {
-                files.artifacts.push(audio);
-            }
-        }
+        // A protocol or matching stem is not proof of ownership. The downloaders
+        // register actual fallback outputs in the same artifact list as plugin outputs.
         self.file_hash_jobs.cancel(task_id);
         files.artifacts.retain(|artifact| artifact != &path);
 
@@ -16282,7 +16279,7 @@ impl DownloadManager {
         }
         if let Err(error) = self
             .db
-            .set_task_file_name_with_source(task_id, new_name, false)
+            .rename_task_output(task_id, new_name, paths[2].filter(|_| moved[2]))
             .await
         {
             return Err(rollback_rename(&paths, &moved, format!("db: {error}")).await);
@@ -17836,6 +17833,7 @@ mod file_exists_tests;
 mod tests {
     use super::*;
     use crate::file_exists::OverwritePolicy;
+    use std::time::Duration;
 
     #[cfg(feature = "bt")]
     #[test]
@@ -24272,7 +24270,9 @@ mod tests {
         std::fs::remove_dir_all(&dir).expect("remove test directory");
     }
 
-    async fn redownload_test_server() -> (String, tokio::task::JoinHandle<()>) {
+    async fn redownload_test_server(
+        late_hls_conflicts: Option<PathBuf>,
+    ) -> (String, tokio::task::JoinHandle<()>) {
         use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -24286,8 +24286,53 @@ mod tests {
                 let mut request = String::new();
                 stream.read_line(&mut request).await.expect("read request");
                 let head = request.starts_with("HEAD ");
-                let audio = request.contains(" /audio ");
-                let body = if audio { "new audio" } else { "new video" };
+                const VIDEO: &str = r#"<AdaptationSet contentType="video" mimeType="video/mp4">
+                    <Representation id="v" bandwidth="100">
+                        <SegmentList><SegmentURL media="video"/></SegmentList>
+                    </Representation>
+                </AdaptationSet>"#;
+                const AUDIO: &str = r#"<AdaptationSet contentType="audio" mimeType="audio/mp4">
+                    <Representation id="a" bandwidth="100">
+                        <SegmentList><SegmentURL media="audio"/></SegmentList>
+                    </Representation>
+                </AdaptationSet>"#;
+                let path = request.split_whitespace().nth(1).expect("request path");
+                let manifest;
+                let body: &str = match path {
+                    "/video.mpd" | "/solo.mpd" => {
+                        let audio = if path == "/video.mpd" { AUDIO } else { "" };
+                        manifest = format!(
+                            r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static"
+                                mediaPresentationDuration="PT1S" minBufferTime="PT1S">
+                                <Period duration="PT1S">{VIDEO}{audio}</Period>
+                            </MPD>"#
+                        );
+                        &manifest
+                    }
+                    "/video.m3u8" => {
+                        "#EXTM3U\n#EXT-X-VERSION:7\n\
+                         #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aud\",NAME=\"en\",DEFAULT=YES,URI=\"sound.m3u8\"\n\
+                         #EXT-X-STREAM-INF:BANDWIDTH=1000,AUDIO=\"aud\"\nstream.m3u8\n"
+                    }
+                    "/stream.m3u8" => {
+                        "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:1\n\
+                         #EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:1,\nhls-video\n#EXT-X-ENDLIST\n"
+                    }
+                    "/sound.m3u8" => {
+                        "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\naudio\n#EXT-X-ENDLIST\n"
+                    }
+                    "/init.mp4" => "init",
+                    "/audio" => "new audio",
+                    "/hls-video" => {
+                        if let Some(dir) = &late_hls_conflicts {
+                            std::fs::write(dir.join("video (1).mp4"), b"late video").unwrap();
+                            std::fs::write(dir.join("video (1) (1).audio.m4a"), b"late audio")
+                                .unwrap();
+                        }
+                        "new video"
+                    }
+                    _ => "new video",
+                };
                 let mut probe = false;
                 loop {
                     let mut line = String::new();
@@ -24328,7 +24373,7 @@ mod tests {
 
     #[tokio::test]
     async fn fresh_dash_track_pair_avoids_existing_audio_output() {
-        let (base, server) = redownload_test_server().await;
+        let (base, server) = redownload_test_server(None).await;
         let dir = unique_filetrack_test_dir("fresh_dash_audio_conflict");
         std::fs::create_dir_all(&dir).expect("create save directory");
         let existing_audio = dir.join("video.audio.m4a");
@@ -24383,8 +24428,140 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fresh_mpd_tracks_are_named_and_cleared_by_ownership() {
+        let dir = unique_filetrack_test_dir("fresh_mpd_audio_conflict");
+        std::fs::create_dir_all(&dir).unwrap();
+        let existing_audio = dir.join("video.audio.m4a");
+        std::fs::write(&existing_audio, b"existing audio").unwrap();
+        let ffmpeg = dir.join("unusable-ffmpeg");
+        std::fs::write(&ffmpeg, b"not an executable").unwrap();
+        let (base, server) = redownload_test_server(None).await;
+        let db = Db::connect("sqlite::memory:").await.unwrap();
+        db.set_config(
+            crate::components::CONFIG_FFMPEG_PATH,
+            &ffmpeg.to_string_lossy(),
+        )
+        .await
+        .unwrap();
+        let mut manager = sched_manager(&db, 1);
+        let mut done_rx = manager.take_done_rx().unwrap();
+        for (manifest, video, has_audio) in [
+            ("video.mpd", "video (1).mp4", true),
+            ("solo.mpd", "solo.mp4", false),
+        ] {
+            let id = manager
+                .create_task(NewTaskSpec {
+                    url: format!("{base}/{manifest}"),
+                    file_name: manifest.to_owned(),
+                    save_dir: dir.to_string_lossy().into_owned(),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            let done = tokio::time::timeout(Duration::from_secs(15), done_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(done.task_id, id);
+            manager.on_task_done(&done).await;
+            let task = db.load_task_by_id(&id).await.unwrap().unwrap();
+            assert_eq!(task.status, 3, "{}", task.error_message);
+            assert_eq!(task.file_name, video);
+            let video = dir.join(video);
+            let audio = dash_downloader::build_audio_path(&video);
+            assert_eq!(std::fs::read(&video).unwrap(), b"new video");
+            if has_audio {
+                assert_eq!(std::fs::read(&audio).unwrap(), b"new audio");
+            } else {
+                std::fs::write(&audio, b"independent audio").unwrap();
+            }
+
+            manager.clear_task_file(&id).await.unwrap();
+            assert!(!video.exists());
+            if has_audio {
+                assert!(!audio.exists());
+            } else {
+                assert_eq!(std::fs::read(&audio).unwrap(), b"independent audio");
+            }
+            let retained = db.load_task_by_id(&id).await.unwrap().unwrap();
+            assert_eq!(retained.file_clear_state, FileClearState::Cleared);
+        }
+        assert_eq!(std::fs::read(existing_audio).unwrap(), b"existing audio");
+        server.abort();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fresh_hls_fallback_checks_audio_at_the_final_mp4_name() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = unique_filetrack_test_dir("fresh_hls_audio_conflict");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("video.audio.m4a"), b"existing audio").unwrap();
+        let ffmpeg = dir.join("failing-mux");
+        // HLS fetches the separate audio rendition only if the version probe succeeds.
+        std::fs::write(&ffmpeg, "#!/bin/sh\n[ \"$1\" = -version ]\n").unwrap();
+        std::fs::set_permissions(&ffmpeg, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let (base, server) = redownload_test_server(Some(dir.clone())).await;
+        let db = Db::connect("sqlite::memory:").await.unwrap();
+        db.set_config(
+            crate::components::CONFIG_FFMPEG_PATH,
+            &ffmpeg.to_string_lossy(),
+        )
+        .await
+        .unwrap();
+        let mut manager = sched_manager(&db, 1);
+        let mut done_rx = manager.take_done_rx().unwrap();
+        let id = manager
+            .create_task(NewTaskSpec {
+                url: format!("{base}/video.m3u8"),
+                file_name: "video.m3u8".into(),
+                save_dir: dir.to_string_lossy().into_owned(),
+                unattended: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let done = tokio::time::timeout(Duration::from_secs(15), done_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(done.task_id, id);
+        manager.on_task_done(&done).await;
+        let task = db.load_task_by_id(&id).await.unwrap().unwrap();
+        assert_eq!(task.status, 3, "{}", task.error_message);
+        assert_eq!(task.file_name, "video (1) (2).mp4");
+        let video = dir.join(task.file_name);
+        let audio = dash_downloader::build_audio_path(&video);
+        assert_eq!(std::fs::read(&video).unwrap(), b"initnew video");
+        assert_eq!(std::fs::read(&audio).unwrap(), b"new audio");
+
+        manager.rename_task(&id, "renamed.mp4").await.unwrap();
+        assert!(!video.exists());
+        assert!(!audio.exists());
+        std::fs::write(&audio, b"replacement at old name").unwrap();
+        let video = dir.join("renamed.mp4");
+        let renamed_audio = dash_downloader::build_audio_path(&video);
+        assert_eq!(std::fs::read(&renamed_audio).unwrap(), b"new audio");
+        manager.clear_task_file(&id).await.unwrap();
+        assert!(!video.exists());
+        assert!(!renamed_audio.exists());
+        assert_eq!(std::fs::read(audio).unwrap(), b"replacement at old name");
+        for (name, bytes) in [
+            ("video.audio.m4a", b"existing audio".as_slice()),
+            ("video (1).mp4", b"late video".as_slice()),
+            ("video (1) (1).audio.m4a", b"late audio".as_slice()),
+        ] {
+            assert_eq!(std::fs::read(dir.join(name)).unwrap(), bytes);
+        }
+        server.abort();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn redownload_cleared_file_does_not_reuse_stale_outputs_or_checkpoints() {
-        let (base, server) = redownload_test_server().await;
+        let (base, server) = redownload_test_server(None).await;
         // Immediate HTTP, queued track pair, and a queued track pair restored on startup.
         for (pair, recover) in [(false, false), (true, false), (true, true)] {
             let dir = unique_filetrack_test_dir("fresh_redownload");

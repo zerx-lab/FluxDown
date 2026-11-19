@@ -2445,6 +2445,8 @@ impl Db {
             .bind(id)
             .execute(&mut *tx)
             .await?;
+        // The new download must not inherit ownership of any old output, including
+        // artifacts left behind by best-effort cleanup.
         sqlx::query("DELETE FROM task_artifacts WHERE task_id = $1")
             .bind(id)
             .execute(&mut *tx)
@@ -2972,6 +2974,51 @@ impl Db {
         Ok(())
     }
 
+    pub(crate) async fn rename_task_output(
+        &self,
+        task_id: &str,
+        file_name: &str,
+        companion: Option<(&Path, &Path)>,
+    ) -> Result<(), DbError> {
+        let Some((old, new)) = companion else {
+            return self
+                .set_task_file_name_with_source(task_id, file_name, false)
+                .await;
+        };
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE tasks SET file_name = $1, name_inferred = 0 WHERE id = $2")
+            .bind(file_name)
+            .bind(task_id)
+            .execute(&mut *tx)
+            .await?;
+        Self::rename_registered_artifact(&mut tx, task_id, old, new).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn rename_registered_artifact(
+        tx: &mut sqlx::Transaction<'_, Any>,
+        task_id: &str,
+        old: &Path,
+        new: &Path,
+    ) -> Result<(), DbError> {
+        if let (Some(old), Some(new)) = (
+            old.file_name().and_then(|name| name.to_str()),
+            new.file_name().and_then(|name| name.to_str()),
+        ) && old != new
+        {
+            sqlx::query(
+                "UPDATE task_artifacts SET file_name = $1 WHERE task_id = $2 AND file_name = $3",
+            )
+            .bind(new)
+            .bind(task_id)
+            .bind(old)
+            .execute(&mut **tx)
+            .await?;
+        }
+        Ok(())
+    }
+
     /// 无条件改写任务文件名，保留 `name_inferred`（引擎侧改名：启动序幕的 dedup、
     /// HLS/DASH 扩展名归一化）。来源随名字一起变时用 [`Self::set_task_file_name_with_source`]。
     pub async fn set_task_file_name(&self, task_id: &str, file_name: &str) -> Result<(), DbError> {
@@ -3345,7 +3392,11 @@ impl Db {
         for chunk in save_dirs.chunks(CHUNK) {
             let placeholders = numbered_placeholders(chunk.len());
             let sql = format!(
-                "SELECT id, save_dir, file_name FROM tasks WHERE save_dir IN ({placeholders})"
+                "SELECT id, save_dir, file_name FROM tasks WHERE save_dir IN ({placeholders})
+                 UNION ALL
+                 SELECT tasks.id, tasks.save_dir, task_artifacts.file_name FROM task_artifacts
+                 JOIN tasks ON tasks.id = task_artifacts.task_id
+                 WHERE tasks.save_dir IN ({placeholders}) AND tasks.file_missing NOT IN (2, 4)"
             );
             let mut query = sqlx::query(AssertSqlSafe(sql));
             for dir in chunk {

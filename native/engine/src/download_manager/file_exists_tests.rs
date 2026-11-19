@@ -404,20 +404,27 @@ fn hls_companion_mp4_counts_as_conflict() {
     std::fs::write(dir.join("clip.mp4"), b"old").expect("write mp4");
     let none = HashSet::new();
     assert_eq!(
-        dedup_filename_sync(&dir, "clip.ts", &none, &OverwritePolicy::Never, true),
+        dedup_filename_sync(&dir, "clip.ts", &none, &OverwritePolicy::Never, true, false),
         "clip (1).ts"
     );
     assert_eq!(
-        dedup_filename_sync(&dir, "clip.ts", &none, &OverwritePolicy::Never, false),
+        dedup_filename_sync(
+            &dir,
+            "clip.ts",
+            &none,
+            &OverwritePolicy::Never,
+            false,
+            false
+        ),
         "clip.ts"
     );
     assert_eq!(
-        dedup_filename_sync(&dir, "clip.ts", &none, &OverwritePolicy::Any, true),
+        dedup_filename_sync(&dir, "clip.ts", &none, &OverwritePolicy::Any, true, false),
         "clip.ts"
     );
     std::fs::write(dir.join("clip (1).mp4"), b"old").expect("write numbered mp4");
     assert_eq!(
-        dedup_filename_sync(&dir, "clip.ts", &none, &OverwritePolicy::Never, true),
+        dedup_filename_sync(&dir, "clip.ts", &none, &OverwritePolicy::Never, true, false),
         "clip (2).ts"
     );
     std::fs::remove_dir_all(&dir).expect("cleanup");

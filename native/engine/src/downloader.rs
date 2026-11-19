@@ -3114,9 +3114,20 @@ pub async fn dedup_filename(
     avoid: &std::collections::HashSet<String>,
     overwrite: &crate::file_exists::OverwritePolicy,
 ) -> String {
+    dedup_output_name(dir, name, Some(reserved), avoid, overwrite, false).await
+}
+
+pub(crate) async fn dedup_output_name(
+    dir: &Path,
+    name: &str,
+    reserved: Option<&std::collections::HashSet<PathBuf>>,
+    avoid: &std::collections::HashSet<String>,
+    overwrite: &crate::file_exists::OverwritePolicy,
+    companion_audio: bool,
+) -> String {
+    let reserved = reserved.cloned();
     let dir_owned = dir.to_path_buf();
     let name_owned = name.to_string();
-    let reserved = reserved.clone();
     let avoid = avoid.clone();
     let allow_overwrite = overwrite.permits(name);
     // 磁盘探测是同步 stat(重度冲突时退化为一次目录扫描),放进阻塞池,
@@ -3126,11 +3137,11 @@ pub async fn dedup_filename(
             &dir_owned,
             &name_owned,
             &DedupRules {
-                reserved: Some(&reserved),
+                reserved: reserved.as_ref(),
                 avoid: Some(&avoid),
                 allow_overwrite,
                 companion_mp4: false,
-                companion_audio: false,
+                companion_audio,
             },
         )
     })
@@ -3520,7 +3531,28 @@ pub(crate) async fn claim_final_name(
     overwrite: &crate::file_exists::OverwritePolicy,
     avoid: &std::collections::HashSet<String>,
 ) -> Result<String, DownloadError> {
+    claim_output_name(src, save_dir, name, overwrite, avoid, false).await
+}
+
+pub(crate) async fn claim_output_name(
+    src: &Path,
+    save_dir: &Path,
+    name: &str,
+    overwrite: &crate::file_exists::OverwritePolicy,
+    avoid: &std::collections::HashSet<String>,
+    companion_audio: bool,
+) -> Result<String, DownloadError> {
     let mut chosen = name.to_string();
+    if companion_audio {
+        let audio = crate::dash_downloader::build_audio_path(&save_dir.join(name));
+        match tokio::fs::symlink_metadata(&audio).await {
+            Ok(_) => {
+                chosen = dedup_output_name(save_dir, name, None, avoid, overwrite, true).await;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
     let mut overwrite_attempted = false;
     let mut attempt = 0u32;
     loop {
@@ -3546,12 +3578,13 @@ pub(crate) async fn claim_final_name(
                         continue;
                     }
                 }
-                chosen = dedup_filename(
+                chosen = dedup_output_name(
                     save_dir,
                     name,
-                    &std::collections::HashSet::new(),
+                    None,
                     avoid,
                     &crate::file_exists::OverwritePolicy::Never,
+                    companion_audio,
                 )
                 .await;
             }

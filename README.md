@@ -61,6 +61,8 @@
 
 In the desktop app, right-click a completed local non-BT download and choose **Delete File Only** to free disk space without removing the completed task. Use **Redownload** to start the transfer from zero on the same task. Existing files and partial downloads are not reused; naming conflicts are handled as for a new download, without a skip option. If cleanup was interrupted and the save drive is unavailable, reconnect the drive and choose **Redownload** again. Downloads captured from a browser POST request must be started again from the browser, even if the engine has not restarted. The original completion record is kept.
 
+**Delete File Only** also removes registered outputs, such as a separate audio track saved when HLS or DASH muxing fails. An audio file is not removed just because its name matches the video.
+
 **Privacy:** local downloads do not require a FluxCloud account. Cloud features are optional. Anonymous installation and daily-active statistics are controlled by `analytics_enabled` and can be disabled; they do not collect download/task information. This is not a zero-telemetry application.
 
 ## FluxDown vs. IDM
