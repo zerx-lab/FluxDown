@@ -1,6 +1,7 @@
 /**
  * 任务列表（迁移自旧 popup 任务面板）：下载中 / 最近完成，1 s 轮询，可暂停 / 继续 / 删除 / 打开。
  * 轮询只在页面可见时进行；popup 用 compact（下载中 + 最近 3 个完成），侧边栏用 full。
+ * 「清理」只把当前已完成记录记入扩展本地隐藏名单（storage.local），不删除主程序里的任务。
  */
 import type { JSX } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
@@ -16,7 +17,7 @@ import { QuickDownload } from "./QuickDownload";
 import { formatBytes, formatSpeed, progressPercent } from "@/ui/format";
 import { useT } from "@/ui/i18n";
 import "./features.css";
-import { isCompletedFileMissing } from "./task-state";
+import { hideClearedCompleted, isCompletedFileMissing, nextClearedCompletedIds } from "./task-state";
 
 type TaskSource = "local" | "remote";
 
@@ -35,6 +36,12 @@ interface NmhOpResponse {
 
 const STATUS = { PENDING: 0, DOWNLOADING: 1, PAUSED: 2, COMPLETED: 3, ERROR: 4, PREPARING: 5 } as const;
 const POLL_MS = 1000;
+/** 扩展本地「已清理的已完成任务 id」名单；popup 与侧边栏共用，经 storage.onChanged 同步。 */
+const CLEARED_KEY = "taskListClearedCompleted";
+
+function toIdList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((x): x is string => typeof x === "string") : [];
+}
 
 async function taskPanelList(source: TaskSource): Promise<TaskPanelResponse> {
   try {
@@ -69,6 +76,23 @@ export function TaskList(props: Props): JSX.Element {
   const [starting, setStarting] = useState(false);
   const inFlight = useRef(false);
   const startTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const [cleared, setCleared] = useState<string[]>([]);
+
+  useEffect(() => {
+    let alive = true;
+    browser.storage.local
+      .get(CLEARED_KEY)
+      .then((r) => alive && setCleared(toIdList(r[CLEARED_KEY])))
+      .catch(() => {});
+    const onChanged = (changes: Record<string, { newValue?: unknown }>, area: string) => {
+      if (area === "local" && CLEARED_KEY in changes) setCleared(toIdList(changes[CLEARED_KEY].newValue));
+    };
+    browser.storage.onChanged.addListener(onChanged);
+    return () => {
+      alive = false;
+      browser.storage.onChanged.removeListener(onChanged);
+    };
+  }, []);
 
   const poll = async () => {
     if (inFlight.current) return;
@@ -127,6 +151,17 @@ export function TaskList(props: Props): JSX.Element {
   const fileOp = async (kind: "open" | "reveal", taskId: string) => {
     const res = await nmhMessage({ type: kind === "open" ? "nmh-open-file" : "nmh-reveal-file", taskId });
     if (!res.ok) showToast(res.message || t("popup.task.opFailed"), "error");
+  };
+
+  const clearCompleted = async () => {
+    if (!state) return;
+    const next = nextClearedCompletedIds(state.tasks, cleared);
+    setCleared(next);
+    try {
+      await browser.storage.local.set({ [CLEARED_KEY]: next });
+    } catch (e) {
+      showToast(String(e), "error");
+    }
   };
 
   const startApp = () => {
@@ -188,8 +223,9 @@ export function TaskList(props: Props): JSX.Element {
   }
 
   const active = state.tasks.filter((x) => x.status !== STATUS.COMPLETED);
-  const finished = state.tasks.filter((x) => x.status === STATUS.COMPLETED);
-  const completed = finished.slice(0, props.density === "compact" ? 3 : 20);
+  const completed = hideClearedCompleted(state.tasks, cleared)
+    .filter((x) => x.status === STATUS.COMPLETED)
+    .slice(0, props.density === "compact" ? 3 : 20);
 
   return (
     <div class="fd-tasks">
@@ -249,7 +285,12 @@ export function TaskList(props: Props): JSX.Element {
       ) : null}
       {completed.length > 0 ? (
         <section class="fd-group">
-          <h4 class="fd-group-title">{t(remoteUrl ? "popup.tasks.remoteCompleted" : "popup.tasks.completed")}</h4>
+          <div class="fd-group-head">
+            <h4 class="fd-group-title">{t(remoteUrl ? "popup.tasks.remoteCompleted" : "popup.tasks.completed")}</h4>
+            <Button size="sm" variant="ghost" title={t("popup.tasks.clearCompletedHint")} onClick={() => void clearCompleted()}>
+              {t("popup.tasks.clearCompleted")}
+            </Button>
+          </div>
           {completed.map((task) => {
             const missing = isCompletedFileMissing(task);
             return (

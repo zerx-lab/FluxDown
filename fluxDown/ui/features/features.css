@@ -55,6 +55,8 @@
 .fd-check-all { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--fd-text-secondary); white-space: nowrap; }
 .fd-group { display: flex; flex-direction: column; gap: 2px; }
 .fd-group-title { margin: 6px 0 2px; font-size: 11px; font-weight: 600; letter-spacing: 0.03em; color: var(--fd-text-secondary); text-transform: uppercase; }
+.fd-group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.fd-group-head .fd-group-title { margin: 6px 0 2px; }
 .fd-group-toggle { display: inline-flex; align-items: center; gap: 4px; border: none; background: transparent; cursor: pointer; padding: 0; text-align: left; }
 .fd-row-wrap { position: relative; }
 .fd-row {

@@ -264,6 +264,8 @@ const zhCN = {
   // 任务面板（popup）
   "popup.tasks.downloading": "下载中",
   "popup.tasks.completed": "最近完成",
+  "popup.tasks.clearCompleted": "清理",
+  "popup.tasks.clearCompletedHint": "仅清理扩展里的记录，不删除 FluxDown 中的任务",
   "popup.tasks.empty": "暂无下载任务",
   "popup.tasks.appNotRunning": "FluxDown 未运行",
   "popup.tasks.localSource": "本机",

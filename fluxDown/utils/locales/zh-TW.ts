@@ -266,6 +266,8 @@ const zhTW = {
   // 任务面板（popup）
   "popup.tasks.downloading": "下載中",
   "popup.tasks.completed": "最近完成",
+  "popup.tasks.clearCompleted": "清理",
+  "popup.tasks.clearCompletedHint": "僅清理擴充功能中的紀錄，不刪除 FluxDown 中的任務",
   "popup.tasks.empty": "尚無下載任務",
   "popup.tasks.appNotRunning": "FluxDown 未執行",
   "popup.tasks.localSource": "本機",

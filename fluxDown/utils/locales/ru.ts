@@ -277,6 +277,8 @@ const ru: Record<MessageKey, string> = {
   // Task panel (popup)
   "popup.tasks.downloading": "Скачивание",
   "popup.tasks.completed": "Недавно завершённые",
+  "popup.tasks.clearCompleted": "Очистить",
+  "popup.tasks.clearCompletedHint": "Очистить записи только в расширении; задачи в FluxDown сохранятся",
   "popup.tasks.empty": "Задач загрузки нет",
   "popup.tasks.appNotRunning": "FluxDown не запущен",
   "popup.tasks.localSource": "Этот компьютер",

@@ -277,6 +277,8 @@ const en: Record<MessageKey, string> = {
   // Task panel (popup)
   "popup.tasks.downloading": "Downloading",
   "popup.tasks.completed": "Recently Completed",
+  "popup.tasks.clearCompleted": "Clear",
+  "popup.tasks.clearCompletedHint": "Clear these records from the extension only; tasks in FluxDown are kept",
   "popup.tasks.empty": "No download tasks",
   "popup.tasks.appNotRunning": "FluxDown is not running",
   "popup.tasks.localSource": "This computer",
