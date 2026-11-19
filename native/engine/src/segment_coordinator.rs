@@ -5368,8 +5368,8 @@ fn spawn_worker(
                                 e,
                                 DownloadError::RangeNotSupported(_)
                                     | DownloadError::RangeMisaligned(_)
-                            ))
-                        || mid_transfer_html;
+                                    | DownloadError::UnexpectedHtml(_)
+                            ));
                     // Auto 多路径：SYS 路径的传输层失败（连接重置/超时/停滞）在
                     // 仍有其它路径存活时同样回收重派——直连被中途阻断时由代理
                     // 接手，而不是整个任务失败。HTTP 状态/校验类错误保持原语义
@@ -5570,7 +5570,6 @@ async fn do_segment_with_retry(
                 attempts = 0;
             }
             Err(DownloadError::Cancelled) => return Err(DownloadError::Cancelled),
-            Err(e @ DownloadError::HtmlHttp { .. }) => return Err(e),
             // 首响应是网页时直接诊断；已有进度时，拒绝该响应体但保留断点，
             // 按瞬时错误重试，预算耗尽后仍可由节点池重派。
             Err(e @ DownloadError::UnexpectedHtml(_))
@@ -5915,9 +5914,18 @@ async fn do_segment(
             }
         }
     };
-    let resp = spec.check_http_status(resp)?;
-    spec.check_html_response(&resp, url, &used.method)?;
-    spec.confirm(&used);
+    let resp = resp.error_for_status()?;
+    let html_range_rejection =
+        if !plain_first && resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+            // Do not adopt an HTML error page as a full stream; use Range recovery.
+            spec.unexpected_html_evidence(&resp, url).is_some()
+        } else {
+            spec.check_html_response(&resp, url, &used.method)?;
+            false
+        };
+    if !html_range_rejection {
+        spec.confirm(&used);
+    }
     if reuse_redirect && direct.is_none() && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT {
         request_path.learn_redirect(url, resp.url().as_str());
     }
@@ -5927,7 +5935,7 @@ async fn do_segment(
     // `Accept-Ranges: bytes`（plain GET 下服务器自述支持）→ SUPPORTED；
     // 否则 UNSUPPORTED。CAS 保证只裁决一次；事件必须在进入写循环【之前】
     // 送出——UNSUPPORTED 时 coordinator 要赶在本段预算耗尽前完成吸收合并。
-    if range_verdict.load(Ordering::Relaxed) == RANGE_VERDICT_UNKNOWN {
+    if !html_range_rejection && range_verdict.load(Ordering::Relaxed) == RANGE_VERDICT_UNKNOWN {
         let supports_range = resp.status() == reqwest::StatusCode::PARTIAL_CONTENT
             || resp
                 .headers()
@@ -5986,6 +5994,7 @@ async fn do_segment(
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
         let version_changed = !plain_first
+            && !html_range_rejection
             && ((!expected_etag.is_empty() && !resp_etag.is_empty() && resp_etag != expected_etag)
                 || (!expected_last_modified.is_empty()
                     && !resp_lm.is_empty()
@@ -5999,7 +6008,8 @@ async fn do_segment(
         // 忽略/不支持 Range 时对 `bytes=0-` 返回整文件），直接采用——写循环按
         // 共享预算截断，行为与 206 无异。不置 conn_sensitive、不记录单连接
         // 缓存（这条流本身就是最优路径；其余 worker 的非 206 照常走信号路径）。
-        let accepted_open_ended_200 = open_ended
+        let accepted_open_ended_200 = !html_range_rejection
+            && open_ended
             && actual_start == 0
             && resp.status() == reqwest::StatusCode::OK
             && request_end >= seg_end;

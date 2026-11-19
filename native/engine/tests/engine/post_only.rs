@@ -109,24 +109,20 @@ async fn serve(mut stream: TcpStream, server: Arc<Server>) {
             .lines()
             .any(|line| line.eq_ignore_ascii_case("authorization: Bearer fixture"))
     {
-        if server.return_binary_for_share.load(Ordering::SeqCst) {
-            zip_response(ZIP_BODY)
-        } else {
-            let (status, headers, body) = server.share_response.lock().unwrap().unwrap_or((
-                "200 OK",
-                "Content-Type: Text/HTML; charset=utf-8\r\n",
-                HTML_BODY,
-            ));
-            let mut response = format!(
-                "HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            )
-            .into_bytes();
-            if method != "HEAD" {
-                response.extend_from_slice(body);
-            }
-            response
+        let (status, headers, body) = server.share_response.lock().unwrap().unwrap_or((
+            "200 OK",
+            "Content-Type: Text/HTML; charset=utf-8\r\n",
+            HTML_BODY,
+        ));
+        let mut response = format!(
+            "HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        if method != "HEAD" {
+            response.extend_from_slice(body);
         }
+        response
     } else if path == PLAIN_PATH && method == "GET" {
         zip_response(ZIP_BODY)
     } else if (path == ZIP_PATH && method == "POST" && body == FORM)
@@ -152,7 +148,6 @@ type ShareResponse = (&'static str, &'static str, &'static [u8]);
 struct Server {
     log: Mutex<Vec<String>>,
     truncate_next_zip: AtomicBool,
-    return_binary_for_share: AtomicBool,
     share_response: Mutex<Option<ShareResponse>>,
 }
 
@@ -506,7 +501,11 @@ async fn get_task_on_post_only_endpoint_reports_readable_error() {
 #[tokio::test(flavor = "current_thread")]
 async fn save_html_keeps_original_and_existing_file_and_rejects_changed_response() {
     let mut h = Harness::new("save_html_get").await;
-    let spec = h.share_spec(None);
+    let headers = "Content-Type: application/octet-stream\r\n\
+                   Content-Disposition: inline; filename=share.html\r\n";
+    *h.server.share_response.lock().unwrap() = Some(("200 OK", headers, HTML_BODY));
+    let mut spec = h.share_spec(None);
+    spec.url = format!("http://{}{DIRECT_HTML_PATH}", h.addr);
     let original = h.engine.manager.create_task(spec).await.unwrap();
     let failed = h.finish(&original).await;
     assert_eq!(failed.status, 4);
@@ -538,16 +537,14 @@ async fn save_html_keeps_original_and_existing_file_and_rejects_changed_response
         tokio::fs::read(&existing_page).await.unwrap().as_slice(),
         b"keep"
     );
-    assert_eq!(h.requests(), [format!("GET {HTML_PATH}")]);
+    assert_eq!(h.requests(), [format!("GET {DIRECT_HTML_PATH}")]);
     assert_eq!(
         h.engine.db.load_task_by_id(&original).await.unwrap(),
         Some(failed)
     );
 
     assert!(h.engine.manager.save_html_response(&saved).await.is_err());
-    h.server
-        .return_binary_for_share
-        .store(true, Ordering::SeqCst);
+    *h.server.share_response.lock().unwrap() = Some(("200 OK", headers, ZIP_BODY));
     let changed = h
         .engine
         .manager
@@ -601,6 +598,29 @@ async fn unnamed_direct_html_and_html_attachments_download_normally() {
         assert_eq!(page.status, 3, "{}", page.error_message);
         assert_eq!(page.file_name, expected_name);
         assert_eq!(h.output(&page).await, HTML_BODY);
+    }
+    h.cleanup().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn html_url_suffix_does_not_override_explicit_binary_target() {
+    let mut h = Harness::new("binary_at_html_url").await;
+    *h.server.share_response.lock().unwrap() = Some((
+        "200 OK",
+        "Content-Type: application/octet-stream\r\n",
+        ZIP_BODY,
+    ));
+    for (hint, file_name) in [(0, "probed.zip"), (-1, "unprobed.zip")] {
+        let mut spec = h.share_spec(None);
+        spec.url = format!("http://{}{DIRECT_HTML_PATH}", h.addr);
+        spec.file_name = file_name.into();
+        spec.hint_file_size = hint;
+        spec.checksum.clear();
+        let task = h.engine.manager.create_task(spec).await.unwrap();
+        let task = h.finish(&task).await;
+        assert_eq!(task.status, 3, "{}", task.error_message);
+        assert_eq!(task.file_name, file_name);
+        assert_eq!(h.output(&task).await, ZIP_BODY);
     }
     h.cleanup().await;
 }
@@ -682,25 +702,30 @@ async fn segmented_html_rejection_does_not_retry() {
 #[tokio::test(flavor = "current_thread")]
 async fn html_login_status_is_reported_but_cannot_be_saved() {
     const HTML_HEADERS: &str = "Content-Type: text/html\r\n";
+    const CHALLENGE_HEADERS: &str = "Content-Type: text/html\r\ncf-mitigated: challenge\r\n";
     let mut h = Harness::new("html_login_status").await;
-    for (status, method, hint) in [
-        ("403 Forbidden", None, 0),
-        ("401 Unauthorized", Some("POST"), 0),
-        ("403 Forbidden", None, -1),
+    for (status, method, hint, headers) in [
+        ("403 Forbidden", None, 0, HTML_HEADERS),
+        ("401 Unauthorized", Some("POST"), 0, HTML_HEADERS),
+        ("403 Forbidden", None, -1, HTML_HEADERS),
+        ("403 Forbidden", None, 0, CHALLENGE_HEADERS),
     ] {
-        *h.server.share_response.lock().unwrap() = Some((status, HTML_HEADERS, HTML_BODY));
+        *h.server.share_response.lock().unwrap() = Some((status, headers, HTML_BODY));
         let mut spec = h.share_spec(method);
         spec.hint_file_size = hint;
         let original = h.engine.manager.create_task(spec).await.unwrap();
         let failed = h.finish(&original).await;
         assert_eq!(failed.status, 4);
         assert!(
-            failed
+            !failed
                 .error_message
-                .starts_with("server returned HTML page (Content-Type: text/html)")
+                .starts_with("server returned HTML page")
         );
         let (code, _) = status.split_once(' ').unwrap();
         assert!(failed.error_message.contains(code));
+        if headers == CHALLENGE_HEADERS {
+            assert!(failed.error_message.contains("bot-challenge"));
+        }
         assert!(!h.work_dir.join(failed.file_name).exists());
         h.clear_requests();
         assert_eq!(

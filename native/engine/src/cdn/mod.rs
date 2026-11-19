@@ -343,7 +343,7 @@ pub async fn finish_pool(
 /// - stall（`Other("segment N stalled: ...")`）：节点停滞。
 pub(crate) fn is_node_attributable(e: &DownloadError) -> bool {
     match e {
-        DownloadError::Request(_) | DownloadError::HtmlHttp { .. } => true,
+        DownloadError::Request(_) => true,
         DownloadError::Other(msg) => msg.contains("stalled") || is_validator_mismatch(e),
         _ => is_validator_mismatch(e),
     }

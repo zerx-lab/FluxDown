@@ -93,7 +93,7 @@ struct ServerState {
     force_full_range_get_once: std::sync::atomic::AtomicBool,
     /// Return one HTML page to a nonzero segment Range, then serve normal 206s.
     force_html_range_get_once: std::sync::atomic::AtomicBool,
-    force_html_on_segment_range: bool,
+    segment_range_html_status: Option<&'static str>,
     /// 206 `Content-Range` 分母（服务器自报总大小）注入序列：每个 206 依次弹出
     /// 一个值作为分母（body 照常按真实区间发送）；序列耗尽后回落为诚实的 body
     /// 长度。模拟【渐进上传中文件不断增长】/病态分母膨胀（BUG-HTTP-HINT-UNDERSIZED
@@ -173,7 +173,7 @@ impl ServerState {
             force_full_on_segment_range: false,
             force_full_range_get_once: std::sync::atomic::AtomicBool::new(false),
             force_html_range_get_once: std::sync::atomic::AtomicBool::new(false),
-            force_html_on_segment_range: false,
+            segment_range_html_status: None,
             range_total_sequence: std::sync::Mutex::new(Vec::new()),
             throttle_range_ms: 0,
             slow_range_get: None,
@@ -643,17 +643,18 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
         return Ok(());
     }
     if is_segment_range_get
-        && req.range.is_some_and(|(start, _)| start > 0)
-        && (st.force_html_on_segment_range
-            || st.force_html_range_get_once.swap(false, Ordering::SeqCst))
+        && let Some(status) = st.segment_range_html_status.or_else(|| {
+            (req.range.is_some_and(|(start, _)| start > 0)
+                && st.force_html_range_get_once.swap(false, Ordering::SeqCst))
+            .then_some("200 OK")
+        })
     {
         st.rejected_range_count.fetch_add(1, Ordering::SeqCst);
-        return write_all(
-            &mut stream,
-            b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 13\r\n\
-              Connection: close\r\n\r\n<html></html>",
-        )
-        .await;
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: text/html\r\nContent-Length: 13\r\n\
+             Connection: close\r\n\r\n<html></html>"
+        );
+        return write_all(&mut stream, response.as_bytes()).await;
     }
     // 钩子 A（永久型）：所有分段 range GET 强制走 200 全量分支（保留 probe 走 206），
     // 复现“服务器支持 Range，但对分段请求偶发/持续返回 200”（alist 代理云盘行为）。
@@ -3604,7 +3605,21 @@ async fn multiseg_etag_stripped_must_not_silently_splice() {
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "binds a local port; run with --ignored"]
 async fn range_advertised_but_all_segments_get_200_falls_back_single_stream() {
-    let work_dir = unique_dir("force200");
+    assert_non_partial_range_falls_back(None).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "binds a local port; run with --ignored"]
+async fn range_html_falls_back_to_plain_get_byte_exact() {
+    assert_non_partial_range_falls_back(Some("200 OK")).await;
+}
+
+async fn assert_non_partial_range_falls_back(html_status: Option<&'static str>) {
+    let work_dir = unique_dir(if html_status.is_some() {
+        "range-html-fallback"
+    } else {
+        "force200"
+    });
 
     if let Err(error) = tokio::fs::remove_dir_all(&work_dir).await {
         assert_eq!(
@@ -3621,9 +3636,10 @@ async fn range_advertised_but_all_segments_get_200_falls_back_single_stream() {
 
     let mut s = ServerState::new(body.clone(), "etag-force200");
     // support_range 保持默认 true：probe（0-0）与 HEAD 都表现为“服务器支持 Range”。
-    s.force_full_on_segment_range = true; // 但所有真实分段请求强制返回 200。
+    s.force_full_on_segment_range = html_status.is_none();
+    s.segment_range_html_status = html_status;
     let st = Arc::new(s);
-    let server = start_server(st).await;
+    let server = start_server(st.clone()).await;
     let url = server.url("/file");
 
     let db = Db::open(&work_dir).await.expect("db");
@@ -3649,6 +3665,10 @@ async fn range_advertised_but_all_segments_get_200_falls_back_single_stream() {
         "❌ 单流回退产出的文件不是字节完整的原文件（可能是 BUG 2：回退前误删已下载数据，\
          download_single 只写出了空/截断文件）"
     );
+    if html_status.is_some() {
+        assert!(st.rejected_range_count.load(Ordering::SeqCst) > 0);
+        assert!(st.full_get_count.load(Ordering::SeqCst) > 0);
+    }
     drop(server);
 }
 
@@ -4259,7 +4279,7 @@ async fn html_range_responses_on_one_path_are_reassigned() {
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "binds local ports; run with --ignored"]
-async fn persistent_sys_html_is_reassigned_to_slower_proxy() {
+async fn persistent_sys_partial_html_is_reassigned_to_slower_proxy() {
     assert_transient_200_on_resume("sys_html", ResumeResponse::HtmlOnSys).await;
 }
 
@@ -4287,7 +4307,9 @@ async fn assert_transient_200_on_resume(tag: &str, response: ResumeResponse) {
     let body = Arc::new(gen_body(size as usize, 909));
     let expected = sha256_bytes(&body);
     let mut origin = ServerState::new(body.clone(), "etag-transient");
-    origin.force_html_on_segment_range = matches!(response, ResumeResponse::HtmlOnSys);
+    if matches!(response, ResumeResponse::HtmlOnSys) {
+        origin.segment_range_html_status = Some("206 Partial Content");
+    }
     let st = Arc::new(origin);
     let server = start_server(st.clone()).await;
     let url = server.url("/file");
@@ -4358,7 +4380,9 @@ async fn assert_transient_200_on_resume(tag: &str, response: ResumeResponse) {
 
             let mut state = ServerState::new(body.clone(), "etag-transient");
             let html_on_sys = matches!(response, ResumeResponse::HtmlOnSys);
-            state.force_html_on_segment_range = !html_on_sys;
+            if !html_on_sys {
+                state.segment_range_html_status = Some("200 OK");
+            }
             let (sys_bps, proxy_bps) = if html_on_sys {
                 (2_000_000.0, 500_000.0)
             } else {

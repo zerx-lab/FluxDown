@@ -35,7 +35,12 @@ impl ProbedMeta {
     /// - 其它名字只有 Content-Disposition（含 URL 查询里的 CD）才算权威。
     pub(crate) fn from_file_info(info: &crate::downloader::FileInfo) -> Self {
         if !info.html_attachment
-            && crate::downloader::html_evidence(&info.content_type, &info.file_name).is_some()
+            && crate::downloader::html_evidence(
+                &info.content_type,
+                &info.file_name,
+                info.name_source,
+            )
+            .is_some()
         {
             return Self::default();
         }
@@ -255,7 +260,7 @@ async fn probe_http_meta(
         crate::downloader::is_html_attachment(response.headers(), &resolved.name, resolved.source);
     if (!html_attachment
         || (!file_name.is_empty() && !crate::downloader::filename_looks_like_html(file_name)))
-        && crate::downloader::html_evidence(content_type, &resolved.name).is_some()
+        && crate::downloader::html_evidence(content_type, &resolved.name, resolved.source).is_some()
     {
         return ProbedMeta::default();
     }

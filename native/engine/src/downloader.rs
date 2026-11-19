@@ -30,12 +30,6 @@ use crate::transfer_activity::{TaskRuntime, TaskSegment, TransferTracker};
 pub enum DownloadError {
     #[error("request failed: {0}")]
     Request(#[from] reqwest::Error),
-    #[error("server returned HTML page (Content-Type: {mime}) — {source}")]
-    HtmlHttp {
-        mime: &'static str,
-        #[source]
-        source: reqwest::Error,
-    },
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("db error: {0}")]
@@ -137,10 +131,7 @@ pub enum DownloadError {
 /// 通知 coordinator 进行降级处理。
 pub(crate) fn is_server_rejection(e: &DownloadError) -> bool {
     match e {
-        DownloadError::Request(req_err)
-        | DownloadError::HtmlHttp {
-            source: req_err, ..
-        } => {
+        DownloadError::Request(req_err) => {
             if let Some(status) = req_err.status() {
                 matches!(status.as_u16(), 403 | 429)
             } else {
@@ -1664,11 +1655,6 @@ fn probe_status_desc(resp: &reqwest::Response) -> String {
         desc.push(' ');
         desc.push_str(tag);
     }
-    if let Some(mime) = login_page_mime(resp) {
-        desc.push(' ');
-        desc.push_str(HTML_LOGIN_TAG);
-        desc.push_str(mime);
-    }
     desc
 }
 
@@ -1722,9 +1708,6 @@ fn probe_rejection(e: &DownloadError) -> Option<ProbeRejection> {
             continue;
         };
         let trimmed = status_desc.trim();
-        let trimmed = trimmed
-            .split_once(HTML_LOGIN_TAG)
-            .map_or(trimmed, |(desc, _)| desc.trim_end());
         if trimmed
             .strip_suffix(BOT_CHALLENGE_TAG)
             .is_some_and(|status| status.trim().parse::<u16>().is_ok())
@@ -3111,11 +3094,15 @@ fn html_mime(content_type: &str) -> Option<&'static str> {
         .find(|candidate| mime.eq_ignore_ascii_case(candidate))
 }
 
-const HTML_LOGIN_TAG: &str = "[html-login] ";
-
-pub(crate) fn html_evidence(content_type: &str, response_name: &str) -> Option<&'static str> {
+pub(crate) fn html_evidence(
+    content_type: &str,
+    response_name: &str,
+    source: crate::naming::NameSource,
+) -> Option<&'static str> {
     html_mime(content_type).or_else(|| {
-        filename_looks_like_html(response_name).then_some("not HTML; HTML response filename")
+        (source == crate::naming::NameSource::Disposition
+            && filename_looks_like_html(response_name))
+        .then_some("not HTML; HTML response filename")
     })
 }
 
@@ -3126,79 +3113,51 @@ fn response_content_type(resp: &reqwest::Response) -> &str {
         .unwrap_or("")
 }
 
-fn login_page_mime(resp: &reqwest::Response) -> Option<&'static str> {
-    if matches!(resp.status().as_u16(), 401 | 403) {
-        html_mime(response_content_type(resp))
-    } else {
-        None
+// Recognize common HTML starts when the server supplies no HTML MIME.
+fn has_html_signature(prefix: &[u8]) -> bool {
+    let prefix = prefix.strip_prefix(b"\xef\xbb\xbf").unwrap_or(prefix);
+    let prefix = prefix.trim_ascii_start();
+    if prefix.starts_with(b"<!--") {
+        return true;
     }
-}
-
-fn html_probe_diagnostic(message: String) -> String {
-    if let Some(probes) = message.strip_prefix("probes failed: ")
-        && let Some(mime) = probes
-            .split(", ")
-            .filter_map(|probe| probe.split_once('='))
-            .find_map(|(_, value)| {
-                let (status, mime) = value.split_once(HTML_LOGIN_TAG)?;
-                if !matches!(status.split_whitespace().next(), Some("401" | "403")) {
-                    return None;
-                }
-                html_mime(mime.split_whitespace().next()?)
-            })
-    {
-        let details = message.replace(HTML_LOGIN_TAG, "");
-        format!("{UNEXPECTED_HTML_PREFIX}{mime}) — {details}")
-    } else {
-        message
-    }
+    [
+        b"<!doctype html".as_slice(),
+        b"<html",
+        b"<head",
+        b"<body",
+        b"<title",
+        b"<meta",
+        b"<script",
+        b"<style",
+        b"<div",
+        b"<p",
+    ]
+    .into_iter()
+    .any(|tag| {
+        prefix
+            .get(..tag.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(tag))
+            && prefix
+                .get(tag.len())
+                .is_some_and(|b| b.is_ascii_whitespace() || *b == b'>')
+    })
 }
 
 impl DownloadSpec {
-    pub(crate) fn check_http_status(
-        &self,
-        resp: reqwest::Response,
-    ) -> Result<reqwest::Response, DownloadError> {
-        // A replay cannot itself be replayed using the failed-task action.
-        let mime = if self.html_only {
-            None
-        } else {
-            login_page_mime(&resp)
-        };
-        resp.error_for_status().map_err(|source| match mime {
-            Some(mime) => DownloadError::HtmlHttp { mime, source },
-            None => DownloadError::Request(source),
-        })
-    }
-
     pub(crate) fn check_html_response(
         &self,
         resp: &reqwest::Response,
         url: &str,
         method: &reqwest::Method,
     ) -> Result<(), DownloadError> {
-        if self.expects_html && !self.html_only {
-            return Ok(());
-        }
-        let ct = response_content_type(resp);
-        let mime = html_mime(ct);
-        let evidence = if mime.is_none() || self.accepts_html_attachment {
-            let name = extract_filename(resp.headers(), url, resp.url().as_str());
-            if self.accepts_html_attachment
-                && is_html_attachment(resp.headers(), &name.name, name.source)
-            {
-                return Ok(());
-            }
-            html_evidence(ct, &name.name)
-        } else {
-            mime
-        };
         if self.html_only {
             let status = resp.status();
-            if evidence.is_none() || !status.is_success() || matches!(status.as_u16(), 204..=206) {
+            if !status.is_success() || matches!(status.as_u16(), 204..=206) {
                 return Err(DownloadError::Other(HTML_RESPONSE_CHANGED_MESSAGE.into()));
             }
-        } else if let Some(evidence) = evidence {
+            return Ok(());
+        }
+        if let Some(evidence) = self.unexpected_html_evidence(resp, url) {
             return Err(DownloadError::UnexpectedHtml(format!(
                 "{UNEXPECTED_HTML_PREFIX}{evidence}) for a non-HTML download — \
                  aborting to avoid corrupting saved file; {}",
@@ -3206,6 +3165,34 @@ impl DownloadSpec {
             )));
         }
         Ok(())
+    }
+
+    pub(crate) fn unexpected_html_evidence(
+        &self,
+        resp: &reqwest::Response,
+        url: &str,
+    ) -> Option<&'static str> {
+        if self.expects_html {
+            return None;
+        }
+        let ct = response_content_type(resp);
+        let mime = html_mime(ct);
+        if mime.is_some() && !self.accepts_html_attachment {
+            return mime;
+        }
+        if !resp
+            .headers()
+            .contains_key(reqwest::header::CONTENT_DISPOSITION)
+        {
+            return mime;
+        }
+        let name = extract_filename(resp.headers(), url, resp.url().as_str());
+        if self.accepts_html_attachment
+            && is_html_attachment(resp.headers(), &name.name, name.source)
+        {
+            return None;
+        }
+        html_evidence(ct, &name.name, name.source)
     }
 }
 
@@ -3938,7 +3925,7 @@ pub(crate) async fn run_download_mode(mut params: DownloadParams, html_only: boo
             // pause / cancel already handled upstream — nothing to do
         }
         Err(e) => {
-            let msg = html_probe_diagnostic(e.to_string());
+            let msg = e.to_string();
             // 追加完整错误链（root cause），方便排查网络/TLS 等底层错误。
             // msg 已包含 reqwest 顶层描述，这里从 source 的 source 开始
             // 避免重复打印同一层信息。
@@ -4451,7 +4438,7 @@ async fn run_download_inner(
     // A hinted filename is not response evidence; hinted downloads are checked when data arrives.
     if !(spec_ref.expects_html || spec_ref.accepts_html_attachment && info.html_attachment)
         && p.hint_file_size == 0
-        && let Some(evidence) = html_evidence(&info.content_type, &info.file_name)
+        && let Some(evidence) = html_evidence(&info.content_type, &info.file_name, info.name_source)
     {
         return Err(DownloadError::UnexpectedHtml(format!(
             "{UNEXPECTED_HTML_PREFIX}{evidence}) instead of the expected file — {}",
@@ -5969,7 +5956,7 @@ async fn download_single_once(
         resp = resend_after_refresh(spec, &mut used, full, &build_full, cancel_token).await?;
         refetched_full = true;
     }
-    let mut resp = spec.check_http_status(resp)?;
+    let mut resp = resp.error_for_status()?;
 
     if want_resume && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT {
         let resp_etag = resp
@@ -6015,9 +6002,9 @@ async fn download_single_once(
                 );
                 drop(resp);
                 let full = send_cancellable(build_full(&used), cancel_token).await?;
-                resp = spec.check_http_status(
-                    resend_after_refresh(spec, &mut used, full, &build_full, cancel_token).await?,
-                )?;
+                resp = resend_after_refresh(spec, &mut used, full, &build_full, cancel_token)
+                    .await?
+                    .error_for_status()?;
                 refetched_full = true;
             } else {
                 log_warn!(
@@ -6086,9 +6073,9 @@ async fn download_single_once(
             );
             drop(resp);
             let full = send_cancellable(build_full(&used), cancel_token).await?;
-            resp = spec.check_http_status(
-                resend_after_refresh(spec, &mut used, full, &build_full, cancel_token).await?,
-            )?;
+            resp = resend_after_refresh(spec, &mut used, full, &build_full, cancel_token)
+                .await?
+                .error_for_status()?;
             refetched_full = true;
         }
     }
@@ -6251,8 +6238,10 @@ async fn download_single_once(
     // downloader 内部不再变更文件名，避免与 manager 的 reserved_temp_paths
     // 协调断裂导致并发下载冲突（参见 PR #296 自我冲突回归 bug）。
 
-    // Wrap with decompression if needed.  The stream now yields
-    // Result<Bytes, io::Error> regardless of whether decompression is active.
+    // A filename can trigger the safety net, but cannot establish the replay's format.
+    let mut html_prefix = (spec.html_only && html_mime(response_content_type(&resp)).is_none())
+        .then(|| ([0u8; 512], 0usize));
+    // The stream yields Result<Bytes, io::Error> with or without decompression.
     let raw_stream = resp.bytes_stream();
     let mut stream = maybe_decompress_stream(raw_stream, encoding);
 
@@ -6319,6 +6308,17 @@ async fn download_single_once(
                 };
                 match chunk {
                     Some(Ok(bytes)) => {
+                        if let Some((prefix, len)) = &mut html_prefix {
+                            let count = bytes.len().min(prefix.len() - *len);
+                            prefix[*len..*len + count].copy_from_slice(&bytes[..count]);
+                            *len += count;
+                            if *len == prefix.len() {
+                                if !has_html_signature(prefix) {
+                                    return Err(DownloadError::Other(HTML_RESPONSE_CHANGED_MESSAGE.into()));
+                                }
+                                html_prefix = None;
+                            }
+                        }
                         // --- Speed limiter: write in sub-chunks as tokens allow ---
                         // 令牌等待必须与取消竞速：低限速下一个 chunk 要等数秒，
                         // 期间暂停/删除不能被挡在 select 分支体外。
@@ -6385,7 +6385,10 @@ async fn download_single_once(
         }
     }
 
-    if spec.html_only && downloaded == 0 {
+    if spec.html_only
+        && (downloaded == 0
+            || html_prefix.is_some_and(|(prefix, len)| !has_html_signature(&prefix[..len])))
+    {
         return Err(DownloadError::Other(HTML_RESPONSE_CHANGED_MESSAGE.into()));
     }
     drop(reading);
