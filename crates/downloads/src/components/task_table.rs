@@ -656,20 +656,10 @@ pub(crate) fn context_menu_items(selection: &[TaskMenuFacts]) -> Vec<MenuEntry> 
         return Vec::new();
     }
     let mut items = Vec::new();
-    if selection.iter().any(|task| {
-        task.controllable
-            && (task.can_resume_seeding
-                || !matches!(task.state, TaskState::Completed | TaskState::Downloading))
-    }) {
+    if selection.iter().any(resume_applies) {
         items.push(MenuEntry::Resume);
     }
-    // 失败的本机任务也可暂停：撤销已排程的自动重试，任务落为已暂停（#947）。
-    if selection.iter().any(|task| {
-        task.controllable
-            && (task.is_seeding
-                || matches!(task.state, TaskState::Downloading | TaskState::Pending)
-                || (task.is_local && task.state == TaskState::Failed))
-    }) {
+    if selection.iter().any(pause_applies) {
         items.push(MenuEntry::Pause);
     }
     if let [only] = selection {
@@ -762,6 +752,40 @@ pub(crate) fn context_menu_items(selection: &[TaskMenuFacts]) -> Vec<MenuEntry> 
         items.push(MenuEntry::ShowDetail);
     }
     items
+}
+
+/// 「继续」会作用到该任务：可控，且可恢复做种或处于完成 / 下载中以外的状态。
+fn resume_applies(task: &TaskMenuFacts) -> bool {
+    task.controllable
+        && (task.can_resume_seeding
+            || !matches!(task.state, TaskState::Completed | TaskState::Downloading))
+}
+
+/// 「暂停」会作用到该任务。失败的本机任务也可暂停：撤销已排程的自动重试，
+/// 任务落为已暂停（#947）。
+fn pause_applies(task: &TaskMenuFacts) -> bool {
+    task.controllable
+        && (task.is_seeding
+            || matches!(task.state, TaskState::Downloading | TaskState::Pending)
+            || (task.is_local && task.state == TaskState::Failed))
+}
+
+/// 「继续」作用的任务全是可恢复做种的已完成任务：菜单项改称「继续做种」。
+pub(crate) fn resume_targets_only_seeds(selection: &[TaskMenuFacts]) -> bool {
+    let mut targets = selection
+        .iter()
+        .filter(|task| resume_applies(task))
+        .peekable();
+    targets.peek().is_some() && targets.all(|task| task.can_resume_seeding)
+}
+
+/// 「暂停」作用的任务全是做种中 / 排队做种的任务：菜单项改称「停止做种」。
+pub(crate) fn pause_targets_only_seeds(selection: &[TaskMenuFacts]) -> bool {
+    let mut targets = selection
+        .iter()
+        .filter(|task| pause_applies(task))
+        .peekable();
+    targets.peek().is_some() && targets.all(|task| task.is_seeding)
 }
 
 /// 右键菜单完整条目：未处于显式多选模式时，在删除组前插入「选择 / 全选」作为
@@ -3191,7 +3215,7 @@ impl DownloadTableDelegate {
         task_menu_entries(&facts, self.in_multi_select(), self.plugin_commands.len())
             .into_iter()
             .fold(menu, |menu, entry| {
-                self.apply_menu_entry(menu, entry, &selected, destructive)
+                self.apply_menu_entry(menu, entry, &selected, &facts, destructive)
             })
     }
 
@@ -3200,16 +3224,25 @@ impl DownloadTableDelegate {
         menu: PopupMenu,
         entry: MenuEntry,
         selected: &[RowKey],
+        facts: &[TaskMenuFacts],
         destructive: Hsla,
     ) -> PopupMenu {
         match entry {
             MenuEntry::Resume => menu.menu_with_icon(
-                self.strings.resume.clone(),
+                if resume_targets_only_seeds(facts) {
+                    self.strings.resume_seeding.clone()
+                } else {
+                    self.strings.resume.clone()
+                },
                 FluxIcon::Play,
                 Box::new(crate::actions::ResumeSelected),
             ),
             MenuEntry::Pause => menu.menu_with_icon(
-                self.strings.pause.clone(),
+                if pause_targets_only_seeds(facts) {
+                    self.strings.stop_seeding.clone()
+                } else {
+                    self.strings.pause.clone()
+                },
                 FluxIcon::Pause,
                 Box::new(crate::actions::PauseSelected),
             ),
@@ -6656,10 +6689,10 @@ mod context_menu_tests {
     use super::{
         MenuEntry, PLUGIN_ERROR_PREFIX, PiecePickingOrder, ShareLink, TaskMenuFacts,
         context_menu_items, force_recheck_visible, is_bt_url, is_replaceable_url,
-        move_storage_visible, piece_picking_checked, piece_picking_order,
-        piece_picking_order_targets, piece_picking_toggle_target, super_seeding_checked,
-        super_seeding_targets, super_seeding_toggle_target, super_seeding_visible,
-        task_limits_visible, task_menu_entries,
+        move_storage_visible, pause_targets_only_seeds, piece_picking_checked, piece_picking_order,
+        piece_picking_order_targets, piece_picking_toggle_target, resume_targets_only_seeds,
+        super_seeding_checked, super_seeding_targets, super_seeding_toggle_target,
+        super_seeding_visible, task_limits_visible, task_menu_entries,
     };
     use crate::model::TaskState;
 
@@ -6707,6 +6740,35 @@ mod context_menu_tests {
         let items = context_menu_items(&[task(true, TaskState::Completed)]);
         assert!(!items.contains(&MenuEntry::Pause));
         assert!(!items.contains(&MenuEntry::Resume));
+    }
+
+    #[test]
+    fn seed_only_selections_use_seeding_labels() {
+        let mut seeding = task(true, TaskState::Completed);
+        seeding.is_seeding = true;
+        let mut stopped = task(true, TaskState::Completed);
+        stopped.can_resume_seeding = true;
+        let paused = task(true, TaskState::Paused);
+        let downloading = task(true, TaskState::Downloading);
+        let plain_done = task(true, TaskState::Completed);
+
+        assert!(resume_targets_only_seeds(&[stopped]));
+        // 普通已完成任务不受「继续」作用，不影响措辞。
+        assert!(resume_targets_only_seeds(&[stopped, plain_done, seeding]));
+        assert!(!resume_targets_only_seeds(&[stopped, paused]));
+        assert!(!resume_targets_only_seeds(&[paused]));
+        assert!(!resume_targets_only_seeds(&[plain_done]));
+
+        assert!(pause_targets_only_seeds(&[seeding]));
+        assert!(pause_targets_only_seeds(&[seeding, stopped, plain_done]));
+        assert!(!pause_targets_only_seeds(&[seeding, downloading]));
+        assert!(!pause_targets_only_seeds(&[downloading]));
+
+        // 不可控制的行不计入。
+        let mut remote_stopped = task(false, TaskState::Completed);
+        remote_stopped.controllable = false;
+        remote_stopped.can_resume_seeding = true;
+        assert!(!resume_targets_only_seeds(&[remote_stopped]));
     }
 
     #[test]

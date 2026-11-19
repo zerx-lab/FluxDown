@@ -142,3 +142,27 @@ describe('buildTaskMenu BT operations', () => {
     }
   })
 })
+
+describe('buildTaskMenu seeding labels', () => {
+  const label = (views: DownloadTaskView[], key: string) =>
+    buildTaskMenu({ t, views, queues: [], queueName: (id: string) => id, showDetail: () => undefined }).find((entry) => entry.key === key)
+  const row = (taskId: string, patch: Partial<DownloadTaskView>) => ({ ...view, taskId, key: `l:${taskId}`, ...patch }) as unknown as DownloadTaskView
+  const seeding = row('s', { seedingStatus: 1 })
+  const stopped = row('x', { seedingStatus: 4 })
+  const paused = row('p', { state: 'paused' })
+  const downloading = row('d', { state: 'downloading' })
+  const plainDone = row('c', { seedingStatus: 0 })
+
+  test('only stopped seeds resume as "resume seeding"', () => {
+    expect(label([stopped], 'resume')).toMatchObject({ label: 'seedingResume' })
+    expect(label([stopped, plainDone, seeding], 'resume')).toMatchObject({ label: 'seedingResume' })
+    expect(label([stopped, paused], 'resume')).toMatchObject({ label: 'resume' })
+    expect(label([paused], 'resume')).toMatchObject({ label: 'resume' })
+  })
+
+  test('only live seeds pause as "stop seeding"', () => {
+    expect(label([seeding], 'pause')).toMatchObject({ label: 'btSeedStopSeeding' })
+    expect(label([seeding, stopped, plainDone], 'pause')).toMatchObject({ label: 'btSeedStopSeeding' })
+    expect(label([seeding, downloading], 'pause')).toMatchObject({ label: 'pause' })
+  })
+})

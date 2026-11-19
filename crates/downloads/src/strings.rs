@@ -69,6 +69,9 @@ pub(crate) struct DownloadStrings {
     pub(crate) pause_all: SharedString,
     pub(crate) resume: SharedString,
     pub(crate) resume_all: SharedString,
+    /// 右键菜单：可继续 / 可停止的全是做种任务时，「继续」「暂停」改用做种措辞。
+    pub(crate) resume_seeding: SharedString,
+    pub(crate) stop_seeding: SharedString,
     /// 状态栏批量按钮禁用时的 tooltip：说明为什么当前不可点。
     pub(crate) pause_all_unavailable: SharedString,
     pub(crate) resume_all_unavailable: SharedString,
@@ -289,6 +292,8 @@ impl DownloadStrings {
             pause_all: shared(translator.text("pauseAll")),
             resume: shared(translator.text(keys::RESUME)),
             resume_all: shared(translator.text("resumeAll")),
+            resume_seeding: shared(translator.text("seedingResume")),
+            stop_seeding: shared(translator.text("btSeedStopSeeding")),
             pause_all_unavailable: shared(translator.text("pauseAllUnavailable")),
             resume_all_unavailable: shared(translator.text("resumeAllUnavailable")),
             resume_all_queue_stopped: shared(translator.text("resumeAllQueueStopped")),
