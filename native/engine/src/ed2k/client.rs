@@ -726,7 +726,7 @@ impl Ed2kClient {
         match source {
             Source::HighId(peer) => {
                 let proxy = self.proxy()?;
-                let result = match tokio::time::timeout(PEER_CONNECT_TIMEOUT, async {
+                match tokio::time::timeout(PEER_CONNECT_TIMEOUT, async {
                     match proxy {
                         Some(proxy) => {
                             proxy
@@ -742,8 +742,7 @@ impl Ed2kClient {
                 {
                     Ok(result) => result,
                     Err(_) => Err(DownloadError::Ed2k(format!("connect {peer} timed out"))),
-                };
-                result
+                }
             }
             Source::LowId(low_id) => {
                 if self.proxy()?.is_some() {

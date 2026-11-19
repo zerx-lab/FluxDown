@@ -10951,7 +10951,7 @@ impl DownloadManager {
             self.proxy_config.resolve()
         };
         let route = static_route(&proxy);
-        Ok(match crate::client_cache::get(
+        let egress = match crate::client_cache::get(
             &proxy,
             resolved_ua,
             ignore_tls_errors,
@@ -10977,7 +10977,8 @@ impl DownloadManager {
                     pac,
                 }
             }
-        })
+        };
+        Ok(egress)
     }
 
     /// hint 任务（不得发探测请求）的占位名：名字为空时按 URL（含预签名 URL 的
