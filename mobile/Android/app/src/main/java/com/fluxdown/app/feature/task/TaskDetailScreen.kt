@@ -66,6 +66,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import com.fluxdown.app.R
+import com.fluxdown.app.actions.LocalFileAvailability
 import com.fluxdown.app.actions.LocalTaskActions
 import com.fluxdown.app.actions.TaskActions
 import com.fluxdown.app.actions.rememberOpenableLocalFile
@@ -516,7 +517,8 @@ private fun ActionRow(
     overlays: FluxOverlayState,
 ) {
     val task = model.task
-    val opensFile = rememberOpenableLocalFile(task, !remoteHost)
+    val file = rememberOpenableLocalFile(task, !remoteHost)
+    val completed = model.visual == TaskVisualState.Completed || model.visual == TaskVisualState.Seeding
     val primaryLabel: String
     val primaryIcon: ImageVector
     when (model.visual) {
@@ -547,9 +549,13 @@ private fun ActionRow(
     val shareShort = str(R.string.detailActionShare)
     val moreShort = str(R.string.detailActionMore)
     var moreBounds by remember { mutableStateOf(Rect.Zero) }
-    val onPrimary: () -> Unit = { actions.primary(task, opensFile) }
+    val onPrimary: () -> Unit = {
+        if (completed) actions.open(task) else actions.primary(task, tryOpenFile = false)
+    }
     val onFolder: () -> Unit = { if (!context.openFolder(task.saveDir)) actions.shareLink(task) }
-    val onMore: () -> Unit = { overlays.showMenu(moreBounds, actions.menuItems(task, model.boosted, opensFile)) }
+    val onMore: () -> Unit = {
+        overlays.showMenu(moreBounds, actions.menuItems(task, model.boosted, file == LocalFileAvailability.RegularFile))
+    }
 
     // 等宽动作块：图标在上、短标签在下（对齐 iOS 地图 / 通讯录卡片）。每块只放一个短词，
     // 窄屏与大字号下不会再出现“图标 + 折成两行的文字”挤在胶囊里；主动作为强调色实心块。
@@ -558,8 +564,7 @@ private fun ActionRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         val tile = Modifier.weight(1f).fillMaxHeight()
-        val completed = model.visual == TaskVisualState.Completed || model.visual == TaskVisualState.Seeding
-        if (!completed || opensFile) FluxActionTile(primaryLabel, primaryIcon, onPrimary, tile, prominent = true)
+        if (!completed || file.canTryOpen) FluxActionTile(primaryLabel, primaryIcon, onPrimary, tile, prominent = true)
         if (!remoteHost) FluxActionTile(folderLabel, FluxIcons.FolderOpen, onFolder, tile)
         FluxActionTile(shareShort, FluxIcons.Share2, { actions.shareLink(task) }, tile, contentDescription = shareLabel)
         FluxActionTile(

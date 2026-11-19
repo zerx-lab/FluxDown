@@ -50,21 +50,37 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
+internal enum class LocalFileAvailability {
+    Pending, RegularFile, Unavailable;
+
+    val canTryOpen: Boolean get() = this != Unavailable
+}
+
+internal fun Task.initialLocalFileAvailability(localHost: Boolean): LocalFileAvailability =
+    if (localHost && status == TaskStatus.Completed && !fileMissing && fileName.isNotEmpty()) {
+        LocalFileAvailability.Pending
+    } else {
+        LocalFileAvailability.Unavailable
+    }
+
 /** 普通文件才能交给系统查看器；多文件 BT 的顶层路径可能是目录。 */
 internal fun Task.openableLocalFile(localHost: Boolean): File? =
-    if (localHost && status == TaskStatus.Completed && !fileMissing && fileName.isNotEmpty()) {
+    if (initialLocalFileAvailability(localHost).canTryOpen) {
         File(saveDir, fileName).takeIf { it.isFile }
     } else {
         null
     }
 
+internal fun Task.probeLocalFileAvailability(localHost: Boolean): LocalFileAvailability =
+    if (openableLocalFile(localHost) != null) LocalFileAvailability.RegularFile else LocalFileAvailability.Unavailable
+
 @Composable
-internal fun rememberOpenableLocalFile(task: Task, localHost: Boolean): Boolean {
-    val eligible = localHost && task.status == TaskStatus.Completed && !task.fileMissing
-    val result = remember(task.taskId, task.saveDir, task.fileName, eligible) { mutableStateOf(false) }
-    if (eligible) {
+internal fun rememberOpenableLocalFile(task: Task, localHost: Boolean): LocalFileAvailability {
+    val initial = task.initialLocalFileAvailability(localHost)
+    val result = remember(task.taskId, task.saveDir, task.fileName, initial) { mutableStateOf(initial) }
+    if (initial == LocalFileAvailability.Pending) {
         LaunchedEffect(result) {
-            result.value = withContext(Dispatchers.IO) { task.openableLocalFile(localHost) != null }
+            result.value = withContext(Dispatchers.IO) { task.probeLocalFileAvailability(localHost) }
         }
     }
     return result.value
@@ -280,18 +296,27 @@ class TaskActions(
         if (isLocalHost()) openLocalFile(task, requireCurrentLocalHost = true)
     }
 
+    internal fun openOrShowDetails(task: Task) {
+        if (!isLocalHost()) return
+        openLocalFile(task, requireCurrentLocalHost = true) { showDetails(task) }
+    }
+
     /**
      * 完成提示里的本机任务在查看远端时也可打开；调用方须保证任务来自本机主机状态。
      */
     fun openLocalFile(task: Task) = openLocalFile(task, requireCurrentLocalHost = false)
 
-    private fun openLocalFile(task: Task, requireCurrentLocalHost: Boolean) {
+    private fun openLocalFile(task: Task, requireCurrentLocalHost: Boolean, onUnavailable: (() -> Unit)? = null) {
         scope.launch {
             val file = withContext(Dispatchers.IO) { task.openableLocalFile(localHost = true) }
             if (requireCurrentLocalHost && !isLocalHost()) return@launch
             if (file == null) {
-                haptics.reject()
-                overlays.toast(s(R.string.mobileFileNotFound), FluxToastKind.Warn, FluxIcons.FileWarning)
+                if (onUnavailable != null) {
+                    onUnavailable()
+                } else {
+                    haptics.reject()
+                    overlays.toast(s(R.string.mobileFileNotFound), FluxToastKind.Warn, FluxIcons.FileWarning)
+                }
                 return@launch
             }
             viewLocalFile(file)
@@ -325,11 +350,13 @@ class TaskActions(
         }
     }
 
+    private fun showDetails(task: Task) = nav.push(com.fluxdown.app.nav.Route.TaskDetail(task.taskId))
+
     /** 行环钮的主动作（按状态）。 */
-    fun primary(task: Task, opensFile: Boolean) = when {
+    fun primary(task: Task, tryOpenFile: Boolean) = when {
         task.status == TaskStatus.Completed && task.fileMissing -> confirmRedownload(task)
-        task.status == TaskStatus.Completed && opensFile && isLocalHost() -> open(task)
-        task.status == TaskStatus.Completed -> nav.push(com.fluxdown.app.nav.Route.TaskDetail(task.taskId))
+        task.status == TaskStatus.Completed && tryOpenFile && isLocalHost() -> openOrShowDetails(task)
+        task.status == TaskStatus.Completed -> showDetails(task)
         task.status == TaskStatus.Paused || task.status == TaskStatus.Failed -> resume(listOf(task.taskId))
         else -> pause(listOf(task.taskId))
     }
@@ -343,9 +370,7 @@ class TaskActions(
         val st = task.status
         if (opensFile && isLocalHost()) add(FluxMenuItem.Action(s(R.string.openFile), { open(task) }, FluxIcons.ExternalLink))
         if (st == TaskStatus.Completed && onSelect != null) {
-            add(FluxMenuItem.Action(s(R.string.mobileTaskDetail), {
-                nav.push(com.fluxdown.app.nav.Route.TaskDetail(task.taskId))
-            }, FluxIcons.Info))
+            add(FluxMenuItem.Action(s(R.string.mobileTaskDetail), { showDetails(task) }, FluxIcons.Info))
         }
         if (task.canResume) add(FluxMenuItem.Action(s(R.string.resume), { resume(listOf(task.taskId)) }, FluxIcons.Play))
         if (task.canPause) add(FluxMenuItem.Action(s(R.string.pause), { pause(listOf(task.taskId)) }, FluxIcons.Pause))

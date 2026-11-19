@@ -1,10 +1,12 @@
 package com.fluxdown.app.feature.newtask
 
+import com.fluxdown.app.externalTorrentSaveDir
 import com.fluxdown.core.model.HostRef
 import com.fluxdown.core.model.Task
 import com.fluxdown.core.model.TaskStatus
 import com.fluxdown.core.store.Connection
 import com.fluxdown.core.store.HostState
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -25,6 +27,11 @@ class PublicDownloadGuideTest {
         val trailingSlash = ready.copy(config = mapOf("default_save_dir" to "$appDir/"))
         assertTrue(trailingSlash.needsPublicDownloadGuide(local, done = false, appDir = appDir))
         assertTrue(ready.needsPublicDownloadGuide(local, done = false, appDir = "$appDir/"))
+    }
+
+    @Test fun surroundingWhitespaceDoesNotMakeDefaultDirectoryCustom() {
+        val padded = ready.copy(config = mapOf("default_save_dir" to " $appDir/ \t"))
+        assertTrue(padded.needsPublicDownloadGuide(local, done = false, appDir = " $appDir \n"))
     }
 
     @Test fun completedGuideAndCustomDefaultAreNotOverwritten() {
@@ -49,5 +56,30 @@ class PublicDownloadGuideTest {
         assertFalse(finished)
         ready.skipPublicDownloadGuide(local, false, appDir) { finished = true }
         assertTrue(finished)
+    }
+
+    @Test fun externalTorrentWaitsWhileSavingAndAfterFailedSave() {
+        val publicDir = "/storage/emulated/0/Download"
+        assertEquals(null, externalTorrentSaveDir(true, publicDir, ready, local, false, appDir))
+        assertEquals(null, externalTorrentSaveDir(false, null, ready, local, false, appDir))
+        assertEquals(publicDir, externalTorrentSaveDir(false, publicDir, ready, local, true, appDir))
+        val disconnected = ready.copy(connection = Connection.Connecting)
+        assertEquals(null, externalTorrentSaveDir(false, publicDir, disconnected, local, true, appDir))
+    }
+
+    @Test fun dismissingExternalGuideContinuesUsingDefaultWithoutPromptingNextTorrent() {
+        var done = false
+        assertEquals(null, externalTorrentSaveDir(false, null, ready, local, done, appDir))
+        ready.skipPublicDownloadGuide(local, done, appDir) { done = true }
+        assertEquals("", externalTorrentSaveDir(false, null, ready, local, done, appDir))
+        assertFalse(ready.needsPublicDownloadGuide(local, done, appDir))
+    }
+
+    @Test fun externalTorrentUsesHostDefaultWhenGuideNoLongerApplies() {
+        val remote = HostRef.Remote("nas", "NAS", "http://nas.test")
+        val publicDir = "/storage/emulated/0/Download"
+        assertEquals("", externalTorrentSaveDir(false, publicDir, ready, remote, false, appDir))
+        val custom = ready.copy(config = mapOf("default_save_dir" to publicDir))
+        assertEquals("", externalTorrentSaveDir(false, null, custom, local, false, appDir))
     }
 }

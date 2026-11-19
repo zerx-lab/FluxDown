@@ -25,6 +25,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.fluxdown.app.actions.LocalFileAvailability
 import com.fluxdown.app.actions.LocalTaskActions
 import com.fluxdown.app.actions.rememberOpenableLocalFile
 import com.fluxdown.app.data.CardField
@@ -79,11 +80,11 @@ private fun DrawScope.drawCardSegment(fill: Color, line: Color, first: Boolean, 
     }
 }
 
-internal enum class DownloadRowTap { ToggleSelection, OpenFile, Details }
+internal enum class DownloadRowTap { ToggleSelection, TryOpenFile, Details }
 
-internal fun downloadRowTap(selecting: Boolean, opensFile: Boolean): DownloadRowTap = when {
+internal fun downloadRowTap(selecting: Boolean, file: LocalFileAvailability): DownloadRowTap = when {
     selecting -> DownloadRowTap.ToggleSelection
-    opensFile -> DownloadRowTap.OpenFile
+    file.canTryOpen -> DownloadRowTap.TryOpenFile
     else -> DownloadRowTap.Details
 }
 
@@ -160,12 +161,14 @@ internal fun DownloadRow(
 
     val coords = remember { arrayOfNulls<LayoutCoordinates>(1) }
 
-    val opensFile = rememberOpenableLocalFile(item.task, view.localHost)
-    val startActions = remember(item.visual, item.boosted, text, actions, opensFile) {
+    val file = rememberOpenableLocalFile(item.task, view.localHost)
+    val opensFile = file == LocalFileAvailability.RegularFile
+    val tryOpenFile = file.canTryOpen
+    val startActions = remember(item.visual, item.boosted, text, actions, tryOpenFile) {
         buildList {
             add(
-                FluxSwipeAction(ringLabelOf(text, item.visual, opensFile), primaryIconOf(item.visual, opensFile), FluxSwipeTone.Accent) {
-                    actions.primary(latest.task, opensFile)
+                FluxSwipeAction(ringLabelOf(text, item.visual, tryOpenFile), primaryIconOf(item.visual, tryOpenFile), FluxSwipeTone.Accent) {
+                    actions.primary(latest.task, tryOpenFile)
                 },
             )
             val st = item.task.status
@@ -185,7 +188,7 @@ internal fun DownloadRow(
         )
     }
 
-    val customActions = if (a11y && !selecting) {
+    val customActions = if (a11y) {
         remember(item, text, actions, conflict, opensFile) {
             val menu = actions.menuItems(item.task, item.boosted, opensFile) { nav.enterSelection(id) }
                 .filterIsInstance<FluxMenuItem.Action>()
@@ -225,14 +228,14 @@ internal fun DownloadRow(
                     categoryColor = colors.category(item.category.fileCategory()),
                     ringKind = item.visual.ringKind(),
                     ringProgress = ringProgressOf(item),
-                    ringContentDescription = if (selecting) text.select else ringLabelOf(text, item.visual, opensFile),
+                    ringContentDescription = if (selecting) text.select else ringLabelOf(text, item.visual, tryOpenFile),
                     onClick = {
-                        when (downloadRowTap(nav.selecting, opensFile)) {
+                        when (downloadRowTap(nav.selecting, file)) {
                             DownloadRowTap.ToggleSelection -> {
                                 nav.toggleSelected(id)
                                 haptics.tick()
                             }
-                            DownloadRowTap.OpenFile -> actions.open(latest.task)
+                            DownloadRowTap.TryOpenFile -> actions.openOrShowDetails(latest.task)
                             DownloadRowTap.Details -> nav.push(Route.TaskDetail(id))
                         }
                     },
@@ -252,7 +255,7 @@ internal fun DownloadRow(
                             overlays.showMenu(c.boundsInRoot(), actions.menuItems(cur.task, cur.boosted, opensFile) { nav.enterSelection(id) })
                         }
                     },
-                    onRingClick = { actions.primary(latest.task, opensFile) },
+                    onRingClick = { actions.primary(latest.task, tryOpenFile) },
                     onTileClick = {
                         if (nav.selecting) {
                             nav.toggleSelected(id)
@@ -268,9 +271,9 @@ internal fun DownloadRow(
                     selection = selection,
                     strikethrough = item.visual == TaskVisualState.Missing,
                     horizontalPadding = hPad,
-                    onClickLabel = when (downloadRowTap(selecting, opensFile)) {
+                    onClickLabel = when (downloadRowTap(selecting, file)) {
                         DownloadRowTap.ToggleSelection -> text.select
-                        DownloadRowTap.OpenFile -> text.ringOpen
+                        DownloadRowTap.TryOpenFile -> text.ringOpen
                         DownloadRowTap.Details -> text.openDetails
                     },
                     customActions = customActions,

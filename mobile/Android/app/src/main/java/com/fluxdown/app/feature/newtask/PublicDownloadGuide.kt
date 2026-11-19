@@ -30,7 +30,7 @@ import kotlinx.coroutines.launch
 /** 仅针对仍使用应用专属默认目录的本机；与已有下载无关。 */
 internal fun HostState.needsPublicDownloadGuide(host: HostRef, done: Boolean, appDir: String): Boolean =
     host is HostRef.Local && !isReadOnly && !done &&
-        config["default_save_dir"]?.trimEnd('/') == appDir.trimEnd('/')
+        config["default_save_dir"]?.trim()?.trimEnd('/') == appDir.trim().trimEnd('/')
 
 internal fun HostState.needsPublicDownloadGuide(context: Context, host: HostRef): Boolean =
     needsPublicDownloadGuide(host, DeviceSettings.of(context).downloadFolderGuideDone, defaultLocalSaveDir(context).path)

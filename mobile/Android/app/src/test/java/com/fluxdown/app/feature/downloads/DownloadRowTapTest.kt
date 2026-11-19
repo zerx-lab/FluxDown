@@ -1,6 +1,9 @@
 package com.fluxdown.app.feature.downloads
 
+import com.fluxdown.app.actions.LocalFileAvailability
+import com.fluxdown.app.actions.initialLocalFileAvailability
 import com.fluxdown.app.actions.openableLocalFile
+import com.fluxdown.app.actions.probeLocalFileAvailability
 import com.fluxdown.core.model.Task
 import com.fluxdown.core.model.TaskStatus
 import java.io.File
@@ -20,8 +23,17 @@ class DownloadRowTapTest {
         val file = files.newFile("single.iso")
         val openable = completed(file).openableLocalFile(localHost = true)
         assertEquals(file, openable)
-        assertEquals(DownloadRowTap.OpenFile, downloadRowTap(selecting = false, opensFile = openable != null))
-        assertEquals(DownloadRowTap.ToggleSelection, downloadRowTap(selecting = true, opensFile = openable != null))
+        val probed = completed(file).probeLocalFileAvailability(localHost = true)
+        assertEquals(DownloadRowTap.TryOpenFile, downloadRowTap(selecting = false, file = probed))
+        assertEquals(DownloadRowTap.ToggleSelection, downloadRowTap(selecting = true, file = probed))
+    }
+
+    @Test fun tappingBeforeProbeFinishesStillAttemptsToOpenAnEligibleTask() {
+        val task = completed(files.newFile("single.iso"))
+        val initial = task.initialLocalFileAvailability(localHost = true)
+        assertEquals(DownloadRowTap.TryOpenFile, downloadRowTap(selecting = false, file = initial))
+        assertEquals(DownloadRowTap.ToggleSelection, downloadRowTap(selecting = true, file = initial))
+        assertEquals(DownloadRowTap.Details, downloadRowTap(selecting = false, file = task.initialLocalFileAvailability(false)))
     }
 
     @Test fun multiFileTorrentContainerShowsDetailsInsteadOfOpening() {
@@ -38,8 +50,7 @@ class DownloadRowTapTest {
     }
 
     private fun assertDetails(task: Task, localHost: Boolean) {
-        val openable = task.openableLocalFile(localHost)
-        assertEquals(null, openable)
-        assertEquals(DownloadRowTap.Details, downloadRowTap(selecting = false, opensFile = openable != null))
+        assertEquals(null, task.openableLocalFile(localHost))
+        assertEquals(DownloadRowTap.Details, downloadRowTap(selecting = false, file = task.probeLocalFileAvailability(localHost)))
     }
 }

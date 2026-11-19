@@ -31,6 +31,7 @@ import com.fluxdown.app.feature.newtask.NewDownloadSheet
 import com.fluxdown.app.feature.newtask.PublicDownloadGuide
 import com.fluxdown.app.feature.newtask.TorrentImport
 import com.fluxdown.app.feature.newtask.needsPublicDownloadGuide
+import com.fluxdown.app.feature.newtask.skipPublicDownloadGuide
 import com.fluxdown.app.i18n.str
 import com.fluxdown.app.nav.AppNavigator
 import com.fluxdown.app.nav.LocalNavigator
@@ -237,6 +238,21 @@ class ExternalDownloadActivity : ComponentActivity() {
 /** 待导入的种子；按引用区分（同一 URI 连续唤起两次也各处理一次）。 */
 private class PendingTorrent(val uri: Uri)
 
+/** null 等待；空字符串交给主机使用当前默认目录。保存失败且仍符合引导条件时继续等待。 */
+internal fun externalTorrentSaveDir(
+    savingDirectory: Boolean,
+    selectedDirectory: String?,
+    state: HostState,
+    host: HostRef,
+    guideDone: Boolean,
+    appDir: String,
+): String? = when {
+    savingDirectory || state.isReadOnly -> null
+    selectedDirectory != null && host is HostRef.Local -> selectedDirectory
+    state.needsPublicDownloadGuide(host, guideDone, appDir) -> null
+    else -> ""
+}
+
 /** 透明舞台：只有「新建下载」Sheet 与浮层（对话框 / toast）；Sheet 关闭后结束窗口。 */
 @Composable
 private fun ExternalDownloadStage(
@@ -273,7 +289,14 @@ private fun ExternalDownloadStage(
             if (head != null && waitingForDirectory) {
                 FluxSheet(
                     visible = true,
-                    onDismissRequest = { if (!savingDirectory) onTorrentDone(head) },
+                    onDismissRequest = {
+                        if (!savingDirectory) {
+                            container.store.state.value.skipPublicDownloadGuide(
+                                container.host.value, settings.downloadFolderGuideDone, appDir,
+                                settings::finishDownloadFolderGuide,
+                            )
+                        }
+                    },
                     dismissible = !savingDirectory,
                     title = str(R.string.defaultSaveDir),
                 ) {
@@ -312,13 +335,9 @@ private fun ExternalDownloadStage(
         val saveDir = if (ready.needsPublicDownloadGuide(container.host.value, settings.downloadFolderGuideDone, appDir)) {
             waitingForDirectory = true
             snapshotFlow {
-                when {
-                    savingDirectory -> null
-                    selectedDirectory != null && host.value is HostRef.Local -> selectedDirectory
-                    !state.value.isReadOnly &&
-                        !state.value.needsPublicDownloadGuide(host.value, settings.downloadFolderGuideDone, appDir) -> ""
-                    else -> null
-                }
+                externalTorrentSaveDir(
+                    savingDirectory, selectedDirectory, state.value, host.value, settings.downloadFolderGuideDone, appDir,
+                )
             }.first { it != null }.orEmpty().also { waitingForDirectory = false }
         } else {
             ""

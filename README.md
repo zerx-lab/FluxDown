@@ -265,7 +265,7 @@ cargo run -p fluxdown_cli -- ping
 
 Android lives in `mobile/Android`; iOS lives in `mobile/FluxDown`. Both use the shared Rust core in `native/mobile` and shared translations in `assets/i18n`.
 
-On Android, the first local download form offers the system Download folder. Grant storage access and confirm a writable folder to change the default, or keep the app folder without granting access. You can change the location later in Download Settings. Tap a completed local task with its file present to open it in Android; long-press for **Open File** or **Task Details**.
+On Android, the first local download form offers the system Download folder. Grant storage access and confirm a writable folder to change the default, or keep the app folder without granting access. Dismissing this prompt while opening a `.torrent` file keeps the app folder and continues the import. Configured category folders still apply independently. You can change the default later in Download Settings. Tap a completed local task with a regular file to open it in Android; long-press for **Open File** or **Task Details**. Tasks without an openable local file still open their details on tap.
 
 ```shell
 # Android: use Android Studio's JBR as JAVA_HOME
