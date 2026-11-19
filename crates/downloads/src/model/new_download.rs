@@ -177,22 +177,29 @@ fn subfolder_file_stem(name: &str) -> &str {
     }
 }
 
-pub(crate) fn check_subfolder(path: &std::path::Path) -> std::io::Result<()> {
-    use std::fs;
-    use std::io::ErrorKind::{AlreadyExists, NotFound};
+#[derive(Debug)]
+pub(crate) enum SubfolderError {
+    Occupied,
+    BrokenLink,
+    Io(std::io::Error),
+}
+
+pub(crate) fn check_subfolder(path: &std::path::Path) -> Result<(), SubfolderError> {
+    use std::{fs, io::ErrorKind::NotFound};
 
     match fs::metadata(path) {
         Ok(metadata) if metadata.is_dir() => Ok(()),
-        Err(missing) if missing.kind() == NotFound => match fs::symlink_metadata(path) {
-            Ok(metadata) if metadata.is_symlink() => Err(missing),
+        Err(error) if error.kind() == NotFound => match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.is_symlink() => Err(SubfolderError::BrokenLink),
+            // The directory may have been created between the two lookups.
             Ok(metadata) if metadata.is_dir() => Ok(()),
-            Ok(_) => Err(AlreadyExists.into()),
+            Ok(_) => Err(SubfolderError::Occupied),
             // Only a missing entry can be created by the engine when it opens the output.
             Err(error) if error.kind() == NotFound => Ok(()),
-            Err(error) => Err(error),
+            Err(error) => Err(SubfolderError::Io(error)),
         },
-        Ok(_) => Err(AlreadyExists.into()),
-        Err(error) => Err(error),
+        Ok(_) => Err(SubfolderError::Occupied),
+        Err(error) => Err(SubfolderError::Io(error)),
     }
 }
 
@@ -739,6 +746,10 @@ mod tests {
             ("magnet:?dn=Show.S01E100.1080p", "Show"),
             ("magnet:?dn=%5BGroup%5D+Show+-+05+%5B1080p%5D", "Show"),
             (
+                "https://example.org/Show%20-%2005%20%5B1080p%5D.ass",
+                "Show",
+            ),
+            (
                 "https://example.org/Report%20-%2012%20Months.pdf",
                 "Report - 12 Months",
             ),
@@ -770,6 +781,7 @@ mod tests {
 
     #[test]
     fn subfolder_check_distinguishes_directories_and_files() -> std::io::Result<()> {
+        use super::{SubfolderError, check_subfolder};
         use std::{fs, io, time::SystemTime};
 
         let nonce = SystemTime::now()
@@ -781,38 +793,32 @@ mod tests {
         fs::create_dir(&root)?;
         let result = (|| {
             let child = root.join("Movie");
-            super::check_subfolder(&child)?;
+            check_subfolder(&child).expect("missing subfolder can be created");
             fs::create_dir(&child)?;
-            super::check_subfolder(&child)?;
+            check_subfolder(&child).expect("existing subfolder can be reused");
             let file = root.join("occupied");
             fs::write(&file, [])?;
-            assert_eq!(
-                super::check_subfolder(&file)
-                    .expect_err("same-name file")
-                    .kind(),
-                io::ErrorKind::AlreadyExists
-            );
+            assert!(matches!(
+                check_subfolder(&file),
+                Err(SubfolderError::Occupied)
+            ));
             #[cfg(unix)]
             {
                 use std::os::unix::fs::symlink;
                 let linked_dir = root.join("linked-dir");
                 symlink(&child, &linked_dir)?;
-                super::check_subfolder(&linked_dir)?;
+                check_subfolder(&linked_dir).expect("linked subfolder can be reused");
                 let linked_file = root.join("linked-file");
                 symlink(&file, &linked_file)?;
-                assert_eq!(
-                    super::check_subfolder(&linked_file)
-                        .expect_err("link to a file")
-                        .kind(),
-                    io::ErrorKind::AlreadyExists
-                );
+                assert!(matches!(
+                    check_subfolder(&linked_file),
+                    Err(SubfolderError::Occupied)
+                ));
                 fs::remove_dir(&child)?;
-                assert_eq!(
-                    super::check_subfolder(&linked_dir)
-                        .expect_err("dangling directory link")
-                        .kind(),
-                    io::ErrorKind::NotFound
-                );
+                assert!(matches!(
+                    check_subfolder(&linked_dir),
+                    Err(SubfolderError::BrokenLink)
+                ));
             }
             Ok(())
         })();

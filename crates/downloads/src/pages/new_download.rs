@@ -36,11 +36,11 @@ use crate::{
         dispatch::{RemoteDirCheck, check_remote_save_dir},
         new_download::{
             BuiltRequests, DEFAULT_HASH_ALGORITHM, DraftOptions, HASH_ALGORITHMS, MAX_THREADS,
-            ProxyChoice, THREAD_PRESETS, ThreadChoice, UA_PRESET_CUSTOM, UA_PRESET_DEFAULT,
-            UA_PRESETS, UrlEntry, append_entries, build_requests, capture_entry, captured_referrer,
-            check_subfolder, checksum_spec, compose_request, custom_segments, detect_ua_preset,
-            manual_proxy_url, parse_entries, parse_input, suggested_subfolder, ua_preset_keys,
-            ua_preset_value,
+            ProxyChoice, SubfolderError, THREAD_PRESETS, ThreadChoice, UA_PRESET_CUSTOM,
+            UA_PRESET_DEFAULT, UA_PRESETS, UrlEntry, append_entries, build_requests, capture_entry,
+            captured_referrer, check_subfolder, checksum_spec, compose_request, custom_segments,
+            detect_ua_preset, manual_proxy_url, parse_entries, parse_input, suggested_subfolder,
+            ua_preset_keys, ua_preset_value,
         },
         save_dir_category::{
             CategoryMode, NewDownloadCategory, category_mode_preference, category_options,
@@ -1267,7 +1267,7 @@ impl NewDownloadView {
         &mut self,
         mut built: BuiltRequests,
         target: String,
-        result: std::io::Result<()>,
+        result: Result<(), SubfolderError>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1301,14 +1301,12 @@ impl NewDownloadView {
         }
         if let Err(error) = result {
             let translator = self.translator.read(cx);
-            let message = match error.kind() {
-                std::io::ErrorKind::AlreadyExists => {
-                    translator.text("downloadSubfolderOccupied").to_owned()
-                }
-                std::io::ErrorKind::NotFound => {
+            let message = match error {
+                SubfolderError::Occupied => translator.text("downloadSubfolderOccupied").to_owned(),
+                SubfolderError::BrokenLink => {
                     translator.text("downloadSubfolderBrokenLink").to_owned()
                 }
-                _ => translator.text_with(
+                SubfolderError::Io(error) => translator.text_with(
                     "downloadSubfolderUnavailable",
                     &[("error", &error.to_string())],
                 ),

@@ -19,12 +19,13 @@ export interface BucketInfo {
 }
 
 // Keep in sync with desktop series_title; both run series_title_cases.json.
-const episodeMarker = /(?:[ ._[\]()-][Ss][0-9]{2}[Ee][0-9]{2,3}|第[0-9]{1,3}[话話集])(?:$|[ ._[\]()-])| - [0-9]{2,3}(?: *(?:\[[^\]]*\]|\([^)]*\)))*$/
+const episodeMarker = /(?:[ ._[\]()-][Ss][0-9]{2}[Ee][0-9]{2,3}|第[0-9]{1,3}[话話集])(?:$|[ ._[\]()-])| - [0-9]{2,3}(?:[Vv][0-9]{1,2})?(?: +[Ee][Nn][Dd])?(?: *(?:\[[^\]]*\]|\([^)]*\)))*$/
+const episodeSidecarExtension = /\.(?:ass|ssa|srt|vtt|nfo)$/i
 
 export function contentBucket(view: DownloadTaskView): BucketInfo | null {
   const name = view.name.slice(Math.max(view.name.lastIndexOf('/'), view.name.lastIndexOf('\\')) + 1)
     .replace(/^ *(?:\[[^\]]*\] *)*/, '')
-  const stem = name.includes(' - ') && fileKindOf(name) === 'video'
+  const stem = name.includes(' - ') && (fileKindOf(name) === 'video' || episodeSidecarExtension.test(name))
     ? name.slice(0, name.lastIndexOf('.'))
     : name
   const match = episodeMarker.exec(stem)

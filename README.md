@@ -44,7 +44,7 @@
 - **Automation & remote management** — RSS subscriptions, scheduled queues, webhooks, plugins and optional FluxCloud device collaboration
 - **Local-first** — free and open source, no ads, no account required for local downloads; resumable state stored locally by default
 
-In Desktop or Web, group a download category by **Series title** to fold individual episodes together without moving files. The view recognises names like `Show.S01E02`, `Show.S01E100`, `[Fansub] Show - 05` and `剧名第05话`; existing task groups and torrent bundles keep their own structure.
+In Desktop or Web, group downloads by **Series title** to fold individual episodes together without moving files. Names like `Show.S01E100` and `剧名第05话` are recognised. A trailing ` - 05` also works for extensionless names, videos, and common subtitle or `.nfo` files, including release suffixes such as `v2`, `END`, and `[1080p]`. Existing task groups and torrent bundles keep their own structure.
 
 For a single local download in Desktop, **Use a named subfolder** reuses or creates a folder under the displayed save location. Recognised episodes use the series title; other downloads use the file or magnet name. Folder names follow the filesystem's case rules: `Show` and `show` group together in the view but can be separate folders on case-sensitive storage. A manually entered or picked directory takes precedence.
 
