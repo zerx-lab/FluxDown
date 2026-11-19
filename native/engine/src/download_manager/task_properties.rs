@@ -50,7 +50,7 @@ impl DownloadManager {
         if edit.original.file_name != edit.updated.file_name
             || edit.original.save_dir != edit.updated.save_dir
         {
-            self.check_file_clear_path_edit(&edit.original)?;
+            self.check_file_clear_path_edit(&edit.original).await?;
         }
         #[cfg(feature = "bt")]
         if edit.relocate

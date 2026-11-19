@@ -254,33 +254,7 @@ impl DownloadManager {
             self.reconcile_file_clear(task_id, &task.save_dir, &task.file_name, true)
                 .await?
         } else {
-            let mut plans = self
-                .plan_batch_deletion(std::slice::from_ref(&task.task_id), true)
-                .await?;
-            let files = plans.remove(task_id).ok_or_else(unavailable)?;
-            if !files.owns_final {
-                return Err(unavailable());
-            }
-            self.file_hash_jobs.cancel(task_id);
-            let primary =
-                task_target_path(&task.save_dir, &task.file_name).ok_or_else(unavailable)?;
-            let intent = tokio::time::timeout(
-                DELETE_FILE_CLEANUP_TIMEOUT,
-                tokio::task::spawn_blocking(move || {
-                    ClearIntent::capture(&primary, files.artifacts)
-                }),
-            )
-            .await
-            .map_err(|error| DownloadError::Other(format!("capture file clear intent: {error}")))?
-            .map_err(|error| {
-                DownloadError::Other(format!("file clear capture worker failed: {error}"))
-            })??;
-            let raw = serde_json::to_string(&intent)
-                .map_err(|error| DbError::InvalidConfig(error.to_string()))?;
-            if !self.db.begin_task_file_clear(task_id, &raw).await? {
-                return Err(unavailable());
-            }
-            self.run_file_clear(task_id, &task.save_dir, &task.file_name, true, intent)
+            self.begin_file_clear(task.task_id, &task.save_dir, &task.file_name)
                 .await?
         };
         if !removed {
@@ -288,6 +262,39 @@ impl DownloadManager {
         }
         self.emit_task_file_cleared(task_id);
         Ok(())
+    }
+
+    async fn begin_file_clear(
+        &mut self,
+        task_id: String,
+        save_dir: &str,
+        file_name: &str,
+    ) -> Result<bool, DownloadError> {
+        let mut plans = self
+            .plan_batch_deletion(std::slice::from_ref(&task_id), true)
+            .await?;
+        let files = plans.remove(&task_id).ok_or_else(unavailable)?;
+        if !files.owns_final {
+            return Err(unavailable());
+        }
+        self.file_hash_jobs.cancel(&task_id);
+        let primary = task_target_path(save_dir, file_name).ok_or_else(unavailable)?;
+        let intent = tokio::time::timeout(
+            DELETE_FILE_CLEANUP_TIMEOUT,
+            tokio::task::spawn_blocking(move || ClearIntent::capture(&primary, files.artifacts)),
+        )
+        .await
+        .map_err(|error| DownloadError::Other(format!("capture file clear intent: {error}")))?
+        .map_err(|error| {
+            DownloadError::Other(format!("file clear capture worker failed: {error}"))
+        })??;
+        let raw = serde_json::to_string(&intent)
+            .map_err(|error| DbError::InvalidConfig(error.to_string()))?;
+        if !self.db.begin_task_file_clear(&task_id, &raw).await? {
+            return Err(unavailable());
+        }
+        self.run_file_clear(&task_id, save_dir, file_name, true, intent)
+            .await
     }
 
     pub(super) async fn reconcile_file_clear(
@@ -306,14 +313,62 @@ impl DownloadManager {
         }
         self.pending_file_unlinks.remove(task_id);
         let raw = self.db.load_task_file_clear_intent(task_id).await?;
-        // Older intents with no directory witness cannot prove unlink, even when the parent exists.
         if raw.is_empty() {
-            return Err(unavailable());
+            self.abandon_legacy_file_clear(task_id, save_dir, file_name)
+                .await?;
+            return if explicit {
+                self.begin_file_clear(task_id.to_owned(), save_dir, file_name)
+                    .await
+            } else {
+                Ok(false)
+            };
         }
         let intent = serde_json::from_str(&raw)
             .map_err(|error| DownloadError::Other(format!("invalid file clear intent: {error}")))?;
         self.run_file_clear(task_id, save_dir, file_name, explicit, intent)
             .await
+    }
+
+    pub(super) async fn check_legacy_file_clear_path_edit(
+        &self,
+        task: &crate::model::TaskInfo,
+    ) -> Result<(), String> {
+        let raw = self
+            .db
+            .load_task_file_clear_intent(&task.task_id)
+            .await
+            .map_err(|error| format!("db: {error:#}"))?;
+        if !raw.is_empty() {
+            return Err("file-clear-pending".into());
+        }
+        self.abandon_legacy_file_clear(&task.task_id, &task.save_dir, &task.file_name)
+            .await
+            .map_err(|error| match error {
+                DownloadError::Db(error) => format!("db: {error:#}"),
+                _ => "file-clear-pending".into(),
+            })
+    }
+
+    async fn abandon_legacy_file_clear(
+        &self,
+        task_id: &str,
+        save_dir: &str,
+        file_name: &str,
+    ) -> Result<(), DownloadError> {
+        // Only positive evidence can retire a legacy intent. An empty mount point
+        // and a directory whose output was unlinked are indistinguishable here.
+        let primary = task_target_path(save_dir, file_name).ok_or_else(unavailable)?;
+        let metadata = tokio::time::timeout(
+            DELETE_FILE_CLEANUP_TIMEOUT,
+            tokio::fs::symlink_metadata(primary),
+        )
+        .await
+        .map_err(|error| DownloadError::Other(format!("probe legacy file clear: {error}")))??;
+        if !metadata.is_file() {
+            return Err(unavailable());
+        }
+        self.db.finish_task_file_clear(task_id, false).await?;
+        Ok(())
     }
 
     async fn run_file_clear(

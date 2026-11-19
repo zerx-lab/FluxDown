@@ -12268,6 +12268,7 @@ impl DownloadManager {
                 .reconcile_file_clear(task_id, &task.save_dir, &task.file_name, false)
                 .await?
             {
+                // A present output is not eligible for missing-file restart or recreation.
                 return Err(unavailable());
             }
             self.emit_task_file_cleared(task_id);
@@ -15980,11 +15981,11 @@ impl DownloadManager {
         self.send_all_groups().await;
     }
 
-    fn check_file_clear_path_edit(&self, task: &TaskInfo) -> Result<(), String> {
+    async fn check_file_clear_path_edit(&self, task: &TaskInfo) -> Result<(), String> {
         // Pending unlink and recovery must observe the same path. A queued restart
         // can still pick up edits, but a live prelude has already captured its path.
         match task.file_clear_state {
-            FileClearState::Pending => Err("file-clear-pending".into()),
+            FileClearState::Pending => self.check_legacy_file_clear_path_edit(task).await,
             FileClearState::RestartPending
                 if self.active_tasks.contains_key(&task.task_id)
                     || self.pending_pauses.contains_key(&task.task_id) =>
@@ -16040,7 +16041,7 @@ impl DownloadManager {
         if t.file_name == new_name {
             return Ok(());
         }
-        self.check_file_clear_path_edit(&t)?;
+        self.check_file_clear_path_edit(&t).await?;
         // 名字未变时上面已直接放行：`out=` 等入口落库的未清洗原名（起跑前尚未被下载器改写）
         // 原样确认不应报错。
         if naming::sanitize_filename(new_name) != new_name {
@@ -25131,6 +25132,91 @@ mod tests {
             }
         }
         std::fs::remove_dir_all(&dir).expect("remove test directory");
+    }
+
+    #[tokio::test]
+    async fn legacy_file_clear_unlocks_only_with_a_present_output() {
+        let temp = FiletrackTestDir::new("legacy_file_clear");
+        let dir = temp.0.join("save");
+        let detached = temp.0.join("detached");
+        std::fs::create_dir(&dir).unwrap();
+        let save_dir = dir.to_string_lossy();
+        let db = Db::connect("sqlite::memory:").await.unwrap();
+        let mut manager = sched_manager(&db, 1);
+
+        for id in ["startup", "retry", "restart", "move"] {
+            let name = format!("{id}.bin");
+            std::fs::write(dir.join(&name), id.as_bytes()).unwrap();
+            insert_task_at_status(&db, id, &save_dir, &name, 3).await;
+        }
+        // The old writer set only the state; the migrated intent column defaults to empty.
+        sqlx::query("UPDATE tasks SET file_missing = 3")
+            .execute(db.pool())
+            .await
+            .unwrap();
+        std::fs::rename(&dir, &detached).unwrap();
+        std::fs::create_dir(&dir).unwrap();
+        manager.recover_pending_file_clears().await.unwrap();
+        assert!(manager.clear_task_file("retry").await.is_err());
+        assert!(
+            manager
+                .try_restart_missing_task_file("restart")
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            db.pending_task_file_clears().await.unwrap().len(),
+            4,
+            "an empty mount point is not evidence of unlink"
+        );
+        std::fs::remove_dir(&dir).unwrap();
+        std::fs::rename(&detached, &dir).unwrap();
+
+        assert!(
+            manager
+                .try_restart_missing_task_file("restart")
+                .await
+                .is_err()
+        );
+        let restart = db.load_task_by_id("restart").await.unwrap().unwrap();
+        assert_eq!(restart.file_clear_state, FileClearState::None);
+        assert_eq!(std::fs::read(dir.join("restart.bin")).unwrap(), b"restart");
+
+        manager.clear_task_file("retry").await.unwrap();
+        let retry = db.load_task_by_id("retry").await.unwrap().unwrap();
+        assert_eq!(retry.status, 3);
+        assert_eq!(retry.file_clear_state, FileClearState::Cleared);
+        assert!(!dir.join("retry.bin").exists());
+
+        insert_task_at_status(&db, "shared", &save_dir, "restart.bin", 2).await;
+        sqlx::query("UPDATE tasks SET file_missing = 3 WHERE id = 'restart'")
+            .execute(db.pool())
+            .await
+            .unwrap();
+        assert!(manager.clear_task_file("restart").await.is_err());
+        assert_eq!(std::fs::read(dir.join("restart.bin")).unwrap(), b"restart");
+
+        let destination = temp.0.join("relocated");
+        let patch = crate::task_edit::storage_move(&db, "move", &destination.to_string_lossy())
+            .await
+            .unwrap()
+            .unwrap();
+        let super::task_properties::TaskEditStep::Started(publish) =
+            manager.begin_task_edit(patch).await.unwrap()
+        else {
+            panic!("completed task relocation must start immediately");
+        };
+        manager.finish_task_edit(publish.await).await.unwrap();
+        assert_eq!(
+            std::fs::read(destination.join("move.bin")).unwrap(),
+            b"move"
+        );
+
+        manager.recover_pending_file_clears().await.unwrap();
+        let startup = db.load_task_by_id("startup").await.unwrap().unwrap();
+        assert_eq!(startup.file_clear_state, FileClearState::None);
+        assert!(!startup.file_missing);
+        assert_eq!(std::fs::read(dir.join("startup.bin")).unwrap(), b"startup");
     }
 
     #[tokio::test]
