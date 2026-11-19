@@ -5783,11 +5783,13 @@ async fn do_segment(
     } else {
         None
     };
-    // hint 跳过探测时，质询或满足门控的 UA 拒绝只能在真实请求上首次暴露。
-    // 换中性 UA 重发同一请求（每个请求最多一次）。临时切换由 settle 决定落库或恢复。
+    // hint 模式跳过了探测，反机器人质询 / 浏览器 UA 被拒只能在真实请求上首次暴露：换中性
+    // UA 重发同一请求。`escape_bot_challenge` 对已是中性 UA 的请求不再重发；另设硬上限，
+    // 防止身份被并发改写后对同一请求反复重发、分段永久卡住。
+    const MAX_UA_RESENDS: u8 = 2;
     let mut used = spec.current();
     let mut refreshed = false;
-    let mut pending_provisional = false;
+    let mut ua_resends: u8 = 0;
     let resp = loop {
         // 单 GET 探测保留的首响应（一次性 URL 的唯一一次请求）：首连接直接消费它，不再发请求。
         // 只有零进度的 plain 首连接会取；重试 / 其余分段照常发 Range 请求。
@@ -5836,17 +5838,8 @@ async fn do_segment(
             }
         }
         let resp = match sent {
-            Ok(Ok(r)) => r,
-            Ok(Err(error)) => {
-                if pending_provisional {
-                    spec.abandon_provisional_ua(&used, db, task_id).await;
-                }
-                return Err(error);
-            }
+            Ok(r) => r?,
             Err(_) => {
-                if pending_provisional {
-                    spec.abandon_provisional_ua(&used, db, task_id).await;
-                }
                 return Err(DownloadError::Other(format!(
                     "segment {seg_idx} stalled: no response headers received within {}s",
                     header_timeout.as_secs()
@@ -5854,33 +5847,12 @@ async fn do_segment(
             }
         };
         request_path.record_setup(sent_at.elapsed());
-        if pending_provisional {
-            // 恢复不是凭据刷新。重发带回质询头时先提升再重发一次；否则结算后再
-            // 决定 refresh，并且用恢复后的 current，不能拿已放弃的中性 Arc 去走
-            // 「别的请求已经刷新过」短路。
-            match spec
-                .follow_provisional_retry(&used, &resp, db, task_id)
-                .await
-            {
-                crate::downloader::ProvisionalRetry::Promote(promoted) => {
-                    drop(resp);
-                    used = promoted;
-                    pending_provisional = false;
-                    continue;
-                }
-                crate::downloader::ProvisionalRetry::Settled(adopt_current) => {
-                    pending_provisional = false;
-                    if adopt_current {
-                        used = spec.current();
-                    }
-                }
-            }
-        }
         match spec.escape_bot_challenge(&used, &resp, db, task_id).await {
-            Some(escape) => {
+            Some(_) if ua_resends >= MAX_UA_RESENDS => break resp,
+            Some(neutral) => {
+                ua_resends += 1;
                 drop(resp);
-                used = escape.spec;
-                pending_provisional = escape.provisional;
+                used = neutral;
             }
             None => {
                 // 被拒（401 / 403 / 410）且有插件声明 refresh：换发凭据后重发同一请求，
@@ -5900,6 +5872,7 @@ async fn do_segment(
     };
     let resp = resp.error_for_status()?;
     spec.confirm(&used);
+    spec.persist_confirmed_ua(&used, db, task_id).await;
     if reuse_redirect && direct.is_none() && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT {
         request_path.learn_redirect(url, resp.url().as_str());
     }
