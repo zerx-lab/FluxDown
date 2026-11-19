@@ -447,7 +447,7 @@ struct DownloadsListScreen: View {
                     .disabled(model.selection.isEmpty)
                 Button(L("exportTaskInfoTxt"), systemImage: "square.and.arrow.down") {
                     let selected = model.selectedTasks()
-                    var tasks = Dictionary(uniqueKeysWithValues: selected.map { ($0.taskId, $0) })
+                    var tasks = Dictionary(selected.map { ($0.taskId, $0) }, uniquingKeysWith: { first, _ in first })
                     let visible = model.list.visibleIds.compactMap { tasks.removeValue(forKey: $0) }
                     let remaining = selected.filter { tasks[$0.taskId] != nil }
                     let rows = (visible + remaining).map {
