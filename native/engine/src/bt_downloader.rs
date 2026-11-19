@@ -3147,6 +3147,7 @@ fn dedup_name_in_dir(
             avoid: Some(avoid),
             allow_overwrite,
             companion_mp4: false,
+            companion_audio: false,
         },
     )
 }

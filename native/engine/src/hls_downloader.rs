@@ -2758,7 +2758,12 @@ async fn finalize_recording(
             Err(e) => {
                 // 合并失败:退回仅视频输出,音轨保留为 sidecar 并留下 warning 活动。
                 let sidecar = build_audio_path(&dest_path);
-                let moved = tokio::fs::rename(audio_temp, &sidecar).await.is_ok();
+                let moved = if p.is_resume {
+                    tokio::fs::rename(audio_temp, &sidecar).await
+                } else {
+                    crate::downloader::claim_rename(audio_temp, &sidecar).await
+                }
+                .is_ok();
                 crate::log_warn!(
                     "[hls-download] task {} audio/video mux failed: {}; keeping video only",
                     p.task_id,

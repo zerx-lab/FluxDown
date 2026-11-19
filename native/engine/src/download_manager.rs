@@ -1602,12 +1602,14 @@ fn dedup_filename_sync(
     reserved: &HashSet<std::path::PathBuf>,
     overwrite: &crate::file_exists::OverwritePolicy,
     companion_mp4: bool,
+    companion_audio: bool,
 ) -> String {
     let rules = downloader::DedupRules {
         reserved: Some(reserved),
         avoid: None,
         allow_overwrite: overwrite.permits(name),
         companion_mp4,
+        companion_audio,
     };
     match downloader::dedup_name_by_probe(dir, name, &rules) {
         Ok(chosen) => chosen,
@@ -1635,19 +1637,18 @@ fn reserve_deduped_name_blocking(
     name: &str,
     overwrite: &crate::file_exists::OverwritePolicy,
     companion_mp4: bool,
+    companion_audio: bool,
 ) -> (String, std::path::PathBuf) {
     let temp_of = |chosen: &str| dir.join(format!("{chosen}{}", downloader::TEMP_EXT));
     let allow_overwrite = overwrite.permits(name);
-    let mut cursor = downloader::DedupCursor::new(
-        dir,
-        name,
-        downloader::DedupRules {
-            reserved: None,
-            avoid: None,
-            allow_overwrite,
-            companion_mp4,
-        },
-    );
+    let rules = downloader::DedupRules {
+        reserved: None,
+        avoid: None,
+        allow_overwrite,
+        companion_mp4,
+        companion_audio,
+    };
+    let mut cursor = downloader::DedupCursor::new(dir, name, rules);
     loop {
         let chosen = match cursor.next_free() {
             Ok(Some(chosen)) => chosen,
@@ -1666,7 +1667,7 @@ fn reserve_deduped_name_blocking(
             continue;
         }
         let overwrite_final = allow_overwrite && chosen == name;
-        match downloader::name_free_on_disk(dir, &chosen, overwrite_final, companion_mp4) {
+        match downloader::name_free_on_disk(dir, &chosen, &rules, overwrite_final) {
             Ok(true) => return (chosen, temp),
             Ok(false) => {
                 lock_reserved(reserved).remove(&temp);
@@ -1697,13 +1698,21 @@ async fn reserve_deduped_name(
     name: &str,
     overwrite: &crate::file_exists::OverwritePolicy,
     companion_mp4: bool,
+    companion_audio: bool,
 ) -> Result<(String, std::path::PathBuf), tokio::task::JoinError> {
     let reserved = Arc::clone(reserved);
     let dir = dir.to_path_buf();
     let name = name.to_string();
     let overwrite = overwrite.clone();
     tokio::task::spawn_blocking(move || {
-        reserve_deduped_name_blocking(&reserved, &dir, &name, &overwrite, companion_mp4)
+        reserve_deduped_name_blocking(
+            &reserved,
+            &dir,
+            &name,
+            &overwrite,
+            companion_mp4,
+            companion_audio,
+        )
     })
     .await
 }
@@ -1747,7 +1756,7 @@ async fn restore_non_hls_file_name(
     let probe_name = restored.clone();
     // 磁盘探测放进阻塞池，不占 async 工作线程。
     let deduped = match tokio::task::spawn_blocking(move || {
-        dedup_filename_sync(&save_path, &probe_name, &snapshot, &overwrite, false)
+        dedup_filename_sync(&save_path, &probe_name, &snapshot, &overwrite, false, false)
     })
     .await
     {
@@ -1785,6 +1794,7 @@ enum StartPrelude {
 struct PreludeCtx {
     global: FileExistsBehavior,
     support: crate::file_exists::AskSupport,
+    restart_missing: bool,
 }
 
 /// 协议对「文件已存在」询问/跳过的支持程度。
@@ -2095,6 +2105,10 @@ async fn finalize_start_file_name(
         }
     }
 
+    if ctx.restart_missing && !params.file_name.is_empty() {
+        params.file_name = naming::sanitize_filename(&params.file_name);
+    }
+
     // Step 3.2：分类目录路由（外部捕获）。名字此刻已尽量确定（服务器文件名 / 类型推断 /
     // 插件 resolve），尚未写任何文件：按它重选目录，使后续「文件已存在」判断、去重、
     // 临时文件都落在最终目录，完成时通常无需移动。
@@ -2108,10 +2122,17 @@ async fn finalize_start_file_name(
     // 契约优先级选择动作。必须在 Step 4 之前判断：dedup 一旦介入就会把
     // file_name 改成不冲突的新名字，届时就再也对不上磁盘上这份文件了。
     if params.file_name.is_empty() {
+        if ctx.restart_missing {
+            return StartPrelude::Failed {
+                error: downloader::DownloadError::Other("missing redownload file name".into()),
+            };
+        }
         return StartPrelude::Proceed(None);
     }
     let save_path = std::path::PathBuf::from(&params.save_dir);
     let is_hls = hls_downloader::is_hls_url(&params.url);
+    let companion_audio = ctx.restart_missing
+        && (is_hls || dash_downloader::is_dash_url(&params.url) || params.audio_url.is_some());
     if let Some(candidate) = task_target_path(&params.save_dir, &params.file_name) {
         let existing = match tokio::fs::metadata(&candidate).await {
             Ok(metadata) if metadata.is_file() => Some(metadata),
@@ -2140,7 +2161,7 @@ async fn finalize_start_file_name(
                     };
                 }
             };
-            let facts = crate::file_exists::ExistsFacts {
+            let mut facts = crate::file_exists::ExistsFacts {
                 final_file_exists: true,
                 temp_conflict: reserved_hit || temp_on_disk,
                 decision,
@@ -2149,6 +2170,15 @@ async fn finalize_start_file_name(
                 unattended: params.unattended,
                 can_prompt: params.selector.can_prompt(),
             };
+            if ctx.restart_missing {
+                // Explicit redownload cannot adopt an unrelated file as its result.
+                if facts.decision == crate::file_exists::ExistsDecision::Skip {
+                    facts.decision = crate::file_exists::ExistsDecision::Rename;
+                }
+                if facts.support == crate::file_exists::AskSupport::WithSkip {
+                    facts.support = crate::file_exists::AskSupport::NoSkip;
+                }
+            }
             match crate::file_exists::decide(&facts) {
                 crate::file_exists::ExistsAction::Skip => {
                     return StartPrelude::SkipExisting {
@@ -2210,6 +2240,7 @@ async fn finalize_start_file_name(
                                 &snapshot,
                                 &crate::file_exists::OverwritePolicy::Never,
                                 is_hls,
+                                companion_audio,
                             )
                         })
                         .await
@@ -2253,6 +2284,7 @@ async fn finalize_start_file_name(
         &params.file_name,
         &params.overwrite,
         is_hls,
+        companion_audio,
     )
     .await
     {
@@ -2266,6 +2298,28 @@ async fn finalize_start_file_name(
         }
     };
     // Step 5: dedup 改名落库。
+    if ctx.restart_missing {
+        match params
+            .db
+            .bind_missing_task_restart(&params.task_id, &deduped)
+            .await
+        {
+            Ok(true) => {
+                params.file_name = deduped;
+                return StartPrelude::Proceed(Some(temp));
+            }
+            result => {
+                lock_reserved(reserved).remove(&temp);
+                let error = match result {
+                    Err(error) => error.into(),
+                    Ok(_) => {
+                        downloader::DownloadError::Other("redownload is no longer pending".into())
+                    }
+                };
+                return StartPrelude::Failed { error };
+            }
+        }
+    }
     if deduped != params.file_name {
         params.file_name = deduped;
         if let Err(error) = params
@@ -7648,6 +7702,9 @@ impl DownloadManager {
     /// 临时产物（`<name>.fdownloading`、DASH/HLS 音轨临时、ED2K 旧版临时名），
     /// 且未完成。读库/探盘出错时保守视为已起跑，沿用续传语义。
     async fn never_started(&self, task: &TaskInfo, has_audio_track: bool) -> bool {
+        if task.file_clear_state == FileClearState::RestartPending {
+            return true;
+        }
         if task.status == 3 || task.downloaded_bytes != 0 {
             return false;
         }
@@ -11532,6 +11589,7 @@ impl DownloadManager {
                     prelude: Some(PreludeCtx {
                         global: self.file_exists_behavior,
                         support,
+                        restart_missing: false,
                     }),
                     reserved_set,
                     done_tx,
@@ -12063,6 +12121,10 @@ impl DownloadManager {
             );
             return;
         }
+        if task.file_clear_state == FileClearState::RestartPending {
+            self.resume_task(task_id).await;
+            return;
+        }
         // 在途哈希读的是即将被删除的上一次产物：立即停止并作废其结果。
         self.file_hash_jobs.cancel(task_id);
 
@@ -12211,6 +12273,10 @@ impl DownloadManager {
             return Err(unavailable());
         }
         let pending = task.file_clear_state == FileClearState::Pending;
+        if task.file_clear_state == FileClearState::RestartPending {
+            self.resume_task(task_id).await;
+            return Ok(true);
+        }
         if !pending && (task.status != 3 || !task.file_missing || is_bt_url(&task.url)) {
             return Ok(false);
         }
@@ -13159,6 +13225,7 @@ impl DownloadManager {
             #[cfg(feature = "plugins")]
             let range_verified = range_verified || plugin_range_supported;
 
+            let restart_missing = task.file_clear_state == FileClearState::RestartPending;
             // 普通 HTTP 续传已持久化文件大小、分段进度与原始 validator。
             // 已知大小时直接从真实缺口发 Range 请求，避免 HEAD / Range 0-0 /
             // plain GET 重新消耗一次性签名 URL。下游直接发送 Range，并用持久化的
@@ -13183,7 +13250,7 @@ impl DownloadManager {
                         true
                     }
                 };
-            let resume_hint = if source_changed {
+            let resume_hint = if restart_missing || source_changed {
                 0
             } else if is_plain_http && task.total_bytes > 0 {
                 task.total_bytes
@@ -13334,6 +13401,7 @@ impl DownloadManager {
                     prelude: fresh.then_some(PreludeCtx {
                         global: self.file_exists_behavior,
                         support,
+                        restart_missing,
                     }),
                     reserved_set,
                     done_tx,
@@ -17815,6 +17883,7 @@ mod tests {
             &HashSet::new(),
             &OverwritePolicy::Any,
             false,
+            false,
         );
         assert_eq!(
             result, "test.txt",
@@ -17826,6 +17895,7 @@ mod tests {
             "test.txt",
             &HashSet::new(),
             &OverwritePolicy::Never,
+            false,
             false,
         );
         assert_eq!(result, "test (1).txt");
@@ -17854,6 +17924,7 @@ mod tests {
             &HashSet::new(),
             &OverwritePolicy::Any,
             false,
+            false,
         );
         assert_eq!(result, "test (1).txt");
         if let Err(error) = std::fs::remove_dir_all(&dir)
@@ -17872,8 +17943,14 @@ mod tests {
         let mut reserved = HashSet::new();
         reserved.insert(dir.join(format!("video.mp4{}", downloader::TEMP_EXT)));
 
-        let result =
-            dedup_filename_sync(&dir, "video.mp4", &reserved, &OverwritePolicy::Any, false);
+        let result = dedup_filename_sync(
+            &dir,
+            "video.mp4",
+            &reserved,
+            &OverwritePolicy::Any,
+            false,
+            false,
+        );
         assert_eq!(result, "video (1).mp4");
 
         // 同名目录也不覆盖(文件不能盖到目录上)。
@@ -17883,6 +17960,7 @@ mod tests {
             "data.bin",
             &HashSet::new(),
             &OverwritePolicy::Any,
+            false,
             false,
         );
         assert_eq!(result, "data (1).bin");
@@ -24192,6 +24270,184 @@ mod tests {
         assert!(manager.try_restart_missing_task_file(id).await.is_err());
         cancel_all_active(&manager);
         std::fs::remove_dir_all(&dir).expect("remove test directory");
+    }
+
+    async fn redownload_test_server() -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind redownload server");
+        let base = format!("http://{}", listener.local_addr().expect("server address"));
+        let server = tokio::spawn(async move {
+            loop {
+                let (socket, _) = listener.accept().await.expect("accept request");
+                let mut stream = BufReader::new(socket);
+                let mut request = String::new();
+                stream.read_line(&mut request).await.expect("read request");
+                let head = request.starts_with("HEAD ");
+                let audio = request.contains(" /audio ");
+                let body = if audio { "new audio" } else { "new video" };
+                let mut probe = false;
+                loop {
+                    let mut line = String::new();
+                    let size = stream.read_line(&mut line).await.expect("read header");
+                    if size == 0 || line == "\r\n" {
+                        break;
+                    }
+                    let line = line.to_ascii_lowercase();
+                    if let Some(range) = line.strip_prefix("range:") {
+                        assert!(
+                            range.trim().starts_with("bytes=0-"),
+                            "redownload requested a nonzero resume offset: {range}"
+                        );
+                        probe = range.trim() == "bytes=0-0";
+                    }
+                }
+                let response = if probe && !head {
+                    format!(
+                        "HTTP/1.1 206 Partial Content\r\nContent-Type: application/octet-stream\r\n\
+                         Content-Range: bytes 0-0/{}\r\nContent-Length: 1\r\nConnection: close\r\n\r\nn",
+                        body.len()
+                    )
+                } else {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        if head { "" } else { body }
+                    )
+                };
+                if let Err(error) = stream.get_mut().write_all(response.as_bytes()).await {
+                    tracing::debug!(%error, "redownload probe closed");
+                }
+            }
+        });
+        (base, server)
+    }
+
+    #[tokio::test]
+    async fn redownload_cleared_file_does_not_reuse_stale_outputs_or_checkpoints() {
+        let (base, server) = redownload_test_server().await;
+        // Immediate HTTP, queued track pair, and a queued track pair restored on startup.
+        for (pair, recover) in [(false, false), (true, false), (true, true)] {
+            let dir = unique_filetrack_test_dir("fresh_redownload");
+            std::fs::create_dir_all(&dir).expect("create save directory");
+            let db = Db::connect("sqlite::memory:").await.expect("test database");
+            let id = "same-task";
+            db.insert_task(
+                id,
+                &format!("{base}/video"),
+                "done.mp4",
+                &dir.to_string_lossy(),
+                1,
+                9,
+                "",
+                "",
+                "",
+                0,
+            )
+            .await
+            .expect("insert task");
+            if pair {
+                db.save_audio_url(id, &format!("{base}/audio"))
+                    .await
+                    .expect("save track URL");
+                // Force the documented two-file fallback without depending on system ffmpeg.
+                let unusable_ffmpeg = dir.join("unusable-ffmpeg");
+                std::fs::write(&unusable_ffmpeg, b"not an executable").expect("ffmpeg fixture");
+                db.set_config(
+                    crate::components::CONFIG_FFMPEG_PATH,
+                    &unusable_ffmpeg.to_string_lossy(),
+                )
+                .await
+                .expect("configure ffmpeg");
+            }
+            db.update_task_status(id, 3, "")
+                .await
+                .expect("complete task");
+            std::fs::write(dir.join("done.mp4"), b"completed").expect("seed original output");
+            let mut manager = sched_manager(&db, 1);
+            manager.clear_task_file(id).await.expect("only delete file");
+
+            let mut unrelated = vec![
+                ("done.mp4", b"old video"),
+                ("done.mp4.fdownloading", b"old bytes"),
+            ];
+            if pair {
+                // The first numbered video name is free, but its audio temp is not.
+                unrelated.push(("done (1).audio.m4a.fdownloading", b"old audio"));
+                unrelated.push(("done.audio.m4a", b"old audio"));
+                unrelated.push(("done.audio.m4a.fdownloading", b"old audio"));
+            }
+            for (name, bytes) in &unrelated {
+                std::fs::write(dir.join(name), bytes).expect("seed unrelated file");
+            }
+            db.set_config("hls_resume_same-task", "2:5")
+                .await
+                .expect("seed checkpoint");
+            if pair {
+                occupy_slot(&mut manager, "busy", 1, "", false);
+            }
+            manager
+                .restart_missing_task_file(id)
+                .await
+                .expect("redownload");
+            if pair {
+                assert!(manager.pending_queue.iter().any(|task| task.task_id == id));
+                assert_eq!(std::fs::read(dir.join("done.mp4")).unwrap(), b"old video");
+                let busy = manager.active_tasks.remove("busy").expect("occupied slot");
+                busy.token.cancel();
+                if recover {
+                    db.set_config("auto_resume_on_start", "true")
+                        .await
+                        .expect("enable startup resume");
+                    let reset = db
+                        .reset_incomplete_tasks_to_paused()
+                        .await
+                        .expect("restore queued tasks on startup");
+                    manager = sched_manager(&db, 1);
+                    manager.auto_resume_on_start(reset).await;
+                } else {
+                    manager.drain_queue().await;
+                }
+            }
+            let mut done_rx = manager.take_done_rx().expect("done receiver");
+            let done = tokio::time::timeout(Duration::from_secs(15), done_rx.recv())
+                .await
+                .expect("redownload timed out")
+                .expect("redownload completed");
+            assert_eq!(done.task_id, id);
+            let task = db
+                .load_task_by_id(id)
+                .await
+                .unwrap()
+                .expect("same task record");
+            assert_eq!(task.status, 3, "{}", task.error_message);
+            let expected_name = if pair { "done (2).mp4" } else { "done (1).mp4" };
+            assert_eq!(task.file_name, expected_name);
+            assert_eq!(
+                std::fs::read(dir.join(expected_name)).unwrap(),
+                b"new video"
+            );
+            if pair {
+                assert_eq!(
+                    std::fs::read(dir.join("done (2).audio.m4a")).unwrap(),
+                    b"new audio"
+                );
+            }
+            for (name, bytes) in unrelated {
+                assert_eq!(std::fs::read(dir.join(name)).unwrap().as_slice(), bytes);
+            }
+            assert!(
+                db.get_config("hls_resume_same-task")
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            std::fs::remove_dir_all(dir).expect("remove test directory");
+        }
+        server.abort();
     }
 
     #[tokio::test]

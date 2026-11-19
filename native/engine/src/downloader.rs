@@ -3130,6 +3130,7 @@ pub async fn dedup_filename(
                 avoid: Some(&avoid),
                 allow_overwrite,
                 companion_mp4: false,
+                companion_audio: false,
             },
         )
     })
@@ -3168,6 +3169,8 @@ pub(crate) struct DedupRules<'a> {
     pub allow_overwrite: bool,
     /// HLS:成品是 `<stem>.mp4`,同 stem 的 `.mp4` 已存在同样算冲突。
     pub companion_mp4: bool,
+    /// A separate audio track and its temporary file must both be unoccupied.
+    pub companion_audio: bool,
 }
 
 /// `name` 的 `.mp4` 伴生名(同 stem)。
@@ -3236,6 +3239,14 @@ fn candidate_taken_by_probe(
         return Ok(true);
     }
     let final_path = dir.join(candidate);
+    if rules.companion_audio {
+        let audio = crate::dash_downloader::build_audio_path(&final_path);
+        let mut audio_temp = audio.as_os_str().to_os_string();
+        audio_temp.push(TEMP_EXT);
+        if entry_exists(Path::new(&audio_temp))? || entry_exists(&audio)? {
+            return Ok(true);
+        }
+    }
     let companion = rules
         .companion_mp4
         .then(|| dir.join(companion_mp4_name(candidate)));
@@ -3275,6 +3286,11 @@ fn candidate_taken_in_scan(
         || existing.contains(&folded)
         || existing.contains(&temp_name.to_lowercase())
         || (rules.companion_mp4 && existing.contains(&companion_mp4_name(candidate).to_lowercase()))
+        || (rules.companion_audio && {
+            let audio = crate::dash_downloader::build_audio_path(Path::new(&folded));
+            let audio = audio.to_string_lossy();
+            existing.contains(audio.as_ref()) || existing.contains(&format!("{audio}{TEMP_EXT}"))
+        })
 }
 
 /// 目录条目名集合(小写折叠)。目录不存在 = 空集。
@@ -3397,16 +3413,10 @@ pub(crate) fn dedup_name_by_probe(
 pub(crate) fn name_free_on_disk(
     dir: &Path,
     candidate: &str,
+    rules: &DedupRules<'_>,
     allow_overwrite: bool,
-    companion_mp4: bool,
 ) -> std::io::Result<bool> {
-    let rules = DedupRules {
-        reserved: None,
-        avoid: None,
-        allow_overwrite,
-        companion_mp4,
-    };
-    candidate_taken_by_probe(dir, candidate, &rules, allow_overwrite).map(|taken| !taken)
+    candidate_taken_by_probe(dir, candidate, rules, allow_overwrite).map(|taken| !taken)
 }
 
 /// 旧算法的参照实现(整目录 `read_dir`、条目名小写折叠、编号 1..=9999),仅供

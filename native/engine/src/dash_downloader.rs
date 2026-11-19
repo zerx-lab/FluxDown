@@ -1230,12 +1230,14 @@ async fn finalize_track_rename(
             e
         ))
     };
-    if role == DashTrack::Audio {
+    if role == DashTrack::Audio && p.is_resume {
         match tokio::fs::remove_file(dest).await {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(rename_failed(e)),
         }
+    }
+    if role == DashTrack::Audio {
         crate::downloader::claim_rename(temp, dest)
             .await
             .map_err(rename_failed)?;
@@ -1404,15 +1406,15 @@ async fn run_track_pair_inner(
     // 视频轨）。探测失败（video_len 未知）绝不跳过——无法与 mux 产物/旧画质
     // 残留区分，宁可重下不可错拼。
     let video_temp = PathBuf::from(format!("{}{}", dest_path.display(), TEMP_EXT));
-    let video_done = match video_len {
-        Some(v) => {
+    let video_done = match (p.is_resume, video_len) {
+        (true, Some(v)) => {
             !tokio::fs::try_exists(&video_temp).await.unwrap_or(false)
                 && tokio::fs::metadata(&dest_path)
                     .await
                     .map(|m| m.len() as i64 == v)
                     .unwrap_or(false)
         }
-        None => false,
+        _ => false,
     };
 
     let (video_bytes, dest_path) = if video_done {
@@ -1478,15 +1480,15 @@ async fn run_track_pair_inner(
     // 音频轨 FS 真值跳过（与视频轨对称）：mux 阶段取消的任务 resume 时，
     // 音频轨已 rename 就位（段行已清），缺此判定会整轨重下（C4/D3）。
     let audio_temp = PathBuf::from(format!("{}{}", audio_path.display(), TEMP_EXT));
-    let audio_done = match audio_len {
-        Some(a) => {
+    let audio_done = match (p.is_resume, audio_len) {
+        (true, Some(a)) => {
             !tokio::fs::try_exists(&audio_temp).await.unwrap_or(false)
                 && tokio::fs::metadata(&audio_path)
                     .await
                     .map(|m| m.len() as i64 == a)
                     .unwrap_or(false)
         }
-        None => false,
+        _ => false,
     };
     let audio_bytes = if audio_done {
         let a = audio_len.unwrap_or(0);

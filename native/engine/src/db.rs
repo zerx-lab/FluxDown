@@ -840,6 +840,7 @@ fn task_from_row(row: &AnyRow) -> Result<TaskInfo, sqlx::Error> {
         file_clear_state: match file_state {
             2 => FileClearState::Cleared,
             3 => FileClearState::Pending,
+            4 => FileClearState::RestartPending,
             _ => FileClearState::None,
         },
         completed_at: row.try_get("completed_at").unwrap_or_default(),
@@ -2417,12 +2418,15 @@ impl Db {
             .collect()
     }
 
+    // file_missing = 4 is an internal pre-start state, not a completed missing file.
+    // Keep it through queueing, resolving and startup recovery until naming is settled.
     pub(crate) async fn reset_missing_task_for_restart(&self, id: &str) -> Result<bool, DbError> {
         let mut tx = self.pool.begin().await?;
         let updated = sqlx::query(
-            "UPDATE tasks SET status = 0, file_missing = 0, downloaded_bytes = 0, total_bytes = 0,
+            "UPDATE tasks SET status = 0, file_missing = 4, downloaded_bytes = 0, total_bytes = 0,
                  src_cdn_bytes = 0, src_proxy_bytes = 0, src_nic_bytes = 0,
-                 error_message = '', completed_at = '', file_hash = '', exists_decision = ''
+                 error_message = '', completed_at = '', file_hash = '', exists_decision = '',
+                 orig_etag = '', orig_last_modified = '', range_verified = 0
              WHERE id = $1 AND status = 3 AND file_missing IN (1, 2)",
         )
         .bind(id)
@@ -2437,8 +2441,39 @@ impl Db {
             .bind(id)
             .execute(&mut *tx)
             .await?;
+        sqlx::query("DELETE FROM ed2k_blocks WHERE task_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM task_artifacts WHERE task_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM config WHERE key IN ($1, $2, $3, $4)")
+            .bind(format!("hls_resume_{id}"))
+            .bind(format!("hls_audio_resume_{id}"))
+            .bind(format!("hls_filter_{id}"))
+            .bind(format!("hls_audio_filter_{id}"))
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await?;
         Ok(true)
+    }
+
+    // Publish the reserved name before the downloader can create any resumable state.
+    pub(crate) async fn bind_missing_task_restart(
+        &self,
+        id: &str,
+        name: &str,
+    ) -> Result<bool, DbError> {
+        let updated = sqlx::query(
+            "UPDATE tasks SET file_name = $1, file_missing = 0 WHERE id = $2 AND file_missing = 4",
+        )
+        .bind(name)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(updated.rows_affected() != 0)
     }
 
     /// 批量落库文件跟踪标志。跳过非完成任务与显式清理的记录。

@@ -125,6 +125,8 @@ pub enum FileClearState {
     None,
     Cleared,
     Pending,
+    /// Redownload queued after file removal; the old path is not owned by this task.
+    RestartPending,
 }
 
 /// 持久化任务信息。
