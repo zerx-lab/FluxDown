@@ -278,7 +278,12 @@ async fn run_agent(
         .is_none()
         .then(|| crate::bundle_watch::spawn(lifecycle.clone(), cancel.clone()));
     let shell = ShellState::new(host.availability, daemon.clone(), events.clone());
-    let power = Arc::new(PowerService::new(events.clone()));
+    let power = PowerService::new(events.clone());
+    let power = Arc::new(if server.is_none() {
+        power.with_quit(lifecycle.clone())
+    } else {
+        power
+    });
     let power_task = tokio::spawn(power.clone().run(cancel.clone()));
     let (notice_tx, notice_rx) = crate::cloud_notify::notice_channel();
     // 提示音只在桌面宿主播放：headless server 没有「本机用户」，不发声。

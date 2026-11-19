@@ -61,7 +61,7 @@ Click a task to open it. From top to bottom:
 A thin bar along the bottom of the window:
 
 - **Left** — a status dot (green while any task is active, gray when idle) with a label, the live combined download speed, and an "N active · N paused · N total" summary.
-- **Right** — a speed-limit popover (toggle plus presets of 128 KB/s / 512 KB/s / 1 MB/s / 2 MB/s / 5 MB/s, or a custom value), and a scheduled shutdown / sleep menu (pick Shut down or Sleep, then 1/5/10/30 minutes or a custom delay; with tasks running the countdown starts after they all finish and "Immediately when done" is also offered, otherwise it starts right away; a live countdown shows once armed).
+- **Right** — a speed-limit popover (toggle plus presets of 128 KB/s / 512 KB/s / 1 MB/s / 2 MB/s / 5 MB/s, or a custom value) and a power menu. Choose **Shut down**, **Sleep**, or **Quit FluxDown**, then select 1/5/10/30 minutes or a custom delay. With work pending, the countdown starts when it finishes and **Immediately when done** is also available. With no work, only a delayed action is available and its countdown starts right away. Cancel from the status bar or system tray. **Quit FluxDown** closes the desktop app and stops its background services.
 
 ## Keyboard Shortcuts
 

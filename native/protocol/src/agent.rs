@@ -744,7 +744,7 @@ pub struct ShellStatusDto {
     pub global_shortcuts: crate::shortcuts::GlobalShortcutsStatusDto,
 }
 
-/// 定时电源操作：到点关机还是睡眠（挂起到内存）。
+/// 定时完成动作：关机、睡眠或完全退出桌面应用。
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
@@ -752,6 +752,7 @@ pub enum PowerAction {
     #[default]
     Shutdown,
     Sleep,
+    Quit,
 }
 
 /// Low-speed power actions always allow this many seconds to cancel before execution.
@@ -767,7 +768,7 @@ pub struct PowerLowSpeedCondition {
     pub duration_secs: u64,
 }
 
-/// 定时关机 / 睡眠的调度状态（agent 拥有状态机与执行）。
+/// 定时电源动作的调度状态（agent 拥有状态机与执行）。
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]

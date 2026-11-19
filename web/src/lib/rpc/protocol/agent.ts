@@ -457,8 +457,8 @@ export interface ShellStatusDto {
   globalShortcuts?: GlobalShortcutsStatusDto;
 }
 
-/** 定时电源操作：关机或睡眠。 */
-export type PowerAction = 'shutdown' | 'sleep';
+/** 定时完成动作：关机、睡眠或退出桌面应用。 */
+export type PowerAction = 'shutdown' | 'sleep' | 'quit';
 
 /** One-shot low-speed condition: 1..=1 GiB/s, continuously for 60..=86400 seconds. */
 export interface PowerLowSpeedCondition {
@@ -466,7 +466,7 @@ export interface PowerLowSpeedCondition {
   durationSecs: number;
 }
 
-/** 定时关机 / 睡眠状态。 */
+/** 定时电源动作状态。 */
 export interface PowerStatusDto {
   /** 已排定的延迟（秒）；null = 未启用。 */
   armedDelaySecs: number | null;

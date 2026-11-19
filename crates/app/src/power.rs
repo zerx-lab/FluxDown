@@ -1,4 +1,4 @@
-//! 定时关机 / 睡眠的界面侧：状态机与执行归 agent（托盘驻留、界面全部关闭后仍要按时执行）。
+//! 定时完成动作的界面侧：状态机与执行归 agent（关闭界面后仍可在托盘驻留时执行）。
 //!
 //! 这里只做三件事：把 agent 快照中的 `power` 投影成状态栏读取的 [`SharedShutdownStatus`]；
 //! 把状态栏请求转成 `agent.power.arm/disarm`；倒计时期间在主窗口挂常驻通知（无主窗口时由
@@ -27,7 +27,7 @@ struct ShutdownGlobal {
 
 impl Global for ShutdownGlobal {}
 
-/// 安装完成后关机投影：跟随会话快照 / `PowerChanged` 更新状态并刷新主窗口。
+/// 安装完成动作投影：跟随会话快照 / `PowerChanged` 更新状态并刷新主窗口。
 pub fn install(cx: &mut App) {
     if cx.has_global::<ShutdownGlobal>() {
         return;
@@ -167,6 +167,7 @@ fn show_countdown(cx: &mut App, action: PowerAction) {
     let (notice_key, cancel_key) = match action {
         PowerAction::Shutdown => ("shutdownCountdownNotice", "shutdownCancelButton"),
         PowerAction::Sleep => ("sleepCountdownNotice", "sleepCancelButton"),
+        PowerAction::Quit => ("quitCountdownNotice", "quitCancelButton"),
     };
     let translator = Desktop::global(cx).translator.read(cx).clone();
     let message = translator.text(notice_key).to_owned();

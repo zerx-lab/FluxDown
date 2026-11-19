@@ -276,6 +276,12 @@ impl PowerActionKeys {
                 armed_after: "sleepArmedHint",
                 cancel: "sleepCancelButton",
             },
+            PowerAction::Quit => Self {
+                countdown: "quitCountdown",
+                armed_immediate: "quitArmedHintImmediate",
+                armed_after: "quitArmedHint",
+                cancel: "quitCancelButton",
+            },
         }
     }
 }
@@ -301,6 +307,7 @@ fn armed_text(
         let action = translator.text(match status.action {
             PowerAction::Shutdown => "powerActionShutdown",
             PowerAction::Sleep => "powerActionSleep",
+            PowerAction::Quit => "powerActionQuit",
         });
         return translator.text_with(
             "powerLowSpeedArmed",
@@ -733,6 +740,7 @@ impl DownloadView {
         let action_items = [
             (PowerAction::Shutdown, "powerActionShutdown"),
             (PowerAction::Sleep, "powerActionSleep"),
+            (PowerAction::Quit, "powerActionQuit"),
         ]
         .map(|(item, key)| (item, SharedString::from(translator.text(key).to_owned())));
         let immediate_label = SharedString::from(translator.text("shutdownImmediate").to_owned());
@@ -773,7 +781,8 @@ impl DownloadView {
         };
         let low_label = SharedString::from(translator.text("powerLowSpeedEntry").to_owned());
         let low_translator = translator.clone();
-        let low_available = (stats.active_tasks > 0 || stats.retry_pending_tasks > 0)
+        let low_available = action != PowerAction::Quit
+            && (stats.active_tasks > 0 || stats.retry_pending_tasks > 0)
             && stats.local_work_count.is_some();
         let arm = move |minutes: i64| ShutdownRequest::Arm {
             delay: minutes_to_duration(minutes),

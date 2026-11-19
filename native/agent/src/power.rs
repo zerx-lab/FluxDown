@@ -1,6 +1,6 @@
-//! 定时关机 / 睡眠：排定时有任务（活跃 / 排队 / 待重试）就等全部完成后再倒计时，没有任务则
-//! 立即倒计时；倒计时中若又出现任务则取消倒计时回到 armed（不完全解除），任务再次清空后重新
-//! 计时。低速条件独立计时：速度恢复、工作清空、断连或本地收尾会重置，达标后另留 30 秒取消。
+//! 定时关机 / 睡眠 / 退出：有活跃、排队或待重试任务时等待清空后再倒计时。
+//! 没有任务则立即倒计时；若出现新任务则回到 armed，任务再次清空后重新计时。
+//! 关机 / 睡眠也支持低速条件：速度恢复、工作清空、断连或本地收尾会重置计时，达标后留 30 秒取消。
 //!
 //! 状态机归 agent：关闭全部 UI（托盘驻留）后仍需按时执行。UI 只经 `agent.power.*`
 //! 发请求、经 `AgentEvent::PowerChanged` 渲染。
@@ -18,6 +18,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio_util::sync::CancellationToken;
 
 use crate::event_hub::AgentEventHub;
+use crate::lifecycle::Lifecycle;
 
 /// 状态刷新 / 到点检查间隔。
 const TICK: Duration = Duration::from_secs(1);
@@ -32,6 +33,7 @@ const MONOTONIC_COUNTS_SLEEP: bool = cfg!(windows);
 pub struct PowerService {
     state: Mutex<PowerState>,
     events: AgentEventHub,
+    quit_lifecycle: Option<Arc<Lifecycle>>,
 }
 
 impl PowerService {
@@ -40,12 +42,23 @@ impl PowerService {
         Self {
             state: Mutex::new(PowerState::new()),
             events,
+            quit_lifecycle: None,
         }
     }
 
+    /// 仅桌面独立宿主允许排定完全退出。
+    #[must_use]
+    pub fn with_quit(mut self, lifecycle: Arc<Lifecycle>) -> Self {
+        self.quit_lifecycle = Some(lifecycle);
+        self
+    }
+
     /// 排定 `action`：有任务时全部完成后再等 `delay`，没有任务时立即开始 `delay` 倒计时。
-    /// 没有任务却要求「完成后立即」（`delay = 0`）时拒绝并返回 `false`，避免误点即刻关机。
+    /// 没有任务时拒绝零延迟；非桌面宿主拒绝排定退出。
     pub fn arm(&self, delay: Duration, action: PowerAction) -> bool {
+        if action == PowerAction::Quit && self.quit_lifecycle.is_none() {
+            return false;
+        }
         let (active, pending) = self
             .events
             .inspect(|snapshot| work_counts(&snapshot.daemon.runtime_stats));
@@ -57,6 +70,9 @@ impl PowerService {
 
     /// Arm a one-shot low-speed action only with known daemon statistics and download work.
     pub fn arm_low_speed(&self, condition: PowerLowSpeedCondition, action: PowerAction) -> bool {
+        if action == PowerAction::Quit {
+            return false;
+        }
         let observation = self.events.inspect(PowerObservation::from_snapshot);
         let accepted = self
             .lock()
@@ -145,7 +161,37 @@ impl PowerService {
             };
             self.publish();
             if let Some(action) = fired {
-                tokio::task::spawn_blocking(move || execute(action));
+                self.execute(action);
+            }
+        }
+    }
+
+    fn execute(&self, action: PowerAction) {
+        if std::env::var_os("FLUXDOWN_SHUTDOWN_DRY_RUN").is_some() {
+            tracing::warn!(?action, "power dry-run: would run the scheduled action now");
+            return;
+        }
+        tracing::info!(?action, "scheduled power action is due");
+        match action {
+            PowerAction::Quit => {
+                if let Some(lifecycle) = &self.quit_lifecycle {
+                    lifecycle.request_quit();
+                }
+            }
+            #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+            PowerAction::Shutdown => {
+                tokio::task::spawn_blocking(move || execute_system(action, power_off));
+            }
+            #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+            PowerAction::Sleep => {
+                tokio::task::spawn_blocking(move || execute_system(action, suspend));
+            }
+            #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+            PowerAction::Shutdown | PowerAction::Sleep => {
+                tracing::warn!(
+                    ?action,
+                    "scheduled power actions are not supported on this platform"
+                );
             }
         }
     }
@@ -211,7 +257,7 @@ impl PowerObservation {
     }
 }
 
-/// 定时关机 / 睡眠的纯状态机：`Instant` 由调用方传入，便于单测构造固定时钟。
+/// 定时电源动作的纯状态机：`Instant` 由调用方传入，便于单测构造固定时钟。
 struct PowerState {
     armed: Option<Armed>,
     countdown_until: Option<Instant>,
@@ -384,19 +430,10 @@ fn work_counts(stats: &DaemonRuntimeStatsDto) -> (u32, u32) {
     )
 }
 
-/// 执行平台电源操作；`FLUXDOWN_SHUTDOWN_DRY_RUN` 设置时只记日志，便于 QA 验证不真的关机 / 睡眠。
+/// 执行并记录平台电源请求的结果。
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
-fn execute(action: PowerAction) {
-    if std::env::var_os("FLUXDOWN_SHUTDOWN_DRY_RUN").is_some() {
-        tracing::warn!(?action, "power dry-run: would run the scheduled action now");
-        return;
-    }
-    tracing::info!(?action, "scheduled power action is due");
-    let result = match action {
-        PowerAction::Shutdown => power_off(),
-        PowerAction::Sleep => suspend(),
-    };
-    match result {
+fn execute_system(action: PowerAction, command: fn() -> std::io::Result<ExitStatus>) {
+    match command() {
         Ok(status) if status.success() => tracing::info!(?action, "power request accepted"),
         Ok(status) => tracing::error!(%status, ?action, "power request failed"),
         Err(error) => tracing::error!(%error, ?action, "could not run power command"),
@@ -465,15 +502,6 @@ fn logind(verb: &str) -> std::io::Result<ExitStatus> {
         Err(error) => tracing::warn!(%error, verb, "could not run systemctl; trying loginctl"),
     }
     Command::new("loginctl").arg(verb).status()
-}
-
-/// Android / iOS 的应用不能关机或睡眠：宿主不应暴露该功能，误调用时只记录。
-#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
-fn execute(action: PowerAction) {
-    tracing::warn!(
-        ?action,
-        "scheduled power actions are not supported on this platform"
-    );
 }
 
 #[cfg(test)]
@@ -563,8 +591,8 @@ mod tests {
     fn zero_delay_fires_on_first_idle_tick() {
         let mut state = PowerState::new();
         let now = Instant::now();
-        state.arm(Duration::ZERO, PowerAction::Sleep, true, now);
-        assert_eq!(state.advance(0, 0, now), Some(PowerAction::Sleep));
+        assert!(state.arm(Duration::ZERO, PowerAction::Quit, true, now));
+        assert_eq!(state.advance(0, 0, now), Some(PowerAction::Quit));
     }
 
     #[test]
