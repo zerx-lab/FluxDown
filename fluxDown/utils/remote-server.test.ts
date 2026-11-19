@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { remoteListTasks, remoteRemoveTask, remoteVerify } from "./remote-server";
+import { REMOTE_MANAGEMENT_UNAVAILABLE, remoteListTasks, remoteRemoveTask, remoteVerify } from "./remote-server";
 
 const config = { remoteUrl: "https://fluxdown.invalid/proxy", remoteToken: "example-key" };
 
@@ -46,7 +46,7 @@ test("connection test reports management unavailable without blocking download t
   try {
     expect(await remoteVerify(config)).toMatchObject({
       success: true,
-      message: "remote_management_unavailable",
+      message: REMOTE_MANAGEMENT_UNAVAILABLE,
     });
   } finally {
     fetch.mockRestore();
@@ -60,6 +60,23 @@ test("task list distinguishes an unavailable management API from other failures"
   try {
     await expect(remoteListTasks(config)).rejects.toThrow("remote_management_unavailable");
     await expect(remoteListTasks(config)).rejects.toThrow("HTTP 500");
+  } finally {
+    fetch.mockRestore();
+  }
+});
+
+test("connection test keeps takeover available on management API 5xx or non-JSON 200", async () => {
+  const fetch = spyOn(globalThis, "fetch")
+    .mockResolvedValueOnce(Response.json({ app: "FluxDown" }))
+    .mockResolvedValueOnce(new Response(null, { status: 502 }))
+    .mockResolvedValueOnce(Response.json({ app: "FluxDown" }))
+    .mockResolvedValueOnce(new Response("<html></html>", { status: 200 }))
+    .mockResolvedValueOnce(Response.json({ app: "FluxDown" }))
+    .mockResolvedValueOnce(new Response(null, { status: 401 }));
+  try {
+    expect(await remoteVerify(config)).toMatchObject({ success: true, message: REMOTE_MANAGEMENT_UNAVAILABLE });
+    expect(await remoteVerify(config)).toMatchObject({ success: true, message: REMOTE_MANAGEMENT_UNAVAILABLE });
+    expect(await remoteVerify(config)).toMatchObject({ success: false, message: "remote_auth_failed" });
   } finally {
     fetch.mockRestore();
   }

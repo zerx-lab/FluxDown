@@ -154,13 +154,19 @@ async function taskRequest(cfg: RemoteServerConfig, method: "GET" | "DELETE", su
     headers: buildHeaders(cfg),
     redirect: "error",
     credentials: "omit",
-    signal: AbortSignal.timeout(PING_TIMEOUT_MS),
+    signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
   });
   if (method === "GET" && response.status === 404) {
     throw new Error(REMOTE_MANAGEMENT_UNAVAILABLE);
   }
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return response.json();
+  try {
+    return await response.json();
+  } catch {
+    // 反代回退到 SPA 页面（200 HTML）：管理 API 实际不可达。
+    if (method === "GET") throw new Error(REMOTE_MANAGEMENT_UNAVAILABLE);
+    throw new Error("Invalid response");
+  }
 }
 
 export async function remoteListTasks(cfg: RemoteServerConfig): Promise<RemoteTask[]> {
@@ -246,11 +252,15 @@ export async function remoteVerify(
   if (resp.status === 401 || resp.status === 403) {
     return { success: false, message: "remote_auth_failed" };
   }
-  if (resp.status === 404) {
+  // 管理 API 的 404 / 5xx / 429 / 反代错误只说明无法验证，不得封掉独立的下载接管。
+  if (!resp.ok) {
     return { ...ping, message: REMOTE_MANAGEMENT_UNAVAILABLE };
   }
-  if (!resp.ok) {
-    return { success: false, message: `HTTP ${resp.status}` };
+  // 反代把 /api/v1/ 回退到 SPA 页面时是 200 HTML，同样视为管理 API 不可用。
+  try {
+    await resp.json();
+  } catch {
+    return { ...ping, message: REMOTE_MANAGEMENT_UNAVAILABLE };
   }
   return ping;
 }

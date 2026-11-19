@@ -186,7 +186,7 @@ export function TaskList(props: Props): JSX.Element {
 
   const active = state.tasks.filter((x) => x.status !== STATUS.COMPLETED);
   const finished = state.tasks.filter((x) => x.status === STATUS.COMPLETED);
-  const completed = remoteUrl ? finished : finished.slice(0, props.density === "compact" ? 3 : 20);
+  const completed = finished.slice(0, props.density === "compact" ? 3 : 20);
 
   return (
     <div class="fd-tasks">
