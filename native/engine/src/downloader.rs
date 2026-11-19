@@ -2412,10 +2412,20 @@ async fn resolve_file_info_once(
     // 两路都没拿到任何 HTTP 响应（TLS 握手 EOF、连接重置、超时……）：这是链路
     // 抖动，不是服务器拒绝 HEAD / Range 的证据。
     let transport_only_failure = matches!(head_result, Some(Err(_))) && get_result.is_err();
-    // 两路都断在传输层时的类型化分类（GET 优先：Range 0-0 与数据连接同形）。
+    // GET 优先：Range 0-0 与数据连接同形。仅 HEAD 方法不受支持时，
+    // 其响应不能证明 GET 可达；还要用普通 GET 区分网络故障与 Range 限制。
     let transport_class = match (&head_result, &get_result) {
         (Some(Err(head)), Err(get)) => crate::net_failure::classify_download_error(get)
             .or_else(|| crate::net_failure::classify_download_error(head)),
+        (Some(Ok(head)), Err(get))
+            if matches!(
+                head.status(),
+                reqwest::StatusCode::METHOD_NOT_ALLOWED | reqwest::StatusCode::NOT_IMPLEMENTED
+            ) && !allows_only_post(head.headers())
+                && !is_bot_challenge(head.headers()) =>
+        {
+            crate::net_failure::classify_download_error(get)
+        }
         _ => None,
     };
 
@@ -2739,9 +2749,8 @@ fn format_probe_failure(
 /// 兜底：前几轮交回重试循环退避重探——plain GET 恰好连上会让整个任务被判成
 /// 「不支持 Range」单连接下载，链路抖动不能换来这种降级。
 ///
-/// `prior_transport`：HEAD 与 ranged GET 是否都断在传输层（及其分类）。三路
-/// 全部没拿到任何 HTTP 响应时，最终错误才带传输失败标签——任何一路拿到
-/// 响应都说明链路可达，失败归服务器而非路径。
+/// `prior_transport`：ranged GET 断在传输层，且 HEAD 没有应答或仅表明不支持 HEAD。
+/// 普通 GET 也断在传输层时保留失败标签；普通 GET 有 HTTP 应答则服从其状态码。
 async fn resolve_file_info_plain_get_fallback(
     client: &Client,
     url: &str,
