@@ -8,6 +8,7 @@ import re
 import subprocess
 
 BOT = "roost-bot[bot]"
+MAINTAINER = "zerx-lab"
 BLOCKED = "待处理"
 READY = "待合并"
 PREFIX = re.compile(r"^(?:【(?:待处理|待合并)】\s*)+")
@@ -66,10 +67,8 @@ CI_ERRORS = {"FAILURE", "ERROR", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRE
 CI_PASS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 
 
-def review_status(entry):
+def review_status(entry, *, roost):
     """Return (timestamp, id, verdict) for an actual review, or None for chatter."""
-    if (entry.get("user") or {}).get("login") != BOT:
-        return None
     state = entry.get("state")
     if state in {"PENDING", "DISMISSED"}:
         return None
@@ -77,7 +76,7 @@ def review_status(entry):
     if not timestamp:
         return None
     body = (entry.get("body") or "").strip()
-    gate = GATE.match(body)
+    gate = GATE.match(body) if roost else None
     if gate:
         verdict = READY if gate[1] == "pass" else BLOCKED
     elif body.startswith("<!-- roost:"):
@@ -158,6 +157,30 @@ def pr_details(repo, number):
     ))["data"]["repository"]["pullRequest"]
 
 
+def status_from_reviews(entries):
+    roost = ("", 0, None)
+    latest = ("", 0, None)
+    formal = ("", 0, None)
+    for entry in entries:
+        login = (entry.get("user") or {}).get("login")
+        if login not in (BOT, MAINTAINER):
+            continue
+        verdict = review_status(entry, roost=login == BOT)
+        if verdict is None:
+            continue
+        if login == BOT:
+            roost = max(roost, verdict)
+        elif verdict[2]:
+            latest = max(latest, verdict)
+            if entry.get("state") in {"CHANGES_REQUESTED", "APPROVED"}:
+                formal = max(formal, verdict)
+
+    # Text can clear a reviewer's textual blocker, but not a formal request for changes.
+    if formal[2] == BLOCKED or latest[2] == BLOCKED:
+        return BLOCKED
+    return roost[2] if roost[2] is not None else latest[2]
+
+
 def status_with_checks(review, pr):
     if pr["mergeable"] == "CONFLICTING":
         return BLOCKED
@@ -184,16 +207,14 @@ def sync(repo, *, dry_run):
         for pr in page:
             number = pr["number"]
             endpoint = f"repos/{repo}/pulls/{number}"
-            verdicts = (
-                verdict
+            status = status_from_reviews(
+                entry
                 for source in (f"{endpoint}/reviews", f"repos/{repo}/issues/{number}/comments")
                 for batch in pages(source)
                 for entry in batch
-                if (verdict := review_status(entry)) is not None
             )
-            _, _, status = max(verdicts, default=("", 0, None))
             if status is None:
-                continue  # Only PRs with a Roost review are eligible for updates.
+                continue  # No actionable review.
             current = pr_details(repo, number)
             if current["state"] != "OPEN":
                 continue
