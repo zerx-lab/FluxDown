@@ -927,7 +927,11 @@ async fn probe_pending_file_clear(save_dir: &str, file_name: &str) -> Option<boo
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 // A detached volume or unreachable parent is not evidence of unlink.
                 let parent = path.parent()?;
-                tokio::fs::metadata(parent).await.ok()?.is_dir().then_some(true)
+                tokio::fs::metadata(parent)
+                    .await
+                    .ok()?
+                    .is_dir()
+                    .then_some(true)
             }
             Err(_) => None,
         }
@@ -12292,11 +12296,23 @@ impl DownloadManager {
             .load_task_by_id(task_id)
             .await?
             .ok_or_else(unavailable)?;
-        if task.status != 3
-            || task.file_missing
-            || is_bt_url(&task.url)
-            || !is_safe_file_name(&task.file_name)
-        {
+        if task.status != 3 || is_bt_url(&task.url) || !is_safe_file_name(&task.file_name) {
+            return Err(unavailable());
+        }
+        // An interrupted clear is resolved by observing the path only; it must never unlink
+        // again, because the name may have been taken by another task in the meantime.
+        if task.file_clear_state == FileClearState::Pending {
+            match probe_pending_file_clear(&task.save_dir, &task.file_name).await {
+                Some(true) => {
+                    self.db.finish_task_file_clear(task_id, true).await?;
+                    self.emit_task_file_cleared(task_id);
+                    return Ok(());
+                }
+                // The output survived: fall through to a fresh, claim-checked clear.
+                Some(false) => self.db.finish_task_file_clear(task_id, false).await?,
+                None => return Err(unavailable()),
+            }
+        } else if task.file_missing {
             return Err(unavailable());
         }
 
@@ -12316,31 +12332,73 @@ impl DownloadManager {
             }
         }
         self.file_hash_jobs.cancel(task_id);
-        // Remove the primary output last; a sidecar failure leaves the action retryable.
         files.artifacts.retain(|artifact| artifact != &path);
-        for artifact in files.artifacts {
-            if let Err(error) = tokio::fs::remove_file(artifact).await
-                && error.kind() != std::io::ErrorKind::NotFound
-            {
-                return Err(error.into());
-            }
-        }
+
+        // Commit the intent first, then unlink the primary output: if it fails nothing else
+        // has been touched yet. An unlink that fails or times out is judged by observing the
+        // path, so an unreachable save drive stays Pending instead of looking cleared.
         if !self.db.begin_task_file_clear(task_id).await? {
             return Err(unavailable());
         }
-        if let Err(error) = tokio::fs::remove_file(path).await
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            self.db.finish_task_file_clear(task_id, false).await?;
-            return Err(error.into());
+        let unlinked =
+            tokio::time::timeout(DELETE_FILE_CLEANUP_TIMEOUT, tokio::fs::remove_file(&path)).await;
+        let (removed, unlink_error) = match unlinked {
+            Ok(Ok(())) => (Some(true), None),
+            Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => (
+                probe_pending_file_clear(&files.save_dir, &files.file_name).await,
+                None,
+            ),
+            Ok(Err(error)) => (
+                probe_pending_file_clear(&files.save_dir, &files.file_name).await,
+                Some(downloader::DownloadError::from(error)),
+            ),
+            Err(elapsed) => (
+                probe_pending_file_clear(&files.save_dir, &files.file_name).await,
+                Some(downloader::DownloadError::Other(format!(
+                    "removing output of task {task_id}: {elapsed}"
+                ))),
+            ),
+        };
+        match (removed, unlink_error) {
+            (Some(true), _) => self.db.finish_task_file_clear(task_id, true).await?,
+            (Some(false), error) => {
+                self.db.finish_task_file_clear(task_id, false).await?;
+                return Err(error.unwrap_or_else(unavailable));
+            }
+            // Unreachable parent or probe timeout: keep Pending for the next observation.
+            (None, error) => return Err(error.unwrap_or_else(unavailable)),
         }
-        self.db.finish_task_file_clear(task_id, true).await?;
 
+        for artifact in files.artifacts {
+            match tokio::time::timeout(
+                DELETE_FILE_CLEANUP_TIMEOUT,
+                tokio::fs::remove_file(&artifact),
+            )
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Ok(Err(error)) => crate::logger::report_warning(
+                    "download-manager",
+                    "clear derived output",
+                    &error,
+                ),
+                Err(elapsed) => crate::logger::report_warning(
+                    "download-manager",
+                    "clear derived output",
+                    &elapsed,
+                ),
+            }
+        }
+        self.emit_task_file_cleared(task_id);
+        Ok(())
+    }
+
+    fn emit_task_file_cleared(&self, task_id: &str) {
         self.sink.emit(EngineEvent::FileMissingChanged(vec![(
             task_id.to_owned(),
             true,
         )]));
-        Ok(())
     }
 
     async fn resume_task_inner(&mut self, task_id: &str) {
@@ -24086,6 +24144,42 @@ mod tests {
         assert!(manager.pending_queue.iter().any(|task| task.task_id == id));
         assert!(manager.try_restart_missing_task_file(id).await.is_err());
         cancel_all_active(&manager);
+        std::fs::remove_dir_all(&dir).expect("remove test directory");
+    }
+
+    #[tokio::test]
+    async fn clearing_again_while_pending_never_unlinks_or_marks_unreachable_dir_cleared() {
+        let dir = unique_filetrack_test_dir("pending_reclear");
+        let save_dir = dir.join("mounted");
+        let detached = dir.join("detached");
+        std::fs::create_dir_all(&save_dir).expect("create save directory");
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        let id = "pending-reclear";
+        insert_task_at_status(&db, id, &save_dir.to_string_lossy(), "done.bin", 3).await;
+        assert!(db.begin_task_file_clear(id).await.expect("commit intent"));
+        std::fs::rename(&save_dir, &detached).expect("simulate detached save directory");
+
+        // An unreachable parent is not evidence of unlink: stay Pending, never report cleared.
+        let mut manager = sched_manager(&db, 1);
+        assert!(manager.clear_task_file(id).await.is_err());
+        let task = db.load_task_by_id(id).await.unwrap().unwrap();
+        assert_eq!(task.file_clear_state, FileClearState::Pending);
+
+        // The drive returns and another task has since claimed the same name: the retry must
+        // observe the file, return to "present" and refuse to touch the claimed output.
+        std::fs::rename(&detached, &save_dir).expect("restore save directory");
+        let path = save_dir.join("done.bin");
+        std::fs::write(&path, b"other task output").expect("seed claimed output");
+        insert_task_at_status(&db, "other", &save_dir.to_string_lossy(), "done.bin", 2).await;
+        assert!(manager.clear_task_file(id).await.is_err());
+        assert_eq!(
+            std::fs::read(&path).expect("claimed output"),
+            b"other task output"
+        );
+        let task = db.load_task_by_id(id).await.unwrap().unwrap();
+        assert_eq!(task.file_clear_state, FileClearState::None);
         std::fs::remove_dir_all(&dir).expect("remove test directory");
     }
 

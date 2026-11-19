@@ -2389,7 +2389,11 @@ impl Db {
         Ok(result.rows_affected() > 0)
     }
 
-    pub(crate) async fn finish_task_file_clear(&self, id: &str, removed: bool) -> Result<(), DbError> {
+    pub(crate) async fn finish_task_file_clear(
+        &self,
+        id: &str,
+        removed: bool,
+    ) -> Result<(), DbError> {
         sqlx::query(
             "UPDATE tasks SET file_missing = $1 WHERE id = $2 AND status = 3 AND file_missing = 3",
         )
