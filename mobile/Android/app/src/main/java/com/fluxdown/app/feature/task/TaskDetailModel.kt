@@ -33,7 +33,8 @@ internal data class DetailModel(
     val boosted: Boolean,
 ) {
     val isTransferring: Boolean get() = task.status == TaskStatus.Downloading
-    val progress: Float? get() = runtime?.hlsFragments?.fraction ?: task.progress
+    val hlsFragments get() = runtime?.hlsFragments?.takeIf { it.fraction != null }
+    val progress: Float? get() = hlsFragments?.fraction ?: task.progress
 
     /** HLS 点播按分片计数，其他任务按真实字节区间或总字节进度。 */
     val flowSegments: List<FlowSegmentUi>

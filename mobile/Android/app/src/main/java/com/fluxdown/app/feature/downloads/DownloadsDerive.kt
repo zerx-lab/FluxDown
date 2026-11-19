@@ -276,7 +276,10 @@ private fun itemFor(t: Task, s: HostState, cache: DeriveCache, queuesById: Map<S
         flow = flow,
         flowState = flowState,
         progress = fragmentProgress ?: t.progress,
-        eta = if (visual == TaskVisualState.Downloading) Format.etaSeconds(t.downloadedBytes, t.totalBytes, sd) else null,
+        hlsFragments = rt?.hlsFragments?.takeIf { fragmentProgress != null },
+        eta = if (visual == TaskVisualState.Downloading && fragmentProgress == null) {
+            Format.etaSeconds(t.downloadedBytes, t.totalBytes, sd)
+        } else null,
     )
     cache.items[t.taskId] = DeriveCache.Entry(item, rt)
     return item

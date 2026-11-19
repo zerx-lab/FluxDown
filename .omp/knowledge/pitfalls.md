@@ -205,6 +205,7 @@
 
 ## Android
 
+- **HLS 分片进度不是字节进度**：Android 列表、详情、前台通知有点播分片计数时用同一分片比例；字节 ETA 只留在详情「常规」的字节统计中，不与分片百分比同组显示。多任务通知只汇总同口径的进度，混合口径时用不确定态。直播、旧主机或尚未收到分片运行时状态时沿用字节口径 → `DownloadsDerive.kt::itemFor`、`TaskDetailModel.kt`、`TransferSummary.kt`。
 - **前台服务停止必须用 `stopSelfResult(lastStartId)`，并在每次启动请求重新计时空闲宽限**：用 `stopSelf()` 会拆掉在途、尚未来得及 `startForeground` 的启动请求，系统以 `ForegroundServiceDidNotStartInTimeException` 杀整个进程；外部唤起建任务后也不能被旧计时停掉 → `mobile/Android/app/src/main/java/com/fluxdown/app/service/DownloadService.kt::stopIfIdle`。
 - **FileProvider 要声明 `root-path` 覆盖 `/storage/`**：可移动存储卡上的文件（`/storage/6BF9-89B3/...`）否则生成不了 content URI，打开已下载文件会崩；文件不在声明根内时提示失败而不是抛异常 → `mobile/Android/app/src/main/res/xml/file_paths.xml`（`storage_volumes`）。
 - **叠层返回键的优先级：菜单 / 对话框在 Sheet 之上**：后注册的 Sheet 返回处理器会抢先，菜单打开时返回键应交给 `FluxOverlayHost` → `mobile/Android/fluxui/src/main/java/com/fluxdown/fluxui/overlay/FluxSheet.kt`（`canGoBack` 条件）。

@@ -3,6 +3,7 @@ package com.fluxdown.app.feature.downloads
 import androidx.compose.runtime.Immutable
 import com.fluxdown.app.ui.TaskVisualState
 import com.fluxdown.core.model.Category
+import com.fluxdown.core.model.HlsFragmentProgress
 import com.fluxdown.core.model.Queue
 import com.fluxdown.core.model.Task
 import com.fluxdown.core.model.TaskStatus
@@ -104,6 +105,7 @@ data class TaskItem(
     val flow: List<FlowSegmentUi>?,
     val flowState: FlowStripState,
     val progress: Float?,
+    val hlsFragments: HlsFragmentProgress?,
     val eta: Long?,
 ) : DownloadItem {
     override val id: String get() = task.taskId
