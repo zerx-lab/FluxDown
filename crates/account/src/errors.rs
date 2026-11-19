@@ -117,6 +117,7 @@ pub(crate) fn reason_key(reason: ErrorReason, context: ErrorContext) -> Option<&
         ErrorReason::SaveDirUnavailable => "errReasonSaveDirUnavailable",
         ErrorReason::TaskFilesInUse => "errReasonTaskFilesInUse",
         ErrorReason::TaskFilesNotDeleted => "errReasonTaskFilesNotDeleted",
+        ErrorReason::TaskFileClearPending => "errReasonTaskFileClearPending",
         ErrorReason::BrowserRequestRequired => "taskErrorPostOnlyResume",
         ErrorReason::PaymentDisabled
         | ErrorReason::PaymentGatewayFailed
@@ -447,6 +448,7 @@ mod tests {
             ErrorReason::SaveDirUnavailable,
             ErrorReason::TaskFilesInUse,
             ErrorReason::TaskFilesNotDeleted,
+            ErrorReason::TaskFileClearPending,
         ];
         let contexts = [
             ErrorContext::General,
