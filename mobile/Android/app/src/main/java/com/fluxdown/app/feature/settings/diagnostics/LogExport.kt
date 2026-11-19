@@ -368,7 +368,7 @@ internal fun LogsSection(ctx: SettingsCtx, model: LogExportModel, scope: Corouti
                         FluxText(
                             text,
                             style = FluxTheme.type.sm,
-                            color = c.coralText,
+                            color = FluxTheme.colors.coralText,
                             modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 10.dp),
                         )
                     }
