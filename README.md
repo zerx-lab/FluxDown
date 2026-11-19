@@ -46,7 +46,7 @@
 
 In Desktop or Web, group a download category by **Series title** to fold individual episodes together without moving files. The view recognises names like `Show.S01E02`, `Show.S01E100`, `[Fansub] Show - 05` and `剧名第05话`; existing task groups and torrent bundles keep their own structure.
 
-For a single local download in Desktop, **Use a named subfolder** reuses or creates a folder under the displayed save location. Recognised episodes use the series title; other downloads use the file or magnet name. A manually entered or picked directory takes precedence.
+For a single local download in Desktop, **Use a named subfolder** reuses or creates a folder under the displayed save location. Recognised episodes use the series title; other downloads use the file or magnet name. Folder names follow the filesystem's case rules: `Show` and `show` group together in the view but can be separate folders on case-sensitive storage. A manually entered or picked directory takes precedence.
 
 Desktop RSS only collects history on the first fetch. **Download all eligible** queues new and initially collected items matching the current search after confirmation. If the eligible items change, review the new results and confirm again.
 

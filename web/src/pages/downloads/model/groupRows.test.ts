@@ -1,5 +1,4 @@
 import { describe, expect, test } from 'bun:test'
-import seriesTitleCases from '../../../../../crates/downloads/tests/fixtures/series_title_cases.json'
 import type { GroupDto, TaskDto } from '../../../lib/rpc'
 import { CategoryIndex, builtinDefaults } from './categories'
 import { SELECTION_ALL } from './filters'
@@ -89,9 +88,12 @@ const describeRow = (item: VisibleRow): string => {
 
 const keys = (rows: readonly VisibleRow[]) => rows.map(describeRow)
 
-test('content grouping recognises the same series titles as desktop', () => {
-  for (const [fileName, title] of seriesTitleCases) {
-    if (fileName === null) throw new Error('missing fixture filename')
+declare const Bun: { file(path: URL): { json(): Promise<unknown> } }
+
+test('content grouping recognises the same series titles as desktop', async () => {
+  // Read the shared fixture only at test time: the Docker Web build does not include crates/.
+  const cases = (await Bun.file(new URL('../../../../../crates/downloads/tests/fixtures/series_title_cases.json', import.meta.url)).json()) as [string, string | null][]
+  for (const [fileName, title] of cases) {
     expect(contentBucket(row(fileName, { fileName }).view)?.label ?? null).toBe(title)
   }
 })

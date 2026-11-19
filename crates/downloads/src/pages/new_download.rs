@@ -1301,13 +1301,17 @@ impl NewDownloadView {
         }
         if let Err(error) = result {
             let translator = self.translator.read(cx);
-            let message = if error.kind() == std::io::ErrorKind::AlreadyExists {
-                translator.text("downloadSubfolderOccupied").to_owned()
-            } else {
-                translator.text_with(
+            let message = match error.kind() {
+                std::io::ErrorKind::AlreadyExists => {
+                    translator.text("downloadSubfolderOccupied").to_owned()
+                }
+                std::io::ErrorKind::NotFound => {
+                    translator.text("downloadSubfolderBrokenLink").to_owned()
+                }
+                _ => translator.text_with(
                     "downloadSubfolderUnavailable",
                     &[("error", &error.to_string())],
-                )
+                ),
             };
             window.push_notification(toast::error(SharedString::from(message)), cx);
             return;

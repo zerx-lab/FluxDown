@@ -178,11 +178,20 @@ fn subfolder_file_stem(name: &str) -> &str {
 }
 
 pub(crate) fn check_subfolder(path: &std::path::Path) -> std::io::Result<()> {
-    match std::fs::metadata(path) {
+    use std::fs;
+    use std::io::ErrorKind::{AlreadyExists, NotFound};
+
+    match fs::metadata(path) {
         Ok(metadata) if metadata.is_dir() => Ok(()),
-        // The download engine creates missing directories when it opens the output.
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Ok(_) => Err(std::io::ErrorKind::AlreadyExists.into()),
+        Err(missing) if missing.kind() == NotFound => match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.is_symlink() => Err(missing),
+            Ok(metadata) if metadata.is_dir() => Ok(()),
+            Ok(_) => Err(AlreadyExists.into()),
+            // Only a missing entry can be created by the engine when it opens the output.
+            Err(error) if error.kind() == NotFound => Ok(()),
+            Err(error) => Err(error),
+        },
+        Ok(_) => Err(AlreadyExists.into()),
         Err(error) => Err(error),
     }
 }
@@ -729,6 +738,10 @@ mod tests {
             ("https://example.org/Show.S01E02.mkv", "Show"),
             ("magnet:?dn=Show.S01E100.1080p", "Show"),
             ("magnet:?dn=%5BGroup%5D+Show+-+05+%5B1080p%5D", "Show"),
+            (
+                "https://example.org/Report%20-%2012%20Months.pdf",
+                "Report - 12 Months",
+            ),
         ] {
             assert_eq!(
                 super::suggested_subfolder(root, url, "").as_deref(),
@@ -792,6 +805,13 @@ mod tests {
                         .expect_err("link to a file")
                         .kind(),
                     io::ErrorKind::AlreadyExists
+                );
+                fs::remove_dir(&child)?;
+                assert_eq!(
+                    super::check_subfolder(&linked_dir)
+                        .expect_err("dangling directory link")
+                        .kind(),
+                    io::ErrorKind::NotFound
                 );
             }
             Ok(())

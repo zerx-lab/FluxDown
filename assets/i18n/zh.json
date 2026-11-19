@@ -451,6 +451,7 @@
   "useSuggestedSubfolder": "按名称使用子文件夹",
   "downloadSubfolderUnavailable": "无法使用按名称生成的子文件夹：{error}",
   "downloadSubfolderOccupied": "同名文件占用了子文件夹的位置，请选择其他保存位置。",
+  "downloadSubfolderBrokenLink": "同名子文件夹的符号链接目标不存在，请修复链接或选择其他保存位置。",
   "downloadSubfolderFormChanged": "检查子文件夹期间下载信息已变化，请重新提交。",
   "selectSaveDir": "选择保存目录",
   "threads": "线程数",

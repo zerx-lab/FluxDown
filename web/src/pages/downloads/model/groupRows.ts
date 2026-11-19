@@ -1,3 +1,4 @@
+import { fileKindOf } from '../../../lib/icon-pack/pack'
 import { flattenDirectories } from './directoryTree'
 import type { DirectoryItem, DirectoryKind } from './directoryTree'
 // 任务表可见行管线（纯函数）：在行引擎「排序 + 行顺序保持 + 侧栏筛选 + 搜索」之后，把任务组并成「文件夹行」、
@@ -18,14 +19,17 @@ export interface BucketInfo {
 }
 
 // Keep in sync with desktop series_title; both run series_title_cases.json.
-const episodeMarker = /(?:[ ._[\]()-][Ss][0-9]{2}[Ee][0-9]{2,3}| - [0-9]{2,3}|第[0-9]{1,3}[话話集])(?:$|[ ._[\]()-])/
+const episodeMarker = /(?:[ ._[\]()-][Ss][0-9]{2}[Ee][0-9]{2,3}|第[0-9]{1,3}[话話集])(?:$|[ ._[\]()-])| - [0-9]{2,3}(?: *(?:\[[^\]]*\]|\([^)]*\)))*$/
 
 export function contentBucket(view: DownloadTaskView): BucketInfo | null {
   const name = view.name.slice(Math.max(view.name.lastIndexOf('/'), view.name.lastIndexOf('\\')) + 1)
     .replace(/^ *(?:\[[^\]]*\] *)*/, '')
-  const match = episodeMarker.exec(name)
+  const stem = name.includes(' - ') && fileKindOf(name) === 'video'
+    ? name.slice(0, name.lastIndexOf('.'))
+    : name
+  const match = episodeMarker.exec(stem)
   if (match === null) return null
-  const label = name.slice(0, match.index).replace(/^[ ._-]+|[ ._-]+$/g, '')
+  const label = stem.slice(0, match.index).replace(/^[ ._-]+|[ ._-]+$/g, '')
   if (label === '') return null
   const folded = label.toLowerCase()
   const key = view.source === 'remote' ? `content:remote:${view.toDevice}\u0000${folded}` : `content:local:${folded}`
