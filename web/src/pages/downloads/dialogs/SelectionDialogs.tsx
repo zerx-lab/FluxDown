@@ -14,6 +14,7 @@ import { SAVE_DIR_HISTORY_ENABLED_PREF, SAVE_DIR_HISTORY_PREF, readSaveDirHistor
 import { Button, Checkbox, Dialog, DialogFooter, FieldHint, FormField, Icon, Input } from '../../../ui'
 import { toastRpcError } from '../../../lib/rpcToast'
 import { cn } from '../../../lib/cn'
+import { byteUnit, useFileSizeUnits } from '../../../lib/fileSizeUnits'
 import { formatBytes, useNow } from './utils'
 import { PluginChoiceDialog } from './PluginChoiceDialog'
 import { SaveDirCombo } from './SaveDirCombo'
@@ -42,6 +43,7 @@ function defaultIndex(request: SelectionRequestDto, kind: 'hls' | 'variant', fir
 }
 
 function SelectionDialog({ request, kind }: { request: SelectionRequestDto; kind: ChoiceKind }) {
+  const units = useFileSizeUnits()
   const t = useT()
   const tasks = useTasks()
   const hasDeadline = hasSelectionDeadline(request)
@@ -110,7 +112,7 @@ function SelectionDialog({ request, kind }: { request: SelectionRequestDto; kind
 
   // BT：`indices` 为空数组在协议里表示「全部文件」，所以没有勾选时必须禁用确认。
   const btSize = kind.type === 'bt' ? kind.files.filter((file) => btSelected.has(file.index)).reduce((sum, file) => sum + Math.max(0, file.size), 0) : 0
-  const confirmLabel = kind.type === 'bt' ? t('btFileSelectConfirm', { count: btSelected.size, size: formatBytes(btSize) }) : t('confirm')
+  const confirmLabel = kind.type === 'bt' ? t('btFileSelectConfirm', { count: btSelected.size, size: formatBytes(btSize, units) }) : t('confirm')
   const canConfirm = kind.type !== 'bt' || btSelectionCanConfirm(btPrefill, btSaveDir, btSelected.size)
 
   return (
@@ -213,13 +215,14 @@ function VariantOptions({
   value: number
   onChange: (index: number) => void
 }) {
+  const units = useFileSizeUnits()
   return (
     <div role="radiogroup" className="flex flex-col gap-0.5">
       {options.map((option) => (
         <OptionRowButton key={option.index} selected={option.index === value} onSelect={() => onChange(option.index)}>
           <div className="truncate text-sm">{option.label}</div>
           <div className="tabular truncate text-xs text-muted-foreground">
-            {[option.container, option.width > 0 && option.height > 0 ? `${option.width}×${option.height}` : '', option.totalBytes > 0 ? formatBytes(option.totalBytes) : '']
+            {[option.container, option.width > 0 && option.height > 0 ? `${option.width}×${option.height}` : '', option.totalBytes > 0 ? formatBytes(option.totalBytes, units) : '']
               .filter((part) => part !== '')
               .join(' · ')}
           </div>
@@ -298,6 +301,7 @@ function BtFiles({
   selected: ReadonlySet<number>
   onSelectedChange: (selected: ReadonlySet<number>) => void
 }) {
+  const units = useFileSizeUnits()
   const t = useT()
   const [filter, setFilter] = useState('')
   const [expanded, setExpanded] = useState(false)
@@ -366,7 +370,7 @@ function BtFiles({
           </Button>
         )}
         <span className="tabular ml-auto text-xs text-muted-foreground">
-          {t('selectedCount', { n: selected.size })} · {formatBytes(selectedSize)}
+          {t('selectedCount', { n: selected.size })} · {formatBytes(selectedSize, units)}
         </span>
       </div>
       {expanded && (
@@ -388,9 +392,9 @@ function BtFiles({
             {t('btFilterMinSize')}
             <select className="rounded-md border border-hairline bg-background p-1" value={minSize} onChange={(event) => setMinSize(Number(event.target.value))}>
               <option value={0}>{t('btFilterAnySize')}</option>
-              <option value={10 * 1024 * 1024}>10 MB</option>
-              <option value={100 * 1024 * 1024}>100 MB</option>
-              <option value={1024 * 1024 * 1024}>1 GB</option>
+              <option value={10 * 1024 * 1024}>10 {byteUnit(2, units)}</option>
+              <option value={100 * 1024 * 1024}>100 {byteUnit(2, units)}</option>
+              <option value={1024 * 1024 * 1024}>1 {byteUnit(3, units)}</option>
             </select>
           </label>
         </div>
@@ -422,7 +426,7 @@ function BtFiles({
                 <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-sm">
                   <Checkbox checked={state} onCheckedChange={(checked) => setMany(row.indices, checked)} />
                   <span className="min-w-0 flex-1 truncate font-medium">{row.name}</span>
-                  <span className="tabular shrink-0 text-xs text-muted-foreground">{formatBytes(row.size)}</span>
+                  <span className="tabular shrink-0 text-xs text-muted-foreground">{formatBytes(row.size, units)}</span>
                 </label>
               </div>
             )
@@ -438,7 +442,7 @@ function BtFiles({
               <span className="min-w-0 flex-1 truncate" title={row.file.path}>
                 {row.name}
               </span>
-              <span className="tabular shrink-0 text-xs text-muted-foreground">{formatBytes(Math.max(0, row.file.size))}</span>
+              <span className="tabular shrink-0 text-xs text-muted-foreground">{formatBytes(Math.max(0, row.file.size), units)}</span>
             </label>
           )
         })}

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { PointerEvent } from 'react'
 import { useT } from '../../../i18n'
+import { useFileSizeUnits, type FileSizeUnits } from '../../../lib/fileSizeUnits'
 import { formatBytes, MAX_ETA_SECS } from '../model/task'
 import type { DownloadTaskView } from '../model/task'
 import { formatEta } from '../table/text'
@@ -13,13 +14,14 @@ const H = 120
 /** 顶部留白，最高刻度线与描边不贴边。 */
 const TOP = 4
 
-const fmt = (v: number) => `${formatBytes(v)}/s`
+const fmt = (v: number, units: FileSizeUnits) => `${formatBytes(v, units)}/s`
 
 /**
  * 全程速度面积图：纵轴三刻度（0 / 一半 / 整值上限，标签画在图内保持满宽），
  * 指针悬停或触摸时显示该点的下载用时与速率。
  */
 function SpeedChart({ history, label }: { history: TaskSpeedHistoryDto; label: string }) {
+  const units = useFileSizeUnits()
   const t = useT()
   const [hover, setHover] = useState<number | null>(null)
   const samples = history.samples
@@ -61,7 +63,7 @@ function SpeedChart({ history, label }: { history: TaskSpeedHistoryDto; label: s
           className={`tabular pointer-events-none absolute left-1 text-[10px] leading-none text-text-tertiary ${i === ticks.length - 1 ? '-translate-y-full -mt-0.5' : 'mt-0.5'}`}
           style={{ top: `${(y(v) / H) * 100}%` }}
         >
-          {fmt(v)}
+          {fmt(v, units)}
         </span>
       ))}
       {hover !== null ? (
@@ -79,7 +81,7 @@ function SpeedChart({ history, label }: { history: TaskSpeedHistoryDto; label: s
             <div className="flex items-center gap-1.5 text-foreground">
               <span className="size-1.5 rounded-full bg-primary" />
               <span>{t('infoSpeed')}</span>
-              <span className="tabular ml-2 font-medium">{fmt(samples[hover] ?? 0)}</span>
+              <span className="tabular ml-2 font-medium">{fmt(samples[hover] ?? 0, units)}</span>
             </div>
           </div>
         </>
@@ -98,6 +100,7 @@ function Tile({ label, value }: { label: string; value: string }) {
 }
 
 export function SpeedTab({ view, history }: { view: DownloadTaskView; history: TaskSpeedHistoryDto | null }) {
+  const units = useFileSizeUnits()
   const t = useT()
   const downloading = view.state === 'downloading'
   const current = downloading ? (view.speed ?? 0) : 0
@@ -114,9 +117,9 @@ export function SpeedTab({ view, history }: { view: DownloadTaskView; history: T
   return (
     <div className="flex flex-col gap-3">
       <div className="flex gap-2 mobile:flex-col">
-        <Tile label={t('infoSpeed')} value={fmt(current)} />
-        <Tile label={t('speedAverage')} value={fmt(avg)} />
-        <Tile label={t('speedPeak')} value={fmt(peak)} />
+        <Tile label={t('infoSpeed')} value={fmt(current, units)} />
+        <Tile label={t('speedAverage')} value={fmt(avg, units)} />
+        <Tile label={t('speedPeak')} value={fmt(peak, units)} />
         <Tile label={t('speedActiveTime')} value={duration} />
       </div>
       <div className="rounded-md border border-hairline bg-chrome p-2">

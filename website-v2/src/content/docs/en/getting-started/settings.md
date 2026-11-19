@@ -30,6 +30,7 @@ Open **Settings** from the top bar's gear icon. The settings sidebar has nine ca
 | Theme Mode | Light, dark, or follow system. | Follow System |
 | Theme | Five built-in themes, filtered to the current light/dark mode: **Default Dark**, **Midnight Blue**, and **Nord** for dark mode; **Default Light** and **Warm Light** for light mode. You can also import a custom theme JSON and export the current one. | Default Dark / Default Light |
 | Theme Color | The app's accent color: Blue, Green, Violet, Rose, or Custom (hue slider + hex input). | Blue |
+| File Size Units | **Appearance → Interface**. Choose `KB / MB / GB` or IEC (`KiB / MiB / GiB`) for sizes and speeds. Both use powers of 1024. The preference is local to this device (or browser). | `KB / MB / GB` |
 | Interface Scale | Overall UI scale, from 80% to 150%. | 100% |
 | App Icon *(Windows only)* | Choose the icon used by the window, taskbar, and tray: the built-in icon, a built-in "bolt" alternative, or a custom image you provide. | Built-in icon |
 

@@ -583,7 +583,7 @@ impl DownloadView {
         let prompt = NumberPrompt {
             title: title.clone(),
             label: custom_label.clone(),
-            unit: SharedString::from(translator.text("statusSpeedLimitKbs").to_owned()),
+            unit: SharedString::from(fluxdown_ui_components::size_units::rate_labels()[1]),
             hint: Some(SharedString::from(translator.text(desc_key).to_owned())),
             cancel_label: SharedString::from(translator.text("cancel").to_owned()),
             confirm_label: SharedString::from(translator.text("confirm").to_owned()),
@@ -617,14 +617,15 @@ impl DownloadView {
                 for mb in SPEED_PRESETS_MB {
                     let bytes = mb_to_bytes(mb);
                     menu = menu.item(
-                        PopupMenuItem::new(SharedString::from(format!("{mb} MB/s")))
-                            .checked(bytes == value)
-                            .on_click({
-                                let view = view.clone();
-                                move |_, _, cx| {
-                                    apply_speed_limit(view.clone(), config_key, bytes, cx)
-                                }
-                            }),
+                        PopupMenuItem::new(SharedString::from(format!(
+                            "{mb} {}",
+                            fluxdown_ui_components::size_units::rate_labels()[2]
+                        )))
+                        .checked(bytes == value)
+                        .on_click({
+                            let view = view.clone();
+                            move |_, _, cx| apply_speed_limit(view.clone(), config_key, bytes, cx)
+                        }),
                     );
                 }
                 let mut recent_hit = false;

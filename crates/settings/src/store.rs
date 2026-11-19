@@ -1703,6 +1703,9 @@ mod tests {
             assert!(!preference_is_synced(key), "{key}");
         }
         assert!(!preference_is_synced(fluxdown_ui_theme::FONT_FAMILY_KEY));
+        assert!(!preference_is_synced(
+            fluxdown_ui_components::size_units::PREF_KEY
+        ));
         assert!(!preference_is_synced("unknown.key"));
         // 同步目录内的键（含自定义分类与带每机属性的 BT / ED2K 开关）走同步链路，
         // 由「在此设备同步的范围」按需设为本机专属。

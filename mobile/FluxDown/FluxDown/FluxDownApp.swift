@@ -4,9 +4,12 @@ import SwiftUI
 
 @main
 struct FluxDownApp: App {
-    @State private var container = AppContainer()
+    @State private var container: AppContainer
 
     init() {
+        let container = AppContainer()
+        Format.setFileSizeUnits(container.appearance.fileSizeUnits)
+        _container = State(initialValue: container)
         // 冷启动即设置通知中心代理：点按通知启动 App 时的回调不会丢。
         _ = NotificationService.shared
     }
