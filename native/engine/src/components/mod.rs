@@ -237,23 +237,6 @@ pub(crate) async fn fetch_github_json(
         .map_err(|e| ComponentError::Http(e.to_string()))
 }
 
-/// [`fetch_github_json`]，但先按用户配置的 [`CONFIG_COMPONENT_MIRROR_BASE`]
-/// 改写 `url`（675#1）：改写后请求失败（或未配置，改写后与原 URL 相同，或镜像
-/// 不是 https）都回退直连原始 `url`，不让一次镜像故障拖垮整个安装流程。
-#[cfg(feature = "components")]
-pub(crate) async fn fetch_github_json_with_mirror(
-    clients: &crate::egress::RoutedClients,
-    url: &str,
-    mirror_base: &str,
-) -> Result<serde_json::Value, ComponentError> {
-    if let Some(mirrored) = https_mirror_url(url, mirror_base)
-        && let Ok(v) = fetch_github_json(clients, &mirrored).await
-    {
-        return Ok(v);
-    }
-    fetch_github_json(clients, url).await
-}
-
 /// 镜像改写后的 URL：仅当确实改写且镜像为 https 才返回；http 镜像一律忽略
 /// （退回直连），避免明文链路上的篡改/降级。
 #[cfg(any(feature = "components", feature = "plugins", test))]
@@ -280,6 +263,21 @@ pub(crate) fn require_upstream_asset_url(url: &str, prefix: &str) -> Result<(), 
             "asset url is not under the upstream release path: {url}"
         )))
     }
+}
+
+#[cfg(feature = "components")]
+fn release_asset_url<'a>(
+    assets: &'a [serde_json::Value],
+    name: &str,
+    upstream_prefix: &str,
+) -> Result<&'a str, ComponentError> {
+    let url = assets
+        .iter()
+        .find(|asset| asset["name"].as_str() == Some(name))
+        .and_then(|asset| asset["browser_download_url"].as_str())
+        .ok_or_else(|| ComponentError::NotFound(format!("asset {name}")))?;
+    require_upstream_asset_url(url, upstream_prefix)?;
+    Ok(url)
 }
 
 /// 解析 `sha256sum` 风格校验文件（`<hex>  <name>` / `<hex> *<name>`），取 `name`
@@ -359,47 +357,68 @@ async fn fetch_text(
 const MIRROR_BASE: &str = "https://fluxdown.com/api/components";
 
 #[cfg(feature = "components")]
-pub(crate) async fn fetch_official_versions_json(
-    clients: &crate::egress::RoutedClients,
-    component: &str,
-) -> Result<serde_json::Value, ComponentError> {
-    fetch_github_json(clients, &format!("{MIRROR_BASE}/{component}")).await
+fn official_versions_url(component: &str) -> String {
+    format!("{MIRROR_BASE}/{component}")
 }
 
-/// 版本列表与 FFmpeg 安装元数据：先尝试显式配置的 HTTPS 镜像，再回退官网缓存
-/// 和直连 GitHub。二进制下载不走此路径。
+/// 版本列表与 FFmpeg 安装元数据：镜像 → 官网缓存 → 直连 GitHub。
 #[cfg(feature = "components")]
-pub(crate) async fn fetch_versions_json(
+async fn fetch_versions_metadata<T>(
     clients: &crate::egress::RoutedClients,
     component: &str,
     github_url: &str,
     mirror_base: &str,
-) -> Result<serde_json::Value, ComponentError> {
-    fetch_versions_from_sources(component, github_url, mirror_base, |url| async move {
-        fetch_github_json(clients, &url).await
-    })
+    select: impl Fn(&serde_json::Value) -> Result<T, ComponentError>,
+) -> Result<T, ComponentError> {
+    fetch_versions_from_sources(
+        component,
+        github_url,
+        mirror_base,
+        |url| async move { fetch_github_json(clients, &url).await },
+        select,
+    )
     .await
 }
 
 #[cfg(feature = "components")]
-async fn fetch_versions_from_sources<Fut>(
+async fn fetch_versions_from_sources<T, Fut>(
     component: &str,
     github_url: &str,
     mirror_base: &str,
-    mut fetch: impl FnMut(String) -> Fut,
-) -> Result<serde_json::Value, ComponentError>
+    fetch: impl FnMut(String) -> Fut,
+    select: impl Fn(&serde_json::Value) -> Result<T, ComponentError>,
+) -> Result<T, ComponentError>
 where
     Fut: std::future::Future<Output = Result<serde_json::Value, ComponentError>>,
 {
-    if let Some(mirrored) = https_mirror_url(github_url, mirror_base)
-        && let Ok(release) = fetch(mirrored).await
-    {
-        return Ok(release);
+    fetch_release_metadata(
+        [
+            https_mirror_url(github_url, mirror_base),
+            Some(official_versions_url(component)),
+        ],
+        github_url,
+        fetch,
+        select,
+    )
+    .await
+}
+
+#[cfg(feature = "components")]
+async fn fetch_release_metadata<T, Fut>(
+    fallbacks: [Option<String>; 2],
+    last_url: &str,
+    mut fetch: impl FnMut(String) -> Fut,
+    select: impl Fn(&serde_json::Value) -> Result<T, ComponentError>,
+) -> Result<T, ComponentError>
+where
+    Fut: std::future::Future<Output = Result<serde_json::Value, ComponentError>>,
+{
+    for url in fallbacks.into_iter().flatten() {
+        if let Ok(metadata) = fetch(url).await.and_then(|release| select(&release)) {
+            return Ok(metadata);
+        }
     }
-    if let Ok(release) = fetch(format!("{MIRROR_BASE}/{component}")).await {
-        return Ok(release);
-    }
-    fetch(github_url.to_string()).await
+    select(&fetch(last_url.to_owned()).await?)
 }
 
 /// 下载载荷到 `dest` 并校验 SHA-256（`expected_sha256`，小写 hex），
@@ -587,76 +606,6 @@ mod tests {
             https_mirror_url("https://example.org/x", "https://proxy.example.com/gh"),
             None
         );
-    }
-
-    #[cfg(feature = "components")]
-    #[tokio::test]
-    async fn configured_mirror_supplies_ffmpeg_build_missing_from_official_cache() {
-        const API: &str =
-            "https://api.github.com/repos/FFmpeg-Builds/FFmpeg-Builds/releases/latest";
-        const MIRROR: &str = "https://mirror.example";
-        const TARGET: &str = "ffmpeg-n8.0-latest-win64-gpl-8.0.zip";
-        const DOWNLOAD: &str = "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.0-latest-win64-gpl-8.0.zip";
-
-        for mirror_base in ["", MIRROR] {
-            let release = super::fetch_versions_from_sources(
-                "ffmpeg",
-                API,
-                mirror_base,
-                |url| async move { match url.as_str() {
-                    "https://mirror.example/repos/FFmpeg-Builds/FFmpeg-Builds/releases/latest" => {
-                        Ok(serde_json::json!({
-                            "assets": [{"name": TARGET, "browser_download_url": DOWNLOAD}]
-                        }))
-                    }
-                    "https://fluxdown.com/api/components/ffmpeg" => Ok(serde_json::json!({
-                        "assets": [{"name": "ffmpeg-n7.1-latest-win64-gpl-7.1.zip"}]
-                    })),
-                    _ => Err(super::ComponentError::Http(
-                        "GitHub API returned 403 Forbidden".into(),
-                    )),
-                } },
-            )
-            .await
-            .unwrap();
-            let download = release["assets"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|asset| asset["name"] == TARGET)
-                .and_then(|asset| asset["browser_download_url"].as_str());
-            assert_eq!(
-                download,
-                if mirror_base.is_empty() {
-                    None
-                } else {
-                    Some(DOWNLOAD)
-                }
-            );
-        }
-    }
-
-    #[cfg(feature = "components")]
-    #[tokio::test]
-    async fn mirror_failure_preserves_official_version_list() {
-        let releases = super::fetch_versions_from_sources(
-            "ytdlp",
-            "https://api.github.com/repos/yt-dlp/yt-dlp/releases?per_page=30",
-            "https://mirror.example",
-            |url| async move {
-                match url.as_str() {
-                    "https://fluxdown.com/api/components/ytdlp" => {
-                        Ok(serde_json::json!([{"tag_name": "2026.07.04"}]))
-                    }
-                    _ => Err(super::ComponentError::Http(
-                        "GitHub API returned 403 Forbidden".into(),
-                    )),
-                }
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(releases[0]["tag_name"], "2026.07.04");
     }
 
     #[test]

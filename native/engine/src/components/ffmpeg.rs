@@ -224,6 +224,8 @@ pub use install::{FfmpegVersions, install_ffmpeg, list_versions};
 mod install {
     use std::path::Path;
 
+    use serde_json::Value;
+
     use super::{CONFIG_FFMPEG_MANAGED_VERSION, ComponentError, FfmpegStatus, managed_ffmpeg_path};
     use crate::db::Db;
 
@@ -242,7 +244,7 @@ mod install {
     pub struct FfmpegVersions {
         /// 降序排列的稳定版本号（如 `["8.0", "7.1", "6.1"]`）。
         pub versions: Vec<String>,
-        /// 最新稳定版（= `versions` 首个；空 = 解析失败）。
+        /// 最新稳定版（= `versions` 首个）。
         pub latest_stable: String,
     }
 
@@ -270,15 +272,80 @@ mod install {
 
     /// 从资产名提取稳定版本号。资产名形如
     /// `ffmpeg-n7.1-latest-win64-gpl-7.1.zip`；master 构建（无 `n<ver>`）忽略。
-    fn parse_asset_version(name: &str, plat: &str) -> Option<String> {
+    fn parse_asset_version<'a>(name: &'a str, plat: &str) -> Option<&'a str> {
         let rest = name.strip_prefix("ffmpeg-n")?;
         let (ver, tail) = rest.split_once("-latest-")?;
-        // 只收 gpl 非 shared 构建：`<plat>-gpl-<ver>.<ext>`
-        let expected = format!("{plat}-gpl-{ver}");
-        if !(tail == format!("{expected}.zip") || tail == format!("{expected}.tar.xz")) {
-            return None;
-        }
-        Some(ver.to_string())
+        let tail = tail.strip_prefix(plat)?.strip_prefix("-gpl-")?;
+        matches!(tail.strip_prefix(ver)?, ".zip" | ".tar.xz").then_some(ver)
+    }
+
+    struct FfmpegBuild<'a> {
+        version: &'a str,
+        url: &'a str,
+        name: &'a str,
+    }
+
+    fn release_builds<'a>(
+        release: &'a Value,
+        plat: &'a str,
+    ) -> Result<(impl Iterator<Item = FfmpegBuild<'a>>, &'a str), ComponentError> {
+        let assets = release["assets"]
+            .as_array()
+            .ok_or_else(|| ComponentError::NotFound("FFmpeg release assets".to_owned()))?;
+        let sums_url =
+            super::super::release_asset_url(assets, CHECKSUM_ASSET, UPSTREAM_DOWNLOAD_PREFIX)?;
+        let builds = assets.iter().filter_map(move |asset| {
+            let name = asset["name"].as_str()?;
+            let version = parse_asset_version(name, plat)?;
+            let url = asset["browser_download_url"].as_str()?;
+            super::super::require_upstream_asset_url(url, UPSTREAM_DOWNLOAD_PREFIX).ok()?;
+            Some(FfmpegBuild { version, url, name })
+        });
+        Ok((builds, sums_url))
+    }
+
+    fn select_versions(release: &Value, plat: &str) -> Result<FfmpegVersions, ComponentError> {
+        let (builds, _) = release_builds(release, plat)?;
+        let mut versions: Vec<String> = builds.map(|build| build.version.to_owned()).collect();
+        versions.sort_by_cached_key(|v| std::cmp::Reverse(version_key(v)));
+        versions.dedup();
+        let latest_stable = versions
+            .first()
+            .cloned()
+            .ok_or_else(|| ComponentError::NotFound(format!("no builds for {plat}")))?;
+        Ok(FfmpegVersions {
+            versions,
+            latest_stable,
+        })
+    }
+
+    struct FfmpegDownload {
+        version: String,
+        url: String,
+        name: String,
+        sums_url: String,
+    }
+
+    fn select_download(
+        release: &Value,
+        plat: &str,
+        version: Option<&str>,
+    ) -> Result<FfmpegDownload, ComponentError> {
+        let (mut builds, sums_url) = release_builds(release, plat)?;
+        let build = match version {
+            Some(want) => builds
+                .find(|build| build.version == want)
+                .ok_or_else(|| ComponentError::NotFound(format!("version {want} ({plat})")))?,
+            None => builds
+                .min_by_key(|build| std::cmp::Reverse(version_key(build.version)))
+                .ok_or_else(|| ComponentError::NotFound(format!("no builds for {plat}")))?,
+        };
+        Ok(FfmpegDownload {
+            version: build.version.to_owned(),
+            url: build.url.to_owned(),
+            name: build.name.to_owned(),
+            sums_url: sums_url.to_owned(),
+        })
     }
 
     /// 列出当前平台可安装的稳定版本（降序）。
@@ -289,23 +356,14 @@ mod install {
         let plat = platform_tag().ok_or(ComponentError::Unsupported)?;
         let clients = super::super::egress_clients(egress).await?;
         let mirror_base = super::super::component_mirror_base(db).await;
-        let release =
-            super::super::fetch_versions_json(&clients, "ffmpeg", RELEASE_API, &mirror_base)
-                .await?;
-        let empty = Vec::new();
-        let assets = release["assets"].as_array().unwrap_or(&empty);
-        let mut versions: Vec<String> = assets
-            .iter()
-            .filter_map(|a| a["name"].as_str())
-            .filter_map(|n| parse_asset_version(n, plat))
-            .collect();
-        versions.sort_by_key(|v| std::cmp::Reverse(version_key(v)));
-        versions.dedup();
-        let latest_stable = versions.first().cloned().unwrap_or_default();
-        Ok(FfmpegVersions {
-            versions,
-            latest_stable,
-        })
+        super::super::fetch_versions_metadata(
+            &clients,
+            "ffmpeg",
+            RELEASE_API,
+            &mirror_base,
+            |release| select_versions(release, plat),
+        )
+        .await
     }
 
     /// 下载并安装指定版本（`None` = 最新稳定版）到数据目录 `bin/`。
@@ -322,46 +380,19 @@ mod install {
         let plat = platform_tag().ok_or(ComponentError::Unsupported)?;
         let clients = super::super::egress_clients(egress).await?;
         let mirror_base = super::super::component_mirror_base(db).await;
-        // latest release 端点与 list_versions 相同，复用同一条镜像优先链路
-        // （用户配置镜像 → 官网镜像 → 直连 GitHub）。
-        let release =
-            super::super::fetch_versions_json(&clients, "ffmpeg", RELEASE_API, &mirror_base)
-                .await?;
-        let empty = Vec::new();
-        let assets = release["assets"].as_array().unwrap_or(&empty);
-
-        // 选定资产：钉住版本或最新稳定版。
-        let mut candidates: Vec<(String, &str, &str)> = assets
-            .iter()
-            .filter_map(|a| {
-                let name = a["name"].as_str()?;
-                let url = a["browser_download_url"].as_str()?;
-                let ver = parse_asset_version(name, plat)?;
-                Some((ver, url, name))
-            })
-            .collect();
-        candidates.sort_by_key(|(v, _, _)| std::cmp::Reverse(version_key(v)));
-        let (chosen_ver, url, asset_name) = match version {
-            Some(want) => candidates
-                .iter()
-                .find(|(v, _, _)| v == want)
-                .ok_or_else(|| ComponentError::NotFound(format!("version {want} ({plat})")))?,
-            None => candidates
-                .first()
-                .ok_or_else(|| ComponentError::NotFound(format!("no builds for {plat}")))?,
-        };
-        let chosen_ver = chosen_ver.clone();
-        let url = url.to_string();
-        let asset_name = asset_name.to_string();
-        let sums_url = assets
-            .iter()
-            .find(|a| a["name"].as_str() == Some(CHECKSUM_ASSET))
-            .and_then(|a| a["browser_download_url"].as_str())
-            .ok_or_else(|| ComponentError::NotFound(format!("asset {CHECKSUM_ASSET}")))?
-            .to_string();
-        // 版本 JSON 可能来自官网镜像或用户镜像：资产与校验文件都必须落在上游发布路径下。
-        super::super::require_upstream_asset_url(&url, UPSTREAM_DOWNLOAD_PREFIX)?;
-        super::super::require_upstream_asset_url(&sums_url, UPSTREAM_DOWNLOAD_PREFIX)?;
+        let FfmpegDownload {
+            version: chosen_ver,
+            url,
+            name: asset_name,
+            sums_url,
+        } = super::super::fetch_versions_metadata(
+            &clients,
+            "ffmpeg",
+            RELEASE_API,
+            &mirror_base,
+            |release| select_download(release, plat, version),
+        )
+        .await?;
         // 校验和是完整性锚：只走代理，不交给插件改写。
         let expected_sha256 =
             super::super::fetch_expected_sha256(&clients, &sums_url, &mirror_base, &asset_name)
@@ -660,17 +691,122 @@ mod install {
     #[cfg(test)]
     #[allow(clippy::unwrap_used)]
     mod tests {
-        use super::{parse_asset_version, version_key};
+        use serde_json::{Value, json};
+
+        use super::{
+            CHECKSUM_ASSET, RELEASE_API, UPSTREAM_DOWNLOAD_PREFIX, parse_asset_version,
+            select_download, select_versions, version_key,
+        };
+
+        const OFFICIAL: &str = "https://fluxdown.com/api/components/ffmpeg";
+        const MIRROR_BASE: &str = "https://mirror.example";
+        const MIRROR: &str =
+            "https://mirror.example/repos/FFmpeg-Builds/FFmpeg-Builds/releases/latest";
+        const TARGET: &str = "ffmpeg-n8.0-latest-win64-gpl-8.0.zip";
+
+        fn release(tag: &str, names: &[&str]) -> Value {
+            let assets: Vec<_> = names
+                .iter()
+                .map(|name| {
+                    json!({
+                        "name": name,
+                        "browser_download_url": format!("{UPSTREAM_DOWNLOAD_PREFIX}{tag}/{name}")
+                    })
+                })
+                .collect();
+            json!({"tag_name": tag, "assets": assets})
+        }
+
+        #[tokio::test]
+        async fn ffmpeg_install_falls_back_to_a_release_with_both_requested_assets() {
+            for (mirror_base, expected_sources, tag, stale_assets) in [
+                (MIRROR_BASE, &[MIRROR][..], "mirror", &[TARGET, CHECKSUM_ASSET][..]),
+                (
+                    MIRROR_BASE,
+                    &[MIRROR, OFFICIAL][..],
+                    "cached",
+                    &["ffmpeg-n7.1-latest-win64-gpl-7.1.zip", CHECKSUM_ASSET][..],
+                ),
+                (
+                    "",
+                    &[OFFICIAL, RELEASE_API][..],
+                    "direct",
+                    &["ffmpeg-n8.0-latest-winarm64-gpl-8.0.zip", CHECKSUM_ASSET][..],
+                ),
+                ("", &[OFFICIAL, RELEASE_API][..], "direct", &[TARGET][..]),
+            ] {
+                let mut visited = Vec::new();
+                let download = super::super::super::fetch_versions_from_sources(
+                    "ffmpeg",
+                    RELEASE_API,
+                    mirror_base,
+                    |url| {
+                        let response = match url.as_str() {
+                            MIRROR => release("mirror", stale_assets),
+                            OFFICIAL if mirror_base.is_empty() => release("cached", stale_assets),
+                            OFFICIAL => release("cached", &[TARGET, CHECKSUM_ASSET]),
+                            RELEASE_API => release("direct", &[TARGET, CHECKSUM_ASSET]),
+                            _ => panic!("unexpected source: {url}"),
+                        };
+                        visited.push(url);
+                        std::future::ready(Ok(response))
+                    },
+                    |metadata| select_download(metadata, "win64", Some("8.0")),
+                )
+                .await
+                .unwrap();
+                assert_eq!(visited.as_slice(), expected_sources);
+                assert_eq!(download.version, "8.0");
+                assert_eq!(download.name, TARGET);
+                assert_eq!(
+                    download.url,
+                    format!("{UPSTREAM_DOWNLOAD_PREFIX}{tag}/{TARGET}")
+                );
+                assert_eq!(
+                    download.sums_url,
+                    format!("{UPSTREAM_DOWNLOAD_PREFIX}{tag}/{CHECKSUM_ASSET}")
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn unusable_mirror_metadata_falls_back_to_official_ffmpeg_list() {
+            let versions = super::super::super::fetch_versions_from_sources(
+                "ffmpeg",
+                RELEASE_API,
+                MIRROR_BASE,
+                |url| async move {
+                    match url.as_str() {
+                        MIRROR => Ok(json!([{"tag_name": "latest", "assets": []}])),
+                        OFFICIAL => Ok(release(
+                            "cached",
+                            &[
+                                "ffmpeg-n7.1-latest-win64-gpl-7.1.zip",
+                                TARGET,
+                                "ffmpeg-n9.0-latest-winarm64-gpl-9.0.zip",
+                                CHECKSUM_ASSET,
+                            ],
+                        )),
+                        _ => panic!("unexpected source: {url}"),
+                    }
+                },
+                |metadata| select_versions(metadata, "win64"),
+            )
+            .await
+            .unwrap();
+            assert_eq!(versions.versions, ["8.0", "7.1"]);
+            assert_eq!(versions.latest_stable, "8.0");
+        }
 
         #[test]
         fn asset_version_parsing() {
             assert_eq!(
                 parse_asset_version("ffmpeg-n7.1-latest-win64-gpl-7.1.zip", "win64"),
-                Some("7.1".to_string())
+                Some("7.1")
             );
             assert_eq!(
                 parse_asset_version("ffmpeg-n6.1-latest-linux64-gpl-6.1.tar.xz", "linux64"),
-                Some("6.1".to_string())
+                Some("6.1")
             );
             // master 构建无 n 前缀 → 忽略
             assert_eq!(

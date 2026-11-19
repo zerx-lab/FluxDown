@@ -198,6 +198,8 @@ pub use install::{YtdlpVersions, install_ytdlp, list_ytdlp_versions};
 mod install {
     use std::path::Path;
 
+    use serde_json::Value;
+
     use super::super::ComponentError;
     use super::{CONFIG_YTDLP_MANAGED_VERSION, YtdlpStatus, managed_ytdlp_path, platform_asset};
     use crate::db::Db;
@@ -216,7 +218,7 @@ mod install {
     pub struct YtdlpVersions {
         /// 降序排列的版本 tag（如 `["2026.07.04", "2026.06.30"]`）。
         pub versions: Vec<String>,
-        /// 最新稳定版（= `versions` 首个；空 = 解析失败）。
+        /// 最新稳定版（= `versions` 首个）。
         pub latest_stable: String,
     }
 
@@ -228,21 +230,41 @@ mod install {
         platform_asset().ok_or(ComponentError::Unsupported)?;
         let clients = super::super::egress_clients(egress).await?;
         let mirror_base = super::super::component_mirror_base(db).await;
-        let releases =
-            super::super::fetch_versions_json(&clients, "ytdlp", RELEASES_API, &mirror_base)
-                .await?;
-        let empty = Vec::new();
-        let arr = releases.as_array().unwrap_or(&empty);
-        let versions: Vec<String> = arr
+        super::super::fetch_versions_metadata(
+            &clients,
+            "ytdlp",
+            RELEASES_API,
+            &mirror_base,
+            select_versions,
+        )
+        .await
+    }
+
+    fn stable_tag(release: &Value) -> Option<&str> {
+        // 官网原样转发标志；兼容未提供标志的镜像，但不接受无效类型。
+        for flag in ["draft", "prerelease"] {
+            if let Some(value) = release.get(flag)
+                && value.as_bool() != Some(false)
+            {
+                return None;
+            }
+        }
+        release["tag_name"].as_str().filter(|tag| !tag.is_empty())
+    }
+
+    fn select_versions(releases: &Value) -> Result<YtdlpVersions, ComponentError> {
+        let releases = releases
+            .as_array()
+            .ok_or_else(|| ComponentError::NotFound("yt-dlp release list".to_owned()))?;
+        let versions: Vec<String> = releases
             .iter()
-            .filter(|r| {
-                !r["draft"].as_bool().unwrap_or(false)
-                    && !r["prerelease"].as_bool().unwrap_or(false)
-            })
-            .filter_map(|r| r["tag_name"].as_str())
-            .map(str::to_string)
+            .filter_map(stable_tag)
+            .map(str::to_owned)
             .collect();
-        let latest_stable = versions.first().cloned().unwrap_or_default();
+        let latest_stable = versions
+            .first()
+            .cloned()
+            .ok_or_else(|| ComponentError::NotFound("stable yt-dlp releases".to_owned()))?;
         Ok(YtdlpVersions {
             versions,
             latest_stable,
@@ -263,45 +285,15 @@ mod install {
         let asset = platform_asset().ok_or(ComponentError::Unsupported)?;
         let clients = super::super::egress_clients(egress).await?;
         let mirror_base = super::super::component_mirror_base(db).await;
-        let url = match version {
-            Some(tag) => format!("{RELEASE_TAG_API}{tag}"),
-            None => RELEASE_LATEST_API.to_string(),
-        };
-        let release =
-            match super::super::fetch_github_json_with_mirror(&clients, &url, &mirror_base).await {
-                Ok(release) => release,
-                Err(error) => {
-                    // 官网缓存的是列表，不代理单个 tag。只使用与安装请求匹配的条目。
-                    let Ok(releases) =
-                        super::super::fetch_official_versions_json(&clients, "ytdlp").await
-                    else {
-                        return Err(error);
-                    };
-                    select_stable_release(releases, version).ok_or(error)?
-                }
-            };
-        let chosen_ver = release["tag_name"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| ComponentError::NotFound("release tag_name".to_string()))?
-            .to_string();
-        let empty = Vec::new();
-        let assets = release["assets"].as_array().unwrap_or(&empty);
-        let asset_url = |name: &str| -> Option<String> {
-            assets
-                .iter()
-                .find(|a| a["name"].as_str() == Some(name))
-                .and_then(|a| a["browser_download_url"].as_str())
-                .map(str::to_string)
-        };
-        let dl_url = asset_url(asset)
-            .ok_or_else(|| ComponentError::NotFound(format!("asset {asset} ({chosen_ver})")))?;
-        let sums_url = asset_url(CHECKSUM_ASSET).ok_or_else(|| {
-            ComponentError::NotFound(format!("asset {CHECKSUM_ASSET} ({chosen_ver})"))
-        })?;
-        // 版本 JSON 可能经镜像而来：资产与校验文件都必须落在上游发布路径下。
-        super::super::require_upstream_asset_url(&dl_url, UPSTREAM_DOWNLOAD_PREFIX)?;
-        super::super::require_upstream_asset_url(&sums_url, UPSTREAM_DOWNLOAD_PREFIX)?;
+        let routed_clients = &clients;
+        let YtdlpDownload {
+            version: chosen_ver,
+            asset_url: dl_url,
+            sums_url,
+        } = fetch_install_metadata(&mirror_base, version, asset, |url| async move {
+            super::super::fetch_github_json(routed_clients, &url).await
+        })
+        .await?;
         // 校验和是完整性锚：只走代理，不交给插件改写。
         let expected_sha256 =
             super::super::fetch_expected_sha256(&clients, &sums_url, &mirror_base, asset).await?;
@@ -376,41 +368,161 @@ mod install {
         Ok(super::ytdlp_status(db, data_dir).await)
     }
 
-    fn select_stable_release(
-        releases: serde_json::Value,
+    struct YtdlpDownload {
+        version: String,
+        asset_url: String,
+        sums_url: String,
+    }
+
+    async fn fetch_install_metadata<Fut>(
+        mirror_base: &str,
         version: Option<&str>,
-    ) -> Option<serde_json::Value> {
-        let serde_json::Value::Array(releases) = releases else {
-            return None;
+        asset: &str,
+        fetch: impl FnMut(String) -> Fut,
+    ) -> Result<YtdlpDownload, ComponentError>
+    where
+        Fut: std::future::Future<Output = Result<Value, ComponentError>>,
+    {
+        let github_url = match version {
+            Some(tag) => format!("{RELEASE_TAG_API}{tag}"),
+            None => RELEASE_LATEST_API.to_owned(),
         };
-        releases.into_iter().find(|release| {
-            release["draft"].as_bool() == Some(false)
-                && release["prerelease"].as_bool() == Some(false)
-                && release["tag_name"]
-                    .as_str()
-                    .is_some_and(|tag| !tag.is_empty() && version.is_none_or(|v| v == tag))
+        super::super::fetch_release_metadata(
+            [
+                super::super::https_mirror_url(&github_url, mirror_base),
+                Some(github_url),
+            ],
+            &super::super::official_versions_url("ytdlp"),
+            fetch,
+            |release| select_download(release, version, asset),
+        )
+        .await
+    }
+
+    fn select_download(
+        metadata: &Value,
+        version: Option<&str>,
+        asset: &str,
+    ) -> Result<YtdlpDownload, ComponentError> {
+        fn matching_tag<'a>(release: &'a Value, version: Option<&str>) -> Option<&'a str> {
+            stable_tag(release).filter(|tag| version.is_none_or(|v| v == *tag))
+        }
+        // 官网缓存的是列表：只选精确 tag，未指定时只选首个稳定条目。
+        let (release, tag) = if let Some(releases) = metadata.as_array() {
+            releases
+                .iter()
+                .find_map(|release| matching_tag(release, version).map(|tag| (release, tag)))
+        } else {
+            matching_tag(metadata, version).map(|tag| (metadata, tag))
+        }
+        .ok_or_else(|| {
+            ComponentError::NotFound(version.unwrap_or("stable yt-dlp release").to_owned())
+        })?;
+        let assets = release["assets"]
+            .as_array()
+            .ok_or_else(|| ComponentError::NotFound(format!("yt-dlp release assets ({tag})")))?;
+        let asset_url = super::super::release_asset_url(assets, asset, UPSTREAM_DOWNLOAD_PREFIX)?;
+        let sums_url =
+            super::super::release_asset_url(assets, CHECKSUM_ASSET, UPSTREAM_DOWNLOAD_PREFIX)?;
+        Ok(YtdlpDownload {
+            version: tag.to_owned(),
+            asset_url: asset_url.to_owned(),
+            sums_url: sums_url.to_owned(),
         })
     }
 
     #[cfg(test)]
-    #[test]
-    fn install_fallback_uses_requested_tag_or_first_stable_release() {
-        let releases = serde_json::json!([
-            {"tag_name": "nightly", "draft": false, "prerelease": true},
-            {"tag_name": "draft", "draft": true, "prerelease": false},
-            {"tag_name": "new", "draft": false, "prerelease": false},
-            {"tag_name": "old", "draft": false, "prerelease": false}
-        ]);
-        assert_eq!(
-            select_stable_release(releases.clone(), None).unwrap()["tag_name"],
-            "new"
-        );
-        assert_eq!(
-            select_stable_release(releases.clone(), Some("old")).unwrap()["tag_name"],
-            "old"
-        );
-        assert!(select_stable_release(releases.clone(), Some("nightly")).is_none());
-        assert!(select_stable_release(releases, Some("missing")).is_none());
+    mod tests {
+        use serde_json::json;
+
+        use super::{
+            CHECKSUM_ASSET, ComponentError, RELEASE_TAG_API, RELEASES_API, UPSTREAM_DOWNLOAD_PREFIX,
+            fetch_install_metadata, select_versions,
+        };
+
+        #[tokio::test]
+        async fn wrong_mirror_shape_falls_back_to_official_ytdlp_list() {
+            let versions = super::super::super::fetch_versions_from_sources(
+                "ytdlp",
+                RELEASES_API,
+                "https://mirror.example",
+                |url| async move {
+                    match url.as_str() {
+                        "https://mirror.example/repos/yt-dlp/yt-dlp/releases?per_page=30" => {
+                            Ok(json!({"tag_name": "2026.07.05"}))
+                        }
+                        "https://fluxdown.com/api/components/ytdlp" => Ok(json!([
+                            {"tag_name": "nightly", "prerelease": true},
+                            {"tag_name": "2026.07.04"}
+                        ])),
+                        _ => panic!("unexpected source: {url}"),
+                    }
+                },
+                select_versions,
+            )
+            .await
+            .unwrap();
+            assert_eq!(versions.versions, ["2026.07.04"]);
+            assert_eq!(versions.latest_stable, "2026.07.04");
+        }
+
+        #[tokio::test]
+        async fn github_403_uses_only_the_requested_cached_ytdlp_release() {
+            const ASSET: &str = "yt-dlp.exe";
+            const TAG: &str = "2026.07.04";
+            const NEWER: &str = "2026.07.05";
+            let release = |tag: &str| {
+                json!({
+                    "tag_name": tag,
+                    "assets": [
+                        {"name": ASSET, "browser_download_url": format!("{UPSTREAM_DOWNLOAD_PREFIX}{tag}/{ASSET}")},
+                        {"name": CHECKSUM_ASSET, "browser_download_url": format!("{UPSTREAM_DOWNLOAD_PREFIX}{tag}/{CHECKSUM_ASSET}")}
+                    ]
+                })
+            };
+            for want in [Some(TAG), None, Some("missing")] {
+                let mut github_denied = false;
+                let result = fetch_install_metadata("", want, ASSET, |url| {
+                    let response = match url.as_str() {
+                        "https://fluxdown.com/api/components/ytdlp" => {
+                            assert!(github_denied);
+                            Ok(json!([
+                                {"tag_name": "nightly", "prerelease": true},
+                                {"tag_name": "draft", "draft": true},
+                                release(NEWER),
+                                release(TAG)
+                            ]))
+                        }
+                        _ => {
+                            if let Some(tag) = want {
+                                assert_eq!(url, format!("{RELEASE_TAG_API}{tag}"));
+                            } else {
+                                assert_eq!(url, super::RELEASE_LATEST_API);
+                            }
+                            github_denied = true;
+                            Err(ComponentError::Http("GitHub API returned 403 Forbidden".into()))
+                        }
+                    };
+                    std::future::ready(response)
+                })
+                .await;
+                if want == Some("missing") {
+                    assert!(matches!(result, Err(ComponentError::NotFound(_))));
+                } else {
+                    let expected = want.unwrap_or(NEWER);
+                    let download = result.unwrap();
+                    assert_eq!(download.version, expected);
+                    assert_eq!(
+                        download.asset_url,
+                        format!("{UPSTREAM_DOWNLOAD_PREFIX}{expected}/{ASSET}")
+                    );
+                    assert_eq!(
+                        download.sums_url,
+                        format!("{UPSTREAM_DOWNLOAD_PREFIX}{expected}/{CHECKSUM_ASSET}")
+                    );
+                }
+            }
+        }
     }
 }
 
