@@ -360,46 +360,46 @@ mod tests {
         }
     }
 
-    #[test]
-    fn probe_refills_a_blank_manual_name_and_preserves_a_custom_draft() {
-        const URL: &str = "https://example.com/download.zip";
-        const DRAFT: &str = " My file.zip ";
+    const URL: &str = "https://example.com/download.zip";
 
-        struct Offline;
+    struct Offline;
 
-        impl DownloadsPort for Offline {
-            fn execute(&self, _: DownloadsCommand) -> PortFuture<DownloadsResult> {
-                Box::pin(async { Err(RpcErrorData::new(ApplicationErrorCode::Internal, false)) })
-            }
+    impl DownloadsPort for Offline {
+        fn execute(&self, _: DownloadsCommand) -> PortFuture<DownloadsResult> {
+            Box::pin(async { Err(RpcErrorData::new(ApplicationErrorCode::Internal, false)) })
         }
+    }
 
-        fn assert_name(view: &NewDownloadView, cx: &App, visible: &str, submitted: &str) {
-            assert_eq!(&*view.rename.read(cx).value(), visible);
-            let built = build_requests(&view.entries, &view.draft_options(false, None, cx));
-            let item = built.items.first().expect("single download request");
-            assert_eq!(item.file_name, submitted);
-        }
+    fn assert_name(view: &NewDownloadView, cx: &App, visible: &str, submitted: &str) {
+        assert_eq!(&*view.rename.read(cx).value(), visible);
+        let built = build_requests(&view.entries, &view.draft_options(false, None, cx));
+        let item = built.items.first().expect("single download request");
+        assert_eq!(item.file_name, submitted);
+    }
 
-        fn apply_probe(
-            view: &mut NewDownloadView,
-            name: &str,
-            window: &mut Window,
-            cx: &mut Context<NewDownloadView>,
-        ) {
-            view.probe
-                .retarget(Some(URL.to_owned()), ProbeStatus::Probing);
-            view.finish_probe(
-                view.probe.generation,
-                URL.to_owned(),
-                Some(ProbeStatus::Found(ProbeInfo {
-                    file_name: name.to_owned(),
-                    total_bytes: 100,
-                })),
-                window,
-                cx,
-            );
-        }
+    fn apply_probe(
+        view: &mut NewDownloadView,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<NewDownloadView>,
+    ) {
+        view.probe
+            .retarget(Some(URL.to_owned()), ProbeStatus::Probing);
+        view.finish_probe(
+            view.probe.generation,
+            URL.to_owned(),
+            Some(ProbeStatus::Found(ProbeInfo {
+                file_name: name.to_owned(),
+                total_bytes: 100,
+            })),
+            window,
+            cx,
+        );
+    }
 
+    fn with_download_view(
+        check: impl FnOnce(&mut NewDownloadView, &mut Window, &mut Context<NewDownloadView>),
+    ) {
         let mut app = TestApp::new();
         let translator = app.update(|cx| {
             gpui_component::init(cx);
@@ -417,17 +417,12 @@ mod tests {
                 cx,
             )
         });
-        win.update(|view, window, cx| {
-            view.context.category_route = Some(CategoryRouteDto {
-                rules: vec![CategoryRuleDto {
-                    match_mode: "extension".to_owned(),
-                    extensions: vec!["pdf".to_owned()],
-                    save_dir: "/downloads/documents".to_owned(),
-                    ..Default::default()
-                }],
-                other_dir: "/downloads/other".to_owned(),
-                ..Default::default()
-            });
+        win.update(check);
+    }
+
+    #[test]
+    fn probe_preserves_a_manual_draft_matching_the_detected_name() {
+        with_download_view(|view, window, cx| {
             view.entries = vec![entry(URL)];
             view.set_auto_name(false, window, cx);
             view.rename
@@ -444,6 +439,29 @@ mod tests {
             assert_name(view, cx, "Report.pdf", "Report.pdf");
 
             view.set_auto_name(true, window, cx);
+            view.entries = vec![entry(URL)];
+            apply_probe(view, "Detected.zip", window, cx);
+            assert_name(view, cx, "Detected.zip", "");
+            view.set_auto_name(false, window, cx);
+            assert_name(view, cx, "Report.pdf", "Report.pdf");
+        });
+    }
+
+    #[test]
+    fn probe_refills_a_blank_manual_name_and_preserves_a_custom_draft() {
+        const DRAFT: &str = " My file.zip ";
+
+        with_download_view(|view, window, cx| {
+            view.context.category_route = Some(CategoryRouteDto {
+                rules: vec![CategoryRuleDto {
+                    match_mode: "extension".to_owned(),
+                    extensions: vec!["pdf".to_owned()],
+                    save_dir: "/downloads/documents".to_owned(),
+                    ..Default::default()
+                }],
+                other_dir: "/downloads/other".to_owned(),
+                ..Default::default()
+            });
             view.entries = vec![entry(URL)];
             apply_probe(view, "Detected.zip", window, cx);
             assert_name(view, cx, "Detected.zip", "");
