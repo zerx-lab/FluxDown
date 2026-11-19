@@ -112,6 +112,13 @@ impl From<&proto::TaskSegmentDto> for SegmentDto {
     }
 }
 
+/// HLS 点播的已写入分片数与总数。
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct HlsFragmentProgressDto {
+    pub written: u64,
+    pub total: u64,
+}
+
 /// `TaskRuntimeDto`。
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
 pub struct TaskRuntimeDto {
@@ -121,6 +128,7 @@ pub struct TaskRuntimeDto {
     pub connected_peers: Option<u32>,
     pub total_bytes: i64,
     pub segments: Vec<SegmentDto>,
+    pub hls_fragments: Option<HlsFragmentProgressDto>,
 }
 
 impl From<&proto::TaskRuntimeDto> for TaskRuntimeDto {
@@ -132,6 +140,12 @@ impl From<&proto::TaskRuntimeDto> for TaskRuntimeDto {
             connected_peers: runtime.connected_peers,
             total_bytes: runtime.total_bytes,
             segments: runtime.segments.iter().map(SegmentDto::from).collect(),
+            hls_fragments: runtime
+                .hls_fragments
+                .map(|progress| HlsFragmentProgressDto {
+                    written: progress.written,
+                    total: progress.total,
+                }),
         }
     }
 }

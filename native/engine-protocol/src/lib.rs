@@ -18,6 +18,7 @@ use fluxdown_protocol::daemon::{
 };
 #[cfg(feature = "components")]
 use fluxdown_protocol::daemon::{ComponentFfmpegStatus, ComponentVersions, ComponentYtdlpStatus};
+use fluxdown_protocol::task_activity::HlsFragmentProgress;
 pub use task_edit::{task_edit_snapshot_to_dto, task_edit_to_engine, task_properties_to_dto};
 
 /// 将捕获请求体转换为引擎请求体。
@@ -192,6 +193,9 @@ pub fn task_runtime_to_dto(
                 active: segment.active,
             })
             .collect(),
+        hls_fragments: runtime
+            .hls_fragments
+            .map(|(written, total)| HlsFragmentProgress { written, total }),
         source_bytes: runtime.source_bytes.map(source_bytes_to_dto),
     }
 }
