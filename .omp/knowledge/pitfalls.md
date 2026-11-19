@@ -99,6 +99,7 @@
 
 另见 AGENTS.md §4：quickjs-jit 与 gpui-shell 同版本、持有引擎的 actor 必须 drain `resolve_rx` / `plugin_retry_rx`、插件页面脚本只经 `userScripts`。
 
+- **插件视图 `view.event` 的应答只确认入队**：图片释放等异步处理的测试要等对应会话的视图帧，再检查 HTTP 结果；直接请求会与 JS 回调抢跑，偶发拿到 200 → `native/daemon/src/plugin_host_rpc.rs::tests::image_resources_cross_js_and_authenticated_http_and_expire_on_close`。
 - **QuickJS 抛 `null` 要按异常值识别为 OOM**：内存紧贴上限时 QuickJS 连 `"out of memory"` 错误对象都分配不出，改抛 `null`，字符串匹配的 `reclassify_oom` 认不出，该次 OOM 不计入熔断；必须在仍持有异常值时判定（代价：插件主动 `throw null` 也计 OOM） → `native/engine/src/plugin/quickjs.rs::caught_error`、回归 `null_exception_sentinel_counts_as_memory_limit_exceeded`。
 - **拦截器链必须显式按 identity 升序排序，不能依赖插件加载顺序**：目录遍历和去重都不保证 identity 顺序，后续插件会看到前一个插件改写后的请求，乱序会改变下载行为 → `native/engine/src/plugin/interceptors.rs::PluginManager::task_interceptor`；回归 `plugin::manager::tests::task_interceptors_follow_identity_order_not_load_order`。
 - **签名 archiveRules 公钥轮换必须清掉旧 watermark / cache**：只丢弃旧公钥缓存却保留高序号水位时，新钥 seed 从较小 sequence 起步会永久 bootstrap 失败 → `plugin/archive_rules_manager.rs::validated_archive_rule_cache`（`RuleWatermark.public_key` + `clear_archive_rule_trust`）；回归 `archive_rule_public_key_rotation_resets_trust_watermark`。
