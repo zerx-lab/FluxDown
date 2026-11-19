@@ -190,7 +190,7 @@ pub(crate) fn save_task_info<T: 'static>(
                 .err()
                 .map(|error| error.to_string()),
             Ok(Ok(None)) => return,
-            Ok(Err(error)) => Some(error.to_string()),
+            Ok(Err(error)) => Some(format!("{error:#}")),
             Err(error) => Some(error.to_string()),
         };
         if let Some(error) = error
