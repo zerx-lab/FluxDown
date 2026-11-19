@@ -107,7 +107,7 @@ struct AppearancePage: View {
                 }
             }
 
-            Section(L("settingsGroupInterface")) {
+            Section {
                 // iOS 没有公开的「显示与亮度」深链；文字大小由系统（动态字体）接管，这里只做说明，不放无效按钮。
                 SettingsTileLabel(
                     title: L("mobileSystemTextSize"),
@@ -122,6 +122,8 @@ struct AppearancePage: View {
                     Text(L("fileSizeUnitsIec")).tag(FileSizeUnits.iec)
                 }
                 .settingsRow("appearance.fileSizeUnits")
+            } header: {
+                Text(L("settingsGroupInterface"))
             } footer: {
                 Text(L("fileSizeUnitsDesc"))
             }
