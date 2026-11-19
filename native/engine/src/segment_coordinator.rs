@@ -5809,10 +5809,13 @@ async fn do_segment(
     } else {
         None
     };
-    // hint 模式跳过了探测，反机器人质询只能在真实请求上首次暴露：换中性 UA 重发
-    // 同一请求（`escape_bot_challenge` 保证每个请求最多重发一次，循环必然收敛）。
+    // hint 模式跳过了探测，反机器人质询 / 浏览器 UA 被拒只能在真实请求上首次暴露：换中性
+    // UA 重发同一请求。`escape_bot_challenge` 对已是中性 UA 的请求不再重发；另设硬上限，
+    // 防止身份被并发改写后对同一请求反复重发、分段永久卡住。
+    const MAX_UA_RESENDS: u8 = 2;
     let mut used = spec.current();
     let mut refreshed = false;
+    let mut ua_resends: u8 = 0;
     let resp = loop {
         // 单 GET 探测保留的首响应（一次性 URL 的唯一一次请求）：首连接直接消费它，不再发请求。
         // 只有零进度的 plain 首连接会取；重试 / 其余分段照常发 Range 请求。
@@ -5871,7 +5874,9 @@ async fn do_segment(
         };
         request_path.record_setup(sent_at.elapsed());
         match spec.escape_bot_challenge(&used, &resp, db, task_id).await {
+            Some(_) if ua_resends >= MAX_UA_RESENDS => break resp,
             Some(neutral) => {
+                ua_resends += 1;
                 drop(resp);
                 used = neutral;
             }
@@ -5893,6 +5898,7 @@ async fn do_segment(
     };
     let resp = resp.error_for_status()?;
     spec.confirm(&used);
+    spec.persist_confirmed_ua(&used, db, task_id).await;
     if reuse_redirect && direct.is_none() && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT {
         request_path.learn_redirect(url, resp.url().as_str());
     }
