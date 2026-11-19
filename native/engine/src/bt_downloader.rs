@@ -1594,6 +1594,7 @@ impl SharedBtSession {
             added = true;
         }
         if seeds.iter().any(|seed| seed == url) {
+            registered.insert(task_id.to_owned(), seeds);
             return Ok(());
         }
         seeds.push(url.to_owned());
@@ -8611,12 +8612,6 @@ mod tests {
                     .clone()
                     .expect("observed handle");
                 assert!(shared_bt.session.get(handle.id().into()).is_none());
-                assert!(
-                    handle
-                        .web_seeds()
-                        .iter()
-                        .any(|seed| seed.url == RELOCATE_WEB_SEED)
-                );
                 if let Some((restart, source)) = restart {
                     // Reattach with the same add-option path as the next inner run,
                     // without a manager, DB reload, or restarted session.

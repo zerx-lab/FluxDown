@@ -7897,14 +7897,16 @@ impl DownloadManager {
                 e
             ),
         }
-        match self.db.task_web_seeds(&task.task_id).await {
-            Ok(seeds) => bt.register_web_seeds(&task.task_id, seeds).await,
-            Err(error) => log_info!(
-                "[manager] web seeds of {} unavailable: {error:#}",
-                task.task_id,
-            ),
-        }
+        self.register_bt_web_seeds(bt, &task.task_id).await;
         options
+    }
+
+    #[cfg(feature = "bt")]
+    async fn register_bt_web_seeds(&self, bt: &SharedBtSession, task_id: &str) {
+        match self.db.task_web_seeds(task_id).await {
+            Ok(seeds) => bt.register_web_seeds(task_id, seeds).await,
+            Err(error) => log_info!("[manager] web seeds of {task_id} unavailable: {error:#}"),
+        }
     }
 
     /// BT 被禁用时把仍停在「排队/下载中/准备中」的任务落回暂停(2)并广播，
@@ -14445,6 +14447,8 @@ impl DownloadManager {
                     url,
                     state: if handle.is_some() {
                         WebSeedState::Rejected
+                    } else if !self.bt_config.enable_webseed {
+                        WebSeedState::Disabled
                     } else {
                         WebSeedState::Pending
                     },
@@ -15122,6 +15126,7 @@ impl DownloadManager {
         let options = self.bt_task_options(task);
         let upload_limit_bps = options.upload_limit_bps;
         bt.register_task_options(&task_id, options).await;
+        self.register_bt_web_seeds(&bt, &task_id).await;
         // 在途登记与关停信号：会话重建（改监听类设置 / 禁用 BT）时，本任务不再向
         // 旧会话登记，由 `invalidate_bt_session` 在新会话上统一重新挂载。
         let reseed_guard = bt.begin_reseed(&task_id);
@@ -19995,9 +20000,45 @@ mod tests {
         )
         .await
         .expect("insert task");
-        let mut mgr = bt_test_manager(db, &work, bt_test_config(port));
+        let pending = "http://127.0.0.1:1/pending";
+        let rejected = "http://127.0.0.1:1/rejected";
+        let config = bt_test_config(port);
+        let mut mgr = bt_test_manager(
+            db,
+            &work,
+            BtConfig {
+                enable_webseed: false,
+                ..config.clone()
+            },
+        );
+        mgr.add_bt_web_seed(id, pending)
+            .await
+            .expect("save source before session creation");
+        let status = mgr.bt_status(id).await.expect("disabled status");
+        assert!(matches!(
+            status.web_seeds.as_slice(),
+            [seed] if seed.url == pending && seed.state == WebSeedState::Disabled
+        ));
+        mgr.set_bt_config(BtConfig {
+            enable_webseed: true,
+            ..config
+        });
+        let status = mgr.bt_status(id).await.expect("pending status");
+        assert!(matches!(
+            status.web_seeds.as_slice(),
+            [seed] if seed.url == pending && seed.state == WebSeedState::Pending
+        ));
         mgr.ensure_bt_session().await.expect("BT session");
         let bt = mgr.bt_session.clone().expect("live session");
+        mgr.add_bt_web_seed(id, pending)
+            .await
+            .expect("duplicate source in fresh session");
+        let mut registered = librqbit::AddTorrentOptions::default();
+        bt.apply_task_options(id, &mut registered).await;
+        assert!(matches!(
+            registered.web_seeds.as_deref(),
+            Some([url]) if url == pending
+        ));
         let opts = librqbit::AddTorrentOptions {
             paused: true,
             output_folder: Some(work.join("download").to_string_lossy().into_owned()),
@@ -20016,16 +20057,6 @@ mod tests {
         let librqbit::AddTorrentResponse::Added(_, handle) = response else {
             panic!("expected a fresh torrent");
         };
-        let pending = "http://127.0.0.1:1/pending";
-        let rejected = "http://127.0.0.1:1/rejected";
-        mgr.add_bt_web_seed(id, pending)
-            .await
-            .expect("save pending source");
-        let status = mgr.bt_status(id).await.expect("pending status");
-        assert!(matches!(
-            status.web_seeds.as_slice(),
-            [seed] if seed.url == pending && seed.state == WebSeedState::Pending
-        ));
 
         bt.store_handle(id, handle).await;
         let error = mgr
@@ -20110,6 +20141,10 @@ mod tests {
         let mut mgr = bt_test_manager(db, &work, config.clone());
         mgr.ensure_bt_session().await.expect("BT session");
         let old = mgr.bt_session.clone().expect("live session");
+        let web_seed = "http://127.0.0.1:1/payload.bin";
+        mgr.add_bt_web_seed("seed", web_seed)
+            .await
+            .expect("add source to completed task");
         let task = mgr
             .db
             .load_task_by_id("seed")
@@ -20163,6 +20198,14 @@ mod tests {
             );
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
+        let handle = new.cached_handle("seed").await.expect("reseeding handle");
+        assert!(handle.web_seeds().iter().any(|seed| seed.url == web_seed));
+        let status = mgr.bt_status("seed").await.expect("reseeding status");
+        assert!(matches!(
+            status.web_seeds.as_slice(),
+            [seed] if seed.url == web_seed && seed.state != crate::bt_status::WebSeedState::Rejected
+        ));
+        drop(handle);
 
         mgr.shutdown().await;
         drop(new);
