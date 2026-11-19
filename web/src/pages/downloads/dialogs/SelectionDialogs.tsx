@@ -311,8 +311,9 @@ function BtFiles({
   const { categoryByIndex, counts } = useMemo(() => {
     const categoryByIndex = new Map<number, string>()
     const counts = new Map<string, number>()
+    if (files.length <= 1) return { categoryByIndex, counts }
     const classify = btCategoryClassifier(rules)
-    if (files.length > 1) for (const file of files) {
+    for (const file of files) {
       const category = classify(file.path)
       categoryByIndex.set(file.index, category)
       counts.set(category, (counts.get(category) ?? 0) + 1)
@@ -340,8 +341,13 @@ function BtFiles({
     onSelectedChange(next)
   }
   const visibleIndices = filtering ? rows.flatMap((row) => (row.type === 'file' ? [row.file.index] : [])) : []
-  const categoryLabels = rules.map((rule) => [rule.id, categoryLabel(t, rule)] as const)
-  if (!rules.some((rule) => rule.builtinType === 'other')) {
+  const seenCategoryIds = new Set<string>()
+  const categoryLabels = rules.flatMap((rule) => {
+    if (seenCategoryIds.has(rule.id)) return []
+    seenCategoryIds.add(rule.id)
+    return [[rule.id, categoryLabel(t, rule)] as const]
+  })
+  if (!seenCategoryIds.has(BUILTIN_OTHER_ID) && !rules.some((rule) => rule.builtinType === 'other')) {
     categoryLabels.push([BUILTIN_OTHER_ID, t('categoryOther')])
   }
 

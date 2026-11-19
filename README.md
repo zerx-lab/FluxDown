@@ -38,7 +38,7 @@
 
 - **Dynamic download acceleration** — Rust + Tokio engine with adaptive segmentation and slow-segment rescue
 - **Multi-protocol** — HTTP/HTTPS, FTP, BitTorrent, eD2K, HLS & DASH streaming
-- **Selective BitTorrent downloads** — In a multi-file torrent or magnet, expand the filters to find files by name, type, or minimum size. Android also supports custom filename regex categories. Bulk actions update only matching files while filters are active.
+- **Selective BitTorrent downloads** — In a multi-file torrent or magnet, expand the filters to find files by name, type, or minimum size. Type filters use the configured extension and filename regex rules. Bulk actions update only matching files while filters are active.
 - **One engine, multiple clients** — native GPUI desktop, Kotlin Android and SwiftUI iOS apps, React Web UI and CLI
 - **Browser integration** — Chrome / Edge / Firefox extension with a 3-layer interception engine, plus a userscript
 - **AI-agent ready** — built-in MCP (Model Context Protocol) server: let Claude, Cursor & other AI clients manage your downloads

@@ -38,7 +38,7 @@ use gpui_component::{
 
 use crate::{
     controller::{DownloadsCommand, DownloadsPort},
-    model::format_bytes,
+    model::{CategoryIndex, format_bytes},
 };
 
 mod plugin_choice;
@@ -101,23 +101,12 @@ fn bt_file_matches(
 }
 
 fn bt_basename(path: &str) -> &str {
-    path.rsplit('/').next().unwrap_or(path)
+    path.rsplit(['/', '\\']).next().unwrap_or(path)
 }
 
-fn bt_category(path: &str, rules: &[CustomCategoryDto], other: usize) -> usize {
-    bt_basename(path)
-        .rsplit_once('.')
-        .filter(|(stem, ext)| !stem.is_empty() && !ext.is_empty())
-        .and_then(|(_, ext)| {
-            rules.iter().position(|rule| {
-                rule.match_mode == "extension"
-                    && !matches!(rule.builtin_type.as_deref(), Some("all" | "other"))
-                    && rule
-                        .extensions
-                        .iter()
-                        .any(|value| value.trim_start_matches('.').eq_ignore_ascii_case(ext))
-            })
-        })
+fn bt_category(path: &str, index: &CategoryIndex, other: usize) -> usize {
+    index
+        .rule_index_for_file_name(bt_basename(path))
         .unwrap_or(other)
 }
 
@@ -284,10 +273,11 @@ impl SelectionView {
                     .position(|category| category.builtin_type.as_deref() == Some("other"))
                     .unwrap_or(categories.len());
                 let mut counts = vec![0; categories.len().max(other + 1)];
+                let index = CategoryIndex::from_dtos(categories);
                 let file_categories = files
                     .iter()
                     .map(|file| {
-                        let category = bt_category(&file.path, &categories, other);
+                        let category = bt_category(&file.path, &index, other);
                         counts[category] += 1;
                         category
                     })
@@ -299,7 +289,7 @@ impl SelectionView {
                     min_size: 0,
                     categories: HashSet::new(),
                     counts,
-                    rules: categories,
+                    rules: index.into_dtos(),
                     file_categories,
                 })
             }
@@ -1235,8 +1225,9 @@ mod tests {
     };
 
     use super::{
-        BT_CATEGORY_KEYS, BT_MIN_SIZES, SelectionState, bt_category, bt_file_matches,
-        bt_name_outcome, bt_save_dir_confirmable, bt_save_dir_outcome, cancel_command,
+        BT_CATEGORY_KEYS, BT_MIN_SIZES, CategoryIndex, SelectionState, bt_category,
+        bt_file_matches, bt_name_outcome, bt_save_dir_confirmable, bt_save_dir_outcome,
+        cancel_command,
     };
     use crate::controller::DownloadsCommand;
 
@@ -1391,21 +1382,32 @@ mod tests {
     }
 
     #[test]
-    fn bt_category_uses_configured_extensions_and_falls_back_to_other() {
+    fn bt_category_uses_ordered_filename_rules_and_falls_back_to_other() {
         let mut rules = CustomCategoryDto::builtin_defaults();
         let mut subtitles = rules[1].clone();
+        subtitles.id = "subtitles".into();
         subtitles.builtin_type = None;
         subtitles.extensions = vec![".SRT".into()];
         rules[1].extensions = vec!["avi".into()];
         rules.insert(1, subtitles.clone());
-        subtitles.match_mode = "regex".into();
-        rules.insert(0, subtitles);
+        let mut episodes = subtitles.clone();
+        episodes.id = "episodes".into();
+        episodes.match_mode = "regex".into();
+        episodes.regex_pattern = r"^S\d+E\d+".into();
+        rules.insert(0, episodes);
+        let mut site = subtitles;
+        site.id = "site".into();
+        site.match_mode = "url".into();
+        site.url_pattern = "*".into();
+        rules.insert(0, site);
         let other = rules.len() - 1;
 
-        assert_eq!(bt_category("Season/Track.srt", &rules, other), 2);
-        assert_eq!(bt_category("Season/Video.AVI", &rules, other), 3);
-        assert_eq!(bt_category("Season/Video.mkv", &rules, other), other);
-        assert_eq!(bt_category("Season.srt/.srt", &rules, other), other);
+        let index = CategoryIndex::from_dtos(rules);
+        assert_eq!(bt_category(r"Season\s01e02.AVI", &index, other), 1);
+        assert_eq!(bt_category("Season/Track.srt", &index, other), 3);
+        assert_eq!(bt_category("Season/Video.AVI", &index, other), 4);
+        assert_eq!(bt_category("Season/Video.mkv", &index, other), other);
+        assert_eq!(bt_category("Season.srt/.srt", &index, other), other);
     }
 
     #[test]

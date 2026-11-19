@@ -1,20 +1,12 @@
 import type { CustomCategoryDto } from '../../../lib/rpc'
-import { BUILTIN_OTHER_ID } from '../model/categories'
+import { BUILTIN_OTHER_ID, CategoryIndex } from '../model/categories'
 
 export function btCategoryClassifier(rules: readonly CustomCategoryDto[]) {
   const other = rules.find((rule) => rule.builtinType === 'other')?.id ?? BUILTIN_OTHER_ID
-  const byExtension = new Map<string, string>()
-  for (const rule of rules) {
-    if (rule.matchMode !== 'extension' || rule.builtinType === 'all' || rule.builtinType === 'other') continue
-    for (const raw of rule.extensions) {
-      const extension = raw.replace(/^\.+/, '').toLowerCase()
-      if (extension && !byExtension.has(extension)) byExtension.set(extension, rule.id)
-    }
-  }
+  const index = new CategoryIndex(rules)
   return (path: string): string => {
-    const name = path.slice(path.lastIndexOf('/') + 1)
-    const dot = name.lastIndexOf('.')
-    return (dot > 0 ? byExtension.get(name.slice(dot + 1).toLowerCase()) : undefined) ?? other
+    const name = path.slice(Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1)
+    return index.categoryOfFileName(name) ?? other
   }
 }
 

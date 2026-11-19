@@ -34,13 +34,15 @@ class CategoryIndexTest {
 
     @Test fun fileNameOnlyClassificationUsesRegexBeforeExtensionAndIgnoresUrlRules() {
         val episodes = custom("episodes", 1, regex = """^S\d+E\d+""")
-        val video = custom("video", 2, extensions = listOf(".mkv"))
+        val duplicate = episodes.copy(position = 2, regexPattern = "^trailer")
+        val video = custom("video", 3, extensions = listOf(".mkv"))
         val anyUrl = custom("site", 0, url = "*")
-        val index = CategoryIndex(listOf(video, episodes, anyUrl, other))
+        val index = CategoryIndex(listOf(video, duplicate, episodes, anyUrl, other))
 
         assertEquals(episodes, index.categoryOfFileName("s01e02.MKV"))
         assertEquals(video, index.categoryOfFileName("trailer.MKV"))
         assertEquals(other, index.categoryOfFileName("notes.txt"))
+        assertEquals(other, index.categoryOfFileName(".mkv"))
     }
 
     @Test fun wildcardIsAnchoredCaseInsensitiveWithQuestionMark() {

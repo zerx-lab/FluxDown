@@ -106,18 +106,6 @@ private func hlsLabel(height: Int64, bandwidth: Int64) -> String {
 
 private let btMinimumSizes: [Int64] = [0, 10 << 20, 100 << 20, 1 << 30]
 
-private func btCategory(_ path: String, rules: [TaskCategory], other: String) -> String {
-    let name = path.split(separator: "/", omittingEmptySubsequences: false).last ?? ""
-    guard let dot = name.lastIndex(of: "."), dot != name.startIndex else { return other }
-    let ext = name[name.index(after: dot)...].lowercased()
-    guard !ext.isEmpty else { return other }
-    return rules.first { rule in
-        rule.builtinType != "all" && rule.builtinType != "other"
-            && rule.regexPattern.isEmpty && rule.urlPattern.isEmpty
-            && rule.extensions.contains { $0.drop(while: { $0 == "." }).lowercased() == ext }
-    }?.id ?? other
-}
-
 private func btMinimumSizeLabel(_ size: Int64) -> String {
     switch size {
     case 0: L("btFilterAnySize")
@@ -156,12 +144,19 @@ private struct BtSelectionView: View {
         self.task = task
         self.resolver = resolver
         self.close = close
-        let rules = (categories.isEmpty ? TaskCategory.builtin : categories).sorted { $0.position < $1.position }
+        let index = CategoryIndex(categories.isEmpty ? TaskCategory.builtin : categories)
+        let rules = index.ordered
         let other = rules.first(where: \.isOther)
         let fallback = TaskCategory.builtin.filter(\.isOther)
-        categoryRules = other == nil ? rules + fallback : rules
+        var seen = Set<String>()
+        categoryRules = (other == nil ? rules + fallback : rules).filter { seen.insert($0.id).inserted }
         let otherID = other?.id ?? fallback.first?.id ?? "builtin_other"
-        let classified = files.count > 1 ? files.map { ($0.index, btCategory($0.path, rules: rules, other: otherID)) } : []
+        let classified = files.count > 1 ? files.map { file in
+            let path = file.path
+            let separator = path.lastIndex(where: { $0 == "/" || $0 == "\\" })
+            let start = separator.map { path.index(after: $0) } ?? path.startIndex
+            return (file.index, index.categoryOfFileName(String(path[start...]))?.id ?? otherID)
+        } : []
         categoryByIndex = Dictionary(classified, uniquingKeysWith: { first, _ in first })
         categoryCounts = classified.reduce(into: [:]) { $0[$1.1, default: 0] += 1 }
         let root = buildBtTree(files)

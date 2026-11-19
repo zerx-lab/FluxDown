@@ -183,14 +183,15 @@ internal fun BtSelectionSheet(ui: SelectionUi, kind: SelectionKind.Bt) {
     val host = hostState()
     val categories by remember(host) { derivedStateOf { host.value.categories } }
     val categoryIndex = remember(categories) { CategoryIndex(categories.ifEmpty { Category.BUILTIN }) }
-    val rules = remember(categoryIndex) {
+    val other = categoryIndex.ordered.firstOrNull { it.isOther } ?: btOtherCategory
+    val rules = remember(categoryIndex, other) {
         val ordered = categoryIndex.ordered
-        if (ordered.any { it.isOther }) ordered else ordered + btOtherCategory
+        (if (ordered.any { it.isOther }) ordered else ordered + other).distinctBy { it.id }
     }
-    val other = rules.first { it.isOther }
     val categoryByIndex = remember(kind, categoryIndex, other) {
         kind.files.associate { file ->
-            val name = file.path.trimEnd('/').substringAfterLast('/').ifEmpty { file.path }
+            val path = file.path
+            val name = path.substring(maxOf(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1)
             file.index to (categoryIndex.categoryOfFileName(name) ?: other)
         }
     }

@@ -77,3 +77,14 @@ test('BT category filtering honors saved custom categories and edited built-in e
   expect(paths.filter((path) => btFileMatches(path, 1, classify(path), '', 0, selected))).toEqual(paths.slice(0, 2))
   expect(classify(paths[2]!)).toBe('builtin_other')
 })
+
+test('BT uses an anchored filename regex before the video extension and ignores URL rules', () => {
+  const video = { ...builtinDefaults()[1]!, position: 4 }
+  const episodes = { ...video, id: 'episodes', builtinType: null, position: 2, matchMode: 'regex', regexPattern: '^S\\d+E\\d+' }
+  const site = { ...episodes, id: 'site', position: 1, matchMode: 'url', urlPattern: '*' }
+  const duplicate = { ...episodes, position: 3, regexPattern: '^trailer' }
+  const classify = btCategoryClassifier(categoriesFromPreference([duplicate, video, episodes, site]))
+  const paths = ['Season\\s01e02.MKV', 'Season/trailer.MKV', 'S01E02/notes.txt']
+  expect(paths.map(classify)).toEqual(['episodes', video.id, 'builtin_other'])
+  expect(paths.filter((path) => btFileMatches(path, 1, classify(path), '', 0, new Set(['episodes'])))).toEqual(paths.slice(0, 1))
+})
