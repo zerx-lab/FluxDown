@@ -45,6 +45,8 @@ internal fun PublicDownloadGuide(
     enabled: Boolean,
     onSavingChange: (Boolean) -> Unit,
     onSaved: (String) -> Unit,
+    onSkip: () -> Unit,
+    skipEnabled: Boolean = enabled,
 ) {
     val context = LocalContext.current
     val container = LocalAppContainer.current
@@ -80,14 +82,8 @@ internal fun PublicDownloadGuide(
             enabled = enabled, icon = FluxIcons.FolderOpen,
         )
         FluxButton(
-            str(R.string.mobileSkipPublicDownloadGuide), {
-                if (enabled) {
-                    container.store.state.value.skipPublicDownloadGuide(
-                        container.host.value, settings.downloadFolderGuideDone, appDir, settings::finishDownloadFolderGuide,
-                    )
-                }
-            },
-            enabled = enabled, variant = ButtonVariant.Ghost,
+            str(R.string.mobileSkipPublicDownloadGuide), onSkip,
+            enabled = skipEnabled, variant = ButtonVariant.Ghost,
         )
     }
 }

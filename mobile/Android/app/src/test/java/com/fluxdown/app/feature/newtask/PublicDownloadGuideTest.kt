@@ -1,11 +1,19 @@
 package com.fluxdown.app.feature.newtask
 
-import com.fluxdown.app.externalTorrentSaveDir
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.snapshots.Snapshot
+import com.fluxdown.app.ExternalTorrentGuide
+import com.fluxdown.core.host.HostErrorCode
+import com.fluxdown.core.host.HostException
 import com.fluxdown.core.model.HostRef
 import com.fluxdown.core.model.Task
 import com.fluxdown.core.model.TaskStatus
 import com.fluxdown.core.store.Connection
 import com.fluxdown.core.store.HostState
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -58,28 +66,97 @@ class PublicDownloadGuideTest {
         assertTrue(finished)
     }
 
-    @Test fun externalTorrentWaitsWhileSavingAndAfterFailedSave() {
+    @Test(timeout = 5_000)
+    fun externalTorrentWaitsForSuccessfulSaveAndLiveHost() = runBlocking {
         val publicDir = "/storage/emulated/0/Download"
-        assertEquals(null, externalTorrentSaveDir(true, publicDir, ready, local, false, appDir))
-        assertEquals(null, externalTorrentSaveDir(false, null, ready, local, false, appDir))
-        assertEquals(publicDir, externalTorrentSaveDir(false, publicDir, ready, local, true, appDir))
-        val disconnected = ready.copy(connection = Connection.Connecting)
-        assertEquals(null, externalTorrentSaveDir(false, publicDir, disconnected, local, true, appDir))
+        val hostState = mutableStateOf(ready)
+        val done = mutableStateOf(false)
+        val guide = ExternalTorrentGuide(appDir, { done.value }, { done.value = true })
+        val submitted = mutableListOf<String>()
+        guide.saving = true
+        val pendingImport = launch(start = CoroutineStart.UNDISPATCHED) {
+            guide.submitWhenReady({ hostState.value }, { local }) { submitted.add(it) }
+        }
+        Snapshot.withMutableSnapshot { guide.dismiss(ready, local) }
+        assertFalse(done.value)
+        Snapshot.withMutableSnapshot { guide.saving = false } // Save failed.
+        yield()
+        assertTrue(guide.canChooseDirectory(ready, local))
+        assertTrue(submitted.isEmpty())
+
+        Snapshot.withMutableSnapshot {
+            hostState.value = ready.copy(connection = Connection.Stale)
+            guide.selectedDirectory = publicDir
+            done.value = true
+        }
+        yield()
+        assertTrue(submitted.isEmpty())
+        Snapshot.withMutableSnapshot { hostState.value = ready }
+        pendingImport.join()
+        assertEquals(listOf(publicDir), submitted)
     }
 
-    @Test fun dismissingExternalGuideContinuesUsingDefaultWithoutPromptingNextTorrent() {
-        var done = false
-        assertEquals(null, externalTorrentSaveDir(false, null, ready, local, done, appDir))
-        ready.skipPublicDownloadGuide(local, done, appDir) { done = true }
-        assertEquals("", externalTorrentSaveDir(false, null, ready, local, done, appDir))
-        assertFalse(ready.needsPublicDownloadGuide(local, done, appDir))
+    @Test(timeout = 5_000)
+    fun dismissingConnectedExternalGuideContinuesUsingDefaultWithoutPromptingNextTorrent() = runBlocking {
+        val done = mutableStateOf(false)
+        val guide = ExternalTorrentGuide(appDir, { done.value }, { done.value = true })
+        val submitted = mutableListOf<String>()
+        val pendingImport = launch(start = CoroutineStart.UNDISPATCHED) {
+            guide.submitWhenReady({ ready }, { local }) { submitted.add(it) }
+        }
+        assertTrue(submitted.isEmpty())
+        Snapshot.withMutableSnapshot { guide.dismiss(ready, local) }
+        pendingImport.join()
+        assertEquals(listOf(""), submitted)
+        assertFalse(ready.needsPublicDownloadGuide(local, done.value, appDir))
     }
 
-    @Test fun externalTorrentUsesHostDefaultWhenGuideNoLongerApplies() {
+    @Test(timeout = 5_000)
+    fun disconnectThenDismissKeepsTorrentPendingAndSubmitsOnceAfterReconnect() = runBlocking {
+        val done = mutableStateOf(false)
+        var skips = 0
+        val hostState = mutableStateOf(ready)
+        val guide = ExternalTorrentGuide(appDir, { done.value }, { skips++; done.value = true })
+        val submitted = mutableListOf<String>()
+        val pendingImport = launch(start = CoroutineStart.UNDISPATCHED) {
+            guide.submitWhenReady({ hostState.value }, { local }) { submitted.add(it) }
+        }
+        assertTrue(guide.canChooseDirectory(ready, local))
+
+        val failed = ready.copy(connection = Connection.Failed(HostException(HostErrorCode.Unavailable)))
+        Snapshot.withMutableSnapshot { hostState.value = failed }
+        yield()
+        assertFalse(guide.canChooseDirectory(failed, local))
+        assertFalse(guide.resolved)
+        Snapshot.withMutableSnapshot {
+            guide.dismiss(failed, local)
+            guide.dismiss(failed, local)
+        }
+        yield()
+        assertTrue(guide.resolved)
+        assertEquals(1, skips)
+        assertTrue(submitted.isEmpty())
+
+        Snapshot.withMutableSnapshot { hostState.value = ready }
+        pendingImport.join()
+        Snapshot.withMutableSnapshot { hostState.value = failed }
+        Snapshot.withMutableSnapshot { hostState.value = ready }
+        yield()
+        assertEquals(listOf(""), submitted)
+        assertFalse(ready.needsPublicDownloadGuide(local, done.value, appDir))
+    }
+
+    @Test(timeout = 5_000)
+    fun externalTorrentUsesHostDefaultWhenGuideNoLongerApplies() = runBlocking {
         val remote = HostRef.Remote("nas", "NAS", "http://nas.test")
         val publicDir = "/storage/emulated/0/Download"
-        assertEquals("", externalTorrentSaveDir(false, publicDir, ready, remote, false, appDir))
+        val guide = ExternalTorrentGuide(appDir, { false }, { error("No skip requested") })
+        val submitted = mutableListOf<String>()
+        guide.selectedDirectory = publicDir
+        guide.submitWhenReady({ ready }, { remote }) { submitted.add(it) }
+        guide.selectedDirectory = null
         val custom = ready.copy(config = mapOf("default_save_dir" to publicDir))
-        assertEquals("", externalTorrentSaveDir(false, null, custom, local, false, appDir))
+        guide.submitWhenReady({ custom }, { local }) { submitted.add(it) }
+        assertEquals(listOf("", ""), submitted)
     }
 }

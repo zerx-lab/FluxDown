@@ -7,7 +7,9 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -22,6 +24,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.fluxdown.app.actions.LocalTaskActions
@@ -51,6 +54,9 @@ import com.fluxdown.core.model.HostRef
 import com.fluxdown.core.store.Connection
 import com.fluxdown.core.store.HostState
 import com.fluxdown.core.store.HostStore
+import com.fluxdown.fluxui.controls.FluxButton
+import com.fluxdown.fluxui.overlay.FluxBanner
+import com.fluxdown.fluxui.overlay.FluxBannerKind
 import com.fluxdown.fluxui.overlay.FluxOverlayHost
 import com.fluxdown.fluxui.overlay.FluxSheet
 import com.fluxdown.fluxui.overlay.FluxToastKind
@@ -61,6 +67,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -134,6 +141,7 @@ class ExternalDownloadActivity : ComponentActivity() {
                     onFailureShown = { silentFailure = null },
                     onSubmitted = { keepLocalDownloadsAlive(container) },
                     onTorrentDone = ::onTorrentDone,
+                    onTorrentCancelled = ::cancelTorrentImport,
                     onClosed = ::finishAndRemoveTask,
                 )
             }
@@ -154,6 +162,12 @@ class ExternalDownloadActivity : ComponentActivity() {
             delay(TOAST_LINGER_MS)
             if (navigator.sheet == null && torrents.isEmpty()) finishAndRemoveTask()
         }
+    }
+
+    private fun cancelTorrentImport() {
+        torrents.clear()
+        closeJob?.cancel()
+        if (navigator.sheet == null) finishAndRemoveTask()
     }
 
     /** VIEW 一个 content / file 种子：MIME 为 `application/x-bittorrent`，或（octet-stream 兜底）文件名以 `.torrent` 结尾。 */
@@ -238,19 +252,86 @@ class ExternalDownloadActivity : ComponentActivity() {
 /** 待导入的种子；按引用区分（同一 URI 连续唤起两次也各处理一次）。 */
 private class PendingTorrent(val uri: Uri)
 
-/** null 等待；空字符串交给主机使用当前默认目录。保存失败且仍符合引导条件时继续等待。 */
-internal fun externalTorrentSaveDir(
-    savingDirectory: Boolean,
-    selectedDirectory: String?,
+/** 只为已确认符合引导条件的种子创建；断连不取消已经展示的引导。 */
+internal class ExternalTorrentGuide(
+    private val appDir: String,
+    private val guideDone: () -> Boolean,
+    private val finishGuide: () -> Unit,
+) {
+    var saving by mutableStateOf(false)
+    var selectedDirectory by mutableStateOf<String?>(null)
+    private var dismissed by mutableStateOf(false)
+    val resolved: Boolean get() = dismissed || guideDone()
+
+    fun canChooseDirectory(state: HostState, host: HostRef): Boolean =
+        !saving && !resolved && state.needsPublicDownloadGuide(host, done = false, appDir = appDir)
+
+    fun dismiss(state: HostState, host: HostRef) {
+        if (saving || dismissed) return
+        if (state.isReadOnly && host is HostRef.Local) {
+            // 已向用户展示本机引导；跳过只写设备偏好，断连也无需修改主机配置。
+            if (!guideDone()) finishGuide()
+        } else {
+            state.skipPublicDownloadGuide(host, guideDone(), appDir, finishGuide)
+        }
+        dismissed = true
+    }
+
+    /** 空字符串交给主机使用当前默认目录；一次等待只交接一次导入。 */
+    suspend fun submitWhenReady(
+        stateOf: () -> HostState,
+        hostOf: () -> HostRef,
+        submit: suspend (String) -> Unit,
+    ) {
+        val saveDir = snapshotFlow {
+            val state = stateOf()
+            val host = hostOf()
+            when {
+                saving || state.isReadOnly -> null
+                selectedDirectory != null && host is HostRef.Local -> selectedDirectory
+                !resolved && state.needsPublicDownloadGuide(host, done = false, appDir = appDir) -> null
+                else -> ""
+            }
+        }.filterNotNull().first()
+        submit(saveDir)
+    }
+}
+
+@Composable
+private fun ExternalTorrentGuideSheet(
+    guide: ExternalTorrentGuide,
     state: HostState,
     host: HostRef,
-    guideDone: Boolean,
-    appDir: String,
-): String? = when {
-    savingDirectory || state.isReadOnly -> null
-    selectedDirectory != null && host is HostRef.Local -> selectedDirectory
-    state.needsPublicDownloadGuide(host, guideDone, appDir) -> null
-    else -> ""
+    onSkip: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    val resolved = guide.resolved
+    FluxSheet(
+        visible = !resolved || state.isReadOnly,
+        onDismissRequest = if (resolved) onCancel else onSkip,
+        dismissible = !guide.saving,
+        title = str(if (resolved) R.string.mobileTorrentImportPending else R.string.defaultSaveDir),
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (resolved) {
+                if (state.isReadOnly) {
+                    FluxBanner(str(R.string.mobileTorrentImportWaitingForHost), kind = FluxBannerKind.Warn)
+                    FluxButton(str(R.string.cancel), onClick = onCancel, enabled = !guide.saving)
+                }
+            } else {
+                if (state.isReadOnly) {
+                    FluxBanner(str(R.string.mobileDownloadGuideDisconnected), kind = FluxBannerKind.Warn)
+                }
+                PublicDownloadGuide(
+                    enabled = guide.canChooseDirectory(state, host),
+                    onSavingChange = { guide.saving = it },
+                    onSaved = { guide.selectedDirectory = it },
+                    onSkip = onSkip,
+                    skipEnabled = !guide.saving,
+                )
+            }
+        }
+    }
 }
 
 /** 透明舞台：只有「新建下载」Sheet 与浮层（对话框 / toast）；Sheet 关闭后结束窗口。 */
@@ -261,6 +342,7 @@ private fun ExternalDownloadStage(
     onFailureShown: () -> Unit,
     onSubmitted: () -> Unit,
     onTorrentDone: (PendingTorrent) -> Unit,
+    onTorrentCancelled: () -> Unit,
     onClosed: () -> Unit,
 ) {
     val container = LocalAppContainer.current
@@ -280,34 +362,27 @@ private fun ExternalDownloadStage(
     val host = container.host.collectAsStateWithLifecycle()
     val settings = remember(context) { DeviceSettings.of(context) }
     val appDir = remember(context) { defaultLocalSaveDir(context).path }
-    var waitingForDirectory by remember(head) { mutableStateOf(false) }
-    var savingDirectory by remember { mutableStateOf(false) }
-    var selectedDirectory by remember(head) { mutableStateOf<String?>(null) }
+    var guide by remember(head) { mutableStateOf<ExternalTorrentGuide?>(null) }
     CompositionLocalProvider(LocalFluxOverlays provides overlays, LocalTaskActions provides actions) {
         Box(Modifier.fillMaxSize()) {
             NewDownloadSheet(route = nav.sheet as? SheetRoute.NewDownload, onDismiss = nav::closeSheet, onSubmitted = onSubmitted)
-            if (head != null && waitingForDirectory) {
-                FluxSheet(
-                    visible = true,
-                    onDismissRequest = {
-                        if (!savingDirectory) {
-                            container.store.state.value.skipPublicDownloadGuide(
-                                container.host.value, settings.downloadFolderGuideDone, appDir,
-                                settings::finishDownloadFolderGuide,
-                            )
+            guide?.let { activeGuide ->
+                ExternalTorrentGuideSheet(
+                    guide = activeGuide,
+                    state = state.value,
+                    host = host.value,
+                    onSkip = {
+                        if (guide === activeGuide) {
+                            activeGuide.dismiss(container.store.state.value, container.host.value)
                         }
                     },
-                    dismissible = !savingDirectory,
-                    title = str(R.string.defaultSaveDir),
-                ) {
-                    PublicDownloadGuide(
-                        enabled = !savingDirectory && state.value.needsPublicDownloadGuide(
-                            host.value, settings.downloadFolderGuideDone, appDir,
-                        ),
-                        onSavingChange = { savingDirectory = it },
-                        onSaved = { selectedDirectory = it },
-                    )
-                }
+                    onCancel = {
+                        if (guide === activeGuide && !activeGuide.saving) {
+                            guide = null
+                            onTorrentCancelled()
+                        }
+                    },
+                )
             }
             FluxOverlayHost(overlays)
         }
@@ -332,26 +407,27 @@ private fun ExternalDownloadStage(
     LaunchedEffect(head) {
         if (head == null) return@LaunchedEffect
         val ready = awaitReady(container.store)
-        val saveDir = if (ready.needsPublicDownloadGuide(container.host.value, settings.downloadFolderGuideDone, appDir)) {
-            waitingForDirectory = true
-            snapshotFlow {
-                externalTorrentSaveDir(
-                    savingDirectory, selectedDirectory, state.value, host.value, settings.downloadFolderGuideDone, appDir,
-                )
-            }.first { it != null }.orEmpty().also { waitingForDirectory = false }
-        } else {
-            ""
+        suspend fun submit(saveDir: String) {
+            if (torrents.firstOrNull() !== head) return
+            guide = null
+            TorrentImport.submit(
+                context = context,
+                container = container,
+                overlays = overlays,
+                errorText = actions::errorText,
+                uris = listOf(head.uri),
+                saveDir = saveDir,
+                queueId = "",
+                startPaused = false,
+            ).let { if (it > 0) onSubmitted() }
+            onTorrentDone(head)
         }
-        TorrentImport.submit(
-            context = context,
-            container = container,
-            overlays = overlays,
-            errorText = actions::errorText,
-            uris = listOf(head.uri),
-            saveDir = saveDir,
-            queueId = "",
-            startPaused = false,
-        ).let { if (it > 0) onSubmitted() }
-        onTorrentDone(head)
+        if (ready.needsPublicDownloadGuide(container.host.value, settings.downloadFolderGuideDone, appDir)) {
+            val activeGuide = ExternalTorrentGuide(appDir, { settings.downloadFolderGuideDone }, settings::finishDownloadFolderGuide)
+            guide = activeGuide
+            activeGuide.submitWhenReady({ state.value }, { host.value }, ::submit)
+        } else {
+            submit("")
+        }
     }
 }

@@ -482,6 +482,14 @@ private fun NewDownloadContent(
                     enabled = !busy && !importingTorrent,
                     onSavingChange = { form.submitting = it },
                     onSaved = form::adoptDefaultSaveDir,
+                    onSkip = {
+                        if (!form.submitting && !importingTorrent) {
+                            container.store.state.value.skipPublicDownloadGuide(
+                                container.host.value, settings.downloadFolderGuideDone, appDir,
+                                settings::finishDownloadFolderGuide,
+                            )
+                        }
+                    },
                 )
             }
         }
