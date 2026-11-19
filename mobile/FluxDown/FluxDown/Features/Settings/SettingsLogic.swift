@@ -392,8 +392,8 @@ nonisolated enum SettingsDownloadRow: String, CaseIterable, Identifiable {
 
 /// 已完成记录保留天数的下拉模式逻辑（镜像 GPUI `sections/retention.rs` 与 Web `retention.ts`）。
 nonisolated enum SettingsRetention {
-    /// 预设天数（0 = 从不），与下拉项一一对应。
-    static let presets = [0, 1, 7, 30]
+    /// 预设（0 = 从不，-1 = 立即），与下拉项一一对应；「立即」不放第一项，免得误触。
+    static let presets = [0, -1, 1, 7, 30]
     /// 切到「自定义」且没有可复用的自定义值时的起始天数（刻意不等于任何预设）。
     static let customStart = 14
     static let customID = "custom"

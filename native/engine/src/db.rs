@@ -4214,22 +4214,45 @@ impl Db {
         cutoff_secs: i64,
         limit: i64,
     ) -> Result<Vec<String>, DbError> {
+        let rows = self
+            .list_expired_completed_task_ids_after(cutoff_secs, limit, None)
+            .await?;
+        Ok(rows.into_iter().map(|(id, _)| id).collect())
+    }
+
+    /// 同 [`Self::list_expired_completed_task_ids`]，但从 `(completed_at, id)` 之后继续。
+    /// `after` 为 `None` 时从头开始。返回 `(id, completed_at)`，调用方据此推进游标，
+    /// 以免本轮要跳过的 id 占满一页后反复选中同一批。
+    pub(crate) async fn list_expired_completed_task_ids_after(
+        &self,
+        cutoff_secs: i64,
+        limit: i64,
+        after: Option<(&str, &str)>,
+    ) -> Result<Vec<(String, String)>, DbError> {
+        let (after_completed_at, after_id) = after.unwrap_or(("", ""));
         let sql = format!(
-            "SELECT id FROM tasks
+            "SELECT id, completed_at FROM tasks
              WHERE status = 3 AND completed_at <> ''
                AND seeding_status NOT IN ({active}, {queued})
                AND (CASE WHEN completed_at = '' THEN 0 ELSE CAST(completed_at AS BIGINT) END) < $1
+               AND ($2 = '' OR completed_at > $2 OR (completed_at = $2 AND id > $3))
              ORDER BY completed_at ASC, id ASC
-             LIMIT $2",
+             LIMIT $4",
             active = crate::bt_seeding::SEEDING_STATUS_ACTIVE,
             queued = crate::bt_seeding::SEEDING_STATUS_QUEUED,
         );
-        let ids = sqlx::query_scalar(AssertSqlSafe(sql))
+        let rows = sqlx::query(AssertSqlSafe(sql))
             .bind(cutoff_secs)
+            .bind(after_completed_at)
+            .bind(after_id)
             .bind(limit)
             .fetch_all(&self.pool)
             .await?;
-        Ok(ids)
+        let mut out = Vec::with_capacity(rows.len());
+        for row in &rows {
+            out.push((row.try_get("id")?, row.try_get("completed_at")?));
+        }
+        Ok(out)
     }
 
     /// 测试专用：直接写入 `completed_at`（正常路径只会写入当前时刻，无法造出「旧」记录）。
@@ -10536,6 +10559,16 @@ mod tests {
             .await
             .expect("limit");
         assert_eq!(limited, ["old"]);
+        let page = db
+            .list_expired_completed_task_ids_after(5000, 1, None)
+            .await
+            .expect("page");
+        assert_eq!(page, vec![("old".to_string(), "1000".to_string())]);
+        let next = db
+            .list_expired_completed_task_ids_after(5000, 10, Some(("1000", "old")))
+            .await
+            .expect("next page");
+        assert_eq!(next, vec![("seedstop".to_string(), "2000".to_string())]);
         close_test_db(&db, dir).await;
     }
 
