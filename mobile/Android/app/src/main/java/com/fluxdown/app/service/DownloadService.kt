@@ -50,6 +50,9 @@ private const val ACTION_DISMISS_TASK_PROGRESS = "com.fluxdown.app.action.DISMIS
 /** 通知刷新最小间隔（≤ 1 Hz）。 */
 private const val THROTTLE_MS = 1_000L
 
+/** 仅在已有刷新事件上低频对账；系统丢弃的通知不能跟随进度反复重发。 */
+private const val TASK_NOTICE_CHECK_MS = 5_000L
+
 /** 空闲后保留前台的宽限（任务切换 / 队列接力时 active 会瞬间归零），随后自行停止。 */
 private const val IDLE_GRACE_MS = 3_000L
 
@@ -65,7 +68,7 @@ private const val WAKE_LOCK_TIMEOUT_MS = 10L * 60L * 1000L
  * 通知常驻、静默，展示本机下载进度（单任务进度条 / 多任务聚合进度 + 展开明细，见 [buildNotification]），
  * 点按回到应用；本机空闲后自行停止。
  *
- * 事件驱动：只收集 [AppContainer.localActivity]（本机主机状态投影），无周期轮询；通知刷新按 [THROTTLE_MS] 节流，
+ * 事件驱动：观察 [AppContainer.localActivity] 和系统通知事件，无周期轮询；通知刷新按 [THROTTLE_MS] 节流，
  * 空闲宽限由新的活动量到来而取消。启动入口见 [DownloadServiceController.start]；
  * 停止由服务自己决定，因此 Activity 被销毁后也不会残留前台通知。
  */
@@ -74,6 +77,7 @@ class DownloadService : Service() {
     private var watcher: Job? = null
     private var notificationRefresh: Job? = null
     private var lastShownAtMs = 0L
+    private var lastTaskNoticeCheckAtMs = -TASK_NOTICE_CHECK_MS
     private val notificationManager by lazy { checkNotNull(getSystemService(NotificationManager::class.java)) }
     private val taskProgressSelection = TaskProgressSelection()
     private val shownTasks = mutableMapOf<String, TaskProgressNotice>()
@@ -233,15 +237,26 @@ class DownloadService : Service() {
             notice.release()
             posted.remove()
         }
+        val now = SystemClock.elapsedRealtime()
         var activeIds: Set<String>? = null
         for (transfer in transfers) {
             val notice = shownTasks.getOrPut(transfer.taskId) { newTaskProgressNotice(transfer.taskId) }
             if (notice.transfer == transfer) {
-                // A notice can disappear without a delete intent. Only check on an event, never poll.
-                val ids = activeIds ?: notificationManager.activeNotifications.mapNotNullTo(HashSet(shownTasks.size)) {
-                    if (it.id == TASK_PROGRESS_ID && it.notification.channelId == TASK_PROGRESS_CHANNEL) it.tag else null
-                }.also { activeIds = it }
-                if (transfer.taskId in ids) continue
+                val ids = activeIds ?: if (now - lastTaskNoticeCheckAtMs >= TASK_NOTICE_CHECK_MS) {
+                    lastTaskNoticeCheckAtMs = now
+                    notificationManager.activeNotifications.mapNotNullTo(HashSet(shownTasks.size)) {
+                        if (it.id == TASK_PROGRESS_ID && it.notification.channelId == TASK_PROGRESS_CHANNEL) it.tag else null
+                    }.also { activeIds = it }
+                } else continue
+                if (transfer.taskId in ids) {
+                    notice.missingAtLastCheck = false
+                    continue
+                }
+                // A second observation gives the delete intent time to arrive before an unchanged notice is restored.
+                if (!notice.missingAtLastCheck) {
+                    notice.missingAtLastCheck = true
+                    continue
+                }
             }
             val builder = progressBuilder(this, TASK_PROGRESS_CHANNEL)
                 .setContentIntent(notice.open)
@@ -249,6 +264,7 @@ class DownloadService : Service() {
             showTransfer(this, builder, transfer)
             notificationManager.notify(transfer.taskId, TASK_PROGRESS_ID, builder.build())
             notice.transfer = transfer
+            notice.missingAtLastCheck = false
         }
     }
 
@@ -268,6 +284,7 @@ class DownloadService : Service() {
 
     private class TaskProgressNotice(val open: PendingIntent, val dismiss: PendingIntent) {
         var transfer: Transfer? = null
+        var missingAtLastCheck = false
 
         fun release() {
             open.cancel()
