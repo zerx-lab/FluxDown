@@ -38,7 +38,6 @@
 
 - **动态下载加速** —— Rust + Tokio 引擎，自适应分段与慢速分段接管
 - **多协议支持** —— HTTP/HTTPS、FTP、BitTorrent、eD2K、HLS 与 DASH 流媒体
-- **BT 按需下载** —— 新建多文件种子或磁力任务时，可展开筛选并按文件名、类型和最小体积查找文件。类型筛选使用已配置的扩展名和文件名正则规则。筛选生效时，批量勾选与清空只作用于匹配项。
 - **一套引擎，多种客户端** —— 原生 GPUI 桌面、Kotlin Android 与 SwiftUI iOS 应用、React Web 管理界面与 CLI
 - **浏览器集成** —— Chrome / Edge / Firefox 扩展，三层下载拦截引擎，另有用户脚本
 - **AI 智能体就绪** —— 内置 MCP（Model Context Protocol）服务器，Claude、Cursor 等 AI 客户端可直接管理下载
