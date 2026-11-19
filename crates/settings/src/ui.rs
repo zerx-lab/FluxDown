@@ -1035,6 +1035,15 @@ struct InputSlot {
     _subscriptions: Vec<gpui::Subscription>,
 }
 
+impl InputSlot {
+    fn commit_secret(&mut self, value: SharedString, cx: &mut App) {
+        if self.last_synced.trim() != value.trim() {
+            self.last_synced = value.clone();
+            (self.set)(value, cx);
+        }
+    }
+}
+
 fn render_input(
     (get, set, secret): (&Getter<SharedString>, &Setter<SharedString>, bool),
     disabled: bool,
@@ -1059,27 +1068,26 @@ fn render_input(
                 let subscription = cx.subscribe(
                     &state,
                     move |slot: &mut InputSlot, input, event: &InputEvent, cx| {
-                        let commit = if secret {
-                            matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. })
-                        } else {
-                            matches!(event, InputEvent::Change)
-                        };
-                        if commit {
-                            let value = input.read(cx).value();
-                            if !secret || slot.last_synced.trim() != value.trim() {
-                                if secret {
-                                    slot.last_synced = value.clone();
-                                }
-                                (slot.set)(value, cx);
+                        if secret {
+                            if matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+                                slot.commit_secret(input.read(cx).value(), cx);
                             }
+                        } else if matches!(event, InputEvent::Change) {
+                            (slot.set)(input.read(cx).value(), cx);
                         }
                     },
                 );
+                let mut subscriptions = vec![subscription];
+                if secret {
+                    subscriptions.push(cx.on_release(|slot: &mut InputSlot, cx| {
+                        slot.commit_secret(slot.state.read(cx).value(), cx);
+                    }));
+                }
                 InputSlot {
                     state,
                     set,
                     last_synced: value,
-                    _subscriptions: vec![subscription],
+                    _subscriptions: subscriptions,
                 }
             }
         },

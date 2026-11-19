@@ -89,10 +89,11 @@ export function NumberField({
   )
 }
 
-/** 文本输入：草稿本地维护，逐字提交；外部值变化且未聚焦时回显。 */
+/** 文本输入：草稿本地维护；支持失焦或回车时统一提交。 */
 export function TextField({
   value,
   onCommit,
+  commitOnBlur = false,
   placeholder,
   disabled,
   className,
@@ -103,6 +104,7 @@ export function TextField({
 }: {
   value: string
   onCommit: (value: string) => void
+  commitOnBlur?: boolean
   placeholder?: string
   disabled?: boolean
   className?: string
@@ -125,7 +127,7 @@ export function TextField({
       disabled={disabled}
       invalid={invalid}
       trailing={trailing}
-      autoComplete="off"
+      autoComplete={type === 'password' ? 'new-password' : 'off'}
       spellCheck={false}
       className={cn(WIDTH_INPUT, className)}
       onFocus={() => {
@@ -133,11 +135,15 @@ export function TextField({
       }}
       onChange={(event) => {
         setDraft(event.target.value)
-        onCommit(event.target.value)
+        if (!commitOnBlur) onCommit(event.target.value)
+      }}
+      onKeyDown={(event) => {
+        if (commitOnBlur && event.key === 'Enter') event.currentTarget.blur()
       }}
       onBlur={() => {
         focused.current = false
-        setDraft(value)
+        if (commitOnBlur && draft !== value) onCommit(draft)
+        else setDraft(value)
       }}
     />
   )
@@ -222,13 +228,12 @@ export function DaemonTextRow({
   vertical,
   wide,
   disabled,
-  type,
-}: RowText & { configKey: string; placeholder?: string; vertical?: boolean; wide?: boolean; disabled?: boolean; type?: 'password' }) {
+}: RowText & { configKey: string; placeholder?: string; vertical?: boolean; wide?: boolean; disabled?: boolean }) {
   const { title, description } = useRowText({ titleKey, descKey })
   const value = useDaemonValue(configKey)
   return (
     <SettingsRow title={title} description={description} vertical={vertical ?? false} disabled={disabled}>
-      <TextField type={type} value={value} placeholder={placeholder} aria-label={title} className={cn(vertical && 'w-full desktop:w-full', wide && WIDTH_INPUT_WIDE)} onCommit={(next) => setDaemon(configKey, next)} />
+      <TextField value={value} placeholder={placeholder} aria-label={title} className={cn(vertical && 'w-full desktop:w-full', wide && WIDTH_INPUT_WIDE)} onCommit={(next) => setDaemon(configKey, next)} />
     </SettingsRow>
   )
 }

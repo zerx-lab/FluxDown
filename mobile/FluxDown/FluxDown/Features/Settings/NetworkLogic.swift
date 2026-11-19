@@ -104,6 +104,7 @@ nonisolated enum NetworkRow: String, CaseIterable, Identifiable {
             }
         }
     }
+
     var group: Group {
         switch self {
         case .mode: .mode

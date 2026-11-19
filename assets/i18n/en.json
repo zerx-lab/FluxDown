@@ -1378,6 +1378,8 @@
   "taskRouteGlobalPac": "Global · system PAC proxy",
   "taskRouteTaskProxy": "Task proxy",
   "taskRouteTaskDirect": "Direct (task setting)",
+  "taskRouteProtocolDirect": "Direct (protocol setting)",
+  "taskRouteProtocolProxy": "Protocol proxy",
   "taskRouteBtDirect": "BitTorrent · direct",
   "taskRouteBtTrackersManual": "BitTorrent · trackers and web seeds via manual proxy",
   "taskRouteBtTrackersSystem": "BitTorrent · trackers and web seeds via system proxy",

@@ -312,11 +312,12 @@ internal fun GlassSectionScope.settingText(
     mono: Boolean = true,
     secret: Boolean = false,
     multiline: Boolean = false,
+    detail: String? = null,
 ) {
     if (!ctx.form.has(key)) return
     row {
         SettingRowBox(ctx, id, key) {
-            FluxFieldRow(title = str(title), subtitle = desc?.let { str(it) }, cloud = ctx.synced(key)) {
+            FluxFieldRow(title = str(title), subtitle = detail ?: desc?.let { str(it) }, cloud = ctx.synced(key)) {
                 CommitTextField(
                     value = ctx.form.string(key),
                     onCommit = { ctx.editor.set(key, it) },

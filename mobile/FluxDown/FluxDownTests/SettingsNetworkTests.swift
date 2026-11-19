@@ -75,12 +75,18 @@ struct SettingsNetworkTests {
         let unloaded = NetworkRow.visible(isLoaded: false)
         #expect(unloaded == [.siteAuth, .siteAuthAdd, .siteAuthClear])
 
-        #expect(NetworkRow.visible(isLoaded: true) == [
+        let loaded = NetworkRow.visible(isLoaded: true)
+        var protocols: [NetworkRow] = [.protocolHttp, .protocolFtp, .protocolHls, .protocolDash]
+        #if FULL_FLAVOR
+        protocols += [.protocolBt, .protocolEd2k]
+        #endif
+        #expect(loaded == [
             .mode, .type, .host, .port, .username, .password, .noList, .test,
+        ] + protocols + [
             .rules, .rulesAdd, .rulesTest, .siteAuth, .siteAuthAdd, .siteAuthClear,
         ])
+        #expect(loaded.filter { $0.group == .protocolProxy } == protocols)
     }
-
     @Test func configRowsMapToProxyCatalogKeysThatAreNotSynced() throws {
         for row in NetworkRow.allCases {
             guard let key = row.configKey else { continue }

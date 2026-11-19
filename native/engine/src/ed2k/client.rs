@@ -274,12 +274,10 @@ impl Ed2kClient {
         let port = u16::try_from(self.listen_port.load(Ordering::Relaxed)).unwrap_or(0);
         let enabled = match self.config.lock() {
             Ok(config) => {
+                let proxy = config.proxy_protocol_ed2k.trim();
                 config.enable_upnp
-                    && (config.proxy_protocol_ed2k.trim().is_empty()
-                        || config
-                            .proxy_protocol_ed2k
-                            .trim()
-                            .eq_ignore_ascii_case("direct://"))
+                    && (proxy.is_empty()
+                        || proxy == crate::proxy_config::ProxyConfig::DIRECT_SENTINEL)
             }
             Err(error) => {
                 log_error!("[ed2k-client] UPnP config lock poisoned: {}", error);

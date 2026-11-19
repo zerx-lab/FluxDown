@@ -62,7 +62,7 @@ struct NetworkPage: View {
                 #if FULL_FLAVOR
                 btProxySection(form, readOnly: readOnly)
                 #endif
-                protocolProxySection(readOnly: readOnly)
+                protocolProxySection(form, readOnly: readOnly)
                 if let rules {
                     ProxyRulesSection(model: rules, editMode: $rulesEditMode)
                 }
@@ -262,14 +262,16 @@ struct NetworkPage: View {
     }
     #endif
 
-    private func protocolProxySection(readOnly: Bool) -> some View {
+    private func protocolProxySection(_ form: SettingsConfigForm, readOnly: Bool) -> some View {
         let rows = NetworkRow.allCases.filter { $0.group == .protocolProxy }
         return Section {
             ForEach(rows) { row in
                 if let item = row.item {
+                    let endpoint = ProxyRule.displayEndpoint(form.value(item.key) ?? "")
                     ConfigTextRow(
                         id: row.id, key: item.key, title: L(row.titleKey),
-                        detail: row.detailKey.map(L), prompt: L("proxyProtocolUrlHint"),
+                        detail: endpoint.isEmpty ? nil : endpoint,
+                        prompt: L(row.detailKey ?? "proxyProtocolUrlHint"),
                         isSecure: true
                     )
                 }

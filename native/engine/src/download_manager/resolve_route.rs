@@ -127,37 +127,57 @@ fn result_protocol(source: &str, result: &ResolveResult) -> Option<DownloadProto
 }
 
 pub(super) struct VariantChoice {
-    pub index: usize,
     label: String,
     container: String,
-    bandwidth: i64,
     width: i64,
     height: i64,
+    required_bandwidth: Option<i64>,
 }
 
 impl VariantChoice {
-    pub fn new(index: usize, variant: &ResolveVariant) -> Self {
-        Self {
-            index,
+    pub fn new(variants: &[ResolveVariant], index: usize) -> Option<Self> {
+        let variant = variants.get(index)?;
+        let mut choice = Self {
             label: variant.label.clone(),
             container: variant.container.clone(),
-            bandwidth: variant.bandwidth,
             width: variant.width,
             height: variant.height,
+            required_bandwidth: None,
+        };
+        if variants
+            .iter()
+            .filter(|variant| choice.matches(variant))
+            .nth(1)
+            .is_some()
+        {
+            choice.required_bandwidth = Some(variant.bandwidth);
         }
+        Some(choice)
     }
 
-    pub fn matches(&self, variant: &ResolveVariant) -> bool {
+    fn matches(&self, variant: &ResolveVariant) -> bool {
         self.label == variant.label
             && self.container == variant.container
-            && self.bandwidth == variant.bandwidth
             && self.width == variant.width
             && self.height == variant.height
+            && self
+                .required_bandwidth
+                .is_none_or(|bandwidth| bandwidth == variant.bandwidth)
+    }
+
+    fn matching_index(&self, variants: &[ResolveVariant]) -> Option<usize> {
+        let mut matches = variants
+            .iter()
+            .enumerate()
+            .filter(|(_, variant)| self.matches(variant));
+        let index = matches.next()?.0;
+        matches.next().is_none().then_some(index)
     }
 }
 
-/// Accepts only the same variant on the second pass; a result from another
-/// protocol could be bound to yet another exit and must not reach the download.
+/// Accepts only the same uniquely identifiable variant on the second pass; a
+/// result from another protocol could be bound to yet another exit and must not
+/// reach the download.
 pub(super) fn accept_retry(
     source: &str,
     mut result: Option<ResolveResult>,
@@ -167,17 +187,17 @@ pub(super) fn accept_retry(
 ) -> Result<Option<ResolveResult>, PluginError> {
     if let Some(resolved) = &mut result {
         if let Some(choice) = choice {
-            let variants = std::mem::take(&mut resolved.variants);
-            if !variants
-                .get(choice.index)
-                .is_some_and(|v| choice.matches(v))
-            {
+            let Some(index) = choice
+                .matching_index(&resolved.variants)
+                .and_then(|index| i32::try_from(index).ok())
+            else {
                 return Err(PluginError::InvalidOutput(
-                    "Resolver changed the selected variant after switching protocol proxy"
+                    "Resolver changed or ambiguously matched the selected variant after switching protocol proxy"
                         .to_owned(),
                 ));
-            }
-            super::apply_chosen_variant(resolved, variants, choice.index as i32);
+            };
+            let variants = std::mem::take(&mut resolved.variants);
+            super::apply_chosen_variant(resolved, variants, index);
         } else if !resolved.variants.is_empty() {
             return Err(PluginError::InvalidOutput(
                 "Resolver returned unexpected variants after switching protocol proxy".to_owned(),
@@ -192,4 +212,165 @@ pub(super) fn accept_retry(
     Err(PluginError::InvalidOutput(
         "Resolver changed the download route after switching protocol proxy".to_owned(),
     ))
+}
+#[cfg(test)]
+mod tests {
+    use super::{
+        ProxyConfig, ResolveResult, ResolveVariant, ResolverRoutes, VariantChoice, accept_retry,
+    };
+    use crate::protocol_proxy::{DownloadProtocol, ProtocolProxies};
+    use std::sync::Arc;
+
+    fn overrides(http: &str, hls: &str) -> ProtocolProxies {
+        ProtocolProxies::from_config(
+            &[
+                ("proxy_protocol_http".to_owned(), http.to_owned()),
+                ("proxy_protocol_hls".to_owned(), hls.to_owned()),
+            ]
+            .into(),
+        )
+    }
+
+    fn resolved(url: &str) -> ResolveResult {
+        ResolveResult {
+            url: url.to_owned(),
+            ..ResolveResult::default()
+        }
+    }
+
+    fn variant(url: &str, bandwidth: i64) -> ResolveVariant {
+        ResolveVariant {
+            label: "1080p".to_owned(),
+            url: url.to_owned(),
+            bandwidth,
+            width: 1920,
+            height: 1080,
+            container: "mp4".to_owned(),
+            ..ResolveVariant::default()
+        }
+    }
+
+    #[test]
+    fn does_not_retry_when_protocols_share_exit() {
+        let overrides = overrides("socks5://proxy.test:1080", "socks5://proxy.test:1080");
+        let routes = ResolverRoutes {
+            overrides: Arc::new(overrides),
+            replan: Some((ProxyConfig::default(), DownloadProtocol::Http)),
+        };
+
+        assert_eq!(
+            routes.retry_protocol(
+                "https://source.test/video",
+                &resolved("https://cdn.test/live.m3u8")
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn retry_accepts_same_variant_after_protocol_switch() {
+        let overrides = overrides("socks5://http.test:1080", "socks5://hls.test:1080");
+        let mut first = resolved("");
+        let lower_quality = |url| ResolveVariant {
+            label: "720p".to_owned(),
+            ..variant(url, 500)
+        };
+        first.variants = vec![
+            lower_quality("https://cdn.test/old-720.m3u8"),
+            variant("https://cdn.test/old.m3u8", 1_000),
+        ];
+        let choice = VariantChoice::new(&first.variants, 1).expect("selected variant");
+        let mut replacement = resolved("");
+        replacement.variants = vec![
+            variant("https://cdn.test/new.m3u8", 1_500),
+            lower_quality("https://cdn.test/new-720.m3u8"),
+        ];
+
+        let accepted = accept_retry(
+            "https://source.test/video",
+            Some(replacement),
+            Some(&choice),
+            DownloadProtocol::Hls,
+            &overrides,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(accepted.url, "https://cdn.test/new.m3u8");
+        assert!(accepted.variants.is_empty());
+    }
+
+    #[test]
+    fn retry_rejects_variant_mismatch() {
+        let overrides = overrides("socks5://http.test:1080", "socks5://hls.test:1080");
+        let choice = VariantChoice::new(&[variant("https://cdn.test/old.m3u8", 1_000)], 0)
+            .expect("selected variant");
+        let mut replacement = resolved("");
+        replacement.variants = vec![ResolveVariant {
+            label: "720p".to_owned(),
+            ..variant("https://cdn.test/new.m3u8", 1_000)
+        }];
+
+        assert!(
+            accept_retry(
+                "https://source.test/video",
+                Some(replacement),
+                Some(&choice),
+                DownloadProtocol::Hls,
+                &overrides,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn retry_rejects_a_different_exit() {
+        let overrides = overrides("socks5://http.test:1080", "socks5://hls.test:1080");
+
+        assert!(
+            accept_retry(
+                "https://source.test/video",
+                Some(resolved("https://cdn.test/video.mp4")),
+                None,
+                DownloadProtocol::Hls,
+                &overrides,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn protocol_switch_is_selected_for_the_replacement_plan() {
+        let overrides = overrides("socks5://http.test:1080", "socks5://hls.test:1080");
+        let routes = ResolverRoutes {
+            overrides: Arc::new(overrides),
+            replan: Some((ProxyConfig::default(), DownloadProtocol::Http)),
+        };
+
+        assert_eq!(
+            routes.retry_protocol(
+                "https://source.test/video",
+                &resolved("https://cdn.test/live.m3u8")
+            ),
+            Some(DownloadProtocol::Hls)
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_plan_uses_resolved_protocol_override() {
+        let routes = ResolverRoutes {
+            overrides: Arc::new(overrides(
+                "socks5://http.test:1080",
+                "socks5://hls.test:1080",
+            )),
+            replan: Some((ProxyConfig::default(), DownloadProtocol::Http)),
+        };
+
+        let plan = routes
+            .retry_plan("https://source.test/video", DownloadProtocol::Hls)
+            .await
+            .unwrap();
+
+        assert_eq!(plan.steps[0].proxy.host, "hls.test");
+    }
 }

@@ -160,12 +160,13 @@ async fn protocol_fallback_respects_task_and_site_precedence() {
     }
 }
 
-async fn failover_pending_after_transport_error(auto_route: &str) -> bool {
+async fn failover_pending_after_transport_error(auto_route: &str, override_url: &str) -> bool {
     let (db, mut manager) = fixture(&[
         ("proxy_mode", "auto"),
         ("proxy_type", "http"),
         ("proxy_host", "127.0.0.1"),
         ("proxy_port", "9"),
+        ("proxy_protocol_http", override_url),
     ])
     .await;
     let id = manager
@@ -209,13 +210,26 @@ async fn failover_pending_after_transport_error(auto_route: &str) -> bool {
 #[tokio::test]
 async fn rule_routed_task_is_not_failed_over_by_auto() {
     assert!(
-        !failover_pending_after_transport_error("rule:custom").await,
+        !failover_pending_after_transport_error("rule:custom", "").await,
         "a rule-decided exit must not be retried through another path"
     );
     if crate::route_health::network_reachable() {
         assert!(
-            failover_pending_after_transport_error("direct").await,
+            failover_pending_after_transport_error("direct", "").await,
             "control: a plain Auto direct task is failed over to the proxy"
         );
+        assert!(
+            failover_pending_after_transport_error("", "").await,
+            "legacy tasks without a recorded route can still use Auto failover"
+        );
     }
+}
+
+#[tokio::test]
+async fn protocol_override_never_fails_over_to_the_global_proxy() {
+    assert!(!failover_pending_after_transport_error("", "direct://").await);
+    assert!(
+        !failover_pending_after_transport_error(crate::protocol_proxy::PROXY_ROUTE, "").await,
+        "an in-flight fixed route is not an Auto route even after its setting is cleared"
+    );
 }

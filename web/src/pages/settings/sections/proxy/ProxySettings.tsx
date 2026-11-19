@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react'
 import { useT } from '../../../../i18n'
 import { RpcError, errorMessage, rpc } from '../../../../lib/rpc'
 import type { ProxyTestRequest, SystemProxyDto } from '../../../../lib/rpc'
-import { enabledRuleCount } from '../../../../lib/proxyRules'
+import { displayEndpoint, enabledRuleCount } from '../../../../lib/proxyRules'
 import { Button } from '../../../../ui'
 import {
   DaemonEnumRow,
@@ -16,6 +16,7 @@ import {
   SettingsRow,
   SettingsSection,
   TextField,
+  WIDTH_INPUT_WIDE,
   setDaemon,
   useDaemonBool,
   useDaemonValue,
@@ -24,6 +25,7 @@ import { InfoLine } from './InfoLine'
 import { ProxyRulesGroup } from './ProxyRulesGroup'
 import { SiteAuthGroup } from './SiteAuthGroup'
 import { btProxyHint } from './btProxy'
+
 const PROTOCOL_ROWS = [
   ['proxy_protocol_http', 'proxyProtocolHttp', 'proxyProtocolUrlHint'],
   ['proxy_protocol_ftp', 'proxyProtocolFtp', undefined],
@@ -227,6 +229,25 @@ function BtProxySection() {
   )
 }
 
+function ProtocolProxyRow({ row: [key, titleKey, hintKey] }: { row: (typeof PROTOCOL_ROWS)[number] }) {
+  const t = useT()
+  const value = useDaemonValue(key)
+  const title = t(titleKey)
+  const description = [hintKey ? t(hintKey) : '', displayEndpoint(value)].filter(Boolean).join(' · ')
+  return (
+    <SettingsRow title={title} description={description} vertical>
+      <TextField
+        type="password"
+        commitOnBlur
+        value={value}
+        aria-label={title}
+        className={WIDTH_INPUT_WIDE}
+        onCommit={(next) => setDaemon(key, next)}
+      />
+    </SettingsRow>
+  )
+}
+
 export function ProxySettings() {
   const t = useT()
   const mode = useDaemonValue('proxy_mode')
@@ -260,17 +281,7 @@ export function ProxySettings() {
       <ManualSection active={current === 'manual'} />
       <BtProxySection />
       <SettingsSection title={t('proxyProtocolSection')} subtitle={t('proxyProtocolDesc')}>
-        {PROTOCOL_ROWS.map(([configKey, titleKey, descKey]) => (
-          <DaemonTextRow
-            key={configKey}
-            configKey={configKey}
-            titleKey={titleKey}
-            descKey={descKey}
-            type="password"
-            vertical
-            wide
-          />
-        ))}
+        {PROTOCOL_ROWS.map((row) => <ProtocolProxyRow key={row[0]} row={row} />)}
       </SettingsSection>
       <ProxyRulesGroup />
       <SiteAuthGroup />

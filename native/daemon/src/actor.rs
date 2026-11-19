@@ -4051,6 +4051,73 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn invalid_protocol_proxy_rejects_the_whole_patch_without_exposing_credentials() {
+        let (_, dir) = open_db().await;
+        let dir_text = dir.to_string_lossy().into_owned();
+        let mut engine = fluxdown_engine::Engine::new(
+            fluxdown_engine::EngineConfig {
+                max_concurrent: 1,
+                speed_limit_bps: 0,
+                upload_limit_bps: 0,
+                default_save_dir: dir_text.clone(),
+                app_data_dir: dir_text,
+                bt_config: fluxdown_engine::bt_config::BtConfig::default(),
+                proxy_config: fluxdown_engine::proxy_config::ProxyConfig::default(),
+                user_agent: String::new(),
+                data_dir_override: Some(dir.clone()),
+                database_url: None,
+            },
+            std::sync::Arc::new(fluxdown_engine::NoopSink),
+            std::sync::Arc::new(fluxdown_engine::NoopSelection),
+        )
+        .await
+        .expect("construct engine");
+        let events =
+            crate::event_hub::DaemonEventHub::new(fluxdown_protocol::DaemonSnapshot::default(), 32);
+        let operation = |ed2k: &str| ActorOperation::PatchConfig {
+            expected_revision: 0,
+            values: BTreeMap::from([
+                ("proxy_protocol_ed2k".to_owned(), ed2k.to_owned()),
+                ("proxy_protocol_http".to_owned(), "direct://".to_owned()),
+            ]),
+        };
+        let invalid = execute_operation(
+            operation("http://alice:proxy-secret@relay.test:8080"),
+            &mut engine,
+            &events,
+        )
+        .await;
+        assert!(matches!(
+            &invalid,
+            Err(ActorError::InvalidArgument(message))
+                if message.starts_with("proxy_protocol_ed2k:")
+                    && !message.contains("alice") && !message.contains("proxy-secret")
+        ));
+        for key in ["proxy_protocol_ed2k", "proxy_protocol_http"] {
+            assert_eq!(engine.db.get_config(key).await.expect("read config"), None);
+        }
+        let valid = execute_operation(
+            ActorOperation::PatchConfig {
+                expected_revision: 0,
+                values: BTreeMap::from([(
+                    "proxy_protocol_http".to_owned(),
+                    "direct://".to_owned(),
+                )]),
+            },
+            &mut engine,
+            &events,
+        )
+        .await;
+        assert!(
+            matches!(valid, Ok(super::ActorResult::Config(snapshot)) if snapshot.revision == 1)
+        );
+        drop(engine);
+        if let Err(error) = tokio::fs::remove_dir_all(dir).await {
+            eprintln!("actor proxy test directory removal failed: {error}");
+        }
+    }
+
     /// 防吸血的 19 个设置键全部热生效：patch 之后 guard 配置立即变化，只读节奏（BT 会话）不被触碰；
     /// 其余 `bt_*` 键的 patch 不影响 guard 配置。
     #[cfg(feature = "bt")]

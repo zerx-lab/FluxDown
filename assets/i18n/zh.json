@@ -1378,6 +1378,8 @@
   "taskRouteGlobalPac": "全局 · 系统 PAC 代理",
   "taskRouteTaskProxy": "任务专属代理",
   "taskRouteTaskDirect": "直连（任务设置）",
+  "taskRouteProtocolDirect": "直连（协议设置）",
+  "taskRouteProtocolProxy": "协议代理",
   "taskRouteBtDirect": "BT · 直连",
   "taskRouteBtTrackersManual": "BT · tracker 与 HTTP 源走手动代理",
   "taskRouteBtTrackersSystem": "BT · tracker 与 HTTP 源走系统代理",

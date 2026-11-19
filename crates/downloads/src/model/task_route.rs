@@ -18,6 +18,8 @@ pub(crate) fn route_label(route: &str, translator: &Translator) -> SharedString 
         "global:pac" => Some("taskRouteGlobalPac"),
         "task:proxy" => Some("taskRouteTaskProxy"),
         "task:direct" => Some("taskRouteTaskDirect"),
+        "protocol:direct" => Some("taskRouteProtocolDirect"),
+        "protocol:proxy" => Some("taskRouteProtocolProxy"),
         "bt:direct" => Some("taskRouteBtDirect"),
         "bt:trackers:manual" => Some("taskRouteBtTrackersManual"),
         "bt:trackers:system" => Some("taskRouteBtTrackersSystem"),

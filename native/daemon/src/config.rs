@@ -861,6 +861,18 @@ mod tests {
     }
 
     #[test]
+    fn fixed_bt_route_ignores_changes_to_the_global_proxy_server() {
+        for route in ["direct://", "socks5://relay.test:1080"] {
+            let config = stored(&[("bt_proxy_enabled", "true"), ("proxy_protocol_bt", route)]);
+            assert!(!super::bt_session_rebuild_needed(&["proxy_host"], &config));
+            assert!(super::bt_session_rebuild_needed(
+                &["bt_proxy_source"],
+                &config
+            ));
+        }
+    }
+
+    #[test]
     fn bt_config_reads_the_proxy_source() {
         use fluxdown_engine::bt_config::BtProxySource;
         let read = |pairs: &[(&str, &str)]| super::bt_config_from_map(&stored(pairs)).proxy_source;

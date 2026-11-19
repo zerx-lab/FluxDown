@@ -98,6 +98,8 @@ internal fun routeLabel(route: String): String {
         "global:pac" -> return str(R.string.taskRouteGlobalPac)
         "task:proxy" -> return str(R.string.taskRouteTaskProxy)
         "task:direct" -> return str(R.string.taskRouteTaskDirect)
+        "protocol:direct" -> return str(R.string.taskRouteProtocolDirect)
+        "protocol:proxy" -> return str(R.string.taskRouteProtocolProxy)
         "bt:direct" -> return str(R.string.taskRouteBtDirect)
         "bt:trackers:manual" -> return str(R.string.taskRouteBtTrackersManual)
         "bt:trackers:system" -> return str(R.string.taskRouteBtTrackersSystem)

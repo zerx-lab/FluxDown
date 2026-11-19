@@ -3,7 +3,7 @@ title: 设置参考
 description: 按设置页侧边栏的分类逐项说明 FluxDown 的全部设置项及其默认值。
 section: getting-started
 order: 4
-sourceHash: "e42c5f29bc57"
+sourceHash: "a284f07fac5b"
 ---
 
 点击顶栏的齿轮图标打开**设置**。设置侧边栏共 9 个分类,顺序为:通用、外观、下载、BitTorrent、eD2K、代理、API 服务、扩展、关于。本页按分类逐项说明每个设置项及其默认值。「扩展」分类以两个 Tab 承载插件管理与可选外部组件(FFmpeg、yt-dlp),详见[插件文档](/docs/zh/plugins/overview/)。设置侧边栏顶部的搜索框可以按名称直接定位到任意设置项。

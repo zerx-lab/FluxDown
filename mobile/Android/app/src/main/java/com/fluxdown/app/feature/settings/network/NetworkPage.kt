@@ -51,8 +51,8 @@ import com.fluxdown.core.protocol.NetworkPortInput
 import com.fluxdown.core.protocol.NetworkProxyMode
 import com.fluxdown.core.protocol.NetworkProxyTest
 import com.fluxdown.core.protocol.NetworkRow
-import com.fluxdown.core.protocol.SettingsCatalog
 import com.fluxdown.core.protocol.ProxyRule
+import com.fluxdown.core.protocol.SettingsCatalog
 import com.fluxdown.core.store.Connection
 import com.fluxdown.fluxui.controls.FluxActionRow
 import com.fluxdown.fluxui.controls.FluxFieldRow
@@ -505,12 +505,14 @@ private fun BtProxySection(ctx: SettingsCtx) {
 @Composable
 private fun ProtocolProxySection(ctx: SettingsCtx) {
     GlassSection(title = str(R.string.proxyProtocolSection), footer = str(R.string.proxyProtocolDesc)) {
-        settingText(ctx, "proxy_protocol_http", R.string.proxyProtocolHttp, null, R.string.proxyProtocolUrlHint, id = NetworkRow.ProtocolHttp.rowId, secret = true)
-        settingText(ctx, "proxy_protocol_ftp", R.string.proxyProtocolFtp, null, R.string.proxyProtocolUrlHint, id = NetworkRow.ProtocolFtp.rowId, secret = true)
-        settingText(ctx, "proxy_protocol_hls", R.string.proxyProtocolHls, null, R.string.proxyProtocolUrlHint, id = NetworkRow.ProtocolHls.rowId, secret = true)
-        settingText(ctx, "proxy_protocol_dash", R.string.proxyProtocolDash, null, R.string.proxyProtocolUrlHint, id = NetworkRow.ProtocolDash.rowId, secret = true)
-        settingText(ctx, "proxy_protocol_bt", R.string.proxyProtocolBt, null, R.string.proxyProtocolBtUrlHint, id = NetworkRow.ProtocolBt.rowId, secret = true)
-        settingText(ctx, "proxy_protocol_ed2k", R.string.proxyProtocolEd2k, null, R.string.proxyProtocolEd2kUrlHint, id = NetworkRow.ProtocolEd2k.rowId, secret = true)
+        for (row in NetworkRow.entries.filter { it.group == NetworkRow.Group.Protocol }) {
+            val key = row.configKey ?: continue
+            val endpoint = ProxyRule.displayEndpoint(ctx.form.string(key)).ifEmpty { null }
+            settingText(
+                ctx, key, row.titleRes(), null, row.detailRes(),
+                id = row.rowId, secret = true, detail = endpoint,
+            )
+        }
     }
 }
 

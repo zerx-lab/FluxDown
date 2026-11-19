@@ -1,7 +1,9 @@
 //! 代理：模式、手动服务器、连通性测试、站点凭据。
 
 use fluxdown_protocol::method;
-use fluxdown_protocol::proxy_rules::{PROXY_RULES_KEY, enabled_proxy_rule_count};
+use fluxdown_protocol::proxy_rules::{
+    PROXY_RULES_KEY, enabled_proxy_rule_count, proxy_display_endpoint,
+};
 use fluxdown_ui_components::{ButtonVariant, ControlExt as _, FluxIcon, loading_button};
 use fluxdown_ui_theme::active_theme;
 use gpui::prelude::FluentBuilder as _;
@@ -40,7 +42,7 @@ pub(crate) fn page(ctx: &SectionContext, cx: &mut App) -> SettingsPage {
     // 非手动模式下默认收起，只露一行摘要。
     sections.push(manual_section(ctx, mode == "manual", cx));
     sections.push(bt_section(ctx, cx));
-    sections.push(protocol_section(ctx));
+    sections.push(protocol_section(ctx, cx));
     sections.push(proxy_rules::group(ctx, cx));
     sections.push(site_auth::group(ctx, cx));
     SettingsPage::new(
@@ -266,39 +268,39 @@ fn manual_summary(proxy_type: &str, host: &str, port: &str) -> Option<String> {
 }
 
 /// 旧 BT 代理下方的各协议独立出口。
-fn protocol_section(ctx: &SectionContext) -> SettingsSection {
+fn protocol_section(ctx: &SectionContext, cx: &App) -> SettingsSection {
+    let store = ctx.store.read(cx);
+    let row = |key, title, hint: Option<&str>| {
+        let mut row = ctx.item(title, hint, ctx.daemon_secret_input(key));
+        let endpoint = proxy_display_endpoint(&store.daemon_str(key));
+        if !endpoint.is_empty() {
+            row = row.description(match hint {
+                Some(hint) => format!("{} · {endpoint}", ctx.t(hint)),
+                None => endpoint,
+            });
+        }
+        row
+    };
     SettingsSection::new()
         .title(ctx.t("proxyProtocolSection"))
         .subtitle(ctx.t("proxyProtocolDesc"))
-        .row(ctx.item(
+        .row(row(
+            "proxy_protocol_http",
             "proxyProtocolHttp",
             Some("proxyProtocolUrlHint"),
-            ctx.daemon_secret_input("proxy_protocol_http"),
         ))
-        .row(ctx.item(
-            "proxyProtocolFtp",
-            None,
-            ctx.daemon_secret_input("proxy_protocol_ftp"),
-        ))
-        .row(ctx.item(
-            "proxyProtocolHls",
-            None,
-            ctx.daemon_secret_input("proxy_protocol_hls"),
-        ))
-        .row(ctx.item(
-            "proxyProtocolDash",
-            None,
-            ctx.daemon_secret_input("proxy_protocol_dash"),
-        ))
-        .row(ctx.item(
+        .row(row("proxy_protocol_ftp", "proxyProtocolFtp", None))
+        .row(row("proxy_protocol_hls", "proxyProtocolHls", None))
+        .row(row("proxy_protocol_dash", "proxyProtocolDash", None))
+        .row(row(
+            "proxy_protocol_bt",
             "proxyProtocolBt",
             Some("proxyProtocolBtUrlHint"),
-            ctx.daemon_secret_input("proxy_protocol_bt"),
         ))
-        .row(ctx.item(
+        .row(row(
+            "proxy_protocol_ed2k",
             "proxyProtocolEd2k",
             Some("proxyProtocolEd2kUrlHint"),
-            ctx.daemon_secret_input("proxy_protocol_ed2k"),
         ))
 }
 

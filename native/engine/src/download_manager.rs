@@ -3871,9 +3871,7 @@ fn apply_resolved_variant(
     track_choice: bool,
 ) -> Option<resolve_route::VariantChoice> {
     let choice = if track_choice {
-        variants
-            .get(idx as usize)
-            .map(|variant| resolve_route::VariantChoice::new(idx as usize, variant))
+        resolve_route::VariantChoice::new(&variants, idx as usize)
     } else {
         None
     };
@@ -8389,7 +8387,14 @@ impl DownloadManager {
             if task.status == 4
                 && self.proxy_config.mode == ProxyMode::Auto
                 && task.proxy_url.is_empty()
-                && crate::auto_proxy::route_of_label(&task.auto_route).is_some()
+                // 站点规则与协议固定出口不参与 Auto 换路：否则会把其失败归因到 Auto，
+                // 并排程不适用的备用路径。旧库没有出口标签的任务仍允许换路。
+                && !crate::auto_proxy::route::is_rule_label(&task.auto_route)
+                && !crate::protocol_proxy::is_fixed_route(&task.auto_route)
+                && self
+                    .protocol_proxies
+                    .raw(DownloadProtocol::for_http_family(&task.url, false))
+                    .is_empty()
                 && !is_bt_url(&task.url)
                 && !is_ed2k_url(&task.url)
                 && let Some(host) = crate::segment_coordinator::extract_host(&task.url)
@@ -10886,10 +10891,15 @@ impl DownloadManager {
                 ignore_tls_errors,
                 crate::tls::HttpVersion::Http1,
             )?;
+            let route = if proxy.is_active() {
+                crate::protocol_proxy::PROXY_ROUTE
+            } else {
+                crate::protocol_proxy::DIRECT_ROUTE
+            };
             return Ok(TaskEgress {
                 client,
                 proxy,
-                route: "",
+                route,
                 auto_ctx: None,
                 router,
                 pac: crate::pac_route::PacRouting::Off,
