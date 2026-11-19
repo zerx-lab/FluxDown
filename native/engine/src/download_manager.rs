@@ -12379,6 +12379,10 @@ impl DownloadManager {
     ) -> Result<(), downloader::DownloadError> {
         let unavailable =
             || downloader::DownloadError::Other("Task output is not eligible for cleanup".into());
+        // A relocation can publish its destination before the stored path is updated.
+        if self.edit_jobs.is_running(task_id) {
+            return Err(unavailable());
+        }
         let task = self
             .db
             .load_task_by_id(task_id)
@@ -24332,6 +24336,97 @@ mod tests {
             // Windows 上 DB 句柄可能仍持有目录；清理不改变行为断言结果。
             crate::logger::report_warning("download-manager-test", "remove test directory", &error);
         }
+    }
+
+    #[tokio::test]
+    async fn clear_task_file_rejects_uncommitted_relocation() {
+        use crate::task_edit::{EditTask, snapshot};
+
+        let dir = unique_filetrack_test_dir("clear_during_relocation");
+        std::fs::create_dir_all(&dir).expect("create source directory");
+        let destination = dir.join("relocated");
+        let source = dir.join("done.bin");
+        let target = destination.join("done.bin");
+        std::fs::write(&source, b"finished payload").expect("write output");
+        let save_dir = dir.to_string_lossy().into_owned();
+        let new_save_dir = destination.to_string_lossy().into_owned();
+        let id = "t-relocating";
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        insert_task_at_status(&db, id, &save_dir, "done.bin", 3).await;
+        let sink = Arc::new(RecordingSink::new());
+        let mut mgr = DownloadManager::new(
+            db.clone(),
+            DownloadManagerConfig {
+                max_concurrent: 1,
+                speed_limit_bps: 0,
+                upload_limit_bps: 0,
+                default_save_dir: save_dir.clone(),
+                app_data_dir: String::new(),
+                data_dir: dir.clone(),
+                bt_config: BtConfig::default(),
+                proxy_config: ProxyConfig::default(),
+                user_agent: String::new(),
+            },
+            sink.clone(),
+            Arc::new(crate::NoopSelection),
+        )
+        .expect("construct manager");
+
+        let before = snapshot(&db, id).await.expect("snapshot task");
+        let step = mgr
+            .begin_task_edit(EditTask {
+                task_id: id.into(),
+                expected_revision: before.revision,
+                save_dir: Some(new_save_dir),
+                ..Default::default()
+            })
+            .await
+            .expect("begin relocation");
+        let super::task_properties::TaskEditStep::Started(publish) = step else {
+            panic!("completed task relocation must start immediately");
+        };
+        let outcome = publish.await;
+        assert_eq!(
+            std::fs::read(&target).expect("published output").as_slice(),
+            b"finished payload"
+        );
+        assert!(mgr.clear_task_file(id).await.is_err());
+        assert_eq!(
+            std::fs::read(&source).expect("source preserved").as_slice(),
+            b"finished payload"
+        );
+        let task = db
+            .load_task_by_id(id)
+            .await
+            .expect("load task")
+            .expect("task retained");
+        assert_eq!(task.save_dir, save_dir);
+        assert_eq!(task.file_clear_state, FileClearState::None);
+        assert!(!task.file_missing);
+        assert!(!sink.events().iter().any(|event| matches!(
+            event,
+            EngineEvent::FileMissingChanged(changes)
+                if changes.iter().any(|(task_id, missing)| task_id == id && *missing)
+        )));
+
+        mgr.finish_task_edit(outcome)
+            .await
+            .expect("commit relocation");
+        mgr.clear_task_file(id)
+            .await
+            .expect("clear relocated output");
+        assert!(!source.exists());
+        assert!(!target.exists());
+        let task = db
+            .load_task_by_id(id)
+            .await
+            .expect("load task")
+            .expect("task retained");
+        assert_eq!(task.status, 3);
+        assert!(task.file_missing);
+        std::fs::remove_dir_all(&dir).expect("remove test directory");
     }
 
     #[tokio::test]
