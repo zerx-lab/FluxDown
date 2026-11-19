@@ -5,7 +5,7 @@ import SwiftUI
 
 /// S6 · BitTorrent 设置（常规 · 连接 · Tracker · 做种 · 防吸血）。
 /// 行与 GPUI `sections/bt.rs` 同序同键同范围；全部写入走 `ConfigEditor`（云同步键 由目录决定）。
-/// 做种关闭时其余做种行整体隐藏；订阅关闭时订阅地址置灰。断线（只读）时各分组整体置灰。
+/// 做种关闭时其余做种行整体隐藏；订阅关闭时订阅地址置灰。断线时禁止编辑。
 /// 「连接 › 监听」在页签可见时每 5 秒查询 `daemon.bt.portStatus`，监听和映射共用快照。
 struct BtPage: View {
     @Environment(AppContainer.self) private var container
@@ -124,6 +124,7 @@ struct BtPage: View {
             Section {
                 if BtSettingsRow.portStart.isVisible(in: form) {
                     ConfigNumberRow(item: BtSettingsRow.portStart.item, range: BtPortRange.bounds, fallback: 6881)
+                        .disabled(readOnly)
                 }
                 if BtSettingsRow.portEnd.isVisible(in: form) {
                     ConfigNumberRow(
@@ -131,13 +132,19 @@ struct BtPage: View {
                         range: min(max(start, BtPortRange.bounds.lowerBound), BtPortRange.bounds.upperBound) ... BtPortRange.bounds.upperBound,
                         fallback: 6891
                     )
+                    .disabled(readOnly)
                     if !BtPortRange.isValid(start: start, end: end) {
                         SettingsStatusLine(text: L("btPortRangeInvalid"), tone: .warning)
                             .transition(.opacity)
                     }
                 }
-                BtListenerStatusRow(status: portModel.status)
-                if BtSettingsRow.upnp.isVisible(in: form) { ConfigToggleRow(item: BtSettingsRow.upnp.item) }
+                if BtSettingsRow.listenerStatus.isVisible(in: form) {
+                    BtListenerStatusRow(status: portModel.status)
+                }
+                if BtSettingsRow.upnp.isVisible(in: form) {
+                    ConfigToggleRow(item: BtSettingsRow.upnp.item)
+                        .disabled(readOnly)
+                }
                 if BtSettingsRow.showsPortMappingStatus(in: form) {
                     BtPortMappingStatusRow(status: portModel.status)
                         .transition(.opacity.combined(with: .move(edge: .top)))
@@ -147,7 +154,6 @@ struct BtPage: View {
             } footer: {
                 Text(L("btSettingsRestartHint"))
             }
-            .disabled(readOnly)
         }
         if !BtSettingsRow.visible(inSection: .transport, form).isEmpty {
             Section(L("btSectionTransport")) {
@@ -329,10 +335,15 @@ private struct BtListenerStatusRow: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(L("btListenerStatus"))
             Text(listener)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
                 .monospacedDigit()
             Text(L("btReachabilityUnverified"))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .settingsRow(BtSettingsRow.listenerStatus.id)
     }
 }
 

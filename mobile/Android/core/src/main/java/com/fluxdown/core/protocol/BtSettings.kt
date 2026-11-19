@@ -15,7 +15,7 @@ enum class BtSettingsTab { General, Connection, Tracker, Seeding, Guard }
 /**
  * BT 页的每一行（GPUI 顺序：页签 → 分组 → 行）。页面渲染与设置搜索共用同一份可见性判定。
  * 做种「时长 + 单位」两个 PC 行在移动端合成一行（各自仍写回两个键）。
- * [PortMappingStatus] 是只读状态行（`daemon.bt.portStatus`），挂在 `bt_enable_upnp` 上：仅映射开启时显示。
+ * [ListenerStatus] 与 [PortMappingStatus] 共用 `daemon.bt.portStatus`；只有映射行受 `bt_enable_upnp` 控制。
  */
 enum class BtSettingsRow(val slug: String, val tab: BtSettingsTab, val configKey: String, val unitKey: String? = null) {
     // 常规：总开关 · 新任务
@@ -26,6 +26,7 @@ enum class BtSettingsRow(val slug: String, val tab: BtSettingsTab, val configKey
     // 连接：监听
     PortStart("portStart", BtSettingsTab.Connection, "bt_port_start"),
     PortEnd("portEnd", BtSettingsTab.Connection, "bt_port_end"),
+    ListenerStatus("listenerStatus", BtSettingsTab.Connection, "bt_enabled"),
     Upnp("upnp", BtSettingsTab.Connection, "bt_enable_upnp"),
     PortMappingStatus("portMappingStatus", BtSettingsTab.Connection, "bt_enable_upnp"),
     // 连接：传输
@@ -113,7 +114,7 @@ enum class BtSettingsRow(val slug: String, val tab: BtSettingsTab, val configKey
         get() = when (this) {
             Enabled -> BtSettingsGroup.Basic
             PieceOrder, FirstLastPiecesFirst, SelectionAutoDefault -> BtSettingsGroup.NewTasks
-            PortStart, PortEnd, Upnp, PortMappingStatus -> BtSettingsGroup.Listen
+            PortStart, PortEnd, ListenerStatus, Upnp, PortMappingStatus -> BtSettingsGroup.Listen
             Utp, UtpCongestion, MseMode, UploadSlots -> BtSettingsGroup.Transport
             Dht, Lsd, Webseed -> BtSettingsGroup.Sources
             MaxConnections, MaxConnectionsPerTorrent -> BtSettingsGroup.Limits

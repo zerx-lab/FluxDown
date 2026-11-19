@@ -44,6 +44,7 @@ import com.fluxdown.app.nav.LocalNavigator
 import com.fluxdown.app.nav.SettingsPage
 import com.fluxdown.app.shell.LocalAppContainer
 import com.fluxdown.app.shell.hostState
+import com.fluxdown.core.host.HostErrorCode
 import com.fluxdown.core.host.HostException
 import com.fluxdown.core.protocol.AgentSessionDto
 import com.fluxdown.core.protocol.BtPortMappingView
@@ -126,6 +127,7 @@ private fun titleOf(row: BtSettingsRow): Int = when (row) {
     BtSettingsRow.Utp -> R.string.btEnableUtp
     BtSettingsRow.PortStart -> R.string.btListenPortStart
     BtSettingsRow.PortEnd -> R.string.btListenPortEnd
+    BtSettingsRow.ListenerStatus -> R.string.btListenerStatus
     BtSettingsRow.MseMode -> R.string.btMseMode
     BtSettingsRow.UploadSlots -> R.string.btUploadSlots
     BtSettingsRow.PortMappingStatus -> R.string.btPortMappingStatus
@@ -186,6 +188,7 @@ private fun detailOf(row: BtSettingsRow): Int? = when (row) {
     BtSettingsRow.Upnp -> R.string.btEnableUpnpDesc
     BtSettingsRow.Utp -> R.string.btEnableUtpDesc
     BtSettingsRow.PortStart -> R.string.btListenPortDesc
+    BtSettingsRow.ListenerStatus -> R.string.btReachabilityUnverified
     BtSettingsRow.MseMode -> R.string.btMseModeDesc
     BtSettingsRow.UploadSlots -> R.string.btUploadSlotsDesc
     BtSettingsRow.UtpCongestion -> R.string.btUtpCongestionDesc
@@ -305,21 +308,23 @@ internal fun BtPage() {
     }
 
     // 监听与映射共用一个快照：仅「连接」页签可见且页面在前台时轮询。
-    var portStatus by remember { mutableStateOf<BtPortStatus?>(null) }
-    val portStatusVisible = tab == BtSettingsTab.Connection
-    LaunchedEffect(container.session, portStatusVisible, lifecycleOwner) {
-        portStatus = null
-        if (!portStatusVisible) return@LaunchedEffect
+    val session = container.session
+    val pollPortStatus = tab == BtSettingsTab.Connection && form.isLoaded && !ctx.readOnly
+    var portStatus by remember(session, pollPortStatus) { mutableStateOf<BtPortStatus?>(null) }
+    LaunchedEffect(session, pollPortStatus, lifecycleOwner) {
+        if (!pollPortStatus) return@LaunchedEffect
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (true) {
                 try {
-                    portStatus = BtPortStatus.fromJson(container.session.callJson(HostMethod.daemonBtPortStatus))
+                    portStatus = BtPortStatus.fromJson(session.callJson(HostMethod.daemonBtPortStatus))
                 } catch (e: CancellationException) {
                     throw e
-                } catch (_: HostException) {
-                    // 旧 daemon 无此方法 / 断线：清空快照，本次可见期间不再轮询。
-                    portStatus = null
-                    return@repeatOnLifecycle
+                } catch (e: HostException) {
+                    // 瞬态错误保留旧快照，下一轮继续；旧 daemon 无此方法时才停止。
+                    if (e.code == HostErrorCode.Unsupported) {
+                        portStatus = null
+                        return@repeatOnLifecycle
+                    }
                 }
                 delay(BtPortMappingView.POLL_INTERVAL_MS)
             }
@@ -469,7 +474,9 @@ private fun ListenSection(ctx: SettingsCtx, portStatus: BtPortStatus?) {
                 }
             }
         }
-        row { ListenerStatusRow(portStatus) }
+        if (BtSettingsRow.ListenerStatus.isVisible(form)) {
+            row { ListenerStatusRow(ctx, portStatus) }
+        }
         if (BtSettingsRow.Upnp.isVisible(form)) {
             settingSwitch(ctx, BtSettingsRow.Upnp.configKey, R.string.btEnableUpnp, R.string.btEnableUpnpDesc, id = BtSettingsRow.Upnp.id)
         }
@@ -480,17 +487,19 @@ private fun ListenSection(ctx: SettingsCtx, portStatus: BtPortStatus?) {
 }
 
 @Composable
-private fun ListenerStatusRow(status: BtPortStatus?) {
+private fun ListenerStatusRow(ctx: SettingsCtx, status: BtPortStatus?) {
     val listener = when {
         status == null -> str(R.string.btListenerUnavailable)
         !status.running -> str(R.string.btListenerIdle)
         status.listenPort == 0L -> str(R.string.btListenerNoPort)
         else -> str(R.string.btListenerActive).fill("port" to status.listenPort)
     }
-    FluxListRow(
-        title = str(R.string.btListenerStatus),
-        subtitle = "$listener\n${str(R.string.btReachabilityUnverified)}",
-    )
+    SettingRowBox(ctx, BtSettingsRow.ListenerStatus.id, null) {
+        FluxListRow(
+            title = str(R.string.btListenerStatus),
+            subtitle = "$listener\n${str(R.string.btReachabilityUnverified)}",
+        )
+    }
 }
 
 /**
