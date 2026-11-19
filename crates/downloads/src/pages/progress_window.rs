@@ -10,6 +10,7 @@
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 mod completions;
@@ -76,6 +77,8 @@ const INFO_ROW_HEIGHT: f32 = 22.;
 const INFO_LABEL_WIDTH: f32 = 44.;
 /// 超过此值的剩余时间不可信，不显示。
 const MAX_ETA_SECS: u64 = 86_400;
+/// A Wayland target can finish the drag protocol before its asynchronous move completes.
+const WAYLAND_DRAG_RECHECK_DELAY: Duration = Duration::from_secs(2);
 
 /// 视图对宿主的事件。
 pub enum ProgressWindowEvent {
@@ -547,11 +550,20 @@ impl ProgressWindowView {
         .detach();
     }
 
-    fn request_drag_rescan(&self, cx: &App) {
-        let future = self.port.execute(DownloadsCommand::RescanFiles);
+    fn request_drag_rescan(&self, source: Option<PathBuf>, cx: &App) {
+        let port = Arc::clone(&self.port);
+        let executor = cx.background_executor().clone();
         cx.background_executor()
             .spawn(async move {
-                if let Err(error) = future.await {
+                if let Some(path) = source
+                    && std::fs::metadata(&path).is_ok()
+                {
+                    executor.timer(WAYLAND_DRAG_RECHECK_DELAY).await;
+                    if std::fs::metadata(path).is_ok() {
+                        return;
+                    }
+                }
+                if let Err(error) = port.execute(DownloadsCommand::RescanFiles).await {
                     eprintln!(
                         "completion drag file rescan request failed: {:?} ({:?})",
                         error.code, error.reason
@@ -568,7 +580,7 @@ impl ProgressWindowView {
         cx: &App,
     ) -> Option<ExternalDragPayload> {
         let Ok(metadata) = std::fs::metadata(path) else {
-            self.request_drag_rescan(cx);
+            self.request_drag_rescan(None, cx);
             return None;
         };
         if track_move {
@@ -581,10 +593,8 @@ impl ProgressWindowView {
     }
 
     fn finish_wayland_drag(&mut self, cx: &App) {
-        if let Some(path) = self.wayland_drag_path.take()
-            && std::fs::metadata(path).is_err()
-        {
-            self.request_drag_rescan(cx);
+        if let Some(path) = self.wayland_drag_path.take() {
+            self.request_drag_rescan(Some(path), cx);
         }
     }
 
@@ -1659,7 +1669,7 @@ mod completion_drag_tests {
             Arc,
             atomic::{AtomicUsize, Ordering},
         },
-        time::{SystemTime, UNIX_EPOCH},
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     use fluxdown_ui_i18n::I18nCatalog;
@@ -1780,6 +1790,7 @@ mod completion_drag_tests {
         std::fs::remove_file(&file)?;
         assert!(completion_drag_file(&row).is_none());
         assert!(handoff(&mut app, &path).is_none());
+        app.run_until_parked();
         assert_eq!(count(), 1);
 
         dto.url = "torrent-file://fixture".into();
@@ -1791,6 +1802,8 @@ mod completion_drag_tests {
             handoff(&mut app, &path).expect("directory payload");
         assert_eq!(paths.entries(), &[(folder.clone(), true)]);
         window.simulate_event(FileDropEvent::Ended);
+        app.advance_clock(Duration::from_secs(2));
+        app.run_until_parked();
         assert_eq!(count(), 1, "copy or cancellation leaves the source intact");
 
         assert!(handoff(&mut app, &path).is_some());
@@ -1799,6 +1812,16 @@ mod completion_drag_tests {
         assert_eq!(count(), 2, "the receiving app moved the source");
         window.simulate_event(FileDropEvent::Ended);
         assert_eq!(count(), 2, "the completed drag is no longer tracked");
+
+        let moved = dir.join("Moved Torrent #1");
+        std::fs::rename(&moved, &folder)?;
+        assert!(handoff(&mut app, &path).is_some());
+        window.simulate_event(FileDropEvent::Ended);
+        assert_eq!(count(), 2, "the target hasn't moved the source yet");
+        std::fs::rename(&folder, &moved)?;
+        app.advance_clock(Duration::from_secs(2));
+        app.run_until_parked();
+        assert_eq!(count(), 3, "a move completed after the protocol ended");
         Ok(())
     }
 }
