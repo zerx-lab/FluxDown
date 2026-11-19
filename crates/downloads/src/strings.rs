@@ -1245,6 +1245,27 @@ mod tests {
     use super::DownloadStrings;
 
     #[test]
+    fn only_successful_html_failure_is_eligible_for_saving() {
+        for (message, expected) in [
+            (
+                "server returned HTML page (Content-Type: text/html) instead of the expected file — hint",
+                true,
+            ),
+            (
+                "server returned HTML page (Content-Type: non-HTML or missing) for a non-HTML download (HTML response filename) — hint",
+                true,
+            ),
+            (
+                "server returned HTML page (Content-Type: text/html) — HTTP 403 Forbidden",
+                false,
+            ),
+            ("request failed: HTTP 403 Forbidden", false),
+        ] {
+            assert_eq!(super::can_save_html_failure(message), expected, "{message}");
+        }
+    }
+
+    #[test]
     fn datetime_keeps_seconds_across_midnight_and_rejects_out_of_range() {
         let before = Local
             .with_ymd_and_hms(2026, 3, 18, 23, 59, 59)

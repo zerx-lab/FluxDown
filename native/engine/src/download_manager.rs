@@ -9749,6 +9749,7 @@ impl DownloadManager {
     }
 
     /// Save the page from a failed HTTP download as a separate, HTML-only task.
+    /// Each call creates a new copy of the page as it is served at that time.
     pub async fn save_html_response(&mut self, task_id: &str) -> Result<String, String> {
         let db_error = |error: DbError| format!("db: {error:#}");
         let source = self

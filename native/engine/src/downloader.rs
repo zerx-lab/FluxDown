@@ -118,6 +118,8 @@ pub enum DownloadError {
     /// 重试遇到它都直接上抛。
     #[error("{0}")]
     PluginAbort(String),
+    /// A successful HTTP response returned a page instead of the requested file.
+    /// This is a response-format mismatch, not a transport failure.
     #[error("{0}")]
     UnexpectedHtml(String),
     #[error("{0}")]
@@ -3094,16 +3096,43 @@ fn html_mime(content_type: &str) -> Option<&'static str> {
         .find(|candidate| mime.eq_ignore_ascii_case(candidate))
 }
 
+pub(crate) enum HtmlEvidence {
+    Mime(&'static str),
+    DispositionName,
+}
+
+impl HtmlEvidence {
+    fn content_type(&self) -> &'static str {
+        match self {
+            Self::Mime(mime) => mime,
+            Self::DispositionName => "non-HTML or missing",
+        }
+    }
+
+    fn detail(&self) -> &'static str {
+        match self {
+            Self::Mime(_) => "",
+            Self::DispositionName => " (HTML response filename)",
+        }
+    }
+}
+
 pub(crate) fn html_evidence(
     content_type: &str,
     response_name: &str,
     source: crate::naming::NameSource,
-) -> Option<&'static str> {
-    html_mime(content_type).or_else(|| {
-        (source == crate::naming::NameSource::Disposition
-            && filename_looks_like_html(response_name))
-        .then_some("not HTML; HTML response filename")
-    })
+) -> Option<HtmlEvidence> {
+    html_mime(content_type)
+        .map(HtmlEvidence::Mime)
+        .or_else(|| html_disposition_evidence(response_name, source))
+}
+
+fn html_disposition_evidence(
+    name: &str,
+    source: crate::naming::NameSource,
+) -> Option<HtmlEvidence> {
+    (source == crate::naming::NameSource::Disposition && filename_looks_like_html(name))
+        .then_some(HtmlEvidence::DispositionName)
 }
 
 fn response_content_type(resp: &reqwest::Response) -> &str {
@@ -3113,12 +3142,23 @@ fn response_content_type(resp: &reqwest::Response) -> &str {
         .unwrap_or("")
 }
 
-// Recognize common HTML starts when the server supplies no HTML MIME.
+// Recognize common HTML starts in the bounded decoded prefix when MIME is not HTML.
 fn has_html_signature(prefix: &[u8]) -> bool {
     let prefix = prefix.strip_prefix(b"\xef\xbb\xbf").unwrap_or(prefix);
-    let prefix = prefix.trim_ascii_start();
-    if prefix.starts_with(b"<!--") {
-        return true;
+    let mut prefix = prefix.trim_ascii_start();
+    if let Some(declaration) = prefix.strip_prefix(b"<?xml")
+        && declaration.first().is_some_and(u8::is_ascii_whitespace)
+    {
+        let Some(end) = declaration.windows(2).position(|window| window == b"?>") else {
+            return false;
+        };
+        prefix = declaration[end + 2..].trim_ascii_start();
+    }
+    while let Some(comment) = prefix.strip_prefix(b"<!--") {
+        let Some(end) = comment.windows(3).position(|window| window == b"-->") else {
+            return false;
+        };
+        prefix = comment[end + 3..].trim_ascii_start();
     }
     [
         b"<!doctype html".as_slice(),
@@ -3131,6 +3171,11 @@ fn has_html_signature(prefix: &[u8]) -> bool {
         b"<style",
         b"<div",
         b"<p",
+        b"<h1",
+        b"<a",
+        b"<table",
+        b"<form",
+        b"<center",
     ]
     .into_iter()
     .any(|tag| {
@@ -3159,8 +3204,10 @@ impl DownloadSpec {
         }
         if let Some(evidence) = self.unexpected_html_evidence(resp, url) {
             return Err(DownloadError::UnexpectedHtml(format!(
-                "{UNEXPECTED_HTML_PREFIX}{evidence}) for a non-HTML download — \
+                "{UNEXPECTED_HTML_PREFIX}{}) for a non-HTML download{} — \
                  aborting to avoid corrupting saved file; {}",
+                evidence.content_type(),
+                evidence.detail(),
                 html_response_hint(url, Some(resp.url()), method)
             )));
         }
@@ -3171,12 +3218,11 @@ impl DownloadSpec {
         &self,
         resp: &reqwest::Response,
         url: &str,
-    ) -> Option<&'static str> {
+    ) -> Option<HtmlEvidence> {
         if self.expects_html {
             return None;
         }
-        let ct = response_content_type(resp);
-        let mime = html_mime(ct);
+        let mime = html_mime(response_content_type(resp)).map(HtmlEvidence::Mime);
         if mime.is_some() && !self.accepts_html_attachment {
             return mime;
         }
@@ -3192,7 +3238,7 @@ impl DownloadSpec {
         {
             return None;
         }
-        html_evidence(ct, &name.name, name.source)
+        mime.or_else(|| html_disposition_evidence(&name.name, name.source))
     }
 }
 
@@ -4441,7 +4487,9 @@ async fn run_download_inner(
         && let Some(evidence) = html_evidence(&info.content_type, &info.file_name, info.name_source)
     {
         return Err(DownloadError::UnexpectedHtml(format!(
-            "{UNEXPECTED_HTML_PREFIX}{evidence}) instead of the expected file — {}",
+            "{UNEXPECTED_HTML_PREFIX}{}) instead of the expected file{} — {}",
+            evidence.content_type(),
+            evidence.detail(),
             html_response_hint(&p.url, probe_final_url.as_ref(), &p.spec.method)
         )));
     }
@@ -6835,6 +6883,48 @@ mod tests {
             None
         );
         assert_eq!(super::infer_origin_referrer("not-a-valid-url"), None);
+    }
+
+    #[test]
+    fn only_successful_html_failure_is_eligible_for_saving() {
+        for (message, expected) in [
+            (
+                "server returned HTML page (Content-Type: text/html) instead of the expected file — hint",
+                true,
+            ),
+            (
+                "server returned HTML page (Content-Type: non-HTML or missing) for a non-HTML download (HTML response filename) — hint",
+                true,
+            ),
+            (
+                "server returned HTML page (Content-Type: text/html) — HTTP 403 Forbidden",
+                false,
+            ),
+            ("request failed: HTTP 403 Forbidden", false),
+        ] {
+            assert_eq!(super::can_save_html_failure(message), expected, "{message}");
+        }
+    }
+
+    #[test]
+    fn replay_sniff_requires_html_after_prelude() {
+        for (body, expected) in [
+            (
+                b"\xef\xbb\xbf\n<!-- page --><H1>Shared file</H1>".as_slice(),
+                true,
+            ),
+            (b"<table><tr><td>Report</td></tr></table>", true),
+            (b"<a href=\"/file\">File</a>", true),
+            (b"<form action=\"/login\"></form>", true),
+            (b"<?xml version=\"1.0\"?><html>Page</html>", true),
+            (b"<?xml version=\"1.0\"?><svg></svg>", false),
+            (b"<!-- archive metadata -->PK\x03\x04", false),
+            (b"<!-- pending", false),
+            (b"<archive>Archive</archive>", false),
+            (b"<table", false),
+        ] {
+            assert_eq!(super::has_html_signature(body), expected, "{body:?}");
+        }
     }
 
     /// HTML 安全网：被重定向到登录 / 错误页时点出终点（不带 query 里的令牌），且路径里

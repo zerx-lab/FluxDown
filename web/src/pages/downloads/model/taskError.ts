@@ -10,7 +10,7 @@ export const UNEXPECTED_HTML_PREFIX = 'server returned HTML page (Content-Type: 
 /** 镜像 `native/engine/src/downloader.rs` 的 `HTML_RESPONSE_CHANGED_MESSAGE`。 */
 export const HTML_RESPONSE_CHANGED_MESSAGE = 'the server did not return a complete HTML page; nothing was saved'
 
-/** 引擎稳定错误消息（整串 trim 后精确匹配）→ i18n key；其余返回 null。 */
+/** 引擎稳定错误消息 → i18n key：意外 HTML 按前缀匹配，其余按 trim 后的完整消息匹配。 */
 export function taskErrorKey(message: string): string | null {
   const text = message.trim()
   if (text.startsWith(UNEXPECTED_HTML_PREFIX)) return 'taskErrorUnexpectedHtml'

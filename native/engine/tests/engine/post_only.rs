@@ -501,9 +501,10 @@ async fn get_task_on_post_only_endpoint_reports_readable_error() {
 #[tokio::test(flavor = "current_thread")]
 async fn save_html_keeps_original_and_existing_file_and_rejects_changed_response() {
     let mut h = Harness::new("save_html_get").await;
+    let page_body = b"<!-- share page --><h1>Shared file</h1>";
     let headers = "Content-Type: application/octet-stream\r\n\
                    Content-Disposition: inline; filename=share.html\r\n";
-    *h.server.share_response.lock().unwrap() = Some(("200 OK", headers, HTML_BODY));
+    *h.server.share_response.lock().unwrap() = Some(("200 OK", headers, page_body));
     let mut spec = h.share_spec(None);
     spec.url = format!("http://{}{DIRECT_HTML_PATH}", h.addr);
     let original = h.engine.manager.create_task(spec).await.unwrap();
@@ -532,7 +533,7 @@ async fn save_html_keeps_original_and_existing_file_and_rejects_changed_response
     assert_eq!(page.status, 3, "{}", page.error_message);
     assert!(page.file_name.ends_with(".html"));
     assert!(page.checksum.is_empty());
-    assert_eq!(h.output(&page).await, HTML_BODY);
+    assert_eq!(h.output(&page).await, page_body);
     assert_eq!(
         tokio::fs::read(&existing_page).await.unwrap().as_slice(),
         b"keep"
@@ -544,6 +545,26 @@ async fn save_html_keeps_original_and_existing_file_and_rejects_changed_response
     );
 
     assert!(h.engine.manager.save_html_response(&saved).await.is_err());
+    let credential_key = format!("plugin.task-{saved}@fluxdown.auth.http://{}", h.addr);
+    assert!(
+        h.engine
+            .db
+            .get_config(&credential_key)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    h.engine.manager.delete_task(&saved, false).await.unwrap();
+    assert!(
+        h.engine
+            .db
+            .get_config(&credential_key)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(h.output(&page).await, page_body);
+
     *h.server.share_response.lock().unwrap() = Some(("200 OK", headers, ZIP_BODY));
     let changed = h
         .engine
@@ -552,6 +573,7 @@ async fn save_html_keeps_original_and_existing_file_and_rejects_changed_response
         .await
         .unwrap();
     let changed = h.finish(&changed).await;
+    assert_ne!(changed.task_id, saved);
     assert_eq!(changed.status, 4);
     assert!(
         changed

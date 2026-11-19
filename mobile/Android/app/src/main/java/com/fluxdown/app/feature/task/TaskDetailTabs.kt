@@ -144,7 +144,7 @@ internal fun GeneralTab(modelOf: () -> DetailModel?) {
             FluxKeyValue(
                 str(R.string.infoError), errorText, mono = true, tone = Tone.Coral,
                 onClick = {
-                    context.copyText(task.fileName, errorText)
+                    context.copyText(task.fileName, task.errorMessage)
                     overlays.toast(errorCopied, FluxToastKind.Success, FluxIcons.Copy)
                 },
             )
