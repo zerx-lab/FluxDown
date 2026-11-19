@@ -12,7 +12,7 @@ export function btFileCategory(path: string): string {
 
 export function btFileMatches(name: string, size: number, category: string, query: string, minSize: number, categories: ReadonlySet<string>): boolean {
   return (!minSize || size >= minSize) && (!categories.size || categories.has(category)) &&
-    (!query || name.slice(name.lastIndexOf('/') + 1).toLowerCase().includes(query))
+    (!query || name.toLowerCase().includes(query))
 }
 
 // BT 文件选择窗的输入规则（与 GPUI `pages/selection.rs` 对齐）。

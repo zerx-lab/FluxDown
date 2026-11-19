@@ -123,7 +123,7 @@ private fun flatten(folder: BtFolderNode, collapsed: Set<String>, out: MutableLi
 
 // ── X1 ───────────────────────────────────────────────────────────────────
 
-private val btSizeChoices = listOf(0L to "", 10_000_000L to "10 MB", 100_000_000L to "100 MB", 1_000_000_000L to "1 GB")
+private val btSizeChoices = listOf(0L to "", 10L shl 20 to "10 MB", 100L shl 20 to "100 MB", 1L shl 30 to "1 GB")
 
 private fun btCategory(path: String): String {
     val name = path.substringAfterLast('/')
@@ -195,7 +195,7 @@ internal fun BtSelectionSheet(ui: SelectionUi, kind: SelectionKind.Bt) {
         if (!filtering) kind.files else kind.files.filter {
             (minSize == 0L || it.size >= minSize) &&
                 (filterCategories.isEmpty() || (categoryByIndex[it.index] ?: "other") in filterCategories) &&
-                (needle.isEmpty() || it.path.substringAfterLast('/').lowercase().contains(needle))
+                (needle.isEmpty() || it.path.lowercase().contains(needle))
         }
     }
     val visibleTree = remember(tree, visibleFiles, filtering) { if (filtering) buildBtTree(visibleFiles) else tree }

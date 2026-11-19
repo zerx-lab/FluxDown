@@ -54,9 +54,9 @@ const BT_CATEGORY_KEYS: [(&str, &str); 7] = [
 ];
 const BT_MIN_SIZES: [(i64, &str); 4] = [
     (0, ""),
-    (10_000_000, "10 MB"),
-    (100_000_000, "100 MB"),
-    (1_000_000_000, "1 GB"),
+    (10 << 20, "10 MB"),
+    (100 << 20, "100 MB"),
+    (1 << 30, "1 GB"),
 ];
 
 struct BtFilter {
@@ -79,8 +79,7 @@ impl BtFilter {
         (self.min_size == 0 || file.size >= self.min_size)
             && (self.categories.is_empty()
                 || self.categories.contains(&self.file_categories[position]))
-            && (self.query.is_empty()
-                || bt_basename(&file.path).to_lowercase().contains(&self.query))
+            && (self.query.is_empty() || file.path.to_lowercase().contains(&self.query))
     }
 }
 

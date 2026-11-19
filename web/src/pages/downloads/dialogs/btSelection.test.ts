@@ -41,18 +41,21 @@ describe('btSelectionCanConfirm', () => {
   })
 })
 
-test('BT filters intersect filename and minimum size with any selected category', () => {
+test('BT filters intersect full path, minimum size (binary MB) and any selected category', () => {
+  const min = 10 * 1024 * 1024
   const files = [
-    { index: 8, path: 'Season/Trailer.MKV', size: 10_000_000 },
-    { index: 23, path: 'Extras/Trailer.MP3', size: 10_000_001 },
-    { index: 35, path: 'Extras/Trailer.mp4', size: 9_999_999 },
+    { index: 8, path: 'Season/Trailer.MKV', size: min },
+    { index: 23, path: 'Extras/Trailer.MP3', size: min + 1 },
+    { index: 35, path: 'Extras/Trailer.mp4', size: min - 1 },
     { index: 37, path: 'Trailer/episode.mkv', size: 15_000_000 },
-    { index: 42, path: 'Season/Trailer.srt', size: 10_000_000 },
+    { index: 42, path: 'Season/Trailer.srt', size: min },
+    { index: 50, path: 'Season/other.mkv', size: min },
   ]
   const categories = new Set(['video', 'audio'])
   expect(files.filter(({ path, size }) =>
-    btFileMatches(path, size, btFileCategory(path), 'trailer', 10_000_000, categories),
-  ).map(({ index }) => index)).toEqual([8, 23])
+    btFileMatches(path, size, btFileCategory(path), 'trailer', min, categories),
+  ).map(({ index }) => index)).toEqual([8, 23, 37])
+  expect(btFileMatches('Season/Trailer.srt', min, 'other', 'srt', 0, new Set())).toBe(true)
 })
 
 test('dots in directories and leading dots do not determine the file category', () => {

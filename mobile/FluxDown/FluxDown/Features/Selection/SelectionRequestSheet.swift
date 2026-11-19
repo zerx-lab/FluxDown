@@ -104,7 +104,7 @@ private func hlsLabel(height: Int64, bandwidth: Int64) -> String {
 #if FULL_FLAVOR
 // MARK: - X1 · BT 文件
 
-private let btMinimumSizes: [Int64] = [0, 10_000_000, 100_000_000, 1_000_000_000]
+private let btMinimumSizes: [Int64] = [0, 10 << 20, 100 << 20, 1 << 30]
 
 private func btCategory(_ path: String) -> String {
     let name = path.split(separator: "/", omittingEmptySubsequences: false).last ?? ""
@@ -116,8 +116,8 @@ private func btCategory(_ path: String) -> String {
 private func btMinimumSizeLabel(_ size: Int64) -> String {
     switch size {
     case 0: L("btFilterAnySize")
-    case 1_000_000_000: "1 GB"
-    default: "\(size / 1_000_000) MB"
+    case 1 << 30: "1 GB"
+    default: "\(size >> 20) MB"
     }
 }
 
@@ -179,7 +179,7 @@ private struct BtSelectionView: View {
         let visibleFiles = filtering ? files.filter { file in
             (minimumSize == 0 || file.size >= minimumSize)
                 && (filterCategories.isEmpty || filterCategories.contains(categoryByIndex[file.index] ?? "other"))
-                && (query.isEmpty || (file.path.split(separator: "/", omittingEmptySubsequences: false).last ?? "").lowercased().contains(query))
+                && (query.isEmpty || file.path.lowercased().contains(query))
         } : files
         let rows = flattenBtTree(filtering ? buildBtTree(visibleFiles) : tree, collapsed: filtering ? [] : collapsed)
         let sizeText = Format.bytes(selectedBytes).description

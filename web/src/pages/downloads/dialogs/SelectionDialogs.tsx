@@ -377,9 +377,9 @@ function BtFiles({
             {t('btFilterMinSize')}
             <select className="rounded-md border border-hairline bg-background p-1" value={minSize} onChange={(event) => setMinSize(Number(event.target.value))}>
               <option value={0}>{t('btFilterAnySize')}</option>
-              <option value={10_000_000}>10 MB</option>
-              <option value={100_000_000}>100 MB</option>
-              <option value={1_000_000_000}>1 GB</option>
+              <option value={10 * 1024 * 1024}>10 MB</option>
+              <option value={100 * 1024 * 1024}>100 MB</option>
+              <option value={1024 * 1024 * 1024}>1 GB</option>
             </select>
           </label>
         </div>
