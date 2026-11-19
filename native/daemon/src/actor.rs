@@ -120,6 +120,9 @@ pub enum ActorOperation {
     ResumeTask {
         task_id: String,
     },
+    SaveHtmlResponse {
+        task_id: String,
+    },
     RenameTask {
         task_id: String,
         file_name: String,
@@ -1632,6 +1635,20 @@ async fn execute_operation(
                 return Err(ActorError::InvalidArgument(BT_DISABLED_MESSAGE.to_owned()));
             }
             engine.manager.resume_task(&task_id).await;
+        }
+        ActorOperation::SaveHtmlResponse { task_id } => {
+            let task_id = engine
+                .manager
+                .save_html_response(&task_id)
+                .await
+                .map_err(|error| match error.as_str() {
+                    "not-found" => ActorError::NotFound,
+                    "not-an-html-failure" | "browser-request-unavailable" => {
+                        ActorError::TaskStateConflict(error)
+                    }
+                    _ => ActorError::Operation(error),
+                })?;
+            return Ok(ActorResult::Created(task_id));
         }
         ActorOperation::RenameTask { task_id, file_name } => engine
             .manager

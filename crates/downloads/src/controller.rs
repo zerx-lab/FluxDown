@@ -141,6 +141,9 @@ pub enum DownloadsCommand {
     Resume {
         task_id: String,
     },
+    SaveHtmlResponse {
+        task_id: String,
+    },
     Rename {
         task_id: String,
         file_name: String,

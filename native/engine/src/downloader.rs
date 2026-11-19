@@ -118,6 +118,10 @@ pub enum DownloadError {
     /// 重试遇到它都直接上抛。
     #[error("{0}")]
     PluginAbort(String),
+    /// A successful HTTP response returned a page instead of the requested file.
+    /// This is a response-format mismatch, not a transport failure.
+    #[error("{0}")]
+    UnexpectedHtml(String),
     #[error("{0}")]
     Other(String),
 }
@@ -276,6 +280,7 @@ pub struct FileInfo {
     /// `file_name` 的来源：只有 Content-Disposition（含 URL 查询里的 CD）才是权威名，
     /// 作为响应命名证据落库供完成期精修引擎推断的名字。
     pub name_source: crate::naming::NameSource,
+    pub(crate) html_attachment: bool,
     pub total_bytes: i64,
     pub supports_range: bool,
     /// MIME content type from the server (e.g. "text/html", "application/octet-stream").
@@ -1638,15 +1643,21 @@ fn is_bot_challenge(headers: &reqwest::header::HeaderMap) -> bool {
 /// 405 且只允许 POST 时追加 [`POST_ONLY_TAG`]。
 fn probe_status_desc(resp: &reqwest::Response) -> String {
     let status = resp.status().as_u16();
-    if is_bot_challenge(resp.headers()) {
-        format!("{status} {BOT_CHALLENGE_TAG}")
+    let tag = if is_bot_challenge(resp.headers()) {
+        BOT_CHALLENGE_TAG
     } else if resp.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED
         && allows_only_post(resp.headers())
     {
-        format!("{status} {POST_ONLY_TAG}")
+        POST_ONLY_TAG
     } else {
-        status.to_string()
+        ""
+    };
+    let mut desc = status.to_string();
+    if !tag.is_empty() {
+        desc.push(' ');
+        desc.push_str(tag);
     }
+    desc
 }
 
 /// `Allow` 头列出 POST 且不含 GET / HEAD（OneDrive 打包端点回 `Allow: OPTIONS, POST`）。
@@ -1791,6 +1802,9 @@ pub struct DownloadSpec {
     /// 单 GET 探测保留的首响应（一次性 URL 的唯一一次请求）；取一次即空，
     /// 随 spec 一并释放（取消 / 跳过 / 失败时连接随之关闭）。
     held_response: std::sync::Mutex<Option<reqwest::Response>>,
+    html_only: bool,
+    expects_html: bool,
+    accepts_html_attachment: bool,
 }
 
 #[derive(Debug)]
@@ -1830,6 +1844,9 @@ impl DownloadSpec {
             refresh_gate: tokio::sync::Mutex::new(RefreshLedger::default()),
             confirmed_generation: std::sync::atomic::AtomicU64::new(0),
             held_response: std::sync::Mutex::new(None),
+            html_only: false,
+            expects_html: false,
+            accepts_html_attachment: false,
         }
     }
 
@@ -2709,6 +2726,7 @@ async fn resolve_file_info_once(
     }
 
     Ok(FileInfo {
+        html_attachment: is_html_attachment(&headers, &file_name, name_source),
         file_name,
         name_source,
         total_bytes,
@@ -2858,6 +2876,7 @@ async fn resolve_file_info_plain_get_fallback(
     );
 
     Ok(FileInfo {
+        html_attachment: is_html_attachment(&headers, &file_name, name_source),
         file_name,
         name_source,
         total_bytes,
@@ -2966,6 +2985,7 @@ async fn resolve_file_info_held_once(
             header_text(reqwest::header::CONTENT_TYPE)
         );
         FileInfo {
+            html_attachment: is_html_attachment(headers, &resolved.name, resolved.source),
             file_name: resolved.name,
             name_source: resolved.source,
             total_bytes,
@@ -3040,12 +3060,209 @@ pub(crate) fn held_probe_applies(p: &DownloadParams) -> bool {
         && !crate::dash_downloader::is_dash_url(&p.url)
 }
 
-/// 文件名是否以 HTML 类扩展名结尾——用于 HTML 安全网判断"服务器返回 HTML
-/// 是否为用户期望"。空字符串视为不像 HTML：调用方有责任在到达此处前确保
-/// 文件名已经解析（run_download 中的 auto_name 空值检查 :1581 是兜底位置）。
+/// 文件名是否以 HTML 类扩展名结尾。
 pub(crate) fn filename_looks_like_html(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    lower.ends_with(".html") || lower.ends_with(".htm") || lower.ends_with(".xhtml")
+    name.rsplit_once('.').is_some_and(|(_, ext)| {
+        ["html", "htm", "xhtml"]
+            .into_iter()
+            .any(|candidate| ext.eq_ignore_ascii_case(candidate))
+    })
+}
+
+pub(crate) const UNEXPECTED_HTML_PREFIX: &str = "server returned HTML page (Content-Type: ";
+pub(crate) const HTML_RESPONSE_CHANGED_MESSAGE: &str =
+    "the server did not return a complete HTML page; nothing was saved";
+
+// Keep the diagnostic prefix for localization, but only successful-response
+// rejections (not 401/403 login pages) qualify for saving.
+pub(crate) fn can_save_html_failure(message: &str) -> bool {
+    message
+        .strip_prefix(UNEXPECTED_HTML_PREFIX)
+        .and_then(|details| details.split_once(") "))
+        .is_some_and(|(_, reason)| {
+            reason.starts_with("instead of the expected file")
+                || reason.starts_with("for a non-HTML download")
+        })
+}
+
+pub(crate) fn is_html_attachment(
+    headers: &reqwest::header::HeaderMap,
+    name: &str,
+    source: crate::naming::NameSource,
+) -> bool {
+    source == crate::naming::NameSource::Disposition
+        && filename_looks_like_html(name)
+        && headers
+            .get(reqwest::header::CONTENT_DISPOSITION)
+            .and_then(|value| value.as_bytes().split(|&byte| byte == b';').next())
+            .is_some_and(|kind| kind.trim_ascii().eq_ignore_ascii_case(b"attachment"))
+}
+
+fn html_mime(content_type: &str) -> Option<&'static str> {
+    let mime = content_type.split(';').next()?.trim();
+    ["text/html", "application/xhtml+xml"]
+        .into_iter()
+        .find(|candidate| mime.eq_ignore_ascii_case(candidate))
+}
+
+pub(crate) enum HtmlEvidence {
+    Mime(&'static str),
+    DispositionName,
+}
+
+impl HtmlEvidence {
+    fn content_type(&self) -> &'static str {
+        match self {
+            Self::Mime(mime) => mime,
+            Self::DispositionName => "non-HTML or missing",
+        }
+    }
+
+    fn detail(&self) -> &'static str {
+        match self {
+            Self::Mime(_) => "",
+            Self::DispositionName => " (HTML response filename)",
+        }
+    }
+}
+
+pub(crate) fn html_evidence(
+    content_type: &str,
+    response_name: &str,
+    source: crate::naming::NameSource,
+) -> Option<HtmlEvidence> {
+    html_mime(content_type)
+        .map(HtmlEvidence::Mime)
+        .or_else(|| html_disposition_evidence(response_name, source))
+}
+
+fn html_disposition_evidence(
+    name: &str,
+    source: crate::naming::NameSource,
+) -> Option<HtmlEvidence> {
+    (source == crate::naming::NameSource::Disposition && filename_looks_like_html(name))
+        .then_some(HtmlEvidence::DispositionName)
+}
+
+fn response_content_type(resp: &reqwest::Response) -> &str {
+    resp.headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+}
+
+// Recognize common HTML starts in the bounded decoded prefix when MIME is not HTML.
+fn has_html_signature(prefix: &[u8]) -> bool {
+    let prefix = prefix.strip_prefix(b"\xef\xbb\xbf").unwrap_or(prefix);
+    let mut prefix = prefix.trim_ascii_start();
+    if let Some(declaration) = prefix.strip_prefix(b"<?xml")
+        && declaration.first().is_some_and(u8::is_ascii_whitespace)
+    {
+        let Some(end) = declaration.windows(2).position(|window| window == b"?>") else {
+            return false;
+        };
+        prefix = declaration[end + 2..].trim_ascii_start();
+    }
+    while let Some(comment) = prefix.strip_prefix(b"<!--") {
+        let Some(end) = comment.windows(3).position(|window| window == b"-->") else {
+            return false;
+        };
+        prefix = comment[end + 3..].trim_ascii_start();
+    }
+    [
+        b"<!doctype html".as_slice(),
+        b"<html",
+        b"<head",
+        b"<body",
+        b"<title",
+        b"<meta",
+        b"<script",
+        b"<style",
+        b"<div",
+        b"<p",
+        b"<h1",
+        b"<h2",
+        b"<h3",
+        b"<h4",
+        b"<h5",
+        b"<h6",
+        b"<a",
+        b"<table",
+        b"<form",
+        b"<center",
+        b"<ul",
+        b"<ol",
+        b"<br",
+        b"<span",
+        b"<img",
+        b"<section",
+    ]
+    .into_iter()
+    .any(|tag| {
+        prefix
+            .get(..tag.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(tag))
+            && prefix.get(tag.len()..).is_some_and(|rest| {
+                rest.starts_with(b"/>")
+                    || rest
+                        .first()
+                        .is_some_and(|b| b.is_ascii_whitespace() || *b == b'>')
+            })
+    })
+}
+
+impl DownloadSpec {
+    fn check_html_response(
+        &self,
+        resp: &reqwest::Response,
+        url: &str,
+        method: &reqwest::Method,
+    ) -> Result<(), DownloadError> {
+        if self.html_only {
+            let status = resp.status();
+            if !status.is_success() || matches!(status.as_u16(), 204..=206) {
+                return Err(DownloadError::Other(HTML_RESPONSE_CHANGED_MESSAGE.into()));
+            }
+            return Ok(());
+        }
+        if let Some(evidence) = self.unexpected_html_evidence(resp, url) {
+            return Err(DownloadError::UnexpectedHtml(format!(
+                "{UNEXPECTED_HTML_PREFIX}{}) for a non-HTML download{} — \
+                 aborting to avoid corrupting saved file; {}",
+                evidence.content_type(),
+                evidence.detail(),
+                html_response_hint(url, Some(resp.url()), method)
+            )));
+        }
+        Ok(())
+    }
+
+    fn unexpected_html_evidence(
+        &self,
+        resp: &reqwest::Response,
+        url: &str,
+    ) -> Option<HtmlEvidence> {
+        if self.expects_html {
+            return None;
+        }
+        let mime = html_mime(response_content_type(resp)).map(HtmlEvidence::Mime);
+        if mime.is_some() && !self.accepts_html_attachment {
+            return mime;
+        }
+        if !resp
+            .headers()
+            .contains_key(reqwest::header::CONTENT_DISPOSITION)
+        {
+            return mime;
+        }
+        let name = extract_filename(resp.headers(), url, resp.url().as_str());
+        if self.accepts_html_attachment
+            && is_html_attachment(resp.headers(), &name.name, name.source)
+        {
+            return None;
+        }
+        mime.or_else(|| html_disposition_evidence(&name.name, name.source))
+    }
 }
 
 /// HTML 安全网文案的成因提示（接在「server returned HTML page …」之后）。
@@ -3712,12 +3929,21 @@ pub(crate) async fn finalize_output(
     })
 }
 
-pub async fn run_download(mut params: DownloadParams) {
+pub async fn run_download(params: DownloadParams) {
+    run_download_mode(params, false).await;
+}
+
+pub(crate) async fn run_download_mode(mut params: DownloadParams, html_only: bool) {
     let task_id_log = params.task_id.clone();
     let preprobed = params.preprobed.take();
-    let result = match run_download_inner(&mut params, preprobed).await {
+    let result = match run_download_inner(&mut params, preprobed, html_only).await {
         Ok((total, renamed)) => {
-            match finalize_output(&params, crate::intercept::ProtocolKind::Http).await {
+            let replaced = if html_only {
+                Ok(None)
+            } else {
+                finalize_output(&params, crate::intercept::ProtocolKind::Http).await
+            };
+            match replaced {
                 Ok(replaced) => {
                     let (total, renamed) = match replaced {
                         Some((name, size)) => (size, Some(name)),
@@ -4005,6 +4231,7 @@ async fn discard_segment_data(db: &Db, task_id: &str, path: &Path) -> Result<(),
 async fn run_download_inner(
     p: &mut DownloadParams,
     preprobed: Option<Result<PreprobedInfo, DownloadError>>,
+    html_only: bool,
 ) -> Result<(i64, Option<String>), DownloadError> {
     log_info!(
         "[download] task {} starting, url={}",
@@ -4132,6 +4359,7 @@ async fn run_download_inner(
             p.hint_file_size
         );
         FileInfo {
+            html_attachment: false,
             file_name: name,
             name_source: crate::naming::NameSource::Fallback,
             total_bytes: effective_size,
@@ -4255,38 +4483,38 @@ async fn run_download_inner(
     let connection_cap = probed_decision.max_connections.unwrap_or(p.connection_cap);
     // 单请求探测的响应终点（跟随重定向后），供下方 HTML 安全网点出被带去的页面。
     let probe_final_url = held_response.as_ref().map(|resp| resp.url().clone());
-    let spec_ref = std::sync::Arc::new(
-        DownloadSpec::new(applied_spec.unwrap_or_else(|| p.spec.clone()))
-            .with_connection_cap(connection_cap)
-            .with_held_response(held_response)
-            .with_refresher(crate::intercept::Refresher::for_params(
-                p,
-                crate::intercept::ProtocolKind::Http,
-            )),
-    );
+    let mut spec = DownloadSpec::new(applied_spec.unwrap_or_else(|| p.spec.clone()))
+        .with_connection_cap(connection_cap)
+        .with_held_response(held_response)
+        .with_refresher(crate::intercept::Refresher::for_params(
+            p,
+            crate::intercept::ProtocolKind::Http,
+        ));
+    spec.html_only = html_only;
+    if !html_only {
+        let inferred = p.file_name.is_empty() || p.db.get_task_naming_state(&p.task_id).await?.0;
+        spec.accepts_html_attachment = inferred;
+        spec.expects_html = if inferred {
+            // Only the requested URL, never a redirect or MIME-derived name,
+            // can establish HTML intent for an inferred target.
+            name_from_url(&p.url).is_some_and(|name| filename_looks_like_html(&name.name))
+        } else {
+            filename_looks_like_html(&p.file_name)
+        };
+    }
+    let spec_ref = std::sync::Arc::new(spec);
 
-    // Safety net (probe 阶段)：服务器在 probe 阶段返回 HTML 但用户期望二进制
-    // 文件——典型场景：Lanzou 等 CDN transit page、form-POST 端点用 GET 访问。
-    // 立即终止，避免落盘成 fake.zip 这类损坏文件。
-    //
-    // 第二道防线在 download_single 的 req.send() 后做实际响应的 Content-Type 检查
-    // （通过 build_request 发起，见 :2335 附近），覆盖 hint_file_size 旁路场景。
-    if !info.content_type.is_empty() {
-        let ct_lower = info.content_type.to_ascii_lowercase();
-        let mime = ct_lower.split(';').next().unwrap_or("").trim();
-        if mime == "text/html" || mime == "application/xhtml+xml" {
-            let expected = if p.file_name.is_empty() {
-                &info.file_name
-            } else {
-                &p.file_name
-            };
-            if !filename_looks_like_html(expected) {
-                return Err(DownloadError::Other(format!(
-                    "server returned HTML page (Content-Type: {mime}) instead of the expected file — {}",
-                    html_response_hint(&p.url, probe_final_url.as_ref(), &p.spec.method)
-                )));
-            }
-        }
+    // A hinted filename is not response evidence; hinted downloads are checked when data arrives.
+    if !(spec_ref.expects_html || spec_ref.accepts_html_attachment && info.html_attachment)
+        && p.hint_file_size == 0
+        && let Some(evidence) = html_evidence(&info.content_type, &info.file_name, info.name_source)
+    {
+        return Err(DownloadError::UnexpectedHtml(format!(
+            "{UNEXPECTED_HTML_PREFIX}{}) instead of the expected file{} — {}",
+            evidence.content_type(),
+            evidence.detail(),
+            html_response_hint(&p.url, probe_final_url.as_ref(), &p.spec.method)
+        )));
     }
 
     // 早期取消检查：probe 完成后、创建文件之前检测 pause/delete，
@@ -4559,6 +4787,7 @@ async fn run_download_inner(
     //     full body, corrupting the assembled output. Force single-stream
     //     for non-GET to make uupdump-style form-POST downloads safe.
     let use_segments = effective_supports_range
+        && !html_only
         && effective_total_bytes > 1_048_576
         && (segments > 1 || resume_has_segments)
         && p.spec.is_get_like();
@@ -4742,7 +4971,6 @@ async fn run_download_inner(
                     &p.cancel_token,
                     &p.speed_limiter,
                     &spec_ref,
-                    &actual_name,
                     &resume_etag,
                     &resume_last_modified,
                     false,
@@ -4797,7 +5025,6 @@ async fn run_download_inner(
             &p.cancel_token,
             &p.speed_limiter,
             &spec_ref,
-            &actual_name,
             &resume_etag,
             &resume_last_modified,
             p.is_resume,
@@ -5049,7 +5276,11 @@ async fn run_download_inner(
     // 完成期定名：引擎推断的名字（HEAD 被拒 / 无 Content-Disposition 时的 URL 占位、
     // 无扩展名、脚本端点名）按实际响应证据与文件头魔数精修；显式名只在缺类型扩展名
     // 时补扩展名，主名不改。精修名没有启动期预订，同样经下方原子占名环避让冲突。
-    let target_name = refine_completed_name(p, &temp_path, &actual_name).await;
+    let target_name = if html_only {
+        actual_name.clone()
+    } else {
+        refine_completed_name(p, &temp_path, &actual_name).await
+    };
     let mut chosen = target_name.clone();
     let mut avoid: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut avoid_loaded = false;
@@ -5409,7 +5640,6 @@ async fn download_single(
     cancel_token: &CancellationToken,
     speed_limiter: &SpeedLimiter,
     spec: &DownloadSpec,
-    expected_filename: &str,
     expected_etag: &str,
     expected_last_modified: &str,
     is_resume: bool,
@@ -5440,7 +5670,6 @@ async fn download_single(
             cancel_token,
             speed_limiter,
             spec,
-            expected_filename,
             &etag_baseline,
             &last_modified_baseline,
             is_resume,
@@ -5640,7 +5869,6 @@ async fn download_single_once(
     cancel_token: &CancellationToken,
     speed_limiter: &SpeedLimiter,
     spec: &DownloadSpec,
-    expected_filename: &str,
     // 续传一致性校验：probe 阶段看到的文件版本标识。Range 206 返回后与响应
     // validator 做后验比对，避免发送可能作废一次性签名 URL 的 If-Range。
     expected_etag: &str,
@@ -5663,7 +5891,12 @@ async fn download_single_once(
 
     // 续传时临时文件已写满（收尾阶段被中断/失败）：无需任何网络请求，直接交给
     // 调用方的完整性检查与收尾，避免把数 GB 整文件从 0 重下。
-    if is_resume && !clean_boundary && total_bytes > 0 && physical_existing_len == total_bytes {
+    if !spec.html_only
+        && is_resume
+        && !clean_boundary
+        && total_bytes > 0
+        && physical_existing_len == total_bytes
+    {
         log_info!(
             "[download-single] task {} temp file already holds all {} bytes; skipping download",
             task_id,
@@ -5692,7 +5925,8 @@ async fn download_single_once(
     // 保留响应只出现在 fresh 运行（GET 类）或非 GET 请求上；后者从不按 Range 续传，即使
     // 任务以续传身份进入也必须消费它，否则同一表单会被再提交一次。
     let use_held = spec.has_held_response();
-    let want_resume = spec.current().is_get_like()
+    let want_resume = !spec.html_only
+        && spec.current().is_get_like()
         && supports_range
         && !use_held
         && physical_existing_len > 0
@@ -5917,42 +6151,11 @@ async fn download_single_once(
         }
     }
 
-    // ---- Safety net: HTML response on a binary download ---------------------
-    //
-    // 兜底 hint_file_size > 0 旁路（行 1480-1536）跳过 probe 的场景：
-    // 当扩展端给出一次性 CDN URL 的 fileSize 提示时，downloader 跳过 probe
-    // 直接进入下载，但若 CDN 实际返回 HTML 错误页（token 已被消费、签名过期、
-    // 站点改用 form POST 等），会落盘成 fake.zip 这类损坏文件。
-    //
-    // 这里在 send 后第一时间检查 Content-Type——发现 text/html 但用户期望
-    // 二进制文件时立即终止下载，确保即使协议升级出问题也绝不再发生
-    // "HTML 当 zip 保存"的损坏。
-    {
-        let ct_raw = resp
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        let mime = ct_raw
-            .split(';')
-            .next()
-            .unwrap_or("")
-            .trim()
-            .to_ascii_lowercase();
-        if (mime == "text/html" || mime == "application/xhtml+xml")
-            && !filename_looks_like_html(expected_filename)
-        {
-            return Err(DownloadError::Other(format!(
-                "server returned HTML page (Content-Type: {mime}) for a non-HTML download — \
-                 aborting to avoid corrupting saved file; {}",
-                html_response_hint(
-                    spec.route_url(url).as_deref().unwrap_or(url),
-                    Some(resp.url()),
-                    &used.method,
-                )
-            )));
-        }
-    }
+    spec.check_html_response(
+        &resp,
+        spec.route_url(url).as_deref().unwrap_or(url),
+        &used.method,
+    )?;
 
     // 第一道闸：拒绝任何【无法完整还原】的响应压缩——必须在 detect_content_encoding
     // 解压分支之前判定。原因（BUG-HTTP-LAYERED-ENCODING-UNREACHABLE）：
@@ -6106,8 +6309,13 @@ async fn download_single_once(
     // downloader 内部不再变更文件名，避免与 manager 的 reserved_temp_paths
     // 协调断裂导致并发下载冲突（参见 PR #296 自我冲突回归 bug）。
 
-    // Wrap with decompression if needed.  The stream now yields
-    // Result<Bytes, io::Error> regardless of whether decompression is active.
+    // A filename can trigger the safety net, but cannot establish the replay's format.
+    let mut html_prefix = if spec.html_only && html_mime(response_content_type(&resp)).is_none() {
+        Some(([0u8; 512], 0usize))
+    } else {
+        None
+    };
+    // The stream yields Result<Bytes, io::Error> with or without decompression.
     let raw_stream = resp.bytes_stream();
     let mut stream = maybe_decompress_stream(raw_stream, encoding);
 
@@ -6174,6 +6382,17 @@ async fn download_single_once(
                 };
                 match chunk {
                     Some(Ok(bytes)) => {
+                        if let Some((prefix, len)) = &mut html_prefix {
+                            let count = bytes.len().min(prefix.len() - *len);
+                            prefix[*len..*len + count].copy_from_slice(&bytes[..count]);
+                            *len += count;
+                            if *len == prefix.len() {
+                                if !has_html_signature(prefix) {
+                                    return Err(DownloadError::Other(HTML_RESPONSE_CHANGED_MESSAGE.into()));
+                                }
+                                html_prefix = None;
+                            }
+                        }
                         // --- Speed limiter: write in sub-chunks as tokens allow ---
                         // 令牌等待必须与取消竞速：低限速下一个 chunk 要等数秒，
                         // 期间暂停/删除不能被挡在 select 分支体外。
@@ -6240,6 +6459,12 @@ async fn download_single_once(
         }
     }
 
+    if spec.html_only
+        && (downloaded == 0
+            || html_prefix.is_some_and(|(prefix, len)| !has_html_signature(&prefix[..len])))
+    {
+        return Err(DownloadError::Other(HTML_RESPONSE_CHANGED_MESSAGE.into()));
+    }
     drop(reading);
     if progress_tx
         .send(ProgressUpdate {
@@ -6681,6 +6906,56 @@ mod tests {
             None
         );
         assert_eq!(super::infer_origin_referrer("not-a-valid-url"), None);
+    }
+
+    #[test]
+    fn only_successful_html_failure_is_eligible_for_saving() {
+        for (message, expected) in [
+            (
+                "server returned HTML page (Content-Type: text/html) instead of the expected file — hint",
+                true,
+            ),
+            (
+                "server returned HTML page (Content-Type: non-HTML or missing) for a non-HTML download (HTML response filename) — hint",
+                true,
+            ),
+            (
+                "server returned HTML page (Content-Type: text/html) — HTTP 403 Forbidden",
+                false,
+            ),
+            ("request failed: HTTP 403 Forbidden", false),
+        ] {
+            assert_eq!(super::can_save_html_failure(message), expected, "{message}");
+        }
+    }
+
+    #[test]
+    fn replay_sniff_requires_html_after_prelude() {
+        for (body, expected) in [
+            (
+                b"\xef\xbb\xbf\n<!-- page --><H1>Shared file</H1>".as_slice(),
+                true,
+            ),
+            (b"<table><tr><td>Report</td></tr></table>", true),
+            (b"<a href=\"/file\">File</a>", true),
+            (b"<form action=\"/login\"></form>", true),
+            (b"<h2>Files</h2>", true),
+            (b"<ul><li>File</li></ul>", true),
+            (b"<ol><li>File</li></ol>", true),
+            (b"<br/>Continue", true),
+            (b"<span>Continue</span>", true),
+            (b"<img src=\"banner.png\" />", true),
+            (b"<section>Files</section>", true),
+            (b"<?xml version=\"1.0\"?><html>Page</html>", true),
+            (b"<?xml version=\"1.0\"?><svg></svg>", false),
+            (b"<!-- archive metadata -->PK\x03\x04", false),
+            (b"<!-- pending", false),
+            (b"<archive>Archive</archive>", false),
+            (b"<section-data>Export</section-data>", false),
+            (b"<table", false),
+        ] {
+            assert_eq!(super::has_html_signature(body), expected, "{body:?}");
+        }
     }
 
     /// HTML 安全网：被重定向到登录 / 错误页时点出终点（不带 query 里的令牌），且路径里
@@ -9701,7 +9976,6 @@ mod single_resume_tests {
             &CancellationToken::new(),
             &SpeedLimiter::new(0),
             &super::DownloadSpec::new(spec),
-            "f.bin",
             "",
             "",
             is_resume,
@@ -10522,7 +10796,7 @@ mod single_resume_tests {
         let attempt = || {
             download_single(
                 "second", &url, &dest, 17, false, &client, &db, &NoopSink, &tx, &cancel, &limiter,
-                &spec, "f.bin", "", "", false,
+                &spec, "", "", false,
             )
         };
         assert!(matches!(
@@ -10535,7 +10809,7 @@ mod single_resume_tests {
         paused.cancel();
         let paused_result = download_single(
             "second", &url, &dest, 17, false, &client, &db, &NoopSink, &tx, &paused, &limiter,
-            &spec, "f.bin", "", "", false,
+            &spec, "", "", false,
         )
         .await;
         assert!(matches!(paused_result, Err(DownloadError::Cancelled)));

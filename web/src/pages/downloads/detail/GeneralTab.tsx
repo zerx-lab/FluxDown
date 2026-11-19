@@ -103,7 +103,7 @@ export function GeneralTab({ view }: { view: DownloadTaskView }) {
           <DetailRow label={t('infoError')}>
             <div className="flex items-center gap-1">
               <span className="min-w-0 flex-1 break-all text-destructive">{localizeTaskError(t, view.errorMessage)}</span>
-              <CopyButton text={localizeTaskError(t, view.errorMessage)} label={t('detailCopyError')} copiedLabel={t('detailErrorCopied')} />
+              <CopyButton text={view.errorMessage} label={t('detailCopyError')} copiedLabel={t('detailErrorCopied')} />
             </div>
           </DetailRow>
         ) : null}

@@ -231,6 +231,8 @@ pub struct TaskInfo {
     pub source_bytes: SourceBytes,
     /// Non-secret task-level overrides; request credentials live in the credential store.
     pub properties: crate::task_edit::TaskProperties,
+    /// Explicit save-as-HTML task; never a candidate for ordinary URL deduplication.
+    pub html_only: bool,
 }
 
 /// 按加速来源累计的已写入字节。
