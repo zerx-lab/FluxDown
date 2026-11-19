@@ -47,6 +47,11 @@ impl DownloadManager {
             return Err("edit-busy".into());
         }
         let edit = task_edit::prepare(&self.db, patch).await?;
+        if edit.original.file_name != edit.updated.file_name
+            || edit.original.save_dir != edit.updated.save_dir
+        {
+            self.check_file_clear_path_edit(&edit.original)?;
+        }
         #[cfg(feature = "bt")]
         if edit.relocate
             && super::is_bt_url(&edit.original.url)

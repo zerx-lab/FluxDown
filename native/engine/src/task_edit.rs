@@ -497,14 +497,20 @@ impl Db {
         let headers = serde_json::to_string(&edit.headers)
             .map_err(|_| DbError::InvalidConfig("task headers encoding failed".into()))?;
         let mut tx = self.pool().begin().await?;
-        let result = sqlx::query("UPDATE tasks SET name_inferred = CASE WHEN file_name <> $1 THEN 0 ELSE name_inferred END,
-            category_route = CASE WHEN save_dir <> $2 THEN '' ELSE category_route END,
-            file_name = $1, save_dir = $2, proxy_url = $3, segments = $4, edit_properties = $5,
+        // An unchanged field must not overwrite a name concurrently bound by the start prelude.
+        let result = sqlx::query("UPDATE tasks SET name_inferred = CASE WHEN $11 AND file_name <> $1 THEN 0 ELSE name_inferred END,
+            category_route = CASE WHEN $12 AND save_dir <> $2 THEN '' ELSE category_route END,
+            file_name = CASE WHEN $11 THEN $1 ELSE file_name END,
+            save_dir = CASE WHEN $12 THEN $2 ELSE save_dir END,
+            proxy_url = $3, segments = $4, edit_properties = $5,
             cookies = $6, referrer = $7, extra_headers = $8, exists_decision = '', bt_download_limit_bps = $9
             WHERE id = $10")
             .bind(&edit.updated.file_name).bind(&edit.updated.save_dir).bind(&edit.updated.proxy_url)
             .bind(edit.updated.segments).bind(props).bind(&edit.cookies).bind(&edit.referrer).bind(headers)
-            .bind(edit.updated.bt_download_limit_bps).bind(&edit.updated.task_id).execute(&mut *tx).await?;
+            .bind(edit.updated.bt_download_limit_bps).bind(&edit.updated.task_id)
+            .bind(edit.original.file_name != edit.updated.file_name)
+            .bind(edit.original.save_dir != edit.updated.save_dir)
+            .execute(&mut *tx).await?;
         if result.rows_affected() != 1 {
             return Err(sqlx::Error::RowNotFound.into());
         }
