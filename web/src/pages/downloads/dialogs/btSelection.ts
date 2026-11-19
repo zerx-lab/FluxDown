@@ -1,13 +1,21 @@
-import { builtinDefaults } from '../model/categories'
+import type { CustomCategoryDto } from '../../../lib/rpc'
+import { BUILTIN_OTHER_ID } from '../model/categories'
 
-const categoryByExtension = new Map(builtinDefaults().flatMap((category) =>
-  category.extensions.map((extension) => [extension, category.builtinType ?? 'other'] as const),
-))
-
-export function btFileCategory(path: string): string {
-  const name = path.slice(path.lastIndexOf('/') + 1)
-  const dot = name.lastIndexOf('.')
-  return (dot > 0 ? categoryByExtension.get(name.slice(dot + 1).toLowerCase()) : undefined) ?? 'other'
+export function btCategoryClassifier(rules: readonly CustomCategoryDto[]) {
+  const other = rules.find((rule) => rule.builtinType === 'other')?.id ?? BUILTIN_OTHER_ID
+  const byExtension = new Map<string, string>()
+  for (const rule of rules) {
+    if (rule.matchMode !== 'extension' || rule.builtinType === 'all' || rule.builtinType === 'other') continue
+    for (const raw of rule.extensions) {
+      const extension = raw.replace(/^\.+/, '').toLowerCase()
+      if (extension && !byExtension.has(extension)) byExtension.set(extension, rule.id)
+    }
+  }
+  return (path: string): string => {
+    const name = path.slice(path.lastIndexOf('/') + 1)
+    const dot = name.lastIndexOf('.')
+    return (dot > 0 ? byExtension.get(name.slice(dot + 1).toLowerCase()) : undefined) ?? other
+  }
 }
 
 export function btFileMatches(name: string, size: number, category: string, query: string, minSize: number, categories: ReadonlySet<string>): boolean {

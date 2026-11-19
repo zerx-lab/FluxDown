@@ -65,7 +65,8 @@ struct BtFilter {
     query: String,
     min_size: i64,
     categories: HashSet<usize>,
-    counts: [usize; BT_CATEGORY_KEYS.len()],
+    counts: Vec<usize>,
+    rules: Vec<CustomCategoryDto>,
     file_categories: Vec<usize>,
 }
 
@@ -101,6 +102,23 @@ fn bt_file_matches(
 
 fn bt_basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
+}
+
+fn bt_category(path: &str, rules: &[CustomCategoryDto], other: usize) -> usize {
+    bt_basename(path)
+        .rsplit_once('.')
+        .filter(|(stem, ext)| !stem.is_empty() && !ext.is_empty())
+        .and_then(|(_, ext)| {
+            rules.iter().position(|rule| {
+                rule.match_mode == "extension"
+                    && !matches!(rule.builtin_type.as_deref(), Some("all" | "other"))
+                    && rule
+                        .extensions
+                        .iter()
+                        .any(|value| value.trim_start_matches('.').eq_ignore_ascii_case(ext))
+            })
+        })
+        .unwrap_or(other)
 }
 
 pub struct SelectionView {
@@ -149,11 +167,15 @@ enum SelectionState {
 /// `FileExists` 由聚合的「文件已存在」窗口承载（见 [`crate::FileConflictView`]），没有计划。
 pub struct SelectionPlan {
     state: SelectionState,
+    categories: Vec<CustomCategoryDto>,
 }
 
 impl SelectionPlan {
     #[must_use]
-    pub fn for_request(request: &SelectionRequestDto) -> Option<Self> {
+    pub fn for_request(
+        request: &SelectionRequestDto,
+        categories: Vec<CustomCategoryDto>,
+    ) -> Option<Self> {
         let state = match request.kind.clone() {
             SelectionKind::Hls { options } => {
                 let selected = match request.default_choice {
@@ -200,7 +222,7 @@ impl SelectionPlan {
             }
             SelectionKind::FileExists { .. } => return None,
         };
-        Some(Self { state })
+        Some(Self { state, categories })
     }
 }
 
@@ -218,6 +240,7 @@ impl SelectionView {
     ) -> Self {
         let strings = SelectionStrings::from_translator(translator.read(cx));
         let state = plan.state;
+        let mut categories = plan.categories;
         let save_dir_input = match &state {
             SelectionState::Bt { save_dir, .. } => {
                 let initial = save_dir.clone();
@@ -255,27 +278,16 @@ impl SelectionView {
                     }
                 })
                 .detach();
-                let defaults = CustomCategoryDto::builtin_defaults();
-                let mut counts = [0; BT_CATEGORY_KEYS.len()];
+                categories.sort_by_key(|category| category.position);
+                let other = categories
+                    .iter()
+                    .position(|category| category.builtin_type.as_deref() == Some("other"))
+                    .unwrap_or(categories.len());
+                let mut counts = vec![0; categories.len().max(other + 1)];
                 let file_categories = files
                     .iter()
                     .map(|file| {
-                        let category = bt_basename(&file.path)
-                            .rsplit_once('.')
-                            .filter(|(stem, _)| !stem.is_empty())
-                            .and_then(|(_, ext)| {
-                                defaults.iter().find(|category| {
-                                    category
-                                        .extensions
-                                        .iter()
-                                        .any(|value| value.eq_ignore_ascii_case(ext))
-                                })
-                            })
-                            .and_then(|category| category.builtin_type.as_deref())
-                            .and_then(|kind| {
-                                BT_CATEGORY_KEYS.iter().position(|(id, _)| *id == kind)
-                            })
-                            .unwrap_or(BT_CATEGORY_KEYS.len() - 1);
+                        let category = bt_category(&file.path, &categories, other);
                         counts[category] += 1;
                         category
                     })
@@ -287,6 +299,7 @@ impl SelectionView {
                     min_size: 0,
                     categories: HashSet::new(),
                     counts,
+                    rules: categories,
                     file_categories,
                 })
             }
@@ -749,6 +762,15 @@ impl SelectionView {
                 .enumerate()
                 .filter(|(_, count)| **count > 0)
                 .map(|(category, count)| {
+                    let rule = filter.rules.get(category);
+                    let kind = rule.map_or(Some("other"), |rule| rule.builtin_type.as_deref());
+                    let label = BT_CATEGORY_KEYS
+                        .iter()
+                        .position(|(id, _)| Some(*id) == kind)
+                        .map_or_else(
+                            || rule.map_or("", |rule| rule.name.as_str()),
+                            |index| self.strings.bt_categories[index].as_ref(),
+                        );
                     let button = Button::new(("bt-category", category));
                     let button = if filter.categories.contains(&category) {
                         button.primary()
@@ -757,7 +779,7 @@ impl SelectionView {
                     };
                     button
                         .control(cx)
-                        .label(format!("{} {count}", self.strings.bt_categories[category]))
+                        .label(format!("{label} {count}"))
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             if let Some(filter) = &mut this.bt_filter
                                 && !filter.categories.remove(&category)
@@ -1208,12 +1230,13 @@ mod tests {
     use std::collections::HashSet;
 
     use fluxdown_protocol::{
-        SELECTION_NO_DEADLINE, SelectionKind, SelectionOutcome, SelectionRequestDto,
+        CustomCategoryDto, SELECTION_NO_DEADLINE, SelectionKind, SelectionOutcome,
+        SelectionRequestDto,
     };
 
     use super::{
-        BT_CATEGORY_KEYS, BT_MIN_SIZES, SelectionState, bt_file_matches, bt_name_outcome,
-        bt_save_dir_confirmable, bt_save_dir_outcome, cancel_command,
+        BT_CATEGORY_KEYS, BT_MIN_SIZES, SelectionState, bt_category, bt_file_matches,
+        bt_name_outcome, bt_save_dir_confirmable, bt_save_dir_outcome, cancel_command,
     };
     use crate::controller::DownloadsCommand;
 
@@ -1365,6 +1388,24 @@ mod tests {
             path: path.to_owned(),
             size,
         }
+    }
+
+    #[test]
+    fn bt_category_uses_configured_extensions_and_falls_back_to_other() {
+        let mut rules = CustomCategoryDto::builtin_defaults();
+        let mut subtitles = rules[1].clone();
+        subtitles.builtin_type = None;
+        subtitles.extensions = vec![".SRT".into()];
+        rules[1].extensions = vec!["avi".into()];
+        rules.insert(1, subtitles.clone());
+        subtitles.match_mode = "regex".into();
+        rules.insert(0, subtitles);
+        let other = rules.len() - 1;
+
+        assert_eq!(bt_category("Season/Track.srt", &rules, other), 2);
+        assert_eq!(bt_category("Season/Video.AVI", &rules, other), 3);
+        assert_eq!(bt_category("Season/Video.mkv", &rules, other), other);
+        assert_eq!(bt_category("Season.srt/.srt", &rules, other), other);
     }
 
     #[test]

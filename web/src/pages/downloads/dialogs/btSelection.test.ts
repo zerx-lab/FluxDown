@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
-import { btFileCategory, btFileMatches, btSelectionCanConfirm, btSelectionName, btSelectionSaveDir } from './btSelection'
+import { builtinDefaults, categoriesFromPreference } from '../model/categories'
+import { btCategoryClassifier, btFileMatches, btSelectionCanConfirm, btSelectionName, btSelectionSaveDir } from './btSelection'
 
 describe('btSelectionSaveDir', () => {
   test('未改、空白、与预填相同都不下发', () => {
@@ -51,14 +52,28 @@ test('BT filters intersect full path, minimum size (binary MB) and any selected 
     { index: 42, path: 'Season/Trailer.srt', size: min },
     { index: 50, path: 'Season/other.mkv', size: min },
   ]
-  const categories = new Set(['video', 'audio'])
+  const categories = new Set(['builtin_video', 'builtin_audio'])
+  const classify = btCategoryClassifier(builtinDefaults())
   expect(files.filter(({ path, size }) =>
-    btFileMatches(path, size, btFileCategory(path), 'trailer', min, categories),
+    btFileMatches(path, size, classify(path), 'trailer', min, categories),
   ).map(({ index }) => index)).toEqual([8, 23, 37])
   expect(btFileMatches('Season/Trailer.srt', min, 'other', 'srt', 0, new Set())).toBe(true)
 })
 
 test('dots in directories and leading dots do not determine the file category', () => {
-  expect(btFileCategory('Season.mkv/README')).toBe('other')
-  expect(btFileCategory('Extras/.mkv')).toBe('other')
+  const classify = btCategoryClassifier(builtinDefaults())
+  expect(classify('Season.mkv/README')).toBe('builtin_other')
+  expect(classify('Extras/.mkv')).toBe('builtin_other')
+})
+
+test('BT category filtering honors saved custom categories and edited built-in extensions', () => {
+  const video = { ...builtinDefaults()[1]!, extensions: ['avi'], position: 3 }
+  const subtitles = { ...video, id: 'subtitles', builtinType: null, name: 'Subtitles', position: 2, extensions: ['.SRT', 'avi'] }
+  const regex = { ...subtitles, id: 'regex', position: 1, matchMode: 'regex' }
+  const classify = btCategoryClassifier(categoriesFromPreference([video, subtitles, regex]))
+  const paths = ['Season/Track.srt', 'Season/Track.AVI', 'Season/Track.mkv']
+  const selected = new Set(['subtitles'])
+
+  expect(paths.filter((path) => btFileMatches(path, 1, classify(path), '', 0, selected))).toEqual(paths.slice(0, 2))
+  expect(classify(paths[2]!)).toBe('builtin_other')
 })

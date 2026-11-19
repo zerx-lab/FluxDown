@@ -66,7 +66,7 @@ private struct SelectionHost: View {
         switch request.kind {
         #if FULL_FLAVOR
         case let .bt(files, _):
-            BtSelectionView(request: request, files: files, task: task, resolver: resolver, close: { dismiss() })
+            BtSelectionView(request: request, files: files, task: task, categories: container.store.state.categories, resolver: resolver, close: { dismiss() })
                 .id(request.requestId)
         case let .variant(options):
             VariantSelectionView(request: request, options: options, task: task, resolver: resolver, close: { dismiss() })
@@ -106,11 +106,16 @@ private func hlsLabel(height: Int64, bandwidth: Int64) -> String {
 
 private let btMinimumSizes: [Int64] = [0, 10 << 20, 100 << 20, 1 << 30]
 
-private func btCategory(_ path: String) -> String {
+private func btCategory(_ path: String, rules: [TaskCategory], other: String) -> String {
     let name = path.split(separator: "/", omittingEmptySubsequences: false).last ?? ""
-    guard let dot = name.lastIndex(of: "."), dot != name.startIndex else { return "other" }
+    guard let dot = name.lastIndex(of: "."), dot != name.startIndex else { return other }
     let ext = name[name.index(after: dot)...].lowercased()
-    return TaskCategory.builtin.first { $0.extensions.contains(ext) }?.builtinType ?? "other"
+    guard !ext.isEmpty else { return other }
+    return rules.first { rule in
+        rule.builtinType != "all" && rule.builtinType != "other"
+            && rule.regexPattern.isEmpty && rule.urlPattern.isEmpty
+            && rule.extensions.contains { $0.drop(while: { $0 == "." }).lowercased() == ext }
+    }?.id ?? other
 }
 
 private func btMinimumSizeLabel(_ size: Int64) -> String {
@@ -127,6 +132,7 @@ private struct BtSelectionView: View {
     let task: DownloadTask?
     let resolver: SelectionResolver
     let close: SelectionClose
+    private let categoryRules: [TaskCategory]
     private let categoryByIndex: [Int32: String]
     private let categoryCounts: [String: Int]
 
@@ -144,15 +150,20 @@ private struct BtSelectionView: View {
     @State private var initialName: String
     @State private var name: String
 
-    init(request: SelectionRequest, files: [BtFile], task: DownloadTask?, resolver: SelectionResolver, close: @escaping SelectionClose) {
+    init(request: SelectionRequest, files: [BtFile], task: DownloadTask?, categories: [TaskCategory], resolver: SelectionResolver, close: @escaping SelectionClose) {
         self.request = request
         self.files = files
         self.task = task
         self.resolver = resolver
         self.close = close
-        let categories = files.count > 1 ? files.map { ($0.index, btCategory($0.path)) } : []
-        categoryByIndex = Dictionary(categories, uniquingKeysWith: { first, _ in first })
-        categoryCounts = categories.reduce(into: [:]) { $0[$1.1, default: 0] += 1 }
+        let rules = (categories.isEmpty ? TaskCategory.builtin : categories).sorted { $0.position < $1.position }
+        let other = rules.first(where: \.isOther)
+        let fallback = TaskCategory.builtin.filter(\.isOther)
+        categoryRules = other == nil ? rules + fallback : rules
+        let otherID = other?.id ?? fallback.first?.id ?? "builtin_other"
+        let classified = files.count > 1 ? files.map { ($0.index, btCategory($0.path, rules: rules, other: otherID)) } : []
+        categoryByIndex = Dictionary(classified, uniquingKeysWith: { first, _ in first })
+        categoryCounts = classified.reduce(into: [:]) { $0[$1.1, default: 0] += 1 }
         let root = buildBtTree(files)
         var defaults: [Int32] = []
         if case let .bt(indices, _, _) = request.defaultChoice { defaults = indices }
@@ -178,7 +189,7 @@ private struct BtSelectionView: View {
         let filtering = filtersExpanded && (!query.isEmpty || !filterCategories.isEmpty || minimumSize > 0)
         let visibleFiles = filtering ? files.filter { file in
             (minimumSize == 0 || file.size >= minimumSize)
-                && (filterCategories.isEmpty || filterCategories.contains(categoryByIndex[file.index] ?? "other"))
+                && (filterCategories.isEmpty || categoryByIndex[file.index].map { filterCategories.contains($0) } == true)
                 && (query.isEmpty || file.path.lowercased().contains(query))
         } : files
         let rows = flattenBtTree(filtering ? buildBtTree(visibleFiles) : tree, collapsed: filtering ? [] : collapsed)
@@ -260,8 +271,9 @@ private struct BtSelectionView: View {
                 .autocorrectionDisabled()
             ScrollView(.horizontal) {
                 HStack {
-                    ForEach(TaskCategory.builtin, id: \.id) { category in
-                        if let kind = category.builtinType, let count = categoryCounts[kind] {
+                    ForEach(categoryRules, id: \.id) { category in
+                        if let count = categoryCounts[category.id] {
+                            let kind = category.id
                             let active = filterCategories.contains(kind)
                             Button {
                                 if active { filterCategories.remove(kind) } else { filterCategories.insert(kind) }

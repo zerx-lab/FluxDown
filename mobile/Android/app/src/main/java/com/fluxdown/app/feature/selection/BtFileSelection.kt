@@ -39,12 +39,11 @@ import androidx.compose.ui.unit.dp
 import com.fluxdown.app.R
 import com.fluxdown.app.i18n.str
 import com.fluxdown.app.shell.hostState
-import com.fluxdown.app.ui.fileCategory
 import com.fluxdown.app.ui.label
+import com.fluxdown.app.ui.tileIcon
 import com.fluxdown.core.format.Format
 import com.fluxdown.core.model.BtFile
 import com.fluxdown.core.model.Category
-import com.fluxdown.core.model.CategoryIndex
 import com.fluxdown.core.model.SelectionKind
 import com.fluxdown.core.model.SelectionOutcome
 import com.fluxdown.core.model.btNameOutcome
@@ -54,7 +53,6 @@ import com.fluxdown.fluxui.controls.FluxButton
 import com.fluxdown.fluxui.controls.FluxCheckbox
 import com.fluxdown.fluxui.controls.FluxDivider
 import com.fluxdown.fluxui.controls.FluxField
-import com.fluxdown.fluxui.data.fileTileIcon
 import com.fluxdown.fluxui.icons.FluxIcon
 import com.fluxdown.fluxui.icons.FluxIcons
 import com.fluxdown.fluxui.overlay.FluxSheet
@@ -125,11 +123,17 @@ private fun flatten(folder: BtFolderNode, collapsed: Set<String>, out: MutableLi
 
 private val btSizeChoices = listOf(0L to "", 10L shl 20 to "10 MB", 100L shl 20 to "100 MB", 1L shl 30 to "1 GB")
 
-private fun btCategory(path: String): String {
+private val btOtherCategory = Category.BUILTIN.last { it.isOther }
+
+private fun btCategory(path: String, rules: List<Category>, other: Category): Category {
     val name = path.substringAfterLast('/')
     val dot = name.lastIndexOf('.')
-    val extension = if (dot > 0) name.substring(dot + 1).lowercase() else ""
-    return Category.BUILTIN.firstOrNull { extension in it.extensions }?.builtinType ?: "other"
+    if (dot <= 0 || dot == name.lastIndex) return other
+    val extension = name.substring(dot + 1)
+    return rules.firstOrNull { rule ->
+        !rule.isAll && !rule.isOther && rule.regexPattern.isEmpty() && rule.urlPattern.isEmpty() &&
+            rule.extensions.any { it.trimStart('.').equals(extension, ignoreCase = true) }
+    } ?: other
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -137,6 +141,7 @@ private fun btCategory(path: String): String {
 private fun BtFilters(
     query: String,
     onQuery: (String) -> Unit,
+    rules: List<Category>,
     counts: Map<String, Int>,
     categories: Set<String>,
     toggleCategory: (String) -> Unit,
@@ -145,8 +150,8 @@ private fun BtFilters(
 ) {
     FluxField(value = query, onValueChange = onQuery, label = str(R.string.webSelectionFilterPlaceholder))
     FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        for (category in Category.BUILTIN) {
-            val id = category.builtinType ?: continue
+        for (category in rules) {
+            val id = category.id
             val count = counts[id] ?: continue
             FluxButton(
                 "${category.label()} $count", { toggleCategory(id) },
@@ -185,16 +190,23 @@ internal fun BtSelectionSheet(ui: SelectionUi, kind: SelectionKind.Bt) {
     var query by remember(request.requestId) { mutableStateOf("") }
     var minSize by remember(request.requestId) { mutableStateOf(0L) }
     var filterCategories by remember(request.requestId) { mutableStateOf(emptySet<String>()) }
-    val categoryByIndex = remember(kind) {
-        if (kind.files.size > 1) kind.files.associate { it.index to btCategory(it.path) } else emptyMap()
+    val host = hostState()
+    val categories by remember(host) { derivedStateOf { host.value.categories } }
+    val rules = remember(categories) {
+        val ordered = categories.ifEmpty { Category.BUILTIN }.sortedBy { it.position }
+        if (ordered.any { it.isOther }) ordered else ordered + btOtherCategory
     }
-    val counts = remember(categoryByIndex) { categoryByIndex.values.groupingBy { it }.eachCount() }
+    val other = rules.first { it.isOther }
+    val categoryByIndex = remember(kind, rules) {
+        kind.files.associate { it.index to btCategory(it.path, rules, other) }
+    }
+    val counts = remember(categoryByIndex) { categoryByIndex.values.groupingBy { it.id }.eachCount() }
     val needle = query.trim().lowercase()
     val filtering = expanded && (needle.isNotEmpty() || minSize > 0L || filterCategories.isNotEmpty())
     val visibleFiles = remember(kind, filtering, needle, minSize, filterCategories, categoryByIndex) {
         if (!filtering) kind.files else kind.files.filter {
             (minSize == 0L || it.size >= minSize) &&
-                (filterCategories.isEmpty() || (categoryByIndex[it.index] ?: "other") in filterCategories) &&
+                (filterCategories.isEmpty() || (categoryByIndex[it.index]?.id ?: other.id) in filterCategories) &&
                 (needle.isEmpty() || it.path.lowercase().contains(needle))
         }
     }
@@ -227,10 +239,6 @@ internal fun BtSelectionSheet(ui: SelectionUi, kind: SelectionKind.Bt) {
     val dirty by remember(request.requestId) {
         derivedStateOf { selected.toSet() != initial || btNameOutcome(initialName, name) != null }
     }
-
-    val host = hostState()
-    val categories by remember { derivedStateOf { host.value.categories } }
-    val index = remember(categories) { CategoryIndex(categories) }
 
     val count = selected.size
     val sizeText = Format.bytes(selectedBytes).toString()
@@ -289,7 +297,7 @@ internal fun BtSelectionSheet(ui: SelectionUi, kind: SelectionKind.Bt) {
             )
         }
         if (expanded) {
-            BtFilters(query, { query = it }, counts, filterCategories, { id ->
+            BtFilters(query, { query = it }, rules, counts, filterCategories, { id ->
                 filterCategories = if (id in filterCategories) filterCategories - id else filterCategories + id
             }, minSize, { minSize = it })
         }
@@ -345,7 +353,7 @@ internal fun BtSelectionSheet(ui: SelectionUi, kind: SelectionKind.Bt) {
                     is BtFileNode -> FileRow(
                         node = node,
                         checked = node.file.index in selected,
-                        icon = fileTileIcon(index.categoryOf(node.name).fileCategory()),
+                        icon = categoryByIndex[node.file.index].tileIcon(bt = false),
                         gutter = chevronGutter,
                         isLast = node === rows.lastOrNull(),
                         onToggle = { if (!selected.add(node.file.index)) selected.remove(node.file.index) },

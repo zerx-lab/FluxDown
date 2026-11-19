@@ -8,7 +8,7 @@
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useT } from '../../../i18n'
-import { hasSelectionDeadline, rpc, useAgent, useTasks } from '../../../lib/rpc'
+import { hasSelectionDeadline, rpc, useAgent, usePref, useTasks } from '../../../lib/rpc'
 import type { BtFileDto, HlsQualityOptionDto, ResolveVariantOptionDto, SelectionKind, SelectionOutcome, SelectionRequestDto } from '../../../lib/rpc'
 import { SAVE_DIR_HISTORY_ENABLED_PREF, SAVE_DIR_HISTORY_PREF, readSaveDirHistory, saveDirChoices } from '../../../lib/saveDirHistory'
 import { Button, Checkbox, Dialog, DialogFooter, FieldHint, FormField, Icon, Input } from '../../../ui'
@@ -17,7 +17,9 @@ import { cn } from '../../../lib/cn'
 import { formatBytes, useNow } from './utils'
 import { PluginChoiceDialog } from './PluginChoiceDialog'
 import { SaveDirCombo } from './SaveDirCombo'
-import { btFileCategory, btFileMatches, btSelectionCanConfirm, btSelectionName, btSelectionSaveDir } from './btSelection'
+import { btCategoryClassifier, btFileMatches, btSelectionCanConfirm, btSelectionName, btSelectionSaveDir } from './btSelection'
+import { BUILTIN_OTHER_ID, categoriesFromPreference } from '../model/categories'
+import { categoryLabel } from '../state'
 
 type ChoiceKind = Exclude<SelectionKind, { type: 'fileExists' | 'plugin' }>
 
@@ -303,23 +305,26 @@ function BtFiles({
   const [categories, setCategories] = useState<ReadonlySet<string>>(new Set())
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
 
+  const categoriesPref = usePref('custom_categories')
+  const rules = useMemo(() => categoriesFromPreference(categoriesPref), [categoriesPref])
   const tree = useMemo(() => buildTree(files), [files])
   const { categoryByIndex, counts } = useMemo(() => {
     const categoryByIndex = new Map<number, string>()
     const counts = new Map<string, number>()
+    const classify = btCategoryClassifier(rules)
     if (files.length > 1) for (const file of files) {
-      const category = btFileCategory(file.path)
+      const category = classify(file.path)
       categoryByIndex.set(file.index, category)
       counts.set(category, (counts.get(category) ?? 0) + 1)
     }
     return { categoryByIndex, counts }
-  }, [files])
+  }, [files, rules])
   const needle = filter.trim().toLowerCase()
   const filtering = expanded && (needle !== '' || minSize > 0 || categories.size > 0)
   const rows = useMemo(() => {
     const out: TreeRow[] = []
     const matches = (file: BtFileDto) => !filtering ||
-      btFileMatches(file.path, file.size, categoryByIndex.get(file.index) ?? 'other', needle, minSize, categories)
+      btFileMatches(file.path, file.size, categoryByIndex.get(file.index) ?? BUILTIN_OTHER_ID, needle, minSize, categories)
     flatten(tree, 0, matches, collapsed, filtering, out)
     return out
   }, [tree, needle, collapsed, filtering, minSize, categories, categoryByIndex])
@@ -335,9 +340,9 @@ function BtFiles({
     onSelectedChange(next)
   }
   const visibleIndices = filtering ? rows.flatMap((row) => (row.type === 'file' ? [row.file.index] : [])) : []
-  const categoryLabels = {
-    video: t('categoryVideo'), audio: t('categoryAudio'), document: t('categoryDocument'),
-    image: t('categoryImage'), program: t('categoryProgram'), archive: t('categoryArchive'), other: t('categoryOther'),
+  const categoryLabels = rules.map((rule) => [rule.id, categoryLabel(t, rule)] as const)
+  if (!rules.some((rule) => rule.builtinType === 'other')) {
+    categoryLabels.push([BUILTIN_OTHER_ID, t('categoryOther')])
   }
 
   return (
@@ -362,7 +367,7 @@ function BtFiles({
         <div className="flex flex-col gap-2">
           <Input aria-label={t('webSelectionFilterPlaceholder')} value={filter} onChange={(event) => setFilter(event.target.value)} placeholder={t('webSelectionFilterPlaceholder')} spellCheck={false} />
           <div className="flex flex-wrap gap-2">
-            {Object.entries(categoryLabels).map(([category, label]) => {
+            {categoryLabels.map(([category, label]) => {
               const count = counts.get(category)
               if (!count) return null
               const pressed = categories.has(category)
