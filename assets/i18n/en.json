@@ -829,7 +829,6 @@
   "fileSizeUnitsIec": "KiB / MiB / GiB (IEC)",
   "queueDownloadLimitWithUnit": "Download Limit ({unit})",
   "queueUploadLimitWithUnit": "Upload Limit ({unit})",
-  "speedLimitUnitLabel": "{unit} (0 = unlimited)",
   "mobileLogSizeUnitLabel": "Unit: {unit} (1–1024)",
   "autoStartup": "Launch at Startup",
   "autoStartupDesc": "Automatically run FluxDown on system startup; stays in the tray without opening the main window when the tray is available",

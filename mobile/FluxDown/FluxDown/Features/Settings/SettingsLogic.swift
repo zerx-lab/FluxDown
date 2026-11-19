@@ -32,7 +32,7 @@ nonisolated enum SettingsRateUnit: String, CaseIterable, Identifiable, Sendable 
     }
 
     func label(iec: Bool) -> String {
-        L("speedLimitUnitLabel", ["unit": unitLabel(iec: iec)])
+        unitLabel(iec: iec)
     }
 
     /// `Stepper` 步长：KB = 64，MB / GB = 1（03-settings §2.3）。

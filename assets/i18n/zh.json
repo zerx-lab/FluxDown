@@ -829,7 +829,6 @@
   "fileSizeUnitsIec": "KiB / MiB / GiB（IEC）",
   "queueDownloadLimitWithUnit": "下载限速 ({unit})",
   "queueUploadLimitWithUnit": "上传限速 ({unit})",
-  "speedLimitUnitLabel": "{unit}（0 = 不限速）",
   "mobileLogSizeUnitLabel": "单位：{unit}（1–1024）",
   "autoStartup": "开机自启动",
   "autoStartupDesc": "系统启动时自动运行 FluxDown；托盘可用时仅托盘驻留，不显示主窗口",
