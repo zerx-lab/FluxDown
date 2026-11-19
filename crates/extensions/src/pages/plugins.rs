@@ -1490,8 +1490,9 @@ impl ExtensionsView {
                         if let Some(message) =
                             resolver_conflict_message(&plugins, &identity, translator)
                         {
-                            let title =
-                                translator.text("pluginResolverUrlConflictsTitle").to_owned();
+                            let title = translator
+                                .text("pluginResolverUrlConflictsTitle")
+                                .to_owned();
                             window.push_notification(
                                 toast::titled(toast::ToastTone::Warning, title, message),
                                 cx,
@@ -2157,27 +2158,31 @@ fn render_resolver_conflicts(
     entries.peek()?;
     let translator = frame.translator;
     let mut active_hint_shown = false;
-    Some(card(cx).w_full().child(
-        v_flex()
-            .gap(frame.tokens.spacing.sm)
-            .child(ui::tone_pill(
-                translator.text("pluginResolverUrlConflictsTitle").to_owned(),
-                frame.extended.colors.warning,
-                frame,
-            ))
-            .children(entries.map(|(owner, conflict)| {
-                let hint = resolver_conflict_hint(plugins, owner, conflict);
-                let show_hint = hint != "pluginResolverUrlConflictsHint" || !active_hint_shown;
-                active_hint_shown |= hint == "pluginResolverUrlConflictsHint";
-                v_flex()
-                    .when(show_hint, |row| row.child(translator.text(hint).to_owned()))
-                    .child(format!("{}: {}", owner.identity, conflict.pattern))
-                    .child(format!(
-                        "{}: {}",
-                        conflict.other_identity, conflict.other_pattern
-                    ))
-            })),
-    ))
+    Some(
+        card(cx).w_full().child(
+            v_flex()
+                .gap(frame.tokens.spacing.sm)
+                .child(ui::tone_pill(
+                    translator
+                        .text("pluginResolverUrlConflictsTitle")
+                        .to_owned(),
+                    frame.extended.colors.warning,
+                    frame,
+                ))
+                .children(entries.map(|(owner, conflict)| {
+                    let hint = resolver_conflict_hint(plugins, owner, conflict);
+                    let show_hint = hint != "pluginResolverUrlConflictsHint" || !active_hint_shown;
+                    active_hint_shown |= hint == "pluginResolverUrlConflictsHint";
+                    v_flex()
+                        .when(show_hint, |row| row.child(translator.text(hint).to_owned()))
+                        .child(format!("{}: {}", owner.identity, conflict.pattern))
+                        .child(format!(
+                            "{}: {}",
+                            conflict.other_identity, conflict.other_pattern
+                        ))
+                })),
+        ),
+    )
 }
 
 fn resolver_conflict_message(
@@ -2251,7 +2256,10 @@ mod resolver_conflict_tests {
         let notice = resolver_conflict_message(&plugins, "scoped@test", &translator).unwrap();
         assert_eq!(
             notice,
-            format!("{}\n{patterns}", translator.text("pluginResolverUrlPendingHint"))
+            format!(
+                "{}\n{patterns}",
+                translator.text("pluginResolverUrlPendingHint")
+            )
         );
 
         plugins[2].enabled = true;
@@ -2259,7 +2267,10 @@ mod resolver_conflict_tests {
         let notice = resolver_conflict_message(&plugins, "scoped@test", &translator).unwrap();
         assert_eq!(
             notice,
-            format!("{}\n{patterns}", translator.text("pluginResolverUrlConflictsHint"))
+            format!(
+                "{}\n{patterns}",
+                translator.text("pluginResolverUrlConflictsHint")
+            )
         );
 
         plugins[0]
