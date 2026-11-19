@@ -528,7 +528,9 @@ impl SelectionView {
                 selected,
                 order,
                 ..
-            } => self.render_bt(files, selected, order, cx).into_any_element(),
+            } => self
+                .render_bt(files, selected, order, cx)
+                .into_any_element(),
             SelectionState::Variant { options, selected } => div()
                 .id("selection-variant-scroll")
                 .size_full()
@@ -814,7 +816,9 @@ impl SelectionView {
             .children(self.render_name(cx))
             .children(self.render_save_dir(cx))
             .child(toolbar)
-            .when(files.len() > 1, |body| body.child(self.render_bt_sort(order, cx)))
+            .when(files.len() > 1, |body| {
+                body.child(self.render_bt_sort(order, cx))
+            })
             .child(div().flex_1().min_h_0().child(list))
     }
 
@@ -1112,7 +1116,12 @@ mod tests {
             size,
         });
         let mut order = BtFileOrder::default();
-        let ids = |order: &BtFileOrder| order.iter(&files).map(|file| file.index).collect::<Vec<_>>();
+        let ids = |order: &BtFileOrder| {
+            order
+                .iter(&files)
+                .map(|file| file.index)
+                .collect::<Vec<_>>()
+        };
         assert_eq!(ids(&order), [9, 3, 7, 0, 4]);
         order.set_sort(BtFileSort::Type, &files);
         assert_eq!(ids(&order), [9, 0, 3, 7, 4]);
