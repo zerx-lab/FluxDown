@@ -350,11 +350,12 @@ jobs:
           if run_gradle 2>&1 | tee "$log"; then
             exit 0
           fi
-          # Hosted runners can receive false negatives from Maven Central while resolving the buildscript.
-          # Refresh remote metadata once; never retry compilation, test or lint failures.
-          if grep -Fq "Could not resolve all artifacts for configuration 'classpath'." "$log" &&
-             grep -Fq 'https://repo.maven.apache.org/maven2/' "$log"; then
-            echo '::warning::Gradle classpath resolution failed; retrying once with refreshed dependency metadata.'
+          # Settings plugin resolution can fail before the buildscript classpath is even configured.
+          # Refresh metadata once for repository resolution failures, not for build tasks.
+          if grep -Fq -- '- Plugin Repositories (could not resolve plugin artifact ' "$log" ||
+             { grep -Eq "Could not resolve all .* for configuration '(:[^']*:|:)?classpath'" "$log" &&
+               grep -Fq 'https://repo.maven.apache.org/maven2/' "$log"; }; then
+            echo '::warning::Gradle plugin or classpath resolution failed; retrying once with refreshed dependency metadata.'
             run_gradle --refresh-dependencies
           else
             exit 1
