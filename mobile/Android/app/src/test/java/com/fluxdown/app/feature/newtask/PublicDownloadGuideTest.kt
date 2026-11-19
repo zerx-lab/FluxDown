@@ -4,6 +4,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.snapshots.Snapshot
 import com.fluxdown.app.ExternalTorrentGuide
+import com.fluxdown.app.awaitHostOutcome
 import com.fluxdown.app.cancelPendingTorrent
 import com.fluxdown.core.host.HostErrorCode
 import com.fluxdown.core.host.HostException
@@ -13,11 +14,14 @@ import com.fluxdown.core.model.TaskStatus
 import com.fluxdown.core.store.Connection
 import com.fluxdown.core.store.HostState
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -94,7 +98,7 @@ class PublicDownloadGuideTest {
         val submitted = mutableListOf<String>()
         guide.saving = true
         val pendingImport = launch(start = CoroutineStart.UNDISPATCHED) {
-            guide.submitWhenReady({ hostState.value }, { local }) { submitted.add(it) }
+            guide.submitWhenReady({ hostState.value }, { local }, { throw it }) { submitted.add(it) }
         }
         Snapshot.withMutableSnapshot { guide.dismiss(ready, local) }
         assertFalse(done.value)
@@ -121,7 +125,7 @@ class PublicDownloadGuideTest {
         val guide = ExternalTorrentGuide(appDir, { done.value }, { done.value = true })
         val submitted = mutableListOf<String>()
         val pendingImport = launch(start = CoroutineStart.UNDISPATCHED) {
-            guide.submitWhenReady({ ready }, { local }) { submitted.add(it) }
+            guide.submitWhenReady({ ready }, { local }, { throw it }) { submitted.add(it) }
         }
         assertTrue(submitted.isEmpty())
         Snapshot.withMutableSnapshot { guide.dismiss(ready, local) }
@@ -138,18 +142,18 @@ class PublicDownloadGuideTest {
         val guide = ExternalTorrentGuide(appDir, { done.value }, { skips++; done.value = true })
         val submitted = mutableListOf<String>()
         val pendingImport = launch(start = CoroutineStart.UNDISPATCHED) {
-            guide.submitWhenReady({ hostState.value }, { local }) { submitted.add(it) }
+            guide.submitWhenReady({ hostState.value }, { local }, { throw it }) { submitted.add(it) }
         }
         assertTrue(guide.canChooseDirectory(ready, local))
 
-        val failed = ready.copy(connection = Connection.Failed(HostException(HostErrorCode.Unavailable)))
-        Snapshot.withMutableSnapshot { hostState.value = failed }
+        val stale = ready.copy(connection = Connection.Stale)
+        Snapshot.withMutableSnapshot { hostState.value = stale }
         yield()
-        assertFalse(guide.canChooseDirectory(failed, local))
+        assertFalse(guide.canChooseDirectory(stale, local))
         assertFalse(guide.resolved)
         Snapshot.withMutableSnapshot {
-            guide.dismiss(failed, local)
-            guide.dismiss(failed, local)
+            guide.dismiss(stale, local)
+            guide.dismiss(stale, local)
         }
         yield()
         assertTrue(guide.resolved)
@@ -158,11 +162,42 @@ class PublicDownloadGuideTest {
 
         Snapshot.withMutableSnapshot { hostState.value = ready }
         pendingImport.join()
-        Snapshot.withMutableSnapshot { hostState.value = failed }
+        Snapshot.withMutableSnapshot { hostState.value = stale }
         Snapshot.withMutableSnapshot { hostState.value = ready }
         yield()
         assertEquals(listOf(""), submitted)
         assertFalse(ready.needsPublicDownloadGuide(local, done.value, appDir))
+    }
+
+    @Test(timeout = 5_000)
+    fun waitingForTorrentHostReturnsFatalFailureWithoutReconnect() = runBlocking {
+        val state = MutableStateFlow(ready.copy(connection = Connection.Stale))
+        val outcome = async(start = CoroutineStart.UNDISPATCHED) { state.awaitHostOutcome() }
+        assertFalse(outcome.isCompleted)
+
+        val failed = ready.copy(connection = Connection.Failed(HostException(HostErrorCode.Unauthorized)))
+        state.value = failed
+        assertSame(failed, outcome.await())
+        assertSame(failed, state.awaitHostOutcome())
+    }
+
+    @Test(timeout = 5_000)
+    fun fatalFailureEndsExternalGuideEvenWhileSavingWithoutSubmitting() = runBlocking {
+        val state = mutableStateOf(ready)
+        val guide = ExternalTorrentGuide(appDir, { false }, { error("No skip requested") })
+        guide.saving = true
+        val failures = mutableListOf<HostException>()
+        val pendingImport = launch(start = CoroutineStart.UNDISPATCHED) {
+            guide.submitWhenReady({ state.value }, { local }, { failures.add(it) }) {
+                error("Fatal connection must not submit a torrent")
+            }
+        }
+        assertFalse(pendingImport.isCompleted)
+
+        val failure = HostException(HostErrorCode.ProtocolIncompatible)
+        Snapshot.withMutableSnapshot { state.value = ready.copy(connection = Connection.Failed(failure)) }
+        pendingImport.join()
+        assertEquals(listOf(failure), failures)
     }
 
     @Test(timeout = 5_000)
@@ -172,10 +207,10 @@ class PublicDownloadGuideTest {
         val guide = ExternalTorrentGuide(appDir, { false }, { error("No skip requested") })
         val submitted = mutableListOf<String>()
         guide.selectedDirectory = publicDir
-        guide.submitWhenReady({ ready }, { remote }) { submitted.add(it) }
+        guide.submitWhenReady({ ready }, { remote }, { throw it }) { submitted.add(it) }
         guide.selectedDirectory = null
         val custom = ready.copy(config = mapOf("default_save_dir" to publicDir))
-        guide.submitWhenReady({ custom }, { local }) { submitted.add(it) }
+        guide.submitWhenReady({ custom }, { local }, { throw it }) { submitted.add(it) }
         assertEquals(listOf("", ""), submitted)
     }
 }

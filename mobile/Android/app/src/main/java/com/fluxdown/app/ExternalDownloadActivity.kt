@@ -31,6 +31,7 @@ import androidx.lifecycle.lifecycleScope
 import com.fluxdown.app.actions.LocalTaskActions
 import com.fluxdown.app.actions.TaskActions
 import com.fluxdown.app.data.DeviceSettings
+import com.fluxdown.app.feature.devices.hostErrorText
 import com.fluxdown.app.feature.newtask.NewDownloadSheet
 import com.fluxdown.app.feature.newtask.PublicDownloadGuide
 import com.fluxdown.app.feature.newtask.TorrentImport
@@ -68,6 +69,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -79,10 +81,11 @@ private const val TAG = "FluxExternal"
 /** 等主机首个快照（默认目录 / 队列 / 免打扰偏好都在里面）的上限；超时按当前状态继续（弹窗会显示只读提示）。 */
 private const val READY_TIMEOUT_MS = 8_000L
 
+internal suspend fun Flow<HostState>.awaitHostOutcome(): HostState =
+    first { !it.isReadOnly || it.connection is Connection.Failed }
+
 private suspend fun awaitReady(store: HostStore): HostState =
-    withTimeoutOrNull(READY_TIMEOUT_MS) {
-        store.state.first { it.connection == Connection.Live || it.connection is Connection.Failed }
-    } ?: store.state.value
+    withTimeoutOrNull(READY_TIMEOUT_MS) { store.state.awaitHostOutcome() } ?: store.state.value
 
 /** Sheet 退场动画（`FluxMotion.snap` 弹簧）走完再结束任务，避免弹窗被直接截断。 */
 private const val SHEET_EXIT_MS = 250L
@@ -271,6 +274,11 @@ internal class ExternalTorrentGuide(
     private var dismissed by mutableStateOf(false)
     val resolved: Boolean get() = dismissed || guideDone()
 
+    private sealed interface Outcome {
+        data class Submit(val saveDir: String) : Outcome
+        data class Fail(val error: HostException) : Outcome
+    }
+
     fun canChooseDirectory(state: HostState, host: HostRef): Boolean =
         !saving && !resolved && state.needsPublicDownloadGuide(host, done = false, appDir = appDir)
 
@@ -289,19 +297,26 @@ internal class ExternalTorrentGuide(
     suspend fun submitWhenReady(
         stateOf: () -> HostState,
         hostOf: () -> HostRef,
+        onFailure: (HostException) -> Unit,
         submit: suspend (String) -> Unit,
     ) {
-        val saveDir = snapshotFlow {
+        val outcome = snapshotFlow<Outcome?> {
             val state = stateOf()
+            val connection = state.connection
+            if (connection is Connection.Failed) return@snapshotFlow Outcome.Fail(connection.error)
+            if (saving || state.isReadOnly) return@snapshotFlow null
             val host = hostOf()
+            val directory = selectedDirectory
             when {
-                saving || state.isReadOnly -> null
-                selectedDirectory != null && host is HostRef.Local -> selectedDirectory
+                directory != null && host is HostRef.Local -> Outcome.Submit(directory)
                 !resolved && state.needsPublicDownloadGuide(host, done = false, appDir = appDir) -> null
-                else -> ""
+                else -> Outcome.Submit("")
             }
         }.filterNotNull().first()
-        submit(saveDir)
+        when (outcome) {
+            is Outcome.Submit -> submit(outcome.saveDir)
+            is Outcome.Fail -> onFailure(outcome.error)
+        }
     }
 }
 
@@ -376,7 +391,9 @@ private fun ExternalDownloadStage(
         Box(Modifier.fillMaxSize()) {
             NewDownloadSheet(route = nav.sheet as? SheetRoute.NewDownload, onDismiss = nav::closeSheet, onSubmitted = onSubmitted)
             val activeGuide = guide
-            if (head != null && (activeGuide != null || waitingForHost)) key(head) {
+            if (head != null && state.value.connection !is Connection.Failed &&
+                (activeGuide != null || waitingForHost)
+            ) key(head) {
                 ExternalTorrentGuideSheet(
                     guide = activeGuide,
                     state = state.value,
@@ -419,16 +436,33 @@ private fun ExternalDownloadStage(
     // 种子逐个提交；本机首次使用应用默认目录时等用户选定目录或明确跳过。
     LaunchedEffect(head) {
         if (head == null) return@LaunchedEffect
+        fun fail(error: HostException) {
+            if (torrents.firstOrNull() !== head) return
+            guide = null
+            waitingForHost = false
+            overlays.toast(context.hostErrorText(error, container.host.value), FluxToastKind.Error)
+            onTorrentDone(head)
+        }
         var ready = awaitReady(container.store)
-        if (ready.isReadOnly) {
+        if (ready.isReadOnly && ready.connection !is Connection.Failed) {
             // A later intent must survive a disconnect even if the preceding guide was skipped or cancelled.
             waitingForHost = true
-            ready = container.store.state.first { !it.isReadOnly }
+            ready = container.store.state.awaitHostOutcome()
             if (torrents.firstOrNull() !== head) return@LaunchedEffect
             waitingForHost = false
         }
+        val connection = ready.connection
+        if (connection is Connection.Failed) {
+            fail(connection.error)
+            return@LaunchedEffect
+        }
         suspend fun submit(saveDir: String) {
             if (torrents.firstOrNull() !== head) return
+            val latest = container.store.state.value.connection
+            if (latest is Connection.Failed) {
+                fail(latest.error)
+                return
+            }
             guide = null
             TorrentImport.submit(
                 context = context,
@@ -445,7 +479,7 @@ private fun ExternalDownloadStage(
         if (ready.needsPublicDownloadGuide(container.host.value, settings.downloadFolderGuideDone, appDir)) {
             val activeGuide = ExternalTorrentGuide(appDir, { settings.downloadFolderGuideDone }, settings::finishDownloadFolderGuide)
             guide = activeGuide
-            activeGuide.submitWhenReady({ state.value }, { host.value }, ::submit)
+            activeGuide.submitWhenReady({ state.value }, { host.value }, ::fail, ::submit)
         } else {
             submit("")
         }
