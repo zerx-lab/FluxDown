@@ -58,6 +58,8 @@ const en: Record<MessageKey, string> = {
   "remote.testing": "Testing...",
   "remote.testSuccess": "Connected ({app} v{version})",
   "remote.testAuthFailed": "Authentication failed, check the access token",
+  "remote.testManagementUnavailable": "Server is reachable, but the Management API and access key could not be verified.",
+  "remote.managementUnavailableHint": "On the server’s Web UI, enable Management API under Settings → API Service. If using a reverse proxy, make sure it forwards /api/v1/ requests.",
   "remote.testUnreachable":
     "Cannot reach the server, check the address and network",
   "remote.testNotConfigured": "Enter the server address first",
@@ -70,7 +72,7 @@ const en: Record<MessageKey, string> = {
   "options.title": "FluxDown Settings",
   "options.remoteDesc":
     "Configure the fluxdown_server address and access token. Remote modes unlock after the connection test passes.",
-  "options.verifiedState": "Status: connection verified",
+  "options.verifiedState": "Status: remote modes available",
   "options.unverifiedState": "Status: not verified (remote modes unavailable)",
   "options.navSettings": "Settings",
   "options.nav.general": "General",

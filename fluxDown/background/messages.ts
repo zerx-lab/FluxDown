@@ -12,7 +12,7 @@ import { hostOf } from "@/rules/url";
 import { installConnectionDiagnostics } from "@/utils/connection-diagnostics-background";
 import { ERROR_LOG_TYPES, handleErrorLogMessage } from "@/utils/error-log-background";
 import { checkRemoteAvailable, effectiveRemoteMode, warmupNativeHost } from "@/utils/download-dispatch";
-import { remoteListTasks, remoteRemoveTask } from "@/utils/remote-server";
+import { REMOTE_MANAGEMENT_UNAVAILABLE, remoteListTasks, remoteRemoveTask } from "@/utils/remote-server";
 import {
   nmhOpenFile,
   nmhRevealFile,
@@ -627,8 +627,9 @@ async function handleTypeMessage(message: TypedMessage, sender: Sender): Promise
       try {
         const tasks = await remoteListTasks(config);
         return { connected: true, tasks, remoteUrl: config.remoteUrl, switchable };
-      } catch {
-        return { connected: false, tasks: [], remoteUrl: config.remoteUrl, switchable };
+      } catch (error) {
+        const managementUnavailable = error instanceof Error && error.message === REMOTE_MANAGEMENT_UNAVAILABLE;
+        return { connected: false, tasks: [], remoteUrl: config.remoteUrl, switchable, managementUnavailable };
       }
     }
     case "task-panel-remove-remote": {

@@ -184,6 +184,8 @@
 
 另见 AGENTS.md §4：插件页面脚本只经浏览器 `userScripts` API 执行。
 
+- **远程下载接管与管理 API 独立门控**：迁移部署可保留接管而关闭管理 API；`/api/v1/info` 返回 404 仅表示无法验证管理 API 和密钥，不能据此禁用接管，也不能报告完整验证成功。列表端点返回 404 时提示宿主开关和反代路由；单个任务的 DELETE 返回 404 也可能只是任务已不存在 → `fluxDown/utils/remote-server.ts`、`fluxDown/background/messages.ts`。
+
 - **表单 POST 的 method / body 不得经重定向回退到下载 URL**：表单 POST 经 301 / 302 / 303 跳到直链后浏览器改发 GET，旧逻辑按 `originalUrl` 回查请求事务，把跳转前的 POST 体安到直链上；`file.xiecdn.com` 这类 CDN 对 POST 直接断连（`connection closed before message completed`），而 POST 任务恢复被引擎拒绝，任务必失败（0.6.0 靠改发 GET 的自动重试掩盖）。只认下载 URL 自身的记录，307 / 308 由 `onBeforeRedirect` 把事务带到目标 URL → `fluxDown/background/request-record.ts::carryAcrossRedirect`。
 - **共享 NMH 端口是一问一答串行的，队首卡死必须断开换新端口，但「排在合法慢请求后面而超时」不得回收**：中继与 agent 连接串行，队首卡住后排队请求全部超时，原先超时不换端口会让任务面板与能力探测一直「未连接」直到 SW 重启；旧端口迟到的断开事件也不得波及新端口 → `fluxDown/utils/nmh-shared.ts::createSharedChannel`、回归 `fluxDown/utils/nmh-shared.test.ts`（三条用例：队首卡死回收 / 慢请求之后不回收 / 迟到断开不波及新端口）。
 - **扩展必须跳过自己配置的远端 FluxDown 服务发起的「下载到本地」请求**：否则扩展拦截该下载、再回投同一远端，形成持续创建任务的死循环；判定依据含 referrer / URL 的 origin 与 server 文件导出端点路径（覆盖反代 / 不同主机名访问 Web UI） → `fluxDown/utils/settings.ts::isFluxDownServerDownload`、测试 `fluxDown/utils/settings.test.ts`。

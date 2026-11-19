@@ -35,6 +35,8 @@ const DOWNLOAD_TIMEOUT_MS = 15000;
 // ping 探活超时：短超时，用于快速判定远程是否在线（fallback 路由决策 / popup 测试连接）。
 const PING_TIMEOUT_MS = 4000;
 
+export const REMOTE_MANAGEMENT_UNAVAILABLE = "remote_management_unavailable";
+
 /** ping 成功时的附加信息（服务端 /ping 返回 {app, version, message: "pong"}） */
 export interface RemotePingResult extends ApiResponse {
   app?: string;
@@ -154,6 +156,9 @@ async function taskRequest(cfg: RemoteServerConfig, method: "GET" | "DELETE", su
     credentials: "omit",
     signal: AbortSignal.timeout(PING_TIMEOUT_MS),
   });
+  if (method === "GET" && response.status === 404) {
+    throw new Error(REMOTE_MANAGEMENT_UNAVAILABLE);
+  }
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
 }
@@ -215,9 +220,8 @@ export async function remotePing(
  * 连接验证：/ping 探活 + 带 token 请求 `GET {remoteUrl}/api/v1/info` 校验鉴权。
  *
  * /ping 无鉴权，token 填错也会 200——只用它做「测试连接」会误报成功。
- * fluxdown_server 的管理 API 恒开且强制 token，/api/v1/info 是最轻量的
- * 鉴权校验端点：401/403 → token 错误。404（指向管理 API 关闭的桌面端等
- * 无法校验 token 的宿主）不视为失败，退化为 ping 结果。
+ * /api/v1/info 的 401/403 表示鉴权失败。404 时只能确认宿主在线：
+ * 保留独立的下载接管路径，同时告知调用方无法验证管理 API 和访问密钥。
  * 用于 popup/options 的「测试连接」与远程模式解锁（settings.remoteVerified）。
  */
 export async function remoteVerify(
@@ -241,6 +245,12 @@ export async function remoteVerify(
 
   if (resp.status === 401 || resp.status === 403) {
     return { success: false, message: "remote_auth_failed" };
+  }
+  if (resp.status === 404) {
+    return { ...ping, message: REMOTE_MANAGEMENT_UNAVAILABLE };
+  }
+  if (!resp.ok) {
+    return { success: false, message: `HTTP ${resp.status}` };
   }
   return ping;
 }

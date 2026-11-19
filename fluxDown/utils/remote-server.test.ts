@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { remoteListTasks, remoteRemoveTask } from "./remote-server";
+import { remoteListTasks, remoteRemoveTask, remoteVerify } from "./remote-server";
 
 const config = { remoteUrl: "https://fluxdown.invalid/proxy", remoteToken: "example-key" };
 
@@ -34,6 +34,32 @@ test("remote removal addresses the exact task and preserves downloaded files", a
     expect(fetch.mock.calls[0]?.[0]).toBe(`${config.remoteUrl}/api/v1/tasks/task-1?deleteFiles=false`);
     expect(fetch.mock.calls[0]?.[1]?.method).toBe("DELETE");
     await expect(remoteRemoveTask(config, "task-1")).rejects.toThrow("HTTP 404");
+  } finally {
+    fetch.mockRestore();
+  }
+});
+
+test("connection test reports management unavailable without blocking download takeover", async () => {
+  const fetch = spyOn(globalThis, "fetch")
+    .mockResolvedValueOnce(Response.json({ app: "FluxDown" }))
+    .mockResolvedValueOnce(new Response(null, { status: 404 }));
+  try {
+    expect(await remoteVerify(config)).toMatchObject({
+      success: true,
+      message: "remote_management_unavailable",
+    });
+  } finally {
+    fetch.mockRestore();
+  }
+});
+
+test("task list distinguishes an unavailable management API from other failures", async () => {
+  const fetch = spyOn(globalThis, "fetch")
+    .mockResolvedValueOnce(new Response(null, { status: 404 }))
+    .mockResolvedValueOnce(new Response(null, { status: 500 }));
+  try {
+    await expect(remoteListTasks(config)).rejects.toThrow("remote_management_unavailable");
+    await expect(remoteListTasks(config)).rejects.toThrow("HTTP 500");
   } finally {
     fetch.mockRestore();
   }

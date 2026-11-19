@@ -25,6 +25,7 @@ interface TaskPanelResponse {
   tasks: (Omit<TaskBrief, "speed"> & { speed?: number })[];
   remoteUrl?: string;
   switchable: boolean;
+  managementUnavailable?: boolean;
 }
 
 interface NmhOpResponse {
@@ -166,7 +167,13 @@ export function TaskList(props: Props): JSX.Element {
     return (
       <div class="fd-tasks">
         {sourcePicker}
-        {remoteUrl ? <EmptyState icon="alert" title={t("popup.tasks.remoteUnavailable")} /> : (
+        {remoteUrl ? (
+          <EmptyState
+            icon="alert"
+            title={t("popup.tasks.remoteUnavailable")}
+            hint={state.managementUnavailable ? t("remote.managementUnavailableHint") : undefined}
+          />
+        ) : (
           <EmptyState icon="alert" title={t("popup.tasks.appNotRunning")}>
             <Button size="sm" variant="primary" disabled={starting} onClick={startApp}>
               {starting ? t("popup.tasks.starting") : t("popup.tasks.startApp")}
