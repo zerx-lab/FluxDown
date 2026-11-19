@@ -135,6 +135,12 @@ private nonisolated func decode(_ s: String) -> String {
 
 nonisolated func batchExportName(_ entry: UrlEntry) -> String {
     if !entry.fileName.isEmpty { return entry.fileName }
+    if entry.url.range(of: "magnet:?", options: [.anchored, .caseInsensitive]) != nil {
+        return magnetName(entry.url) ?? ""
+    }
+    if entry.url.range(of: "ed2k://", options: [.anchored, .caseInsensitive]) != nil {
+        return ed2kName(entry.url) ?? ""
+    }
     guard let scheme = entry.url.range(of: "://"),
           ["http", "https", "ftp"].contains(entry.url[..<scheme.lowerBound].lowercased()) else { return "" }
     let path = splitUrl(entry.url).path
@@ -150,9 +156,7 @@ nonisolated func inferName(_ entry: UrlEntry) -> String {
     case .bt:
         return magnetName(url) ?? btihOf(url).map { "magnet:" + $0 } ?? String(url.prefix(40))
     case .ed2k:
-        let parts = url.split(separator: "|", omittingEmptySubsequences: false)
-        if parts.count > 2, !parts[2].trimmingCharacters(in: .whitespaces).isEmpty { return decode(String(parts[2])) }
-        return String(url.prefix(40))
+        return ed2kName(url) ?? String(url.prefix(40))
     default:
         let parts = splitUrl(url)
         let segment = parts.path.split(separator: "/", omittingEmptySubsequences: true).last.map(String.init)
@@ -183,12 +187,19 @@ private nonisolated func splitUrl(_ url: String) -> (host: String?, path: String
 
 private nonisolated func magnetName(_ url: String) -> String? {
     guard let q = url.firstIndex(of: "?") else { return nil }
-    for part in url[url.index(after: q)...].split(separator: "&") where part.hasPrefix("dn=") {
+    let query = url[url.index(after: q)...].prefix { $0 != "#" }
+    for part in query.split(separator: "&") where part.hasPrefix("dn=") {
         let value = decode(String(part.dropFirst(3)))
         if !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return value }
         return nil
     }
     return nil
+}
+
+private nonisolated func ed2kName(_ url: String) -> String? {
+    guard let prefix = url.range(of: "ed2k://|file|", options: [.anchored, .caseInsensitive]) else { return nil }
+    let name = decode(String(url[prefix.upperBound...].prefix { $0 != "|" }))
+    return name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : name
 }
 
 private nonisolated func btihOf(_ url: String) -> String? {

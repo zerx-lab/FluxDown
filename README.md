@@ -62,7 +62,9 @@
 
 Task exports are UTF-8 text with `Name`, `URL`, and `Size (bytes)` columns separated by tabs. Decode `\\`, `\t`, `\r`, and `\n` as a backslash, tab, carriage return, and line feed respectively, in a single pass after splitting fields. Unknown values are blank; resolved plugin lists do not expose direct per-file URLs. The desktop and Web clipboard action additionally prefixes text starting with spreadsheet formula markers or a quote (after leading whitespace) with an apostrophe; TXT files do not add that prefix.
 
-Resolved plugin lists export only checked files, including checked files hidden by the current search or filter. The name column contains each file's relative path, and sizes reflect the chosen variant where variant selection is available.
+New-download batches use explicit `out=` names first, then available names from the link itself (HTTP(S)/FTP file paths, magnet `dn`, or eD2k file names). Links without a known name leave that field blank.
+
+Resolved plugin lists export only checked files, including checked files hidden by the current search or filter. The name column contains each file's relative path. Where variant selection is available, an explicitly chosen variant with unknown size leaves the size blank, even if the default item size is known.
 
 **Privacy:** local downloads do not require a FluxCloud account. Cloud features are optional. Anonymous installation and daily-active statistics are controlled by `analytics_enabled` and can be disabled; they do not collect download/task information. This is not a zero-telemetry application.
 

@@ -13,6 +13,48 @@ import Testing
         "Name\tURL\tSize (bytes)\n=报告\\\\x\\tpart\\r\\n2\thttps://example.com/original\t4294967296\nfile.bin\t\t")
 }
 
+@Test func batchTaskInfoDocumentExportsKnownNamesOnly() {
+    let entries = parseEntries("""
+        https://example.com/a%20b.zip?key=v
+        https://example.com/
+        MAGNET:?xt=urn:btih:a&dn=My+Show%21
+        ed2k://|file|f%20x.iso|100|h|/
+        magnet:?xt=urn:btih:b
+        ed2k://|file||100|h|/
+        magnet:?xt=urn:btih:c&dn=ignored
+          out=keep%20name
+        """)
+    let document = TaskInfoDocument(entries.map { TaskInfoRow(name: batchExportName($0), url: $0.url) })
+    #expect(String(decoding: document.data, as: UTF8.self) == [
+        "Name\tURL\tSize (bytes)",
+        "a b.zip\thttps://example.com/a%20b.zip?key=v\t",
+        "\thttps://example.com/\t",
+        "My+Show!\tMAGNET:?xt=urn:btih:a&dn=My+Show%21\t",
+        "f x.iso\ted2k://|file|f%20x.iso|100|h|/\t",
+        "\tmagnet:?xt=urn:btih:b\t",
+        "\ted2k://|file||100|h|/\t",
+        "keep%20name\tmagnet:?xt=urn:btih:c&dn=ignored\t",
+    ].joined(separator: "\n"))
+}
+
+@Test func manifestTaskInfoDocumentLeavesExplicitUnknownVariantSizeBlank() {
+    var selection = ManifestSelection(items: [
+        PreviewItemDto(id: "a", name: "video.mp4", path: "folder", size: 50, variants: [
+            PreviewVariantDto(id: "unknown", label: "Unknown", size: 0),
+        ]),
+    ])
+    selection.toggle("a")
+    selection.chooseVariant("unknown", for: "a")
+    let document = TaskInfoDocument(selection.selectedExportRows().map {
+        TaskInfoRow(name: $0.name, url: "", size: $0.size)
+    })
+    #expect(String(decoding: document.data, as: UTF8.self) == "Name\tURL\tSize (bytes)\nfolder/video.mp4\t\t")
+    #expect(selection.selectedSize == (0, 1))
+    #expect(selection.requestItems() == [
+        GroupItemRequest(resolverItem: "a@unknown", fileName: "video.mp4", relPath: "folder", size: 0),
+    ])
+}
+
 // 下载列表派生逻辑（筛选计数 / 智能排序 / 分组 / 分段投影 / 重排节流 / 行文案）。
 
 // MARK: - 夹具

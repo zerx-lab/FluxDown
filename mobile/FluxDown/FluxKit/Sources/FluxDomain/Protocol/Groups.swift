@@ -396,10 +396,9 @@ public struct ManifestSelection: Sendable, Hashable {
         return item.variants.first { $0.id == id }
     }
 
-    /// 有效大小：选了规格且规格大小已知用规格，否则条目大小；0 = 未知。
+    /// 有效大小：显式规格用规格大小，否则用条目大小；0 = 未知。
     public func effectiveSize(of item: PreviewItemDto) -> Int64 {
-        if let variant = variant(for: item), variant.size > 0 { return variant.size }
-        return max(item.size, 0)
+        max(variant(for: item)?.size ?? item.size, 0)
     }
 
     public var selectedItems: [PreviewItemDto] { items.filter { selected.contains($0.id) } }

@@ -111,8 +111,13 @@ private fun decode(s: String): String = runCatching { URLDecoder.decode(s.replac
 
 internal fun UrlEntry.batchExportName(): String {
     if (fileName.isNotEmpty()) return fileName
+    if (url.startsWith("magnet:?", ignoreCase = true)) return magnetName(url).orEmpty()
+    if (url.startsWith("ed2k://", ignoreCase = true)) return ed2kName(url).orEmpty()
+    if (!url.startsWith("http://", ignoreCase = true) &&
+        !url.startsWith("https://", ignoreCase = true) &&
+        !url.startsWith("ftp://", ignoreCase = true)
+    ) return ""
     val schemeEnd = url.indexOf("://")
-    if (schemeEnd < 0 || url.substring(0, schemeEnd).lowercase() !in setOf("http", "https", "ftp")) return ""
     // 字符串切分而非 java.net.URI：URL 含空格 / `|` / `{}` 时 URI 会抛异常，与 GPUI / Web / iOS 不一致。
     val rest = url.substring(schemeEnd + 3).substringBefore('#').substringBefore('?')
     val slash = rest.indexOf('/')
@@ -126,7 +131,7 @@ internal fun inferName(entry: UrlEntry): String {
     val url = entry.url
     return when (protocolOf(url)) {
         TaskProtocol.Bt -> magnetName(url) ?: btihOf(url)?.let { "magnet:$it" } ?: url.take(40)
-        TaskProtocol.Ed2k -> url.split('|').getOrNull(2)?.takeIf { it.isNotBlank() }?.let(::decode) ?: url.take(40)
+        TaskProtocol.Ed2k -> ed2kName(url) ?: url.take(40)
         else -> {
             val uri = runCatching { URI(url.substringBefore('#')) }.getOrNull()
             val seg = uri?.rawPath?.trimEnd('/')?.substringAfterLast('/')?.takeIf { it.isNotEmpty() }
@@ -136,7 +141,12 @@ internal fun inferName(entry: UrlEntry): String {
 }
 
 private fun magnetName(url: String): String? =
-    url.substringAfter('?', "").split('&').firstOrNull { it.startsWith("dn=") }?.removePrefix("dn=")?.let(::decode)?.takeIf { it.isNotBlank() }
+    url.substringAfter('?', "").substringBefore('#').splitToSequence('&')
+        .firstOrNull { it.startsWith("dn=") }?.removePrefix("dn=")?.let(::decode)?.takeIf { it.isNotBlank() }
+
+private fun ed2kName(url: String): String? =
+    url.takeIf { it.startsWith("ed2k://|file|", ignoreCase = true) }
+        ?.split('|', limit = 4)?.getOrNull(2)?.let(::decode)?.takeIf { it.isNotBlank() }
 
 private fun btihOf(url: String): String? =
     Regex("btih:([A-Za-z0-9]+)", RegexOption.IGNORE_CASE).find(url)?.groupValues?.get(1)?.take(12)

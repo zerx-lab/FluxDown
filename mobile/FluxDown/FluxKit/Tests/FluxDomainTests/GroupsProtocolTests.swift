@@ -100,7 +100,7 @@ struct GroupsProtocolTests {
     private func items() -> [PreviewItemDto] {
         [
             PreviewItemDto(id: "a", name: "a.jpg", path: "2024", size: 1000),
-            PreviewItemDto(id: "v", name: "v.mp4", path: "", size: 0, variants: [
+            PreviewItemDto(id: "v", name: "v.mp4", path: "", size: 50, variants: [
                 PreviewVariantDto(id: "hd", label: "1080p", size: 9000),
                 PreviewVariantDto(id: "sd", label: "480p", size: 0),
             ]),
@@ -114,14 +114,15 @@ struct GroupsProtocolTests {
         selection.toggle("a")
         selection.toggle("v")
         #expect(selection.count == 2)
-        // 默认规格：条目大小（0 = 未知）。
-        #expect(selection.selectedSize == (1000, 1))
+        // 默认规格使用条目大小。
+        #expect(selection.selectedSize == (1050, 0))
         selection.chooseVariant("hd", for: "v")
         #expect(selection.selectedSize == (10_000, 0))
-        selection.chooseVariant("sd", for: "v") // 规格大小未知 → 回落条目大小（0）
+        selection.chooseVariant("sd", for: "v") // 显式规格未知，不回落到条目大小。
         #expect(selection.selectedSize == (1000, 1))
         selection.chooseVariant(nil, for: "v")
         #expect(selection.variant(for: items()[1]) == nil)
+        #expect(selection.selectedSize == (1050, 0))
 
         let all = items().map(\.id)
         selection.toggleAll(in: all)

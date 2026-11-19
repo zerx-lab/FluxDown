@@ -68,7 +68,18 @@ test('downloaded TXT preserves task fields and the complete parsed batch', async
       { name: '=报告\\x\tpart\r\n2', url: 'https://example.com/resolved', originUrl: 'https://example.com/original', sizeBytes: 4294967296 },
       { name: 'file.bin', url: 'torrent-file://local', originUrl: '', sizeBytes: 0 },
     ])
-    const entries = parseEntries('https://example.com/a%20b.zip?key=v\nftp://example.com/f\n  out=报告.zip\nhttps://example.com/', false)
+    const entries = parseEntries([
+      'https://example.com/a%20b.zip?key=v',
+      'ftp://example.com/f',
+      '  out=报告.zip',
+      'https://example.com/',
+      'MAGNET:?xt=urn:btih:a&dn=My+Show%21',
+      'ed2k://|file|f%20x.iso|100|h|/',
+      'magnet:?xt=urn:btih:b',
+      'ed2k://|file||100|h|/',
+      'magnet:?xt=urn:btih:c&dn=ignored',
+      '  out=keep%20name',
+    ].join('\n'), false)
     exportTaskInfo(entries.map((entry) => ({
       name: batchEntryName(entry), url: entry.url, originUrl: '', sizeBytes: 0,
     })))
@@ -87,6 +98,11 @@ test('downloaded TXT preserves task fields and the complete parsed batch', async
       ['a b.zip', 'https://example.com/a%20b.zip?key=v', ''],
       ['报告.zip', 'ftp://example.com/f', ''],
       ['', 'https://example.com/', ''],
+      ['My+Show!', 'MAGNET:?xt=urn:btih:a&dn=My+Show%21', ''],
+      ['f x.iso', 'ed2k://|file|f%20x.iso|100|h|/', ''],
+      ['', 'magnet:?xt=urn:btih:b', ''],
+      ['', 'ed2k://|file||100|h|/', ''],
+      ['keep%20name', 'magnet:?xt=urn:btih:c&dn=ignored', ''],
     ])
   } finally {
     URL.createObjectURL = originalCreateUrl

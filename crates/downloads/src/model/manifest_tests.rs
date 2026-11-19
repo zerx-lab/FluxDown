@@ -259,7 +259,15 @@ fn explicit_variant_controls_token_size_and_unknown_statistics_only_for_its_item
     assert!(model.set_variant(0, Some("unknown")));
     let stat = model.selection_stat();
     assert_eq!((stat.size, stat.unknown), (20, 1));
-    assert_eq!(model.group_items()[0].size, 0);
+    let items = model.group_items();
+    assert_eq!(
+        (items[0].resolver_item.as_str(), items[0].size),
+        ("opaque-episode@unknown", 0)
+    );
+    assert_eq!(
+        crate::components::selection_bar::export_task_info_text(model.selected_export_rows()),
+        "Name\tURL\tSize (bytes)\nfolder/original.bin\t\t\nother.bin\t\t20"
+    );
     model.toggle_file(0);
     assert_eq!(
         (model.selection_stat().count, model.selection_stat().unknown),

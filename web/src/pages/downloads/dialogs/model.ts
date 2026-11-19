@@ -52,8 +52,21 @@ function urlFileSegment(url: string): string | null {
 
 export function batchEntryName({ fileName, url }: UrlEntry): string {
   if (fileName !== '') return fileName
+  if (/^magnet:\?/i.test(url)) {
+    const raw = url.slice(8).split('#', 1)[0]?.split('&').find((part) => part.startsWith('dn='))?.slice(3)
+    return decodedMetadataName(raw)
+  }
+  if (/^ed2k:\/\/\|file\|/i.test(url)) {
+    return decodedMetadataName(url.split('|', 3)[2])
+  }
   const segment = /^(https?|ftp):\/\//i.test(url) ? urlFileSegment(url) : null
   return segment === null ? '' : safeDecode(segment) ?? segment
+}
+
+function decodedMetadataName(raw: string | undefined): string {
+  if (raw === undefined) return ''
+  const name = safeDecode(raw) ?? raw
+  return rustTrim(name) === '' ? '' : name
 }
 
 const LEADING_URL = /^(?:https?|ftp):\/\/\S+/i

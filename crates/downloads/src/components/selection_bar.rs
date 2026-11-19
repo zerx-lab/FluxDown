@@ -57,32 +57,57 @@ fn push_task_info_row(text: &mut String, name: &str, url: &str, size: u64, clipb
 pub(crate) fn batch_link_info_text<'a>(
     entries: impl IntoIterator<Item = &'a crate::model::new_download::UrlEntry>,
 ) -> String {
-    use crate::model::new_download::{percent_decode_utf8, url_file_segment};
-
     let mut text = TASK_INFO_HEADER.to_owned();
     for entry in entries {
-        let scheme = entry.url.split_once("://").map_or("", |(scheme, _)| scheme);
-        let name = if entry.file_name.is_empty()
-            && ["http", "https", "ftp"]
-                .into_iter()
-                .any(|protocol| scheme.eq_ignore_ascii_case(protocol))
-        {
-            url_file_segment(&entry.url).unwrap_or_default()
-        } else {
-            &entry.file_name
-        };
-        let decoded = (entry.file_name.is_empty() && name.contains('%'))
-            .then(|| percent_decode_utf8(name))
-            .flatten();
-        push_task_info_row(
-            &mut text,
-            decoded.as_deref().unwrap_or(name),
-            &entry.url,
-            0,
-            false,
-        );
+        let name = batch_entry_name(entry);
+        push_task_info_row(&mut text, &name, &entry.url, 0, false);
     }
     text
+}
+
+fn batch_entry_name(entry: &crate::model::new_download::UrlEntry) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+
+    use crate::model::new_download::{percent_decode_utf8, url_file_segment};
+
+    if !entry.file_name.is_empty() {
+        return Cow::Borrowed(&entry.file_name);
+    }
+    let (scheme, rest) = entry.url.split_once(':').unwrap_or_default();
+    let (raw_name, p2p) = if scheme.eq_ignore_ascii_case("magnet") {
+        let query = rest.strip_prefix('?').unwrap_or_default();
+        let query = query.split('#').next().unwrap_or_default();
+        (
+            query.split('&').find_map(|part| part.strip_prefix("dn=")),
+            true,
+        )
+    } else if scheme.eq_ignore_ascii_case("ed2k") {
+        let mut fields = rest.split('|');
+        let name = match (fields.next(), fields.next()) {
+            (Some("//"), Some(kind)) if kind.eq_ignore_ascii_case("file") => fields.next(),
+            _ => None,
+        };
+        (name, true)
+    } else if rest.starts_with("//")
+        && ["http", "https", "ftp"]
+            .into_iter()
+            .any(|protocol| scheme.eq_ignore_ascii_case(protocol))
+    {
+        (url_file_segment(&entry.url), false)
+    } else {
+        (None, false)
+    };
+    let raw_name = raw_name.unwrap_or_default();
+    let name = if raw_name.contains('%') {
+        percent_decode_utf8(raw_name).map_or(Cow::Borrowed(raw_name), Cow::Owned)
+    } else {
+        Cow::Borrowed(raw_name)
+    };
+    if p2p && name.trim().is_empty() {
+        Cow::Borrowed("")
+    } else {
+        name
+    }
 }
 
 pub(crate) fn export_task_info_text(
@@ -552,7 +577,25 @@ mod tests {
     }
 
     #[test]
-    fn parsed_batch_exports_explicit_and_url_names_without_guessing_sizes() {
+    fn parsed_batch_exports_known_names_without_guessing_sizes() {
+        let magnet = "MAGNET:?xt=urn:btih:a&dn=My+Show%21";
+        let ed2k = "ed2k://|file|f%20x.iso|100|h|/";
+        let unnamed_magnet = "magnet:?xt=urn:btih:b";
+        let unnamed_ed2k = "ed2k://|file||100|h|/";
+        let renamed = "magnet:?xt=urn:btih:c&dn=ignored";
+        let p2p = crate::model::new_download::parse_entries(
+            &format!(
+                "{magnet}\n{ed2k}\n{unnamed_magnet}\n{unnamed_ed2k}\n{renamed}\n  out=keep%20name"
+            ),
+            false,
+        );
+        assert_eq!(
+            batch_link_info_text(&p2p),
+            format!(
+                "Name\tURL\tSize (bytes)\nMy+Show!\t{magnet}\t\nf x.iso\t{ed2k}\t\n\t{unnamed_magnet}\t\n\t{unnamed_ed2k}\t\nkeep%20name\t{renamed}\t"
+            )
+        );
+
         let entries = crate::model::new_download::parse_entries(
             "https://example.com/a%20b.zip?key=v\nftp://example.com/f\n  out=报告.zip\nhttps://example.com/",
             false,
