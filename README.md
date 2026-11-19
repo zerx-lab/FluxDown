@@ -55,7 +55,6 @@
 | **Persistence & Resume** | SQLite with WAL by default; server deployments can use PostgreSQL; recover downloads from persisted state |
 | **Browser Integration** | Download interception, streaming media sniffing, Alt+Click bypass, right-click send and connection diagnostics |
 | **Desktop & Web UI** | GPUI desktop and React Web management, light/dark themes, custom themes, task details and segment visualization; desktop tray keeps the service available after the UI closes |
-| **Download Completion Drag-Out** | Drag a completed file or multi-file torrent folder from the desktop completion window. macOS offers a copy; on Linux Wayland the receiving app can copy or move it. Not available on Windows or X11. |
 | **RSS & Automation** | Feed filters, unattended downloads, JavaScript plugins, managed FFmpeg/yt-dlp components and task-event webhooks |
 | **Remote Devices** | Optional FluxCloud account, settings sync and remote task management, plus LAN device pairing and direct connections |
 | **APIs & CLI** | REST/OpenAPI, aria2-compatible JSON-RPC, MCP with 12 tools, and a CLI for scripts or standalone downloads |
