@@ -161,8 +161,7 @@ internal fun DownloadRow(
 
     val coords = remember { arrayOfNulls<LayoutCoordinates>(1) }
 
-    val fileState = rememberLocalFileAvailability(item.task, view.localHost)
-    val file by fileState
+    val file by rememberLocalFileAvailability(item.task, view.localHost)
     val opensFile = file == LocalFileAvailability.RegularFile
     val tryOpenFile = file.canTryOpen
     val startActions = remember(item.visual, item.boosted, text, actions, tryOpenFile) {
@@ -255,13 +254,7 @@ internal fun DownloadRow(
                             val cur = latest
                             val anchor = c.boundsInRoot()
                             val onSelect = { nav.enterSelection(id) }
-                            if (file == LocalFileAvailability.Pending) {
-                                overlays.showMenu(anchor, derivedStateOf {
-                                    actions.menuItems(cur.task, cur.boosted, fileState.value == LocalFileAvailability.RegularFile, onSelect)
-                                })
-                            } else {
-                                overlays.showMenu(anchor, actions.menuItems(cur.task, cur.boosted, opensFile, onSelect))
-                            }
+                            actions.showTaskMenu(anchor, cur.task, cur.boosted, file, onSelect)
                         }
                     },
                     onRingClick = { actions.primary(latest.task, tryOpenFile) },

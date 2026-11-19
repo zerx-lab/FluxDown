@@ -40,6 +40,7 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.toggleableState
@@ -90,6 +91,7 @@ sealed interface FluxMenuItem {
         val hintIsPath: Boolean = false,
         val showTrailingCheck: Boolean = true,
         val radio: Boolean = false,
+        val visible: Boolean = true,
     ) : FluxMenuItem
 
     @Immutable
@@ -206,8 +208,8 @@ internal fun MenuLayer(state: FluxOverlayState) {
                 .padding(6.dp),
         ) {
             shown.header?.let { MenuHeader(it) }
-            // 列表变化时取消旧行的按压，避免新插入的动作接走原有手势。
-            key(items) {
+            // Live item updates keep their slots; a replacement menu resets all gestures.
+            key(shown.id) {
                 items.forEach { item ->
                     when (item) {
                         is FluxMenuItem.Header -> MenuHeader(item.label)
@@ -252,14 +254,15 @@ private fun MenuRow(item: FluxMenuItem.Action, state: FluxOverlayState) {
         Modifier
             .fillMaxWidth()
             .heightIn(min = 48.dp)
-            .alpha(if (item.enabled) 1f else 0.38f)
+            .alpha(if (!item.visible) 0f else if (item.enabled) 1f else 0.38f)
+            .then(if (item.visible) Modifier else Modifier.clearAndSetSemantics { })
             .fluxPressable(
                 onClick = {
                     haptics.tick()
                     if (!item.keepOpen) state.dismissMenu()
                     item.onClick()
                 },
-                enabled = item.enabled,
+                enabled = item.visible && item.enabled,
                 role = when {
                     item.radio -> Role.RadioButton
                     item.showTrailingCheck -> Role.Button

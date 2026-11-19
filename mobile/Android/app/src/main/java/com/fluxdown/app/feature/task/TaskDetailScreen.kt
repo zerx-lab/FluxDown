@@ -552,14 +552,14 @@ private fun ActionRow(
     val shareShort = str(R.string.detailActionShare)
     val moreShort = str(R.string.detailActionMore)
     var moreBounds by remember { mutableStateOf(Rect.Zero) }
-    val onPrimary: (() -> Unit)? = when {
-        !completed -> { { actions.primary(task, tryOpenFile = false) } }
-        detailCanOpenFile(file) -> { { actions.open(task) } }
-        else -> null
+    val primaryEnabled = !completed || detailCanOpenFile(file)
+    val onPrimary: () -> Unit = {
+        if (!completed) actions.primary(task, tryOpenFile = false)
+        else if (detailCanOpenFile(file)) actions.open(task)
     }
     val onFolder: () -> Unit = { if (!context.openFolder(task.saveDir)) actions.shareLink(task) }
     val onMore: () -> Unit = {
-        overlays.showMenu(moreBounds, actions.menuItems(task, model.boosted, detailCanOpenFile(file)))
+        actions.showTaskMenu(moreBounds, task, model.boosted, file)
     }
 
     // 等宽动作块：图标在上、短标签在下（对齐 iOS 地图 / 通讯录卡片）。每块只放一个短词，
@@ -569,7 +569,9 @@ private fun ActionRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         val tile = Modifier.weight(1f).fillMaxHeight()
-        onPrimary?.let { FluxActionTile(primaryLabel, primaryIcon, it, tile, prominent = true) }
+        if (primaryEnabled || file == LocalFileAvailability.Pending) {
+            FluxActionTile(primaryLabel, primaryIcon, onPrimary, tile, prominent = true, enabled = primaryEnabled)
+        }
         if (!remoteHost) FluxActionTile(folderLabel, FluxIcons.FolderOpen, onFolder, tile)
         FluxActionTile(shareShort, FluxIcons.Share2, { actions.shareLink(task) }, tile, contentDescription = shareLabel)
         FluxActionTile(

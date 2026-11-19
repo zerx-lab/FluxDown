@@ -3432,7 +3432,7 @@
   "mobileSkipPublicDownloadGuide": "Keep app folder",
   "mobileDownloadGuideDisconnected": "Download service disconnected. You can keep the app folder now or wait to choose a folder.",
   "mobileTorrentImportPending": "Pending torrent import",
-  "mobileTorrentImportWaitingForHost": "Download service disconnected. Import will continue when it reconnects. You can cancel the pending import.",
+  "mobileTorrentImportWaitingForHost": "Waiting for the download service. Import will continue when it connects. You can cancel the pending import.",
   "mobileAllFilesDescNative": "Android requires \"All files access\" for FluxDown to open and save to this location. Turn it on in system settings; the folder reloads when you come back. The app folder works without it.",
   "mobileStoragePermTitle": "Storage permission required",
   "mobileStoragePermDesc": "Android 10 and earlier require the storage permission for FluxDown to open and save to this location. The folder reloads once you grant it. The app folder works without it.",

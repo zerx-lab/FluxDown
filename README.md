@@ -265,9 +265,9 @@ cargo run -p fluxdown_cli -- ping
 
 Android lives in `mobile/Android`; iOS lives in `mobile/FluxDown`. Both use the shared Rust core in `native/mobile` and shared translations in `assets/i18n`.
 
-On Android, the first local download form offers the system Download folder. Grant storage access and confirm a writable folder to change the default, or keep the app folder without granting access. Dismissing this prompt while opening a `.torrent` file keeps the app folder and continues the import. If the download service is disconnected, the import waits for reconnection. Cancelling from that waiting screen cancels only the current import; later queued torrents are kept. Configured category folders still apply independently. You can change the default later in Download Settings.
+On Android, the first local download offers the system Download folder if the app-specific default is still in use, even when downloads already exist. Grant storage access and confirm a writable folder to change the default, or keep the app folder without granting access. Dismissing this prompt while opening a `.torrent` file keeps the app folder and continues the import. The import shows a cancellable waiting screen during startup or a temporary disconnect, including when the connection drops while reading the torrent. Cancelling removes only the current import. A terminal connection error ends all queued imports with one error message. Configured category folders still apply independently. You can change the default later in Download Settings.
 
-Tap a completed local task with a regular file to open it in Android; long-press for **Open File** or **Task Details**. Tasks without an openable local file still open their details on tap. In details, **Open File** appears after the app confirms a regular file. Directory tasks can still open the folder, and tasks marked missing offer to download again with confirmation.
+Tap a completed local task with a regular file to open it in Android; long-press for **Open File** or **Task Details**. Tasks without an openable local file still open their details on tap. In details, the **Open File** button stays disabled until the app confirms a regular file. Directory tasks can still open the folder, and tasks marked missing offer to download again with confirmation.
 
 ```shell
 # Android: use Android Studio's JBR as JAVA_HOME

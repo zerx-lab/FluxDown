@@ -1,11 +1,11 @@
 package com.fluxdown.app.feature.newtask
 
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.snapshots.Snapshot
 import com.fluxdown.app.ExternalTorrentGuide
+import com.fluxdown.app.ExternalTorrentQueue
 import com.fluxdown.app.awaitHostOutcome
-import com.fluxdown.app.cancelPendingTorrent
+import com.fluxdown.app.awaitTorrentWrite
 import com.fluxdown.core.host.HostErrorCode
 import com.fluxdown.core.host.HostException
 import com.fluxdown.core.model.HostRef
@@ -31,20 +31,78 @@ class PublicDownloadGuideTest {
     private val ready = HostState(connection = Connection.Live, config = mapOf("default_save_dir" to appDir))
 
     @Test fun cancellingDisplayedTorrentPreservesLaterImportsInOrder() {
-        data class Import(val uri: String)
+        class Import(val uri: String)
         val displayed = Import("first.torrent")
         val repeated = Import("first.torrent")
         val last = Import("last.torrent")
-        val queue = mutableStateListOf(displayed)
-        queue.add(repeated)
-        queue.add(last)
+        var closed = false
+        var linger = false
+        val queue = ExternalTorrentQueue<Import>({ closed = true }, { linger = true }, {}, { false })
+        queue.enqueue(displayed)
+        queue.enqueue(repeated)
+        queue.enqueue(last)
 
-        assertTrue(queue.cancelPendingTorrent(displayed))
-        // A second dismissal from the old sheet must not cancel an identical later intent.
-        assertFalse(queue.cancelPendingTorrent(displayed))
-        assertEquals(listOf(repeated, last), queue.toList())
-        assertTrue(queue.cancelPendingTorrent(repeated))
-        assertEquals(listOf(last), queue.toList())
+        var state = ready
+        val dismissWaitingSheet = { queue.cancelWaiting(displayed, state) }
+        dismissWaitingSheet() // A closing animation must not cancel after the host is ready.
+        assertSame(displayed, queue.pending.first())
+        state = ready.copy(connection = Connection.Stale)
+        dismissWaitingSheet()
+        dismissWaitingSheet()
+        assertEquals(listOf(repeated, last), queue.pending.toList())
+        assertFalse(closed)
+        queue.complete(repeated)
+        assertFalse(linger)
+        queue.complete(last)
+        assertTrue(linger)
+        assertFalse(closed)
+        queue.closeIfIdle()
+        assertTrue(closed)
+    }
+
+    @Test(timeout = 5_000)
+    fun disconnectAtFinalWriteGateRetainsHeadAndFatalAbortsQueueAndCloses() = runBlocking {
+        val first = Any()
+        var closed = false
+        var linger = false
+        val queue = ExternalTorrentQueue<Any>({ closed = true }, { linger = true }, {}, { false })
+        queue.enqueue(first)
+        queue.enqueue(Any())
+        val state = MutableStateFlow(ready)
+        val errors = mutableListOf<HostException>()
+        val terminal = HostException(HostErrorCode.ProtocolIncompatible)
+        val job = launch(start = CoroutineStart.UNDISPATCHED) {
+            suspend fun writable() = state.awaitTorrentWrite(
+                { queue.pending.firstOrNull() === first },
+                { error -> queue.fail(first) { errors.add(error) } },
+            )
+            assertSame(ready, writable())
+            // Reading the file can span a connection loss after the initial check.
+            state.value = ready.copy(connection = Connection.Stale)
+            if (writable() != null) error("Must not create on a terminal connection")
+        }
+        assertSame(first, queue.pending.first())
+        assertFalse(job.isCompleted)
+        assertFalse(closed)
+        state.value = ready.copy(connection = Connection.Failed(terminal))
+        job.join()
+        queue.fail(first) { error("Stale callback must not restart the toast") }
+        assertEquals(listOf(terminal), errors)
+        assertTrue(queue.pending.isEmpty())
+        assertTrue(linger)
+        queue.closeIfIdle()
+        assertTrue(closed)
+    }
+
+    @Test(timeout = 5_000)
+    fun finalWriteGateResumesSameImportAfterReconnect() = runBlocking {
+        val state = MutableStateFlow(ready.copy(connection = Connection.Stale))
+        val handoff = async(start = CoroutineStart.UNDISPATCHED) {
+            state.awaitTorrentWrite({ true }) { error("Transient disconnect is not terminal") }
+        }
+        assertFalse(handoff.isCompleted)
+        state.value = ready
+        assertSame(ready, handoff.await())
     }
 
     @Test fun partialTaskTableDoesNotSuppressGuide() {

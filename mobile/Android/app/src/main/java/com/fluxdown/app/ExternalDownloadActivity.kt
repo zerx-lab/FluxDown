@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
@@ -26,7 +27,6 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.fluxdown.app.actions.LocalTaskActions
 import com.fluxdown.app.actions.TaskActions
@@ -44,7 +44,6 @@ import com.fluxdown.app.nav.SheetRoute
 import com.fluxdown.app.service.DownloadServiceController
 import com.fluxdown.app.shell.FluxAppRoot
 import com.fluxdown.app.shell.LocalAppContainer
-import com.fluxdown.app.shell.hostState
 import com.fluxdown.app.ui.defaultLocalSaveDir
 import com.fluxdown.app.ui.isLocalDirWritable
 import com.fluxdown.core.capture.ExternalDownload
@@ -70,6 +69,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -83,6 +83,24 @@ private const val READY_TIMEOUT_MS = 8_000L
 
 internal suspend fun Flow<HostState>.awaitHostOutcome(): HostState =
     first { !it.isReadOnly || it.connection is Connection.Failed }
+
+/** Re-read after resuming: a writable emission can already be stale when the waiter runs. */
+internal suspend fun StateFlow<HostState>.awaitTorrentWrite(
+    isCurrent: () -> Boolean,
+    onFailure: (HostException) -> Unit,
+): HostState? {
+    while (isCurrent()) {
+        val latest = value
+        val connection = latest.connection
+        if (connection is Connection.Failed) {
+            onFailure(connection.error)
+            return null
+        }
+        if (!latest.isReadOnly) return latest
+        awaitHostOutcome()
+    }
+    return null
+}
 
 private suspend fun awaitReady(store: HostStore): HostState =
     withTimeoutOrNull(READY_TIMEOUT_MS) { store.state.awaitHostOutcome() } ?: store.state.value
@@ -110,8 +128,12 @@ class ExternalDownloadActivity : ComponentActivity() {
     /** 按到达顺序串行处理（解析可能较重：长 Cookie / 请求头 JSON）。 */
     private val intents = Channel<Intent>(Channel.UNLIMITED)
 
-    /** 待导入的 `.torrent`（VIEW content / file URI）：由舞台逐个提交，完成后回调 [onTorrentDone]。 */
-    private val torrents = mutableStateListOf<PendingTorrent>()
+    private val torrents = ExternalTorrentQueue<PendingTorrent>(
+        closeNow = ::finishAndRemoveTask,
+        closeAfterToast = ::closeAfterTorrentToast,
+        cancelClose = { closeJob?.cancel() },
+        hasOtherSheet = { navigator.sheet != null },
+    )
     private var closeJob: Job? = null
 
     /** 免打扰建任务失败的原因：交给组合层 toast 后清空。 */
@@ -126,14 +148,13 @@ class ExternalDownloadActivity : ComponentActivity() {
         lifecycleScope.launch {
             for (next in intents) {
                 if (withContext(Dispatchers.IO) { isTorrentView(next) }) {
-                    closeJob?.cancel()
-                    next.data?.let { torrents.add(PendingTorrent(it)) }
+                    next.data?.let { torrents.enqueue(PendingTorrent(it)) }
                     continue
                 }
                 val request = withContext(Dispatchers.Default) { parse(next) }
                 when {
                     request != null -> dispatch(container, request)
-                    navigator.sheet == null && torrents.isEmpty() -> finishAndRemoveTask()
+                    navigator.sheet == null && torrents.pending.isEmpty() -> finishAndRemoveTask()
                 }
             }
         }
@@ -144,8 +165,6 @@ class ExternalDownloadActivity : ComponentActivity() {
                     torrents = torrents,
                     onFailureShown = { silentFailure = null },
                     onSubmitted = { keepLocalDownloadsAlive(container) },
-                    onTorrentDone = ::onTorrentDone,
-                    onTorrentCancelled = ::cancelTorrentImport,
                     onClosed = ::finishAndRemoveTask,
                 )
             }
@@ -158,20 +177,11 @@ class ExternalDownloadActivity : ComponentActivity() {
         intents.trySend(intent)
     }
 
-    /** 种子建完：窗口只为它而开时，留出 toast 展示时间再结束；其间又来新的唤起则取消。 */
-    private fun onTorrentDone(done: PendingTorrent) {
-        torrents.remove(done)
-        closeJob?.cancel()
+    private fun closeAfterTorrentToast() {
         closeJob = lifecycleScope.launch {
             delay(TOAST_LINGER_MS)
-            if (navigator.sheet == null && torrents.isEmpty()) finishAndRemoveTask()
+            torrents.closeIfIdle()
         }
-    }
-
-    private fun cancelTorrentImport(head: PendingTorrent) {
-        if (!torrents.cancelPendingTorrent(head)) return
-        closeJob?.cancel()
-        if (navigator.sheet == null && torrents.isEmpty()) finishAndRemoveTask()
     }
 
     /** VIEW 一个 content / file 种子：MIME 为 `application/x-bittorrent`，或（octet-stream 兜底）文件名以 `.torrent` 结尾。 */
@@ -191,7 +201,7 @@ class ExternalDownloadActivity : ComponentActivity() {
     private suspend fun dispatch(container: AppContainer, request: ExternalDownload) {
         val state = awaitReady(container.store)
         val plan = SilentCapture.plan(request, state)
-        if (plan != null && torrents.isEmpty() &&
+        if (plan != null && torrents.pending.isEmpty() &&
             !state.needsPublicDownloadGuide(this, container.host.value) && silentDirUsable(container, plan)
         ) {
             try {
@@ -256,11 +266,54 @@ class ExternalDownloadActivity : ComponentActivity() {
 /** 待导入的种子；按引用区分（同一 URI 连续唤起两次也各处理一次）。 */
 private class PendingTorrent(val uri: Uri)
 
-/** A closing sheet can only cancel the exact import it was displaying. */
-internal fun <T : Any> MutableList<T>.cancelPendingTorrent(head: T): Boolean {
-    if (firstOrNull() !== head) return false
-    removeAt(0)
-    return true
+internal class ExternalTorrentQueue<T : Any>(
+    private val closeNow: () -> Unit,
+    private val closeAfterToast: () -> Unit,
+    private val cancelClose: () -> Unit,
+    private val hasOtherSheet: () -> Boolean,
+) {
+    private val queue = mutableStateListOf<T>()
+    val pending: List<T> get() = queue
+
+    fun enqueue(item: T) {
+        cancelClose()
+        queue.add(item)
+    }
+
+    private fun removeHead(head: T): Boolean {
+        if (queue.firstOrNull() !== head) return false
+        queue.removeAt(0)
+        return true
+    }
+
+    fun cancelWaiting(head: T, state: HostState) {
+        if (!state.isReadOnly || state.connection is Connection.Failed) return
+        if (!removeHead(head)) return
+        cancelClose()
+        closeIfIdle()
+    }
+
+    fun complete(head: T) {
+        if (removeHead(head)) lingerIfIdle()
+    }
+
+    fun fail(head: T, report: () -> Unit) {
+        if (queue.firstOrNull() !== head) return
+        queue.clear()
+        report()
+        lingerIfIdle()
+    }
+
+    private fun lingerIfIdle() {
+        if (queue.isEmpty()) {
+            cancelClose()
+            closeAfterToast()
+        }
+    }
+
+    fun closeIfIdle() {
+        if (queue.isEmpty() && !hasOtherSheet()) closeNow()
+    }
 }
 
 /** 只为已确认符合引导条件的种子创建；断连不取消已经展示的引导。 */
@@ -361,11 +414,9 @@ private fun ExternalTorrentGuideSheet(
 @Composable
 private fun ExternalDownloadStage(
     failure: HostException?,
-    torrents: List<PendingTorrent>,
+    torrents: ExternalTorrentQueue<PendingTorrent>,
     onFailureShown: () -> Unit,
     onSubmitted: () -> Unit,
-    onTorrentDone: (PendingTorrent) -> Unit,
-    onTorrentCancelled: (PendingTorrent) -> Unit,
     onClosed: () -> Unit,
 ) {
     val container = LocalAppContainer.current
@@ -380,20 +431,18 @@ private fun ExternalDownloadStage(
         }
     }
     val close by rememberUpdatedState(onClosed)
-    val head = torrents.firstOrNull()
-    val state = hostState()
-    val host = container.host.collectAsStateWithLifecycle()
+    val head = torrents.pending.firstOrNull()
+    val state = container.store.state.collectAsState()
+    val host = container.host.collectAsState()
     val settings = remember(context) { DeviceSettings.of(context) }
     val appDir = remember(context) { defaultLocalSaveDir(context).path }
     var guide by remember(head) { mutableStateOf<ExternalTorrentGuide?>(null) }
-    var waitingForHost by remember(head) { mutableStateOf(false) }
+    var creating by remember(head) { mutableStateOf(false) }
     CompositionLocalProvider(LocalFluxOverlays provides overlays, LocalTaskActions provides actions) {
         Box(Modifier.fillMaxSize()) {
             NewDownloadSheet(route = nav.sheet as? SheetRoute.NewDownload, onDismiss = nav::closeSheet, onSubmitted = onSubmitted)
             val activeGuide = guide
-            if (head != null && state.value.connection !is Connection.Failed &&
-                (activeGuide != null || waitingForHost)
-            ) key(head) {
+            if (head != null && !creating && state.value.connection !is Connection.Failed) key(head) {
                 ExternalTorrentGuideSheet(
                     guide = activeGuide,
                     state = state.value,
@@ -404,12 +453,8 @@ private fun ExternalDownloadStage(
                         }
                     },
                     onCancel = {
-                        if (guide === activeGuide && activeGuide?.saving != true &&
-                            (activeGuide != null || waitingForHost)
-                        ) {
-                            guide = null
-                            waitingForHost = false
-                            onTorrentCancelled(head)
+                        if (!creating && guide === activeGuide && activeGuide?.saving != true) {
+                            torrents.cancelWaiting(head, container.store.state.value)
                         }
                     },
                 )
@@ -430,39 +475,25 @@ private fun ExternalDownloadStage(
             opened = true
         } else if (opened) {
             delay(SHEET_EXIT_MS)
-            if (torrents.isEmpty()) close()
+            if (torrents.pending.isEmpty()) close()
         }
     }
     // 种子逐个提交；本机首次使用应用默认目录时等用户选定目录或明确跳过。
     LaunchedEffect(head) {
         if (head == null) return@LaunchedEffect
         fun fail(error: HostException) {
-            if (torrents.firstOrNull() !== head) return
-            guide = null
-            waitingForHost = false
-            overlays.toast(context.hostErrorText(error, container.host.value), FluxToastKind.Error)
-            onTorrentDone(head)
-        }
-        var ready = awaitReady(container.store)
-        if (ready.isReadOnly && ready.connection !is Connection.Failed) {
-            // A later intent must survive a disconnect even if the preceding guide was skipped or cancelled.
-            waitingForHost = true
-            ready = container.store.state.awaitHostOutcome()
-            if (torrents.firstOrNull() !== head) return@LaunchedEffect
-            waitingForHost = false
-        }
-        val connection = ready.connection
-        if (connection is Connection.Failed) {
-            fail(connection.error)
-            return@LaunchedEffect
-        }
-        suspend fun submit(saveDir: String) {
-            if (torrents.firstOrNull() !== head) return
-            val latest = container.store.state.value.connection
-            if (latest is Connection.Failed) {
-                fail(latest.error)
-                return
+            torrents.fail(head) {
+                guide = null
+                overlays.toast(context.hostErrorText(error, container.host.value), FluxToastKind.Error)
             }
+        }
+        suspend fun awaitWritable(): HostState? = container.store.state.awaitTorrentWrite(
+            isCurrent = { torrents.pending.firstOrNull() === head },
+            onFailure = ::fail,
+        )
+        val ready = awaitWritable() ?: return@LaunchedEffect
+        suspend fun submit(saveDir: String) {
+            if (awaitWritable() == null) return
             guide = null
             TorrentImport.submit(
                 context = context,
@@ -473,8 +504,15 @@ private fun ExternalDownloadStage(
                 saveDir = saveDir,
                 queueId = "",
                 startPaused = false,
+                beforeCreate = {
+                    if (awaitWritable() == null) false
+                    else {
+                        creating = true
+                        true
+                    }
+                },
             ).let { if (it > 0) onSubmitted() }
-            onTorrentDone(head)
+            torrents.complete(head)
         }
         if (ready.needsPublicDownloadGuide(container.host.value, settings.downloadFolderGuideDone, appDir)) {
             val activeGuide = ExternalTorrentGuide(appDir, { settings.downloadFolderGuideDone }, settings::finishDownloadFolderGuide)

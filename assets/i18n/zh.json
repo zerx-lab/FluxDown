@@ -3432,7 +3432,7 @@
   "mobileSkipPublicDownloadGuide": "保留应用目录",
   "mobileDownloadGuideDisconnected": "下载服务已断开。你可以保留应用目录，或等连接恢复后选择目录。",
   "mobileTorrentImportPending": "等待导入种子",
-  "mobileTorrentImportWaitingForHost": "下载服务已断开。连接恢复后将继续导入，也可以取消等待中的导入。",
+  "mobileTorrentImportWaitingForHost": "正在等待下载服务。连接后将继续导入，也可以取消等待中的导入。",
   "mobileAllFilesDescNative": "Android 要求授予「所有文件访问」权限，FluxDown 才能打开并保存到此位置。请在系统设置中开启，返回后会自动刷新；应用目录无需该权限。",
   "mobileStoragePermTitle": "需要存储权限",
   "mobileStoragePermDesc": "Android 10 及以下需要存储权限，FluxDown 才能打开并保存到此位置。授权后会自动刷新；应用目录无需该权限。",

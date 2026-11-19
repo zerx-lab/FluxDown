@@ -46,6 +46,7 @@ import com.fluxdown.fluxui.overlay.FluxOverlayState
 import com.fluxdown.fluxui.overlay.FluxToastKind
 import com.fluxdown.fluxui.theme.FluxHaptics
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -87,6 +88,32 @@ internal fun rememberLocalFileAvailability(task: Task, localHost: Boolean): Stat
     return result
 }
 
+internal suspend fun dispatchLocalFile(
+    task: Task,
+    isCurrent: () -> Boolean,
+    onUnavailable: () -> Unit,
+    onOpen: (File) -> Unit,
+) {
+    val file = withContext(Dispatchers.IO) { task.openableLocalFile(localHost = true) }
+    if (!isCurrent()) return
+    if (file == null) onUnavailable() else onOpen(file)
+}
+
+/** Publishes a reserved slot before IO so existing rows never move or lose their press. */
+internal suspend fun showProbingTaskMenu(
+    task: Task,
+    isCurrent: () -> Boolean,
+    open: FluxMenuItem.Action,
+    rest: List<FluxMenuItem>,
+    show: (State<List<FluxMenuItem>>) -> Unit,
+) {
+    val items = mutableStateOf<List<FluxMenuItem>>(listOf(open.copy(visible = false)) + rest)
+    show(items)
+    dispatchLocalFile(task, isCurrent, onUnavailable = {}) {
+        items.value = listOf(open) + rest
+    }
+}
+
 /**
  * 任务动作的唯一分发点：行环钮、滑动、长按菜单、选择坞、详情页都经此调用，
  * 保证只读拦截、错误文案、toast 与触感一致（PC `MenuEntry` 同序）。
@@ -102,6 +129,28 @@ class TaskActions(
     /** 当前主机是否为本机：远端主机的文件在主机磁盘上，本机无法打开。 */
     private val isLocalHost: () -> Boolean,
 ) {
+    internal fun showTaskMenu(
+        anchor: androidx.compose.ui.geometry.Rect,
+        task: Task,
+        boosted: Boolean,
+        file: LocalFileAvailability,
+        onSelect: (() -> Unit)? = null,
+    ) {
+        if (file != LocalFileAvailability.Pending || !isLocalHost()) {
+            overlays.showMenu(anchor, menuItems(task, boosted, file == LocalFileAvailability.RegularFile, onSelect))
+            return
+        }
+        val open = openMenuAction(task)
+        val rest = menuItems(task, boosted, opensFile = false, onSelect = onSelect)
+        // The owning shell outlives the originating lazy row and its probe.
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            showProbingTaskMenu(task, isLocalHost, open, rest) { overlays.showMenu(anchor, it) }
+        }
+    }
+
+    private fun openMenuAction(task: Task) =
+        FluxMenuItem.Action(s(R.string.openFile), { open(task) }, FluxIcons.ExternalLink)
+
     private fun s(id: Int, vararg args: Pair<String, Any?>) = context.str(id, *args)
 
     /** 只读（断连宽限后）拒绝写操作：toast(error) + REJECT。 */
@@ -309,18 +358,14 @@ class TaskActions(
 
     private fun openLocalFile(task: Task, requireCurrentLocalHost: Boolean, onUnavailable: (() -> Unit)? = null) {
         scope.launch {
-            val file = withContext(Dispatchers.IO) { task.openableLocalFile(localHost = true) }
-            if (requireCurrentLocalHost && !isLocalHost()) return@launch
-            if (file == null) {
+            dispatchLocalFile(task, { !requireCurrentLocalHost || isLocalHost() }, onUnavailable = {
                 if (onUnavailable != null) {
                     onUnavailable()
                 } else {
                     haptics.reject()
                     overlays.toast(s(R.string.mobileFileNotFound), FluxToastKind.Warn, FluxIcons.FileWarning)
                 }
-                return@launch
-            }
-            viewLocalFile(file)
+            }, onOpen = ::viewLocalFile)
         }
     }
 
@@ -369,7 +414,7 @@ class TaskActions(
      */
     fun menuItems(task: Task, boosted: Boolean, opensFile: Boolean, onSelect: (() -> Unit)? = null): List<FluxMenuItem> = buildList {
         val st = task.status
-        if (opensFile && isLocalHost()) add(FluxMenuItem.Action(s(R.string.openFile), { open(task) }, FluxIcons.ExternalLink))
+        if (opensFile && isLocalHost()) add(openMenuAction(task))
         if (st == TaskStatus.Completed && onSelect != null) {
             add(FluxMenuItem.Action(s(R.string.mobileTaskDetail), { showDetails(task) }, FluxIcons.Info))
         }
