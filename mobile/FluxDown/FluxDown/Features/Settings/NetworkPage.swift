@@ -268,10 +268,10 @@ struct NetworkPage: View {
             ForEach(rows) { row in
                 if let item = row.item {
                     let endpoint = ProxyRule.displayEndpoint(form.value(item.key) ?? "")
+                    let hint = L(row.detailKey ?? "proxyProtocolUrlHint")
                     ConfigTextRow(
                         id: row.id, key: item.key, title: L(row.titleKey),
-                        detail: endpoint.isEmpty ? nil : endpoint,
-                        prompt: L(row.detailKey ?? "proxyProtocolUrlHint"),
+                        detail: endpoint.isEmpty ? hint : "\(hint) · \(endpoint)",
                         isSecure: true
                     )
                 }

@@ -1,6 +1,6 @@
 // 设置控件与「绑定到配置键」的行（GPUI `SectionContext::daemon_* / pref_*`）。
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useEffectEvent, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useT } from '../../../i18n'
 import { cn } from '../../../lib/cn'
@@ -89,7 +89,7 @@ export function NumberField({
   )
 }
 
-/** 文本输入：草稿本地维护；支持失焦或回车时统一提交。 */
+/** 文本输入：草稿本地维护；支持失焦、回车或卸载时统一提交。 */
 export function TextField({
   value,
   onCommit,
@@ -115,6 +115,20 @@ export function TextField({
 }) {
   const [draft, setDraft] = useState(value)
   const focused = useRef(false)
+  const pendingDraft = useRef<string | undefined>(undefined)
+  const commitDraft = () => {
+    const pending = pendingDraft.current
+    pendingDraft.current = undefined
+    if (disabled || pending === undefined || pending === value) return false
+    onCommit(pending)
+    return true
+  }
+  const commitOnUnmount = useEffectEvent(() => {
+    commitDraft()
+  })
+  useEffect(() => {
+    if (commitOnBlur) return () => commitOnUnmount()
+  }, [commitOnBlur])
   useEffect(() => {
     if (!focused.current) setDraft(value)
   }, [value])
@@ -134,16 +148,17 @@ export function TextField({
         focused.current = true
       }}
       onChange={(event) => {
-        setDraft(event.target.value)
-        if (!commitOnBlur) onCommit(event.target.value)
+        const next = event.target.value
+        setDraft(next)
+        if (commitOnBlur) pendingDraft.current = next
+        else onCommit(next)
       }}
       onKeyDown={(event) => {
         if (commitOnBlur && event.key === 'Enter') event.currentTarget.blur()
       }}
       onBlur={() => {
         focused.current = false
-        if (commitOnBlur && draft !== value) onCommit(draft)
-        else setDraft(value)
+        if (!commitOnBlur || !commitDraft()) setDraft(value)
       }}
     />
   )

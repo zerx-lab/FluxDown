@@ -131,6 +131,8 @@ The manual server fields stay editable in every mode and are kept when you switc
 
 Under **Protocol-specific proxies**, configure separate routes for HTTP/HTTPS, FTP, HLS, DASH (including paired video and audio tracks), BitTorrent, and eD2K. Enter a proxy URL with an explicit port, such as `socks5://host:1080`. To include credentials, percent-encode reserved characters in the username and password. Leave a field blank to keep its previous behavior, or enter `direct://` to skip the proxy configured in FluxDown. This does not bypass an OS-level VPN or TUN.
 
+The saved endpoint is shown without credentials. In the Web app, pressing Enter, leaving the field, or switching settings sections submits the edit.
+
 For HTTP/HTTPS, FTP, HLS, and DASH, a task's own proxy and matching site rules take precedence, in that order. A protocol route is used when neither applies, before the global mode; a fixed route does not use Auto failover. A change applies the next time a transfer starts or resumes. These routes do not change egress for application updates or subscription feeds.
 
 The BitTorrent route overrides the BitTorrent proxy section above it and includes peer connections. SOCKS5 with UDP support is recommended for UDP trackers and DHT; changing the route rebuilds the BT session and continues active tasks. The eD2K route requires SOCKS5 with UDP support: server and peer connections use SOCKS5 TCP, and Kad uses SOCKS5 UDP. A SOCKS5 proxy does not forward incoming connections, so it can affect reachability and eD2K's High ID.

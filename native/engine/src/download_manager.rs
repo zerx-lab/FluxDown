@@ -8388,7 +8388,8 @@ impl DownloadManager {
                 && self.proxy_config.mode == ProxyMode::Auto
                 && task.proxy_url.is_empty()
                 // 站点规则与协议固定出口不参与 Auto 换路：否则会把其失败归因到 Auto，
-                // 并排程不适用的备用路径。旧库没有出口标签的任务仍允许换路。
+                // 并排程不适用的备用路径。出口标签记录实际下载协议的决定（含插件解析、
+                // 独立音轨）；源链接上的覆盖也保守地阻止换路，旧库空标签且无覆盖仍可换路。
                 && !crate::auto_proxy::route::is_rule_label(&task.auto_route)
                 && !crate::protocol_proxy::is_fixed_route(&task.auto_route)
                 && self
