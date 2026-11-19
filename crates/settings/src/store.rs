@@ -1213,7 +1213,7 @@ impl SettingsStore {
     }
 
     /// 监听与映射状态轮询：不走 `call_with`，避免后台刷新改写页面横幅。
-    /// 上一轮仍在途则跳过；失败时清空快照。
+    /// 上一轮仍在途则跳过；瞬态错误保留最后一次成功的快照。
     pub fn load_bt_port_status(&mut self, cx: &mut Context<Self>) {
         if !self.daemon_connected() || self.in_flight(BT_PORT_STATUS_ACTION) {
             return;
@@ -1240,9 +1240,14 @@ impl SettingsStore {
         if !self.daemon_connected() {
             return;
         }
-        let status = result
-            .ok()
-            .and_then(|value| serde_json::from_value::<BtPortStatusDto>(value).ok());
+        let status = match result {
+            Ok(value) => match serde_json::from_value::<BtPortStatusDto>(value) {
+                Ok(status) => Some(status),
+                Err(_) => return,
+            },
+            Err(error) if error.code == ApplicationErrorCode::Unsupported => None,
+            Err(_) => return,
+        };
         if self.bt_port_status != status {
             self.bt_port_status = status;
             cx.notify();

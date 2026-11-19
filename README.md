@@ -59,8 +59,6 @@
 | **Remote Devices** | Optional FluxCloud account, settings sync and remote task management, plus LAN device pairing and direct connections |
 | **APIs & CLI** | REST/OpenAPI, aria2-compatible JSON-RPC, MCP with 12 tools, and a CLI for scripts or standalone downloads |
 
-In **Settings → BitTorrent → Connection**, the local listener shows the actual port even when automatic mapping is off. Router mapping results are shown separately and do not verify public reachability.
-
 **Privacy:** local downloads do not require a FluxCloud account. Cloud features are optional. Anonymous installation and daily-active statistics are controlled by `analytics_enabled` and can be disabled; they do not collect download/task information. This is not a zero-telemetry application.
 
 ## FluxDown vs. IDM

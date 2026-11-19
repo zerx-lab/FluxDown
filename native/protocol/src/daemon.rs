@@ -1139,7 +1139,7 @@ pub struct SetTaskSuperSeedingParams {
 pub struct BtPortStatusDto {
     /// BT 会话是否在运行（没有 BT 任务时会话不创建，也就没有映射）。
     pub running: bool,
-    /// 监听端口；未运行为 0。
+    /// 实际监听端口；0 表示未报告监听端口。
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub listen_port: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

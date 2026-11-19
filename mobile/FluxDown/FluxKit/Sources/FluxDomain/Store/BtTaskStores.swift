@@ -78,7 +78,7 @@ public final class BtFilesStore {
 @MainActor
 @Observable
 public final class BtPortStatusStore {
-    /// 最近一次查询的快照；首轮在途或查询失败时为 nil。
+    /// 最近一次成功的快照；尚未查询成功或主机不支持此方法时为 nil。
     public private(set) var status: BtPortStatus?
 
     @ObservationIgnored private var generation = 0
@@ -88,7 +88,7 @@ public final class BtPortStatusStore {
 
     public init() {}
 
-    /// 失败时清空快照，不弹 Toast。
+    /// 瞬态错误保留旧快照，不弹 Toast。
     public func load(_ session: any HostSession) async {
         generation += 1
         let mine = generation
@@ -97,7 +97,7 @@ public final class BtPortStatusStore {
             guard mine == generation, !Task.isCancelled else { return }
             status = next
         } catch {
-            guard mine == generation, !Task.isCancelled else { return }
+            guard mine == generation, !Task.isCancelled, error.code == .unsupported else { return }
             status = nil
         }
     }

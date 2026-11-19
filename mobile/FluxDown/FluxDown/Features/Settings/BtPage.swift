@@ -63,13 +63,16 @@ struct BtPage: View {
         // 仅在前台且「连接」页签可见时轮询；换主机先清掉上一台的读数。
         .task(id: PortPollKey(
             active: scenePhase == .active,
-            visible: btOn && shownTab == .connection,
+            visible: btOn && shownTab == .connection && !readOnly,
             hostID: container.host.id
         )) {
-            guard scenePhase == .active, btOn, shownTab == .connection else { return }
+            guard scenePhase == .active, btOn, shownTab == .connection, !readOnly else { return }
             await portModel.poll(container.session)
         }
         .onChange(of: container.host.id) { portModel.reset() }
+        .onChange(of: readOnly) { _, disconnected in
+            if disconnected { portModel.reset() }
+        }
         // 搜索命中：先切到目标行所在页签（reveal 在 350ms 后才滚动，页签内容此时已渲染）。
         .onChange(of: focus.target, initial: true) { _, target in
             if let target, let owner = BtSettingsRow.tab(forRowID: target) { tab = owner }
