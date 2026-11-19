@@ -604,6 +604,45 @@ pub struct RemoteCommandParams {
     pub delete_files: bool,
 }
 
+/// `agent.remote.commandMany` 单次请求的任务数上限（客户端按此分块；agent 再按云端批量上限拆分）。
+pub const REMOTE_COMMAND_MANY_MAX: usize = 1000;
+
+/// `agent.remote.commandMany` 参数：同一动作批量作用于多条远程任务。
+///
+/// 与逐条 `agent.remote.command` 语义相同：cancel / delete 不依赖目标在线，云端已没有的记录
+/// 视为已达成（从投影移除）；pause / resume 遇到不存在的记录失败为 `notFound` + `remoteTaskGone`。
+/// 重复 id 只处理一次；超过 [`REMOTE_COMMAND_MANY_MAX`] 条返回 `invalidArgument`。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteCommandManyParams {
+    pub task_ids: Vec<String>,
+    pub action: RemoteCommandAction,
+    /// 仅 `Delete`：目标设备同时删除已下载文件。
+    #[serde(default)]
+    pub delete_files: bool,
+}
+
+/// 批量远程指令中失败的一条。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteCommandFailure {
+    pub task_id: String,
+    pub error: crate::RpcErrorData,
+}
+
+/// `agent.remote.commandMany` 结果：`succeeded` 与 `failed` 互斥，合起来覆盖去重后的全部 id。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteCommandManyResult {
+    #[serde(default)]
+    pub succeeded: Vec<String>,
+    #[serde(default)]
+    pub failed: Vec<RemoteCommandFailure>,
+}
+
 /// UI Gateway 运行状态；永远不携带 token 文本。
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

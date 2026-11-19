@@ -613,6 +613,7 @@ public enum AccountRules {
         case "targetDeviceOffline": "errReasonTargetDeviceOffline"
         case "taskStateConflict": "errReasonTaskStateConflict"
         case "taskDeviceMismatch": "errReasonTaskDeviceMismatch"
+        case "remoteTaskGone": "errReasonRemoteTaskGone"
         case "saveDirUnavailable": "errReasonSaveDirUnavailable"
         default: nil
         }

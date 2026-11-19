@@ -20,6 +20,8 @@ struct RemoteTaskRow: View {
     let targetOnline: Bool?
     let busy: Bool
     let readOnly: Bool
+    /// 下载页多选模式：行只负责被选中，不显示行内按钮 / 滑动 / 长按菜单。
+    var selecting = false
     /// 下发命令：动作 + 是否同时删除文件。
     let issue: (RemoteCommandAction, Bool) -> Void
 
@@ -58,33 +60,17 @@ struct RemoteTaskRow: View {
         // 滑动删除只弹确认框：不能用 `role: .destructive`，否则 List 会立即动画移除该行，
         // 数据源仍有这一行 → UICollectionView 行数不一致崩溃（同本地任务行，用红色 tint 代替）。
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            if allows(.delete) {
+            if !selecting, allows(.delete) {
                 Button(L("delete"), systemImage: FluxSymbol.delete) { confirmingDelete = true }
                     .tint(Color.fdStatusFailed)
             }
-            if allows(.cancel) {
+            if !selecting, allows(.cancel) {
                 Button(L("cancel"), systemImage: "xmark.circle") { issue(.cancel, false) }
                     .tint(Color.fdStatusWarning)
             }
         }
         .contextMenu {
-            if let action = RemoteTaskRules.primaryAction(for: task), allows(action) {
-                Button(L(action == .pause ? "pause" : "resume"), systemImage: action == .pause ? FluxSymbol.pause : FluxSymbol.resume) {
-                    issue(action, false)
-                }
-            }
-            if allows(.cancel) {
-                Button(L("cancel"), systemImage: "xmark.circle") { issue(.cancel, false) }
-            }
-            if !task.url.isEmpty {
-                Button(L("mobileSwipeCopyLink"), systemImage: FluxSymbol.link) {
-                    UIPasteboard.general.string = task.url
-                    container.toasts.show(text: L("urlCopied"), tone: .success)
-                }
-            }
-            if allows(.delete) {
-                Button(L("delete"), systemImage: FluxSymbol.delete, role: .destructive) { confirmingDelete = true }
-            }
+            if !selecting { menuItems }
         }
         .alert(L("deleteTask"), isPresented: $confirmingDelete) {
             Button(L("deleteTask"), role: .destructive) { issue(.delete, false) }
@@ -95,6 +81,27 @@ struct RemoteTaskRow: View {
             Button(L("cancel"), role: .cancel) {}
         } message: {
             Text(displayName)
+        }
+    }
+
+    @ViewBuilder
+    private var menuItems: some View {
+        if let action = RemoteTaskRules.primaryAction(for: task), allows(action) {
+            Button(L(action == .pause ? "pause" : "resume"), systemImage: action == .pause ? FluxSymbol.pause : FluxSymbol.resume) {
+                issue(action, false)
+            }
+        }
+        if allows(.cancel) {
+            Button(L("cancel"), systemImage: "xmark.circle") { issue(.cancel, false) }
+        }
+        if !task.url.isEmpty {
+            Button(L("mobileSwipeCopyLink"), systemImage: FluxSymbol.link) {
+                UIPasteboard.general.string = task.url
+                container.toasts.show(text: L("urlCopied"), tone: .success)
+            }
+        }
+        if allows(.delete) {
+            Button(L("delete"), systemImage: FluxSymbol.delete, role: .destructive) { confirmingDelete = true }
         }
     }
 
@@ -183,7 +190,7 @@ struct RemoteTaskRow: View {
             ProgressView()
                 .frame(width: 44, height: 44)
                 .accessibilityLabel(L("mobileLoading"))
-        } else if let action = RemoteTaskRules.primaryAction(for: task) {
+        } else if !selecting, let action = RemoteTaskRules.primaryAction(for: task) {
             Button {
                 issue(action, false)
             } label: {

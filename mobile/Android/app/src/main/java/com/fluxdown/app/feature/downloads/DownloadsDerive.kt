@@ -188,7 +188,7 @@ internal fun derive(input: DeriveInput, cache: DeriveCache, nowMs: Long, interac
     cache.sortSig = sig
     cache.lastPos = HashMap<String, Int>(ordered.size * 2).also { m -> ordered.forEachIndexed { i, it -> m[it.id] = i } }
 
-    // 5. 分区 / 分组 → 扁平条目（远程行与本地行穿插；只有本地行进多选范围）
+    // 5. 分区 / 分组 → 扁平条目（远程行与本地行穿插；远程行以 RemoteItem.id 进多选范围）
     val entries = ArrayList<ListEntry>(ordered.size + 8)
     val visible = ArrayList<String>(ordered.size)
     if (p.groupBy == GroupBy.None) {
@@ -214,7 +214,7 @@ internal fun derive(input: DeriveInput, cache: DeriveCache, nowMs: Long, interac
     val queueFacets = s.queues.sortedBy { it.position }.map { QueueFacet(it, queueCounts[normQueue(it.queueId)] ?: 0) }
 
     return DeriveResult(
-        list = DownloadsList(entries, visible, s.tasks.size + remoteAll.size, loaded = true),
+        list = DownloadsList(entries, visible, s.tasks.size + remoteAll.size, loaded = true, remote = remoteAll),
         facets = Facets(folderCounts.asList(), pills, queueFacets, ordered.size, remoteCount),
         retryAtMs = retryAt,
     )
@@ -231,7 +231,10 @@ private fun rowEntry(it: DownloadItem, zone: RowZone, first: Boolean, last: Bool
             visible += it.id
             RowEntry(it, zone, first, last)
         }
-        is RemoteItem -> RemoteRowEntry(it, zone, first, last)
+        is RemoteItem -> {
+            visible += it.id
+            RemoteRowEntry(it, zone, first, last)
+        }
     }
 
 // ── 行模型 ────────────────────────────────────────────────────────────────

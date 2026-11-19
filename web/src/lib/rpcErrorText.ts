@@ -39,6 +39,8 @@ export function rpcErrorText(error: unknown, t: TFunction): string {
     case 'gatewayRestartFailed': return t('apiServiceRestartFailed')
     case 'taskFilesInUse': return t('errReasonTaskFilesInUse')
     case 'taskFilesNotDeleted': return t('errReasonTaskFilesNotDeleted')
+    case 'remoteTaskGone': return t('errReasonRemoteTaskGone')
+    case 'targetDeviceOffline': return t('errReasonTargetDeviceOffline')
   }
   const kind = rpcErrorKind(error)
   const base = t(RPC_ERROR_KEYS[kind])

@@ -146,6 +146,7 @@ impl GatewayService {
                     method::CAPABILITY_AGENT_AUTH.to_owned(),
                     method::CAPABILITY_AGENT_SYNC.to_owned(),
                     method::CAPABILITY_AGENT_REMOTE_TASKS.to_owned(),
+                    method::CAPABILITY_AGENT_REMOTE_BATCH.to_owned(),
                     method::CAPABILITY_AGENT_BILLING.to_owned(),
                     method::CAPABILITY_AGENT_REFERRALS.to_owned(),
                     method::CAPABILITY_AGENT_EXTERNAL_CAPTURE.to_owned(),
@@ -613,6 +614,11 @@ impl GatewayService {
                         .await
                         .map(|()| serde_json::json!({ "ok": true })),
                 )
+            }
+            method::AGENT_REMOTE_COMMAND_MANY => {
+                let params =
+                    parse_params::<fluxdown_protocol::RemoteCommandManyParams>(request.params)?;
+                remote_value(self.remote.command_many(params).await)
             }
             method::AGENT_LINK_PAIRING_CODE
             | method::AGENT_LINK_STOP_PAIRING
@@ -1865,36 +1871,9 @@ pub(crate) fn ensure_exposed_auth_token(state: &mut crate::state::AgentState) ->
 fn remote_value<T: serde::Serialize>(
     result: Result<T, RemoteError>,
 ) -> Result<serde_json::Value, RpcErrorData> {
-    result.map_err(remote_error_data).and_then(to_value)
-}
-
-fn remote_error_data(error: RemoteError) -> RpcErrorData {
-    match error {
-        RemoteError::Daemon(error) => error,
-        RemoteError::Cloud(error) => cloud_error_data(error),
-        RemoteError::NotFound(_) => RpcErrorData::new(ApplicationErrorCode::NotFound, false),
-        RemoteError::TaskUnavailable(_) => RpcErrorData::new(ApplicationErrorCode::Conflict, false)
-            .with_reason(fluxdown_protocol::ErrorReason::TaskStateConflict),
-        RemoteError::InvalidArgument {
-            field,
-            reason,
-            message,
-        } => {
-            tracing::debug!(field, %message, "remote RPC argument rejected");
-            let mut data = invalid_field(field);
-            data.reason = reason;
-            data
-        }
-        RemoteError::InvalidAction(action) => {
-            tracing::debug!(%action, "unknown remote task action");
-            invalid_field("action")
-        }
-        RemoteError::Json(error) => internal_error("remote task response", error),
-        RemoteError::State(error) => internal_error("agent state", error),
-        RemoteError::Protocol(message) => internal_error("remote task protocol", message),
-        RemoteError::Kicked => RpcErrorData::new(ApplicationErrorCode::Conflict, false)
-            .with_reason(fluxdown_protocol::ErrorReason::OnlineDeviceLimit),
-    }
+    result
+        .map_err(RemoteError::into_rpc_error)
+        .and_then(to_value)
 }
 
 fn params_or_empty(params: Option<serde_json::Value>) -> serde_json::Value {

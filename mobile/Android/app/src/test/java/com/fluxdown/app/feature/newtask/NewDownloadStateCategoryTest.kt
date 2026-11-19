@@ -62,8 +62,9 @@ class NewDownloadStateCategoryTest {
         assertEquals("/dl/Video", form.saveDir)
         assertNull(requestOffered(form))
 
+        // 回到自动：按当前文件名（movie.mp4）重新推导分类目录。
         form.selectMode(SaveDirMode.Auto)
-        assertEquals("/dl/Programs", form.saveDir)
+        assertEquals("/dl/Video", form.saveDir)
         assertEquals("/dl", requestOffered(form))
     }
 

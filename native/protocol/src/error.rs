@@ -101,6 +101,8 @@ pub enum ErrorReason {
     TaskStateConflict,
     /// 远程任务：只有目标设备可以上报该任务状态。
     TaskDeviceMismatch,
+    /// 远程任务：FluxCloud 已没有这条记录（已被其他设备删除或过期清理）；agent 已把它从投影移除。
+    RemoteTaskGone,
     /// 保存目录在目标设备上不可用（路径风格不符 / 非绝对路径 / 无法创建）。
     SaveDirUnavailable,
     /// 删除任务：文件正被其他程序占用，无法删除；任务记录已保留。

@@ -226,6 +226,8 @@ object HostMethod {
     const val agentRemoteList = "agent.remote.list"
     const val agentRemoteDispatch = "agent.remote.dispatch"
     const val agentRemoteCommand = "agent.remote.command"
+    /** `RemoteCommandManyParams` → `RemoteCommandManyResult`：对多个远程任务执行同一动作（需 `agent.remoteBatch` 能力）。 */
+    const val agentRemoteCommandMany = "agent.remote.commandMany"
     /** 局域网直连（L1）：展示本机配对码并开始广播 → `LinkPairingCodeDto`。 */
     const val agentLinkPairingCode = "agent.link.pairingCode"
     /** 停止展示配对码 / 停止配对广播。 */
@@ -333,6 +335,8 @@ object HostCapability {
     const val agentAuth = "agent.auth"
     const val agentSync = "agent.sync"
     const val agentRemoteTasks = "agent.remoteTasks"
+    /** 主机支持 `agent.remote.commandMany` 与 `remoteTaskGone` 错误原因。 */
+    const val agentRemoteBatch = "agent.remoteBatch"
     const val agentBilling = "agent.billing"
     const val agentReferrals = "agent.referrals"
     const val agentDeviceLink = "agent.deviceLink"
