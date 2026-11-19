@@ -501,7 +501,7 @@ async fn get_task_on_post_only_endpoint_reports_readable_error() {
 #[tokio::test(flavor = "current_thread")]
 async fn save_html_keeps_original_and_existing_file_and_rejects_changed_response() {
     let mut h = Harness::new("save_html_get").await;
-    let page_body = b"<!-- share page --><h1>Shared file</h1>";
+    let page_body = b"<!-- share page --><section><h2>Shared file</h2></section>";
     let headers = "Content-Type: application/octet-stream\r\n\
                    Content-Disposition: inline; filename=share.html\r\n";
     *h.server.share_response.lock().unwrap() = Some(("200 OK", headers, page_body));

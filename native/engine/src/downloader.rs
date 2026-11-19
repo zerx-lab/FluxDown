@@ -3172,19 +3172,33 @@ fn has_html_signature(prefix: &[u8]) -> bool {
         b"<div",
         b"<p",
         b"<h1",
+        b"<h2",
+        b"<h3",
+        b"<h4",
+        b"<h5",
+        b"<h6",
         b"<a",
         b"<table",
         b"<form",
         b"<center",
+        b"<ul",
+        b"<ol",
+        b"<br",
+        b"<span",
+        b"<img",
+        b"<section",
     ]
     .into_iter()
     .any(|tag| {
         prefix
             .get(..tag.len())
             .is_some_and(|start| start.eq_ignore_ascii_case(tag))
-            && prefix
-                .get(tag.len())
-                .is_some_and(|b| b.is_ascii_whitespace() || *b == b'>')
+            && prefix.get(tag.len()..).is_some_and(|rest| {
+                rest.starts_with(b"/>")
+                    || rest
+                        .first()
+                        .is_some_and(|b| b.is_ascii_whitespace() || *b == b'>')
+            })
     })
 }
 
@@ -6916,11 +6930,19 @@ mod tests {
             (b"<table><tr><td>Report</td></tr></table>", true),
             (b"<a href=\"/file\">File</a>", true),
             (b"<form action=\"/login\"></form>", true),
+            (b"<h2>Files</h2>", true),
+            (b"<ul><li>File</li></ul>", true),
+            (b"<ol><li>File</li></ol>", true),
+            (b"<br/>Continue", true),
+            (b"<span>Continue</span>", true),
+            (b"<img src=\"banner.png\" />", true),
+            (b"<section>Files</section>", true),
             (b"<?xml version=\"1.0\"?><html>Page</html>", true),
             (b"<?xml version=\"1.0\"?><svg></svg>", false),
             (b"<!-- archive metadata -->PK\x03\x04", false),
             (b"<!-- pending", false),
             (b"<archive>Archive</archive>", false),
+            (b"<section-data>Export</section-data>", false),
             (b"<table", false),
         ] {
             assert_eq!(super::has_html_signature(body), expected, "{body:?}");
