@@ -509,7 +509,7 @@ pub(crate) fn url_has_prefix(url: &str, prefixes: &[&str]) -> bool {
 }
 
 /// BT 任务源：`magnet:` 链接或 `torrent-file://` 本地种子哨兵。
-fn is_bt_url(url: &str) -> bool {
+pub(crate) fn is_bt_url(url: &str) -> bool {
     url_has_prefix(url, &["magnet:", "torrent-file://"])
 }
 
@@ -555,6 +555,10 @@ impl TaskMenuFacts {
     /// 本地已完成且产物仍在下载目录：「打开文件」「复制文件」的共同前提。
     pub(crate) fn has_product_on_disk(&self) -> bool {
         self.is_local && self.state == TaskState::Completed && !self.file_missing
+    }
+
+    pub(crate) fn can_clear_task_file(&self) -> bool {
+        self.has_product_on_disk() && !self.is_bt && !self.is_torrent_sentinel
     }
 
     /// 「复制下载地址」对单个任务有意义：有真实链接，且不与「复制磁力链接」重复
@@ -636,6 +640,8 @@ pub(crate) enum MenuEntry {
     MoveStorage,
     /// 任务级 BT 限速对话框（单选；条件见 [`task_limits_visible`]）。
     TaskSpeedLimits,
+    /// Add a BEP 19 source (single local BitTorrent task).
+    AddWebSeed,
     /// 超级做种勾选（可多选；条件见 [`super_seeding_visible`]）。
     SuperSeeding,
     /// 复制磁力链接（单选；条件见 [`TaskMenuFacts::can_share_torrent`]）。
@@ -651,6 +657,7 @@ pub(crate) enum MenuEntry {
     Separator,
     Delete,
     DeleteWithFiles,
+    ClearTaskFile,
     /// 在主窗口停靠详情面板中查看（独立窗口经面板头部「在独立窗口打开」）。
     ShowDetail,
     /// 插件贡献的命令（下标对应 [`DownloadView`] 上的插件命令列表）。
@@ -667,20 +674,10 @@ pub(crate) fn context_menu_items(selection: &[TaskMenuFacts]) -> Vec<MenuEntry> 
         return Vec::new();
     }
     let mut items = Vec::new();
-    if selection.iter().any(|task| {
-        task.controllable
-            && (task.can_resume_seeding
-                || !matches!(task.state, TaskState::Completed | TaskState::Downloading))
-    }) {
+    if selection.iter().any(resume_applies) {
         items.push(MenuEntry::Resume);
     }
-    // 失败的本机任务也可暂停：撤销已排程的自动重试，任务落为已暂停（#947）。
-    if selection.iter().any(|task| {
-        task.controllable
-            && (task.is_seeding
-                || matches!(task.state, TaskState::Downloading | TaskState::Pending)
-                || (task.is_local && task.state == TaskState::Failed))
-    }) {
+    if selection.iter().any(pause_applies) {
         items.push(MenuEntry::Pause);
     }
     if let [only] = selection {
@@ -737,6 +734,9 @@ pub(crate) fn context_menu_items(selection: &[TaskMenuFacts]) -> Vec<MenuEntry> 
     if task_limits_visible(selection) {
         items.push(MenuEntry::TaskSpeedLimits);
     }
+    if single_local_bt(selection) {
+        items.push(MenuEntry::AddWebSeed);
+    }
     if super_seeding_visible(selection) {
         items.push(MenuEntry::SuperSeeding);
     }
@@ -764,10 +764,49 @@ pub(crate) fn context_menu_items(selection: &[TaskMenuFacts]) -> Vec<MenuEntry> 
         items.push(MenuEntry::Delete);
         items.push(MenuEntry::DeleteWithFiles);
     }
+    if let [only] = selection
+        && only.can_clear_task_file()
+    {
+        items.push(MenuEntry::ClearTaskFile);
+    }
     if selection.iter().any(|task| task.is_local) {
         items.push(MenuEntry::ShowDetail);
     }
     items
+}
+
+/// 「继续」会作用到该任务：可控，且可恢复做种或处于完成 / 下载中以外的状态。
+fn resume_applies(task: &TaskMenuFacts) -> bool {
+    task.controllable
+        && (task.can_resume_seeding
+            || !matches!(task.state, TaskState::Completed | TaskState::Downloading))
+}
+
+/// 「暂停」会作用到该任务。失败的本机任务也可暂停：撤销已排程的自动重试，
+/// 任务落为已暂停（#947）。
+fn pause_applies(task: &TaskMenuFacts) -> bool {
+    task.controllable
+        && (task.is_seeding
+            || matches!(task.state, TaskState::Downloading | TaskState::Pending)
+            || (task.is_local && task.state == TaskState::Failed))
+}
+
+/// 「继续」作用的任务全是可恢复做种的已完成任务：菜单项改称「继续做种」。
+pub(crate) fn resume_targets_only_seeds(selection: &[TaskMenuFacts]) -> bool {
+    let mut targets = selection
+        .iter()
+        .filter(|task| resume_applies(task))
+        .peekable();
+    targets.peek().is_some() && targets.all(|task| task.can_resume_seeding)
+}
+
+/// 「暂停」作用的任务全是做种中 / 排队做种的任务：菜单项改称「停止做种」。
+pub(crate) fn pause_targets_only_seeds(selection: &[TaskMenuFacts]) -> bool {
+    let mut targets = selection
+        .iter()
+        .filter(|task| pause_applies(task))
+        .peekable();
+    targets.peek().is_some() && targets.all(|task| task.is_seeding)
 }
 
 /// 右键菜单完整条目：未处于显式多选模式时，在删除组前插入「选择 / 全选」作为
@@ -878,7 +917,7 @@ pub(crate) fn force_recheck_visible(selection: &[TaskMenuFacts]) -> bool {
 }
 
 /// 单选本机 BT 任务（任意状态）。
-fn single_local_bt(selection: &[TaskMenuFacts]) -> bool {
+pub(crate) fn single_local_bt(selection: &[TaskMenuFacts]) -> bool {
     matches!(selection, [only] if only.is_local && only.is_bt)
 }
 
@@ -1936,6 +1975,25 @@ impl DownloadTableDelegate {
         self.visible_task_ids()
             .filter_map(|id| self.store.row(id).map(|row| row.key.clone()))
             .collect()
+    }
+
+    pub(crate) fn selected_rows_in_order(&self) -> Vec<std::cell::Ref<'_, DownloadTaskView>> {
+        let mut rows: Vec<_> = self
+            .visible_task_ids()
+            .filter_map(|id| {
+                let row = self.store.row(id)?;
+                self.selected_tasks.contains(&row.key).then_some(row)
+            })
+            .collect();
+        if rows.len() < self.selected_tasks.len() {
+            // A collapsed bucket or directory can still contain selected tasks.
+            let shown: HashSet<_> = rows.iter().map(|row| row.key.clone()).collect();
+            rows.extend(self.sorted_rows.iter().filter_map(|&id| {
+                let row = self.store.row(id)?;
+                (self.selected_tasks.contains(&row.key) && !shown.contains(&row.key)).then_some(row)
+            }));
+        }
+        rows
     }
 
     /// 可见任务行里（选中数, 总数）；不分配。
@@ -3205,7 +3263,7 @@ impl DownloadTableDelegate {
         task_menu_entries(&facts, self.in_multi_select(), self.plugin_commands.len())
             .into_iter()
             .fold(menu, |menu, entry| {
-                self.apply_menu_entry(menu, entry, &selected, destructive)
+                self.apply_menu_entry(menu, entry, &selected, &facts, destructive)
             })
     }
 
@@ -3214,16 +3272,25 @@ impl DownloadTableDelegate {
         menu: PopupMenu,
         entry: MenuEntry,
         selected: &[RowKey],
+        facts: &[TaskMenuFacts],
         destructive: Hsla,
     ) -> PopupMenu {
         match entry {
             MenuEntry::Resume => menu.menu_with_icon(
-                self.strings.resume.clone(),
+                if resume_targets_only_seeds(facts) {
+                    self.strings.resume_seeding.clone()
+                } else {
+                    self.strings.resume.clone()
+                },
                 FluxIcon::Play,
                 Box::new(crate::actions::ResumeSelected),
             ),
             MenuEntry::Pause => menu.menu_with_icon(
-                self.strings.pause.clone(),
+                if pause_targets_only_seeds(facts) {
+                    self.strings.stop_seeding.clone()
+                } else {
+                    self.strings.pause.clone()
+                },
                 FluxIcon::Pause,
                 Box::new(crate::actions::PauseSelected),
             ),
@@ -3316,6 +3383,11 @@ impl DownloadTableDelegate {
                 FluxIcon::Gauge,
                 Box::new(crate::actions::TaskLimitsSelected),
             ),
+            MenuEntry::AddWebSeed => menu.menu_with_icon(
+                self.strings.bt_add_web_seed.clone(),
+                FluxIcon::Globe,
+                Box::new(crate::actions::AddWebSeedSelected),
+            ),
             MenuEntry::SuperSeeding => {
                 let facts: Vec<_> = selected
                     .iter()
@@ -3364,6 +3436,12 @@ impl DownloadTableDelegate {
                 destructive,
                 self.strings.delete_task_and_file.clone(),
                 Box::new(crate::actions::DeleteSelectedWithFiles),
+            ),
+            MenuEntry::ClearTaskFile => destructive_menu_item(
+                menu,
+                destructive,
+                self.strings.clear_task_file.clone(),
+                Box::new(crate::actions::ClearSelectedTaskFile),
             ),
             MenuEntry::ShowDetail => menu.menu_with_icon(
                 self.strings.detail.clone(),
@@ -4638,7 +4716,8 @@ fn arm_reorder_timer(
 }
 
 impl DownloadView {
-    /// 选中集合 → 命令列表（远程任务走 `agent.remote.command`）。
+    /// 选中集合 → 命令列表（远程任务生成逐条 `agent.remote.command`，派发前由 `coalesce_commands`
+    /// 把同动作的多条合并为 `agent.remote.commandMany`）。
     pub(crate) fn commands_for_selection(
         &self,
         action: ToolbarCommand,
@@ -4725,8 +4804,8 @@ impl DownloadView {
     }
 
     /// 执行一批命令。本地多任务删除先拆出走分块删除（见 [`crate::deletion`]）；同类多任务
-    /// 的暂停 / 继续 / 远程删除先合并成批量 RPC
-    /// （见 [`coalesce_commands`]），其余命令按 [`MAX_IN_FLIGHT`] 限制并发；幂等命令被
+    /// 的暂停 / 继续 / 删除（本地与远程）先合并成批量 RPC
+    /// （见 [`coalesce_commands`]；远程为 `agent.remote.commandMany`），其余命令按 [`MAX_IN_FLIGHT`] 限制并发；幂等命令被
     /// agent 以可重试的 `Unavailable` 拒绝时退避重试。任一失败在页面横幅提示（按错误
     /// `reason` 给出原因，同一批里先失败的错误一直保留，后完成的成功不会冲掉它）。
     /// 单任务「继续」/「重新下载」在命令前登记旧状态、成功后确认开始；
@@ -4743,6 +4822,7 @@ impl DownloadView {
         }
         let interactive_start = match commands.as_slice() {
             [DownloadsCommand::Resume { task_id }] => Some((task_id.clone(), false)),
+            [DownloadsCommand::RestartMissingFile { task_id }] => Some((task_id.clone(), false)),
             [DownloadsCommand::Redownload(request, task_id)] if !request.start_paused => {
                 Some((task_id.clone(), true))
             }
@@ -5507,6 +5587,14 @@ mod tests {
         // 折叠的组也在「全选」范围内。
         delegate.select_all_tasks();
         assert_eq!(delegate.selection_summary().count, 4);
+        assert_eq!(
+            delegate
+                .selected_rows_in_order()
+                .iter()
+                .map(|row| row.key.clone())
+                .collect::<Vec<_>>(),
+            delegate.visible_task_keys()
+        );
 
         // Cmd/Ctrl 单击整组移出 / 并入选区。
         delegate.select_group(
@@ -6453,6 +6541,23 @@ mod tests {
         let t0 = RowKey::Local("t0".into());
         let t1 = RowKey::Local("t1".into());
         assert_eq!(delegate.visible_task_keys(), [t1.clone(), t0.clone()]);
+        // Select in the reverse of the displayed order, using the real row action.
+        delegate.select_task(t0.clone(), SelectModifiers::default());
+        delegate.select_task(
+            t1.clone(),
+            SelectModifiers {
+                toggle: true,
+                ..SelectModifiers::default()
+            },
+        );
+        assert_eq!(
+            delegate
+                .selected_rows_in_order()
+                .iter()
+                .map(|row| row.key.clone())
+                .collect::<Vec<_>>(),
+            [t1.clone(), t0.clone()]
+        );
 
         let now = Instant::now();
         delegate.row_order.note_interaction(now);
@@ -6468,6 +6573,14 @@ mod tests {
         delegate.view_dirty = true;
         assert!(delegate.refresh_view_at(deadline));
         assert_eq!(delegate.visible_task_keys(), [t0, t1]);
+        assert_eq!(
+            delegate
+                .selected_rows_in_order()
+                .iter()
+                .map(|row| row.key.clone())
+                .collect::<Vec<_>>(),
+            delegate.visible_task_keys()
+        );
         assert_eq!(delegate.reorder_deadline(), None);
         Ok(())
     }
@@ -6710,10 +6823,10 @@ mod context_menu_tests {
     use super::{
         MenuEntry, PLUGIN_ERROR_PREFIX, PiecePickingOrder, ShareLink, TaskMenuFacts,
         context_menu_items, force_recheck_visible, is_bt_url, is_replaceable_url,
-        move_storage_visible, piece_picking_checked, piece_picking_order,
-        piece_picking_order_targets, piece_picking_toggle_target, super_seeding_checked,
-        super_seeding_targets, super_seeding_toggle_target, super_seeding_visible,
-        task_limits_visible, task_menu_entries,
+        move_storage_visible, pause_targets_only_seeds, piece_picking_checked, piece_picking_order,
+        piece_picking_order_targets, piece_picking_toggle_target, resume_targets_only_seeds,
+        super_seeding_checked, super_seeding_targets, super_seeding_toggle_target,
+        super_seeding_visible, task_limits_visible, task_menu_entries,
     };
     use crate::model::TaskState;
 
@@ -6761,6 +6874,35 @@ mod context_menu_tests {
         let items = context_menu_items(&[task(true, TaskState::Completed)]);
         assert!(!items.contains(&MenuEntry::Pause));
         assert!(!items.contains(&MenuEntry::Resume));
+    }
+
+    #[test]
+    fn seed_only_selections_use_seeding_labels() {
+        let mut seeding = task(true, TaskState::Completed);
+        seeding.is_seeding = true;
+        let mut stopped = task(true, TaskState::Completed);
+        stopped.can_resume_seeding = true;
+        let paused = task(true, TaskState::Paused);
+        let downloading = task(true, TaskState::Downloading);
+        let plain_done = task(true, TaskState::Completed);
+
+        assert!(resume_targets_only_seeds(&[stopped]));
+        // 普通已完成任务不受「继续」作用，不影响措辞。
+        assert!(resume_targets_only_seeds(&[stopped, plain_done, seeding]));
+        assert!(!resume_targets_only_seeds(&[stopped, paused]));
+        assert!(!resume_targets_only_seeds(&[paused]));
+        assert!(!resume_targets_only_seeds(&[plain_done]));
+
+        assert!(pause_targets_only_seeds(&[seeding]));
+        assert!(pause_targets_only_seeds(&[seeding, stopped, plain_done]));
+        assert!(!pause_targets_only_seeds(&[seeding, downloading]));
+        assert!(!pause_targets_only_seeds(&[downloading]));
+
+        // 不可控制的行不计入。
+        let mut remote_stopped = task(false, TaskState::Completed);
+        remote_stopped.controllable = false;
+        remote_stopped.can_resume_seeding = true;
+        assert!(!resume_targets_only_seeds(&[remote_stopped]));
     }
 
     #[test]
@@ -6906,6 +7048,26 @@ mod context_menu_tests {
     }
 
     #[test]
+    fn clear_task_file_requires_one_local_completed_non_bt_product() {
+        assert!(
+            context_menu_items(&[task(true, TaskState::Completed)])
+                .contains(&MenuEntry::ClearTaskFile)
+        );
+        let mut bt = task(true, TaskState::Completed);
+        bt.is_bt = true;
+        let mut missing = task(true, TaskState::Completed);
+        missing.file_missing = true;
+        for ineligible in [
+            bt,
+            missing,
+            task(false, TaskState::Completed),
+            task(true, TaskState::Paused),
+        ] {
+            assert!(!context_menu_items(&[ineligible]).contains(&MenuEntry::ClearTaskFile));
+        }
+    }
+
+    #[test]
     fn missing_file_hides_open_and_copy_file_but_keeps_folder_and_redownload() {
         let mut missing = task(true, TaskState::Completed);
         missing.file_missing = true;
@@ -6996,11 +7158,12 @@ mod context_menu_tests {
             .position(|entry| *entry == MenuEntry::VerifyIntegrity)
             .expect("completed BT task offers verification");
         assert_eq!(
-            items.get(at + 1..at + 5),
+            items.get(at + 1..at + 6),
             Some(
                 &[
                     MenuEntry::MoveStorage,
                     MenuEntry::TaskSpeedLimits,
+                    MenuEntry::AddWebSeed,
                     MenuEntry::SuperSeeding,
                     MenuEntry::Redownload,
                 ][..]
@@ -7063,12 +7226,13 @@ mod context_menu_tests {
                 MenuEntry::CopyUrl
             };
             assert_eq!(
-                items.get(at + 3..at + 8),
+                items.get(at + 3..at + 9),
                 Some(
                     &[
                         MenuEntry::ForceRecheck,
                         MenuEntry::MoveStorage,
                         MenuEntry::TaskSpeedLimits,
+                        MenuEntry::AddWebSeed,
                         MenuEntry::SuperSeeding,
                         next,
                     ][..]
@@ -7206,6 +7370,7 @@ mod context_menu_tests {
             assert!(task_limits_visible(&[single]));
         }
         assert!(!task_limits_visible(&[http]));
+        assert!(!context_menu_items(&[http]).contains(&MenuEntry::AddWebSeed));
         for selection in [&[remote][..], &[unfinished, completed][..], &[][..]] {
             assert!(!move_storage_visible(selection), "{selection:?}");
             assert!(!task_limits_visible(selection), "{selection:?}");
@@ -7215,6 +7380,7 @@ mod context_menu_tests {
                 !items.contains(&MenuEntry::TaskSpeedLimits),
                 "{selection:?}"
             );
+            assert!(!items.contains(&MenuEntry::AddWebSeed), "{selection:?}");
         }
 
         // 超级做种：全体本机 BT，可多选、任意状态。

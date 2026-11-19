@@ -7,7 +7,10 @@
 
 use std::{collections::HashSet, time::Duration};
 
-use fluxdown_protocol::{ApplicationErrorCode, RpcErrorData};
+use fluxdown_protocol::{
+    ApplicationErrorCode, REMOTE_COMMAND_MANY_MAX, RemoteCommandAction, RemoteCommandManyParams,
+    RemoteCommandParams, RpcErrorData,
+};
 
 use crate::controller::DownloadsCommand;
 
@@ -74,7 +77,14 @@ pub(crate) fn retry_copy(command: &DownloadsCommand) -> Option<DownloadsCommand>
 enum GroupKind {
     Pause,
     Resume,
-    Delete { delete_files: bool },
+    Delete {
+        delete_files: bool,
+    },
+    /// 远程任务（`agent.remote.commandMany`）；`delete_files` 仅 `Delete` 有意义，其余恒为 `false`。
+    Remote {
+        action: RemoteCommandAction,
+        delete_files: bool,
+    },
 }
 
 struct Group {
@@ -90,6 +100,8 @@ enum Slot {
 
 /// 把同类多任务命令合并为批量命令：
 /// - 暂停 / 继续各合并为一条；删除按 `delete_files` 分别合并（至多两条）；
+/// - 远程任务命令（无自带 `command_id`）按动作（删除再按 `delete_files`）合并为
+///   `agent.remote.commandMany`，每条至多 [`REMOTE_COMMAND_MANY_MAX`] 个任务；
 /// - 同一任务 ID 在同类里只保留一次；
 /// - 合并后只剩一个任务时保持原来的单任务命令（宿主据此识别「单任务继续」）；
 /// - 其余命令原样保留。
@@ -108,6 +120,18 @@ pub(crate) fn coalesce_commands(commands: Vec<DownloadsCommand>) -> Vec<Download
                 task_id,
                 delete_files,
             } => (GroupKind::Delete { delete_files }, task_id),
+            DownloadsCommand::RemoteCommand(RemoteCommandParams {
+                task_id,
+                action,
+                command_id: None,
+                delete_files,
+            }) => (
+                GroupKind::Remote {
+                    action,
+                    delete_files: action == RemoteCommandAction::Delete && delete_files,
+                },
+                task_id,
+            ),
             other => {
                 slots.push(Slot::Single(other));
                 continue;
@@ -133,39 +157,75 @@ pub(crate) fn coalesce_commands(commands: Vec<DownloadsCommand>) -> Vec<Download
     let mut groups: Vec<Option<Group>> = groups.into_iter().map(Some).collect();
     slots
         .into_iter()
-        .filter_map(|slot| match slot {
-            Slot::Single(command) => Some(command),
-            Slot::Group(index) => groups.get_mut(index)?.take().map(group_command),
+        .flat_map(|slot| match slot {
+            Slot::Single(command) => vec![command],
+            Slot::Group(index) => groups
+                .get_mut(index)
+                .and_then(Option::take)
+                .map(group_commands)
+                .unwrap_or_default(),
         })
         .collect()
 }
 
-fn group_command(group: Group) -> DownloadsCommand {
-    let Group { kind, mut ids, .. } = group;
-    if ids.len() == 1 {
-        let task_id = ids.remove(0);
-        return match kind {
-            GroupKind::Pause => DownloadsCommand::Pause { task_id },
-            GroupKind::Resume => DownloadsCommand::Resume { task_id },
-            GroupKind::Delete { delete_files } => DownloadsCommand::Delete {
+fn group_commands(group: Group) -> Vec<DownloadsCommand> {
+    let Group { kind, ids, .. } = group;
+    let only = match ids.as_slice() {
+        [only] => Some(only.clone()),
+        _ => None,
+    };
+    match (kind, only) {
+        (GroupKind::Pause, Some(task_id)) => vec![DownloadsCommand::Pause { task_id }],
+        (GroupKind::Pause, None) => vec![DownloadsCommand::PauseMany { task_ids: ids }],
+        (GroupKind::Resume, Some(task_id)) => vec![DownloadsCommand::Resume { task_id }],
+        (GroupKind::Resume, None) => vec![DownloadsCommand::ResumeMany { task_ids: ids }],
+        (GroupKind::Delete { delete_files }, Some(task_id)) => {
+            vec![DownloadsCommand::Delete {
                 task_id,
                 delete_files,
-            },
-        };
-    }
-    match kind {
-        GroupKind::Pause => DownloadsCommand::PauseMany { task_ids: ids },
-        GroupKind::Resume => DownloadsCommand::ResumeMany { task_ids: ids },
-        GroupKind::Delete { delete_files } => DownloadsCommand::DeleteMany {
+            }]
+        }
+        (GroupKind::Delete { delete_files }, None) => vec![DownloadsCommand::DeleteMany {
             task_ids: ids,
             delete_files,
-        },
+        }],
+        (
+            GroupKind::Remote {
+                action,
+                delete_files,
+            },
+            Some(task_id),
+        ) => vec![DownloadsCommand::RemoteCommand(RemoteCommandParams {
+            task_id,
+            action,
+            command_id: None,
+            delete_files,
+        })],
+        (
+            GroupKind::Remote {
+                action,
+                delete_files,
+            },
+            None,
+        ) => ids
+            .chunks(REMOTE_COMMAND_MANY_MAX)
+            .map(|chunk| {
+                DownloadsCommand::RemoteCommandMany(RemoteCommandManyParams {
+                    task_ids: chunk.to_vec(),
+                    action,
+                    delete_files,
+                })
+            })
+            .collect(),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use fluxdown_protocol::{ApplicationErrorCode, RpcErrorData};
+    use fluxdown_protocol::{
+        ApplicationErrorCode, REMOTE_COMMAND_MANY_MAX, RemoteCommandAction, RemoteCommandParams,
+        RpcErrorData,
+    };
 
     use super::{MAX_RETRIES, coalesce_commands, retry_copy, retry_delay};
     use crate::controller::DownloadsCommand;
@@ -312,5 +372,111 @@ mod tests {
             .is_none()
         );
         assert!(retry_copy(&DownloadsCommand::PauseAll).is_none());
+    }
+
+    fn remote(id: &str, action: RemoteCommandAction, delete_files: bool) -> DownloadsCommand {
+        DownloadsCommand::RemoteCommand(RemoteCommandParams {
+            task_id: id.to_owned(),
+            action,
+            command_id: None,
+            delete_files,
+        })
+    }
+
+    #[test]
+    fn remote_commands_of_one_action_merge_into_remote_batch() {
+        let merged = coalesce_commands(vec![
+            remote("a", RemoteCommandAction::Pause, false),
+            remote("b", RemoteCommandAction::Resume, false),
+            remote("c", RemoteCommandAction::Pause, false),
+            remote("a", RemoteCommandAction::Pause, false),
+        ]);
+        assert_eq!(merged.len(), 2);
+        assert!(matches!(
+            &merged[0],
+            DownloadsCommand::RemoteCommandMany(params)
+                if params.action == RemoteCommandAction::Pause
+                    && !params.delete_files
+                    && params.task_ids == ids(&["a", "c"])
+        ));
+        assert!(matches!(
+            &merged[1],
+            DownloadsCommand::RemoteCommand(params)
+                if params.task_id == "b" && params.action == RemoteCommandAction::Resume
+        ));
+    }
+
+    #[test]
+    fn remote_deletes_split_by_delete_files_and_other_actions_ignore_it() {
+        let merged = coalesce_commands(vec![
+            remote("a", RemoteCommandAction::Delete, false),
+            remote("b", RemoteCommandAction::Delete, true),
+            remote("c", RemoteCommandAction::Delete, false),
+            remote("d", RemoteCommandAction::Delete, true),
+            remote("e", RemoteCommandAction::Pause, true),
+            remote("f", RemoteCommandAction::Pause, false),
+        ]);
+        assert_eq!(merged.len(), 3);
+        assert!(matches!(
+            &merged[0],
+            DownloadsCommand::RemoteCommandMany(params)
+                if !params.delete_files && params.task_ids == ids(&["a", "c"])
+        ));
+        assert!(matches!(
+            &merged[1],
+            DownloadsCommand::RemoteCommandMany(params)
+                if params.delete_files && params.task_ids == ids(&["b", "d"])
+        ));
+        assert!(matches!(
+            &merged[2],
+            DownloadsCommand::RemoteCommandMany(params)
+                if !params.delete_files && params.task_ids == ids(&["e", "f"])
+        ));
+    }
+
+    #[test]
+    fn remote_batches_are_chunked_and_local_commands_stay_separate() {
+        let mut commands: Vec<DownloadsCommand> = (0..=REMOTE_COMMAND_MANY_MAX)
+            .map(|index| remote(&format!("r{index}"), RemoteCommandAction::Delete, false))
+            .collect();
+        commands.push(pause("local"));
+        let merged = coalesce_commands(commands);
+        assert_eq!(merged.len(), 3);
+        assert!(matches!(
+            &merged[0],
+            DownloadsCommand::RemoteCommandMany(params)
+                if params.task_ids.len() == REMOTE_COMMAND_MANY_MAX
+        ));
+        assert!(matches!(
+            &merged[1],
+            DownloadsCommand::RemoteCommandMany(params)
+                if params.task_ids == vec![format!("r{REMOTE_COMMAND_MANY_MAX}")]
+        ));
+        assert!(matches!(
+            &merged[2],
+            DownloadsCommand::Pause { task_id } if task_id == "local"
+        ));
+    }
+
+    #[test]
+    fn remote_command_with_own_command_id_is_not_merged_or_replayed() {
+        let with_id = DownloadsCommand::RemoteCommand(RemoteCommandParams {
+            task_id: "a".to_owned(),
+            action: RemoteCommandAction::Pause,
+            command_id: Some("id".to_owned()),
+            delete_files: false,
+        });
+        let merged = coalesce_commands(vec![
+            with_id,
+            remote("b", RemoteCommandAction::Pause, false),
+        ]);
+        assert_eq!(merged.len(), 2);
+        assert!(
+            matches!(&merged[0], DownloadsCommand::RemoteCommand(params) if params.task_id == "a")
+        );
+        assert!(
+            matches!(&merged[1], DownloadsCommand::RemoteCommand(params) if params.task_id == "b")
+        );
+        assert!(retry_copy(&remote("a", RemoteCommandAction::Pause, false)).is_none());
     }
 }

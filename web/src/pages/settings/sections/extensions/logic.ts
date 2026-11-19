@@ -408,9 +408,13 @@ export function hostsToConfirm(entry: MarketEntryDto, installed: PluginDto | und
 /** 安装 / 更新成功后的授权处理：无待授权 → none；市场预确认与 pending 吻合 → grant；其余 → dialog。 */
 export type PostInstallConsent = 'none' | 'grant' | 'dialog'
 
+export function hasPendingConsent(plugin: PluginDto): boolean {
+  return (plugin.consentPending?.length ?? 0) > 0 || (plugin.consentPendingHosts?.length ?? 0) > 0
+}
+
 export function postInstallConsent(plugin: PluginDto, confirmed: ConsentSet | null): PostInstallConsent {
-  const pending: ConsentSet = { permissions: plugin.consentPending, networkHosts: plugin.consentPendingHosts }
-  if (pending.permissions.length === 0 && pending.networkHosts.length === 0) return 'none'
+  if (!hasPendingConsent(plugin)) return 'none'
+  const pending: ConsentSet = { permissions: plugin.consentPending ?? [], networkHosts: plugin.consentPendingHosts ?? [] }
   if (confirmed !== null && consentMatches(confirmed, pending)) return 'grant'
   return 'dialog'
 }
@@ -433,8 +437,46 @@ export function liveDialogPlugins(plugins: readonly PluginDto[], open: DialogIde
     detail: find(open.detail),
     settings: find(open.settings),
     auth: find(open.auth),
-    consent: consent !== null && postInstallConsent(consent, null) === 'none' ? null : consent,
+    consent: consent !== null && hasPendingConsent(consent) ? consent : null,
   }
+}
+
+type ResolverConflictHint = 'pluginResolverUrlConflictsHint' | 'pluginResolverUrlPendingHint' | 'pluginResolverUrlDuplicateHint'
+
+export type ResolverUrlConflict = NonNullable<PluginDto['resolverUrlConflicts']>[number] & {
+  identity: string
+  hint: ResolverConflictHint
+}
+
+/** The host stores each overlap only on its first participant; match both identities. */
+export function resolverUrlConflicts(plugins: readonly PluginDto[], identity?: string): ResolverUrlConflict[] {
+  const enabled = new Set(plugins.filter((plugin) => plugin.enabled).map((plugin) => plugin.identity))
+  const conflicts: ResolverUrlConflict[] = []
+  for (const plugin of plugins) {
+    for (const conflict of plugin.resolverUrlConflicts ?? []) {
+      if (identity !== undefined && identity !== plugin.identity && identity !== conflict.otherIdentity) continue
+      const hint =
+        plugin.identity === conflict.otherIdentity
+          ? 'pluginResolverUrlDuplicateHint'
+          : plugin.enabled && enabled.has(conflict.otherIdentity)
+            ? 'pluginResolverUrlConflictsHint'
+            : 'pluginResolverUrlPendingHint'
+      conflicts.push({ identity: plugin.identity, ...conflict, hint })
+    }
+  }
+  return conflicts
+}
+
+export function resolverUrlConflictNotice(plugins: readonly PluginDto[], identity: string, t: (key: string) => string): string | null {
+  const conflicts = resolverUrlConflicts(plugins, identity)
+  if (conflicts.length === 0) return null
+  let activeHintShown = false
+  const pairs = conflicts.map(({ identity, pattern, otherIdentity, otherPattern, hint }) => {
+    const showHint = hint !== 'pluginResolverUrlConflictsHint' || !activeHintShown
+    activeHintShown ||= hint === 'pluginResolverUrlConflictsHint'
+    return `${showHint ? `${t(hint)}\n` : ''}${identity}: ${pattern}\n${otherIdentity}: ${otherPattern}`
+  })
+  return `${t('pluginResolverUrlConflictsTitle')}\n\n${pairs.join('\n\n')}`
 }
 
 // ── 插件登录挑战 ────────────────────────────────────────────

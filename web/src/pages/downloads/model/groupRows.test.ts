@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import type { GroupDto, TaskDto } from '../../../lib/rpc'
 import { CategoryIndex, builtinDefaults } from './categories'
 import { SELECTION_ALL } from './filters'
-import { buildVisibleRows, contentBucket, dirCollapseKey, dominantCategory, groupRowsByDirectory, groupsMatchingQuery, keysInVisualSpan, selectGroupOnClick } from './groupRows'
+import { buildVisibleRows, contentBucket, dirCollapseKey, dominantCategory, groupRowsByDirectory, groupsMatchingQuery, keysInVisualSpan, selectGroupOnClick, selectedTaskViewsInOrder } from './groupRows'
 import type { BucketInfo, GroupFolderRow, VisibleRow, VisibleRowsInput } from './groupRows'
 import { RowEngine } from './rowEngine'
 import type { TaskRow } from './rowEngine'
@@ -153,6 +153,16 @@ describe('merge position', () => {
     const built = build(rows, [group('pack', { name: 'm' })])
     // 代理名 "m" 排在 c.bin 之后、orphan.bin 之前；孤儿 groupId 与远程任务留在顶层。
     expect(keys(built.rows)).toEqual(['l:a', 'r:r1', 'l:c', 'g:pack', 'l:orphan', 'l:z'])
+    const selected = selectGroupOnClick(
+      { selected: new Set(['l:z', remote.key]), anchor: remote.key, multiSelect: true },
+      'pack', ['l:m1'], built.sequence(), { secondary: true, shift: false },
+    ).selected
+    expect(selectedTaskViewsInOrder(built.rows, rows, selected).map((view) => view.key))
+      .toEqual([remote.key, 'l:m1', 'l:z'])
+    const reversed = [...rows].reverse()
+    const reordered = build(reversed, [group('pack', { name: 'm' })], { compare: (a, b) => nameAsc(b, a) })
+    expect(selectedTaskViewsInOrder(reordered.rows, reversed, selected).map((view) => view.key))
+      .toEqual(['l:z', 'l:m1', remote.key])
     expect(built.visibleCount).toBe(6)
   })
 
@@ -237,6 +247,8 @@ describe('expansion and selection sequence', () => {
     expect(keys(built.rows)).toEqual(['# group', '# single', 'l:solo'])
     expect(built.rows[0]).toMatchObject({ count: 2, collapsed: true })
     expect(built.sequence()).toEqual(['l:solo'])
+    expect(selectedTaskViewsInOrder(built.rows, rows, new Set(['l:solo', 'l:deep'])).map((view) => view.key))
+      .toEqual(['l:solo', 'l:deep'])
   })
 
   test('type buckets can use the dominant member category for a group', () => {

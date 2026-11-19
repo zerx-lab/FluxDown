@@ -214,11 +214,17 @@ pub enum InvalidBuildOption {
 }
 
 /// 一个种子最多写入的 HTTP 源（与 librqbit 相同）。
-const MAX_WEB_SEEDS: usize = 64;
+pub(crate) const MAX_WEB_SEEDS: usize = 64;
 /// HTTP 源地址的最大字节数（与 librqbit 相同）。
 const MAX_WEB_SEED_URL_LEN: usize = 4096;
 /// 分片大小下限 / 上限（BEP 52 块大小 / libtorrent 上限）。
 const PIECE_LENGTH_RANGE: std::ops::RangeInclusive<u32> = 16 * 1024..=128 * 1024 * 1024;
+
+pub(crate) fn is_web_seed_url(url: &str) -> bool {
+    url.len() <= MAX_WEB_SEED_URL_LEN
+        && url::Url::parse(url)
+            .is_ok_and(|url| matches!(url.scheme(), "http" | "https") && url.host().is_some())
+}
 
 impl TorrentBuildOptions {
     /// 生成前检查选项，让调用方能指出是哪个字段不对（哈希可能要几分钟，不能等到最后才报）。
@@ -252,11 +258,7 @@ impl TorrentBuildOptions {
             if seed.is_empty() || seeds.contains(&seed) {
                 continue;
             }
-            let usable = seed.len() <= MAX_WEB_SEED_URL_LEN
-                && url::Url::parse(seed).is_ok_and(|url| {
-                    matches!(url.scheme(), "http" | "https") && url.host().is_some()
-                });
-            if !usable {
+            if !is_web_seed_url(seed) {
                 return Err(InvalidBuildOption::WebSeed(seed.to_owned()));
             }
             seeds.push(seed);

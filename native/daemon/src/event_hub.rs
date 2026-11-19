@@ -1007,10 +1007,7 @@ impl fluxdown_engine::events::EventSink for DaemonEngineEventSink {
             #[cfg(feature = "plugins")]
             EngineEvent::PluginsChanged(plugins) => {
                 self.0.publish(DaemonEvent::PluginsChanged(
-                    plugins
-                        .into_iter()
-                        .map(fluxdown_engine_protocol::plugin_info_to_dto)
-                        .collect(),
+                    fluxdown_engine_protocol::plugin_list_to_dtos(plugins),
                 ));
                 return;
             }
@@ -1416,6 +1413,7 @@ mod tests {
             checksum: String::new(),
             ignore_tls_errors: false,
             file_missing: false,
+            file_clear_state: fluxdown_engine::model::FileClearState::None,
             completed_at: String::new(),
             file_hash: String::new(),
             segments: 0,
@@ -1441,6 +1439,7 @@ mod tests {
             auto_route: String::new(),
             source_bytes: Default::default(),
             properties: Default::default(),
+            html_only: false,
         }
     }
 

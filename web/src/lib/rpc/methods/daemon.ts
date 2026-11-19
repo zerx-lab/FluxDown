@@ -115,6 +115,7 @@ import type {
   BtStatusDto,
   BtFilesDto,
   BtPortStatusDto,
+  AddTaskWebSeedParams,
   MoveTaskStorageParams,
   RenameBtFileParams,
   SetTaskBtLimitsParams,
@@ -200,6 +201,8 @@ const task = {
   setBtLimits: (params: SetTaskBtLimitsParams) => call<OkResult>(METHOD.DAEMON_TASK_SET_BT_LIMITS, params),
   setSuperSeeding: (params: SetTaskSuperSeedingParams) =>
     call<OkResult>(METHOD.DAEMON_TASK_SET_SUPER_SEEDING, params),
+  addWebSeed: (params: AddTaskWebSeedParams) =>
+    call<OkResult>(METHOD.DAEMON_TASK_ADD_WEB_SEED, params),
   reannounce: (params: TaskIdParams) => call<OkResult>(METHOD.DAEMON_TASK_REANNOUNCE, params),
   delete: (params: TaskDeleteParams) => call<OkResult>(METHOD.DAEMON_TASK_DELETE, params),
   pauseAll: () => call<OkResult>(METHOD.DAEMON_TASK_PAUSE_ALL),

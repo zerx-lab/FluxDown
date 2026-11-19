@@ -22,8 +22,12 @@ use std::{
     time::Duration,
 };
 
+use super::download_name::DownloadName;
 use crate::{
-    components::threads_risk::threads_risk_callout,
+    components::{
+        selection_bar::{batch_link_info_text, save_task_info},
+        threads_risk::threads_risk_callout,
+    },
     controller::{
         CATEGORY_SAVE_DIR_HISTORY_PREF, DownloadsCommand, DownloadsPort, DownloadsResult,
         LAST_CATEGORY_MODE_PREF, LAST_DOWNLOAD_TARGET_PREF, LAST_SAVE_DIR_PREF,
@@ -60,8 +64,8 @@ use fluxdown_protocol::{
     AgentSnapshot, CloudDevice, LinkDeviceInfo, PendingCaptureDto, QueueDto, SiteAuthCredentialDto,
 };
 use fluxdown_ui_components::{
-    ControlExt as _, FluxIcon, IconControlExt as _, field_error, field_hint, field_label, form,
-    form_field, form_gap, form_row, input_with_action, option_group, option_row,
+    ControlExt as _, FluxIcon, IconControlExt as _, check_row, field_error, field_hint,
+    field_label, form, form_field, form_gap, form_row, input_with_action, option_group, option_row,
 };
 use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_theme::active_theme;
@@ -333,6 +337,7 @@ pub struct NewDownloadView {
     threads: ThreadChoice,
     custom_threads: Entity<InputState>,
     rename: Entity<InputState>,
+    download_name: DownloadName,
     advanced_open: bool,
     http_user: Entity<InputState>,
     http_password: Entity<InputState>,
@@ -445,6 +450,7 @@ impl NewDownloadView {
         let mut this = Self {
             threads: ThreadChoice::from_segments(context.segments),
             rename,
+            download_name: DownloadName::default(),
             http_user: Self::input(strings.http_auth_user.clone(), window, cx),
             referrer: Self::input(strings.referrer_placeholder.clone(), window, cx),
             referrer_filled: None,
@@ -2168,9 +2174,34 @@ impl NewDownloadView {
         if self.is_batch() {
             return None;
         }
+        let this = cx.weak_entity();
+        let auto = check_row(
+            "new-download-auto-name",
+            self.download_name.is_auto(),
+            self.strings.name_auto.clone(),
+            move |checked, window, cx| {
+                let Ok(()) = this.update(cx, |this, cx| {
+                    this.set_auto_name(checked, window, cx);
+                }) else {
+                    return;
+                };
+            },
+            cx,
+        )
+        .flex_none();
         Some(form_field(
             self.strings.rename.clone(),
-            Input::new(&self.rename).control(cx).w_full(),
+            h_flex()
+                .w_full()
+                .gap(active_theme(cx).tokens().spacing.sm)
+                .child(
+                    Input::new(&self.rename)
+                        .control(cx)
+                        .flex_1()
+                        .min_w_0()
+                        .disabled(self.download_name.is_auto()),
+                )
+                .child(auto),
             None,
             cx,
         ))
@@ -2557,6 +2588,27 @@ impl NewDownloadView {
             .bg(theme.extended().colors.chrome)
             .border_t(theme.extended().stroke.thin)
             .border_color(theme.extended().colors.hairline)
+            .when(self.entries.len() > 1, |footer| {
+                footer.child(
+                    Button::new("new-download-export-info")
+                        .outline()
+                        .label(
+                            self.translator
+                                .read(cx)
+                                .text("exportTaskInfoTxt")
+                                .to_owned(),
+                        )
+                        .control(cx)
+                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                            let failed = this
+                                .translator
+                                .read(cx)
+                                .text("taskInfoExportFailed")
+                                .to_owned();
+                            save_task_info(batch_link_info_text(&this.entries), failed, window, cx);
+                        })),
+                )
+            })
             .child(
                 Button::new("new-download-cancel")
                     .outline()

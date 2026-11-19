@@ -4,6 +4,80 @@ import Foundation
 import Testing
 @testable import FluxDown
 
+@Test func taskInfoDocumentWritesReversibleUTF8() {
+    let document = TaskInfoDocument([
+        TaskInfoRow(name: "=报告\\x\tpart\r\n2", url: "https://example.com/original", size: 4294967296),
+        TaskInfoRow(name: "file.bin", url: "torrent-file://local"),
+    ])
+    #expect(String(decoding: document.data, as: UTF8.self) ==
+        "Name\tURL\tSize (bytes)\n=报告\\\\x\\tpart\\r\\n2\thttps://example.com/original\t4294967296\nfile.bin\t\t")
+}
+
+@MainActor @Test func taskInfoDocumentIncludesMixedAndRemoteOnlySelectionsInListOrder() {
+    let local = makeTask("same-id", .pending, name: "local.bin", url: "https://example.com/local")
+    let remote = RemoteTaskDto(id: "same-id", url: "https://example.com/remote", fileName: "remote.bin", totalBytes: 42)
+    let hidden = RemoteTaskDto(id: "hidden", fileName: "hidden.bin")
+    let visibleIds = [DownloadsRow.remoteIdPrefix + remote.id, local.taskId]
+    let header = "Name\tURL\tSize (bytes)"
+    let remoteLine = "\nremote.bin\thttps://example.com/remote\t42"
+
+    let mixed = TaskInfoDocument(TaskInfoRow.selected(local: [local], remote: [hidden, remote], visibleIds: visibleIds))
+    #expect(String(decoding: mixed.data, as: UTF8.self) == "\(header)\(remoteLine)\nlocal.bin\thttps://example.com/local\t\nhidden.bin\t\t")
+
+    let remoteOnly = TaskInfoDocument(TaskInfoRow.selected(local: [], remote: [remote], visibleIds: visibleIds))
+    #expect(String(decoding: remoteOnly.data, as: UTF8.self) == "\(header)\(remoteLine)")
+}
+
+@Test func batchTaskInfoDocumentExportsKnownNamesAndSizes() {
+    let empty = "ed2k://|file|empty.txt|0|31D6CFE0D16AE931B73C59D7E0C089C0|/"
+    let wrongHash = "ed2k://|file|invalid.txt|0|1555B7DCA052B5958EE68DB58A42408D|/"
+    let entries = parseEntries("""
+        https://example.com/a%20b.zip?key=v
+        https://example.com/
+        MAGNET:?xt=urn:btih:a&dn=My+Show%21
+        ED2K://|FILE|f%20x.iso|5044211712|1555B7DCA052B5958EE68DB58A42408D|/
+        magnet:?xt=urn:btih:b
+        ed2k://|file||100|h|/
+        ed2k://|file|ignored|100|1555B7DCA052B5958EE68DB58A42408D|/
+          out=keep%20name
+        \(empty)
+        \(wrongHash)
+        """)
+    let document = TaskInfoDocument(entries.map {
+        TaskInfoRow(name: batchExportName($0), url: $0.url, size: batchExportSize($0.url))
+    })
+    #expect(String(decoding: document.data, as: UTF8.self) == [
+        "Name\tURL\tSize (bytes)",
+        "a b.zip\thttps://example.com/a%20b.zip?key=v\t",
+        "\thttps://example.com/\t",
+        "My+Show!\tMAGNET:?xt=urn:btih:a&dn=My+Show%21\t",
+        "f x.iso\tED2K://|FILE|f%20x.iso|5044211712|1555B7DCA052B5958EE68DB58A42408D|/\t5044211712",
+        "\tmagnet:?xt=urn:btih:b\t",
+        "\ted2k://|file||100|h|/\t",
+        "keep%20name\ted2k://|file|ignored|100|1555B7DCA052B5958EE68DB58A42408D|/\t100",
+        "empty.txt\t\(empty)\t0",
+        "invalid.txt\t\(wrongHash)\t",
+    ].joined(separator: "\n"))
+}
+
+@Test func manifestTaskInfoDocumentLeavesExplicitUnknownVariantSizeBlank() {
+    var selection = ManifestSelection(items: [
+        PreviewItemDto(id: "a", name: "video.mp4", path: "folder", size: 50, variants: [
+            PreviewVariantDto(id: "unknown", label: "Unknown", size: 0),
+        ]),
+    ])
+    selection.toggle("a")
+    selection.chooseVariant("unknown", for: "a")
+    let document = TaskInfoDocument(selection.selectedExportRows().map {
+        TaskInfoRow(name: $0.name, url: "", size: $0.size > 0 ? $0.size : nil)
+    })
+    #expect(String(decoding: document.data, as: UTF8.self) == "Name\tURL\tSize (bytes)\nfolder/video.mp4\t\t")
+    #expect(selection.selectedSize == (0, 1))
+    #expect(selection.requestItems() == [
+        GroupItemRequest(resolverItem: "a@unknown", fileName: "video.mp4", relPath: "folder", size: 0),
+    ])
+}
+
 // 下载列表派生逻辑（筛选计数 / 智能排序 / 分组 / 分段投影 / 重排节流 / 行文案）。
 
 // MARK: - 夹具
@@ -319,8 +393,8 @@ struct DownloadsRemoteRowsTests {
         // 分区头计数含远程行；汇总速度只算本机（r2 的 5000 不计入）。
         #expect(result.list.sections.map(\.count) == [3, 4])
         #expect(result.list.sections[0].downSpeed == 1000)
-        // 远程行不参与多选。
-        #expect(result.list.visibleIds == ["a", "f", "b"])
+        // 远程行参与多选 / 全选：行 id 与列表顺序一致（远程行带 `remote:` 前缀）。
+        #expect(result.list.visibleIds == ["a", "remote:r2", "remote:r1", "f", "remote:r3", "remote:r4", "b"])
     }
 
     @Test func remoteUnknownSortsWithPendingAndBothTiersSplitInflightFromHistory() {
@@ -388,7 +462,7 @@ struct DownloadsRemoteRowsTests {
         filter.remoteOnly = true
         let result = run(filter)
         #expect(ids(result) == ["remote:r2", "remote:r1", "remote:r3", "remote:r4"])
-        #expect(result.list.visibleIds.isEmpty)
+        #expect(result.list.visibleIds == ["remote:r2", "remote:r1", "remote:r3", "remote:r4"])
         #expect(result.facets.matching == 4)
         #expect(result.facets.remoteCount == 4)
         #expect(!result.list.isEmpty)
@@ -435,7 +509,9 @@ struct DownloadsRemoteRowsTests {
         let result = run(state: makeState([]))
         #expect(!result.list.isEmpty)
         #expect(result.list.sections.map(\.id) == ["flow", "history"])
-        #expect(result.list.visibleIds.isEmpty)
+        // 只有远程行时全选范围也是它们（`remote:` 前缀）。
+        #expect(!result.list.visibleIds.isEmpty)
+        #expect(result.list.visibleIds.allSatisfy { $0.hasPrefix(DownloadsRow.remoteIdPrefix) })
     }
 
     @Test func groupByStatusPlacesRemoteByMapping() {
@@ -446,8 +522,9 @@ struct DownloadsRemoteRowsTests {
         #expect(sections["status:4"] == ["f", "remote:r3"])
         #expect(sections["status:2"] == ["remote:r4"])
         #expect(sections["status:3"] == ["b"])
-        // 分组视图的 visibleIds 同样不含远程。
-        #expect(result.list.visibleIds == ["a", "f", "b"])
+        // 分组视图的 visibleIds 同样含远程行，顺序与分区行一致。
+        #expect(result.list.visibleIds == result.list.sections.flatMap { $0.rows.map(\.id) })
+        #expect(Set(result.list.visibleIds) == ["a", "f", "b", "remote:r1", "remote:r2", "remote:r3", "remote:r4"])
     }
 
     @Test func groupByDateUsesRemoteCreatedAt() throws {

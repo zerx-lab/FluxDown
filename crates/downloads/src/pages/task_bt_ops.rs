@@ -1,12 +1,13 @@
-//! 任务右键菜单的 BT 运维项：「强制重新校验」「移动到…」「任务限速…」「超级做种」。
+//! 任务右键菜单的 BT 运维项。
 //!
 //! 可见性由 [`crate::components::task_table`] 的纯函数判定；处理器下发前按同一事实源再判。
 //! 旧 daemon 不认识这些方法时返回的错误经常规错误通知展示。
 
-use std::{rc::Rc, sync::Arc};
+use std::{cell::Cell, rc::Rc, sync::Arc};
 
 use fluxdown_protocol::{
-    MoveTaskStorageParams, RpcErrorData, SetTaskBtLimitsParams, SetTaskSuperSeedingParams,
+    AddTaskWebSeedParams, MoveTaskStorageParams, RpcErrorData, SetTaskBtLimitsParams,
+    SetTaskSuperSeedingParams,
 };
 use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
@@ -24,10 +25,11 @@ use gpui_component::{
 
 use crate::{
     actions::{
-        ForceRecheckSelected, MoveStorageSelected, TaskLimitsSelected, ToggleSuperSeedingSelected,
+        AddWebSeedSelected, ForceRecheckSelected, MoveStorageSelected, TaskLimitsSelected,
+        ToggleSuperSeedingSelected,
     },
     components::task_table::{
-        force_recheck_visible, move_storage_visible, super_seeding_targets,
+        force_recheck_visible, move_storage_visible, single_local_bt, super_seeding_targets,
         super_seeding_toggle_target, task_limits_visible, task_menu_facts_for,
     },
     controller::{DownloadsCommand, DownloadsPort},
@@ -441,6 +443,101 @@ impl DownloadView {
                 })
         });
         let input = form_entity.read(cx).download.clone();
+        input.update(cx, |state, cx| state.focus(window, cx));
+    }
+
+    pub(crate) fn on_add_web_seed_selected(
+        &mut self,
+        _: &AddWebSeedSelected,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let rows = self.bt_selection(cx);
+        let [(key, facts)] = rows.as_slice() else {
+            return;
+        };
+        if !single_local_bt(std::slice::from_ref(facts)) {
+            return;
+        }
+        let task_id = key.task_id().to_owned();
+        let translator = self.translator.clone();
+        let t = translator.read(cx);
+        let title = SharedString::from(t.text("btAddWebSeedTitle").to_owned());
+        let label = SharedString::from(t.text("btWebSeedUrl").to_owned());
+        let hint = SharedString::from(t.text("btAddWebSeedHint").to_owned());
+        let ok_label = self.strings.confirm.clone();
+        let cancel_label = self.strings.cancel.clone();
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("https://"));
+        let dialog_input = input.clone();
+        let port = Arc::clone(&self.port);
+        let pending = Rc::new(Cell::new(false));
+        let dismissed = Rc::new(Cell::new(false));
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let input = dialog_input.clone();
+            let content_input = input.clone();
+            let label = label.clone();
+            let hint = hint.clone();
+            let port = Arc::clone(&port);
+            let task_id = task_id.clone();
+            let translator = translator.clone();
+            let pending = pending.clone();
+            let dismissed = dismissed.clone();
+            let on_close = dismissed.clone();
+            dialog
+                .title(dialog_title(title.clone(), cx))
+                .w(px(520.))
+                .content(move |content, _, cx| {
+                    content.child(form(cx).child(form_field(
+                        label.clone(),
+                        Input::new(&content_input).control(cx).w_full(),
+                        Some(hint.clone()),
+                        cx,
+                    )))
+                })
+                .footer(dialog_footer(
+                    Some(cancel_label.clone()),
+                    ok_label.clone(),
+                    DialogIntent::Confirm,
+                    cx,
+                ))
+                .on_close(move |_, _, _| on_close.set(true))
+                .on_ok(move |_, window, cx| {
+                    let value = input.read(cx).value();
+                    let url = value.trim();
+                    if url.is_empty() || pending.replace(true) {
+                        return false;
+                    }
+                    let future = port.execute(DownloadsCommand::AddWebSeed(AddTaskWebSeedParams {
+                        task_id: task_id.clone(),
+                        url: url.to_owned(),
+                    }));
+                    let translator = translator.clone();
+                    let handle = window.window_handle();
+                    let input = input.downgrade();
+                    let pending = pending.clone();
+                    let dismissed = dismissed.clone();
+                    cx.spawn(async move |cx| {
+                        let result = future.await;
+                        pending.set(false);
+                        let notification = result.err().map(|error| {
+                            translator.read_with(cx, |translator, _| {
+                                toast::error(error_text(translator, &error))
+                            })
+                        });
+                        if let Err(error) = handle.update(cx, |_, window, cx| {
+                            if let Some(notification) = notification {
+                                window.push_notification(notification, cx);
+                            } else if !dismissed.get() && input.upgrade().is_some() {
+                                window.close_dialog(cx);
+                            }
+                        }) {
+                            eprintln!("window closed before the web seed result: {error:#}");
+                        }
+                    })
+                    .detach();
+                    false
+                })
+        });
         input.update(cx, |state, cx| state.focus(window, cx));
     }
 

@@ -14,13 +14,14 @@ import com.fluxdown.app.AppContainer
 import com.fluxdown.app.R
 import com.fluxdown.app.shell.LocalAppContainer
 import com.fluxdown.core.host.HostErrorCode
-import com.fluxdown.core.host.HostException
-import com.fluxdown.core.model.HostRef
-import com.fluxdown.core.protocol.HostMethod
 import com.fluxdown.core.host.HostEvent
+import com.fluxdown.core.host.HostException
+import com.fluxdown.core.host.HostSession
+import com.fluxdown.core.model.HostRef
 import com.fluxdown.core.protocol.ComponentKind
 import com.fluxdown.core.protocol.ComponentProgressNotice
 import com.fluxdown.core.protocol.ComponentResultNotice
+import com.fluxdown.core.protocol.HostMethod
 import com.fluxdown.core.protocol.HostNotice
 import com.fluxdown.core.protocol.InstalledPlugin
 import com.fluxdown.core.protocol.Json
@@ -96,6 +97,13 @@ internal class ExtensionsModel(val container: AppContainer, val hostId: String) 
     /** 安装 / 重载成功但缺基础组件：弹窗提醒（提醒式，不阻断）。 */
     var missingComponents by mutableStateOf<List<String>?>(null)
 
+    private var conflictNotices by mutableStateOf(emptyList<List<ResolverUrlOverlap>>())
+    val conflictNotice: List<ResolverUrlOverlap>? get() = conflictNotices.firstOrNull()
+
+    fun dismissConflictNotice() {
+        conflictNotices = conflictNotices.drop(1)
+    }
+
     // 市场
     var marketPhase by mutableStateOf<MarketPhase>(MarketPhase.Idle)
         private set
@@ -152,8 +160,10 @@ internal class ExtensionsModel(val container: AppContainer, val hostId: String) 
     }
 
     fun setEnabled(env: ExtensionsEnv, plugin: PluginDto, enabled: Boolean) = launchBusy(plugin.identity) {
+        val target = session
         try {
-            session.callUnit(HostMethod.daemonPluginSetEnabled, pluginSetEnabledParams(plugin.identity, enabled))
+            target.callUnit(HostMethod.daemonPluginSetEnabled, pluginSetEnabledParams(plugin.identity, enabled))
+            if (enabled) noteResolverConflicts(target, plugin.identity)
         } catch (e: HostException) {
             env.toast(env.text(R.string.pluginOpEnabledFailed, "message" to env.error(e)), FluxToastKind.Error)
         }
@@ -182,6 +192,20 @@ internal class ExtensionsModel(val container: AppContainer, val hostId: String) 
     private fun noteMissing(result: InstalledPlugin?) {
         val missing = result?.missingComponents.orEmpty()
         if (missing.isNotEmpty()) missingComponents = missing
+    }
+
+    private suspend fun noteResolverConflicts(target: HostSession, identity: String) {
+        if (identity.isEmpty() || target !== session || container.host.value.id != hostId) return
+        // The PluginsChanged projection may still be behind the mutation response.
+        val plugins = try {
+            PluginDto.listFromJson(target.callJson(HostMethod.daemonPluginList))
+        } catch (_: HostException) {
+            // A failed read does not turn a successful mutation into a failure.
+            return
+        }
+        if (target !== session || container.host.value.id != hostId) return
+        val conflicts = resolverUrlConflicts(plugins, setOf(identity))
+        if (conflicts.isNotEmpty()) conflictNotices = conflictNotices + listOf(conflicts)
     }
 
     // ───────────── 站点默认插件 ─────────────
@@ -231,10 +255,12 @@ internal class ExtensionsModel(val container: AppContainer, val hostId: String) 
         if (installPhase != null) return
         installPhase = InstallPhase.Installing
         container.appScope.launch {
+            val target = session
             try {
                 val data = readPackage(env, uri)
-                val result = installRemote(data)
+                val result = installRemote(target, data)
                 env.toast(env.text(R.string.pluginOpInstallSuccess), FluxToastKind.Success)
+                noteResolverConflicts(target, result.identity)
                 noteMissing(result)
             } catch (e: HostException) {
                 env.toast(env.text(R.string.pluginOpInstallFailed, "message" to env.error(e)), FluxToastKind.Error)
@@ -269,7 +295,10 @@ internal class ExtensionsModel(val container: AppContainer, val hostId: String) 
         }
     }
 
-    private suspend fun installRemote(data: ByteArray): InstalledPlugin {
+    private suspend fun installRemote(target: HostSession, data: ByteArray): InstalledPlugin {
+        if (target !== session || container.host.value.id != hostId) {
+            throw HostException(HostErrorCode.Unavailable, message = "host changed")
+        }
         val ref = container.host.value as? HostRef.Remote
             ?: throw HostException(HostErrorCode.InvalidArgument, message = "not a remote host")
         val key = container.remoteAccessKey(ref.id)
@@ -281,7 +310,7 @@ internal class ExtensionsModel(val container: AppContainer, val hostId: String) 
             if (installPhase is InstallPhase.Uploading) installPhase = InstallPhase.Uploading(fraction)
         }
         installPhase = InstallPhase.Installing
-        val result = session.callJson(HostMethod.daemonPluginInstall, pluginInstallParams(blobId))
+        val result = target.callJson(HostMethod.daemonPluginInstall, pluginInstallParams(blobId))
         return InstalledPlugin.fromJson(result) ?: InstalledPlugin("")
     }
 
@@ -340,8 +369,9 @@ internal class ExtensionsModel(val container: AppContainer, val hostId: String) 
         if (entry.pluginId in marketPending) return
         marketPending = marketPending + entry.pluginId
         container.appScope.launch {
+            val target = session
             try {
-                val result = session.callJson(
+                val result = target.callJson(
                     HostMethod.daemonPluginMarketInstall,
                     pluginMarketInstallParams(entry.pluginId, entry.version),
                 )
@@ -349,7 +379,9 @@ internal class ExtensionsModel(val container: AppContainer, val hostId: String) 
                     env.text(if (request.isUpdate) R.string.pluginOpUpdateSuccess else R.string.pluginOpInstallSuccess),
                     FluxToastKind.Success,
                 )
-                noteMissing(InstalledPlugin.fromJson(result))
+                val installed = InstalledPlugin.fromJson(result)
+                noteResolverConflicts(target, installed?.identity ?: entry.pluginId)
+                noteMissing(installed)
             } catch (e: HostException) {
                 // 用户确认的版本已不是最新：刷新目录，按新版本重新确认权限。
                 if (e.reason == "marketVersionChanged") {

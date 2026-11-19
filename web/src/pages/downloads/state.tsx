@@ -34,7 +34,7 @@ import { remoteCan } from './model/batchPlan'
 import { isDownloadable } from './model/actions'
 import type { SidebarCounts } from './model/counts'
 import { useLiveSpeeds } from './model/liveSpeeds'
-import { buildVisibleRows, contentBucket, dirCollapseKey, dominantCategory, groupFullySelected, groupRowsByDirectory, groupsMatchingQuery, keysInVisualSpan, rowIndexOfKey, selectGroupOnClick, selectionIsGroup } from './model/groupRows'
+import { buildVisibleRows, contentBucket, dirCollapseKey, dominantCategory, groupFullySelected, groupRowsByDirectory, groupsMatchingQuery, keysInVisualSpan, rowIndexOfKey, selectGroupOnClick, selectedTaskViewsInOrder, selectionIsGroup } from './model/groupRows'
 import type { BucketInfo, GroupFolderRow, VisibleRow, VisibleRowsInput } from './model/groupRows'
 import type { DirectoryItem } from './model/directoryTree'
 import { makeAggregate } from './model/groupTree'
@@ -119,6 +119,7 @@ export interface DownloadsContextValue {
   visibleSelected: number
   selected: ReadonlySet<RowKey>
   selectedViews: readonly DownloadTaskView[]
+  selectedViewsInOrder: () => readonly DownloadTaskView[]
   summary: SelectionSummary
   /** 显式多选模式：Ctrl/Cmd+点击、行首复选框、右键「选择 / 全选」或全选进入，普通单击 / 清空选择退出（与 GPUI `multi_select` 对齐）。 */
   multiSelect: boolean
@@ -744,6 +745,11 @@ export function DownloadsProvider({ children }: { children: ReactNode }) {
     [selected, byKey, snapshot.contentVersion, tasksLoading],
   )
 
+  const selectedViewsInOrder = useCallback(
+    () => tasksLoading ? EMPTY_VIEWS : selectedTaskViewsInOrder(rows, snapshot.rows, selected),
+    [tasksLoading, selected, rows, snapshot.rows],
+  )
+
   const summary = useMemo<SelectionSummary>(() => {
     let anyLocal = false
     let anyActive = false
@@ -838,6 +844,7 @@ export function DownloadsProvider({ children }: { children: ReactNode }) {
       visibleSelected,
       selected,
       selectedViews,
+      selectedViewsInOrder,
       summary,
       multiSelect,
       clickSelect,
@@ -890,6 +897,7 @@ export function DownloadsProvider({ children }: { children: ReactNode }) {
       visibleSelected,
       selected,
       selectedViews,
+      selectedViewsInOrder,
       summary,
       multiSelect,
       clickSelect,

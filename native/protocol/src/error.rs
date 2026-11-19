@@ -101,12 +101,16 @@ pub enum ErrorReason {
     TaskStateConflict,
     /// 远程任务：只有目标设备可以上报该任务状态。
     TaskDeviceMismatch,
+    /// 远程任务：FluxCloud 已没有这条记录（已被其他设备删除或过期清理）；agent 已把它从投影移除。
+    RemoteTaskGone,
     /// 保存目录在目标设备上不可用（路径风格不符 / 非绝对路径 / 无法创建）。
     SaveDirUnavailable,
     /// 删除任务：文件正被其他程序占用，无法删除；任务记录已保留。
     TaskFilesInUse,
     /// 删除任务：任务文件无法删除（权限 / 磁盘 / 清理超时等）；任务记录已保留。
     TaskFilesNotDeleted,
+    /// 重新下载：浏览器接管的请求必须由浏览器重新发起。
+    BrowserRequestRequired,
     /// 局域网配对：配对码错误或已过期。
     PairingCodeInvalid,
     /// 局域网配对：配对会话不存在或已过期。

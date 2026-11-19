@@ -57,13 +57,25 @@ Desktop RSS only collects history on the first fetch. **Download all eligible** 
 | **Rust-Powered Engine** | Shared Rust + Tokio engine, independent of UI and FFI, used by desktop, mobile, server and standalone CLI hosts |
 | **Smart Segmentation** | Segments split dynamically at runtime; idle workers take over slow segments |
 | **Multi-Protocol** | Dedicated engines for HTTP/HTTPS, FTP, BitTorrent (DHT/UPnP/magnet), eD2K (server + Kad DHT source finding, MD4 verification), HLS (AES-decrypt) and DASH |
+| **BitTorrent Web Seeds** | On desktop and Web, right-click a torrent to add a BEP 19 source: a direct HTTP(S) file URL for a single-file torrent, or the root of a mirror that preserves the original torrent folder and file paths for a multi-file torrent. The server must support HTTP range requests. The address is saved with the task. |
 | **Queues & Speed Control** | Named queues, scheduling and token-bucket global rate limiting |
 | **Persistence & Resume** | SQLite with WAL by default; server deployments can use PostgreSQL; recover downloads from persisted state |
 | **Browser Integration** | Download interception, streaming media sniffing, Alt+Click bypass, right-click send and connection diagnostics |
 | **Desktop & Web UI** | GPUI desktop and React Web management, light/dark themes, custom themes, task details and segment visualization; desktop tray keeps the service available after the UI closes |
+| **Batch TXT Export** | Select tasks or select all in the download list, or use **Export task information (.txt)** from the new-download batch or resolved file list. Available in desktop, Web, Android, and iOS; resolved plugin lists are available in desktop, Web, and full iOS. |
 | **RSS & Automation** | Feed filters, unattended downloads, JavaScript plugins, managed FFmpeg/yt-dlp components and task-event webhooks |
 | **Remote Devices** | Optional FluxCloud account, settings sync and remote task management, plus LAN device pairing and direct connections |
 | **APIs & CLI** | REST/OpenAPI, aria2-compatible JSON-RPC, MCP with 12 tools, and a CLI for scripts or standalone downloads |
+
+Download-list exports include selected tasks from the current host and selected FluxCloud remote tasks, even when only remote tasks are selected.
+The URL column for a FluxCloud remote task is available only if its source device shares download URLs.
+
+Task exports are UTF-8 text with `Name`, `URL`, and `Size (bytes)` columns separated by tabs. Decode `\\`, `\t`, `\r`, and `\n` as a backslash, tab, carriage return, and line feed respectively, in a single pass after splitting fields. Unknown values are blank; resolved plugin lists do not expose direct per-file URLs. The desktop and Web clipboard action additionally prefixes text starting with spreadsheet formula markers or a quote (after leading whitespace) with an apostrophe; TXT files do not add that prefix.
+
+New-download batches use explicit `out=` names first, then available names from the link itself (HTTP(S)/FTP file paths, magnet `dn`, or eD2k file names). Links without a known name leave that field blank.
+A new-download batch exports the byte size declared by an eD2k file link, including `0` for a valid empty file. Links without known size metadata leave the size blank.
+
+Resolved plugin lists export only checked files, including checked files hidden by the current search or filter. The name column contains each file's relative path. Where variant selection is available, an explicitly chosen variant with unknown size leaves the size blank, even if the default item size is known.
 
 **Privacy:** local downloads do not require a FluxCloud account. Cloud features are optional. Anonymous installation and daily-active statistics are controlled by `analytics_enabled` and can be disabled; they do not collect download/task information. This is not a zero-telemetry application.
 
@@ -114,6 +126,10 @@ docker compose -f docker/docker-compose.yml up -d
 ```
 
 Open `http://<server>:17800/` and set an access key in the first-run wizard. The key must contain 8–128 visible ASCII characters, including both a letter and a digit. Set it up on a trusted network before exposing the service; use an HTTPS reverse proxy for remote access.
+
+**Browser extension:** Viewing remote progress and removing tasks requires the host’s Management API. If an existing Docker deployment can accept downloads but cannot list tasks, open the server’s Web UI, enable **Settings → API Service → Management API**, then test the connection again in the extension. If you use a reverse proxy, make sure it forwards `/api/v1/` requests. Remote Only shows the server automatically; in Desktop First, select Remote server in the task panel. Removing tasks does not delete downloaded files.
+
+**iOS:** In FluxDown, go to Devices → Add Host switch the mode to **Access key** (the default is LAN pairing), then enter the server address and access key. Switch to that host, then use Downloads to add tasks, check progress, or remove tasks.
 
 - Server mode listens on `[::]:17800` (IPv4 + IPv6, falling back to `0.0.0.0` without IPv6) by default; override it with `FLUXDOWN_BIND`.
 - For unattended setup, supply `FLUXDOWN_TOKEN` through your deployment environment or secret manager, not a committed file. It initializes the key only if one has not already been set.

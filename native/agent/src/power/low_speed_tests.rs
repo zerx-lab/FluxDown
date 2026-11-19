@@ -230,10 +230,17 @@ fn switching_back_to_completion_does_not_retain_low_speed_timing() {
     state.arm_low_speed(CONDITION, PowerAction::Shutdown, downloading(), now);
     state.arm(Duration::from_secs(5), PowerAction::Sleep, true, now);
     assert_eq!(state.status(now).low_speed, None);
-    assert_eq!(state.advance(1, 0, now + Duration::from_secs(1000)), None);
-    assert_eq!(state.advance(0, 0, now + Duration::from_secs(1000)), None);
+    let idle = PowerObservation {
+        connected: true,
+        ..PowerObservation::default()
+    };
     assert_eq!(
-        state.advance(0, 0, now + Duration::from_secs(1005)),
+        state.advance(downloading(), now + Duration::from_secs(1000)),
+        None
+    );
+    assert_eq!(state.advance(idle, now + Duration::from_secs(1000)), None);
+    assert_eq!(
+        state.advance(idle, now + Duration::from_secs(1005)),
         Some(PowerAction::Sleep)
     );
 }

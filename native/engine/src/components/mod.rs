@@ -225,33 +225,19 @@ pub(crate) async fn fetch_github_json(
         .header("Accept", "application/vnd.github+json")
         .send()
         .await
-        .map_err(|e| ComponentError::Http(e.to_string()))?;
+        .map_err(|e| ComponentError::Http(format!("API request failed: {}", e.without_url())))?;
     if !resp.status().is_success() {
         return Err(ComponentError::Http(format!(
-            "GitHub API returned {}",
+            "API returned {}",
             resp.status()
         )));
     }
-    resp.json::<serde_json::Value>()
-        .await
-        .map_err(|e| ComponentError::Http(e.to_string()))
-}
-
-/// [`fetch_github_json`]，但先按用户配置的 [`CONFIG_COMPONENT_MIRROR_BASE`]
-/// 改写 `url`（675#1）：改写后请求失败（或未配置，改写后与原 URL 相同，或镜像
-/// 不是 https）都回退直连原始 `url`，不让一次镜像故障拖垮整个安装流程。
-#[cfg(feature = "components")]
-pub(crate) async fn fetch_github_json_with_mirror(
-    clients: &crate::egress::RoutedClients,
-    url: &str,
-    mirror_base: &str,
-) -> Result<serde_json::Value, ComponentError> {
-    if let Some(mirrored) = https_mirror_url(url, mirror_base)
-        && let Ok(v) = fetch_github_json(clients, &mirrored).await
-    {
-        return Ok(v);
-    }
-    fetch_github_json(clients, url).await
+    resp.json::<serde_json::Value>().await.map_err(|e| {
+        ComponentError::Http(format!(
+            "API response could not be read: {}",
+            e.without_url()
+        ))
+    })
 }
 
 /// 镜像改写后的 URL：仅当确实改写且镜像为 https 才返回；http 镜像一律忽略
@@ -280,6 +266,21 @@ pub(crate) fn require_upstream_asset_url(url: &str, prefix: &str) -> Result<(), 
             "asset url is not under the upstream release path: {url}"
         )))
     }
+}
+
+#[cfg(feature = "components")]
+fn release_asset_url<'a>(
+    assets: &'a [serde_json::Value],
+    name: &str,
+    upstream_prefix: &str,
+) -> Result<&'a str, ComponentError> {
+    let url = assets
+        .iter()
+        .find(|asset| asset["name"].as_str() == Some(name))
+        .and_then(|asset| asset["browser_download_url"].as_str())
+        .ok_or_else(|| ComponentError::NotFound(format!("asset {name}")))?;
+    require_upstream_asset_url(url, upstream_prefix)?;
+    Ok(url)
 }
 
 /// 解析 `sha256sum` 风格校验文件（`<hex>  <name>` / `<hex> *<name>`），取 `name`
@@ -354,27 +355,86 @@ async fn fetch_text(
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// 官网组件版本镜像的基地址。版本列表拉取优先经此转发（服务端持 token +
-/// 24h 缓存，规避 GitHub 匿名 API 每 IP 60/h 限流与直连 api.github.com 的
-/// 网络问题），失败依次回退用户配置的镜像（若有）与直连 GitHub。
+/// 官网组件版本镜像：服务端持 token，并缓存响应以缓解 GitHub 匿名 API 限流。
 #[cfg(feature = "components")]
 const MIRROR_BASE: &str = "https://fluxdown.com/api/components";
 
-/// 版本列表专用：优先经官网镜像 `MIRROR_BASE/<component>` 拉取（返回原样
-/// GitHub JSON）；失败则经 [`fetch_github_json_with_mirror`] 依次尝试用户
-/// 配置的镜像与直连 `github_url`。二进制下载不走此路径。
 #[cfg(feature = "components")]
-pub(crate) async fn fetch_versions_json(
+fn official_versions_url(component: &str) -> String {
+    format!("{MIRROR_BASE}/{component}")
+}
+
+/// 版本列表与 FFmpeg 安装元数据：镜像 → 官网缓存 → 直连 GitHub。
+#[cfg(feature = "components")]
+async fn fetch_versions_metadata<T>(
     clients: &crate::egress::RoutedClients,
     component: &str,
     github_url: &str,
     mirror_base: &str,
-) -> Result<serde_json::Value, ComponentError> {
-    let official_mirror = format!("{MIRROR_BASE}/{component}");
-    if let Ok(v) = fetch_github_json(clients, &official_mirror).await {
-        return Ok(v);
+    select: impl Fn(&serde_json::Value) -> Result<T, ComponentError>,
+) -> Result<T, ComponentError> {
+    fetch_versions_from_sources(
+        component,
+        github_url,
+        mirror_base,
+        |url| async move { fetch_github_json(clients, &url).await },
+        select,
+    )
+    .await
+}
+
+#[cfg(feature = "components")]
+async fn fetch_versions_from_sources<T, Fut>(
+    component: &str,
+    github_url: &str,
+    mirror_base: &str,
+    fetch: impl FnMut(String) -> Fut,
+    select: impl Fn(&serde_json::Value) -> Result<T, ComponentError>,
+) -> Result<T, ComponentError>
+where
+    Fut: std::future::Future<Output = Result<serde_json::Value, ComponentError>>,
+{
+    fetch_release_metadata(
+        [
+            (
+                "configured mirror",
+                https_mirror_url(github_url, mirror_base),
+            ),
+            ("official cache", Some(official_versions_url(component))),
+        ],
+        ("direct GitHub API", github_url),
+        fetch,
+        select,
+    )
+    .await
+}
+
+/// 尝试各来源，只有元数据通过选取才停止回退。
+#[cfg(feature = "components")]
+async fn fetch_release_metadata<T, Fut>(
+    fallbacks: [(&str, Option<String>); 2],
+    last: (&str, &str),
+    mut fetch: impl FnMut(String) -> Fut,
+    select: impl Fn(&serde_json::Value) -> Result<T, ComponentError>,
+) -> Result<T, ComponentError>
+where
+    Fut: std::future::Future<Output = Result<serde_json::Value, ComponentError>>,
+{
+    let mut failures = Vec::new();
+    let sources = fallbacks
+        .into_iter()
+        .filter_map(|(source, url)| url.map(|url| (source, url)))
+        .chain(std::iter::once_with(|| (last.0, last.1.to_owned())));
+    for (source, url) in sources {
+        match fetch(url).await.and_then(|release| select(&release)) {
+            Ok(metadata) => return Ok(metadata),
+            Err(error) => failures.push(format!("{source}: {error}")),
+        }
     }
-    fetch_github_json_with_mirror(clients, github_url, mirror_base).await
+    Err(ComponentError::Http(format!(
+        "release metadata unavailable ({})",
+        failures.join("; ")
+    )))
 }
 
 /// 下载载荷到 `dest` 并校验 SHA-256（`expected_sha256`，小写 hex），

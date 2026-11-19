@@ -33,6 +33,8 @@ pub struct TaskRuntime {
     pub parallelism_limit: Option<u32>,
     pub total_bytes: i64,
     pub segments: Vec<TaskSegment>,
+    /// HLS 点播已写入的媒体分片数与总数（含独立音轨）；直播不提供。
+    pub hls_fragments: Option<(u64, u64)>,
     /// Live cumulative accelerated-source bytes (persisted base + this run,
     /// including in-flight); `None` = this protocol/path has no attribution.
     pub source_bytes: Option<crate::model::SourceBytes>,

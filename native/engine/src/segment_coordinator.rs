@@ -1404,6 +1404,7 @@ fn sampled_http_runtime(
             .collect(),
         // 来源累计由持有节点池的调用方按需回填；这里不做归因。
         source_bytes: None,
+        hls_fragments: None,
     };
     (snapshot, runtime)
 }

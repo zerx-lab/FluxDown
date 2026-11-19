@@ -341,6 +341,9 @@ struct TasksProtocolTests {
         #expect(TaskErrorMessage.localizationKey(for: "connection reset") == nil)
         #expect(TaskErrorMessage.displayText("connection reset", localize: { _ in "x" }) == "connection reset")
         #expect(TaskErrorMessage.displayText(TaskErrorMessage.postOnlyResume, localize: { "L:" + $0 }) == "L:taskErrorPostOnlyResume")
+        #expect(TaskErrorMessage.displayText(" server returned HTML page (Content-Type: text/html), redirected to /login\n", localize: { "L:" + $0 }) == "L:taskErrorUnexpectedHtml")
+        #expect(TaskErrorMessage.localizationKey(for: "the server did not return a complete HTML page; nothing was saved") == "taskErrorHtmlChanged")
+        #expect(TaskErrorMessage.localizationKey(for: "the server did not return a complete HTML page; nothing was saved.") == nil)
     }
 
     // MARK: BT 选片
