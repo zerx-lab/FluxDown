@@ -19,7 +19,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-internal data class TaskInfoRow(val name: String, val url: String, val size: Long = 0)
+internal data class TaskInfoRow(val name: String, val url: String, val size: Long? = null)
 
 internal fun taskInfoText(rows: List<TaskInfoRow>): String = buildString {
     fun cell(value: String) {
@@ -40,7 +40,7 @@ internal fun taskInfoText(rows: List<TaskInfoRow>): String = buildString {
         append('\t')
         if (!row.url.startsWith("torrent-file://", ignoreCase = true)) cell(row.url)
         append('\t')
-        if (row.size > 0) append(row.size)
+        row.size?.let { append(it) }
     }
 }
 

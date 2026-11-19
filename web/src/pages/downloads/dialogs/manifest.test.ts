@@ -59,7 +59,7 @@ test('exports only checked files with relative paths and default sizes', () => {
 
   expect(manifestExportRows(items, new Set(['root', 'b', 'a']))).toEqual([
     { name: 'first/same.bin', url: '', originUrl: '', sizeBytes: 50 },
-    { name: 'second/nested/same.bin', url: '', originUrl: '', sizeBytes: 0 },
+    { name: 'second/nested/same.bin', url: '', originUrl: '', sizeBytes: null },
     { name: 'root.bin', url: '', originUrl: '', sizeBytes: 1 },
   ])
   expect(manifestExportRows(items, new Set())).toEqual([])

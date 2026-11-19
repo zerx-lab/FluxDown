@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { batchExportRow, parseEntries } from '../dialogs/model'
-import { canCopyUrls, canShareTorrent, exportTaskInfo, taskInfoText, torrentFileName } from './actions'
+import { canCopyUrls, canShareTorrent, exportTaskInfo, taskInfoRow, taskInfoText, torrentFileName } from './actions'
 import type { DownloadTaskView } from './task'
 
 const view = (source: string, protocol: string) => ({ source, protocol }) as unknown as DownloadTaskView
@@ -46,7 +46,7 @@ test('task info keeps rows without links and escapes cell boundaries', () => {
   expect(taskInfoText([
     { name: '=报告\tpart\n2', url: 'https://example.com/resolved', originUrl: 'https://example.com/original', sizeBytes: 1 },
     { name: 'file.bin', url: 'torrent-file://local', originUrl: '', sizeBytes: 0 },
-  ])).toBe("Name\tURL\tSize (bytes)\n'=报告\\tpart\\n2\thttps://example.com/original\t1\nfile.bin\t\t")
+  ].map(taskInfoRow))).toBe("Name\tURL\tSize (bytes)\n'=报告\\tpart\\n2\thttps://example.com/original\t1\nfile.bin\t\t")
 })
 
 test('downloaded TXT preserves task fields and the complete parsed batch', async () => {
@@ -67,7 +67,7 @@ test('downloaded TXT preserves task fields and the complete parsed batch', async
     exportTaskInfo([
       { name: '=报告\\x\tpart\r\n2', url: 'https://example.com/resolved', originUrl: 'https://example.com/original', sizeBytes: 4294967296 },
       { name: 'file.bin', url: 'torrent-file://local', originUrl: '', sizeBytes: 0 },
-    ])
+    ].map(taskInfoRow))
     const entries = parseEntries([
       'https://example.com/a%20b.zip?key=v',
       'ftp://example.com/f',
@@ -79,6 +79,8 @@ test('downloaded TXT preserves task fields and the complete parsed batch', async
       'ed2k://|file||100|h|/',
       'ed2k://|file|ignored|100|1555B7DCA052B5958EE68DB58A42408D|/',
       '  out=keep%20name',
+      'ed2k://|file|empty.txt|0|31D6CFE0D16AE931B73C59D7E0C089C0|/',
+      'ed2k://|file|invalid.txt|0|1555B7DCA052B5958EE68DB58A42408D|/',
     ].join('\n'), false)
     exportTaskInfo(entries.map(batchExportRow))
     expect(downloaded).toEqual(['fluxdown-tasks.txt', 'fluxdown-tasks.txt'])
@@ -101,6 +103,8 @@ test('downloaded TXT preserves task fields and the complete parsed batch', async
       ['', 'magnet:?xt=urn:btih:b', ''],
       ['', 'ed2k://|file||100|h|/', ''],
       ['keep%20name', 'ed2k://|file|ignored|100|1555B7DCA052B5958EE68DB58A42408D|/', '100'],
+      ['empty.txt', 'ed2k://|file|empty.txt|0|31D6CFE0D16AE931B73C59D7E0C089C0|/', '0'],
+      ['invalid.txt', 'ed2k://|file|invalid.txt|0|1555B7DCA052B5958EE68DB58A42408D|/', ''],
     ])
   } finally {
     URL.createObjectURL = originalCreateUrl

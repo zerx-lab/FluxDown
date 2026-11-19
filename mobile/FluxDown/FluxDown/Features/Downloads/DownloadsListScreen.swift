@@ -451,7 +451,7 @@ struct DownloadsListScreen: View {
                     let visible = model.list.visibleIds.compactMap { tasks.removeValue(forKey: $0) }
                     let remaining = selected.filter { tasks[$0.taskId] != nil }
                     let rows = (visible + remaining).map {
-                        TaskInfoRow(name: $0.fileName, url: $0.shareUrl, size: $0.totalBytes)
+                        TaskInfoRow(name: $0.fileName, url: $0.shareUrl, size: $0.totalBytes > 0 ? $0.totalBytes : nil)
                     }
                     if !rows.isEmpty { taskInfoExport = TaskInfoDocument(rows) }
                 }
@@ -550,7 +550,7 @@ struct DownloadsListScreen: View {
 nonisolated struct TaskInfoRow {
     let name: String
     let url: String
-    var size: Int64 = 0
+    var size: Int64? = nil
 }
 
 nonisolated struct TaskInfoDocument: FileDocument {
@@ -567,7 +567,7 @@ nonisolated struct TaskInfoDocument: FileDocument {
         var text = "Name\tURL\tSize (bytes)"
         for row in rows {
             let url = row.url.lowercased().hasPrefix("torrent-file://") ? "" : row.url
-            let size = row.size > 0 ? String(row.size) : ""
+            let size = row.size.map { String($0) } ?? ""
             text += "\n\(cell(row.name))\t\(cell(url))\t\(size)"
         }
         data = Data(text.utf8)

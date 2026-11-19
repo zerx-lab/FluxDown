@@ -14,11 +14,14 @@ class TaskInfoExportTest {
 
     @Test
     fun writesOrderedUtf8RowsWithUnknownFieldsBlank() {
+        val empty = "ed2k://|file|empty.txt|0|31D6CFE0D16AE931B73C59D7E0C089C0|/"
+        val wrongHash = "ed2k://|file|invalid.txt|0|1555B7DCA052B5958EE68DB58A42408D|/"
         val batch = parseEntries(
             "https://example.com/a%20b.zip?key=v\nftp://example.com/f\n  out=报告.zip\nhttps://example.com/" +
                 "\nMAGNET:?xt=urn:btih:a&dn=My+Show%21\nED2K://|FILE|f%20x.iso|5044211712|1555B7DCA052B5958EE68DB58A42408D|/" +
                 "\nmagnet:?xt=urn:btih:b\ned2k://|file||100|h|/" +
-                "\ned2k://|file|ignored|100|1555B7DCA052B5958EE68DB58A42408D|/\n  out=keep%20name",
+                "\ned2k://|file|ignored|100|1555B7DCA052B5958EE68DB58A42408D|/\n  out=keep%20name" +
+                "\n$empty\n$wrongHash",
         )
         val rows = listOf(
             TaskInfoRow("=报告\\x\tpart\r\n2", "https://example.com/original", 4294967296L),
@@ -31,7 +34,8 @@ class TaskInfoExportTest {
                 "\nfile.bin\t\t\na b.zip\thttps://example.com/a%20b.zip?key=v\t\n报告.zip\tftp://example.com/f\t" +
                 "\n\thttps://example.com/\t\nMy+Show!\tMAGNET:?xt=urn:btih:a&dn=My+Show%21\t" +
                 "\nf x.iso\tED2K://|FILE|f%20x.iso|5044211712|1555B7DCA052B5958EE68DB58A42408D|/\t5044211712\n\tmagnet:?xt=urn:btih:b\t" +
-                "\n\ted2k://|file||100|h|/\t\nkeep%20name\ted2k://|file|ignored|100|1555B7DCA052B5958EE68DB58A42408D|/\t100",
+                "\n\ted2k://|file||100|h|/\t\nkeep%20name\ted2k://|file|ignored|100|1555B7DCA052B5958EE68DB58A42408D|/\t100" +
+                "\nempty.txt\t$empty\t0\ninvalid.txt\t$wrongHash\t",
             file.readText(Charsets.UTF_8),
         )
     }

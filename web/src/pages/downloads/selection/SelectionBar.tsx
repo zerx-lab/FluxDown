@@ -4,7 +4,7 @@ import { useT } from '../../../i18n'
 import { cn } from '../../../lib/cn'
 import { ActionMenu, Icon, Tooltip } from '../../../ui'
 import type { MenuEntry } from '../../../ui'
-import { confirmDeleteWithFiles, copyTaskInfo, deleteViews, downloadViewsFiles, exportTaskInfo, pauseViews, resumeViews } from '../model/actions'
+import { confirmDeleteWithFiles, copyTaskInfo, deleteViews, downloadViewsFiles, exportTaskInfo, pauseViews, resumeViews, taskInfoRow } from '../model/actions'
 import { useDownloads } from '../state'
 
 const BTN =
@@ -72,7 +72,7 @@ function SelectionActions({ inline }: { inline?: boolean }) {
       <Action label={t('copyTaskInfo')} className={btn} onClick={() => void copyTaskInfo(selectedViewsInOrder())}>
         <Icon icon={Copy} size="md" />
       </Action>
-      <Action label={t('exportTaskInfoTxt')} className={btn} onClick={() => exportTaskInfo(selectedViewsInOrder())}>
+      <Action label={t('exportTaskInfoTxt')} className={btn} onClick={() => exportTaskInfo(selectedViewsInOrder().map(taskInfoRow))}>
         <Icon icon={FileDown} size="md" />
       </Action>
       <ActionMenu

@@ -51,10 +51,12 @@ function urlFileSegment(url: string): string | null {
 }
 
 export function batchExportRow(entry: UrlEntry) {
-  const fields = /^ed2k:\/\/\|file\|[^|]+\|(\+?[0-9]+)\|[0-9a-f]{32}(?:\||$)/i.exec(entry.url)
-  const size = Number(fields?.[1] ?? 0)
+  const fields = /^ed2k:\/\/\|file\|[^|]+\|(\+?[0-9]+)\|([0-9a-f]{32})(?:\||$)/i.exec(entry.url)
+  const size = Number(fields?.[1])
   // The engine's eD2k ceiling is below Number.MAX_SAFE_INTEGER.
-  return { name: batchEntryName(entry), url: entry.url, originUrl: '', sizeBytes: size <= 0x40_0000_0000 ? size : 0 }
+  const knownSize = size <= 0x40_0000_0000 &&
+    (size !== 0 || fields?.[2]?.toLowerCase() === '31d6cfe0d16ae931b73c59d7e0c089c0')
+  return { name: batchEntryName(entry), url: entry.url, originUrl: '', sizeBytes: knownSize ? size : null }
 }
 
 function batchEntryName({ fileName, url }: UrlEntry): string {

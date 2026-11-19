@@ -40,13 +40,19 @@ fn push_task_info_cell(text: &mut String, value: &str, clipboard: bool) {
 
 const TASK_INFO_HEADER: &str = "Name\tURL\tSize (bytes)";
 
-fn push_task_info_row(text: &mut String, name: &str, url: &str, size: u64, clipboard: bool) {
+fn push_task_info_row(
+    text: &mut String,
+    name: &str,
+    url: &str,
+    size: Option<u64>,
+    clipboard: bool,
+) {
     text.push('\n');
     push_task_info_cell(text, name, clipboard);
     text.push('\t');
     push_task_info_cell(text, url, clipboard);
     text.push('\t');
-    if size > 0 {
+    if let Some(size) = size {
         use std::fmt::Write as _;
         if let Err(error) = write!(text, "{size}") {
             eprintln!("could not format task size: {error}");
@@ -66,8 +72,8 @@ pub(crate) fn batch_link_info_text<'a>(
     text
 }
 
-fn batch_entry_size(url: &str) -> u64 {
-    // Match the wire fields and size ceiling of the engine's eD2k link parser.
+fn batch_entry_size(url: &str) -> Option<u64> {
+    // Match the engine's eD2k wire fields, size ceiling, and MD4("") root for empty files.
     let mut fields = url.split('|');
     let (Some(scheme), Some(kind), Some(name), Some(size), Some(hash)) = (
         fields.next(),
@@ -76,7 +82,7 @@ fn batch_entry_size(url: &str) -> u64 {
         fields.next(),
         fields.next(),
     ) else {
-        return 0;
+        return None;
     };
     if !scheme.eq_ignore_ascii_case("ed2k://")
         || !kind.eq_ignore_ascii_case("file")
@@ -84,12 +90,12 @@ fn batch_entry_size(url: &str) -> u64 {
         || hash.len() != 32
         || !hash.bytes().all(|byte| byte.is_ascii_hexdigit())
     {
-        return 0;
+        return None;
     }
-    size.parse::<u64>()
-        .ok()
-        .filter(|&bytes| bytes <= 0x40_0000_0000)
-        .unwrap_or_default()
+    size.parse::<u64>().ok().filter(|&bytes| {
+        bytes <= 0x40_0000_0000
+            && (bytes != 0 || hash.eq_ignore_ascii_case("31d6cfe0d16ae931b73c59d7e0c089c0"))
+    })
 }
 
 fn batch_entry_name(entry: &crate::model::new_download::UrlEntry) -> std::borrow::Cow<'_, str> {
@@ -142,6 +148,7 @@ pub(crate) fn export_task_info_text(
 ) -> String {
     let mut text = TASK_INFO_HEADER.to_owned();
     for (name, size) in rows {
+        let size = (size > 0).then_some(size);
         push_task_info_row(&mut text, name.as_ref(), "", size, false);
     }
     text
@@ -159,7 +166,7 @@ fn task_info_text<'a>(
             &mut text,
             &row.name,
             row.copyable_share_url().unwrap_or_default(),
-            row.size_bytes,
+            (row.size_bytes > 0).then_some(row.size_bytes),
             clipboard,
         );
     }
@@ -610,16 +617,18 @@ mod tests {
         let unnamed_magnet = "magnet:?xt=urn:btih:b";
         let unnamed_ed2k = "ed2k://|file||100|h|/";
         let renamed = "ed2k://|file|ignored|100|1555B7DCA052B5958EE68DB58A42408D|/";
+        let empty = "ed2k://|file|empty.txt|0|31D6CFE0D16AE931B73C59D7E0C089C0|/";
+        let wrong_hash = "ed2k://|file|invalid.txt|0|1555B7DCA052B5958EE68DB58A42408D|/";
         let p2p = crate::model::new_download::parse_entries(
             &format!(
-                "{magnet}\n{ed2k}\n{unnamed_magnet}\n{unnamed_ed2k}\n{renamed}\n  out=keep%20name"
+                "{magnet}\n{ed2k}\n{unnamed_magnet}\n{unnamed_ed2k}\n{renamed}\n  out=keep%20name\n{empty}\n{wrong_hash}"
             ),
             false,
         );
         assert_eq!(
             batch_link_info_text(&p2p),
             format!(
-                "Name\tURL\tSize (bytes)\nMy+Show!\t{magnet}\t\nf x.iso\t{ed2k}\t5044211712\n\t{unnamed_magnet}\t\n\t{unnamed_ed2k}\t\nkeep%20name\t{renamed}\t100"
+                "Name\tURL\tSize (bytes)\nMy+Show!\t{magnet}\t\nf x.iso\t{ed2k}\t5044211712\n\t{unnamed_magnet}\t\n\t{unnamed_ed2k}\t\nkeep%20name\t{renamed}\t100\nempty.txt\t{empty}\t0\ninvalid.txt\t{wrong_hash}\t"
             )
         );
 

@@ -224,7 +224,7 @@ private fun SelectionDockContent(modifier: Modifier, reservedEnd: Dp) {
             add(SelectionDockAction("export-info", exportLabel, FluxIcons.FileText, {
                 val tasks = selectedTasks().associateByTo(LinkedHashMap()) { it.taskId }
                 val ordered = view.list.visibleIds.mapNotNull(tasks::remove) + tasks.values
-                exportTaskInfo(ordered.map { TaskInfoRow(it.fileName, it.shareUrl, it.totalBytes) })
+                exportTaskInfo(ordered.map { TaskInfoRow(it.fileName, it.shareUrl, it.totalBytes.takeIf { size -> size > 0 }) })
             }))
             add(
                 SelectionDockAction(

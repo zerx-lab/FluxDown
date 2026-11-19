@@ -14,6 +14,8 @@ import Testing
 }
 
 @Test func batchTaskInfoDocumentExportsKnownNamesAndSizes() {
+    let empty = "ed2k://|file|empty.txt|0|31D6CFE0D16AE931B73C59D7E0C089C0|/"
+    let wrongHash = "ed2k://|file|invalid.txt|0|1555B7DCA052B5958EE68DB58A42408D|/"
     let entries = parseEntries("""
         https://example.com/a%20b.zip?key=v
         https://example.com/
@@ -23,6 +25,8 @@ import Testing
         ed2k://|file||100|h|/
         ed2k://|file|ignored|100|1555B7DCA052B5958EE68DB58A42408D|/
           out=keep%20name
+        \(empty)
+        \(wrongHash)
         """)
     let document = TaskInfoDocument(entries.map {
         TaskInfoRow(name: batchExportName($0), url: $0.url, size: batchExportSize($0.url))
@@ -36,6 +40,8 @@ import Testing
         "\tmagnet:?xt=urn:btih:b\t",
         "\ted2k://|file||100|h|/\t",
         "keep%20name\ted2k://|file|ignored|100|1555B7DCA052B5958EE68DB58A42408D|/\t100",
+        "empty.txt\t\(empty)\t0",
+        "invalid.txt\t\(wrongHash)\t",
     ].joined(separator: "\n"))
 }
 
@@ -48,7 +54,7 @@ import Testing
     selection.toggle("a")
     selection.chooseVariant("unknown", for: "a")
     let document = TaskInfoDocument(selection.selectedExportRows().map {
-        TaskInfoRow(name: $0.name, url: "", size: $0.size)
+        TaskInfoRow(name: $0.name, url: "", size: $0.size > 0 ? $0.size : nil)
     })
     #expect(String(decoding: document.data, as: UTF8.self) == "Name\tURL\tSize (bytes)\nfolder/video.mp4\t\t")
     #expect(selection.selectedSize == (0, 1))

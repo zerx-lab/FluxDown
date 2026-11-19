@@ -459,7 +459,7 @@ export function manifestExportRows(items: PreviewItemDto[], selectedItemIds: Set
     name: path ? `${path}/${name}` : name,
     url: '',
     originUrl: '',
-    sizeBytes: size,
+    sizeBytes: size > 0 ? size : null,
   }))
 }
 

@@ -310,7 +310,7 @@ struct ManifestSelectView: View {
             }
             Button(L("exportTaskInfoTxt"), systemImage: "square.and.arrow.down") {
                 taskInfoExport = TaskInfoDocument(model.selection.selectedExportRows().map {
-                    TaskInfoRow(name: $0.name, url: "", size: $0.size)
+                    TaskInfoRow(name: $0.name, url: "", size: $0.size > 0 ? $0.size : nil)
                 })
             }
             .disabled(model.selection.count == 0 || model.submitting)

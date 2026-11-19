@@ -109,15 +109,17 @@ internal fun protocolOf(url: String): TaskProtocol = when {
 
 private fun decode(s: String): String = runCatching { URLDecoder.decode(s.replace("+", "%2B"), "UTF-8") }.getOrDefault(s)
 
-internal fun UrlEntry.batchExportSize(): Long {
-    if (!url.startsWith("ed2k://|file|", ignoreCase = true)) return 0
+internal fun UrlEntry.batchExportSize(): Long? {
+    if (!url.startsWith("ed2k://|file|", ignoreCase = true)) return null
     val fields = url.split('|', limit = 6)
-    if (fields.size < 5 || fields[2].isEmpty()) return 0
+    if (fields.size < 5 || fields[2].isEmpty()) return null
     val hash = fields[4]
-    if (hash.length != 32 || hash.any { it !in '0'..'9' && it !in 'a'..'f' && it !in 'A'..'F' }) return 0
+    if (hash.length != 32 || hash.any { it !in '0'..'9' && it !in 'a'..'f' && it !in 'A'..'F' }) return null
     val size = fields[3].removePrefix("+")
-    if (size.any { it !in '0'..'9' }) return 0
-    return size.toLongOrNull()?.takeIf { it <= 0x40_0000_0000L } ?: 0
+    if (size.any { it !in '0'..'9' }) return null
+    return size.toLongOrNull()?.takeIf {
+        it <= 0x40_0000_0000L && (it != 0L || hash.equals("31d6cfe0d16ae931b73c59d7e0c089c0", ignoreCase = true))
+    }
 }
 
 internal fun UrlEntry.batchExportName(): String {

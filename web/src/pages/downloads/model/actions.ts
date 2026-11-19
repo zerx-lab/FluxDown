@@ -251,14 +251,21 @@ function taskInfoCell(value: string, clipboard: boolean): string {
   return prefix + value.replaceAll('\\', '\\\\').replaceAll('\t', '\\t').replaceAll('\n', '\\n').replaceAll('\r', '\\r')
 }
 
+type TaskInfoFields = Pick<DownloadTaskView, 'name' | 'url' | 'originUrl' | 'sizeBytes'>
+type TaskInfoRow = Omit<TaskInfoFields, 'sizeBytes'> & { sizeBytes: number | null }
+
+export function taskInfoRow({ name, url, originUrl, sizeBytes }: TaskInfoFields): TaskInfoRow {
+  return { name, url, originUrl, sizeBytes: sizeBytes > 0 ? sizeBytes : null }
+}
+
 export function taskInfoText(
-  views: readonly Pick<DownloadTaskView, 'name' | 'url' | 'originUrl' | 'sizeBytes'>[],
+  views: readonly TaskInfoRow[],
   clipboard = true,
 ): string {
   return [
     'Name\tURL\tSize (bytes)',
     ...views.map((view) =>
-      `${taskInfoCell(view.name, clipboard)}\t${taskInfoCell(copyableShareUrl(view), clipboard)}\t${view.sizeBytes > 0 ? view.sizeBytes : ''}`,
+      `${taskInfoCell(view.name, clipboard)}\t${taskInfoCell(copyableShareUrl(view), clipboard)}\t${view.sizeBytes ?? ''}`,
     ),
   ].join('\n')
 }
@@ -286,7 +293,7 @@ export function exportTaskInfo(views: Parameters<typeof taskInfoText>[0]): void 
 
 export async function copyTaskInfo(views: readonly DownloadTaskView[]): Promise<void> {
   if (views.length === 0) return
-  if (await copyText(taskInfoText(views))) {
+  if (await copyText(taskInfoText(views.map(taskInfoRow)))) {
     toast.key('taskInfoCopied', 'success')
   } else {
     toast.key('copyFileFailed', 'error')
