@@ -273,6 +273,7 @@ const zhTW = {
   "popup.tasks.remoteUnavailable": "無法取得遠端任務",
   "popup.tasks.remoteCompleted": "已完成",
   "popup.tasks.startApp": "啟動 FluxDown",
+  "popup.tasks.downloadApp": "尚未安裝？下載 FluxDown",
   "popup.tasks.starting": "啟動中…",
   "popup.tasks.statsToday": "今日：",
   "popup.tasks.statsLineTitle": "開啟設定檢視更多",

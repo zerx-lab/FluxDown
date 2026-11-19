@@ -271,6 +271,7 @@ const zhCN = {
   "popup.tasks.remoteUnavailable": "无法获取远程任务",
   "popup.tasks.remoteCompleted": "已完成",
   "popup.tasks.startApp": "启动 FluxDown",
+  "popup.tasks.downloadApp": "还没安装？下载 FluxDown",
   "popup.tasks.starting": "启动中…",
   "popup.tasks.statsToday": "今日：",
   "popup.tasks.statsLineTitle": "打开设置查看更多",

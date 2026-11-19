@@ -222,6 +222,8 @@ impl ShellAction {
     }
 }
 
+type CloseRequestHandler = Rc<dyn Fn(&mut Window, &mut App)>;
+
 /// 使用 FluxDown 自定义标题栏承载任意能力页面的辅助窗口。
 pub struct AuxiliaryWindowView {
     _translator: Entity<Translator>,
@@ -231,6 +233,7 @@ pub struct AuxiliaryWindowView {
     /// 宿主设置的动态标题（如任务文件名）；存在时优先于按语言刷新的默认标题。
     title_override: Option<SharedString>,
     content: AnyView,
+    close_requested: Option<CloseRequestHandler>,
     /// 窗口是否可由用户调整尺寸；`false` 时 Windows / Linux 自绘只含最小化 + 关闭的标题栏
     /// （系统不会响应最大化，留着只会误导）。macOS 恒用系统交通灯。
     resizable: bool,
@@ -258,6 +261,7 @@ impl AuxiliaryWindowView {
             title,
             title_override: None,
             content,
+            close_requested: None,
             resizable: true,
             traffic_light_y: crate::initial_traffic_light_y(),
         }
@@ -267,6 +271,24 @@ impl AuxiliaryWindowView {
     #[must_use]
     pub fn resizable(mut self, resizable: bool) -> Self {
         self.resizable = resizable;
+        self
+    }
+
+    /// 接管用户点 X 的关闭请求；回调负责收尾，程序主动移除窗口不触发它。
+    #[must_use]
+    pub fn on_close_requested(
+        mut self,
+        callback: impl Fn(&mut Window, &mut App) + 'static,
+        window: &mut Window,
+        cx: &App,
+    ) -> Self {
+        let callback = Rc::new(callback);
+        let native_close = callback.clone();
+        window.on_window_should_close(cx, move |window, cx| {
+            native_close(window, cx);
+            false
+        });
+        self.close_requested = Some(callback);
         self
     }
 
@@ -326,7 +348,10 @@ impl AuxiliaryWindowView {
                 .child(title_row)
                 .into_any_element();
         }
-        let title_bar = TitleBar::new();
+        let mut title_bar = TitleBar::new();
+        if let Some(callback) = self.close_requested.clone() {
+            title_bar = title_bar.on_close_window(move |_, window, cx| callback(window, cx));
+        }
         #[cfg(not(target_os = "macos"))]
         let title_bar = title_bar.pl(spacing.sm);
         title_bar

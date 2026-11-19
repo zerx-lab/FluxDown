@@ -284,6 +284,7 @@ const en: Record<MessageKey, string> = {
   "popup.tasks.remoteUnavailable": "Remote tasks unavailable",
   "popup.tasks.remoteCompleted": "Completed",
   "popup.tasks.startApp": "Start FluxDown",
+  "popup.tasks.downloadApp": "Not installed? Get FluxDown",
   "popup.tasks.starting": "Starting…",
   "popup.tasks.statsToday": "Today:",
   "popup.tasks.statsLineTitle": "Open settings for details",

@@ -284,6 +284,7 @@ const ru: Record<MessageKey, string> = {
   "popup.tasks.remoteUnavailable": "Удалённые задачи недоступны",
   "popup.tasks.remoteCompleted": "Завершённые",
   "popup.tasks.startApp": "Запустить FluxDown",
+  "popup.tasks.downloadApp": "Не установлен? Скачать FluxDown",
   "popup.tasks.starting": "Запуск…",
   "popup.tasks.statsToday": "Сегодня:",
   "popup.tasks.statsLineTitle": "Подробности — в настройках",
