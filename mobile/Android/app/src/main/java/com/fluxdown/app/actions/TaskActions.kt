@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -75,7 +76,7 @@ internal fun Task.probeLocalFileAvailability(localHost: Boolean): LocalFileAvail
     if (openableLocalFile(localHost) != null) LocalFileAvailability.RegularFile else LocalFileAvailability.Unavailable
 
 @Composable
-internal fun rememberOpenableLocalFile(task: Task, localHost: Boolean): LocalFileAvailability {
+internal fun rememberLocalFileAvailability(task: Task, localHost: Boolean): State<LocalFileAvailability> {
     val initial = task.initialLocalFileAvailability(localHost)
     val result = remember(task.taskId, task.saveDir, task.fileName, initial) { mutableStateOf(initial) }
     if (initial == LocalFileAvailability.Pending) {
@@ -83,7 +84,7 @@ internal fun rememberOpenableLocalFile(task: Task, localHost: Boolean): LocalFil
             result.value = withContext(Dispatchers.IO) { task.probeLocalFileAvailability(localHost) }
         }
     }
-    return result.value
+    return result
 }
 
 /**

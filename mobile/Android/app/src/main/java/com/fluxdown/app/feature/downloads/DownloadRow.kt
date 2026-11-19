@@ -27,7 +27,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.fluxdown.app.actions.LocalFileAvailability
 import com.fluxdown.app.actions.LocalTaskActions
-import com.fluxdown.app.actions.rememberOpenableLocalFile
+import com.fluxdown.app.actions.rememberLocalFileAvailability
 import com.fluxdown.app.data.CardField
 import com.fluxdown.app.data.Density
 import com.fluxdown.app.nav.LocalNavigator
@@ -161,7 +161,8 @@ internal fun DownloadRow(
 
     val coords = remember { arrayOfNulls<LayoutCoordinates>(1) }
 
-    val file = rememberOpenableLocalFile(item.task, view.localHost)
+    val fileState = rememberLocalFileAvailability(item.task, view.localHost)
+    val file by fileState
     val opensFile = file == LocalFileAvailability.RegularFile
     val tryOpenFile = file.canTryOpen
     val startActions = remember(item.visual, item.boosted, text, actions, tryOpenFile) {
@@ -252,7 +253,15 @@ internal fun DownloadRow(
                             nav.toggleSelected(id)
                         } else if (c != null && c.isAttached) {
                             val cur = latest
-                            overlays.showMenu(c.boundsInRoot(), actions.menuItems(cur.task, cur.boosted, opensFile) { nav.enterSelection(id) })
+                            val anchor = c.boundsInRoot()
+                            val onSelect = { nav.enterSelection(id) }
+                            if (file == LocalFileAvailability.Pending) {
+                                overlays.showMenu(anchor, derivedStateOf {
+                                    actions.menuItems(cur.task, cur.boosted, fileState.value == LocalFileAvailability.RegularFile, onSelect)
+                                })
+                            } else {
+                                overlays.showMenu(anchor, actions.menuItems(cur.task, cur.boosted, opensFile, onSelect))
+                            }
                         }
                     },
                     onRingClick = { actions.primary(latest.task, tryOpenFile) },

@@ -22,8 +22,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -103,10 +105,13 @@ enum class FluxMenuAlign { Start, End }
 internal class MenuEntry(
     val id: Long,
     val anchor: Rect,
-    val items: List<FluxMenuItem>,
+    private val initialItems: List<FluxMenuItem>,
     val header: String?,
     val align: FluxMenuAlign?,
-)
+    private val liveItems: State<List<FluxMenuItem>>? = null,
+) {
+    val items: List<FluxMenuItem> get() = liveItems?.value ?: initialItems
+}
 
 /**
  * z80。烟晶菜单（Real / Thick / menuBg）：自锚点最近角缩放 .82→1 + 模糊 6→0（fluid）；
@@ -119,6 +124,8 @@ internal fun MenuLayer(state: FluxOverlayState) {
     val prog = rememberOverlayProgress()
     val last = remember { Last<MenuEntry>() }
     if (entry != null) last.value = entry
+    val lastItems = remember { Last<List<FluxMenuItem>>() }
+    if (entry != null) lastItems.value = entry.items
 
     LaunchedEffect(entry) {
         if (entry != null) prog.enter(motion.of(motion.fluid), restartAt = 0f) else prog.exit(motion.of(motion.snap))
@@ -127,6 +134,7 @@ internal fun MenuLayer(state: FluxOverlayState) {
 
     val shown = last.value
     if (shown == null || !prog.present) return
+    val items = lastItems.value ?: return
 
     val colors = FluxTheme.colors
     val status = WindowInsets.statusBars
@@ -198,17 +206,20 @@ internal fun MenuLayer(state: FluxOverlayState) {
                 .padding(6.dp),
         ) {
             shown.header?.let { MenuHeader(it) }
-            shown.items.forEach { item ->
-                when (item) {
-                    is FluxMenuItem.Header -> MenuHeader(item.label)
-                    FluxMenuItem.Divider -> Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 8.dp, vertical = 6.dp)
-                            .height(0.5.dp)
-                            .background(colors.hairline),
-                    )
-                    is FluxMenuItem.Action -> MenuRow(item, state)
+            // 列表变化时取消旧行的按压，避免新插入的动作接走原有手势。
+            key(items) {
+                items.forEach { item ->
+                    when (item) {
+                        is FluxMenuItem.Header -> MenuHeader(item.label)
+                        FluxMenuItem.Divider -> Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp, vertical = 6.dp)
+                                .height(0.5.dp)
+                                .background(colors.hairline),
+                        )
+                        is FluxMenuItem.Action -> MenuRow(item, state)
+                    }
                 }
             }
 

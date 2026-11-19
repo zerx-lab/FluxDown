@@ -69,7 +69,7 @@ import com.fluxdown.app.R
 import com.fluxdown.app.actions.LocalFileAvailability
 import com.fluxdown.app.actions.LocalTaskActions
 import com.fluxdown.app.actions.TaskActions
-import com.fluxdown.app.actions.rememberOpenableLocalFile
+import com.fluxdown.app.actions.rememberLocalFileAvailability
 import com.fluxdown.app.i18n.localizedTaskError
 import com.fluxdown.app.i18n.str
 import com.fluxdown.app.shell.LocalAppContainer
@@ -520,7 +520,7 @@ private fun ActionRow(
     overlays: FluxOverlayState,
 ) {
     val task = model.task
-    val file = rememberOpenableLocalFile(task, !remoteHost)
+    val file by rememberLocalFileAvailability(task, !remoteHost)
     val completed = model.visual == TaskVisualState.Completed || model.visual == TaskVisualState.Seeding
     val primaryLabel: String
     val primaryIcon: ImageVector
