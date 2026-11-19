@@ -19,38 +19,46 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.fluxdown.app.actions.LocalTaskActions
 import com.fluxdown.app.actions.TaskActions
+import com.fluxdown.app.data.DeviceSettings
 import com.fluxdown.app.feature.newtask.NewDownloadSheet
+import com.fluxdown.app.feature.newtask.PublicDownloadGuide
+import com.fluxdown.app.feature.newtask.TorrentImport
+import com.fluxdown.app.feature.newtask.needsPublicDownloadGuide
+import com.fluxdown.app.i18n.str
 import com.fluxdown.app.nav.AppNavigator
 import com.fluxdown.app.nav.LocalNavigator
 import com.fluxdown.app.nav.SheetRoute
 import com.fluxdown.app.service.DownloadServiceController
 import com.fluxdown.app.shell.FluxAppRoot
 import com.fluxdown.app.shell.LocalAppContainer
+import com.fluxdown.app.shell.hostState
+import com.fluxdown.app.ui.defaultLocalSaveDir
 import com.fluxdown.app.ui.isLocalDirWritable
-import com.fluxdown.app.feature.newtask.TorrentImport
 import com.fluxdown.core.capture.ExternalDownload
 import com.fluxdown.core.capture.ExternalIntake
 import com.fluxdown.core.capture.SilentCapture
 import com.fluxdown.core.capture.TorrentFile
 import com.fluxdown.core.host.HostException
 import com.fluxdown.core.model.HostRef
-import com.fluxdown.core.protocol.HostMethod
-import com.fluxdown.core.protocol.callUnit
 import com.fluxdown.core.store.Connection
 import com.fluxdown.core.store.HostState
+import com.fluxdown.core.store.HostStore
 import com.fluxdown.fluxui.overlay.FluxOverlayHost
+import com.fluxdown.fluxui.overlay.FluxSheet
 import com.fluxdown.fluxui.overlay.FluxToastKind
 import com.fluxdown.fluxui.overlay.LocalFluxOverlays
 import com.fluxdown.fluxui.overlay.rememberFluxOverlayState
 import com.fluxdown.fluxui.theme.FluxTheme
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -61,6 +69,11 @@ private const val TAG = "FluxExternal"
 
 /** 等主机首个快照（默认目录 / 队列 / 免打扰偏好都在里面）的上限；超时按当前状态继续（弹窗会显示只读提示）。 */
 private const val READY_TIMEOUT_MS = 8_000L
+
+private suspend fun awaitReady(store: HostStore): HostState =
+    withTimeoutOrNull(READY_TIMEOUT_MS) {
+        store.state.first { it.connection == Connection.Live || it.connection is Connection.Failed }
+    } ?: store.state.value
 
 /** Sheet 退场动画（`FluxMotion.snap` 弹簧）走完再结束任务，避免弹窗被直接截断。 */
 private const val SHEET_EXIT_MS = 250L
@@ -157,9 +170,11 @@ class ExternalDownloadActivity : ComponentActivity() {
 
     /** 免打扰优先；否则打开弹窗，已打开时追加进当前表单。 */
     private suspend fun dispatch(container: AppContainer, request: ExternalDownload) {
-        val state = awaitReady(container)
+        val state = awaitReady(container.store)
         val plan = SilentCapture.plan(request, state)
-        if (plan != null && silentDirUsable(container, plan)) {
+        if (plan != null && torrents.isEmpty() &&
+            !state.needsPublicDownloadGuide(this, container.host.value) && silentDirUsable(container, plan)
+        ) {
             try {
                 container.session.createTask(plan.request)
                 keepLocalDownloadsAlive(container)
@@ -172,11 +187,6 @@ class ExternalDownloadActivity : ComponentActivity() {
         }
         navigator.openSheet(SheetRoute.NewDownload(external = request))
     }
-
-    private suspend fun awaitReady(container: AppContainer): HostState =
-        withTimeoutOrNull(READY_TIMEOUT_MS) {
-            container.store.state.first { it.connection == Connection.Live || it.connection is Connection.Failed }
-        } ?: container.store.state.value
 
     /** 本机主机：目录不可写（分区存储外 / 拼错路径）时退回弹窗，避免静默建出必然失败的任务。 */
     private suspend fun silentDirUsable(container: AppContainer, plan: SilentCapture): Boolean =
@@ -249,9 +259,33 @@ private fun ExternalDownloadStage(
         }
     }
     val close by rememberUpdatedState(onClosed)
+    val head = torrents.firstOrNull()
+    val state = hostState()
+    val host = container.host.collectAsStateWithLifecycle()
+    val settings = remember(context) { DeviceSettings.of(context) }
+    val appDir = remember(context) { defaultLocalSaveDir(context).path }
+    var waitingForDirectory by remember(head) { mutableStateOf(false) }
+    var savingDirectory by remember { mutableStateOf(false) }
+    var selectedDirectory by remember(head) { mutableStateOf<String?>(null) }
     CompositionLocalProvider(LocalFluxOverlays provides overlays, LocalTaskActions provides actions) {
         Box(Modifier.fillMaxSize()) {
             NewDownloadSheet(route = nav.sheet as? SheetRoute.NewDownload, onDismiss = nav::closeSheet, onSubmitted = onSubmitted)
+            if (head != null && waitingForDirectory) {
+                FluxSheet(
+                    visible = true,
+                    onDismissRequest = { if (!savingDirectory) onTorrentDone(head) },
+                    dismissible = !savingDirectory,
+                    title = str(R.string.defaultSaveDir),
+                ) {
+                    PublicDownloadGuide(
+                        enabled = !savingDirectory && state.value.needsPublicDownloadGuide(
+                            host.value, settings.downloadFolderGuideDone, appDir,
+                        ),
+                        onSavingChange = { savingDirectory = it },
+                        onSaved = { selectedDirectory = it },
+                    )
+                }
+            }
             FluxOverlayHost(overlays)
         }
     }
@@ -271,17 +305,31 @@ private fun ExternalDownloadStage(
             if (torrents.isEmpty()) close()
         }
     }
-    // 种子逐个提交（默认目录 / 默认队列，同 iOS `openFromSystem`）；每个结束即回调，由 Activity 决定何时关窗。
-    val head = torrents.firstOrNull()
+    // 种子逐个提交；本机首次使用应用默认目录时等用户选定目录或明确跳过。
     LaunchedEffect(head) {
         if (head == null) return@LaunchedEffect
+        val ready = awaitReady(container.store)
+        val saveDir = if (ready.needsPublicDownloadGuide(container.host.value, settings.downloadFolderGuideDone, appDir)) {
+            waitingForDirectory = true
+            snapshotFlow {
+                when {
+                    savingDirectory -> null
+                    selectedDirectory != null && host.value is HostRef.Local -> selectedDirectory
+                    !state.value.isReadOnly &&
+                        !state.value.needsPublicDownloadGuide(host.value, settings.downloadFolderGuideDone, appDir) -> ""
+                    else -> null
+                }
+            }.first { it != null }.orEmpty().also { waitingForDirectory = false }
+        } else {
+            ""
+        }
         TorrentImport.submit(
             context = context,
             container = container,
             overlays = overlays,
             errorText = actions::errorText,
             uris = listOf(head.uri),
-            saveDir = "",
+            saveDir = saveDir,
             queueId = "",
             startPaused = false,
         ).let { if (it > 0) onSubmitted() }

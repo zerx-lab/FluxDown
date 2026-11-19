@@ -48,13 +48,11 @@ import com.fluxdown.app.i18n.str
 import com.fluxdown.app.nav.SheetRoute
 import com.fluxdown.app.shell.LocalAppContainer
 import com.fluxdown.app.shell.hostState
+import com.fluxdown.app.ui.defaultLocalSaveDir
 import com.fluxdown.app.ui.fileCategory
 import com.fluxdown.app.ui.label
-import com.fluxdown.app.ui.defaultLocalSaveDir
 import com.fluxdown.app.ui.launchDocumentPicker
-import com.fluxdown.app.ui.publicDownloadSaveDir
 import com.fluxdown.app.ui.rememberLocalDirectoryPicker
-import com.fluxdown.core.host.HostException
 import com.fluxdown.core.host.ImportRules
 import com.fluxdown.core.host.groupImportBatches
 import com.fluxdown.core.host.isError
@@ -380,55 +378,6 @@ private fun checksumHexValid(hex: String): Boolean {
 
 private fun checksumValid(form: NewDownloadState): Boolean = !form.single || checksumHexValid(form.advanced.checksumHex)
 
-/** 首次交互式本机下载：用户确认可写目录后才提交默认值；跳过不改主机配置。 */
-@Composable
-private fun PublicDownloadGuide(form: NewDownloadState, enabled: Boolean) {
-    val context = LocalContext.current
-    val container = LocalAppContainer.current
-    val state = hostState()
-    val settings = remember(context) { DeviceSettings.of(context) }
-    val appDir = remember(context) { defaultLocalSaveDir(context).path }
-    val publicDir = remember { publicDownloadSaveDir().path }
-    val current = state.value
-    if (settings.downloadFolderGuideDone || current.isReadOnly || current.tasks.isNotEmpty() ||
-        current.config["default_save_dir"] != appDir
-    ) return
-
-    val overlays = LocalFluxOverlays.current
-    val actions = LocalTaskActions.current
-    val pickDirectory = rememberLocalDirectoryPicker { path ->
-        val latest = container.store.state.value
-        if (!enabled || form.submitting || container.host.value !is HostRef.Local ||
-            latest.isReadOnly || latest.config["default_save_dir"] != appDir
-        ) return@rememberLocalDirectoryPicker
-        val session = container.session
-        form.submitting = true
-        container.appScope.launch {
-            try {
-                // 用检查过的 revision，不在冲突后重试覆盖用户另行设置的目录。
-                session.patchConfig(latest.configRevision, mapOf("default_save_dir" to path))
-                form.adoptDefaultSaveDir(path)
-                settings.finishDownloadFolderGuide()
-            } catch (e: HostException) {
-                overlays.toast(actions.errorText(e), FluxToastKind.Error)
-            } finally {
-                form.submitting = false
-            }
-        }
-    }
-    FluxBanner(text = str(R.string.mobilePublicDownloadGuide), kind = FluxBannerKind.Info)
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        FluxButton(
-            str(R.string.mobileUsePublicDownloadDir), { pickDirectory(publicDir) },
-            enabled = enabled, icon = FluxIcons.FolderOpen,
-        )
-        FluxButton(
-            str(R.string.mobileSkipPublicDownloadGuide), settings::finishDownloadFolderGuide,
-            enabled = enabled, variant = ButtonVariant.Ghost,
-        )
-    }
-}
-
 // ── N1 正文 ───────────────────────────────────────────────────────────────
 
 @Composable
@@ -526,7 +475,15 @@ private fun NewDownloadContent(
 
     Column(Modifier.padding(top = 2.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         if (hostRef is HostRef.Local && target == null) {
-            PublicDownloadGuide(form, enabled = !busy && !importingTorrent)
+            val settings = remember(context) { DeviceSettings.of(context) }
+            val appDir = remember(context) { defaultLocalSaveDir(context).path }
+            if (host.value.needsPublicDownloadGuide(hostRef, settings.downloadFolderGuideDone, appDir)) {
+                PublicDownloadGuide(
+                    enabled = !busy && !importingTorrent,
+                    onSavingChange = { form.submitting = it },
+                    onSaved = form::adoptDefaultSaveDir,
+                )
+            }
         }
 
         FluxText(str(R.string.batchDownloadDesc), style = type.sm, color = c.inkMuted)
