@@ -222,12 +222,13 @@ export function DaemonTextRow({
   vertical,
   wide,
   disabled,
-}: RowText & { configKey: string; placeholder?: string; vertical?: boolean; wide?: boolean; disabled?: boolean }) {
+  type,
+}: RowText & { configKey: string; placeholder?: string; vertical?: boolean; wide?: boolean; disabled?: boolean; type?: 'password' }) {
   const { title, description } = useRowText({ titleKey, descKey })
   const value = useDaemonValue(configKey)
   return (
     <SettingsRow title={title} description={description} vertical={vertical ?? false} disabled={disabled}>
-      <TextField value={value} placeholder={placeholder} aria-label={title} className={cn(vertical && 'w-full desktop:w-full', wide && WIDTH_INPUT_WIDE)} onCommit={(next) => setDaemon(configKey, next)} />
+      <TextField type={type} value={value} placeholder={placeholder} aria-label={title} className={cn(vertical && 'w-full desktop:w-full', wide && WIDTH_INPUT_WIDE)} onCommit={(next) => setDaemon(configKey, next)} />
     </SettingsRow>
   )
 }

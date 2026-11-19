@@ -271,6 +271,7 @@ pub(crate) enum Control {
     Input {
         get: Getter<SharedString>,
         set: Setter<SharedString>,
+        secret: bool,
     },
     Dropdown {
         options: Vec<(SharedString, SharedString)>,
@@ -335,9 +336,18 @@ impl Control {
         G: Fn(&App) -> SharedString + 'static,
         S: Fn(SharedString, &mut App) + 'static,
     {
+        Self::text_input(false, get, set)
+    }
+
+    pub(crate) fn text_input<G, S>(secret: bool, get: G, set: S) -> Self
+    where
+        G: Fn(&App) -> SharedString + 'static,
+        S: Fn(SharedString, &mut App) + 'static,
+    {
         Self::Input {
             get: Rc::new(get),
             set: Rc::new(set),
+            secret,
         }
     }
 
@@ -882,8 +892,8 @@ fn render_control(
             );
             with_unit_column(number, unit.clone(), width.is_none(), unit_column, cx)
         }
-        Control::Input { get, set } => with_unit_column(
-            render_input(get, set, disabled, key, width, window, cx),
+        Control::Input { get, set, secret } => with_unit_column(
+            render_input((get, set, *secret), disabled, key, width, window, cx),
             None,
             false,
             unit_column,
@@ -1020,13 +1030,13 @@ pub(crate) fn dropdown_button(
 struct InputSlot {
     state: gpui::Entity<InputState>,
     /// 订阅回调读取的当前行 setter；每次 render 刷新，避免槽被别的行复用后写错键。
-    set: Rc<RefCell<Setter<SharedString>>>,
+    set: Setter<SharedString>,
+    last_synced: SharedString,
     _subscriptions: Vec<gpui::Subscription>,
 }
 
 fn render_input(
-    get: &Getter<SharedString>,
-    set: &Setter<SharedString>,
+    (get, set, secret): (&Getter<SharedString>, &Setter<SharedString>, bool),
     disabled: bool,
     key: &SharedString,
     width: Option<Pixels>,
@@ -1041,31 +1051,52 @@ fn render_input(
             let value = value.clone();
             let set = set.clone();
             move |window, cx| {
-                let state = cx.new(|cx| InputState::new(window, cx).default_value(value));
-                let shared = Rc::new(RefCell::new(set));
-                let subscription = cx.subscribe(&state, {
-                    let shared = shared.clone();
-                    move |_, state, event: &InputEvent, cx| {
-                        if matches!(event, InputEvent::Change) {
-                            let set = shared.borrow().clone();
-                            set(state.read(cx).value(), cx);
-                        }
-                    }
+                let state = cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .default_value(value.clone())
+                        .masked(secret)
                 });
+                let subscription = cx.subscribe(
+                    &state,
+                    move |slot: &mut InputSlot, input, event: &InputEvent, cx| {
+                        let commit = if secret {
+                            matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. })
+                        } else {
+                            matches!(event, InputEvent::Change)
+                        };
+                        if commit {
+                            let value = input.read(cx).value();
+                            if !secret || slot.last_synced.trim() != value.trim() {
+                                if secret {
+                                    slot.last_synced = value.clone();
+                                }
+                                (slot.set)(value, cx);
+                            }
+                        }
+                    },
+                );
                 InputSlot {
                     state,
-                    set: shared,
+                    set,
+                    last_synced: value,
                     _subscriptions: vec![subscription],
                 }
             }
         },
     );
     slot.update(cx, |slot, cx| {
-        *slot.set.borrow_mut() = set.clone();
-        // Text 类键 daemon 会 trim 归一化；按 trim 比较，避免逐字输入的空格被回写抹掉。
-        if slot.state.read(cx).value().trim() != value.trim() {
+        slot.set = set.clone();
+        // Secret URLs have local drafts; rerenders with the same saved value
+        // must not erase them before the user presses Enter or leaves the field.
+        let changed = if secret {
+            slot.last_synced.trim() != value.trim()
+        } else {
+            slot.state.read(cx).value().trim() != value.trim()
+        };
+        if changed {
+            slot.last_synced = value.clone();
             slot.state.update(cx, |state, cx| {
-                state.set_value(value.clone(), window, cx);
+                state.set_value(value, window, cx);
             });
         }
     });

@@ -1000,10 +1000,15 @@ async fn dispatch_operation(
                         .await?
                         .and_then(|value| value.parse::<u16>().ok())
                         .unwrap_or(0);
-                    Ok::<_, fluxdown_engine::db::DbError>((cached, urls, listen_port))
+                    let proxy_url = engine
+                        .db
+                        .get_config(fluxdown_engine::protocol_proxy::ED2K_KEY)
+                        .await?
+                        .unwrap_or_default();
+                    Ok::<_, fluxdown_engine::db::DbError>((cached, urls, listen_port, proxy_url))
                 }
                 .await;
-                let (cached, urls, listen_port) = match inputs {
+                let (cached, urls, listen_port, proxy_url) = match inputs {
                     Ok(inputs) => inputs,
                     Err(error) => {
                         if ack
@@ -1024,6 +1029,7 @@ async fn dispatch_operation(
                         &urls,
                         listen_port,
                         &proxy,
+                        &proxy_url,
                     )
                     .await;
                     if maintenance_tx
@@ -3076,10 +3082,16 @@ async fn patch_config(
     {
         return Err(ActorError::InvalidArgument(first.message()));
     }
-    if values
-        .keys()
-        .any(|key| key.starts_with("proxy_") || key == "global_user_agent")
-    {
+    for (key, value) in &values {
+        if fluxdown_engine::protocol_proxy::is_key(key) {
+            fluxdown_engine::protocol_proxy::validate(key, value)
+                .map_err(|error| ActorError::InvalidArgument(format!("{key}: {error}")))?;
+        }
+    }
+    if values.keys().any(|key| {
+        (key.starts_with("proxy_") && !fluxdown_engine::protocol_proxy::is_key(key))
+            || key == "global_user_agent"
+    }) {
         // 与引擎实际应用时一致地构建 client：非法代理或 UA（HeaderValue 规则）
         // 必须在提交前被拒绝，否则毒值落库后会导致下次启动失败。
         let proxy = fluxdown_engine::proxy_config::ProxyConfig::from_config_map(&merged);
@@ -3427,10 +3439,15 @@ async fn apply_live_config<'a>(
             .map_err(|error| ActorError::Operation(format!("{error:#}")))?;
     }
     let rules_key = fluxdown_engine::proxy_rules::PROXY_RULES_KEY;
-    if keys
+    let bt_proxy_changed = keys
         .iter()
-        .any(|key| key.starts_with("proxy_") && *key != rules_key)
-    {
+        .any(|key| fluxdown_engine::protocol_proxy::is_key(key))
+        && engine.manager.set_protocol_proxies(all);
+    if keys.iter().any(|key| {
+        key.starts_with("proxy_")
+            && *key != rules_key
+            && !fluxdown_engine::protocol_proxy::is_key(key)
+    }) {
         engine
             .manager
             .set_proxy_config(fluxdown_engine::proxy_config::ProxyConfig::from_config_map(
@@ -3443,7 +3460,8 @@ async fn apply_live_config<'a>(
             fluxdown_engine::proxy_config::ProxyConfig::from_config_map(all).rules,
         );
     }
-    let bt_session_rebuild = crate::config::bt_session_rebuild_needed(&keys, all);
+    let bt_session_rebuild =
+        bt_proxy_changed || crate::config::bt_session_rebuild_needed(&keys, all);
     if bt_session_rebuild || keys.iter().any(|key| key.starts_with("bt_")) {
         engine
             .manager
@@ -3457,7 +3475,9 @@ async fn apply_live_config<'a>(
     // eD2K 设置热生效：UPnP 开关立即建立 / 撤销映射；服务器列表、Kad 开关与引导节点
     // 订阅由各任务在下一轮找源前重读。监听端口只在监听器首次绑定时读取。
     #[cfg(feature = "ed2k")]
-    if keys.iter().any(|key| key.starts_with("ed2k_")) {
+    if keys.iter().any(|key| key.starts_with("ed2k_"))
+        || keys.contains(&fluxdown_engine::protocol_proxy::ED2K_KEY)
+    {
         fluxdown_engine::ed2k::apply_live_settings(&engine.db)
             .await
             .map_err(|error| ActorError::Operation(format!("{error:#}")))?;

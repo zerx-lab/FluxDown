@@ -21,9 +21,17 @@ import {
   useDaemonValue,
 } from '../../kit'
 import { InfoLine } from './InfoLine'
-import { btProxyHint } from './btProxy'
 import { ProxyRulesGroup } from './ProxyRulesGroup'
 import { SiteAuthGroup } from './SiteAuthGroup'
+import { btProxyHint } from './btProxy'
+const PROTOCOL_ROWS = [
+  ['proxy_protocol_http', 'proxyProtocolHttp', 'proxyProtocolUrlHint'],
+  ['proxy_protocol_ftp', 'proxyProtocolFtp', undefined],
+  ['proxy_protocol_hls', 'proxyProtocolHls', undefined],
+  ['proxy_protocol_dash', 'proxyProtocolDash', undefined],
+  ['proxy_protocol_bt', 'proxyProtocolBt', 'proxyProtocolBtUrlHint'],
+  ['proxy_protocol_ed2k', 'proxyProtocolEd2k', 'proxyProtocolEd2kUrlHint'],
+] as const
 
 const MODES = ['none', 'system', 'manual', 'auto'] as const
 type ProxyMode = (typeof MODES)[number]
@@ -227,7 +235,7 @@ export function ProxySettings() {
   const current = (MODES as readonly string[]).includes(mode) ? (mode as ProxyMode) : 'none'
   return (
     <SettingsPage title={t('settingsCatProxy')} description={t('settingsCatProxyDesc')}>
-      <SettingsSection title={t('proxySettings')} subtitle={t('proxyBtNote')}>
+      <SettingsSection title={t('proxySettings')} subtitle={t('proxyProtocolNote')}>
         <SettingsRow title={t('proxySettings')} description={t('proxySettingsDesc')}>
           <DropdownField
             value={current}
@@ -251,6 +259,19 @@ export function ProxySettings() {
       {current === 'system' ? <SystemSection /> : null}
       <ManualSection active={current === 'manual'} />
       <BtProxySection />
+      <SettingsSection title={t('proxyProtocolSection')} subtitle={t('proxyProtocolDesc')}>
+        {PROTOCOL_ROWS.map(([configKey, titleKey, descKey]) => (
+          <DaemonTextRow
+            key={configKey}
+            configKey={configKey}
+            titleKey={titleKey}
+            descKey={descKey}
+            type="password"
+            vertical
+            wide
+          />
+        ))}
+      </SettingsSection>
       <ProxyRulesGroup />
       <SiteAuthGroup />
     </SettingsPage>

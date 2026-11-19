@@ -45,7 +45,7 @@ struct NetworkPage: View {
                     if ruleCount > 0 { rulesActiveRow(ruleCount) }
                 } footer: {
                     #if FULL_FLAVOR
-                    Text(L("proxyBtNote"))
+                    Text(L("proxyProtocolNote"))
                     #endif
                 }
                 .disabled(readOnly)
@@ -62,6 +62,7 @@ struct NetworkPage: View {
                 #if FULL_FLAVOR
                 btProxySection(form, readOnly: readOnly)
                 #endif
+                protocolProxySection(readOnly: readOnly)
                 if let rules {
                     ProxyRulesSection(model: rules, editMode: $rulesEditMode)
                 }
@@ -260,6 +261,26 @@ struct NetworkPage: View {
         }
     }
     #endif
+
+    private func protocolProxySection(readOnly: Bool) -> some View {
+        let rows = NetworkRow.allCases.filter { $0.group == .protocolProxy }
+        return Section {
+            ForEach(rows) { row in
+                if let item = row.item {
+                    ConfigTextRow(
+                        id: row.id, key: item.key, title: L(row.titleKey),
+                        detail: row.detailKey.map(L), prompt: L("proxyProtocolUrlHint"),
+                        isSecure: true
+                    )
+                }
+            }
+        } header: {
+            Text(L("proxyProtocolSection"))
+        } footer: {
+            Text(L("proxyProtocolDesc"))
+        }
+        .disabled(readOnly)
+    }
 
     /// HTTP / HTTPS / SOCKS4 / SOCKS5：分段控件；辅助功能字号下四段放不下，改用菜单。
     @ViewBuilder

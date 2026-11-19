@@ -40,6 +40,7 @@ pub(crate) fn page(ctx: &SectionContext, cx: &mut App) -> SettingsPage {
     // 非手动模式下默认收起，只露一行摘要。
     sections.push(manual_section(ctx, mode == "manual", cx));
     sections.push(bt_section(ctx, cx));
+    sections.push(protocol_section(ctx));
     sections.push(proxy_rules::group(ctx, cx));
     sections.push(site_auth::group(ctx, cx));
     SettingsPage::new(
@@ -75,7 +76,7 @@ fn mode_section(ctx: &SectionContext, rule_count: usize) -> SettingsSection {
     );
     let mut section = SettingsSection::new()
         .title(ctx.t("proxySettings"))
-        .subtitle(ctx.t("proxyBtNote"))
+        .subtitle(ctx.t("proxyProtocolNote"))
         .row(ctx.item("proxySettings", Some("proxySettingsDesc"), control));
     if rule_count > 0 {
         let hint = SharedString::from(ctx.translator.text_with(
@@ -262,6 +263,43 @@ fn manual_summary(proxy_type: &str, host: &str, port: &str) -> Option<String> {
         format!("{host}:{port}")
     };
     Some(format!("{} · {endpoint}", proxy_type.to_uppercase()))
+}
+
+/// 旧 BT 代理下方的各协议独立出口。
+fn protocol_section(ctx: &SectionContext) -> SettingsSection {
+    SettingsSection::new()
+        .title(ctx.t("proxyProtocolSection"))
+        .subtitle(ctx.t("proxyProtocolDesc"))
+        .row(ctx.item(
+            "proxyProtocolHttp",
+            Some("proxyProtocolUrlHint"),
+            ctx.daemon_secret_input("proxy_protocol_http"),
+        ))
+        .row(ctx.item(
+            "proxyProtocolFtp",
+            None,
+            ctx.daemon_secret_input("proxy_protocol_ftp"),
+        ))
+        .row(ctx.item(
+            "proxyProtocolHls",
+            None,
+            ctx.daemon_secret_input("proxy_protocol_hls"),
+        ))
+        .row(ctx.item(
+            "proxyProtocolDash",
+            None,
+            ctx.daemon_secret_input("proxy_protocol_dash"),
+        ))
+        .row(ctx.item(
+            "proxyProtocolBt",
+            Some("proxyProtocolBtUrlHint"),
+            ctx.daemon_secret_input("proxy_protocol_bt"),
+        ))
+        .row(ctx.item(
+            "proxyProtocolEd2k",
+            Some("proxyProtocolEd2kUrlHint"),
+            ctx.daemon_secret_input("proxy_protocol_ed2k"),
+        ))
 }
 
 /// BitTorrent 走代理：总开关 + 代理来源 + 节点连接是否也走代理 + 一条提示。
