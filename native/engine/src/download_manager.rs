@@ -13975,6 +13975,10 @@ impl DownloadManager {
                 Ok(sources) => {
                     for task_id in &deleted {
                         self.replayable_requests.remove(task_id);
+                        #[cfg(feature = "bt")]
+                        if let Some(bt) = &self.bt_session {
+                            bt.clear_web_seeds(task_id).await;
+                        }
                     }
                     self.broadcast_deleted_rss_sources(sources).await;
                     self.prune_group_dirs(group_dirs, &deleted).await;
@@ -19955,7 +19959,7 @@ mod tests {
     }
 
     #[cfg(feature = "bt")]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn web_seed_rejection_before_and_after_handle_publication() {
         use crate::{bt_local_seed::MAX_WEB_SEEDS, bt_status::WebSeedState};
 
@@ -20038,9 +20042,12 @@ mod tests {
         );
         let status = mgr.bt_status(id).await.expect("published status");
         assert_eq!(status.web_seeds.len(), MAX_WEB_SEEDS + 1);
-        assert!(status.web_seeds.iter().any(|seed| {
-            seed.url == pending && seed.state == WebSeedState::Rejected
-        }));
+        assert!(
+            status
+                .web_seeds
+                .iter()
+                .any(|seed| { seed.url == pending && seed.state == WebSeedState::Rejected })
+        );
         assert!(!status.web_seeds.iter().any(|seed| seed.url == rejected));
         mgr.shutdown().await;
         drop(bt);

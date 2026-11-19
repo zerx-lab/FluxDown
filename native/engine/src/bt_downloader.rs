@@ -7845,12 +7845,13 @@ mod tests {
 
     mod selection_save_lifecycle {
         use super::super::{
-            AddTorrent, AddTorrentResponse, Arc, AtomicBool, AtomicUsize, BtFileEntry, BtHandle,
-            BtInnerExit, BtInnerParams, BtSelectionStrategy, Bytes, Db, DownloadError, Duration,
-            HashMap, HashSet, HostSelection, ListenerMode, ListenerOptions, Mutex, Ordering, Path,
-            ProgressUpdate, STATUS_DOWNLOADING, SeedingManager, SelectionOutcome, Session,
-            SessionOptions, SessionPersistenceConfig, SharedBtSession, SocketAddr, TorrentSource,
-            bt_download_inner, bt_stage_dir, build_add_torrent_options, mpsc, probe_torrent_meta,
+            AddTorrent, AddTorrentOptions, AddTorrentResponse, Arc, AtomicBool, AtomicUsize,
+            BtFileEntry, BtHandle, BtInnerExit, BtInnerParams, BtSelectionStrategy, Bytes, Db,
+            DownloadError, Duration, HashMap, HashSet, HostSelection, ListenerMode,
+            ListenerOptions, Mutex, Ordering, Path, ProgressUpdate, STATUS_DOWNLOADING,
+            SeedingManager, SelectionOutcome, Session, SessionOptions, SessionPersistenceConfig,
+            SharedBtSession, SocketAddr, TorrentSource, bt_download_inner, bt_stage_dir,
+            build_add_torrent_options, mpsc, probe_torrent_meta, relocate_restart,
             stage_dir_has_real_data,
         };
         use crate::events::{EngineEvent, EventSink};
@@ -8611,7 +8612,10 @@ mod tests {
                     .expect("observed handle");
                 assert!(shared_bt.session.get(handle.id().into()).is_none());
                 assert!(
-                    handle.web_seeds().iter().any(|seed| seed.url == RELOCATE_WEB_SEED)
+                    handle
+                        .web_seeds()
+                        .iter()
+                        .any(|seed| seed.url == RELOCATE_WEB_SEED)
                 );
                 if let Some((restart, source)) = restart {
                     // Reattach with the same add-option path as the next inner run,
@@ -8623,7 +8627,9 @@ mod tests {
                         paused: true,
                         ..Default::default()
                     };
-                    shared_bt.apply_task_options("selection-task", &mut opts).await;
+                    shared_bt
+                        .apply_task_options("selection-task", &mut opts)
+                        .await;
                     let input = shared_bt.add_input(&source, &mut opts);
                     let response = shared_bt
                         .session
@@ -8634,7 +8640,10 @@ mod tests {
                         panic!("expected a new handle after relocation");
                     };
                     assert!(
-                        new_handle.web_seeds().iter().any(|seed| seed.url == RELOCATE_WEB_SEED)
+                        new_handle
+                            .web_seeds()
+                            .iter()
+                            .any(|seed| seed.url == RELOCATE_WEB_SEED)
                     );
                 }
                 assert_eq!(
