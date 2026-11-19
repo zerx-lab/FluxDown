@@ -111,12 +111,13 @@ private fun decode(s: String): String = runCatching { URLDecoder.decode(s.replac
 
 internal fun UrlEntry.batchExportName(): String {
     if (fileName.isNotEmpty()) return fileName
-    val uri = runCatching { URI(url) }.getOrNull() ?: return ""
-    when (uri.scheme?.lowercase()) {
-        "http", "https", "ftp" -> Unit
-        else -> return ""
-    }
-    return uri.rawPath.orEmpty().substringAfterLast('/').let(::decode)
+    val schemeEnd = url.indexOf("://")
+    if (schemeEnd < 0 || url.substring(0, schemeEnd).lowercase() !in setOf("http", "https", "ftp")) return ""
+    // 字符串切分而非 java.net.URI：URL 含空格 / `|` / `{}` 时 URI 会抛异常，与 GPUI / Web / iOS 不一致。
+    val rest = url.substring(schemeEnd + 3).substringBefore('#').substringBefore('?')
+    val slash = rest.indexOf('/')
+    if (slash < 0) return ""
+    return decode(rest.substring(slash).substringAfterLast('/'))
 }
 
 /** 预览用的推断文件名：`out=` 优先；磁力取 `dn=`，eD2K 取 `|file|名称|`，其余取路径末段（取不到用主机名）。 */

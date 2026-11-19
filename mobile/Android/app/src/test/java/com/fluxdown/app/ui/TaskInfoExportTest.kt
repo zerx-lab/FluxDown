@@ -25,4 +25,10 @@ class TaskInfoExportTest {
             file.readText(Charsets.UTF_8),
         )
     }
+
+    @Test
+    fun batchNameSurvivesUrlsThatJavaUriRejects() {
+        val entry = parseEntries("https://example.com/dir/a b.zip?x=1").single()
+        assertEquals("a b.zip", entry.batchExportName())
+    }
 }
