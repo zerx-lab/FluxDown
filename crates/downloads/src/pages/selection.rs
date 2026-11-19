@@ -354,7 +354,7 @@ impl SelectionView {
             _ => None,
         };
         let task_name = SharedString::from(task_name);
-        let download_name = DownloadName::new(task_name.clone());
+        let download_name = DownloadName::with_fixed_name(task_name.clone());
         let name_input = matches!(state, SelectionState::Bt { .. }).then(|| {
             let initial = task_name.clone();
             cx.new(|cx| InputState::new(window, cx).default_value(initial))
@@ -1588,6 +1588,12 @@ mod tests {
             for unchanged in ["  movie.mkv ", "   "] {
                 input.update(cx, |input, cx| input.set_value(unchanged, window, cx));
                 assert_eq!(view.name_override(cx), None);
+                view.download_name.set_auto(true, input, window, cx);
+                assert_eq!(&*input.read(cx).value(), "movie.mkv");
+                assert_eq!(view.name_override(cx), None);
+                view.download_name.set_auto(false, input, window, cx);
+                assert_eq!(&*input.read(cx).value(), unchanged);
+                assert_eq!(view.name_override(cx), None);
             }
             input.update(cx, |input, cx| input.set_value("  My Movie  ", window, cx));
             assert_eq!(view.name_override(cx).as_deref(), Some("My Movie"));
@@ -1597,6 +1603,11 @@ mod tests {
             view.download_name.set_auto(false, input, window, cx);
             assert_eq!(&*input.read(cx).value(), "  My Movie  ");
             assert_eq!(view.name_override(cx).as_deref(), Some("My Movie"));
+
+            for original in ["movie.mkv", "  movie.mkv  "] {
+                input.update(cx, |input, cx| input.set_value(original, window, cx));
+                assert_eq!(view.name_override(cx), None);
+            }
         });
     }
 
