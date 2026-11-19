@@ -3,7 +3,7 @@
 //! 可见性由 [`crate::components::task_table`] 的纯函数判定；处理器下发前按同一事实源再判。
 //! 旧 daemon 不认识这些方法时返回的错误经常规错误通知展示。
 
-use std::{rc::Rc, sync::Arc};
+use std::{cell::Cell, rc::Rc, sync::Arc};
 
 use fluxdown_protocol::{
     AddTaskWebSeedParams, MoveTaskStorageParams, RpcErrorData, SetTaskBtLimitsParams,
@@ -470,6 +470,8 @@ impl DownloadView {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("https://"));
         let dialog_input = input.clone();
         let port = Arc::clone(&self.port);
+        let pending = Rc::new(Cell::new(false));
+        let dismissed = Rc::new(Cell::new(false));
         window.open_dialog(cx, move |dialog, _, cx| {
             let input = dialog_input.clone();
             let content_input = input.clone();
@@ -478,6 +480,9 @@ impl DownloadView {
             let port = Arc::clone(&port);
             let task_id = task_id.clone();
             let translator = translator.clone();
+            let pending = pending.clone();
+            let dismissed = dismissed.clone();
+            let on_close = dismissed.clone();
             dialog
                 .title(dialog_title(title.clone(), cx))
                 .w(px(520.))
@@ -495,10 +500,11 @@ impl DownloadView {
                     DialogIntent::Confirm,
                     cx,
                 ))
+                .on_close(move |_, _, _| on_close.set(true))
                 .on_ok(move |_, window, cx| {
                     let value = input.read(cx).value();
                     let url = value.trim();
-                    if url.is_empty() {
+                    if url.is_empty() || pending.replace(true) {
                         return false;
                     }
                     let future = port.execute(DownloadsCommand::AddWebSeed(AddTaskWebSeedParams {
@@ -507,21 +513,29 @@ impl DownloadView {
                     }));
                     let translator = translator.clone();
                     let handle = window.window_handle();
+                    let input = input.downgrade();
+                    let pending = pending.clone();
+                    let dismissed = dismissed.clone();
                     cx.spawn(async move |cx| {
-                        let Err(error) = future.await else {
-                            return;
-                        };
-                        let notification = translator.read_with(cx, |translator, _| {
-                            toast::error(error_text(translator, &error))
+                        let result = future.await;
+                        pending.set(false);
+                        let notification = result.err().map(|error| {
+                            translator.read_with(cx, |translator, _| {
+                                toast::error(error_text(translator, &error))
+                            })
                         });
                         if let Err(error) = handle.update(cx, |_, window, cx| {
-                            window.push_notification(notification, cx);
+                            if let Some(notification) = notification {
+                                window.push_notification(notification, cx);
+                            } else if !dismissed.get() && input.upgrade().is_some() {
+                                window.close_dialog(cx);
+                            }
                         }) {
                             eprintln!("window closed before the web seed result: {error:#}");
                         }
                     })
                     .detach();
-                    true
+                    false
                 })
         });
         input.update(cx, |state, cx| state.focus(window, cx));

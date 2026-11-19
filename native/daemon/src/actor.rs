@@ -2796,6 +2796,8 @@ fn bt_status_to_dto(
                     WebSeedState::Downloading => "downloading",
                     WebSeedState::BackingOff => "backingOff",
                     WebSeedState::Disabled => "disabled",
+                    WebSeedState::Pending => "pending",
+                    WebSeedState::Rejected => "rejected",
                 }
                 .to_owned(),
                 downloaded: seed.downloaded,

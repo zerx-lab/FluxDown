@@ -1025,6 +1025,7 @@ pub struct BtStatusDto {
 pub struct BtWebSeedDto {
     pub url: String,
     /// `idle` / `downloading` / `backingOff` / `disabled`。
+    /// `pending` = 已保存待挂载；`rejected` = 当前句柄未接受已保存的来源。
     pub state: String,
     /// 从它下载的字节。
     #[serde(default, skip_serializing_if = "is_zero_u64")]

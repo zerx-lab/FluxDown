@@ -507,7 +507,7 @@ export interface BtStatusDto {
 }
 
 /** HTTP 源状态（`BtWebSeedDto.state`）。 */
-export type BtWebSeedState = 'idle' | 'downloading' | 'backingOff' | 'disabled';
+export type BtWebSeedState = 'idle' | 'downloading' | 'backingOff' | 'disabled' | 'pending' | 'rejected';
 
 /** 一个 HTTP 源（`BtWebSeedDto`）。 */
 export interface BtWebSeedDto {

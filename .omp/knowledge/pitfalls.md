@@ -49,6 +49,8 @@
 
 另见 AGENTS.md §4：BT 判定只认 `magnet:` 与 `torrent-file://`、「复制链接」读 `origin_url`、`dht.json` 撞端口排除区间。
 
+- **BT 内部摘挂不能清手动 HTTP 源登记**：文件选择窗改保存目录时，同一 worker 直接重进下载，不再经 manager 从 DB 登记；`SharedBtSession::delete_task` 只摘句柄，永久删除任务才清登记。应用已保存来源与发布句柄须与用户添加互斥，否则容量拒绝会被当成已应用 → `bt_downloader.rs::{store_handle,save_web_seed}`。
+
 - **随机默认监听端口只能在配置缺失时生成，并原子保存 BT 两个边界**：每次启动重随机会破坏手动 NAT / 防火墙规则；无差别迁移旧值会覆盖用户自选范围与 eD2K 的显式 `0`。只缺一个 BT 边界时沿用另一个，不能拼接随机值 → `native/engine/src/db.rs::init_default_config`、回归 `default_listen_ports_*`（#872）。
 
 - **Windows 子路径 NotFound 不保证父路径是目录**：BT 完成命名先检查目标目录本身，普通文件返回 NotADirectory，避免把其下的候选名误判为空闲 → `native/engine/src/bt_downloader.rs::dedup_name_in_dir`；回归 `completion_layout_propagates_destination_scan_error`。

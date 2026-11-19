@@ -367,6 +367,10 @@ pub enum WebSeedState {
     BackingOff,
     /// 本次运行不再用它（数据不对、不支持断点续传，或设置里关掉了 HTTP 源）。
     Disabled,
+    /// Saved by the user; no handle has been published yet.
+    Pending,
+    /// Saved by the user but not accepted by the current handle.
+    Rejected,
 }
 
 /// librqbit 的 HTTP 源实况 → 展示行。

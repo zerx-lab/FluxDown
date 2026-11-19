@@ -826,6 +826,8 @@ pub struct SharedBtSession {
     /// librqbit 按新路径读写；会话里的任务改名走 [`Self::rename_file`]，同时更新这里。
     file_renames: Mutex<HashMap<String, BTreeMap<usize, PathBuf>>>,
     /// User-added BEP 19 sources loaded from the task DB, not from the session cache.
+    /// Serializes additions with handle publication; internal detaches keep the registration.
+    /// Only permanent task deletion clears it.
     web_seeds: Mutex<HashMap<String, Vec<String>>>,
     /// 下一次加入会话跳过初检的任务（本机做种时用户声明数据可信，或种子刚由这份数据
     /// 生成）：librqbit 只核对文件长度。由 [`Self::apply_task_options`] 取走，只生效一次。
@@ -1414,10 +1416,16 @@ impl SharedBtSession {
 
     /// Store a torrent handle for a task so it can be paused/resumed later.
     pub async fn store_handle(&self, task_id: &str, handle: BtHandle) {
-        self.handles
-            .lock()
-            .await
-            .insert(task_id.to_string(), handle.clone());
+        {
+            let seeds = self.web_seeds.lock().await;
+            if let Some(seeds) = seeds.get(task_id) {
+                self.apply_web_seeds(task_id, &handle, seeds).await;
+            }
+            self.handles
+                .lock()
+                .await
+                .insert(task_id.to_string(), handle.clone());
+        }
         // 入册之后再取登记的选项：与 `set_task_piece_picking` / `set_task_limits`（先登记、
         // 再找句柄）交错时，两边总有一边看到对方，且都在本锁内设定句柄。
         let options = self.task_options.lock().await;
@@ -1431,12 +1439,6 @@ impl SharedBtSession {
         let levels = self.file_levels.lock().await.get(task_id).cloned();
         if let Some(levels) = levels {
             self.apply_file_levels(task_id, &handle, &levels).await;
-        }
-        // An add can be in flight (e.g. resolving a magnet) when the user adds a source.
-        // Publish the handle first so either this path or registration sees both values.
-        let seeds = self.web_seeds.lock().await;
-        if let Some(seeds) = seeds.get(task_id) {
-            self.apply_web_seeds(task_id, &handle, seeds).await;
         }
     }
 
@@ -1568,6 +1570,50 @@ impl SharedBtSession {
             self.apply_web_seeds(task_id, &handle, &seeds).await;
         }
         registered.insert(task_id.to_owned(), seeds);
+    }
+
+    pub(crate) async fn save_web_seed(
+        &self,
+        db: &Db,
+        task_id: &str,
+        url: &str,
+        mut seeds: Vec<String>,
+    ) -> Result<(), crate::bt_task_files::BtTaskOpError> {
+        use crate::bt_task_files::BtTaskOpError;
+
+        let mut registered = self.web_seeds.lock().await;
+        let handle = self.cached_handle(task_id).await;
+        let mut added = false;
+        if let Some(handle) = &handle
+            && !handle.web_seeds().iter().any(|seed| seed.url == url)
+        {
+            self.session
+                .add_web_seed(handle, url)
+                .await
+                .map_err(|error| BtTaskOpError::Operation(format!("{error:#}")))?;
+            added = true;
+        }
+        if seeds.iter().any(|seed| seed == url) {
+            return Ok(());
+        }
+        seeds.push(url.to_owned());
+        if let Err(error) = db.set_task_web_seeds(task_id, &seeds).await {
+            if added
+                && let Some(handle) = &handle
+                && let Err(rollback) = self.session.remove_web_seed(handle, url).await
+            {
+                return Err(BtTaskOpError::Operation(format!(
+                    "could not save web seed: {error:#}; could not undo live addition: {rollback:#}"
+                )));
+            }
+            return Err(error.into());
+        }
+        registered.insert(task_id.to_owned(), seeds);
+        Ok(())
+    }
+
+    pub(crate) async fn clear_web_seeds(&self, task_id: &str) {
+        self.web_seeds.lock().await.remove(task_id);
     }
 
     async fn apply_web_seeds(&self, task_id: &str, handle: &BtHandle, seeds: &[String]) {
@@ -2324,7 +2370,6 @@ impl SharedBtSession {
         self.pause_epochs.lock().await.remove(task_id);
         self.pending_pauses.lock().await.remove(task_id);
         self.fastresume_tainted.lock().await.remove(task_id);
-        self.web_seeds.lock().await.remove(task_id);
         // 选片登记保留（见 `piece_picking` 字段注释）。
         crate::bt_partfile::remove_sidecar(&self.parts_sidecar_path(task_id));
         Ok(handle.is_some())
@@ -7832,6 +7877,7 @@ mod tests {
             observed_handle: Mutex<Option<BtHandle>>,
             /// 模拟用户浏览文件列表的时长：给对话框的后台暂停留出尝试窗口。
             answer_delay: Duration,
+            web_seed_db: Option<Db>,
         }
 
         #[async_trait::async_trait]
@@ -7861,6 +7907,12 @@ mod tests {
                 // pauses initial checking; waiting for initialization here
                 // would make the selector wait for its own answer to resume it.
                 *self.observed_handle.lock().await = Some(handle);
+                if let Some(db) = &self.web_seed_db {
+                    self.shared_bt
+                        .save_web_seed(db, task_id, RELOCATE_WEB_SEED, Vec::new())
+                        .await
+                        .expect("add HTTP source while choosing files");
+                }
                 *self.seen_save_dir.lock().await = save_dir.to_owned();
                 tokio::time::sleep(self.answer_delay).await;
                 if self.pause_on_choice {
@@ -8122,6 +8174,7 @@ mod tests {
                     custom_name: None,
                     seen_save_dir: Mutex::new(String::new()),
                     answer_delay: Duration::ZERO,
+                    web_seed_db: None,
                     observed_handle: Mutex::new(None),
                 });
                 let (params, _progress_rx) = inner_params(
@@ -8273,6 +8326,7 @@ mod tests {
                     seen_save_dir: Mutex::new(String::new()),
                     observed_handle: Mutex::new(None),
                     answer_delay: Duration::ZERO,
+                    web_seed_db: None,
                 });
                 let (mut params, _progress_rx) = inner_params(
                     &shared_bt,
@@ -8357,6 +8411,7 @@ mod tests {
                     seen_save_dir: Mutex::new(String::new()),
                     observed_handle: Mutex::new(None),
                     answer_delay: Duration::from_millis(300),
+                    web_seed_db: None,
                 });
                 let (params, mut progress_rx) = inner_params(
                     &shared_bt,
@@ -8446,6 +8501,8 @@ mod tests {
             exercise_dialog_relocate(true);
         }
 
+        const RELOCATE_WEB_SEED: &str = "http://127.0.0.1:1/mirror/";
+
         fn exercise_dialog_relocate(paused: bool) {
             let root = super::unique_test_dir(if paused {
                 "dialog_relocate_paused"
@@ -8491,6 +8548,7 @@ mod tests {
                     seen_save_dir: Mutex::new(String::new()),
                     observed_handle: Mutex::new(None),
                     answer_delay: Duration::ZERO,
+                    web_seed_db: Some(db.clone()),
                 });
                 let (mut params, _progress_rx) = inner_params(
                     &shared_bt,
@@ -8505,16 +8563,19 @@ mod tests {
                     tokio::time::timeout(Duration::from_secs(10), bt_download_inner(params))
                         .await
                         .expect("relocate path timed out");
-                match result {
-                    Err(DownloadError::Cancelled) if paused => {}
+                let restart = match result {
+                    Err(DownloadError::Cancelled) if paused => None,
                     Ok(BtInnerExit::Relocate {
-                        save_dir, indices, ..
+                        save_dir,
+                        indices,
+                        torrent_source,
                     }) if !paused => {
                         assert_eq!(save_dir, expected);
                         assert_eq!(indices, vec![0]);
+                        Some((relocate_restart(save_dir, indices), torrent_source))
                     }
                     other => panic!("unexpected relocate result (paused={paused}): {other:?}"),
-                }
+                };
                 assert_eq!(selector.seen_save_dir.lock().await.as_str(), current);
                 let task = db
                     .load_task_by_id("selection-task")
@@ -8549,6 +8610,33 @@ mod tests {
                     .clone()
                     .expect("observed handle");
                 assert!(shared_bt.session.get(handle.id().into()).is_none());
+                assert!(
+                    handle.web_seeds().iter().any(|seed| seed.url == RELOCATE_WEB_SEED)
+                );
+                if let Some((restart, source)) = restart {
+                    // Reattach with the same add-option path as the next inner run,
+                    // without a manager, DB reload, or restarted session.
+                    let stage = bt_stage_dir(&restart.save_dir, "selection-task");
+                    std::fs::create_dir_all(&stage).expect("relocated staging directory");
+                    let mut opts = AddTorrentOptions {
+                        output_folder: Some(stage.to_string_lossy().into_owned()),
+                        paused: true,
+                        ..Default::default()
+                    };
+                    shared_bt.apply_task_options("selection-task", &mut opts).await;
+                    let input = shared_bt.add_input(&source, &mut opts);
+                    let response = shared_bt
+                        .session
+                        .add_torrent(input, Some(opts))
+                        .await
+                        .expect("reattach after relocation");
+                    let AddTorrentResponse::Added(_, new_handle) = response else {
+                        panic!("expected a new handle after relocation");
+                    };
+                    assert!(
+                        new_handle.web_seeds().iter().any(|seed| seed.url == RELOCATE_WEB_SEED)
+                    );
+                }
                 assert_eq!(
                     published.0.lock().expect("sink").last().map(String::as_str),
                     Some(expected.as_str())
@@ -8594,6 +8682,7 @@ mod tests {
                     seen_save_dir: Mutex::new(String::new()),
                     observed_handle: Mutex::new(None),
                     answer_delay: Duration::ZERO,
+                    web_seed_db: None,
                 });
                 let (params, mut progress_rx) = inner_params(
                     &shared_bt,

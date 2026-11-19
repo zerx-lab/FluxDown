@@ -203,6 +203,9 @@
 - **I2P**（`bt_i2p_enabled` / `bt_i2p_sam_host` / `bt_i2p_sam_port` / `bt_i2p_mixed`，会话级，改动重建会话）：`bt_downloader::i2p_options` 建会话时把 SAM 主机解析成地址
   （解析失败记日志并关闭 I2P，不影响明网种子）。只有带 `.i2p` tracker 的种子走 I2P；非混合模式下这类种子不碰明网 tracker / DHT / LSD / PEX / HTTP 源。
   对端在 rqbit 里是 `0100::/64` 合成地址：防吸血 `PeerPolicy` 与连接上限按该地址处理，IP 过滤不作用于它。
+- **手动 HTTP 源（BEP 19）**：`daemon.task.addWebSeed` 接受 `taskId` / `url`，按任务去重后写 `tasks.bt_web_seeds`（不改种子或磁力链接）。
+  已入册时须先获会话接受；未入册时成功只代表已保存。`daemon.task.btStatus` 的 `webSeeds` 用 `pending` 表示待挂载、`rejected` 表示当前句柄未接受的已保存来源；
+  已接受的行仍显示 librqbit 实况（含总开关停用状态）。同一轮改保存目录摘挂保留登记，永久删除任务才清理。
 - **BT 分享材料 / 实况**：`daemon.task.torrentShare` 返回磁力链接（种子自带 tracker ∪ `extra_trackers_for` 会话追加 tracker，去重）与可选
   `.torrent` base64（库里无字节的纯磁力任务不返回）；右键「复制磁力链接 / 导出 .torrent」用它。`daemon.task.btStatus` 返回逐 peer
   （地址 / 客户端 / 传输 / 累计 / 速度）、逐 tracker 状态与 HTTP 源（webseed）实况，详情页「Tracker / 连接」页签每 2 秒轮询。tracker 行取 librqbit
