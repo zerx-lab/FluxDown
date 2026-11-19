@@ -7768,11 +7768,11 @@ v360.m3u8\n\
             }
             terminal
         };
-        let (fallback, terminal) = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            async { tokio::join!(download, drain) },
-        )
-        .await?;
+        let (fallback, terminal) =
+            tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                tokio::join!(download, drain)
+            })
+            .await?;
         assert!(fallback.is_none());
         assert_eq!(terminal, [(0, Some((1, 2))), (4, None)]);
         assert_eq!(
