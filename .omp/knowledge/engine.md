@@ -190,9 +190,10 @@
   创建前按 info hash 对全部 BT 任务（种子字节 + 磁力 URL）查重，重复时 `seedLocal` 返回 `duplicate=true` + 已有任务（不建新任务，客户端弹 `duplicateTorrentToast`）。
 - **超级做种（BEP 16）**（`daemon.task.setSuperSeeding`）：`tasks.bt_super_seeding` → `BtTaskOptions::super_seeding`，经 `register_task_options` / `set_task_super_seeding`
   作用于已入册句柄（`Session::set_super_seeding`），每次加入会话经 `apply_task_options` 烘焙 `AddTorrentOptions::super_seeding`；只在任务完整时生效，下载中可提前设。
-- **添加 HTTP 源（BEP 19）**（`daemon.task.addWebSeed`）：用户地址存于 `tasks.bt_web_seeds`，不改种子文件或磁力链接。
-  已入册的句柄即时添加；会话登记保留到同轮重挂载，恢复下载和磁盘续种从库重新登记。BT 详情合并句柄实况和已保存来源；
-  句柄缺少的来源按会话开关区分停用和拒绝，无句柄时按设置区分停用和待挂载。
+- **添加 HTTP 源（BEP 19）**（`daemon.task.addWebSeed`）：接受 `taskId` / `url`，按任务去重后存入 `tasks.bt_web_seeds`，不改种子文件或磁力链接。
+  已入册时即时添加，须经会话接受才保存；未入册时成功仅表示已保存。普通恢复和磁盘续种在挂载前重新登记；同一轮改保存目录摘挂保留登记，永久删除任务才清理。
+  `daemon.task.btStatus` 的 `webSeeds` 合并 librqbit 实况和已保存来源。对句柄中不存在的已保存来源，先判断有效开关（有句柄时取会话开关，无句柄时取当前配置）：
+  关闭时为 `disabled`，开启时有句柄为 `rejected`、无句柄为 `pending`。
 - **v2 / 混合种子**：任务主键仍是 20 字节 info hash（v1 / 混合 = SHA-1，纯 v2 = 截断 SHA-256）；`BtStatusDto` / `TorrentShareDto` 另带 `infoHashV2`（种子字节 / 磁力 `btmh` / 句柄取得元数据后）。
   分享磁力的 `xt` 随版本：v1 = `btih`、纯 v2 = `btmh`、混合两个都带。完成复核与 `daemon.task.verify` 共用 `verify_pieces_core`：按 `Lengths`（纯 v2 每个文件从分片边界开始、
   文件末片较短）与各文件 `offset_in_torrent` 取片，校验器来自 `ValidatedTorrentMetaV1Info::piece_verifier`（v1 SHA-1 / v2 merkle / 混合两者）；哈希未知（v2 层未取得）的片记为跳过，
@@ -206,9 +207,6 @@
 - **I2P**（`bt_i2p_enabled` / `bt_i2p_sam_host` / `bt_i2p_sam_port` / `bt_i2p_mixed`，会话级，改动重建会话）：`bt_downloader::i2p_options` 建会话时把 SAM 主机解析成地址
   （解析失败记日志并关闭 I2P，不影响明网种子）。只有带 `.i2p` tracker 的种子走 I2P；非混合模式下这类种子不碰明网 tracker / DHT / LSD / PEX / HTTP 源。
   对端在 rqbit 里是 `0100::/64` 合成地址：防吸血 `PeerPolicy` 与连接上限按该地址处理，IP 过滤不作用于它。
-- **手动 HTTP 源（BEP 19）**：`daemon.task.addWebSeed` 接受 `taskId` / `url`，按任务去重后写 `tasks.bt_web_seeds`（不改种子或磁力链接）。
-  已入册时须先获会话接受；未入册时成功只代表已保存。`daemon.task.btStatus` 的 `webSeeds` 用 `pending` 表示待挂载、`rejected` 表示当前句柄未接受的已保存来源；
-  无句柄且总开关关闭时显示 `disabled`；已接受的行显示 librqbit 实况。普通恢复与磁盘续种均在挂载前加载已保存来源；同一轮改保存目录摘挂保留登记，永久删除任务才清理。
 - **BT 分享材料 / 实况**：`daemon.task.torrentShare` 返回磁力链接（种子自带 tracker ∪ `extra_trackers_for` 会话追加 tracker，去重）与可选
   `.torrent` base64（库里无字节的纯磁力任务不返回）；右键「复制磁力链接 / 导出 .torrent」用它。`daemon.task.btStatus` 返回逐 peer
   （地址 / 客户端 / 传输 / 累计 / 速度）、逐 tracker 状态与 HTTP 源（webseed）实况，详情页「Tracker / 连接」页签每 2 秒轮询。tracker 行取 librqbit

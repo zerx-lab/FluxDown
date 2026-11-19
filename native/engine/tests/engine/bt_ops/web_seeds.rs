@@ -60,6 +60,26 @@ async fn serve_ranges(files: MirrorFiles) -> (String, JoinHandle<()>) {
     (base, server)
 }
 
+async fn download_with_mirror<T>(
+    mut server: JoinHandle<()>,
+    download: impl std::future::Future<Output = T>,
+) -> T {
+    let result = tokio::select! {
+        biased;
+        result = &mut server => {
+            result.expect("HTTP mirror failed during download");
+            unreachable!("HTTP mirror exited before shutdown");
+        }
+        result = download => result,
+    };
+    server.abort();
+    let error = server
+        .await
+        .expect_err("HTTP mirror exited before shutdown");
+    assert!(error.is_cancelled(), "HTTP mirror failed: {error}");
+    result
+}
+
 async fn add_torrent(leech: &mut Downloader, path: &Path, start_paused: bool) -> String {
     let torrent = create_torrent(
         path,
@@ -113,13 +133,12 @@ async fn adding_a_direct_link_supplies_a_running_torrent_without_peers() {
         .add_bt_web_seed(&id, &url)
         .await
         .unwrap();
-    let task = leech.wait_done(&id).await;
+    let task = download_with_mirror(server, leech.wait_done(&id)).await;
     assert_eq!(task.status, 3, "{:?}", task.error_message);
     assert_eq!(
         leech.landed(&task, "payload.bin").await.as_deref(),
         Some(BODY)
     );
-    server.abort();
     leech.shutdown().await;
 }
 
@@ -153,13 +172,12 @@ async fn a_paused_torrents_mirror_survives_restart_and_uses_the_published_paths(
     let status = leech.engine.manager.bt_status(&id).await.unwrap();
     assert!(matches!(status.web_seeds.as_slice(), [seed] if seed.url == url));
     leech.engine.manager.resume_task(&id).await;
-    let task = leech.wait_done(&id).await;
+    let task = download_with_mirror(server, leech.wait_done(&id)).await;
     assert_eq!(task.status, 3, "{:?}", task.error_message);
     assert_eq!(leech.landed(&task, "a.bin").await.as_deref(), Some(FIRST));
     assert_eq!(
         leech.landed(&task, "sub/b.bin").await.as_deref(),
         Some(SECOND)
     );
-    server.abort();
     leech.shutdown().await;
 }
