@@ -452,6 +452,27 @@ mod tests {
     }
 
     #[test]
+    fn probe_preserves_a_padded_prefill_on_same_url_refresh() {
+        const NAME: &str = "Detected.zip";
+        const PADDED: &str = "  Detected.zip  ";
+
+        with_download_view(|view, window, cx| {
+            view.entries = vec![entry(URL)];
+            apply_probe(view, NAME, window, cx);
+            view.set_auto_name(false, window, cx);
+            assert_name(view, cx, NAME, "");
+
+            view.rename
+                .update(cx, |input, cx| input.set_value(PADDED, window, cx));
+            view.urls.update(cx, |input, cx| {
+                input.set_value(format!("{URL}\n\n"), window, cx)
+            });
+            view.refresh_entries(window, cx);
+            assert_name(view, cx, PADDED, "");
+        });
+    }
+
+    #[test]
     fn probe_refills_a_blank_manual_name_and_preserves_a_custom_draft() {
         const DRAFT: &str = " My file.zip ";
 

@@ -96,10 +96,12 @@ impl DownloadName {
         let write = match &mut self.mode {
             NameMode::Manual { prefilled } => {
                 // Matching a new detection does not make an existing draft a prefill.
-                let untouched = *prefilled && text == self.detected.as_str();
-                let write = text != detected
-                    && (untouched
-                        || (!detected.is_empty() && Cow::<'_, str>::from(text).trim().is_empty()));
+                let value: Cow<'_, str> = text.into();
+                let trimmed = value.trim();
+                let untouched = *prefilled && trimmed == self.detected.trim();
+                let write = value != detected
+                    && ((untouched && detected != self.detected.as_str())
+                        || (!detected.is_empty() && trimmed.is_empty()));
                 *prefilled = !detected.is_empty() && (write || untouched);
                 write
             }
