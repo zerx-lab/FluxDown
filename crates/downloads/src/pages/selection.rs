@@ -76,11 +76,27 @@ impl BtFilter {
     }
 
     fn matches(&self, position: usize, file: &BtFileDto) -> bool {
-        (self.min_size == 0 || file.size >= self.min_size)
-            && (self.categories.is_empty()
-                || self.categories.contains(&self.file_categories[position]))
-            && (self.query.is_empty() || file.path.to_lowercase().contains(&self.query))
+        bt_file_matches(
+            &self.query,
+            self.min_size,
+            &self.categories,
+            self.file_categories[position],
+            file,
+        )
     }
+}
+
+/// `query` 已是修剪后的小写串（每次输入变化只算一次）；匹配完整相对路径，目录名与扩展名均可搜。
+fn bt_file_matches(
+    query: &str,
+    min_size: i64,
+    categories: &HashSet<usize>,
+    category: usize,
+    file: &BtFileDto,
+) -> bool {
+    (min_size == 0 || file.size >= min_size)
+        && (categories.is_empty() || categories.contains(&category))
+        && (query.is_empty() || file.path.to_lowercase().contains(query))
 }
 
 fn bt_basename(path: &str) -> &str {
@@ -944,7 +960,13 @@ impl SelectionView {
                     .map(|filter| self.render_bt_filters(filter, cx)),
             )
             .when(no_matches, |view| {
-                view.child(self.strings.bt_filter_no_matches.clone())
+                view.child(
+                    div()
+                        .text_size(tokens.typography.sm.size)
+                        .line_height(tokens.typography.sm.line_height)
+                        .text_color(tokens.colors.muted_foreground)
+                        .child(self.strings.bt_filter_no_matches.clone()),
+                )
             })
             .child(div().flex_1().min_h_0().child(list))
     }
@@ -1190,8 +1212,8 @@ mod tests {
     };
 
     use super::{
-        SelectionState, bt_name_outcome, bt_save_dir_confirmable, bt_save_dir_outcome,
-        cancel_command,
+        BT_CATEGORY_KEYS, BT_MIN_SIZES, SelectionState, bt_file_matches, bt_name_outcome,
+        bt_save_dir_confirmable, bt_save_dir_outcome, cancel_command,
     };
     use crate::controller::DownloadsCommand;
 
@@ -1335,5 +1357,51 @@ mod tests {
         assert!(bt_save_dir_confirmable("", "   "));
         assert!(bt_save_dir_confirmable("  ", ""));
         assert!(bt_save_dir_confirmable("", r"D:\Movies"));
+    }
+
+    fn bt_file(path: &str, size: i64) -> fluxdown_protocol::BtFileDto {
+        fluxdown_protocol::BtFileDto {
+            index: 0,
+            path: path.to_owned(),
+            size,
+        }
+    }
+
+    #[test]
+    fn bt_filter_matches_extension_and_directory_names() {
+        let none = HashSet::new();
+        let file = bt_file("Trailer/episode.MKV", 1);
+        assert!(bt_file_matches("mkv", 0, &none, 0, &file));
+        assert!(bt_file_matches("trailer", 0, &none, 0, &file));
+        assert!(!bt_file_matches("srt", 0, &none, 0, &file));
+        assert!(bt_file_matches("", 0, &none, 0, &file));
+    }
+
+    #[test]
+    fn bt_filter_min_size_uses_1024_boundaries() {
+        let none = HashSet::new();
+        let min = BT_MIN_SIZES[1].0;
+        assert_eq!(min, 10 * 1024 * 1024);
+        assert!(bt_file_matches("", min, &none, 0, &bt_file("a", min)));
+        assert!(!bt_file_matches("", min, &none, 0, &bt_file("a", min - 1)));
+        assert_eq!(BT_MIN_SIZES[3].0, 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn bt_filter_combines_category_size_and_query() {
+        let video = BT_CATEGORY_KEYS
+            .iter()
+            .position(|(id, _)| *id == "video")
+            .unwrap();
+        let audio = BT_CATEGORY_KEYS
+            .iter()
+            .position(|(id, _)| *id == "audio")
+            .unwrap();
+        let picked: HashSet<usize> = [video].into_iter().collect();
+        let file = bt_file("Season/Trailer.mkv", 20 << 20);
+        assert!(bt_file_matches("trailer", 10 << 20, &picked, video, &file));
+        assert!(!bt_file_matches("trailer", 10 << 20, &picked, audio, &file));
+        assert!(!bt_file_matches("other", 10 << 20, &picked, video, &file));
+        assert!(!bt_file_matches("trailer", 30 << 20, &picked, video, &file));
     }
 }
