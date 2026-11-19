@@ -54,13 +54,9 @@ impl FileConflictView {
             .line_height(tokens.typography.xs.line_height)
             .font_features(tabular_numbers())
             .text_color(tokens.colors.muted_foreground)
-            .child(
-                item.existing_size
-                    .clone()
-                    .unwrap_or_else(|| unknown.clone()),
-            )
+            .child(item.existing_size_text().unwrap_or_else(|| unknown.clone()))
             .child("→")
-            .child(item.incoming_size.clone().unwrap_or(unknown));
+            .child(item.incoming_size_text().unwrap_or(unknown));
 
         let mut buttons = h_flex()
             .flex_none()

@@ -107,6 +107,7 @@
 
 另见 AGENTS.md §4：quickjs-jit 与 gpui-shell 同版本、持有引擎的 actor 必须 drain `resolve_rx` / `plugin_retry_rx`、插件页面脚本只经 `userScripts`。
 
+- **插件视图 `view.event` 的应答只确认入队**：图片释放等异步处理的测试要等对应会话的视图帧，再检查 HTTP 结果；直接请求会与 JS 回调抢跑，偶发拿到 200 → `native/daemon/src/plugin_host_rpc.rs::tests::image_resources_cross_js_and_authenticated_http_and_expire_on_close`。
 - **QuickJS 抛 `null` 要按异常值识别为 OOM**：内存紧贴上限时 QuickJS 连 `"out of memory"` 错误对象都分配不出，改抛 `null`，字符串匹配的 `reclassify_oom` 认不出，该次 OOM 不计入熔断；必须在仍持有异常值时判定（代价：插件主动 `throw null` 也计 OOM） → `native/engine/src/plugin/quickjs.rs::caught_error`、回归 `null_exception_sentinel_counts_as_memory_limit_exceeded`。
 - **拦截器链必须显式按 identity 升序排序，不能依赖插件加载顺序**：目录遍历和去重都不保证 identity 顺序，后续插件会看到前一个插件改写后的请求，乱序会改变下载行为 → `native/engine/src/plugin/interceptors.rs::PluginManager::task_interceptor`；回归 `plugin::manager::tests::task_interceptors_follow_identity_order_not_load_order`。
 - **签名 archiveRules 公钥轮换必须清掉旧 watermark / cache**：只丢弃旧公钥缓存却保留高序号水位时，新钥 seed 从较小 sequence 起步会永久 bootstrap 失败 → `plugin/archive_rules_manager.rs::validated_archive_rule_cache`（`RuleWatermark.public_key` + `clear_archive_rule_trust`）；回归 `archive_rule_public_key_rotation_resets_trust_watermark`。
@@ -258,6 +259,7 @@
 - **多行链接输入框不能用 `KeyboardType.Uri`**：Compose 对多行框虽加 `TYPE_TEXT_FLAG_MULTI_LINE` + `IME_FLAG_NO_ENTER_ACTION`，但小米 / 搜狗 / 百度等输入法见到 `TYPE_TEXT_VARIATION_URI` 就固定给「前往」键、回车不换行（#1010）；多行框一律 `KeyboardType.Text` + `ImeAction.Default`，单行 URL 框不受影响 → `mobile/Android/app/src/main/java/com/fluxdown/app/feature/newtask/NewDownloadSheet.kt`（批量链接框）。
 - **链接文件名百分号解码的 UTF-8 转换须双向严格**：Kotlin 默认编码会把未配对的 UTF-16 代理项换成 `?`，默认解码会把无效的 `%XX` 字节序列换成 `�`。输入或解码结果无效时保留原字符串 → `mobile/Android/app/.../feature/newtask/LinkParser.kt::decode`、`TaskInfoExportTest`。
 - **真模糊玻璃面采样的背景源必须不透明**：页面级 `fluxBackdropSource` 常只录透明的列表（画布 / 颗粒在壳层），模糊副本透明处会让下方清晰文字透过玻璃显出来；推入页内的玻璃面又拿不到舞台级源（壳层对页面内容提供 null 防 RenderNode 环），不自建页面级源就静默退化为实色。`GlassNode` 在副本下先垫 `canvas`；推入页浮层自建源并只对浮层提供 `LocalFluxBackdrop` → `mobile/Android/fluxui/src/main/java/com/fluxdown/fluxui/material/FluxGlass.kt::GlassNode.draw`、`app/.../feature/rss/RssItemsScreen.kt`（选择坞）、`feature/downloads/DownloadsScreen.kt`（`listBackdrop`）。
+- **冷启动的设备外观偏好只在 Activity 组合根等待**：控件各自给 DataStore 初值会短暂显示错误单位；分别隐藏控件又会导致布局跳变。`app/.../shell/AppRoot.kt::FluxAppRoot` 用 `OnPreDrawListener` 推迟首帧绘制，加载后通过 `LocalAppearance` 给页面和弹层提供同一个非空快照。偏好流必须发出首个快照或报错，不可吞掉读取错误后无值结束，否则首帧不会绘制。
 
 ## iOS
 

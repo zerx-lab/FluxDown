@@ -1,6 +1,7 @@
 // 下载页任务行投影（移植 crates/downloads/src/model/mod.rs 的 DownloadTaskView）。
 // 本地任务来自 daemon 快照 + 引擎 taskProgress 的实时速度；远程任务来自 agent.remoteTasks。
 
+import { byteUnit, type FileSizeUnits } from '../../../lib/fileSizeUnits'
 import { fileKindOf } from '../../../lib/icon-pack'
 import type { FileKind } from '../../../lib/icon-pack'
 import type { RemoteTaskDto, TaskDto, TaskRuntimeDto } from '../../../lib/rpc'
@@ -355,16 +356,15 @@ export function activeTransfers(view: DownloadTaskView): number | null {
   return view.runtime?.activeTransfers ?? null
 }
 
-/** 字节 → `1.5 MB`（与 GPUI `format_bytes` 一致：B/KB/MB/GB，1 位小数）。 */
-export function formatBytes(bytes: number): string {
-  const units = ['B', 'KB', 'MB', 'GB']
+/** 字节 → `1.5 MB`（1024 进制，单位由设备偏好选择）。 */
+export function formatBytes(bytes: number, units?: FileSizeUnits): string {
   let value = bytes
   let unit = 0
-  while (value >= 1024 && unit + 1 < units.length) {
+  while (value >= 1024 && unit < 3) {
     value /= 1024
     unit += 1
   }
-  return unit === 0 ? `${Math.floor(bytes)} B` : `${value.toFixed(1)} ${units[unit]}`
+  return unit === 0 ? `${Math.floor(bytes)} ${byteUnit(unit, units)}` : `${value.toFixed(1)} ${byteUnit(unit, units)}`
 }
 
 /** 完整本地时间 `YYYY-MM-DD HH:MM:SS`（Unix 秒）。 */

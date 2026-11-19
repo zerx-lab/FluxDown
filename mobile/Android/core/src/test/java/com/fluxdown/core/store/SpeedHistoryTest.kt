@@ -1,6 +1,7 @@
 package com.fluxdown.core.store
 
 import com.fluxdown.core.format.Format
+import com.fluxdown.core.format.FileSizeUnits
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -27,14 +28,20 @@ class SpeedHistoryTest {
 
     @Test
     fun bytesFollowPrototypePrecisionRules() {
-        assertEquals("0 B", Format.bytes(0).toString())
-        assertEquals("512 B", Format.bytes(512).toString())
-        assertEquals("1.50 KB", Format.bytes(1536).toString())
-        assertEquals("18.6 MB", Format.bytes((18.6 * 1024 * 1024).toLong()).toString())
-        assertEquals("186 GB", Format.bytes(186L * 1024 * 1024 * 1024).toString())
-        assertNull(Format.speed(0))
+        assertEquals("0 B", Format.bytes(0, FileSizeUnits.Legacy).toString())
+        assertEquals("512 B", Format.bytes(512, FileSizeUnits.Legacy).toString())
+        assertEquals("1.50 KB", Format.bytes(1536, FileSizeUnits.Legacy).toString())
+        assertEquals("18.6 MB", Format.bytes((18.6 * 1024 * 1024).toLong(), FileSizeUnits.Legacy).toString())
+        assertEquals("186 GB", Format.bytes(186L * 1024 * 1024 * 1024, FileSizeUnits.Legacy).toString())
+        assertNull(Format.speed(0, FileSizeUnits.Legacy))
     }
 
+    @Test
+    fun fileSizeUnitsChangeLabelsWithoutChangingBinaryScalingOrPrecision() {
+        assertEquals("1.50 KiB", Format.bytes(1536, FileSizeUnits.Iec).toString())
+        assertEquals("18.6 MiB", Format.bytes((18.6 * 1024 * 1024).toLong(), FileSizeUnits.Iec).toString())
+        assertEquals("1.50 KiB/s", Format.speed(1536, FileSizeUnits.Iec)?.toString())
+    }
     @Test
     fun etaIsUnknownWhenStalledUnknownSizeOrBeyondOneDay() {
         assertNull(Format.etaSeconds(10, 0, 100))

@@ -159,7 +159,7 @@ struct FileConflictCountdown: View {
 enum FileConflictFormat {
     /// 已有文件的修改时间（与任务行同一套「刚刚 / N 分钟前 …」文案）。
     static func relativeModified(unixMs: Int64) -> String {
-        RowText.live.relative(unixMs / 1000, now: Int64(Date().timeIntervalSince1970))
+        RowText.live(units: .legacy).relative(unixMs / 1000, now: Int64(Date().timeIntervalSince1970))
     }
 
     /// 列表行副标题：已有大小 · 修改时间（未知项省略）。

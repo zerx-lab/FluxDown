@@ -376,14 +376,13 @@ fn localized_release_body<'a>(body: &'a str, locale: &str) -> &'a str {
 }
 
 fn logs_section(ctx: &SectionContext) -> SettingsSection {
+    let size = ctx
+        .daemon_number("log_max_size_mb")
+        .unit(fluxdown_ui_components::size_units::labels()[2]);
     SettingsSection::new()
         .title(ctx.t("logExport"))
         .subtitle(ctx.t("logExportDesc"))
-        .row(ctx.item(
-            "logMaxSize",
-            Some("logMaxSizeDesc"),
-            ctx.daemon_number("log_max_size_mb").unit("MB"),
-        ))
+        .row(ctx.item("logMaxSize", Some("logMaxSizeDesc"), size))
         .row(ctx.item("logExportButton", None, export_control(ctx)))
 }
 

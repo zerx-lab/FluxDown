@@ -150,13 +150,13 @@ impl FileConflictView {
             .gap(spacing.sm)
             .child(self.compare_column(
                 self.strings.existing.clone(),
-                item.existing_size.clone(),
+                item.existing_size_text(),
                 modified,
                 cx,
             ))
             .child(self.compare_column(
                 self.strings.incoming.clone(),
-                item.incoming_size.clone(),
+                item.incoming_size_text(),
                 None,
                 cx,
             ))

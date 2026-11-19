@@ -1,3 +1,4 @@
+import { byteUnit, useFileSizeUnits } from '../../../lib/fileSizeUnits'
 // 队列管理：左列队列列表，右侧表单编辑（新建 / 更新 / 定时 / 启停 / 删除 / 待处理任务排序）。
 // 与 GPUI `pages/queue_manager.rs` 对齐；移动端（<=820px）为「列表 → 详情」两级导航。
 
@@ -188,6 +189,8 @@ function QueueEditor({
   onSaved: (createdQueueId: string | null) => void
   onDeleted: () => void
 }) {
+  const fileSizeUnits = useFileSizeUnits()
+  const speedUnit = `${byteUnit(1, fileSizeUnits)}/s`
   const t = useT()
   const [name, setName] = useState(queue?.name ?? '')
   const [maxConcurrent, setMaxConcurrent] = useState(String(queue?.maxConcurrent ?? 0))
@@ -303,8 +306,8 @@ function QueueEditor({
           </FormField>
         )}
         <FormRow>
-          <NumberField id="queue-speed" label={t('queueSpeedLimit')} hint={t('queueSpeedLimitHint')} value={speedLimit} onChange={setSpeedLimit} />
-          <NumberField id="queue-upload" label={t('queueUploadLimit')} hint={t('queueUploadLimitDesc')} value={uploadLimit} onChange={setUploadLimit} />
+          <NumberField id="queue-speed" label={t('queueDownloadLimitWithUnit', { unit: speedUnit })} hint={t('queueSpeedLimitHint')} value={speedLimit} onChange={setSpeedLimit} />
+          <NumberField id="queue-upload" label={t('queueUploadLimitWithUnit', { unit: speedUnit })} hint={t('queueUploadLimitDesc')} value={uploadLimit} onChange={setUploadLimit} />
         </FormRow>
         <div className="flex flex-col">
           <FormRow>

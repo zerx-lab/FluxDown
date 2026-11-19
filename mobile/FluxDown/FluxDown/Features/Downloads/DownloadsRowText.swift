@@ -17,9 +17,17 @@ nonisolated struct StatusLine: Equatable {
 struct RowText {
     typealias Lookup = (String, [String: CustomStringConvertible]) -> String
 
+    let units: FileSizeUnits
     let lookup: Lookup
 
-    static let live = RowText { key, args in args.isEmpty ? L(key) : L(key, args) }
+    init(units: FileSizeUnits = .legacy, lookup: @escaping Lookup) {
+        self.units = units
+        self.lookup = lookup
+    }
+
+    static func live(units: FileSizeUnits) -> RowText {
+        RowText(units: units) { key, args in args.isEmpty ? L(key) : L(key, args) }
+    }
 
     private func t(_ key: String, _ args: [String: CustomStringConvertible] = [:]) -> String {
         lookup(key, args)
@@ -85,7 +93,7 @@ struct RowText {
         switch item.visual {
         case .downloading:
             var parts: [String] = []
-            if fields.contains(.speed), item.speedDown > 0, let speed = Format.speed(item.speedDown) {
+            if fields.contains(.speed), item.speedDown > 0, let speed = Format.speed(item.speedDown, style: units) {
                 parts.append(speed.description)
             }
             if fields.contains(.eta), let seconds = item.eta {
@@ -112,7 +120,7 @@ struct RowText {
             return StatusLine(text: t("statusCompleted"), tone: .secondary)
         case .seeding:
             var text = t(item.task.seedingStatus == .queuedForSlot ? "seedingStatusQueued" : "statusSeeding")
-            if item.speedUp > 0, let up = Format.speed(item.speedUp) { text += " · ↑ " + up.description }
+            if item.speedUp > 0, let up = Format.speed(item.speedUp, style: units) { text += " · ↑ " + up.description }
             return StatusLine(text: text, tone: .success)
         case .missing:
             return StatusLine(text: t("statusFileMissing"), tone: .warning)
@@ -132,7 +140,7 @@ struct RowText {
         let task = item.task
         let total = task.totalBytes
         let showSize = fields.contains(.size)
-        let totalSize = total > 0 ? Format.bytes(total).description : nil
+        let totalSize = total > 0 ? Format.bytes(total, style: units).description : nil
         var parts: [String] = []
 
         switch item.visual {
@@ -140,7 +148,7 @@ struct RowText {
             if showSize { parts.append(doneOfTotal(task)) }
             if let n = item.activeTransfers, n > 0 { parts.append(t("mobileActiveTransfersCount", ["n": n])) }
             if task.protocol == .bt, let n = item.connectedPeers, n > 0 { parts.append(t("mobilePeersCount", ["n": n])) }
-            if fields.contains(.speed), item.speedUp > 0, let up = Format.speed(item.speedUp) { parts.append("↑ " + up.description) }
+            if fields.contains(.speed), item.speedUp > 0, let up = Format.speed(item.speedUp, style: units) { parts.append("↑ " + up.description) }
         case .paused, .failed, .verifying:
             if showSize, total > 0 || task.downloadedBytes > 0 { parts.append(doneOfTotal(task)) }
         case .queued, .pending, .missing, .seeding:
@@ -161,8 +169,8 @@ struct RowText {
 
     private func doneOfTotal(_ task: DownloadTask) -> String {
         task.totalBytes > 0
-            ? Format.bytes(task.downloadedBytes).description + " / " + Format.bytes(task.totalBytes).description
-            : Format.bytes(task.downloadedBytes).description
+            ? Format.bytes(task.downloadedBytes, style: units).description + " / " + Format.bytes(task.totalBytes, style: units).description
+            : Format.bytes(task.downloadedBytes, style: units).description
     }
 
     // MARK: 圆环 / 无障碍

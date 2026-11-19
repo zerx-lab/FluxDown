@@ -6,6 +6,7 @@ import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Download, Pause, Play, R
 import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent, PointerEvent as ReactPointerEvent } from 'react'
 import { useT } from '../../../i18n'
+import { useFileSizeUnits, type FileSizeUnits } from '../../../lib/fileSizeUnits'
 import { cn } from '../../../lib/cn'
 import { Checkbox, ContextMenuArea, Icon, Tooltip } from '../../../ui'
 import type { MenuEntry } from '../../../ui'
@@ -74,7 +75,7 @@ interface RowProps {
   rowActionLabels: { pause: string; resume: string; download: string; select: string }
 }
 
-function renderCell(props: RowProps, column: LayoutColumn) {
+function renderCell(props: RowProps, column: LayoutColumn, units: FileSizeUnits) {
   const { t, view, density, queueName } = props
   const downloading = view.state === 'downloading'
   switch (column.kind) {
@@ -86,7 +87,7 @@ function renderCell(props: RowProps, column: LayoutColumn) {
     }
     case 'size':
       return view.sizeBytes > 0 ? (
-        <Meta numeric>{formatBytes(view.sizeBytes)}</Meta>
+        <Meta numeric>{formatBytes(view.sizeBytes, units)}</Meta>
       ) : (
         <Meta numeric tertiary>
           —
@@ -95,7 +96,7 @@ function renderCell(props: RowProps, column: LayoutColumn) {
     case 'status':
       return <StatusCell t={t} view={view} density={density} />
     case 'speed': {
-      const upload = seedingUploadLabel(view)
+      const upload = seedingUploadLabel(view, units)
       if (upload !== null) {
         return (
           <Meta numeric success>
@@ -104,7 +105,7 @@ function renderCell(props: RowProps, column: LayoutColumn) {
         )
       }
       return downloading && view.speed !== null && view.speed > 0 ? (
-        <Meta numeric>{`${formatBytes(view.speed)}/s`}</Meta>
+        <Meta numeric>{`${formatBytes(view.speed, units)}/s`}</Meta>
       ) : (
         <Meta numeric tertiary>
           —
@@ -185,6 +186,7 @@ function RowActions({ view, labels, selected }: { view: DownloadTaskView; labels
 }
 
 const TaskRow = memo(function TaskRow(props: RowProps) {
+  const units = useFileSizeUnits()
   const { view, columns, selected, anySelected, onClick, onDoubleClick, onToggle, getMenu, onContext, density, depth } = props
   const twoLine = density !== 'compact'
   return (
@@ -257,10 +259,10 @@ const TaskRow = memo(function TaskRow(props: RowProps) {
                   <span className="mr-2 flex shrink-0 items-center">
                     <KindGlyph view={view} tile={density === 'relaxed'} />
                   </span>
-                  <div className="min-w-0 flex-1">{renderCell(props, column)}</div>
+                  <div className="min-w-0 flex-1">{renderCell(props, column, units)}</div>
                 </>
               ) : (
-                renderCell(props, column)
+                renderCell(props, column, units)
               )}
             </div>
           )
