@@ -14,7 +14,8 @@ READY = "待合并"
 PREFIX = re.compile(r"^(?:【(?:待处理|待合并)】\s*)+")
 GATE = re.compile(r"^<!--\s*roost:gate:(pass|fail):[0-9a-f]{40}\s*-->")
 CONCLUSION = re.compile(
-    r"^(?:审查结论|结论|conclusion|verdict|review summary)(?:\s*[：:]\s*|\s+|$)", re.I
+    r"^(?:审查结论|结论|conclusion|verdict|review summary)(?:\s*[：:]\s*|\s+|(?=[（(])|$)",
+    re.I,
 )
 BLOCKER_HEADING = re.compile(
     r"^(?:\d+[.、]\s*)?(?:阻塞(?:项|问题|缺陷)?|blocking (?:issues?|findings)|blockers?)"
@@ -131,7 +132,7 @@ def text_verdict(body, *, is_review):
         return None  # A no-op synchronize review does not clear a previous verdict.
     if empty_blockers or NONBLOCKING.search(summary):
         return READY
-    return ""  # Latest substantive review is ambiguous: leave the title as-is.
+    return BLOCKED  # A substantive review without a clear pass is still pending.
 
 
 def title_with_status(title, status):
@@ -170,7 +171,7 @@ def status_from_reviews(entries):
             continue
         if login == BOT:
             roost = max(roost, verdict)
-        elif verdict[2]:
+        else:
             latest = max(latest, verdict)
             if entry.get("state") in {"CHANGES_REQUESTED", "APPROVED"}:
                 formal = max(formal, verdict)
