@@ -38,7 +38,6 @@
 
 - **动态下载加速** —— Rust + Tokio 引擎，自适应分段与慢速分段接管
 - **多协议支持** —— HTTP/HTTPS、FTP、BitTorrent、eD2K、HLS 与 DASH 流媒体
-- **Android HLS 进度** —— 下载列表和详情按已写入分片数显示点播进度；直播仅显示已录制的字节数，不显示完成百分比。
 - **一套引擎，多种客户端** —— 原生 GPUI 桌面、Kotlin Android 与 SwiftUI iOS 应用、React Web 管理界面与 CLI
 - **浏览器集成** —— Chrome / Edge / Firefox 扩展，三层下载拦截引擎，另有用户脚本
 - **AI 智能体就绪** —— 内置 MCP（Model Context Protocol）服务器，Claude、Cursor 等 AI 客户端可直接管理下载

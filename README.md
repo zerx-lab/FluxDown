@@ -38,7 +38,6 @@
 
 - **Dynamic download acceleration** — Rust + Tokio engine with adaptive segmentation and slow-segment rescue
 - **Multi-protocol** — HTTP/HTTPS, FTP, BitTorrent, eD2K, HLS & DASH streaming
-- **HLS progress on Android** — the download list and task details show progress by written segment count for on-demand playlists; live recordings show recorded bytes without a completion percentage.
 - **One engine, multiple clients** — native GPUI desktop, Kotlin Android and SwiftUI iOS apps, React Web UI and CLI
 - **Browser integration** — Chrome / Edge / Firefox extension with a 3-layer interception engine, plus a userscript
 - **AI-agent ready** — built-in MCP (Model Context Protocol) server: let Claude, Cursor & other AI clients manage your downloads
