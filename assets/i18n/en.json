@@ -177,7 +177,7 @@
   "deleteTask": "Delete Task",
   "deleteTaskAndFile": "Delete Task & File",
   "clearTaskFile": "Delete File Only",
-  "clearTaskFileConfirmation": "Delete the downloaded files from disk? The completed task will remain and can be downloaded again.",
+  "clearTaskFileConfirmation": "Delete the downloaded file of \"{fileName}\" from disk? The completed task will remain and can be downloaded again. This cannot be undone.",
   "cleanStaleTasks": "Clean up invalid tasks",
   "cleanStaleTasksTitle": "Clean up invalid tasks",
   "cleanStaleTasksDesc": "Remove {count} selected task(s) that failed or whose completed files were moved or deleted? Only task records will be removed. Downloaded files and partial data will be kept.",

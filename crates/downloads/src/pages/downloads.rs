@@ -2064,7 +2064,17 @@ impl DownloadView {
         }
         let task_id = key.task_id().to_owned();
         let title = self.strings.clear_task_file.clone();
-        let description = self.strings.clear_task_file_confirmation.clone();
+        let name = self
+            .controller
+            .store()
+            .get(key)
+            .map(|row| row.name.clone())
+            .unwrap_or_default();
+        let description = SharedString::from(
+            self.strings
+                .clear_task_file_confirmation
+                .replace("{fileName}", &name),
+        );
         let ok_label = self.strings.delete.clone();
         let cancel_label = self.strings.cancel.clone();
         let this = cx.weak_entity();
