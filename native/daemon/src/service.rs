@@ -3699,15 +3699,18 @@ mod plugin_consent_audit_tests {
         const SCOPED: &str = "scoped@test";
         const BROAD_PATTERN: &str = "https://*/download";
         const SCOPED_PATTERN: &str = "https://x.test/*/download";
+        const UPDATED_PATTERN: &str = "https://x.test/new/*/download";
 
         let f = fixture().await;
-        let install = |identity, pattern| {
-            let src = f.base.join(identity);
+        f.manager.load_all().await;
+        let install = |identity: &str, version: &str, pattern: &str, permissions: &[&str]| {
+            let src = f.base.join(identity).join(version);
             std::fs::create_dir_all(&src).unwrap();
             std::fs::write(
                 src.join("manifest.json"),
                 json!({
-                    "identity": identity, "name": identity, "version": "1.0.0",
+                    "identity": identity, "name": identity, "version": version,
+                    "permissions": permissions,
                     "resolvers": [{
                         "entry": "resolve.js",
                         "match": { "urls": [pattern] }
@@ -3726,26 +3729,67 @@ mod plugin_consent_audit_tests {
         call(
             &f,
             method::DAEMON_PLUGIN_INSTALL_DEV,
-            install(BROAD, BROAD_PATTERN),
+            install(BROAD, "1.0.0", BROAD_PATTERN, &[]),
         )
         .await
         .unwrap();
 
-        for (action, params, enabled) in [
+        for (action, params, version, reason, pending, warning_pattern) in [
             (
                 method::DAEMON_PLUGIN_INSTALL_DEV,
-                install(SCOPED, SCOPED_PATTERN),
-                true,
+                install(SCOPED, "1.0.0", SCOPED_PATTERN, &["tasks"]),
+                "1.0.0",
+                "ConsentRequired",
+                json!(["tasks"]),
+                Some(SCOPED_PATTERN),
+            ),
+            (
+                method::DAEMON_PLUGIN_CONSENT,
+                json!({ "identity": SCOPED, "permissions": ["tasks"], "networkHosts": [] }),
+                "1.0.0",
+                "None",
+                json!([]),
+                Some(SCOPED_PATTERN),
             ),
             (
                 method::DAEMON_PLUGIN_SET_ENABLED,
                 json!({ "identity": SCOPED, "enabled": false }),
-                false,
+                "1.0.0",
+                "Manual",
+                json!([]),
+                None,
+            ),
+            (
+                method::DAEMON_PLUGIN_INSTALL_DEV,
+                install(SCOPED, "2.0.0", UPDATED_PATTERN, &["tasks", "ytdlp"]),
+                "2.0.0",
+                "Manual",
+                json!(["ytdlp"]),
+                None,
+            ),
+            (
+                method::DAEMON_PLUGIN_SET_ENABLED,
+                json!({ "identity": SCOPED, "enabled": false }),
+                "2.0.0",
+                "Manual",
+                json!(["ytdlp"]),
+                None,
+            ),
+            (
+                method::DAEMON_PLUGIN_CONSENT,
+                json!({ "identity": SCOPED, "permissions": ["tasks", "ytdlp"], "networkHosts": [] }),
+                "2.0.0",
+                "Manual",
+                json!([]),
+                None,
             ),
             (
                 method::DAEMON_PLUGIN_SET_ENABLED,
                 json!({ "identity": SCOPED, "enabled": true }),
-                true,
+                "2.0.0",
+                "None",
+                json!([]),
+                Some(UPDATED_PATTERN),
             ),
         ] {
             let mut events = f.service.events.subscribe();
@@ -3765,14 +3809,24 @@ mod plugin_consent_audit_tests {
             assert_eq!(list[0]["identity"], BROAD);
             assert_eq!(list[0]["enabled"], true);
             assert_eq!(list[1]["identity"], SCOPED);
-            assert_eq!(list[1]["enabled"], enabled);
-            if enabled {
+            assert_eq!(list[1]["version"], version);
+            assert_eq!(list[1]["disabledReason"], reason);
+            assert_eq!(list[1]["enabled"], reason == "None");
+            assert_eq!(list[1]["consentPending"], pending);
+            let route = f
+                .manager
+                .route_resolver("https://x.test/new/item/download")
+                .await
+                .expect("broad plugin always matches");
+            assert_eq!(route.identity, BROAD);
+            assert_eq!(route.choice_pending, reason == "None");
+            if let Some(pattern) = warning_pattern {
                 assert_eq!(
                     list[0]["resolverUrlConflicts"],
                     json!([{
                         "pattern": BROAD_PATTERN,
                         "otherIdentity": SCOPED,
-                        "otherPattern": SCOPED_PATTERN,
+                        "otherPattern": pattern,
                     }])
                 );
             } else {

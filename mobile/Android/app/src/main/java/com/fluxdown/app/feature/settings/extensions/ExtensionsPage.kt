@@ -83,13 +83,24 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
+internal data class ResolverUrlOverlap(
+    val identity: String,
+    val patterns: PluginResolverUrlConflict,
+    val pending: Boolean,
+)
+
 @Composable
 internal fun rememberResolverUrlConflicts(plugins: List<PluginDto>, identities: Set<String>? = null) =
     remember(plugins, identities) {
+        val enabled = plugins.filter { it.enabled }.mapTo(HashSet()) { it.identity }
         plugins.flatMap { plugin ->
             plugin.resolverUrlConflicts.mapNotNull { conflict ->
                 if (identities == null || plugin.identity in identities || conflict.otherIdentity in identities) {
-                    plugin.identity to conflict
+                    ResolverUrlOverlap(
+                        plugin.identity,
+                        conflict,
+                        !plugin.enabled || conflict.otherIdentity !in enabled,
+                    )
                 } else {
                     null
                 }
@@ -98,19 +109,21 @@ internal fun rememberResolverUrlConflicts(plugins: List<PluginDto>, identities: 
     }
 
 @Composable
-internal fun ResolverUrlConflictSection(conflicts: List<Pair<String, PluginResolverUrlConflict>>) {
+internal fun ResolverUrlConflictSection(conflicts: List<ResolverUrlOverlap>) {
     if (conflicts.isEmpty()) return
     GlassSection(title = str(R.string.pluginResolverUrlConflictsTitle)) {
-        if (conflicts.any { (identity, conflict) -> identity != conflict.otherIdentity }) {
+        if (conflicts.any { (identity, patterns, pending) -> identity != patterns.otherIdentity && !pending }) {
             row {
                 FluxBanner(str(R.string.pluginResolverUrlConflictsHint), kind = FluxBannerKind.Warn)
             }
         }
-        for ((identity, conflict) in conflicts) {
+        for ((identity, conflict, pending) in conflicts) {
             row {
                 Column {
                     if (identity == conflict.otherIdentity) {
                         FluxText(str(R.string.pluginResolverUrlDuplicateHint))
+                    } else if (pending) {
+                        FluxText(str(R.string.pluginResolverUrlPendingHint))
                     }
                     FluxText("$identity: ${conflict.pattern}")
                     FluxText("${conflict.otherIdentity}: ${conflict.otherPattern}")

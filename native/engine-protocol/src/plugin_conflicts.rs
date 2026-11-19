@@ -7,7 +7,9 @@ pub(super) fn annotate(mut plugins: Vec<PluginDto>) -> Vec<PluginDto> {
     let normalized: Vec<Vec<_>> = plugins
         .iter()
         .map(|plugin| {
-            if plugin.enabled || plugin.disabled_reason == "ConsentRequired" {
+            if plugin.enabled
+                || (plugin.load_status == "Loaded" && plugin.disabled_reason == "ConsentRequired")
+            {
                 plugin
                     .resolver_urls
                     .iter()

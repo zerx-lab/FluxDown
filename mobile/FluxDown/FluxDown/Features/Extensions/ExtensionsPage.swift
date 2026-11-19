@@ -497,6 +497,7 @@ struct ResolverUrlConflictSection: View {
     }
 
     var body: some View {
+        let enabled = Set(plugins.filter(\.enabled).map(\.identity))
         let owners = plugins.filter { plugin in
             plugin.resolverUrlConflicts.contains { matches(plugin.identity, $0.otherIdentity) }
         }
@@ -504,7 +505,8 @@ struct ResolverUrlConflictSection: View {
             Section {
                 if owners.contains(where: { plugin in
                     plugin.resolverUrlConflicts.contains {
-                        plugin.identity != $0.otherIdentity && matches(plugin.identity, $0.otherIdentity)
+                        plugin.enabled && enabled.contains($0.otherIdentity)
+                            && plugin.identity != $0.otherIdentity && matches(plugin.identity, $0.otherIdentity)
                     }
                 }) {
                     Text(L("pluginResolverUrlConflictsHint"))
@@ -517,6 +519,9 @@ struct ResolverUrlConflictSection: View {
                         VStack(alignment: .leading) {
                             if plugin.identity == conflict.otherIdentity {
                                 Text(L("pluginResolverUrlDuplicateHint"))
+                                    .foregroundStyle(.secondary)
+                            } else if !plugin.enabled || !enabled.contains(conflict.otherIdentity) {
+                                Text(L("pluginResolverUrlPendingHint"))
                                     .foregroundStyle(.secondary)
                             }
                             Text(verbatim: "\(plugin.identity): \(conflict.pattern)")
