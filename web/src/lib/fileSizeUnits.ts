@@ -11,6 +11,7 @@ const IEC_UNITS = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'] as const
 
 let current: FileSizeUnits = 'legacy'
 let initialized = false
+let listeningToStorage = false
 
 function initialize(): void {
   if (initialized) return
@@ -36,14 +37,17 @@ function onStorage(event: StorageEvent): void {
   window.dispatchEvent(new Event(CHANGE_EVENT))
 }
 
-function subscribe(listener: () => void): () => void {
+/** Subscribe to preference changes from this tab and, via `storage`, from other tabs. */
+export function subscribeFileSizeUnits(listener: () => void): () => void {
   initialize()
-  window.addEventListener(CHANGE_EVENT, listener)
-  window.addEventListener('storage', onStorage)
-  return () => {
-    window.removeEventListener(CHANGE_EVENT, listener)
-    window.removeEventListener('storage', onStorage)
+  // One module-level `storage` listener for all subscribers: the DOM dedupes the shared
+  // handler reference, so per-subscriber removal would detach it for everyone else.
+  if (!listeningToStorage) {
+    listeningToStorage = true
+    window.addEventListener('storage', onStorage)
   }
+  window.addEventListener(CHANGE_EVENT, listener)
+  return () => window.removeEventListener(CHANGE_EVENT, listener)
 }
 
 export function getFileSizeUnits(): FileSizeUnits {
@@ -62,7 +66,7 @@ export function setFileSizeUnits(value: FileSizeUnits): void {
 }
 
 export function useFileSizeUnits(): FileSizeUnits {
-  return useSyncExternalStore(subscribe, read, () => 'legacy')
+  return useSyncExternalStore(subscribeFileSizeUnits, read, () => 'legacy')
 }
 
 export function byteUnitFor(index: number, preference: FileSizeUnits): string {
