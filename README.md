@@ -61,6 +61,7 @@
 | **APIs & CLI** | REST/OpenAPI, aria2-compatible JSON-RPC, MCP with 12 tools, and a CLI for scripts or standalone downloads |
 
 Download-list exports include selected tasks from the current host and selected FluxCloud remote tasks, even when only remote tasks are selected.
+The URL column for a FluxCloud remote task is available only if its source device shares download URLs.
 
 Task exports are UTF-8 text with `Name`, `URL`, and `Size (bytes)` columns separated by tabs. Decode `\\`, `\t`, `\r`, and `\n` as a backslash, tab, carriage return, and line feed respectively, in a single pass after splitting fields. Unknown values are blank; resolved plugin lists do not expose direct per-file URLs. The desktop and Web clipboard action additionally prefixes text starting with spreadsheet formula markers or a quote (after leading whitespace) with an apostrophe; TXT files do not add that prefix.
 
