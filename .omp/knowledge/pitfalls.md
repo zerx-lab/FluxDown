@@ -44,6 +44,7 @@
 - **SQLite 测试 URL 不得把 Windows 盘符放在 `sqlite://` 的主机位**：`sqlite://C:\...` 经 SQLx Any 的 URL 解析会把 `C` 当主机、丢掉盘符冒号，打开错误的相对路径（SQLite 14）；文件型测试库一律用 `db::sqlite_url` 生成 URL → 各下载器测试的文件库夹具。
 - **Windows 上测试删目录前，先关掉所有持有文件的对象**：只 `drop` 不够——BT 会话要 `shutdown`、SQLx 池要 `close`，在途 runtime 与常驻连接都可能还占着文件（`Os { code: 32 }`）；不需要跨重启持久化的测试直接用内存库 → `bt_downloader.rs` 的选择夹具、`tests/engine/bt_guard/e2e.rs::a_failed_startup_load_is_retried_when_the_next_bt_session_starts`、`tests/engine/hls_live_recording.rs::setup`。
 - **BT 文件选择期间暂停会与句柄摘除竞争**：取消选择询问会删掉会话句柄；管理器已取消 worker 后再调用 `session.pause`，句柄可能恰好消失并报错。此时仍须写入暂停态、保留匹配 `TaskDone` 的收尾屏障，否则数据库停在准备态 5 且永远没有暂停帧。测试须核对暂停前后落库状态与目标帧 → `native/engine/src/download_manager.rs::{pause_task_inner,pause_during_unanswered_bt_file_selection_finishes_task}`。
+- **删除任务时 `InvalidFilename` 与 `NotFound` 一样算路径不存在**：失败任务的保存路径含 Windows 非法字符（#1191，`os error 123`）或组件超长时，`remove_file` 返回 `InvalidFilename`（Windows `ERROR_INVALID_NAME` / `ERROR_FILENAME_EXCED_RANGE`，Unix `ENAMETOOLONG`）而不是 `NotFound`。只忽略 `NotFound` 会把「文件不可能存在」当成清理失败，任务记录永久留下，只删记录也同样失败。权限、占用、目录冲突仍须保留任务 → `native/engine/src/download_manager.rs::path_is_absent`（`delete_task` / `keep_first_cleanup_error` / `delete_task_artifact_files`）、回归 `delete_failed_task_with_impossible_name_removes_record`。
 
 ## BT / eD2K
 
