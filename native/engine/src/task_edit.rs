@@ -427,7 +427,8 @@ pub(crate) async fn prepare(db: &Db, patch: EditTask) -> Result<PreparedEdit, St
         || old_context.0 != cookies
         || old_context.1 != referrer
         || old_context.2 != headers;
-    let relocate = original.save_dir != updated.save_dir || original.file_name != updated.file_name;
+    let relocate = !original.file_clear_state.retains_path_only()
+        && (original.save_dir != updated.save_dir || original.file_name != updated.file_name);
     let secrets: HashMap<_, _> = headers
         .iter()
         .filter(|(name, _)| secret_header(name))
