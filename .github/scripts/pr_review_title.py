@@ -182,9 +182,7 @@ def status_from_reviews(entries):
     return roost[2] if roost[2] is not None else latest[2]
 
 
-def status_with_checks(review, pr):
-    if pr["mergeable"] == "CONFLICTING":
-        return BLOCKED
+def check_states(pr):
     # Read the current head's complete rollup, not CI history from older commits.
     states = set()
     for node in pr["commits"]["nodes"]:
@@ -192,15 +190,21 @@ def status_with_checks(review, pr):
         if rollup:
             for field in ("checkRunCountsByState", "statusContextCountsByState"):
                 states.update(row["state"] for row in rollup["contexts"][field] if row["count"])
-    if states & CI_ERRORS:
+    return states
+
+
+def status_with_checks(review, pr, states):
+    if review == BLOCKED or pr["mergeable"] == "CONFLICTING" or states & CI_ERRORS:
         return BLOCKED
-    if review == READY and (
-        pr["mergeable"] != "MERGEABLE" or pr["mergeStateStatus"] != "CLEAN"
-        or not states or states - CI_PASS
-    ):
-        # GitHub enforces branch rules; also wait for this repo's CI even if it is not required.
+    if review != READY:
+        return review
+    if pr["mergeable"] == "UNKNOWN" or pr["mergeStateStatus"] == "UNKNOWN" or not states:
+        return None  # An incomplete snapshot must not change the title.
+    if pr["mergeStateStatus"] == "UNSTABLE" and states <= CI_PASS:
+        return None  # The merge state and the check rollup disagree.
+    if pr["mergeable"] != "MERGEABLE" or pr["mergeStateStatus"] != "CLEAN" or states - CI_PASS:
         return BLOCKED
-    return review
+    return READY
 
 
 def sync(repo, *, dry_run):
@@ -219,7 +223,14 @@ def sync(repo, *, dry_run):
             current = pr_details(repo, number)
             if current["state"] != "OPEN":
                 continue
-            status = status_with_checks(status, current)
+            states = check_states(current)
+            decision = status_with_checks(status, current, states)
+            print(f"#{number}: review={status} merge={current['mergeable']}/"
+                  f"{current['mergeStateStatus']} checks={','.join(sorted(states)) or '-'} "
+                  f"decision={decision or 'preserve'}", flush=True)
+            if decision is None:
+                continue
+            status = decision
             title = title_with_status(current["title"], status)
             if title == current["title"]:
                 continue
