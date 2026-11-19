@@ -455,6 +455,70 @@ impl RssView {
         .detach();
     }
 
+    fn confirm_download_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let query = self.search.read(cx).value().trim().to_lowercase();
+        let Some(source_id) = self.controller.selected_source.clone() else {
+            return;
+        };
+        let guids: Vec<_> = self
+            .controller
+            .bulk_download_candidates(&query, self.oldest_first)
+            .map(str::to_owned)
+            .collect();
+        if guids.is_empty() || self.controller.stale || self.controller.loading {
+            return;
+        }
+        let count = guids.len().to_string();
+        let title = self.t("rssDownloadAllEligible", cx);
+        let description = SharedString::from(self.with(
+            "rssDownloadAllEligibleConfirm",
+            &[("count", &count)],
+            cx,
+        ));
+        let cancel = self.t("cancel", cx);
+        let view = cx.weak_entity();
+        window.open_alert_dialog(cx, move |alert, _, cx| {
+            let view = view.clone();
+            let query = query.clone();
+            let source_id = source_id.clone();
+            let guids = guids.clone();
+            alert
+                .title(fluxdown_ui_components::dialog_title(title.clone(), cx))
+                .description(description.clone())
+                .footer(fluxdown_ui_components::dialog_footer(
+                    Some(cancel.clone()),
+                    title.clone(),
+                    fluxdown_ui_components::DialogIntent::Confirm,
+                    cx,
+                ))
+                .on_ok(move |_, _, cx| {
+                    view.update(cx, |this, cx| {
+                        let current_query = this.search.read(cx).value().trim().to_lowercase();
+                        if this.controller.stale
+                            || this.controller.loading
+                            || this.controller.selected_source.as_deref() != Some(&source_id)
+                            || current_query != query
+                        {
+                            return false;
+                        }
+                        let confirmed: HashSet<_> = guids.iter().map(String::as_str).collect();
+                        let eligible: Vec<_> = this
+                            .controller
+                            .bulk_download_candidates(&query, this.oldest_first)
+                            .filter(|guid| confirmed.contains(guid))
+                            .map(str::to_owned)
+                            .collect();
+                        if eligible.is_empty() {
+                            return false;
+                        }
+                        this.act(eligible, "download", cx);
+                        true
+                    })
+                    .unwrap_or(false)
+                })
+        });
+    }
+
     fn confirm_delete(
         &mut self,
         source: RssSourceDto,
@@ -1313,7 +1377,7 @@ impl Render for RssView {
                             ),
                     ),
             );
-            if !self.controller.items.is_empty() || selected_count > 0 {
+            if !visible.is_empty() || selected_count > 0 {
                 let select_state = if all_visible {
                     CheckState::Checked
                 } else if any_visible {
@@ -1357,29 +1421,26 @@ impl Render for RssView {
                                         .child(self.t("rssSelectVisible", cx)),
                                 ),
                         )
-                        .child(
-                            Button::new("rss-select-all-downloadable")
-                                .ghost()
-                                .label(self.t("rssSelectAllDownloadable", cx))
-                                .control(cx)
-                                .disabled(
-                                    stale
-                                        || self.controller.loading
-                                        || self
-                                            .controller
-                                            .bulk_download_candidates()
-                                            .next()
-                                            .is_none(),
-                                )
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.controller.selected = this
-                                        .controller
-                                        .bulk_download_candidates()
-                                        .map(str::to_owned)
-                                        .collect();
-                                    cx.notify();
-                                })),
-                        )
+                        .when(!visible.is_empty(), |bar| {
+                            bar.child(
+                                Button::new("rss-download-all-eligible")
+                                    .ghost()
+                                    .label(self.t("rssDownloadAllEligible", cx))
+                                    .control(cx)
+                                    .disabled(
+                                        stale
+                                            || self.controller.loading
+                                            || !visible.iter().any(|&index| {
+                                                self.controller.is_bulk_download_candidate(
+                                                    &self.controller.items[index],
+                                                )
+                                            }),
+                                    )
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.confirm_download_all(window, cx);
+                                    })),
+                            )
+                        })
                         .when(selected_count > 0, |bar| {
                             bar.child(
                                 div()

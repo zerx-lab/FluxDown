@@ -393,18 +393,27 @@ impl RssController {
         }
     }
 
-    /// 批量下载不等同于逐条「重新下载」：只纳入尚未处置的新条目和首次收录的历史。
-    pub(crate) fn bulk_download_candidates(&self) -> impl Iterator<Item = &str> {
-        self.items
-            .iter()
-            .filter(|item| {
-                self.selected_source.as_deref() == Some(item.source_id.as_str())
-                    && matches!(item.status, 0 | 5)
-                    && (!item.link.trim().is_empty() || !item.enclosure_url.trim().is_empty())
-                    && (self.busy.is_empty()
-                        || !self.busy.contains(&format!("{}\0{}", item.source_id, item.guid)))
-            })
+    /// Eligible bulk-download items are new or initial history rows with a usable link.
+    pub(crate) fn bulk_download_candidates<'a>(
+        &'a self,
+        query: &str,
+        oldest_first: bool,
+    ) -> impl Iterator<Item = &'a str> {
+        self.visible_indices(query, oldest_first)
+            .into_iter()
+            .filter_map(|index| self.items.get(index))
+            .filter(|item| self.is_bulk_download_candidate(item))
             .map(|item| item.guid.as_str())
+    }
+
+    pub(crate) fn is_bulk_download_candidate(&self, item: &RssItemDto) -> bool {
+        self.selected_source.as_deref() == Some(item.source_id.as_str())
+            && matches!(item.status, 0 | 5)
+            && (!item.link.trim().is_empty() || !item.enclosure_url.trim().is_empty())
+            && (self.busy.is_empty()
+                || !self
+                    .busy
+                    .contains(&format!("{}\0{}", item.source_id, item.guid)))
     }
 
     pub(crate) fn task_status(&self, item: &RssItemDto) -> Option<(i32, bool)> {
@@ -540,13 +549,62 @@ mod tests {
         })
         .collect();
         assert_eq!(
-            controller.bulk_download_candidates().collect::<Vec<_>>(),
+            controller
+                .bulk_download_candidates("", false)
+                .collect::<Vec<_>>(),
             ["new", "history"]
         );
         assert!(controller.begin_action("a", "new"));
         assert_eq!(
-            controller.bulk_download_candidates().collect::<Vec<_>>(),
+            controller
+                .bulk_download_candidates("", false)
+                .collect::<Vec<_>>(),
             ["history"]
+        );
+    }
+
+    #[test]
+    fn bulk_download_candidates_are_limited_to_search_and_current_eligibility() {
+        let mut controller = RssController::new(Arc::new(Port));
+        controller.stale = false;
+        controller.selected_source = Some("a".into());
+        controller.items = [
+            ("a", "match-new", "Match new", 0, true),
+            ("a", "match-history", "Match history", 5, true),
+            ("a", "hidden", "Hidden result", 0, true),
+            ("a", "no-link", "Match no link", 5, false),
+            ("a", "handled", "Match handled", 4, true),
+        ]
+        .into_iter()
+        .map(|(source, guid, title, status, has_link)| {
+            let mut row = item(source, guid, title, 0, status, "");
+            if has_link {
+                row.link = format!("https://example.org/{guid}");
+            }
+            row
+        })
+        .collect();
+        assert_eq!(
+            controller
+                .bulk_download_candidates("match", false)
+                .collect::<Vec<_>>(),
+            ["match-new", "match-history"]
+        );
+        assert!(controller.begin_action("a", "match-new"));
+        assert_eq!(
+            controller
+                .bulk_download_candidates("match", false)
+                .collect::<Vec<_>>(),
+            ["match-history"]
+        );
+        assert!(controller.is_bulk_download_candidate(&controller.items[1]));
+        controller.items[1].status = 4;
+        assert!(!controller.is_bulk_download_candidate(&controller.items[1]));
+        assert_eq!(
+            controller
+                .bulk_download_candidates("", false)
+                .collect::<Vec<_>>(),
+            ["hidden"]
         );
     }
 

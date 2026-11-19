@@ -340,6 +340,44 @@ struct GroupBucket {
     order: i64,
 }
 
+/// Recognize explicit season/episode tokens; title is the filename stem before the token.
+fn content_group_bucket(task: &DownloadTaskView) -> Option<GroupBucket> {
+    let name = task.name.rsplit(['/', '\\']).next()?;
+    let bytes = name.as_bytes();
+    let separator = |byte: u8| b" ._-[]()".contains(&byte);
+    let (index, _) = bytes.windows(6).enumerate().find(|(index, part)| {
+        let [season, s1, s2, episode, e1, e2] = *part else {
+            return false;
+        };
+        season.eq_ignore_ascii_case(&b's')
+            && episode.eq_ignore_ascii_case(&b'e')
+            && [s1, s2, e1, e2].into_iter().all(u8::is_ascii_digit)
+            && index
+                .checked_sub(1)
+                .and_then(|i| bytes.get(i))
+                .copied()
+                .is_some_and(separator)
+            && bytes.get(index + part.len()).copied().is_none_or(separator)
+    })?;
+    let title = name
+        .get(..index)?
+        .trim_matches(|ch: char| ch.is_ascii() && separator(ch as u8));
+    if title.is_empty() {
+        return None;
+    }
+    let folded = title.to_lowercase();
+    let key = if task.source == TaskSource::Remote {
+        format!("content:remote:{}\0{folded}", task.to_device)
+    } else {
+        format!("content:local:{folded}")
+    };
+    Some(GroupBucket {
+        key,
+        label: SharedString::from(title.to_owned()),
+        order: 0,
+    })
+}
+
 /// 自上次重算以来，影响可见行的变化范围。
 enum ViewChange {
     /// 没有影响排序 / 筛选 / 分组的变化：可见行与选中集都无需重算。
@@ -1775,10 +1813,15 @@ impl DownloadTableDelegate {
             self.push_directories(&mut visible, &entities, &local, &remote);
             return visible;
         }
+        let mut ungrouped = Vec::new();
         let mut buckets = group_by_key(
             entities.into_iter().filter_map(|entity| {
-                self.entity_bucket(entity, &local, &remote)
-                    .map(|bucket| (bucket, entity))
+                if let Some(bucket) = self.entity_bucket(entity, &local, &remote) {
+                    Some((bucket, entity))
+                } else {
+                    ungrouped.push(entity);
+                    None
+                }
             }),
             |bucket: &GroupBucket| bucket.key.as_str(),
         );
@@ -1805,13 +1848,16 @@ impl DownloadTableDelegate {
                 }
             }
         }
+        for entity in ungrouped {
+            self.push_entity(&mut visible, entity);
+        }
         visible
     }
 
     fn group_bucket(&self, task: &DownloadTaskView) -> GroupBucket {
         let strings = &self.strings;
         match self.prefs.group_by {
-            ViewGroupBy::None | ViewGroupBy::Directory => GroupBucket {
+            ViewGroupBy::None | ViewGroupBy::Directory | ViewGroupBy::Content => GroupBucket {
                 key: String::new(),
                 label: SharedString::default(),
                 order: 0,
@@ -5239,18 +5285,20 @@ mod tests {
     }
 
     #[test]
-    fn directory_grouping_in_video_category_uses_only_matching_task_paths() -> Result<(), I18nError> {
-        let mut delegate = delegate(&[2, 2, 2])?;
+    fn content_grouping_in_video_category_uses_titles_not_save_paths() -> Result<(), I18nError> {
+        let mut delegate = delegate(&[2, 2, 2, 2, 2])?;
         let mut rows = delegate.store.local().to_vec();
-        rows[0].name = "one.mp4".into();
-        rows[0].file_extension = "mp4".into();
-        rows[0].save_dir = "/dl/Shows".into();
-        rows[1].name = "two.mp4".into();
-        rows[1].file_extension = "mp4".into();
-        rows[1].save_dir = "/dl/Movies".into();
-        rows[2].name = "notes.txt".into();
-        rows[2].file_extension = "txt".into();
-        rows[2].save_dir = "/dl/Documents".into();
+        for (row, (name, extension, dir)) in rows.iter_mut().zip([
+            ("节目.S01E01.mp4", "mp4", "/dl"),
+            ("节目 S02E03.mp4", "mp4", "/dl/another"),
+            ("节目.S03E01.txt", "txt", "/dl"),
+            ("Movie.mp4", "mp4", "/dl"),
+            ("Other.S01E02.mp4", "mp4", "/dl"),
+        ]) {
+            row.name = name.into();
+            row.file_extension = extension.into();
+            row.save_dir = dir.into();
+        }
         delegate.store.replace_local(rows);
         delegate.set_categories(Rc::new(CategoryIndex::from_dtos(
             fluxdown_protocol::CustomCategoryDto::builtin_defaults(),
@@ -5260,7 +5308,7 @@ mod tests {
             DownloadStatusFilter::All,
             "builtin_video",
         )));
-        delegate.prefs_mut().group_by = ViewGroupBy::Directory;
+        delegate.prefs_mut().group_by = ViewGroupBy::Content;
         delegate.refresh_view();
 
         let folders = delegate
@@ -5271,10 +5319,16 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<(&str, usize)>>();
-        assert_eq!(folders[0], ("Default download directory", 2));
-        assert_eq!(folders.len(), 3);
-        assert!(folders.contains(&("Movies", 1)));
-        assert!(folders.contains(&("Shows", 1)));
+        assert_eq!(folders, [("Other", 1), ("节目", 2)]);
+        delegate.toggle_group_collapsed("content:local:节目");
+        delegate.refresh_view();
+        assert_eq!(delegate.visible_task_ids().count(), 2);
+        assert!(
+            delegate
+                .visible
+                .iter()
+                .any(|row| matches!(row, VisibleRow::Task(super::RowId::Local(3))))
+        );
         Ok(())
     }
 

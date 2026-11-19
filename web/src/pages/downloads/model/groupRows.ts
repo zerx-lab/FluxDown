@@ -17,6 +17,17 @@ export interface BucketInfo {
   order: number
 }
 
+export function contentBucket(view: DownloadTaskView): BucketInfo | null {
+  const name = view.name.slice(Math.max(view.name.lastIndexOf('/'), view.name.lastIndexOf('\\')) + 1)
+  const match = /[ ._\-[\]()]s[0-9]{2}e[0-9]{2}(?=$|[ ._\-[\]()])/i.exec(name)
+  if (match === null) return null
+  const label = name.slice(0, match.index).replace(/^[ ._\-[\]()]+|[ ._\-[\]()]+$/g, '')
+  if (label === '') return null
+  const folded = label.toLowerCase()
+  const key = view.source === 'remote' ? `content:remote:${view.toDevice}\u0000${folded}` : `content:local:${folded}`
+  return { key, label, order: 0 }
+}
+
 /** 分组方式的桶标题行。 */
 export interface BucketRow {
   type: 'bucket'
@@ -124,8 +135,8 @@ export interface VisibleRowsInput {
   groups: readonly GroupDto[]
   /** 当前排序比较器（与引擎同一个）。 */
   compare: (left: DownloadTaskView, right: DownloadTaskView) => number
-  /** null = 不分组。组行传入其通过成员的视图，供「类型」这种不能直接用代理视图的分桶使用。 */
-  bucketOf: ((view: DownloadTaskView, groupMembers: readonly DownloadTaskView[] | null) => BucketInfo) | null
+  /** Null callback disables grouping; a null result leaves that entity outside any named bucket. */
+  bucketOf: ((view: DownloadTaskView, groupMembers: readonly DownloadTaskView[] | null) => BucketInfo | null) | null
   /** 已折叠的桶键。 */
   collapsedBuckets: ReadonlySet<string>
   /** 运行期展开的组。 */
@@ -273,8 +284,13 @@ export function buildVisibleRows(input: VisibleRowsInput): VisibleRows {
     buckets.push({ info: null, entities, count: 0 })
   } else {
     const byKey = new Map<string, Bucket>()
+    const ungrouped: Entity[] = []
     for (const entity of entities) {
       const info = input.bucketOf(entity.view, membersOf.get(entity) ?? null)
+      if (info === null) {
+        ungrouped.push(entity)
+        continue
+      }
       let bucket = byKey.get(info.key)
       if (bucket === undefined) {
         bucket = { info, entities: [], count: 0 }
@@ -289,6 +305,7 @@ export function buildVisibleRows(input: VisibleRowsInput): VisibleRows {
       const right = b.info as BucketInfo
       return left.order - right.order || (left.label < right.label ? -1 : left.label > right.label ? 1 : 0)
     })
+    if (ungrouped.length > 0) buckets.push({ info: null, entities: ungrouped, count: 0 })
   }
 
   // 6. 展开：组行后紧跟 flatten 出的成员行 / 目录行。

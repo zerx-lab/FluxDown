@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import type { GroupDto, TaskDto } from '../../../lib/rpc'
 import { CategoryIndex, builtinDefaults } from './categories'
 import { SELECTION_ALL } from './filters'
-import { buildVisibleRows, dirCollapseKey, dominantCategory, groupRowsByDirectory, groupsMatchingQuery, keysInVisualSpan, selectGroupOnClick } from './groupRows'
+import { buildVisibleRows, contentBucket, dirCollapseKey, dominantCategory, groupRowsByDirectory, groupsMatchingQuery, keysInVisualSpan, selectGroupOnClick } from './groupRows'
 import type { BucketInfo, GroupFolderRow, VisibleRow, VisibleRowsInput } from './groupRows'
 import { RowEngine } from './rowEngine'
 import type { TaskRow } from './rowEngine'
@@ -87,6 +87,22 @@ const describeRow = (item: VisibleRow): string => {
 }
 
 const keys = (rows: readonly VisibleRow[]) => rows.map(describeRow)
+
+test('content grouping collapses recognized episodes independently of save directories', () => {
+  const rows = [
+    row('one', { fileName: '节目.S01E01.mp4' }),
+    row('two', { fileName: '节目 S02E03.mp4', saveDir: '/elsewhere' }),
+    row('movie', { fileName: 'Movie.mp4' }),
+    row('other', { fileName: 'Other.S01E02.mp4' }),
+    row('lookalike', { fileName: 'Document AAS01E02.mp4' }),
+  ]
+  const bucketOf: VisibleRowsInput['bucketOf'] = (view, members) => members === null ? contentBucket(view) : null
+  expect(keys(build(rows, [], { bucketOf }).rows)).toEqual([
+    '# Other', 'l:other', '# 节目', 'l:one', 'l:two', 'l:movie', 'l:lookalike',
+  ])
+  const collapsed = build(rows, [], { bucketOf, collapsedBuckets: new Set(['content:local:节目']) })
+  expect(collapsed.sequence()).toEqual(['l:other', 'l:movie', 'l:lookalike'])
+})
 
 describe('directory row integration', () => {
   test('directory headings wrap top-level tasks and collapse descendants without changing item identity', () => {

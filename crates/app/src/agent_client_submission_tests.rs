@@ -520,6 +520,7 @@ fn create_many_resends_same_batch_after_disconnect_without_pausing_the_gate() {
                     category_route: None,
                     last_category_mode: "auto".to_owned(),
                     offered_save_dir: String::new(),
+                    subfolder_base: None,
                 },
                 move |command| submit_port.execute(command),
                 SubmissionHooks::new(|_| tokio::time::sleep(Duration::from_millis(1))),

@@ -218,6 +218,12 @@ impl DownloadTableDelegate {
         local: &[DownloadTaskView],
         remote: &[DownloadTaskView],
     ) -> Option<GroupBucket> {
+        if self.prefs.group_by == ViewGroupBy::Content {
+            return match entity {
+                Entity::Task(id) => row_at(local, remote, id).and_then(super::content_group_bucket),
+                Entity::Group(_) => None,
+            };
+        }
         match entity {
             Entity::Task(id) => row_at(local, remote, id).map(|task| self.group_bucket(task)),
             Entity::Group(ix) => {

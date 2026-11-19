@@ -100,6 +100,8 @@ pub enum NewDownloadSubmission {
         last_category_mode: String,
         /// Form's initial directory before category prefill.
         offered_save_dir: String,
+        /// Base displayed in the form when a derived child is used for the actual download.
+        subfolder_base: Option<String>,
     },
     /// 预解析清单确认后只建一个组；捕获事务由 agent 合并并消费。
     Group {
@@ -211,8 +213,15 @@ impl NewDownloadSubmission {
                 common,
                 items,
                 captures,
+                subfolder_base,
                 ..
             } => {
+                if let Some(base) = subfolder_base {
+                    return Some(DownloadsCommand::SetLocalPreference {
+                        key: LAST_SAVE_DIR_PREF,
+                        value: serde_json::Value::String(base.clone()),
+                    });
+                }
                 let source = if items.is_empty() {
                     &captures.first()?.request
                 } else {
@@ -244,6 +253,7 @@ impl NewDownloadSubmission {
                 category_route,
                 last_category_mode,
                 offered_save_dir,
+                ..
             } => {
                 let mut common = *common;
                 let category_route =
@@ -1210,6 +1220,7 @@ mod tests {
             category_route: None,
             last_category_mode: "auto".to_owned(),
             offered_save_dir: String::new(),
+            subfolder_base: None,
         }
     }
 
@@ -1313,6 +1324,7 @@ mod tests {
             category_route: None,
             last_category_mode: "auto".to_owned(),
             offered_save_dir: String::new(),
+            subfolder_base: None,
         };
         let sent = RefCell::new(None);
         block_on(run_submission(
@@ -1630,6 +1642,7 @@ mod tests {
             category_route: None,
             last_category_mode: "none".to_owned(),
             offered_save_dir: String::new(),
+            subfolder_base: None,
         };
         let resolved = RefCell::new(Vec::<(String, bool)>::new());
         let category_preferences = RefCell::new(Vec::new());
@@ -1665,6 +1678,7 @@ mod tests {
             category_route: None,
             last_category_mode: "category:video".to_owned(),
             offered_save_dir: "/downloads".to_owned(),
+            subfolder_base: None,
         };
         let preferences = RefCell::new(Vec::new());
         let report = block_on(run_submission(
@@ -1778,6 +1792,7 @@ mod tests {
             category_route: route,
             last_category_mode: "auto".to_owned(),
             offered_save_dir: offered.to_owned(),
+            subfolder_base: None,
         }
         .plan();
         let batch = plan.batch.expect("batch");
@@ -1826,6 +1841,7 @@ mod tests {
                 category_route: route,
                 last_category_mode: "auto".to_owned(),
                 offered_save_dir: "/downloads".to_owned(),
+                subfolder_base: None,
             }
             .plan();
             let Some(DownloadsCommand::CaptureResolve(params)) = plan.commands.first() else {
@@ -1836,6 +1852,29 @@ mod tests {
 
         assert!(!disable_flag(Some(route()), "/downloads"));
         assert!(disable_flag(None, "/data/video"));
+    }
+
+    #[test]
+    fn subfolder_submission_keeps_the_base_as_the_last_directory() {
+        let plan = NewDownloadSubmission::Tasks {
+            common: Box::new(blank_request("/downloads/Movie")),
+            items: vec![CreateTaskItem::default()],
+            captures: Vec::new(),
+            category_route: None,
+            last_category_mode: "auto".to_owned(),
+            offered_save_dir: "/downloads".to_owned(),
+            subfolder_base: Some("/downloads".to_owned()),
+        }
+        .plan();
+        assert_eq!(
+            plan.batch.expect("batch").common.save_dir,
+            "/downloads/Movie"
+        );
+        assert!(matches!(
+            plan.best_effort.first(),
+            Some(DownloadsCommand::SetLocalPreference { key: LAST_SAVE_DIR_PREF, value })
+                if value == "/downloads"
+        ));
     }
 
     #[test]

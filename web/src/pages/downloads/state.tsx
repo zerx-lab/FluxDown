@@ -34,7 +34,7 @@ import { remoteCan } from './model/batchPlan'
 import { isDownloadable } from './model/actions'
 import type { SidebarCounts } from './model/counts'
 import { useLiveSpeeds } from './model/liveSpeeds'
-import { buildVisibleRows, dirCollapseKey, dominantCategory, groupFullySelected, groupRowsByDirectory, groupsMatchingQuery, keysInVisualSpan, rowIndexOfKey, selectGroupOnClick, selectionIsGroup } from './model/groupRows'
+import { buildVisibleRows, contentBucket, dirCollapseKey, dominantCategory, groupFullySelected, groupRowsByDirectory, groupsMatchingQuery, keysInVisualSpan, rowIndexOfKey, selectGroupOnClick, selectionIsGroup } from './model/groupRows'
 import type { BucketInfo, GroupFolderRow, VisibleRow, VisibleRowsInput } from './model/groupRows'
 import type { DirectoryItem } from './model/directoryTree'
 import { makeAggregate } from './model/groupTree'
@@ -413,8 +413,10 @@ export function DownloadsProvider({ children }: { children: ReactNode }) {
       const index = categories.indexOf(id)
       return index < 0 ? Number.MAX_SAFE_INTEGER : index
     }
-    return (view, groupMembers): BucketInfo => {
+    return (view, groupMembers): BucketInfo | null => {
       switch (groupBy) {
+        case 'content':
+          return groupMembers === null ? contentBucket(view) : null
         case 'status':
           return { key: `status:${view.state}`, label: stateLabel(t, view.state), order: STATE_RANK[view.state] }
         case 'date': {

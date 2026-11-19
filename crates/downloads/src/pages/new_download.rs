@@ -38,8 +38,9 @@ use crate::{
             BuiltRequests, DEFAULT_HASH_ALGORITHM, DraftOptions, HASH_ALGORITHMS, MAX_THREADS,
             ProxyChoice, THREAD_PRESETS, ThreadChoice, UA_PRESET_CUSTOM, UA_PRESET_DEFAULT,
             UA_PRESETS, UrlEntry, append_entries, build_requests, capture_entry, captured_referrer,
-            checksum_spec, compose_request, custom_segments, detect_ua_preset, manual_proxy_url,
-            parse_entries, parse_input, suggested_subfolder, ua_preset_keys, ua_preset_value,
+            check_subfolder, checksum_spec, compose_request, custom_segments, detect_ua_preset,
+            manual_proxy_url, parse_entries, parse_input, suggested_subfolder, ua_preset_keys,
+            ua_preset_value,
         },
         save_dir_category::{
             CategoryMode, NewDownloadCategory, category_mode_preference, category_options,
@@ -106,8 +107,6 @@ pub struct NewDownloadQueue {
 pub struct NewDownloadContext {
     /// 保存目录初值（沿用上次 / 全局默认）。
     pub save_dir: String,
-    /// 全局默认目录，不受上次选择和分类路由影响。
-    pub default_save_dir: String,
     /// 保存目录历史（最新在前）；`None` = 偏好关闭，不列出也不记录。
     pub save_dir_history: Option<Vec<String>>,
     /// 按分类记住的手动保存目录（与历史同一开关）；`None` = 偏好关闭，不列出也不记录。
@@ -252,7 +251,6 @@ pub(crate) fn build_new_download_context(
     let category_options = category_options(&categories);
     NewDownloadContext {
         save_dir: save_dir.to_owned(),
-        default_save_dir: default_save_dir.to_owned(),
         save_dir_history,
         category_save_dir_history,
         queue_id: queue_id.to_owned(),
@@ -330,6 +328,8 @@ pub struct NewDownloadView {
     /// 尚未确认 / 忽略的外部捕获；按 URL 与链接行对应。
     captures: Vec<PendingCaptureDto>,
     save_dir: Entity<InputState>,
+    use_subfolder: bool,
+    checking_subfolder: bool,
     threads: ThreadChoice,
     custom_threads: Entity<InputState>,
     rename: Entity<InputState>,
@@ -465,6 +465,8 @@ impl NewDownloadView {
             entries: Vec::new(),
             captures: Vec::new(),
             save_dir,
+            use_subfolder: false,
+            checking_subfolder: false,
             custom_threads,
             advanced_open: false,
             http_password,
@@ -559,6 +561,7 @@ impl NewDownloadView {
             |this, _, event: &InputEvent, _, cx| {
                 if let InputEvent::Change = event {
                     this.category_dir_manually_edited = true;
+                    this.use_subfolder = false;
                     cx.notify();
                 }
             },
@@ -920,6 +923,7 @@ impl NewDownloadView {
 
     fn can_submit(&self, cx: &App) -> bool {
         if self.picking
+            || self.checking_subfolder
             || self.preview_gate.is_active()
             || self.manifest.is_some()
             || self.entries.is_empty()
@@ -1004,7 +1008,6 @@ impl NewDownloadView {
     ) {
         let NewDownloadContext {
             save_dir,
-            default_save_dir,
             save_dir_history,
             category_save_dir_history,
             queue_id,
@@ -1048,7 +1051,6 @@ impl NewDownloadView {
             self.proxy_choice = ProxyChoice::FollowGlobal;
         }
         self.context.save_dir = save_dir;
-        self.context.default_save_dir = default_save_dir;
         self.context.save_dir_history = save_dir_history;
         self.context.category_save_dir_history = category_save_dir_history;
         self.context.queue_id = queue_id;
@@ -1230,7 +1232,55 @@ impl NewDownloadView {
 
     fn submit_requests(
         &mut self,
+        mut built: BuiltRequests,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let target = self
+            .use_subfolder
+            .then(|| self.subfolder_target(cx))
+            .flatten()
+            .filter(|_| self.save_dir.read(cx).value().trim() == built.common.save_dir);
+        let Some(target) = target else {
+            self.dispatch_requests(built, None, window, cx);
+            return;
+        };
+        self.checking_subfolder = true;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let path = std::path::PathBuf::from(&target);
+            let result = cx
+                .background_executor()
+                .spawn(async move { check_subfolder(&path) })
+                .await;
+            let Ok(()) = this.update_in(cx, |this, window, cx| {
+                this.checking_subfolder = false;
+                cx.notify();
+                if !this.use_subfolder || this.subfolder_target(cx).as_deref() != Some(&target) {
+                    return;
+                }
+                if let Err(error) = result {
+                    let message = this.translator.read(cx).text_with(
+                        "downloadSubfolderUnavailable",
+                        &[("error", &error.to_string())],
+                    );
+                    window.push_notification(toast::error(SharedString::from(message)), cx);
+                    return;
+                }
+                let base = std::mem::replace(&mut built.common.save_dir, target);
+                this.dispatch_requests(built, Some(base), window, cx);
+            }) else {
+                // The window was closed during the filesystem check.
+                return;
+            };
+        })
+        .detach();
+    }
+
+    fn dispatch_requests(
+        &mut self,
         built: BuiltRequests,
+        subfolder_base: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1250,19 +1300,20 @@ impl NewDownloadView {
                 None => tasks.push(item),
             }
         }
-        self.record_save_dir_history(&common.save_dir, cx);
+        self.record_save_dir_history(subfolder_base.as_deref().unwrap_or(&common.save_dir), cx);
         let offered_save_dir = self.context.save_dir.clone();
         (self.on_submit)(
             NewDownloadSubmission::Tasks {
                 common: Box::new(common),
                 items: tasks,
                 captures,
-                // 自动模式且目录框未被手改才按分类路由；用户改过的目录原样使用。
+                // A derived subfolder is the final directory, not a new category route root.
                 category_route: self
                     .context
                     .category_route
                     .clone()
-                    .filter(|_| self.routes_by_category(cx)),
+                    .filter(|_| subfolder_base.is_none() && self.routes_by_category(cx)),
+                subfolder_base,
                 last_category_mode: category_mode_preference(&self.category_mode),
                 offered_save_dir,
             },
@@ -1829,6 +1880,25 @@ impl NewDownloadView {
         ))
     }
 
+    fn subfolder_target(&self, cx: &App) -> Option<String> {
+        let [entry] = self.entries.as_slice() else {
+            return None;
+        };
+        if self.is_remote() || !self.save_dir_untouched(cx) {
+            return None;
+        }
+        let rename = self.rename_value(cx);
+        suggested_subfolder(
+            &self.save_dir.read(cx).value(),
+            &entry.url,
+            if rename.is_empty() {
+                &entry.file_name
+            } else {
+                &rename
+            },
+        )
+    }
+
     fn render_save_dir(&self, cx: &mut Context<Self>) -> Div {
         if let Some(entry) = self.target_entry() {
             let invalid = self.remote_dir_check(entry, cx) == RemoteDirCheck::Invalid;
@@ -1854,11 +1924,6 @@ impl NewDownloadView {
                 ))
             });
         }
-        let suggestion = if self.save_dir_untouched(cx) {
-            suggested_subfolder(&self.context.default_save_dir, &self.entries)
-        } else {
-            None
-        };
         form_field(
             self.strings.save_dir.clone(),
             input_with_action(
@@ -1874,35 +1939,27 @@ impl NewDownloadView {
                     })),
                 cx,
             ),
-            suggestion.as_deref().map(SharedString::from),
+            None,
             cx,
         )
-        .when_some(suggestion, |field, dir| {
-            field.child(
-                Button::new("new-download-use-suggested-subfolder")
-                    .outline()
-                    .label(SharedString::from(
-                        self.translator
-                            .read(cx)
-                            .text("useSuggestedSubfolder")
-                            .to_owned(),
-                    ))
-                    .control(cx)
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        if this.save_dir_untouched(cx)
-                            && suggested_subfolder(&this.context.default_save_dir, &this.entries)
-                                .as_deref()
-                                == Some(dir.as_str())
-                        {
-                            this.category_dir_manually_edited = true;
-                            this.save_dir_menu_open = false;
-                            this.save_dir.update(cx, |input, cx| {
-                                input.set_value(dir.clone(), window, cx);
-                            });
-                            cx.notify();
-                        }
-                    })),
-            )
+        .when_some(self.subfolder_target(cx), |field, dir| {
+            let title = self
+                .translator
+                .read(cx)
+                .text("useSuggestedSubfolder")
+                .to_owned();
+            field
+                .child(self.toggle(
+                    "new-download-use-suggested-subfolder",
+                    title.into(),
+                    None,
+                    self.use_subfolder,
+                    |this, enabled| this.use_subfolder = enabled,
+                    cx,
+                ))
+                .when(self.use_subfolder, |field| {
+                    field.child(field_hint(dir, cx).min_w_0().text_ellipsis_middle())
+                })
         })
     }
 
