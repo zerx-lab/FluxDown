@@ -720,7 +720,12 @@ mod install {
         #[tokio::test]
         async fn ffmpeg_install_falls_back_to_a_release_with_both_requested_assets() {
             for (mirror_base, expected_sources, tag, stale_assets) in [
-                (MIRROR_BASE, &[MIRROR][..], "mirror", &[TARGET, CHECKSUM_ASSET][..]),
+                (
+                    MIRROR_BASE,
+                    &[MIRROR][..],
+                    "mirror",
+                    &[TARGET, CHECKSUM_ASSET][..],
+                ),
                 (
                     MIRROR_BASE,
                     &[MIRROR, OFFICIAL][..],

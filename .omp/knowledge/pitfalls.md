@@ -12,6 +12,8 @@
 
 另见 AGENTS.md §4：anyhow 错误一律 `{e:#}`、pg 字节列必须 `BIGINT`、一个 data_dir 只有一个引擎写入者、RSS 无人值守链路、宿主下载走统一出口。
 
+- **组件 Release 回退以可用资产为准，不以 HTTP 200 为准**：yt-dlp 列表和安装共用平台二进制与校验资产检查；所有来源失败时保留各来源的错误，避免官网缓存缺 tag 掩盖直连 403 → `native/engine/src/components/{mod.rs,ytdlp.rs}`，回归 `unusable_mirror_falls_back_to_installable_windows_versions`、`github_403_uses_only_the_requested_cached_ytdlp_release`。
+
 - **HLS 根播放列表被 403 时要用协商 HTTP/2 的 client 重试，但默认不能换掉 HTTP/1.1**：带浏览器 UA（扩展转发）却只说 HTTP/1.1 的请求会被 Cloudflare 判为机器人，播放列表直接 403（surrit.com 实测：同一组 UA + Referer，HTTP/1.1 → 403，协商 HTTP/2 → 200）。默认下载 client 仍强制 HTTP/1.1（每分片一条连接、代理兼容更稳）；仅根列表 403 且尚未写盘时换 `HttpVersion::Any` 整任务重跑，分片 / 子列表 403 不触发。`client_cache` 键含 HTTP 版本，规则路由 `with_http` 同步 → `hls_downloader::{run_hls_download,root_playlist_forbidden,use_http2_transport}`、`downloader::build_http2_client`、`client_cache`、`rule_route::EgressRouter::with_http`；回归 `hls_downloader::tests::http2_fallback_triggers_only_on_root_playlist_403`。
 - **换链接后的续传必须对新链接真实探测，并零容差比对新旧文件大小**：沿用库存大小当 hint 会跳过探测——任务被换成更小文件时分段越界、持续 416；新版本仅大几百 KB 时被当作 CDN 误差拼成坏文件。大小一致（如签名过期换新链接）才续传，否则清空分段与旧临时文件重下 → `native/engine/src/db.rs::task_source_changed`、`native/engine/src/download_manager.rs`（`source_changed` 分支）、回归 `native/engine/tests/engine/change_url_resume.rs::switching_to_a_different_file_restarts_from_zero` / `switching_to_a_resigned_link_of_the_same_file_keeps_progress`。
 - **纯 Range 续传也必须校验服务器版本标识**：不发 If-Range 时若不验 validator，会把旧任务进度与新文件分段静默拼接 → 回归 `native/engine/tests/engine/realtest.rs::validated_plain_range_rejects_changed_version`（`#[ignore]`，需 `--ignored`）。

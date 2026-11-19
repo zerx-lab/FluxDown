@@ -227,7 +227,7 @@ mod install {
         db: &Db,
         egress: &crate::egress::Egress,
     ) -> Result<YtdlpVersions, ComponentError> {
-        platform_asset().ok_or(ComponentError::Unsupported)?;
+        let asset = platform_asset().ok_or(ComponentError::Unsupported)?;
         let clients = super::super::egress_clients(egress).await?;
         let mirror_base = super::super::component_mirror_base(db).await;
         super::super::fetch_versions_metadata(
@@ -235,7 +235,7 @@ mod install {
             "ytdlp",
             RELEASES_API,
             &mirror_base,
-            select_versions,
+            |releases| select_versions(releases, asset),
         )
         .await
     }
@@ -252,19 +252,22 @@ mod install {
         release["tag_name"].as_str().filter(|tag| !tag.is_empty())
     }
 
-    fn select_versions(releases: &Value) -> Result<YtdlpVersions, ComponentError> {
+    fn select_versions(releases: &Value, asset: &str) -> Result<YtdlpVersions, ComponentError> {
         let releases = releases
             .as_array()
             .ok_or_else(|| ComponentError::NotFound("yt-dlp release list".to_owned()))?;
         let versions: Vec<String> = releases
             .iter()
-            .filter_map(stable_tag)
+            .filter_map(|release| {
+                let tag = stable_tag(release)?;
+                release_asset_urls(release, tag, asset).ok()?;
+                Some(tag)
+            })
             .map(str::to_owned)
             .collect();
-        let latest_stable = versions
-            .first()
-            .cloned()
-            .ok_or_else(|| ComponentError::NotFound("stable yt-dlp releases".to_owned()))?;
+        let latest_stable = versions.first().cloned().ok_or_else(|| {
+            ComponentError::NotFound(format!("stable yt-dlp releases for {asset}"))
+        })?;
         Ok(YtdlpVersions {
             versions,
             latest_stable,
@@ -389,10 +392,16 @@ mod install {
         };
         super::super::fetch_release_metadata(
             [
-                super::super::https_mirror_url(&github_url, mirror_base),
-                Some(github_url),
+                (
+                    "configured mirror",
+                    super::super::https_mirror_url(&github_url, mirror_base),
+                ),
+                ("direct GitHub API", Some(github_url)),
             ],
-            &super::super::official_versions_url("ytdlp"),
+            (
+                "official cache",
+                &super::super::official_versions_url("ytdlp"),
+            ),
             fetch,
             |release| select_download(release, version, asset),
         )
@@ -416,14 +425,12 @@ mod install {
             matching_tag(metadata, version).map(|tag| (metadata, tag))
         }
         .ok_or_else(|| {
-            ComponentError::NotFound(version.unwrap_or("stable yt-dlp release").to_owned())
+            ComponentError::NotFound(match version {
+                Some(tag) => format!("yt-dlp release tag {tag}"),
+                None => "stable yt-dlp release".to_owned(),
+            })
         })?;
-        let assets = release["assets"]
-            .as_array()
-            .ok_or_else(|| ComponentError::NotFound(format!("yt-dlp release assets ({tag})")))?;
-        let asset_url = super::super::release_asset_url(assets, asset, UPSTREAM_DOWNLOAD_PREFIX)?;
-        let sums_url =
-            super::super::release_asset_url(assets, CHECKSUM_ASSET, UPSTREAM_DOWNLOAD_PREFIX)?;
+        let (asset_url, sums_url) = release_asset_urls(release, tag, asset)?;
         Ok(YtdlpDownload {
             version: tag.to_owned(),
             asset_url: asset_url.to_owned(),
@@ -431,83 +438,131 @@ mod install {
         })
     }
 
+    fn release_asset_urls<'a>(
+        release: &'a Value,
+        tag: &str,
+        asset: &str,
+    ) -> Result<(&'a str, &'a str), ComponentError> {
+        let assets = release["assets"]
+            .as_array()
+            .ok_or_else(|| ComponentError::NotFound(format!("yt-dlp release assets ({tag})")))?;
+        let asset_url = super::super::release_asset_url(assets, asset, UPSTREAM_DOWNLOAD_PREFIX)?;
+        let sums_url =
+            super::super::release_asset_url(assets, CHECKSUM_ASSET, UPSTREAM_DOWNLOAD_PREFIX)?;
+        Ok((asset_url, sums_url))
+    }
+
     #[cfg(test)]
     mod tests {
         use serde_json::json;
 
         use super::{
-            CHECKSUM_ASSET, ComponentError, RELEASE_TAG_API, RELEASES_API, UPSTREAM_DOWNLOAD_PREFIX,
-            fetch_install_metadata, select_versions,
+            CHECKSUM_ASSET, ComponentError, RELEASE_TAG_API, RELEASES_API,
+            UPSTREAM_DOWNLOAD_PREFIX, fetch_install_metadata, select_versions,
         };
 
+        const ASSET: &str = "yt-dlp.exe";
+        const TAG: &str = "2026.07.04";
+        const NEWER: &str = "2026.07.05";
+        const MIRROR_BASE: &str = "https://mirror.example";
+        const OFFICIAL: &str = "https://fluxdown.com/api/components/ytdlp";
+
+        fn release(tag: &str, names: &[&str]) -> serde_json::Value {
+            let assets: Vec<_> = names
+                .iter()
+                .map(|name| {
+                    json!({
+                        "name": name,
+                        "browser_download_url": format!("{UPSTREAM_DOWNLOAD_PREFIX}{tag}/{name}")
+                    })
+                })
+                .collect();
+            json!({"tag_name": tag, "assets": assets})
+        }
+
         #[tokio::test]
-        async fn wrong_mirror_shape_falls_back_to_official_ytdlp_list() {
-            let versions = super::super::super::fetch_versions_from_sources(
-                "ytdlp",
-                RELEASES_API,
-                "https://mirror.example",
-                |url| async move {
-                    match url.as_str() {
-                        "https://mirror.example/repos/yt-dlp/yt-dlp/releases?per_page=30" => {
-                            Ok(json!({"tag_name": "2026.07.05"}))
-                        }
-                        "https://fluxdown.com/api/components/ytdlp" => Ok(json!([
-                            {"tag_name": "nightly", "prerelease": true},
-                            {"tag_name": "2026.07.04"}
-                        ])),
-                        _ => panic!("unexpected source: {url}"),
-                    }
-                },
-                select_versions,
-            )
-            .await
-            .unwrap();
-            assert_eq!(versions.versions, ["2026.07.04"]);
-            assert_eq!(versions.latest_stable, "2026.07.04");
+        async fn unusable_mirror_falls_back_to_installable_windows_versions() {
+            let linux_only = release(NEWER, &["yt-dlp_linux", CHECKSUM_ASSET]);
+            let missing_checksum = release(NEWER, &[ASSET]);
+            for mirror in [
+                json!({"tag_name": NEWER}),
+                json!([linux_only]),
+                json!([missing_checksum]),
+            ] {
+                let mut prerelease = release("nightly", &[ASSET, CHECKSUM_ASSET]);
+                prerelease["prerelease"] = json!(true);
+                let official = json!([
+                    prerelease,
+                    linux_only,
+                    missing_checksum,
+                    release(TAG, &[ASSET, CHECKSUM_ASSET])
+                ]);
+                let mut visited = Vec::new();
+                let versions = super::super::super::fetch_versions_from_sources(
+                    "ytdlp",
+                    RELEASES_API,
+                    MIRROR_BASE,
+                    |url| {
+                        let response = if url == OFFICIAL { &official } else { &mirror };
+                        visited.push(url);
+                        std::future::ready(Ok(response.clone()))
+                    },
+                    |releases| select_versions(releases, ASSET),
+                )
+                .await
+                .unwrap();
+                assert_eq!(
+                    visited,
+                    [
+                        "https://mirror.example/repos/yt-dlp/yt-dlp/releases?per_page=30",
+                        OFFICIAL,
+                    ]
+                );
+                assert_eq!(versions.versions, [TAG]);
+                assert_eq!(versions.latest_stable, TAG);
+            }
         }
 
         #[tokio::test]
         async fn github_403_uses_only_the_requested_cached_ytdlp_release() {
-            const ASSET: &str = "yt-dlp.exe";
-            const TAG: &str = "2026.07.04";
-            const NEWER: &str = "2026.07.05";
-            let release = |tag: &str| {
-                json!({
-                    "tag_name": tag,
-                    "assets": [
-                        {"name": ASSET, "browser_download_url": format!("{UPSTREAM_DOWNLOAD_PREFIX}{tag}/{ASSET}")},
-                        {"name": CHECKSUM_ASSET, "browser_download_url": format!("{UPSTREAM_DOWNLOAD_PREFIX}{tag}/{CHECKSUM_ASSET}")}
-                    ]
-                })
-            };
+            let cached = |tag: &str| release(tag, &[ASSET, CHECKSUM_ASSET]);
             for want in [Some(TAG), None, Some("missing")] {
-                let mut github_denied = false;
-                let result = fetch_install_metadata("", want, ASSET, |url| {
+                let github = match want {
+                    Some(tag) => format!("{RELEASE_TAG_API}{tag}"),
+                    None => super::RELEASE_LATEST_API.to_owned(),
+                };
+                let mirror = super::super::super::https_mirror_url(&github, MIRROR_BASE).unwrap();
+                let mut visited = Vec::new();
+                let result = fetch_install_metadata(MIRROR_BASE, want, ASSET, |url| {
                     let response = match url.as_str() {
-                        "https://fluxdown.com/api/components/ytdlp" => {
-                            assert!(github_denied);
-                            Ok(json!([
-                                {"tag_name": "nightly", "prerelease": true},
-                                {"tag_name": "draft", "draft": true},
-                                release(NEWER),
-                                release(TAG)
-                            ]))
+                        OFFICIAL => Ok(json!([
+                            {"tag_name": "nightly", "prerelease": true},
+                            {"tag_name": "draft", "draft": true},
+                            cached(NEWER),
+                            cached(TAG)
+                        ])),
+                        endpoint if endpoint == mirror.as_str() => {
+                            Err(ComponentError::Http("API request failed: timeout".into()))
                         }
-                        _ => {
-                            if let Some(tag) = want {
-                                assert_eq!(url, format!("{RELEASE_TAG_API}{tag}"));
-                            } else {
-                                assert_eq!(url, super::RELEASE_LATEST_API);
-                            }
-                            github_denied = true;
-                            Err(ComponentError::Http("GitHub API returned 403 Forbidden".into()))
+                        endpoint if endpoint == github.as_str() => {
+                            Err(ComponentError::Http("API returned 403 Forbidden".into()))
                         }
+                        _ => panic!("unexpected source: {url}"),
                     };
+                    visited.push(url);
                     std::future::ready(response)
                 })
                 .await;
+                assert_eq!(visited, [mirror.as_str(), github.as_str(), OFFICIAL]);
                 if want == Some("missing") {
-                    assert!(matches!(result, Err(ComponentError::NotFound(_))));
+                    let message = result.err().unwrap().to_string();
+                    assert!(message.contains("configured mirror: http error: API request failed"));
+                    assert!(message.contains("direct GitHub API: http error: API returned 403"));
+                    assert!(
+                        message.contains(
+                            "official cache: asset not found: yt-dlp release tag missing"
+                        )
+                    );
                 } else {
                     let expected = want.unwrap_or(NEWER);
                     let download = result.unwrap();

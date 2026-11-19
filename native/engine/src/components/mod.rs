@@ -225,16 +225,19 @@ pub(crate) async fn fetch_github_json(
         .header("Accept", "application/vnd.github+json")
         .send()
         .await
-        .map_err(|e| ComponentError::Http(e.to_string()))?;
+        .map_err(|e| ComponentError::Http(format!("API request failed: {}", e.without_url())))?;
     if !resp.status().is_success() {
         return Err(ComponentError::Http(format!(
-            "GitHub API returned {}",
+            "API returned {}",
             resp.status()
         )));
     }
-    resp.json::<serde_json::Value>()
-        .await
-        .map_err(|e| ComponentError::Http(e.to_string()))
+    resp.json::<serde_json::Value>().await.map_err(|e| {
+        ComponentError::Http(format!(
+            "API response could not be read: {}",
+            e.without_url()
+        ))
+    })
 }
 
 /// 镜像改写后的 URL：仅当确实改写且镜像为 https 才返回；http 镜像一律忽略
@@ -393,32 +396,45 @@ where
 {
     fetch_release_metadata(
         [
-            https_mirror_url(github_url, mirror_base),
-            Some(official_versions_url(component)),
+            (
+                "configured mirror",
+                https_mirror_url(github_url, mirror_base),
+            ),
+            ("official cache", Some(official_versions_url(component))),
         ],
-        github_url,
+        ("direct GitHub API", github_url),
         fetch,
         select,
     )
     .await
 }
 
+/// 尝试各来源，只有元数据通过选取才停止回退。
 #[cfg(feature = "components")]
 async fn fetch_release_metadata<T, Fut>(
-    fallbacks: [Option<String>; 2],
-    last_url: &str,
+    fallbacks: [(&str, Option<String>); 2],
+    last: (&str, &str),
     mut fetch: impl FnMut(String) -> Fut,
     select: impl Fn(&serde_json::Value) -> Result<T, ComponentError>,
 ) -> Result<T, ComponentError>
 where
     Fut: std::future::Future<Output = Result<serde_json::Value, ComponentError>>,
 {
-    for url in fallbacks.into_iter().flatten() {
-        if let Ok(metadata) = fetch(url).await.and_then(|release| select(&release)) {
-            return Ok(metadata);
+    let mut failures = Vec::new();
+    let sources = fallbacks
+        .into_iter()
+        .filter_map(|(source, url)| url.map(|url| (source, url)))
+        .chain(std::iter::once_with(|| (last.0, last.1.to_owned())));
+    for (source, url) in sources {
+        match fetch(url).await.and_then(|release| select(&release)) {
+            Ok(metadata) => return Ok(metadata),
+            Err(error) => failures.push(format!("{source}: {error}")),
         }
     }
-    select(&fetch(last_url.to_owned()).await?)
+    Err(ComponentError::Http(format!(
+        "release metadata unavailable ({})",
+        failures.join("; ")
+    )))
 }
 
 /// 下载载荷到 `dest` 并校验 SHA-256（`expected_sha256`，小写 hex），
