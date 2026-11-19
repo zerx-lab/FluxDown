@@ -2454,7 +2454,7 @@
   "rssIgnoreSelected": "Ignore selected",
   "rssSelectVisible": "Select visible items",
   "rssDownloadAllEligible": "Download all eligible",
-  "rssDownloadAllEligibleConfirm": "Queue {count} new or previously collected items from the current results?",
+  "rssDownloadAllEligibleConfirm": "Queue {count} new or previously collected items from the current results? Previously collected items were not checked against this feed's filters.",
   "rssDownloadAllEligibleChanged": "The eligible RSS items changed. Review the current results and confirm again.",
   "rssClearSelection": "Clear selection",
   "rssTaskMissing": "Task deleted · download again",

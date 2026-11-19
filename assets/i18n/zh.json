@@ -2454,7 +2454,7 @@
   "rssIgnoreSelected": "忽略所选",
   "rssSelectVisible": "全选当前条目",
   "rssDownloadAllEligible": "下载全部可下载条目",
-  "rssDownloadAllEligibleConfirm": "将当前结果中的 {count} 条新条目或首次收录的历史条目加入下载队列？",
+  "rssDownloadAllEligibleConfirm": "将当前结果中的 {count} 条新条目或首次收录的历史条目加入下载队列？首次收录的历史条目未经过该订阅的过滤规则。",
   "rssDownloadAllEligibleChanged": "可下载的 RSS 条目已变化，请查看当前结果后重新确认。",
   "rssClearSelection": "取消选择",
   "rssTaskMissing": "关联任务已删除 · 可重新下载",
