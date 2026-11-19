@@ -23969,7 +23969,9 @@ mod tests {
     #[tokio::test]
     async fn hls_terminal_progress_publishes_unsampled_checkpoint_before_resume() {
         for terminal in [2, 4] {
-            let db = Db::connect("sqlite::memory:").await.expect("connect mem db");
+            let db = Db::connect("sqlite::memory:")
+                .await
+                .expect("connect mem db");
             let sink = Arc::new(RecordingSink::new());
             let (tx, rx) = mpsc::channel(8);
             let runtime = |written| TaskRuntime {
@@ -24033,7 +24035,11 @@ mod tests {
             assert_eq!(progress_statuses(&sink), [1, terminal, 1]);
             assert_eq!(
                 frames,
-                [(1, Some((1, 4))), (terminal, Some((2, 4))), (1, Some((2, 4)))]
+                [
+                    (1, Some((1, 4))),
+                    (terminal, Some((2, 4))),
+                    (1, Some((2, 4)))
+                ]
             );
         }
     }
