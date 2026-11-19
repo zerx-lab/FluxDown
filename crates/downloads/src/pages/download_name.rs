@@ -7,6 +7,7 @@ use gpui_component::input::InputState;
 pub(super) struct DownloadName {
     detected: SharedString,
     mode: NameMode,
+    fixed_name: bool,
 }
 
 #[derive(Default)]
@@ -24,10 +25,11 @@ enum NameMode {
 }
 
 impl DownloadName {
-    pub(super) fn new(detected: SharedString) -> Self {
+    pub(super) fn with_fixed_name(detected: SharedString) -> Self {
         Self {
             detected,
             mode: NameMode::Auto,
+            fixed_name: true,
         }
     }
 
@@ -115,12 +117,14 @@ impl DownloadName {
         let NameMode::Manual { prefilled } = self.mode else {
             return None;
         };
-        if prefilled && input.text() == self.detected.as_str() {
+        // For a fixed name, restoring the original text always means no rename.
+        let omit_detected = self.fixed_name || prefilled;
+        if omit_detected && input.text() == self.detected.as_str() {
             return None;
         }
         let value: Cow<'_, str> = input.text().into();
         let trimmed = value.trim();
-        if trimmed.is_empty() || (prefilled && trimmed == self.detected.trim()) {
+        if trimmed.is_empty() || (omit_detected && trimmed == self.detected.trim()) {
             None
         } else if trimmed.len() == value.len() {
             Some(value.into_owned())
