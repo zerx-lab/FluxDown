@@ -70,8 +70,12 @@ const subscribe = (listener: () => void): (() => void) => {
   }
 }
 
+export function getDialogsState(): DialogsState {
+  return state
+}
+
 export function useDialogsState(): DialogsState {
-  return useSyncExternalStore(subscribe, () => state)
+  return useSyncExternalStore(subscribe, getDialogsState)
 }
 
 export function openNewDownload(options: NewDownloadOptions = {}): void {

@@ -2630,13 +2630,32 @@ impl Db {
                 .bind(task_id)
                 .fetch_optional(&self.pool)
                 .await?;
-        json.map_or_else(
-            || Ok(Vec::new()),
-            |json| {
-                serde_json::from_str(&json)
-                    .map_err(|error| DbError::InvalidConfig(format!("BT web seeds: {error}")))
-            },
+        json.as_deref()
+            .map_or_else(|| Ok(Vec::new()), Self::decode_web_seeds)
+    }
+
+    #[cfg(feature = "bt")]
+    fn decode_web_seeds(json: &str) -> Result<Vec<String>, DbError> {
+        serde_json::from_str(json)
+            .map_err(|error| DbError::InvalidConfig(format!("BT web seeds: {error}")))
+    }
+
+    /// Loads only the persisted inputs needed by BT detail polling.
+    #[cfg(feature = "bt")]
+    pub(crate) async fn load_bt_status_inputs(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<(String, Option<Vec<u8>>, Vec<String>)>, DbError> {
+        let row: Option<(String, Option<Vec<u8>>, String)> = sqlx::query_as(
+            "SELECT tasks.url, torrent_files.file_bytes, tasks.bt_web_seeds
+             FROM tasks LEFT JOIN torrent_files ON torrent_files.task_id = tasks.id
+             WHERE tasks.id = $1",
         )
+        .bind(task_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|(url, bytes, json)| Ok((url, bytes, Self::decode_web_seeds(&json)?)))
+            .transpose()
     }
 
     /// Persists the task's user-added sources without rewriting torrent metadata.

@@ -190,6 +190,9 @@
   创建前按 info hash 对全部 BT 任务（种子字节 + 磁力 URL）查重，重复时 `seedLocal` 返回 `duplicate=true` + 已有任务（不建新任务，客户端弹 `duplicateTorrentToast`）。
 - **超级做种（BEP 16）**（`daemon.task.setSuperSeeding`）：`tasks.bt_super_seeding` → `BtTaskOptions::super_seeding`，经 `register_task_options` / `set_task_super_seeding`
   作用于已入册句柄（`Session::set_super_seeding`），每次加入会话经 `apply_task_options` 烘焙 `AddTorrentOptions::super_seeding`；只在任务完整时生效，下载中可提前设。
+- **添加 HTTP 源（BEP 19）**（`daemon.task.addWebSeed`）：用户地址存于 `tasks.bt_web_seeds`，不改种子文件或磁力链接。
+  已入册的句柄即时添加；会话登记保留到同轮重挂载，恢复下载和磁盘续种从库重新登记。BT 详情合并句柄实况和已保存来源；
+  句柄缺少的来源按会话开关区分停用和拒绝，无句柄时按设置区分停用和待挂载。
 - **v2 / 混合种子**：任务主键仍是 20 字节 info hash（v1 / 混合 = SHA-1，纯 v2 = 截断 SHA-256）；`BtStatusDto` / `TorrentShareDto` 另带 `infoHashV2`（种子字节 / 磁力 `btmh` / 句柄取得元数据后）。
   分享磁力的 `xt` 随版本：v1 = `btih`、纯 v2 = `btmh`、混合两个都带。完成复核与 `daemon.task.verify` 共用 `verify_pieces_core`：按 `Lengths`（纯 v2 每个文件从分片边界开始、
   文件末片较短）与各文件 `offset_in_torrent` 取片，校验器来自 `ValidatedTorrentMetaV1Info::piece_verifier`（v1 SHA-1 / v2 merkle / 混合两者）；哈希未知（v2 层未取得）的片记为跳过，

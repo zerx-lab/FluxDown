@@ -755,6 +755,7 @@ pub struct SharedBtSession {
     /// 晚于做种登记，会话重建据此与做种表合并，不漏掉校验中的任务。
     reseeding: Arc<std::sync::Mutex<HashSet<String>>>,
     session: Arc<Session>,
+    web_seeds_enabled: bool,
     /// Maps our `task_id` → librqbit `BtHandle`.
     /// Protected by an async Mutex because it's accessed from both the
     /// main actor (pause/delete) and spawned download tasks (add/finish).
@@ -1229,6 +1230,7 @@ impl SharedBtSession {
             closing: CancellationToken::new(),
             reseeding: Arc::new(std::sync::Mutex::new(HashSet::new())),
             session,
+            web_seeds_enabled: bt_config.enable_webseed,
             handles: Mutex::new(HashMap::new()),
             pending_deletes: Mutex::new(HashMap::new()),
             inflight_adds: AtomicUsize::new(0),
@@ -1322,6 +1324,11 @@ impl SharedBtSession {
             "[BT] shared session upload speed limit updated to {} B/s",
             bps
         );
+    }
+
+    /// The setting captured when constructing this session.
+    pub(crate) fn web_seeds_enabled(&self) -> bool {
+        self.web_seeds_enabled
     }
 
     /// Get an `Arc<Session>` handle for adding torrents.
@@ -7989,6 +7996,7 @@ mod tests {
                 closing: tokio_util::sync::CancellationToken::new(),
                 reseeding: Arc::new(std::sync::Mutex::new(HashSet::new())),
                 session,
+                web_seeds_enabled: true,
                 handles: Mutex::new(HashMap::new()),
                 pending_deletes: Mutex::new(HashMap::new()),
                 inflight_adds: AtomicUsize::new(0),

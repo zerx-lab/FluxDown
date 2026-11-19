@@ -40,3 +40,6 @@ The page exercises the production torrent context menu and Add Web Seed dialog
 against controlled RPC responses; no agent or HTTP mirror is required.
 The page sets `document.documentElement.dataset.roostUi` to `pass` only after
 the interaction assertions pass and the fixture is cleaned up.
+
+`bun test` separately covers the dialog store's stale-close guard: an old
+request cannot close a new dialog for the same torrent.
