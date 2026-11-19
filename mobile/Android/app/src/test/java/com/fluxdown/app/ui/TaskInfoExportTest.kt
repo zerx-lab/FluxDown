@@ -1,5 +1,6 @@
 package com.fluxdown.app.ui
 
+import com.fluxdown.app.feature.newtask.UrlEntry
 import com.fluxdown.app.feature.newtask.batchExportName
 import com.fluxdown.app.feature.newtask.parseEntries
 import org.junit.Assert.assertEquals
@@ -28,7 +29,7 @@ class TaskInfoExportTest {
 
     @Test
     fun batchNameSurvivesUrlsThatJavaUriRejects() {
-        val entry = parseEntries("https://example.com/dir/a b.zip?x=1").single()
+        val entry = UrlEntry("https://example.com/dir/a b.zip?x=1")
         assertEquals("a b.zip", entry.batchExportName())
     }
 }
