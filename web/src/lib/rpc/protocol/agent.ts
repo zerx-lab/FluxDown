@@ -579,8 +579,8 @@ export interface CaptureCreateGroupParams {
 }
 
 /**
- * `agent.capture.submitTorrentFile` 参数。`silent=true` 全选文件直接建任务；`silent=false`
- * 由 daemon 发 BT 文件选择请求。其余字段缺省时维持 daemon 默认目录 / 队列 / 立即开始。
+ * `agent.capture.submitTorrentFile` 参数。`silent=true` 且「免打扰下载」与「跳过二次选择」
+ * 偏好均开启时全选文件直接建任务；否则由 daemon 发 BT 文件选择请求。其余字段缺省时维持 daemon 默认目录 / 队列 / 立即开始。
  */
 export interface CaptureSubmitTorrentFileParams {
   path: string;
