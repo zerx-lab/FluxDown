@@ -102,6 +102,7 @@ public struct CategoryIndex: Sendable {
         }
 
         let category: TaskCategory
+        let firstWithID: Bool
         let kind: Kind
 
         var isUrl: Bool {
@@ -132,13 +133,17 @@ public struct CategoryIndex: Sendable {
     public init(_ categories: [TaskCategory]) {
         ordered = categories.sorted { $0.position < $1.position }
         other = ordered.first { $0.isOther }
-        let rules: [Rule] = ordered.filter { !$0.isAll && !$0.isOther }.map { category in
+        var seen = Set<String>()
+        let rules: [Rule] = ordered.compactMap { category in
+            let first = seen.insert(category.id).inserted
+            guard !category.isAll, !category.isOther else { return nil }
             if !category.urlPattern.isEmpty {
-                return Rule(category: category, kind: .url(UrlWildcard.compile(category.urlPattern)))
+                return Rule(category: category, firstWithID: first, kind: .url(UrlWildcard.compile(category.urlPattern)))
             }
             if !category.regexPattern.isEmpty {
                 return Rule(
                     category: category,
+                    firstWithID: first,
                     kind: .regex(try? NSRegularExpression(pattern: category.regexPattern, options: [.caseInsensitive]))
                 )
             }
@@ -146,7 +151,7 @@ public struct CategoryIndex: Sendable {
                 let lower = ext.lowercased()
                 return lower.hasPrefix(".") ? String(lower.dropFirst()) : lower
             })
-            return Rule(category: category, kind: .extensions(exts))
+            return Rule(category: category, firstWithID: first, kind: .extensions(exts))
         }
         urlRules = rules.filter(\.isUrl)
         nameRules = rules.filter { !$0.isUrl }
@@ -157,6 +162,18 @@ public struct CategoryIndex: Sendable {
         urlRules.first { $0.matches(fileName, url: url) }?.category
             ?? nameRules.first { $0.matches(fileName, url: url) }?.category
             ?? other
+    }
+
+    /// 种子成员没有独立来源地址，只按文件名匹配。
+    public func categoryOfFileName(_ fileName: String) -> TaskCategory? {
+        let hasExtension = fileName.lastIndex(of: ".").map { dot in
+            dot != fileName.startIndex && fileName.index(after: dot) != fileName.endIndex
+        } ?? false
+        return nameRules.first { rule in
+            guard rule.firstWithID else { return false }
+            if case .extensions = rule.kind, !hasExtension { return false }
+            return rule.matches(fileName, url: "")
+        }?.category ?? other
     }
 
     /// 任务是否属于分类（all 恒真；other = 未命中任何具体分类）。

@@ -12,8 +12,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fluxdown_protocol::{
-    BtFileDto, HlsQualityOptionDto, PluginCandidateDto, ResolveVariantOptionDto, SelectionKind,
-    SelectionOutcome, SelectionRequestDto, SelectionResolutionDto,
+    BtFileDto, CustomCategoryDto, HlsQualityOptionDto, PluginCandidateDto, ResolveVariantOptionDto,
+    SelectionKind, SelectionOutcome, SelectionRequestDto, SelectionResolutionDto,
 };
 use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
@@ -39,10 +39,77 @@ use gpui_component::{
 use super::download_name::DownloadName;
 use crate::{
     controller::{DownloadsCommand, DownloadsPort},
-    model::format_bytes,
+    model::{CategoryIndex, format_bytes},
 };
 
 mod plugin_choice;
+
+const BT_CATEGORY_KEYS: [(&str, &str); 7] = [
+    ("video", "categoryVideo"),
+    ("audio", "categoryAudio"),
+    ("document", "categoryDocument"),
+    ("image", "categoryImage"),
+    ("program", "categoryProgram"),
+    ("archive", "categoryArchive"),
+    ("other", "categoryOther"),
+];
+const BT_MIN_SIZES: [(i64, &str); 4] = [
+    (0, ""),
+    (10 << 20, "10 MB"),
+    (100 << 20, "100 MB"),
+    (1 << 30, "1 GB"),
+];
+
+struct BtFilter {
+    input: Entity<InputState>,
+    expanded: bool,
+    query: String,
+    min_size: i64,
+    categories: HashSet<usize>,
+    counts: Vec<usize>,
+    rules: Vec<CustomCategoryDto>,
+    file_categories: Vec<usize>,
+}
+
+impl BtFilter {
+    fn active(&self) -> bool {
+        self.expanded
+            && (!self.query.is_empty() || self.min_size > 0 || !self.categories.is_empty())
+    }
+
+    fn matches(&self, position: usize, file: &BtFile) -> bool {
+        bt_file_matches(
+            &self.query,
+            self.min_size,
+            &self.categories,
+            self.file_categories[position],
+            file,
+        )
+    }
+}
+
+/// `query` 已是修剪后的小写串（每次输入变化只算一次）；匹配完整相对路径，目录名与扩展名均可搜。
+fn bt_file_matches(
+    query: &str,
+    min_size: i64,
+    categories: &HashSet<usize>,
+    category: usize,
+    file: &BtFile,
+) -> bool {
+    (min_size == 0 || file.size >= min_size)
+        && (categories.is_empty() || categories.contains(&category))
+        && (query.is_empty() || file.path_lower.contains(query))
+}
+
+fn bt_basename(path: &str) -> &str {
+    path.rsplit(['/', '\\']).next().unwrap_or(path)
+}
+
+fn bt_category(path: &str, index: &CategoryIndex, other: usize) -> usize {
+    index
+        .rule_index_for_file_name(bt_basename(path))
+        .unwrap_or(other)
+}
 
 pub struct SelectionView {
     strings: SelectionStrings,
@@ -54,6 +121,7 @@ pub struct SelectionView {
     save_dir_input: Option<Entity<InputState>>,
     /// BT 名称输入，预填任务当前名称；其它选择种类没有。
     name_input: Option<Entity<InputState>>,
+    bt_filter: Option<BtFilter>,
     download_name: DownloadName,
     /// 系统目录选择器打开中，避免重入。
     picking_save_dir: bool,
@@ -99,6 +167,8 @@ struct BtFile {
     index: i32,
     size: i64,
     path: SharedString,
+    /// 筛选搜索用的小写路径，构造时算一次，渲染期不再逐文件分配。
+    path_lower: String,
     leaf: SharedString,
     depth: f32,
 }
@@ -114,6 +184,7 @@ impl From<&BtFileDto> for BtFile {
         Self {
             index: file.index,
             size: file.size,
+            path_lower: file.path.to_lowercase(),
             path,
             leaf,
             depth,
@@ -160,8 +231,12 @@ impl BtFileOrder {
         });
     }
 
-    fn iter<'a>(&'a self, files: &'a [BtFile]) -> impl Iterator<Item = &'a BtFile> {
-        (0..files.len()).map(|i| &files[self.positions.get(i).copied().unwrap_or(i)])
+    /// 按显示顺序给出 `(原始位置, 文件)`；筛选的分类表按原始位置索引。
+    fn iter<'a>(&'a self, files: &'a [BtFile]) -> impl Iterator<Item = (usize, &'a BtFile)> {
+        (0..files.len()).map(|i| {
+            let position = self.positions.get(i).copied().unwrap_or(i);
+            (position, &files[position])
+        })
     }
 }
 
@@ -177,11 +252,15 @@ fn extension_bytes(name: &str) -> impl Iterator<Item = u8> + '_ {
 /// `FileExists` 由聚合的「文件已存在」窗口承载（见 [`crate::FileConflictView`]），没有计划。
 pub struct SelectionPlan {
     state: SelectionState,
+    categories: Vec<CustomCategoryDto>,
 }
 
 impl SelectionPlan {
     #[must_use]
-    pub fn for_request(request: &SelectionRequestDto) -> Option<Self> {
+    pub fn for_request(
+        request: &SelectionRequestDto,
+        categories: Vec<CustomCategoryDto>,
+    ) -> Option<Self> {
         let state = match &request.kind {
             SelectionKind::Hls { options } => {
                 let selected = match request.default_choice {
@@ -235,7 +314,7 @@ impl SelectionPlan {
             }
             SelectionKind::FileExists { .. } => return None,
         };
-        Some(Self { state })
+        Some(Self { state, categories })
     }
 }
 
@@ -253,6 +332,7 @@ impl SelectionView {
     ) -> Self {
         let strings = SelectionStrings::from_translator(translator.read(cx));
         let state = plan.state;
+        let mut categories = plan.categories;
         let save_dir_input = match &state {
             SelectionState::Bt { save_dir, .. } => {
                 let initial = save_dir.clone();
@@ -279,11 +359,58 @@ impl SelectionView {
             let initial = task_name.clone();
             cx.new(|cx| InputState::new(window, cx).default_value(initial))
         });
+        let bt_filter = match &state {
+            SelectionState::Bt { files, .. } if files.len() > 1 => {
+                let placeholder = strings.bt_filter_search.clone();
+                let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
+                cx.subscribe(&input, |this, input, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change)
+                        && let Some(filter) = &mut this.bt_filter
+                    {
+                        filter.query = input.read(cx).value().trim().to_lowercase();
+                        cx.notify();
+                    }
+                })
+                .detach();
+                categories.sort_by_key(|category| category.position);
+                let other = categories
+                    .iter()
+                    .position(|category| category.builtin_type.as_deref() == Some("other"))
+                    .unwrap_or(categories.len());
+                let mut counts = vec![0; categories.len().max(other + 1)];
+                let index = CategoryIndex::from_dtos(categories);
+                let file_categories = files
+                    .iter()
+                    .map(|file| {
+                        let category = bt_category(&file.path, &index, other);
+                        counts[category] += 1;
+                        category
+                    })
+                    .collect();
+                Some(BtFilter {
+                    input,
+                    expanded: false,
+                    query: String::new(),
+                    min_size: 0,
+                    categories: HashSet::new(),
+                    counts,
+                    rules: index.into_dtos(),
+                    file_categories,
+                })
+            }
+            _ => None,
+        };
         cx.observe_in(&translator, window, |this, translator, window, cx| {
             this.strings = SelectionStrings::from_translator(translator.read(cx));
             if let Some(input) = &this.save_dir_input {
                 let placeholder = this.strings.save_dir_placeholder.clone();
                 input.update(cx, |input, cx| {
+                    input.set_placeholder(placeholder, window, cx)
+                });
+            }
+            if let Some(filter) = &this.bt_filter {
+                let placeholder = this.strings.bt_filter_search.clone();
+                filter.input.update(cx, |input, cx| {
                     input.set_placeholder(placeholder, window, cx)
                 });
             }
@@ -310,6 +437,7 @@ impl SelectionView {
             state,
             save_dir_input,
             name_input,
+            bt_filter,
             download_name,
             picking_save_dir: false,
             submitting: false,
@@ -730,6 +858,104 @@ impl SelectionView {
             }))
     }
 
+    fn set_bt_visible(&mut self, checked: bool) {
+        let SelectionState::Bt {
+            files, selected, ..
+        } = &mut self.state
+        else {
+            return;
+        };
+        let filter = self.bt_filter.as_ref().filter(|filter| filter.active());
+        if !checked && filter.is_none() {
+            selected.clear();
+            return;
+        }
+        for (position, file) in files.iter().enumerate() {
+            if filter.is_none_or(|filter| filter.matches(position, file)) {
+                if checked {
+                    selected.insert(file.index);
+                } else {
+                    selected.remove(&file.index);
+                }
+            }
+        }
+    }
+
+    fn render_bt_filters(&self, filter: &BtFilter, cx: &mut Context<Self>) -> Div {
+        let spacing = active_theme(cx).tokens().spacing.sm;
+        let categories = h_flex().flex_wrap().gap(spacing).children(
+            filter
+                .counts
+                .iter()
+                .enumerate()
+                .filter(|(_, count)| **count > 0)
+                .map(|(category, count)| {
+                    let rule = filter.rules.get(category);
+                    let kind = rule.map_or(Some("other"), |rule| rule.builtin_type.as_deref());
+                    let label = BT_CATEGORY_KEYS
+                        .iter()
+                        .position(|(id, _)| Some(*id) == kind)
+                        .map_or_else(
+                            || rule.map_or("", |rule| rule.name.as_str()),
+                            |index| self.strings.bt_categories[index].as_ref(),
+                        );
+                    let button = Button::new(("bt-category", category));
+                    let button = if filter.categories.contains(&category) {
+                        button.primary()
+                    } else {
+                        button.outline()
+                    };
+                    button
+                        .control(cx)
+                        .label(format!("{label} {count}"))
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            if let Some(filter) = &mut this.bt_filter
+                                && !filter.categories.remove(&category)
+                            {
+                                filter.categories.insert(category);
+                            }
+                            cx.notify();
+                        }))
+                }),
+        );
+        let sizes = h_flex()
+            .items_center()
+            .flex_wrap()
+            .gap(spacing)
+            .child(self.strings.bt_filter_min_size.clone())
+            .children(
+                BT_MIN_SIZES
+                    .iter()
+                    .enumerate()
+                    .map(|(index, &(size, label))| {
+                        let button = Button::new(("bt-min-size", index));
+                        let button = if filter.min_size == size {
+                            button.primary()
+                        } else {
+                            button.outline()
+                        };
+                        button
+                            .control(cx)
+                            .label(if size == 0 {
+                                self.strings.bt_filter_any_size.clone()
+                            } else {
+                                SharedString::from(label)
+                            })
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                if let Some(filter) = &mut this.bt_filter {
+                                    filter.min_size = size;
+                                }
+                                cx.notify();
+                            }))
+                    }),
+            );
+        v_flex()
+            .gap(spacing)
+            .child(Input::new(&filter.input).control(cx).w_full())
+            .child(categories)
+            .child(sizes)
+    }
+
     fn render_bt_sort(&self, order: &BtFileOrder, cx: &mut Context<Self>) -> Div {
         let spacing = active_theme(cx).tokens().spacing.xs;
         let options = [
@@ -773,6 +999,12 @@ impl SelectionView {
         cx: &mut Context<Self>,
     ) -> Div {
         let tokens = active_theme(cx).tokens().clone();
+        let filter = self.bt_filter.as_ref().filter(|filter| filter.active());
+        let mut visible = order
+            .iter(files)
+            .filter(|(position, file)| filter.is_none_or(|filter| filter.matches(*position, file)))
+            .peekable();
+        let no_matches = filter.is_some() && visible.peek().is_none();
         let selected_size: i64 = files
             .iter()
             .filter(|file| selected.contains(&file.index))
@@ -780,19 +1012,20 @@ impl SelectionView {
             .sum();
         let toolbar = h_flex()
             .items_center()
+            .flex_wrap()
             .gap(tokens.spacing.sm)
             .child(
                 Button::new("bt-select-all")
                     .outline()
                     .control(cx)
-                    .label(self.strings.select_all.clone())
+                    .disabled(no_matches)
+                    .label(if filter.is_some() {
+                        self.strings.bt_select_visible.clone()
+                    } else {
+                        self.strings.select_all.clone()
+                    })
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        if let SelectionState::Bt {
-                            files, selected, ..
-                        } = &mut this.state
-                        {
-                            *selected = files.iter().map(|file| file.index).collect();
-                        }
+                        this.set_bt_visible(true);
                         cx.notify();
                     })),
             )
@@ -800,14 +1033,33 @@ impl SelectionView {
                 Button::new("bt-deselect-all")
                     .outline()
                     .control(cx)
-                    .label(self.strings.deselect_all.clone())
+                    .disabled(no_matches)
+                    .label(if filter.is_some() {
+                        self.strings.bt_clear_visible.clone()
+                    } else {
+                        self.strings.deselect_all.clone()
+                    })
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        if let SelectionState::Bt { selected, .. } = &mut this.state {
-                            selected.clear();
-                        }
+                        this.set_bt_visible(false);
                         cx.notify();
                     })),
             )
+            .children(self.bt_filter.as_ref().map(|filter| {
+                Button::new("bt-toggle-filters")
+                    .outline()
+                    .control(cx)
+                    .label(if filter.expanded {
+                        self.strings.bt_filter_hide.clone()
+                    } else {
+                        self.strings.bt_filter_show.clone()
+                    })
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        if let Some(filter) = &mut this.bt_filter {
+                            filter.expanded = !filter.expanded;
+                        }
+                        cx.notify();
+                    }))
+            }))
             .child(
                 div()
                     .flex_1()
@@ -827,7 +1079,7 @@ impl SelectionView {
         let list = v_flex()
             .flex_1()
             .min_h_0()
-            .children(order.iter(files).map(|file| {
+            .children(visible.map(|(_, file)| {
                 let checked = selected.contains(&file.index);
                 let index = file.index;
                 let (depth, label) = file.label(order.sort);
@@ -891,6 +1143,21 @@ impl SelectionView {
             .child(toolbar)
             .when(files.len() > 1, |body| {
                 body.child(self.render_bt_sort(order, cx))
+            })
+            .children(
+                self.bt_filter
+                    .as_ref()
+                    .filter(|filter| filter.expanded)
+                    .map(|filter| self.render_bt_filters(filter, cx)),
+            )
+            .when(no_matches, |view| {
+                view.child(
+                    div()
+                        .text_size(tokens.typography.sm.size)
+                        .line_height(tokens.typography.sm.line_height)
+                        .text_color(tokens.colors.muted_foreground)
+                        .child(self.strings.bt_filter_no_matches.clone()),
+                )
             })
             .child(div().flex_1().min_h_0().child(list))
     }
@@ -1005,6 +1272,15 @@ struct SelectionStrings {
     plugin_confirm: SharedString,
     select_all: SharedString,
     deselect_all: SharedString,
+    bt_filter_show: SharedString,
+    bt_filter_hide: SharedString,
+    bt_filter_search: SharedString,
+    bt_filter_min_size: SharedString,
+    bt_filter_any_size: SharedString,
+    bt_select_visible: SharedString,
+    bt_clear_visible: SharedString,
+    bt_filter_no_matches: SharedString,
+    bt_categories: [SharedString; BT_CATEGORY_KEYS.len()],
     sort_original: SharedString,
     sort_type: SharedString,
     sort_size: SharedString,
@@ -1040,6 +1316,15 @@ impl SelectionStrings {
             plugin_confirm: shared(translator.text("pluginChoiceConfirm")),
             select_all: shared(translator.text("btFileSelectAll")),
             deselect_all: shared(translator.text("deselectAll")),
+            bt_filter_show: shared(translator.text("btFilterShow")),
+            bt_filter_hide: shared(translator.text("btFilterHide")),
+            bt_filter_search: shared(translator.text("webSelectionFilterPlaceholder")),
+            bt_filter_min_size: shared(translator.text("btFilterMinSize")),
+            bt_filter_any_size: shared(translator.text("btFilterAnySize")),
+            bt_select_visible: shared(translator.text("btFilterSelectVisible")),
+            bt_clear_visible: shared(translator.text("btFilterClearVisible")),
+            bt_filter_no_matches: shared(translator.text("btFilterNoMatches")),
+            bt_categories: BT_CATEGORY_KEYS.map(|(_, key)| shared(translator.text(key))),
             sort_original: shared(translator.text("btFileSortOriginal")),
             sort_type: shared(translator.text("btFileSortType")),
             sort_size: shared(translator.text("btFileSortSize")),
@@ -1114,14 +1399,15 @@ mod tests {
     use std::{collections::HashSet, sync::Arc};
 
     use fluxdown_protocol::{
-        ApplicationErrorCode, BtFileDto, RpcErrorData, SELECTION_NO_DEADLINE, SelectionKind,
-        SelectionOutcome, SelectionRequestDto,
+        ApplicationErrorCode, BtFileDto, CustomCategoryDto, RpcErrorData, SELECTION_NO_DEADLINE,
+        SelectionKind, SelectionOutcome, SelectionRequestDto,
     };
     use fluxdown_ui_i18n::I18nCatalog;
     use gpui::{AppContext as _, TestApp};
 
     use super::{
-        BtFile, BtFileOrder, BtFileSort, SelectionPlan, SelectionState, SelectionView,
+        BT_CATEGORY_KEYS, BT_MIN_SIZES, BtFile, BtFileOrder, BtFileSort, CategoryIndex,
+        SelectionPlan, SelectionState, SelectionView, bt_category, bt_file_matches,
         bt_save_dir_confirmable, bt_save_dir_outcome, cancel_command,
     };
     use crate::controller::{DownloadsCommand, DownloadsPort, DownloadsResult, PortFuture};
@@ -1191,7 +1477,7 @@ mod tests {
         let ids = |order: &BtFileOrder| {
             order
                 .iter(&files)
-                .map(|file| file.index)
+                .map(|(_, file)| file.index)
                 .collect::<Vec<_>>()
         };
         assert_eq!(ids(&order), [9, 3, 7, 0, 4]);
@@ -1224,7 +1510,7 @@ mod tests {
         fn rows<'a>(order: &'a BtFileOrder, files: &'a [BtFile]) -> Vec<(i32, (f32, &'a str))> {
             order
                 .iter(files)
-                .map(|file| {
+                .map(|(_, file)| {
                     let (depth, label) = file.label(order.sort);
                     (file.index, (depth, label.as_str()))
                 })
@@ -1284,7 +1570,7 @@ mod tests {
                 }],
                 save_dir: String::new(),
             });
-            let plan = SelectionPlan::for_request(&request).expect("BT selection plan");
+            let plan = SelectionPlan::for_request(&request, Vec::new()).expect("BT selection plan");
             SelectionView::new(
                 translator,
                 request,
@@ -1398,5 +1684,166 @@ mod tests {
         assert!(bt_save_dir_confirmable("", "   "));
         assert!(bt_save_dir_confirmable("  ", ""));
         assert!(bt_save_dir_confirmable("", r"D:\Movies"));
+    }
+
+    fn bt_file(path: &str, size: i64) -> BtFile {
+        BtFile::from(&BtFileDto {
+            index: 0,
+            path: path.to_owned(),
+            size,
+        })
+    }
+
+    #[test]
+    fn bt_category_uses_ordered_filename_rules_and_falls_back_to_other() {
+        let mut rules = CustomCategoryDto::builtin_defaults();
+        let mut subtitles = rules[1].clone();
+        subtitles.id = "subtitles".into();
+        subtitles.builtin_type = None;
+        subtitles.extensions = vec![".SRT".into()];
+        rules[1].extensions = vec!["avi".into()];
+        rules.insert(1, subtitles.clone());
+        let mut episodes = subtitles.clone();
+        episodes.id = "episodes".into();
+        episodes.match_mode = "regex".into();
+        episodes.regex_pattern = r"^S\d+E\d+".into();
+        rules.insert(0, episodes);
+        let mut site = subtitles;
+        site.id = "site".into();
+        site.match_mode = "url".into();
+        site.url_pattern = "*".into();
+        rules.insert(0, site);
+        let other = rules.len() - 1;
+
+        let index = CategoryIndex::from_dtos(rules);
+        assert_eq!(bt_category(r"Season\s01e02.AVI", &index, other), 1);
+        assert_eq!(bt_category("Season/Track.srt", &index, other), 3);
+        assert_eq!(bt_category("Season/Video.AVI", &index, other), 4);
+        assert_eq!(bt_category("Season/Video.mkv", &index, other), other);
+        assert_eq!(bt_category("Season.srt/.srt", &index, other), other);
+    }
+
+    #[test]
+    fn bt_filter_matches_extension_and_directory_names() {
+        let none = HashSet::new();
+        let file = bt_file("Trailer/episode.MKV", 1);
+        assert!(bt_file_matches("mkv", 0, &none, 0, &file));
+        assert!(bt_file_matches("trailer", 0, &none, 0, &file));
+        assert!(!bt_file_matches("srt", 0, &none, 0, &file));
+        assert!(bt_file_matches("", 0, &none, 0, &file));
+    }
+
+    #[test]
+    fn bt_filter_min_size_uses_1024_boundaries() {
+        let none = HashSet::new();
+        let min = BT_MIN_SIZES[1].0;
+        assert_eq!(min, 10 * 1024 * 1024);
+        assert!(bt_file_matches("", min, &none, 0, &bt_file("a", min)));
+        assert!(!bt_file_matches("", min, &none, 0, &bt_file("a", min - 1)));
+        assert_eq!(BT_MIN_SIZES[3].0, 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn bt_filter_combines_category_size_and_query() {
+        let video = BT_CATEGORY_KEYS
+            .iter()
+            .position(|(id, _)| *id == "video")
+            .unwrap();
+        let audio = BT_CATEGORY_KEYS
+            .iter()
+            .position(|(id, _)| *id == "audio")
+            .unwrap();
+        let picked: HashSet<usize> = [video].into_iter().collect();
+        let file = bt_file("Season/Trailer.mkv", 20 << 20);
+        assert!(bt_file_matches("trailer", 10 << 20, &picked, video, &file));
+        assert!(!bt_file_matches("trailer", 10 << 20, &picked, audio, &file));
+        assert!(!bt_file_matches("other", 10 << 20, &picked, video, &file));
+        assert!(!bt_file_matches("trailer", 30 << 20, &picked, video, &file));
+    }
+
+    /// 排序只定顺序，筛选定可见与批量范围：分类按原始位置取，批量勾选不碰隐藏项。
+    #[test]
+    fn sorted_bt_rows_filter_and_bulk_select_by_original_position() {
+        struct Offline;
+
+        impl DownloadsPort for Offline {
+            fn execute(&self, _: DownloadsCommand) -> PortFuture<DownloadsResult> {
+                Box::pin(async { Err(RpcErrorData::new(ApplicationErrorCode::Internal, false)) })
+            }
+        }
+
+        let mut app = TestApp::new();
+        let translator = app.update(|cx| {
+            gpui_component::init(cx);
+            fluxdown_ui_theme::init(cx);
+            let catalog = I18nCatalog::load_embedded().expect("catalog");
+            cx.new(|_| catalog.translator("en"))
+        });
+        let files = [
+            (5, "small.mkv", 10),
+            (6, "notes.txt", 50),
+            (7, "large.mkv", 30),
+            (8, "medium.mp4", 20),
+        ]
+        .map(|(index, path, size)| BtFileDto {
+            index,
+            path: path.to_owned(),
+            size,
+        });
+        let mut win = app.open_window(|window, cx| {
+            let request = request(SelectionKind::Bt {
+                files: files.to_vec(),
+                save_dir: String::new(),
+            });
+            let plan = SelectionPlan::for_request(&request, CustomCategoryDto::builtin_defaults())
+                .expect("BT selection plan");
+            SelectionView::new(
+                translator,
+                request,
+                plan,
+                "pack".to_owned(),
+                Arc::new(Offline),
+                window,
+                cx,
+            )
+        });
+        let visible = |view: &SelectionView| {
+            let SelectionState::Bt { files, order, .. } = &view.state else {
+                panic!("BT state");
+            };
+            let filter = view.bt_filter.as_ref().filter(|filter| filter.active());
+            order
+                .iter(files)
+                .filter(|(position, file)| filter.is_none_or(|f| f.matches(*position, file)))
+                .map(|(_, file)| file.index)
+                .collect::<Vec<_>>()
+        };
+        win.update(|view, _, _| {
+            let SelectionState::Bt { files, order, .. } = &mut view.state else {
+                panic!("BT state");
+            };
+            order.set_sort(BtFileSort::Size, files);
+            let filter = view.bt_filter.as_mut().expect("multi-file filter");
+            let video = filter
+                .rules
+                .iter()
+                .position(|rule| rule.builtin_type.as_deref() == Some("video"))
+                .expect("video category");
+            filter.expanded = true;
+            filter.categories.insert(video);
+        });
+        win.update(|view, _, _| {
+            assert_eq!(visible(view), [7, 8, 5]);
+            view.set_bt_visible(false);
+            let SelectionState::Bt { selected, .. } = &view.state else {
+                panic!("BT state");
+            };
+            assert_eq!(*selected, HashSet::from([6]));
+            view.set_bt_visible(true);
+            let SelectionState::Bt { selected, .. } = &view.state else {
+                panic!("BT state");
+            };
+            assert_eq!(*selected, HashSet::from([5, 6, 7, 8]));
+        });
     }
 }
