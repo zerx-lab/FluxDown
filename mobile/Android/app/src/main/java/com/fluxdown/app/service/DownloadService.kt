@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -23,6 +24,8 @@ import com.fluxdown.app.diag.AppDiagnostics
 import com.fluxdown.app.i18n.str
 import com.fluxdown.core.format.Format
 import com.fluxdown.core.model.HostRef
+import com.fluxdown.core.model.TaskStatus
+import com.fluxdown.core.store.Transfer
 import com.fluxdown.core.store.TransferSummary
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -38,6 +41,8 @@ import kotlinx.coroutines.launch
 private const val TAG = "FluxDownService"
 private const val CHANNEL_ID = "fluxdown_downloads"
 private const val NOTIFICATION_ID = 1001
+private const val TASK_PROGRESS_CHANNEL = "fluxdown_task_progress"
+private const val TASK_PROGRESS_ID = 1002
 
 /** 通知刷新最小间隔（≤ 1 Hz）。 */
 private const val THROTTLE_MS = 1_000L
@@ -65,6 +70,8 @@ class DownloadService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var watcher: Job? = null
     private var lastShownAtMs = 0L
+    private val notificationManager by lazy { checkNotNull(getSystemService(NotificationManager::class.java)) }
+    private val shownTaskIds = mutableSetOf<String>()
 
     /** 最近一次已交付的启动请求；停止只针对它，之后在途的启动请求会让 [stopSelfResult] 返回 false。 */
     private var lastStartId = 0
@@ -74,7 +81,14 @@ class DownloadService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        ensureChannel(this)
+        ensureChannel(this, notificationManager, CHANNEL_ID, R.string.mobileDlNotifChannel, R.string.mobileDlNotifChannelDesc)
+        ensureChannel(this, notificationManager, TASK_PROGRESS_CHANNEL, R.string.mobileDlNotifTaskChannel, R.string.mobileDlNotifTaskChannelDesc)
+        // 前台服务异常退出时系统可能仍保留普通通知；重新启动后按当前任务重建。
+        for (entry in notificationManager.activeNotifications) {
+            if (entry.id == TASK_PROGRESS_ID && entry.notification.channelId == TASK_PROGRESS_CHANNEL) {
+                notificationManager.cancel(entry.tag, entry.id)
+            }
+        }
         AppDiagnostics.event("download service created")
     }
 
@@ -103,6 +117,7 @@ class DownloadService : Service() {
                     stopIfIdle("local session stale for ${STALE_KEEP_MS}ms")
                 }
             } else {
+                clearTaskNotifications()
                 delay(IDLE_GRACE_MS)
                 stopIfIdle("idle")
             }
@@ -138,6 +153,7 @@ class DownloadService : Service() {
         AppDiagnostics.event("download service destroyed")
         releaseWakeLock()
         scope.cancel()
+        clearTaskNotifications()
         super.onDestroy()
     }
 
@@ -146,6 +162,45 @@ class DownloadService : Service() {
         lastShownAtMs = SystemClock.elapsedRealtime()
         ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(this, activity), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         if (activity.busy) holdWakeLock()
+        showTaskNotifications(activity.transfers)
+    }
+
+    private fun showTaskNotifications(transfers: List<Transfer>) {
+        if (transfers.isEmpty() ||
+            (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) ||
+            !notificationManager.areNotificationsEnabled() ||
+            notificationManager.getNotificationChannel(TASK_PROGRESS_CHANNEL)?.importance == NotificationManager.IMPORTANCE_NONE
+        ) {
+            clearTaskNotifications()
+            return
+        }
+
+        val currentIds = HashSet<String>(transfers.size)
+        for (transfer in transfers) {
+            if (transfer.status == TaskStatus.Downloading) currentIds.add(transfer.taskId)
+        }
+        shownTaskIds.removeAll { taskId ->
+            if (taskId in currentIds) return@removeAll false
+            notificationManager.cancel(taskId, TASK_PROGRESS_ID)
+            true
+        }
+        for (transfer in transfers) {
+            if (transfer.status != TaskStatus.Downloading) continue
+            // Intent extras 不参与 PendingIntent 的身份比较；用 URI 区分任务，不将任务 ID 压成可能碰撞的整数。
+            val identity = Uri.Builder().scheme("fluxdown").authority("task-progress").appendPath(transfer.taskId).build()
+            val builder = progressBuilder(this, TASK_PROGRESS_CHANNEL)
+                .setContentIntent(NotificationIntents.pending(this, HostRef.Local.ID, transfer.taskId, TASK_PROGRESS_ID, identity))
+            showTransfer(this, builder, transfer)
+            val notification = builder.build()
+            notificationManager.notify(transfer.taskId, TASK_PROGRESS_ID, notification)
+            shownTaskIds.add(transfer.taskId)
+        }
+    }
+
+    private fun clearTaskNotifications() {
+        for (taskId in shownTaskIds) notificationManager.cancel(taskId, TASK_PROGRESS_ID)
+        shownTaskIds.clear()
     }
 
     /** 下载期间保持 CPU 运行（前台服务本身不阻止息屏后 CPU 休眠）；非引用计数，带超时、每次刷新续期。 */
@@ -165,14 +220,13 @@ class DownloadService : Service() {
 }
 
 /** 渠道只创建一次（已存在则跳过）；LOW = 静默、不弹出。 */
-private fun ensureChannel(context: Context) {
-    val nm = context.getSystemService(NotificationManager::class.java)
-    if (nm.getNotificationChannel(CHANNEL_ID) != null) return
-    val channel = NotificationChannel(CHANNEL_ID, context.str(R.string.mobileDlNotifChannel), NotificationManager.IMPORTANCE_LOW).apply {
-        description = context.str(R.string.mobileDlNotifChannelDesc)
+private fun ensureChannel(context: Context, manager: NotificationManager, id: String, name: Int, descriptionId: Int) {
+    if (manager.getNotificationChannel(id) != null) return
+    val channel = NotificationChannel(id, context.str(name), NotificationManager.IMPORTANCE_LOW).apply {
+        description = context.str(descriptionId)
         setShowBadge(false)
     }
-    nm.createNotificationChannel(channel)
+    manager.createNotificationChannel(channel)
 }
 
 /**
@@ -186,34 +240,13 @@ private fun ensureChannel(context: Context) {
 private fun buildNotification(context: Context, a: LocalActivity): android.app.Notification {
     val transfers = a.transfers
     val single = transfers.singleOrNull()
-    val builder = NotificationCompat.Builder(context, CHANNEL_ID)
-        .setSmallIcon(R.drawable.ic_stat_download)
-        .setColor(NotificationTint)
+    val builder = progressBuilder(context, CHANNEL_ID)
         .setContentIntent(NotificationIntents.pending(context, HostRef.Local.ID, single?.taskId.orEmpty(), code = NOTIFICATION_ID))
-        .setOngoing(true)
-        .setOnlyAlertOnce(true)
         .setSilent(true)
-        .setShowWhen(false)
-        .setCategory(NotificationCompat.CATEGORY_PROGRESS)
         .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
     val waiting = if (a.waiting > 0) context.str(R.string.mobileDlNotifWaiting, "n" to a.waiting) else null
     when {
-        single != null -> {
-            val fraction = single.fraction
-            val fragments = single.hlsFragments
-            builder.setContentTitle(single.fileName.ifEmpty { context.str(R.string.mobileDlNotifActive, "n" to 1) })
-                .setContentText(
-                    listOfNotNull(
-                        speedLabel(context, single.speedBps),
-                        if (fragments != null) {
-                            context.str(R.string.hlsFragmentProgress, "done" to fragments.written, "total" to fragments.total)
-                        } else sizeLabel(single.downloadedBytes, single.totalBytes),
-                        if (fragments == null) single.etaSeconds?.let { remainingLabel(context, it) } else null,
-                        waiting,
-                    ).joinToString(SEP),
-                )
-            applyProgress(builder, fraction)
-        }
+        single != null -> showTransfer(context, builder, single, waiting)
         transfers.isNotEmpty() -> {
             val summary = TransferSummary.of(transfers)
             val headline = listOfNotNull(
@@ -252,6 +285,31 @@ private fun buildNotification(context: Context, a: LocalActivity): android.app.N
         }
     }
     return builder.build()
+}
+
+private fun progressBuilder(context: Context, channelId: String) =
+    NotificationCompat.Builder(context, channelId)
+        .setSmallIcon(R.drawable.ic_stat_download)
+        .setColor(NotificationTint)
+        .setOngoing(true)
+        .setOnlyAlertOnce(true)
+        .setShowWhen(false)
+        .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+
+private fun showTransfer(context: Context, builder: NotificationCompat.Builder, transfer: Transfer, waiting: String? = null) {
+    val fragments = transfer.hlsFragments
+    builder.setContentTitle(transfer.fileName.ifEmpty { context.str(R.string.mobileDlNotifActive, "n" to 1) })
+        .setContentText(
+            listOfNotNull(
+                speedLabel(context, transfer.speedBps),
+                if (fragments != null) {
+                    context.str(R.string.hlsFragmentProgress, "done" to fragments.written, "total" to fragments.total)
+                } else sizeLabel(transfer.downloadedBytes, transfer.totalBytes),
+                if (fragments == null) transfer.etaSeconds?.let { remainingLabel(context, it) } else null,
+                waiting,
+            ).joinToString(SEP),
+        )
+    applyProgress(builder, transfer.fraction)
 }
 
 private const val SEP = " · "

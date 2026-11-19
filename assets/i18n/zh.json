@@ -3462,6 +3462,8 @@
   "mobileHostConnect": "连接",
   "mobileDlNotifChannel": "正在下载",
   "mobileDlNotifChannelDesc": "本机下载进行时常驻显示，使下载能在后台继续",
+  "mobileDlNotifTaskChannel": "逐任务下载进度",
+  "mobileDlNotifTaskChannelDesc": "为本机每个正在下载的任务单独显示进度通知",
   "mobileDlNotifActive": "{n} 个任务下载中",
   "mobileDlNotifWaiting": "{n} 个任务等待中",
   "mobileDlNotifSpeed": "↓ {speed}",

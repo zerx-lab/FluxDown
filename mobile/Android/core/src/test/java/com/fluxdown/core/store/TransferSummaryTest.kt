@@ -10,7 +10,8 @@ import org.junit.Test
 
 /** 进度通知的聚合规则：未知大小不拖垮进度、剩余时间需全部已知、越界夹紧、只投影活跃任务。 */
 class TransferSummaryTest {
-    private fun transfer(id: String, down: Long, total: Long, speed: Long) = Transfer(id, "$id.bin", down, total, speed)
+    private fun transfer(id: String, down: Long, total: Long, speed: Long) =
+        Transfer(id, "$id.bin", down, total, speed, TaskStatus.Downloading)
 
     @Test fun aggregatesKnownSizesAndSpeed() {
         val s = TransferSummary.of(listOf(transfer("a", 25, 100, 5), transfer("b", 75, 100, 5)))
@@ -85,7 +86,7 @@ class TransferSummaryTest {
             speeds = mapOf("a" to LiveSpeed(down = 7, up = 0)),
         )
         assertEquals(
-            listOf(Transfer("a", "a.bin", 10, 100, 7), Transfer("c", "c.bin", 10, 100, 0)),
+            listOf(transfer("a", 10, 100, 7), transfer("c", 10, 100, 0).copy(status = TaskStatus.Preparing)),
             state.transfers(),
         )
         assertEquals(emptyList<Transfer>(), state.copy(connection = Connection.Stale).transfers())
