@@ -14,9 +14,17 @@ class PublicDownloadGuideTest {
     private val local = HostRef.Local("Android")
     private val ready = HostState(connection = Connection.Live, config = mapOf("default_save_dir" to appDir))
 
-    @Test fun existingTorrentDoesNotSuppressGuide() {
+    @Test fun partialTaskTableDoesNotSuppressGuide() {
         val torrent = Task("1", "torrent-file://test", "", "test.iso", appDir, TaskStatus.Completed, 1, 1)
-        assertTrue(ready.copy(tasks = listOf(torrent)).needsPublicDownloadGuide(local, done = false, appDir = appDir))
+        val loading = ready.copy(tasksLoading = true, taskTotal = 2)
+        assertTrue(loading.needsPublicDownloadGuide(local, done = false, appDir = appDir))
+        assertTrue(loading.copy(tasks = listOf(torrent)).needsPublicDownloadGuide(local, done = false, appDir = appDir))
+    }
+
+    @Test fun trailingSlashesDoNotMakeDefaultDirectoryCustom() {
+        val trailingSlash = ready.copy(config = mapOf("default_save_dir" to "$appDir/"))
+        assertTrue(trailingSlash.needsPublicDownloadGuide(local, done = false, appDir = appDir))
+        assertTrue(ready.needsPublicDownloadGuide(local, done = false, appDir = "$appDir/"))
     }
 
     @Test fun completedGuideAndCustomDefaultAreNotOverwritten() {
@@ -29,5 +37,17 @@ class PublicDownloadGuideTest {
         val remote = HostRef.Remote("nas", "NAS", "http://nas.test")
         assertFalse(ready.needsPublicDownloadGuide(remote, done = false, appDir = appDir))
         assertFalse(ready.copy(connection = Connection.Connecting).needsPublicDownloadGuide(local, done = false, appDir = appDir))
+    }
+
+    @Test fun skipDoesNotMarkGuideDoneAfterHostConnectionOrDefaultChanges() {
+        var finished = false
+        val remote = HostRef.Remote("nas", "NAS", "http://nas.test")
+        ready.skipPublicDownloadGuide(remote, false, appDir) { finished = true }
+        ready.copy(connection = Connection.Connecting).skipPublicDownloadGuide(local, false, appDir) { finished = true }
+        ready.copy(config = mapOf("default_save_dir" to "/storage/emulated/0/Download"))
+            .skipPublicDownloadGuide(local, false, appDir) { finished = true }
+        assertFalse(finished)
+        ready.skipPublicDownloadGuide(local, false, appDir) { finished = true }
+        assertTrue(finished)
     }
 }

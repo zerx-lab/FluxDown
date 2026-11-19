@@ -3428,7 +3428,7 @@
   "mobileNotifSystemFooterAndroid": "Completion notifications follow your signed-in devices; the other switches apply to this phone only. Notifications are shown for the host you are viewing and for downloads on this phone.",
   "mobileSaveDirNotWritable": "Can't write to \"{dir}\". Check storage access and whether the folder is read-only. Android still protects other apps' private folders.",
   "mobileUsePublicDownloadDir": "Use system Download folder",
-  "mobilePublicDownloadGuide": "Use the system Download folder to find your downloads in your file manager. If you skip this step, downloads stay in the app folder. You can change this later in Download Settings.",
+  "mobilePublicDownloadGuide": "Use the system Download folder as the default so you can find your downloads in your file manager. Your selected category may still save to a private folder. Skipping keeps the app folder as the default; you can change it later in Download Settings.",
   "mobileSkipPublicDownloadGuide": "Keep app folder",
   "mobileAllFilesDescNative": "Android requires \"All files access\" for FluxDown to open and save to this location. Turn it on in system settings; the folder reloads when you come back. The app folder works without it.",
   "mobileStoragePermTitle": "Storage permission required",

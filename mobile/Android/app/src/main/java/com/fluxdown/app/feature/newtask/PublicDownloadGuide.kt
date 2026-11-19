@@ -29,10 +29,15 @@ import kotlinx.coroutines.launch
 
 /** 仅针对仍使用应用专属默认目录的本机；与已有下载无关。 */
 internal fun HostState.needsPublicDownloadGuide(host: HostRef, done: Boolean, appDir: String): Boolean =
-    host is HostRef.Local && !isReadOnly && !done && config["default_save_dir"] == appDir
+    host is HostRef.Local && !isReadOnly && !done &&
+        config["default_save_dir"]?.trimEnd('/') == appDir.trimEnd('/')
 
 internal fun HostState.needsPublicDownloadGuide(context: Context, host: HostRef): Boolean =
     needsPublicDownloadGuide(host, DeviceSettings.of(context).downloadFolderGuideDone, defaultLocalSaveDir(context).path)
+
+internal fun HostState.skipPublicDownloadGuide(host: HostRef, done: Boolean, appDir: String, finish: () -> Unit) {
+    if (needsPublicDownloadGuide(host, done, appDir)) finish()
+}
 
 /** 选中可写目录后才修改默认值。跳过保留主机设置；权限拒绝或保存失败不结束引导。 */
 @Composable
@@ -45,11 +50,12 @@ internal fun PublicDownloadGuide(
     val container = LocalAppContainer.current
     val settings = remember(context) { DeviceSettings.of(context) }
     val publicDir = remember { publicDownloadSaveDir().path }
+    val appDir = remember(context) { defaultLocalSaveDir(context).path }
     val overlays = LocalFluxOverlays.current
     val actions = LocalTaskActions.current
     val pickDirectory = rememberLocalDirectoryPicker { path ->
         val latest = container.store.state.value
-        if (!enabled || !latest.needsPublicDownloadGuide(context, container.host.value)) {
+        if (!enabled || !latest.needsPublicDownloadGuide(container.host.value, settings.downloadFolderGuideDone, appDir)) {
             return@rememberLocalDirectoryPicker
         }
         val session = container.session
@@ -74,7 +80,13 @@ internal fun PublicDownloadGuide(
             enabled = enabled, icon = FluxIcons.FolderOpen,
         )
         FluxButton(
-            str(R.string.mobileSkipPublicDownloadGuide), settings::finishDownloadFolderGuide,
+            str(R.string.mobileSkipPublicDownloadGuide), {
+                if (enabled) {
+                    container.store.state.value.skipPublicDownloadGuide(
+                        container.host.value, settings.downloadFolderGuideDone, appDir, settings::finishDownloadFolderGuide,
+                    )
+                }
+            },
             enabled = enabled, variant = ButtonVariant.Ghost,
         )
     }

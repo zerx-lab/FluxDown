@@ -62,7 +62,7 @@ internal class RowText(c: Context) {
     val ringResume = c.str(R.string.resume)
     val ringRetry = c.str(R.string.mobileRetry)
     val ringRedownload = c.str(R.string.redownloadTask)
-    val ringSeeding = c.str(R.string.statusSeeding)
+    val select = c.str(R.string.selectTasks)
     val ringOpen = c.str(R.string.mobileOpenFile)
 
     val boost = c.str(R.string.boostDownload)

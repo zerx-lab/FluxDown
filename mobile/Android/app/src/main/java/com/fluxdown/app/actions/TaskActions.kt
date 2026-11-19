@@ -7,6 +7,7 @@ import android.content.Intent
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,8 +45,30 @@ import com.fluxdown.fluxui.overlay.FluxOverlayState
 import com.fluxdown.fluxui.overlay.FluxToastKind
 import com.fluxdown.fluxui.theme.FluxHaptics
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
+
+/** 普通文件才能交给系统查看器；多文件 BT 的顶层路径可能是目录。 */
+internal fun Task.openableLocalFile(localHost: Boolean): File? =
+    if (localHost && status == TaskStatus.Completed && !fileMissing && fileName.isNotEmpty()) {
+        File(saveDir, fileName).takeIf { it.isFile }
+    } else {
+        null
+    }
+
+@Composable
+internal fun rememberOpenableLocalFile(task: Task, localHost: Boolean): Boolean {
+    val eligible = localHost && task.status == TaskStatus.Completed && !task.fileMissing
+    val result = remember(task.taskId, task.saveDir, task.fileName, eligible) { mutableStateOf(false) }
+    if (eligible) {
+        LaunchedEffect(result) {
+            result.value = withContext(Dispatchers.IO) { task.openableLocalFile(localHost) != null }
+        }
+    }
+    return result.value
+}
 
 /**
  * 任务动作的唯一分发点：行环钮、滑动、长按菜单、选择坞、详情页都经此调用，
@@ -252,31 +275,30 @@ class TaskActions(
         context.startActivity(Intent.createChooser(send, task.fileName).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
 
-    /** 本机已完成且文件仍在（iOS `hasLocalFile` 同条件）。远端主机的文件不在本机，不提供打开。 */
-    fun hasLocalFile(task: Task): Boolean =
-        isLocalHost() && task.status == TaskStatus.Completed && !task.fileMissing
-
-    /** 打开当前主机列表里的已完成文件：远端主机 / 不存在 → 警告；存在 → ACTION_VIEW（FileProvider）。 */
+    /** 打开当前主机列表里的已完成文件。 */
     fun open(task: Task) {
-        if (!hasLocalFile(task)) {
-            haptics.reject()
-            overlays.toast(s(R.string.mobileFileNotFound), FluxToastKind.Warn, FluxIcons.FileWarning)
-            return
-        }
-        openLocalFile(task)
+        if (isLocalHost()) openLocalFile(task, requireCurrentLocalHost = true)
     }
 
     /**
-     * 打开本机引擎的任务文件，不看当前查看的是哪台主机：完成提示里的本机任务（含 PC 下发到本机的）
-     * 在用户正查看远端主机时同样要能打开。调用方须保证 [task] 来自本机主机状态。
+     * 完成提示里的本机任务在查看远端时也可打开；调用方须保证任务来自本机主机状态。
      */
-    fun openLocalFile(task: Task) {
-        val file = File(task.saveDir, task.fileName)
-        if (task.fileMissing || !file.exists()) {
-            haptics.reject()
-            overlays.toast(s(R.string.mobileFileNotFound), FluxToastKind.Warn, FluxIcons.FileWarning)
-            return
+    fun openLocalFile(task: Task) = openLocalFile(task, requireCurrentLocalHost = false)
+
+    private fun openLocalFile(task: Task, requireCurrentLocalHost: Boolean) {
+        scope.launch {
+            val file = withContext(Dispatchers.IO) { task.openableLocalFile(localHost = true) }
+            if (requireCurrentLocalHost && !isLocalHost()) return@launch
+            if (file == null) {
+                haptics.reject()
+                overlays.toast(s(R.string.mobileFileNotFound), FluxToastKind.Warn, FluxIcons.FileWarning)
+                return@launch
+            }
+            viewLocalFile(file)
         }
+    }
+
+    private fun viewLocalFile(file: File) {
         val uri = try {
             FileProvider.getUriForFile(context, "${context.packageName}.files", file)
         } catch (e: IllegalArgumentException) {
@@ -304,9 +326,9 @@ class TaskActions(
     }
 
     /** 行环钮的主动作（按状态）。 */
-    fun primary(task: Task) = when {
+    fun primary(task: Task, opensFile: Boolean) = when {
         task.status == TaskStatus.Completed && task.fileMissing -> confirmRedownload(task)
-        task.status == TaskStatus.Completed && isLocalHost() -> open(task)
+        task.status == TaskStatus.Completed && opensFile && isLocalHost() -> open(task)
         task.status == TaskStatus.Completed -> nav.push(com.fluxdown.app.nav.Route.TaskDetail(task.taskId))
         task.status == TaskStatus.Paused || task.status == TaskStatus.Failed -> resume(listOf(task.taskId))
         else -> pause(listOf(task.taskId))
@@ -317,15 +339,13 @@ class TaskActions(
      * 位于重新下载与复制链接之前。顺序是单选（最稀有优先 / 按顺序下载，混选都不点亮）；
      * 首尾文件块是独立复选框（全部开启才勾上，点击设为反值）。
      */
-    fun menuItems(task: Task, boosted: Boolean, onSelect: (() -> Unit)? = null): List<FluxMenuItem> = buildList {
+    fun menuItems(task: Task, boosted: Boolean, opensFile: Boolean, onSelect: (() -> Unit)? = null): List<FluxMenuItem> = buildList {
         val st = task.status
-        if (hasLocalFile(task)) {
-            add(FluxMenuItem.Action(s(R.string.openFile), { open(task) }, FluxIcons.ExternalLink))
-            if (onSelect != null) {
-                add(FluxMenuItem.Action(s(R.string.mobileTaskDetail), {
-                    nav.push(com.fluxdown.app.nav.Route.TaskDetail(task.taskId))
-                }, FluxIcons.Info))
-            }
+        if (opensFile && isLocalHost()) add(FluxMenuItem.Action(s(R.string.openFile), { open(task) }, FluxIcons.ExternalLink))
+        if (st == TaskStatus.Completed && onSelect != null) {
+            add(FluxMenuItem.Action(s(R.string.mobileTaskDetail), {
+                nav.push(com.fluxdown.app.nav.Route.TaskDetail(task.taskId))
+            }, FluxIcons.Info))
         }
         if (task.canResume) add(FluxMenuItem.Action(s(R.string.resume), { resume(listOf(task.taskId)) }, FluxIcons.Play))
         if (task.canPause) add(FluxMenuItem.Action(s(R.string.pause), { pause(listOf(task.taskId)) }, FluxIcons.Pause))
