@@ -3391,8 +3391,10 @@ impl Db {
         }
         for chunk in save_dirs.chunks(CHUNK) {
             let placeholders = numbered_placeholders(chunk.len());
+            // Cleared and restart-pending rows retain historical names, not file claims.
             let sql = format!(
                 "SELECT id, save_dir, file_name FROM tasks WHERE save_dir IN ({placeholders})
+                 AND file_missing NOT IN (2, 4)
                  UNION ALL
                  SELECT tasks.id, tasks.save_dir, task_artifacts.file_name FROM task_artifacts
                  JOIN tasks ON tasks.id = task_artifacts.task_id

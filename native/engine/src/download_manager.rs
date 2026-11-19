@@ -24980,6 +24980,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn clear_task_file_allows_name_reused_after_clear() {
+        let dir = unique_filetrack_test_dir("clear_reused_name");
+        std::fs::create_dir_all(&dir).expect("create test directory");
+        let save_dir = dir.to_string_lossy();
+        let name = "done.bin";
+        let path = dir.join(name);
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        let mut manager = sched_manager(&db, 1);
+
+        std::fs::write(&path, b"first output").expect("seed first output");
+        insert_task_at_status(&db, "first", &save_dir, name, 3).await;
+        manager.clear_task_file("first").await.expect("clear first");
+        assert!(!path.exists());
+
+        std::fs::write(&path, b"second output").expect("seed replacement output");
+        insert_task_at_status(&db, "second", &save_dir, name, 3).await;
+        manager
+            .clear_task_file("second")
+            .await
+            .expect("clear second while first remains in history");
+        assert!(!path.exists());
+        for id in ["first", "second"] {
+            let task = db.load_task_by_id(id).await.unwrap().unwrap();
+            assert_eq!(task.status, 3);
+            assert_eq!(task.file_name, name);
+            assert_eq!(task.file_clear_state, FileClearState::Cleared);
+        }
+        std::fs::remove_dir_all(&dir).expect("remove test directory");
+    }
+
+    #[tokio::test]
     async fn clear_task_file_refuses_non_completed_task() {
         let dir = unique_filetrack_test_dir("clear_file_active");
         std::fs::create_dir_all(&dir).expect("create test dir");
