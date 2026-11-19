@@ -1183,14 +1183,14 @@ mod tests {
             size,
         });
         let mut order = BtFileOrder::default();
-        let rows = |order: &BtFileOrder| {
+        fn rows<'a>(order: &'a BtFileOrder, files: &'a [BtFileDto]) -> Vec<(i32, (f32, &'a str))> {
             order
-                .iter(&files)
+                .iter(files)
                 .map(|file| (file.index, bt_row_label(&file.path, order.sort)))
-                .collect::<Vec<_>>()
-        };
+                .collect()
+        }
         assert_eq!(
-            rows(&order),
+            rows(&order, &files),
             [
                 (14, (4.0, "a-very-long-common-file-name-alpha.mkv")),
                 (2, (0.0, "notes.txt")),
@@ -1199,7 +1199,7 @@ mod tests {
         );
         order.set_sort(BtFileSort::Type, &files);
         assert_eq!(
-            rows(&order),
+            rows(&order, &files),
             [
                 (14, (0.0, alpha.as_str())),
                 (39, (0.0, beta.as_str())),
@@ -1208,7 +1208,7 @@ mod tests {
         );
         order.set_sort(BtFileSort::Size, &files);
         assert_eq!(
-            rows(&order),
+            rows(&order, &files),
             [
                 (2, (0.0, "notes.txt")),
                 (14, (0.0, alpha.as_str())),
