@@ -922,7 +922,7 @@
   "fileMissingKeep": "保留任务记录",
   "fileMissingDelete": "自动删除任务记录",
   "completedRecordRetention": "自动清理已完成记录",
-  "completedRecordRetentionDesc": "已完成任务超过所选时间后从列表移除；选「立即」则在下载成功后马上移除。只移除任务记录，已下载的文件会保留在磁盘上；仍在做种的任务会被跳过",
+  "completedRecordRetentionDesc": "已完成任务超过所选时间后从列表移除；选「立即」则在下载成功后马上移除，并同时清掉现有的已完成记录。只移除任务记录，已下载的文件会保留；做种中的任务保留到停止做种为止，停止做种后同样移除",
   "retentionImmediate": "立即",
   "retentionNever": "从不",
   "retentionDay1": "1 天后",

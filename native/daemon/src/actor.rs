@@ -488,7 +488,7 @@ pub struct EngineReceivers {
     pub retry: mpsc::Receiver<String>,
     pub plugin: mpsc::UnboundedReceiver<PluginEvent>,
     pub missing_cleanup: mpsc::Receiver<Vec<String>>,
-    /// 做种落入停止原因后，再清一次已完成记录。
+    /// 做种在 actor 外落入停止原因，或刚完成 / 刚停止做种的宽限到期：再清一次已完成记录。
     pub retention_purge: mpsc::Receiver<()>,
     /// 「下载完成后计算哈希」的结果回流。
     pub file_hash: mpsc::UnboundedReceiver<fluxdown_engine::file_hash::FileHashOutcome>,
@@ -685,7 +685,7 @@ async fn run_actor(
             }
             Some(()) = receivers.retention_purge.recv() => {
                 arm_db_memory_trim(db_memory_trim.as_mut(), &mut db_memory_trim_armed);
-                engine.manager.purge_after_seeding_stopped().await;
+                engine.manager.purge_requested_completed_records().await;
             }
             _ = file_scan.tick() => {
                 // 完全空闲且 idle_file_scan 关闭时跳过，避免周期性唤醒 NAS 硬盘。

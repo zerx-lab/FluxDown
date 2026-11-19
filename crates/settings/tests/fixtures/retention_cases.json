@@ -1,5 +1,5 @@
 {
-  "presets": [-1, 0, 1, 7, 30],
+  "presets": [0, -1, 1, 7, 30],
   "customStart": 14,
   "mode": [
     { "days": -1, "customFlag": false, "expect": "-1" },

@@ -194,7 +194,7 @@ struct SettingsRowVisibilityTests {
 
     /// 与 `crates/settings/tests/fixtures/retention_cases.json` 同一组用例（GPUI / Web / Android 共用语义）。
     @Test func retentionModeFollowsSharedCases() {
-        #expect(SettingsRetention.presets == [-1, 0, 1, 7, 30])
+        #expect(SettingsRetention.presets == [0, -1, 1, 7, 30])
         #expect(SettingsRetention.customStart == 14)
         let cases: [(days: Int, flag: Bool, expect: String)] = [
             (-1, false, "-1"), (-1, true, "-1"),

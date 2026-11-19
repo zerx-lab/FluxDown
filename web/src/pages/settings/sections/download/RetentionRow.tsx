@@ -30,8 +30,8 @@ export function RetentionRow() {
         <DropdownField
           value={mode}
           options={[
-            { value: '-1', label: t('retentionImmediate') },
             { value: '0', label: t('retentionNever') },
+            { value: '-1', label: t('retentionImmediate') },
             { value: '1', label: t('retentionDay1') },
             { value: '7', label: t('retentionDay7') },
             { value: '30', label: t('retentionDay30') },

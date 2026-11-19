@@ -48,6 +48,7 @@ mod bt_archive;
 #[cfg(feature = "bt")]
 mod bt_storage_ops;
 mod group_dirs;
+mod retention_grace;
 mod task_properties;
 pub use boost::BoostError;
 #[cfg(feature = "bt")]
@@ -4012,10 +4013,16 @@ pub struct DownloadManager {
     completed_record_retention_days: i32,
     /// 上次执行保留期清理的单调时刻，用于去抖（见 `RETENTION_PURGE_DEBOUNCE`）。
     last_retention_purge: Option<std::time::Instant>,
-    /// 做种在 actor 外落入停止原因时通知宿主再清一次。立即模式不能等下一次完成或重扫。
+    /// 做种在 actor 外落入停止原因，或宽限到期时通知宿主再清一次。
     retention_purge_tx: mpsc::Sender<()>,
     /// 上述通知的接收端（仅取一次，交给 actor loop）。
     retention_purge_rx: Option<mpsc::Receiver<()>>,
+    /// 刚完成 / 刚停止做种的任务在宽限内不删，让各端快照先看到最终状态。
+    retention_grace: retention_grace::RetentionGrace,
+    /// 宽限时长；测试缩短它。
+    retention_grace_period: std::time::Duration,
+    /// 已安排的宽限到期唤醒时刻，避免每次清理都多起一个等待任务。
+    retention_wake_at: Option<std::time::Instant>,
     /// Boost 模式当前优先任务 ID。None = 无优先任务。变化时持久化到 config
     /// `boost_state`，重启后由 `resume_on_start` 处理（见 `boost.rs`）。
     priority_task_id: Option<String>,
@@ -4295,6 +4302,9 @@ impl DownloadManager {
             last_retention_purge: None,
             retention_purge_tx,
             retention_purge_rx: Some(retention_purge_rx),
+            retention_grace: retention_grace::RetentionGrace::default(),
+            retention_grace_period: retention_grace::RETENTION_GRACE,
+            retention_wake_at: None,
             priority_task_id: None,
             auto_paused_ids: Vec::new(),
             auto_retry_counts: HashMap::new(),
@@ -4386,9 +4396,9 @@ impl DownloadManager {
         self.missing_cleanup_rx.take()
     }
 
-    /// 取出「做种落入停止原因后再清已完成记录」的通知接收端。宿主 actor
-    /// 收到后调用 [`Self::purge_after_seeding_stopped`]。宿主不取时通道会被填满，
-    /// 通知侧记下失败——下一次完成 / 重扫仍会清理。
+    /// 取出「再清一次已完成记录」的通知接收端（做种在 actor 外落入停止原因，或宽限
+    /// 到期）。宿主 actor 收到后调用 [`Self::purge_requested_completed_records`]。
+    /// 宿主不取时通道会被填满，通知侧记下失败——下一次完成 / 重扫仍会清理。
     pub fn take_retention_purge_rx(&mut self) -> Option<mpsc::Receiver<()>> {
         self.retention_purge_rx.take()
     }
@@ -6804,12 +6814,14 @@ impl DownloadManager {
                             seeding_message: reason.message().to_string(),
                             seeding_time_secs: t.seeding_time_secs,
                         });
+                        self.hold_retention_grace([task_id.as_str()]);
                     }
                 }
             }
         }
         // 停止释放了槽位——立即再平衡，让排队的做种者补位。
         // 达限停止已把 1/8 写成停止原因：再清一次，否则立即模式要等下次完成或重扫。
+        // 刚停的这几条在宽限里，到期唤醒后再删。
         if had_stops {
             self.reconcile_seeding_slots().await;
             self.purge_after_seeding_stopped().await;
@@ -6870,7 +6882,7 @@ impl DownloadManager {
                     0,
                 )
                 .await;
-                self.notify_retention_purge();
+                self.notify_retention_purge(&task_id);
                 continue;
             }
             if let Err(error) = self
@@ -7532,8 +7544,9 @@ impl DownloadManager {
         );
         if !carry_over {
             // 没有要接回的任务：新会话在下一次 BT 活动时惰性创建。
-            // 做种已写成「会话释放」，不再做种的已完成记录现在可以清。
+            // 做种已写成「会话释放」，不再做种的已完成记录在宽限到期后可以清。
             std::thread::spawn(move || bt.shutdown());
+            self.hold_retention_grace(seeders.iter().map(String::as_str));
             self.purge_after_seeding_stopped().await;
             return;
         }
@@ -7606,7 +7619,8 @@ impl DownloadManager {
             }
         }
         self.batch_resume(&paused_downloads).await;
-        // 写成排队的被查询排除。只跳过没写上的 id；已落成停止原因的可以清。
+        // 写成排队的被查询排除。只跳过没写上的 id；已落成停止原因的等宽限到期再清。
+        self.hold_retention_grace(seeders.iter().map(String::as_str));
         self.purge_expired_completed_records_except(
             self.completed_record_retention_days < 0,
             &unmarked,
@@ -8153,7 +8167,9 @@ impl DownloadManager {
     pub async fn on_task_done(&mut self, done: &TaskDone) {
         self.handle_task_done(done).await;
         self.reconcile_priority().await;
-        // 完成通知已在 handle_task_done 里发出。立即模式不能再等 10 分钟去抖。
+        // 完成帧刚发出：本任务先进宽限，各端快照看到 status=3 之后才删（见
+        // `retention_grace`）。立即模式不再等 10 分钟去抖，其余已到期的记录照常清。
+        self.hold_retention_grace([done.task_id.as_str()]);
         let immediate = self.completed_record_retention_days < 0;
         self.purge_expired_completed_records(immediate).await;
     }
@@ -8833,6 +8849,8 @@ impl DownloadManager {
     /// `handle_task_done` 里摘掉条目后，随后的清理仍会删它。
     /// `bt_archive_results` 里的 id 也跳过：分类授权已经消耗，搬完（结果移出
     /// map，且 `finish_bt_move` 已返回）之后的清理才删。
+    /// 宽限内的 id（刚完成 / 刚停止做种，见 `retention_grace`）同样跳过，并安排一次
+    /// 到期唤醒，宿主收到后经 [`Self::purge_requested_completed_records`] 再清。
     ///
     /// 无独立定时器：由进程启动、任务完成、`daemon.task.rescan`、设置变更，以及做种
     /// 落入停止原因后调用。`force = false` 时受 [`RETENTION_PURGE_DEBOUNCE`] 去抖；
@@ -8868,6 +8886,7 @@ impl DownloadManager {
         let cutoff = retention_cutoff_secs(days, now);
         let archiving = self.in_flight_bt_archive_ids().await;
         let protected: HashSet<&str> = protect.iter().map(String::as_str).collect();
+        let (in_grace, grace_release) = self.retention_grace.pending(std::time::Instant::now());
         let mut after_completed_at = String::new();
         let mut after_id = String::new();
         let mut paged = false;
@@ -8902,6 +8921,7 @@ impl DownloadManager {
                     !self.active_tasks.contains_key(id)
                         && !protected.contains(id.as_str())
                         && !archiving.contains(id.as_str())
+                        && !in_grace.contains(id.as_str())
                 })
                 .collect();
             if ids.is_empty() {
@@ -8934,12 +8954,16 @@ impl DownloadManager {
                 );
             }
         }
+        if let Some(release) = grace_release {
+            self.schedule_retention_wake(release);
+        }
         purged
     }
 
-    /// 做种从活动 / 排队落入停止原因之后调用。非零保留期顺带清理已完成记录；
-    /// 立即模式跳过去抖，否则刚停止的做种要等下一次完成或重扫才消失。
-    pub async fn purge_after_seeding_stopped(&mut self) {
+    /// 做种从活动 / 排队落入停止原因之后调用（调用方先把刚停的 id 放进宽限）。
+    /// 非零保留期顺带清理已完成记录；立即模式跳过去抖，否则刚停止的做种要等下一次
+    /// 完成或重扫才消失。
+    async fn purge_after_seeding_stopped(&mut self) {
         if self.completed_record_retention_days == 0 {
             return;
         }
@@ -8947,8 +8971,40 @@ impl DownloadManager {
             .await;
     }
 
-    /// 通知宿主再清一次已完成记录。接收端未取或已满时记下原因，不阻塞调用方。
-    fn notify_retention_purge(&self) {
+    /// 宿主收到 `retention_purge` 通知后调用：做种在 actor 外落入停止原因，或宽限
+    /// 到期。跳过去抖；保留期为 0 时什么都不做。
+    pub async fn purge_requested_completed_records(&mut self) {
+        self.purge_expired_completed_records(true).await;
+    }
+
+    /// 刚完成 / 刚停止做种的记录进宽限：这段时间内清理不删它们。
+    fn hold_retention_grace<'a>(&self, ids: impl IntoIterator<Item = &'a str>) {
+        self.retention_grace.hold(ids, self.retention_grace_period);
+    }
+
+    /// 在 `release` 时刻经通道唤醒宿主再清一次。已有不晚于它、尚未到点的唤醒就不重复安排；
+    /// 那次唤醒的清理会为剩下的宽限再安排下一次。
+    fn schedule_retention_wake(&mut self, release: std::time::Instant) {
+        let now = std::time::Instant::now();
+        if self
+            .retention_wake_at
+            .is_some_and(|at| at > now && at <= release)
+        {
+            return;
+        }
+        self.retention_wake_at = Some(release);
+        let tx = self.retention_purge_tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep_until(tokio::time::Instant::from_std(release)).await;
+            request_retention_purge(&tx);
+        });
+    }
+
+    /// 停止帧已发出的 `task_id` 进宽限，并通知宿主再清一次已完成记录。
+    /// 接收端未取或已满时记下原因，不阻塞调用方。
+    #[cfg(feature = "bt")]
+    fn notify_retention_purge(&self, task_id: &str) {
+        self.hold_retention_grace([task_id]);
         if self.completed_record_retention_days == 0 {
             return;
         }
@@ -12121,7 +12177,8 @@ impl DownloadManager {
                         0,
                     )
                     .await;
-                    // 立即模式会删掉记录；task.paused 必须在删除前发出。
+                    // 停止帧刚发出，记录先进宽限；task.paused 也要在删除前发出。
+                    self.hold_retention_grace([task_id]);
                     if notify {
                         self.emit_paused_webhook(task_id).await;
                     }
@@ -15262,6 +15319,8 @@ impl DownloadManager {
         let reseed_guard = bt.begin_reseed(&task_id);
         let closing = bt.closing_token();
         let purge_tx = self.retention_purge_tx.clone();
+        let grace = self.retention_grace.clone();
+        let grace_period = self.retention_grace_period;
         bt.clone().runtime_handle().spawn(async move {
             let _reseed_guard = reseed_guard;
             let readd = tokio::select! {
@@ -15322,6 +15381,8 @@ impl DownloadManager {
                                         .await {
                                         crate::logger::report_error("download-manager", "persist task state", &error);
                                     }
+                                // 写库前就进宽限：写完到发出停止帧之间的清理也不能删。
+                                grace.hold([task_id.as_str()], grace_period);
                                 if let Err(error) = db
                                     .update_task_seeding_status(
                                         &task_id,
@@ -15382,6 +15443,8 @@ impl DownloadManager {
                         tracing::debug!(delete_files, "cleared pending deletion after reseed failed");
                     }
                     // 回退停止态：状态码保留原停止原因，说明换成失败原因。
+                    // 写库前就进宽限：写完到发出停止帧之间的清理也不能删。
+                    grace.hold([task_id.as_str()], grace_period);
                     if let Err(error) = db
                         .update_task_seeding_status(&task_id, stopped_status, &msg)
                         .await {
@@ -19361,7 +19424,60 @@ mod tests {
         );
     }
 
-    /// 用户停止做种后，非做种的已完成记录立刻清掉，文件留下。
+    /// 等宿主收到宽限到期的唤醒，再按 actor 的做法清理一次。
+    async fn await_retention_wake(mgr: &mut DownloadManager, rx: &mut mpsc::Receiver<()>) {
+        tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("grace wake arrives")
+            .expect("wake channel open");
+        mgr.purge_requested_completed_records().await;
+    }
+
+    /// 完成帧之后紧跟 `TasksDeleted` 会让各端的快照差分漏掉完成通知。立即模式下
+    /// 刚完成的记录在宽限内保留（其他清理触发也不删），宽限到期的唤醒之后才删，文件留下。
+    #[tokio::test]
+    async fn immediate_retention_waits_out_the_grace_after_completion() {
+        let dir = unique_filetrack_test_dir("retention_grace_done");
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        let save_dir = dir.to_string_lossy().to_string();
+        let kept_file = dir.join("done.bin");
+        std::fs::write(&kept_file, b"payload").expect("write file");
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        insert_task_at_status(&db, "done", &save_dir, "done.bin", 3).await;
+        let mut mgr = retention_test_manager(db.clone(), &save_dir);
+        let mut wake = mgr.take_retention_purge_rx().expect("retention rx");
+        mgr.retention_grace_period = std::time::Duration::from_secs(1);
+        mgr.set_completed_record_retention_days(-1);
+
+        mgr.on_task_done(&TaskDone::finished("done".to_owned(), 0, None))
+            .await;
+        assert!(
+            db.load_task_by_id("done").await.expect("load").is_some(),
+            "宽限内完成记录必须还在，各端才能看到 status=3"
+        );
+        assert_eq!(
+            mgr.purge_expired_completed_records(true).await,
+            0,
+            "宽限内设置变更 / 重扫触发的清理也不能删"
+        );
+
+        await_retention_wake(&mut mgr, &mut wake).await;
+        assert!(
+            db.load_task_by_id("done").await.expect("load").is_none(),
+            "宽限到期的唤醒之后必须删掉"
+        );
+        assert!(kept_file.exists(), "立即清理只删记录，绝不删文件");
+
+        if let Err(error) = std::fs::remove_dir_all(&dir)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            crate::logger::report_warning("download-manager-test", "remove test directory", &error);
+        }
+    }
+
+    /// 用户停止做种后，记录在宽限内保留，到期唤醒后清掉，文件留下。
     #[tokio::test]
     async fn stopping_seeding_purges_immediate_completed_records() {
         let dir = unique_filetrack_test_dir("retention_stop_seed");
@@ -19377,6 +19493,8 @@ mod tests {
             .await
             .expect("mark seeding");
         let mut mgr = retention_test_manager(db.clone(), &save_dir);
+        let mut wake = mgr.take_retention_purge_rx().expect("retention rx");
+        mgr.retention_grace_period = std::time::Duration::from_secs(1);
         mgr.set_completed_record_retention_days(-1);
         assert_eq!(
             mgr.purge_expired_completed_records(true).await,
@@ -19386,8 +19504,14 @@ mod tests {
 
         mgr.pause_task("seed").await;
         assert!(
+            db.load_task_by_id("seed").await.expect("load").is_some(),
+            "停止帧刚发出，宽限内记录必须还在"
+        );
+
+        await_retention_wake(&mut mgr, &mut wake).await;
+        assert!(
             db.load_task_by_id("seed").await.expect("load").is_none(),
-            "停止做种后立即模式必须清掉记录"
+            "停止做种的宽限到期后立即模式必须清掉记录"
         );
         assert!(kept_file.exists(), "停止做种后的清理也不删文件");
 
@@ -19567,6 +19691,8 @@ mod tests {
             Arc::new(crate::NoopSelection),
         )
         .expect("construct manager");
+        // 这里只看 task.paused 与删除的先后，不测宽限。
+        mgr.retention_grace_period = std::time::Duration::ZERO;
         mgr.set_completed_record_retention_days(-1);
 
         mgr.pause_task("seed").await;
@@ -19694,6 +19820,8 @@ mod tests {
         insert_task_at_status(&db, "plain", &save_dir, "plain.bin", 3).await;
 
         let mut mgr = retention_test_manager(db.clone(), &save_dir);
+        // 这里只测在途归档的保护，不测宽限。
+        mgr.retention_grace_period = std::time::Duration::ZERO;
         mgr.set_completed_record_retention_days(-1);
         mgr.bt_archive_results
             .lock()
