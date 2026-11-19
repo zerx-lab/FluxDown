@@ -507,16 +507,10 @@ private fun ProtocolProxySection(ctx: SettingsCtx) {
     GlassSection(title = str(R.string.proxyProtocolSection), footer = str(R.string.proxyProtocolDesc)) {
         for (row in NetworkRow.entries.filter { it.group == NetworkRow.Group.Protocol }) {
             val key = row.configKey ?: continue
-            val hint = row.detailRes()?.let { str(it) }
-            val endpoint = ProxyRule.displayEndpoint(ctx.form.string(key))
-            val detail = when {
-                endpoint.isEmpty() -> hint
-                hint == null -> endpoint
-                else -> "$hint · $endpoint"
-            }
+            val endpoint = ProxyRule.displayEndpoint(ctx.form.string(key)).ifEmpty { null }
             settingText(
-                ctx, key, row.titleRes(), null,
-                id = row.rowId, secret = true, detail = detail,
+                ctx, key, row.titleRes(), row.detailRes(), R.string.proxyRuleProxyUrlPlaceholder,
+                id = row.rowId, secret = true, detail = endpoint,
             )
         }
     }

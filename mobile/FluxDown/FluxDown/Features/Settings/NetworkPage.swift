@@ -272,6 +272,7 @@ struct NetworkPage: View {
                     ConfigTextRow(
                         id: row.id, key: item.key, title: L(row.titleKey),
                         detail: endpoint.isEmpty ? hint : "\(hint) · \(endpoint)",
+                        prompt: L("proxyRuleProxyUrlPlaceholder"),
                         isSecure: true
                     )
                 }

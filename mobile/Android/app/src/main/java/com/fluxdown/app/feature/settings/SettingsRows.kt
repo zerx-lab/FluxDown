@@ -317,7 +317,9 @@ internal fun GlassSectionScope.settingText(
     if (!ctx.form.has(key)) return
     row {
         SettingRowBox(ctx, id, key) {
-            FluxFieldRow(title = str(title), subtitle = detail ?: desc?.let { str(it) }, cloud = ctx.synced(key)) {
+            val hint = desc?.let { str(it) }
+            val subtitle = if (hint != null && detail != null) "$hint · $detail" else hint ?: detail
+            FluxFieldRow(title = str(title), subtitle = subtitle, cloud = ctx.synced(key)) {
                 CommitTextField(
                     value = ctx.form.string(key),
                     onCommit = { ctx.editor.set(key, it) },
