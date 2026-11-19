@@ -1070,8 +1070,8 @@ pub struct CaptureCreateGroupParams {
 
 /// `agent.capture.submitTorrentFile` 参数。
 ///
-/// `silent=true`（系统打开 / 关联启动）全选文件直接建任务；`silent=false`（用户主动选择）
-/// 由 daemon 发 BT 文件选择请求。`saveDir` / `queueId` / `startPaused` 缺省维持旧行为
+/// `silent=true`（系统打开 / 关联启动）且「免打扰下载」与「跳过二次选择」偏好均开启时
+/// 全选文件直接建任务；否则（含 `silent=false` 用户主动选择）由 daemon 发 BT 文件选择请求。`saveDir` / `queueId` / `startPaused` 缺省维持旧行为
 /// （daemon 默认目录 / 默认队列 / 立即开始），新建下载表单入口携带表单值。
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
