@@ -147,6 +147,9 @@ export function TaskList(props: Props): JSX.Element {
         <Button size="sm" variant="primary" disabled={starting} onClick={startApp}>
           {starting ? t("popup.tasks.starting") : t("popup.tasks.startApp")}
         </Button>
+        <a class="fd-task-download-link" href="https://fluxdown.com/download/" target="_blank" rel="noreferrer noopener">
+          {t("popup.tasks.downloadApp")}
+        </a>
       </EmptyState>
     );
   }

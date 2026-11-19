@@ -265,6 +265,7 @@ const zhCN = {
   "popup.tasks.empty": "暂无下载任务",
   "popup.tasks.appNotRunning": "FluxDown 未运行",
   "popup.tasks.startApp": "启动 FluxDown",
+  "popup.tasks.downloadApp": "还没安装？下载 FluxDown",
   "popup.tasks.starting": "启动中…",
   "popup.tasks.statsToday": "今日：",
   "popup.tasks.statsLineTitle": "打开设置查看更多",

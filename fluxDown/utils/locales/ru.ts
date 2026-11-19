@@ -278,6 +278,7 @@ const ru: Record<MessageKey, string> = {
   "popup.tasks.empty": "Задач загрузки нет",
   "popup.tasks.appNotRunning": "FluxDown не запущен",
   "popup.tasks.startApp": "Запустить FluxDown",
+  "popup.tasks.downloadApp": "Не установлен? Скачать FluxDown",
   "popup.tasks.starting": "Запуск…",
   "popup.tasks.statsToday": "Сегодня:",
   "popup.tasks.statsLineTitle": "Подробности — в настройках",

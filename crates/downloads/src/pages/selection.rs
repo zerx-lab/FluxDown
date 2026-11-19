@@ -270,7 +270,8 @@ impl SelectionView {
         self.resolve(outcome, window, cx);
     }
 
-    fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// 放弃当前选择；BT 删除任务，窗口在请求撤回后关闭。
+    pub fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let command = cancel_command(&self.state, &self.request);
         self.submit(command, window, cx);
     }
