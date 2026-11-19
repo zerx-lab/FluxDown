@@ -193,7 +193,9 @@
 
 /* ===== TaskList ===== */
 .fd-tasks { display: flex; flex-direction: column; gap: 6px; }
-.fd-task-download-link { color: var(--fd-text-secondary); font-size: 12px; }
+.fd-task-download-link { color: var(--fd-text-secondary); font-size: 12px; text-decoration: underline; text-underline-offset: 2px; }
+.fd-task-download-link:hover { color: var(--fd-accent); }
+.fd-task-download-link:focus-visible { outline: 2px solid var(--fd-accent); outline-offset: 2px; border-radius: var(--fd-radius-sm); }
 .fd-quick { display: flex; gap: 6px; }
 .fd-task { display: flex; align-items: center; gap: 8px; padding: 6px; border-radius: var(--fd-radius-sm); }
 .fd-task:hover { background: var(--fd-hover); }
