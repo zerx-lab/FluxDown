@@ -472,7 +472,7 @@ impl ExtensionsView {
                     frame,
                 )
             }),
-            (plugin.disabled_reason == "ConsentRequired").then(|| {
+            (!load_failed && has_pending_consent(plugin)).then(|| {
                 ui::tone_pill(
                     translator.text("pluginDisabledConsentRequired").to_owned(),
                     frame.extended.colors.warning,
