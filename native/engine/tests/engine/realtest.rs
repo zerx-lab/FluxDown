@@ -4257,10 +4257,17 @@ async fn html_range_responses_on_one_path_are_reassigned() {
     assert_transient_200_on_resume("html_path", ResumeResponse::HtmlOnAlternate).await;
 }
 
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "binds local ports; run with --ignored"]
+async fn persistent_sys_html_is_reassigned_to_slower_proxy() {
+    assert_transient_200_on_resume("sys_html", ResumeResponse::HtmlOnSys).await;
+}
+
 enum ResumeResponse {
     Full,
     HtmlOnce,
     HtmlOnAlternate,
+    HtmlOnSys,
 }
 
 async fn assert_transient_200_on_resume(tag: &str, response: ResumeResponse) {
@@ -4279,7 +4286,9 @@ async fn assert_transient_200_on_resume(tag: &str, response: ResumeResponse) {
     let size = 8_000_003i64; // ~8MB 素数
     let body = Arc::new(gen_body(size as usize, 909));
     let expected = sha256_bytes(&body);
-    let st = Arc::new(ServerState::new(body.clone(), "etag-transient"));
+    let mut origin = ServerState::new(body.clone(), "etag-transient");
+    origin.force_html_on_segment_range = matches!(response, ResumeResponse::HtmlOnSys);
+    let st = Arc::new(origin);
     let server = start_server(st.clone()).await;
     let url = server.url("/file");
 
@@ -4344,11 +4353,17 @@ async fn assert_transient_200_on_resume(tag: &str, response: ResumeResponse) {
             st.force_html_range_get_once.store(true, Ordering::SeqCst);
             None
         }
-        ResumeResponse::HtmlOnAlternate => {
+        ResumeResponse::HtmlOnAlternate | ResumeResponse::HtmlOnSys => {
             use fluxdown_engine::auto_proxy::{CandidateSource, RoutePath};
 
             let mut state = ServerState::new(body.clone(), "etag-transient");
-            state.force_html_on_segment_range = true;
+            let html_on_sys = matches!(response, ResumeResponse::HtmlOnSys);
+            state.force_html_on_segment_range = !html_on_sys;
+            let (sys_bps, proxy_bps) = if html_on_sys {
+                (2_000_000.0, 500_000.0)
+            } else {
+                (1_000_000.0, 2_000_000.0)
+            };
             let state = Arc::new(state);
             let proxy = start_server(state.clone()).await;
             let proxy_client = reqwest::Client::builder()
@@ -4357,11 +4372,11 @@ async fn assert_transient_200_on_resume(tag: &str, response: ResumeResponse) {
                 .unwrap();
             nodes.add_paths(
                 RoutePath::Direct,
-                Some(1_000_000.0),
+                Some(sys_bps),
                 vec![(
                     RoutePath::Proxy(CandidateSource::ManualFields),
                     proxy_client,
-                    Some(2_000_000.0),
+                    Some(proxy_bps),
                 )],
             );
             Some((proxy, state))
@@ -4415,6 +4430,13 @@ async fn assert_transient_200_on_resume(tag: &str, response: ResumeResponse) {
         ResumeResponse::HtmlOnAlternate => {
             let (_proxy, state) = bad_path.unwrap();
             assert!(state.rejected_range_count.load(Ordering::SeqCst) > 0);
+            assert_eq!(state.full_get_count.load(Ordering::SeqCst), 0);
+            assert_eq!(st.full_get_count.load(Ordering::SeqCst), 0);
+        }
+        ResumeResponse::HtmlOnSys => {
+            let (_proxy, state) = bad_path.unwrap();
+            assert!(st.rejected_range_count.load(Ordering::SeqCst) > 1);
+            assert!(state.range_get_count.load(Ordering::SeqCst) > 0);
             assert_eq!(state.full_get_count.load(Ordering::SeqCst), 0);
             assert_eq!(st.full_get_count.load(Ordering::SeqCst), 0);
         }

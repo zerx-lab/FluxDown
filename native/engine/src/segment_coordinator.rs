@@ -2772,13 +2772,9 @@ pub async fn run_coordinated_download(
                             continue;
                         }
                         // --- 多 CDN 节点可归因失败：回收段重派 ----------------
-                        // worker 已在钉定租约上把节点可归因错误翻译为
-                        // CdnNodeFailed（SYS 租约错误不经翻译，不会到达此臂），
-                        // 且 NodePool 已完成降权/踢除——此处只需把段回 Pending
-                        // 并重新派工：下一次租借自然避开劣质节点。节点池全灭时
-                        // 租约退 SYS，其错误走原语义分支——本臂绝不可能把任务
-                        // 拖入无限循环。派工逻辑与 TrueSizeLarger 重派完全同款
-                        //（verdict / 串行模式门控一致）。
+                        // Worker 已按节点失败或 SYS 改道回收该段。下一次租约
+                        // 使用节点池更新后的路由状态；派工沿用 TrueSizeLarger
+                        // 的 Range 裁决和串行模式门控。
                         if let DownloadError::CdnNodeFailed(msg) = &error {
                             log_info!(
                                 "[coordinator] task {} seg {} CDN 节点失败，回收重派: {}",
@@ -5378,10 +5374,14 @@ fn spawn_worker(
                     // 接手，而不是整个任务失败。HTTP 状态/校验类错误保持原语义
                     // （源站拒绝学习、清盘回退）。判据是类型化传输失败分类
                     // （Io/Db 永不归类），与 OS 本地化文本无关。
-                    // 有进度后的 HTML 也可以走同一有界改道，不当作 Range 失效。
+                    // HTML 改道只在重派能使用闭区间时生效；已确认 Range 的
+                    // 开放式首段也会在重派时转为闭区间。
                     let sys_fallback = !lease_attributable
                         && if mid_transfer_html {
-                            nodes.try_sys_html_fallback()
+                            let can_redispatch_bounded = (!assignment.open_ended
+                                && !assignment.no_range)
+                                || range_verdict.load(Ordering::Relaxed) == RANGE_VERDICT_SUPPORTED;
+                            can_redispatch_bounded && nodes.try_sys_html_fallback()
                         } else {
                             crate::net_failure::classify_download_error(&e).is_some()
                                 && nodes.try_sys_transport_fallback()
