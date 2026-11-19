@@ -283,6 +283,9 @@ impl NewDownloadView {
 
     /// 提交用的文件名：仍是未改动的预填探测名时视为空（交给引擎定名，与不预填时行为一致）。
     pub(super) fn rename_value(&self, cx: &App) -> String {
+        if self.auto_name {
+            return String::new();
+        }
         let value = self.rename.read(cx).value().trim().to_owned();
         if self.probe.filled.as_deref() == Some(value.as_str()) {
             String::new()
@@ -292,7 +295,7 @@ impl NewDownloadView {
     }
 
     /// 探测结果变化后同步「文件名」输入框：占位提示 + 预填可编辑的探测名。
-    fn sync_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn sync_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let placeholder = self.rename_placeholder();
         if placeholder != self.probe.placeholder {
             self.probe.set_placeholder(placeholder.clone());

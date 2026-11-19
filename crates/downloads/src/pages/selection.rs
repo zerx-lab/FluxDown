@@ -53,6 +53,7 @@ pub struct SelectionView {
     save_dir_input: Option<Entity<InputState>>,
     /// BT 名称输入，预填任务当前名称；其它选择种类没有。
     name_input: Option<Entity<InputState>>,
+    auto_name: bool,
     /// 系统目录选择器打开中，避免重入。
     picking_save_dir: bool,
     submitting: bool,
@@ -263,6 +264,7 @@ impl SelectionView {
             state,
             save_dir_input,
             name_input,
+            auto_name: true,
             picking_save_dir: false,
             submitting: false,
         }
@@ -306,7 +308,7 @@ impl SelectionView {
             } => SelectionOutcome::Bt {
                 indices: selected.iter().copied().collect(),
                 save_dir: bt_save_dir_outcome(save_dir, &self.save_dir_input_value(cx)),
-                custom_name: bt_name_outcome(&self.task_name, &self.name_input_value(cx)),
+                custom_name: self.name_override(cx),
             },
             SelectionState::Variant { selected, .. } => {
                 SelectionOutcome::Variant { index: *selected }
@@ -358,11 +360,9 @@ impl SelectionView {
         .detach();
     }
 
-    fn name_input_value(&self, cx: &App) -> SharedString {
-        self.name_input
-            .as_ref()
-            .map(|input| input.read(cx).value())
-            .unwrap_or_default()
+    fn name_override(&self, cx: &App) -> Option<String> {
+        let input = self.name_input.as_ref()?;
+        bt_name_outcome(self.auto_name, &self.task_name, &input.read(cx).value())
     }
 
     fn save_dir_input_value(&self, cx: &App) -> SharedString {
@@ -421,10 +421,41 @@ impl SelectionView {
     /// 名称：单文件种子是文件名，多文件种子是外层目录名。
     fn render_name(&self, cx: &mut Context<Self>) -> Option<Div> {
         let input = self.name_input.as_ref()?;
+        let this = cx.weak_entity();
+        let auto = check_row(
+            "bt-auto-name",
+            self.auto_name,
+            self.strings.auto_name.clone(),
+            move |checked, window, cx| {
+                let Ok(()) = this.update(cx, |this, cx| {
+                    this.auto_name = checked;
+                    if checked && let Some(input) = &this.name_input {
+                        input.update(cx, |input, cx| {
+                            input.set_value(this.task_name.clone(), window, cx);
+                        });
+                    }
+                    cx.notify();
+                }) else {
+                    return;
+                };
+            },
+            cx,
+        )
+        .flex_none();
         Some(
             form_field(
                 self.strings.name.clone(),
-                Input::new(input).control(cx).w_full(),
+                h_flex()
+                    .w_full()
+                    .gap(active_theme(cx).tokens().spacing.sm)
+                    .child(
+                        Input::new(input)
+                            .control(cx)
+                            .flex_1()
+                            .min_w_0()
+                            .disabled(self.auto_name),
+                    )
+                    .child(auto),
                 None,
                 cx,
             )
@@ -946,6 +977,7 @@ struct SelectionStrings {
     sort_size: SharedString,
     selected_count: SharedString,
     name: SharedString,
+    auto_name: SharedString,
     save_dir: SharedString,
     save_dir_placeholder: SharedString,
     browse: SharedString,
@@ -980,6 +1012,7 @@ impl SelectionStrings {
             sort_size: shared(translator.text("btFileSortSize")),
             selected_count: shared(translator.text("selectedCount")),
             name: shared(translator.text("btFileColumnName")),
+            auto_name: shared(translator.text("auto")),
             save_dir: shared(translator.text("saveDir")),
             save_dir_placeholder: shared(translator.text("selectSaveDir")),
             browse: shared(translator.text("browse")),
@@ -1019,12 +1052,11 @@ fn cancel_command(state: &SelectionState, request: &SelectionRequestDto) -> Down
     }
 }
 
-/// 把名称输入收成 [`SelectionOutcome::Bt`] 的 `custom_name`：去首尾空白后非空且与预填名不同
-/// 才下发；未改或清空都是 `None`（沿用种子内名称）。清洗由引擎按文件名规则做。
+/// 自动模式不发送覆盖名；手动模式只发送非空且与预填名不同的名称。清洗由引擎完成。
 #[must_use]
-fn bt_name_outcome(initial: &str, input: &str) -> Option<String> {
+fn bt_name_outcome(auto: bool, initial: &str, input: &str) -> Option<String> {
     let trimmed = input.trim();
-    (!trimmed.is_empty() && trimmed != initial.trim()).then(|| trimmed.to_owned())
+    (!auto && !trimmed.is_empty() && trimmed != initial.trim()).then(|| trimmed.to_owned())
 }
 
 /// 保存目录输入是否允许确认。
@@ -1141,15 +1173,18 @@ mod tests {
     }
 
     #[test]
-    fn name_is_sent_only_when_changed() {
-        assert_eq!(bt_name_outcome("Pack", "Pack"), None);
-        assert_eq!(bt_name_outcome("Pack", "  Pack "), None);
-        assert_eq!(bt_name_outcome("Pack", "   "), None);
-        assert_eq!(
-            bt_name_outcome("Pack", " 我的剧集 "),
-            Some("我的剧集".to_owned())
-        );
-        assert_eq!(bt_name_outcome("", "Pack"), Some("Pack".to_owned()));
+    fn switching_back_to_auto_discards_bt_name_overrides() {
+        for (initial, custom) in [("movie.mkv", "My Movie"), ("Pack", "My Series")] {
+            let edited = format!("  {custom}  ");
+            assert_eq!(bt_name_outcome(true, initial, initial), None);
+            assert_eq!(
+                bt_name_outcome(false, initial, &edited),
+                Some(custom.to_owned())
+            );
+            assert_eq!(bt_name_outcome(true, initial, &edited), None);
+        }
+        assert_eq!(bt_name_outcome(false, "Pack", "  Pack "), None);
+        assert_eq!(bt_name_outcome(false, "Pack", "   "), None);
     }
 
     #[test]
