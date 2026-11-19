@@ -39,11 +39,15 @@ internal class RowText(c: Context) {
     val failed = c.str(R.string.statusError)
     private val errorPostOnlyEndpoint = c.str(R.string.taskErrorPostOnlyEndpoint)
     private val errorPostOnlyResume = c.str(R.string.taskErrorPostOnlyResume)
+    private val errorUnexpectedHtml = c.str(R.string.taskErrorUnexpectedHtml)
+    private val errorHtmlChanged = c.str(R.string.taskErrorHtmlChanged)
 
     /** 引擎稳定错误文案 → 本地化；其余原样。 */
     fun taskError(raw: String): String = when (TaskErrorMessage.match(raw)) {
         TaskErrorMessage.PostOnlyEndpoint -> errorPostOnlyEndpoint
         TaskErrorMessage.PostOnlyResume -> errorPostOnlyResume
+        TaskErrorMessage.UnexpectedHtml -> errorUnexpectedHtml
+        TaskErrorMessage.HtmlChanged -> errorHtmlChanged
         null -> raw
     }
 

@@ -1186,7 +1186,7 @@ fn group_digits(value: usize) -> String {
 }
 
 impl DownloadStrings {
-    /// 仅用于显示 / 复制，逻辑判断仍用原始 `error_message`。
+    /// 本地化展示文本；详情复制可保留原始 HTML 诊断，逻辑判断仍用原始 `error_message`。
     pub(crate) fn task_error_text<'a>(&'a self, raw: &'a str) -> &'a str {
         if is_unexpected_html(raw) {
             return &self.task_error_unexpected_html;

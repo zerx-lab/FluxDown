@@ -2468,9 +2468,10 @@ async fn run_http_family_task(run: HttpFamilyRun) {
     let mut params = params;
     // 拦截阶段的插件请求跟随任务出口（Prepare 用起跑出口；改道 / PAC 后再同步一次）。
     crate::intercept::sync_egress(&params);
-    if !use_ed2k
-        && let Err(message) =
-            prepare_request(&mut params, prelude.is_some() && !html_only, resolver_patch).await
+    // HTML saves replay the stored request, without resolver or Prepare patches.
+    if !html_only
+        && !use_ed2k
+        && let Err(message) = prepare_request(&mut params, prelude.is_some(), resolver_patch).await
     {
         persist_task_failure(&task_id, message, &panic_db, &panic_progress_tx).await;
         send_task_done(&done_tx, TaskDone::finished(task_id, spawn_gen, None)).await;
@@ -13254,7 +13255,11 @@ impl DownloadManager {
                 crate::file_exists::OverwritePolicy::Never
             };
             let support = ask_support(&task.url, audio_url.is_some(), replay.is_some());
-            let interceptor = self.task_interceptor(&tid, &source_url, &task.url).await;
+            let interceptor = if html_only {
+                crate::intercept::noop()
+            } else {
+                self.task_interceptor(&tid, &source_url, &task.url).await
+            };
             let run_meta = crate::intercept::RunMeta {
                 proxy_url: task.proxy_url.clone(),
                 ignore_tls_errors: task.ignore_tls_errors,

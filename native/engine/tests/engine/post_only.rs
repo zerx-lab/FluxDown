@@ -518,6 +518,80 @@ async fn save_html_keeps_original_and_existing_file_and_rejects_changed_response
     h.cleanup().await;
 }
 
+#[cfg(feature = "plugins")]
+#[tokio::test(flavor = "current_thread")]
+async fn save_html_after_restart_uses_stored_url_without_resolve_or_prepare() {
+    let mut h = Harness::new("save_html_bound_resolver").await;
+    let spec = h.share_spec(None);
+    let original = h.engine.manager.create_task(spec).await.unwrap();
+    let failed = h.finish(&original).await;
+    assert_eq!(failed.status, 4);
+    assert!(failed.error_message.starts_with("server returned HTML page"));
+
+    let mut h = h.restart_engine().await;
+    let dir = h.work_dir.join("plugin_src");
+    tokio::fs::create_dir_all(&dir).await.unwrap();
+    let manifest = r#"{
+      "identity": "tester@html-replay",
+      "name": "HTML Replay Test",
+      "version": "1.0.0",
+      "permissions": ["intercept"],
+      "resolvers": [{ "match": { "urls": ["http://127.0.0.1*"] }, "entry": "resolve.js" }],
+      "interceptors": {
+        "match": { "urls": ["http://127.0.0.1*"] },
+        "entry": "intercept.js",
+        "stages": ["prepare"]
+      }
+    }"#;
+    tokio::fs::write(dir.join("manifest.json"), manifest)
+        .await
+        .unwrap();
+    let rewrite = format!(r#"async () => ({{ url: "http://{}{PLAIN_PATH}" }})"#, h.addr);
+    tokio::fs::write(
+        dir.join("resolve.js"),
+        format!("globalThis.resolve = {rewrite};"),
+    )
+    .await
+    .unwrap();
+    tokio::fs::write(
+        dir.join("intercept.js"),
+        format!("globalThis.intercept = {rewrite};"),
+    )
+    .await
+    .unwrap();
+    let pm = h.engine.manager.plugin_manager().unwrap();
+    let id = pm.install_dev(&dir).await.unwrap();
+    pm.grant_consent(&id, &["intercept".to_string()], &[])
+        .await
+        .unwrap();
+    pm.set_enabled(&id, true).await.unwrap();
+    h.engine.db.set_task_resolver(&original, &id).await.unwrap();
+    h.engine
+        .db
+        .set_task_resolver_item(&original, "fixture")
+        .await
+        .unwrap();
+
+    let mut resolve_rx = h.engine.manager.take_resolve_rx().unwrap();
+    h.clear_requests();
+    let saved = h
+        .engine
+        .manager
+        .save_html_response(&original)
+        .await
+        .unwrap();
+    let page = tokio::select! {
+        biased;
+        _ = resolve_rx.recv() => Err("saving HTML entered resolve"),
+        page = h.finish(&saved) => Ok(page),
+    }
+    .expect("HTML save must complete without resolving");
+    assert_eq!(page.status, 3, "{}", page.error_message);
+    assert_eq!(h.output(&page).await, HTML_BODY);
+    assert_eq!(h.requests(), [format!("GET {HTML_PATH}")]);
+    h.cleanup().await;
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn save_html_replays_post_and_refuses_to_guess_after_restart() {
     let mut h = Harness::new("save_html_post").await;

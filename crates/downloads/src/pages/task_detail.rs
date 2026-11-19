@@ -962,6 +962,7 @@ impl TaskDetailView {
             return;
         };
         let raw = &row.error_message;
+        // Keep Content-Type and redirect diagnostics in the clipboard, not in the localized UI.
         let message = if is_unexpected_html(raw) {
             raw.clone()
         } else {
