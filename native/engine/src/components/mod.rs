@@ -375,28 +375,31 @@ pub(crate) async fn fetch_versions_json(
     github_url: &str,
     mirror_base: &str,
 ) -> Result<serde_json::Value, ComponentError> {
-    fetch_versions_from_sources(component, github_url, mirror_base, async |url| {
-        fetch_github_json(clients, url).await
+    fetch_versions_from_sources(component, github_url, mirror_base, |url| async move {
+        fetch_github_json(clients, &url).await
     })
     .await
 }
 
 #[cfg(feature = "components")]
-async fn fetch_versions_from_sources(
+async fn fetch_versions_from_sources<Fut>(
     component: &str,
     github_url: &str,
     mirror_base: &str,
-    mut fetch: impl std::ops::AsyncFnMut(&str) -> Result<serde_json::Value, ComponentError>,
-) -> Result<serde_json::Value, ComponentError> {
+    mut fetch: impl FnMut(String) -> Fut,
+) -> Result<serde_json::Value, ComponentError>
+where
+    Fut: std::future::Future<Output = Result<serde_json::Value, ComponentError>>,
+{
     if let Some(mirrored) = https_mirror_url(github_url, mirror_base)
-        && let Ok(release) = fetch(&mirrored).await
+        && let Ok(release) = fetch(mirrored).await
     {
         return Ok(release);
     }
-    if let Ok(release) = fetch(&format!("{MIRROR_BASE}/{component}")).await {
+    if let Ok(release) = fetch(format!("{MIRROR_BASE}/{component}")).await {
         return Ok(release);
     }
-    fetch(github_url).await
+    fetch(github_url.to_string()).await
 }
 
 /// 下载载荷到 `dest` 并校验 SHA-256（`expected_sha256`，小写 hex），
@@ -589,18 +592,18 @@ mod tests {
     #[cfg(feature = "components")]
     #[tokio::test]
     async fn configured_mirror_supplies_ffmpeg_build_missing_from_official_cache() {
-        const API: &str = "https://api.github.com/repos/FFmpeg-Builds/FFmpeg-Builds/releases/latest";
+        const API: &str =
+            "https://api.github.com/repos/FFmpeg-Builds/FFmpeg-Builds/releases/latest";
         const MIRROR: &str = "https://mirror.example";
         const TARGET: &str = "ffmpeg-n8.0-latest-win64-gpl-8.0.zip";
-        const DOWNLOAD: &str =
-            "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.0-latest-win64-gpl-8.0.zip";
+        const DOWNLOAD: &str = "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.0-latest-win64-gpl-8.0.zip";
 
         for mirror_base in ["", MIRROR] {
             let release = super::fetch_versions_from_sources(
                 "ffmpeg",
                 API,
                 mirror_base,
-                async |url| match url {
+                |url| async move { match url.as_str() {
                     "https://mirror.example/repos/FFmpeg-Builds/FFmpeg-Builds/releases/latest" => {
                         Ok(serde_json::json!({
                             "assets": [{"name": TARGET, "browser_download_url": DOWNLOAD}]
@@ -612,7 +615,7 @@ mod tests {
                     _ => Err(super::ComponentError::Http(
                         "GitHub API returned 403 Forbidden".into(),
                     )),
-                },
+                } },
             )
             .await
             .unwrap();
@@ -640,13 +643,15 @@ mod tests {
             "ytdlp",
             "https://api.github.com/repos/yt-dlp/yt-dlp/releases?per_page=30",
             "https://mirror.example",
-            async |url| match url {
-                "https://fluxdown.com/api/components/ytdlp" => {
-                    Ok(serde_json::json!([{"tag_name": "2026.07.04"}]))
+            |url| async move {
+                match url.as_str() {
+                    "https://fluxdown.com/api/components/ytdlp" => {
+                        Ok(serde_json::json!([{"tag_name": "2026.07.04"}]))
+                    }
+                    _ => Err(super::ComponentError::Http(
+                        "GitHub API returned 403 Forbidden".into(),
+                    )),
                 }
-                _ => Err(super::ComponentError::Http(
-                    "GitHub API returned 403 Forbidden".into(),
-                )),
             },
         )
         .await
