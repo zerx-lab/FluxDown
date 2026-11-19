@@ -357,6 +357,9 @@ impl AgentDownloadsPort {
                 DownloadsCommand::Resume { task_id } => {
                     (method::DAEMON_TASK_RESUME, json!({ "taskId": task_id }))
                 }
+                DownloadsCommand::SaveHtmlResponse { task_id } => {
+                    (method::DAEMON_TASK_SAVE_HTML, json!({ "taskId": task_id }))
+                }
                 DownloadsCommand::Rename { task_id, file_name } => (
                     method::DAEMON_TASK_RENAME,
                     json!({ "taskId": task_id, "fileName": file_name }),
@@ -402,6 +405,9 @@ impl AgentDownloadsPort {
                 }
                 DownloadsCommand::SetSuperSeeding(params) => {
                     (method::DAEMON_TASK_SET_SUPER_SEEDING, serialize(params)?)
+                }
+                DownloadsCommand::AddWebSeed(params) => {
+                    (method::DAEMON_TASK_ADD_WEB_SEED, serialize(params)?)
                 }
                 DownloadsCommand::Reannounce { task_id } => {
                     (method::DAEMON_TASK_REANNOUNCE, json!({ "taskId": task_id }))

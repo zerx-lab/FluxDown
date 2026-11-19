@@ -229,6 +229,8 @@ internal fun RemoteTaskRow(entry: RemoteRowEntry, style: RowStyle, flowIndex: In
         statusError = str(R.string.statusError),
         errorPostOnlyEndpoint = str(R.string.taskErrorPostOnlyEndpoint),
         errorPostOnlyResume = str(R.string.taskErrorPostOnlyResume),
+        errorUnexpectedHtml = str(R.string.taskErrorUnexpectedHtml),
+        errorHtmlChanged = str(R.string.taskErrorHtmlChanged),
         statusCompleted = str(R.string.statusCompleted),
         statusDownloading = str(R.string.statusDownloading),
         statusPending = str(R.string.statusPending),
@@ -472,11 +474,15 @@ private data class RemoteRowStrings(
     val statusUnknown: String,
     val errorPostOnlyEndpoint: String,
     val errorPostOnlyResume: String,
+    val errorUnexpectedHtml: String,
+    val errorHtmlChanged: String,
 ) {
     fun taskError(raw: String?): String? = raw?.let {
         when (TaskErrorMessage.match(it)) {
             TaskErrorMessage.PostOnlyEndpoint -> errorPostOnlyEndpoint
             TaskErrorMessage.PostOnlyResume -> errorPostOnlyResume
+            TaskErrorMessage.UnexpectedHtml -> errorUnexpectedHtml
+            TaskErrorMessage.HtmlChanged -> errorHtmlChanged
             null -> it
         }
     }

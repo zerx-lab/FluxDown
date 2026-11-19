@@ -337,7 +337,7 @@ pub struct BtStatusView {
     pub counts: PeerCounts,
     pub trackers: Vec<TrackerRow>,
     pub peers: Vec<PeerRow>,
-    /// HTTP 源（BEP 19 webseed）；任务不在会话里时为空。
+    /// HTTP 源（BEP 19 webseed）；任务不在会话里时仍显示手动添加的来源。
     pub web_seeds: Vec<WebSeedRow>,
     /// info hash（小写十六进制）：v1 / 混合种子为 SHA-1，纯 v2 种子为截断的 SHA-256。
     pub info_hash: String,
@@ -367,6 +367,10 @@ pub enum WebSeedState {
     BackingOff,
     /// 本次运行不再用它（数据不对、不支持断点续传，或设置里关掉了 HTTP 源）。
     Disabled,
+    /// Saved by the user; no handle has been published yet.
+    Pending,
+    /// Saved by the user but not accepted by the current handle.
+    Rejected,
 }
 
 /// librqbit 的 HTTP 源实况 → 展示行。

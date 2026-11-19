@@ -54,6 +54,8 @@ object HostMethod {
     const val daemonTaskSetBtLimits = "daemon.task.setBtLimits"
     /** 超级做种开关（`{taskId, enabled}`）：完成（做种）后才实际生效，可提前设置。 */
     const val daemonTaskSetSuperSeeding = "daemon.task.setSuperSeeding"
+    /** 添加 BT HTTP 源（移动端无入口，仅保持方法表一一对应）。 */
+    const val daemonTaskAddWebSeed = "daemon.task.addWebSeed"
     /** 立即向 tracker 重新汇报（`{taskId}`）；任务不在运行返回 `taskStateConflict`。移动端暂不消费。 */
     const val daemonTaskReannounce = "daemon.task.reannounce"
     /** 批量暂停 / 恢复（`{taskIds}`）：整批只推一次任务快照；未知 id 忽略，空列表为空操作。 */

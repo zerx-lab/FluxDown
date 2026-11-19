@@ -131,7 +131,7 @@ export function canForceRecheck(views: readonly EditFacts[]): boolean {
 }
 
 /** 恰好一个本地 BT 任务（任意状态，含已完成 / 做种）。 */
-function singleLocalBt(views: readonly EditFacts[]): boolean {
+export function singleLocalBt(views: readonly EditFacts[]): boolean {
   return views.length === 1 && views[0]!.source === 'local' && isBtUrl(views[0]!.url)
 }
 

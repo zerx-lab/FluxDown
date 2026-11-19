@@ -151,7 +151,7 @@ private struct BtSelectionView: View {
         var seen = Set<String>()
         categoryRules = (other == nil ? rules + fallback : rules).filter { seen.insert($0.id).inserted }
         let otherID = other?.id ?? fallback.first?.id ?? "builtin_other"
-        let classified = files.count > 1 ? files.map { file in
+        let classified: [(Int32, String)] = files.count > 1 ? files.map { file in
             let path = file.path
             let separator = path.lastIndex(where: { $0 == "/" || $0 == "\\" })
             let start = separator.map { path.index(after: $0) } ?? path.startIndex

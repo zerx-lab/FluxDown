@@ -120,6 +120,9 @@ pub enum ActorOperation {
     ResumeTask {
         task_id: String,
     },
+    SaveHtmlResponse {
+        task_id: String,
+    },
     RenameTask {
         task_id: String,
         file_name: String,
@@ -152,6 +155,10 @@ pub enum ActorOperation {
     SetTaskSuperSeeding {
         task_id: String,
         enabled: bool,
+    },
+    AddTaskWebSeed {
+        task_id: String,
+        url: String,
     },
     DeleteTask {
         task_id: String,
@@ -1424,6 +1431,23 @@ async fn execute_operation(
                 ));
             }
         }
+        ActorOperation::AddTaskWebSeed { task_id, url } => {
+            #[cfg(feature = "bt")]
+            {
+                engine
+                    .manager
+                    .add_bt_web_seed(&task_id, &url)
+                    .await
+                    .map_err(bt_task_op_error)?;
+            }
+            #[cfg(not(feature = "bt"))]
+            {
+                let _ = (task_id, url);
+                return Err(ActorError::InvalidArgument(
+                    UNSUPPORTED_PROTOCOL_MESSAGE.to_owned(),
+                ));
+            }
+        }
         ActorOperation::BtTaskFiles { task_id } => {
             #[cfg(feature = "bt")]
             {
@@ -1638,6 +1662,20 @@ async fn execute_operation(
                 return Err(ActorError::InvalidArgument(BT_DISABLED_MESSAGE.to_owned()));
             }
             engine.manager.resume_task(&task_id).await;
+        }
+        ActorOperation::SaveHtmlResponse { task_id } => {
+            let task_id = engine
+                .manager
+                .save_html_response(&task_id)
+                .await
+                .map_err(|error| match error.as_str() {
+                    "not-found" => ActorError::NotFound,
+                    "not-an-html-failure" | "browser-request-unavailable" => {
+                        ActorError::TaskStateConflict(error)
+                    }
+                    _ => ActorError::Operation(error),
+                })?;
+            return Ok(ActorResult::Created(task_id));
         }
         ActorOperation::RenameTask { task_id, file_name } => engine
             .manager
@@ -2826,6 +2864,8 @@ fn bt_status_to_dto(
                     WebSeedState::Downloading => "downloading",
                     WebSeedState::BackingOff => "backingOff",
                     WebSeedState::Disabled => "disabled",
+                    WebSeedState::Pending => "pending",
+                    WebSeedState::Rejected => "rejected",
                 }
                 .to_owned(),
                 downloaded: seed.downloaded,

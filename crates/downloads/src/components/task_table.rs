@@ -624,6 +624,8 @@ pub(crate) enum MenuEntry {
     MoveStorage,
     /// 任务级 BT 限速对话框（单选；条件见 [`task_limits_visible`]）。
     TaskSpeedLimits,
+    /// Add a BEP 19 source (single local BitTorrent task).
+    AddWebSeed,
     /// 超级做种勾选（可多选；条件见 [`super_seeding_visible`]）。
     SuperSeeding,
     /// 复制磁力链接（单选；条件见 [`TaskMenuFacts::can_share_torrent`]）。
@@ -715,6 +717,9 @@ pub(crate) fn context_menu_items(selection: &[TaskMenuFacts]) -> Vec<MenuEntry> 
     }
     if task_limits_visible(selection) {
         items.push(MenuEntry::TaskSpeedLimits);
+    }
+    if single_local_bt(selection) {
+        items.push(MenuEntry::AddWebSeed);
     }
     if super_seeding_visible(selection) {
         items.push(MenuEntry::SuperSeeding);
@@ -896,7 +901,7 @@ pub(crate) fn force_recheck_visible(selection: &[TaskMenuFacts]) -> bool {
 }
 
 /// 单选本机 BT 任务（任意状态）。
-fn single_local_bt(selection: &[TaskMenuFacts]) -> bool {
+pub(crate) fn single_local_bt(selection: &[TaskMenuFacts]) -> bool {
     matches!(selection, [only] if only.is_local && only.is_bt)
 }
 
@@ -1946,6 +1951,25 @@ impl DownloadTableDelegate {
         self.visible_task_ids()
             .filter_map(|id| self.store.row(id).map(|row| row.key.clone()))
             .collect()
+    }
+
+    pub(crate) fn selected_rows_in_order(&self) -> Vec<std::cell::Ref<'_, DownloadTaskView>> {
+        let mut rows: Vec<_> = self
+            .visible_task_ids()
+            .filter_map(|id| {
+                let row = self.store.row(id)?;
+                self.selected_tasks.contains(&row.key).then_some(row)
+            })
+            .collect();
+        if rows.len() < self.selected_tasks.len() {
+            // A collapsed bucket or directory can still contain selected tasks.
+            let shown: HashSet<_> = rows.iter().map(|row| row.key.clone()).collect();
+            rows.extend(self.sorted_rows.iter().filter_map(|&id| {
+                let row = self.store.row(id)?;
+                (self.selected_tasks.contains(&row.key) && !shown.contains(&row.key)).then_some(row)
+            }));
+        }
+        rows
     }
 
     /// 可见任务行里（选中数, 总数）；不分配。
@@ -3334,6 +3358,11 @@ impl DownloadTableDelegate {
                 self.strings.bt_task_limits.clone(),
                 FluxIcon::Gauge,
                 Box::new(crate::actions::TaskLimitsSelected),
+            ),
+            MenuEntry::AddWebSeed => menu.menu_with_icon(
+                self.strings.bt_add_web_seed.clone(),
+                FluxIcon::Globe,
+                Box::new(crate::actions::AddWebSeedSelected),
             ),
             MenuEntry::SuperSeeding => {
                 let facts: Vec<_> = selected
@@ -5486,6 +5515,14 @@ mod tests {
         // 折叠的组也在「全选」范围内。
         delegate.select_all_tasks();
         assert_eq!(delegate.selection_summary().count, 4);
+        assert_eq!(
+            delegate
+                .selected_rows_in_order()
+                .iter()
+                .map(|row| row.key.clone())
+                .collect::<Vec<_>>(),
+            delegate.visible_task_keys()
+        );
 
         // Cmd/Ctrl 单击整组移出 / 并入选区。
         delegate.select_group(
@@ -6432,6 +6469,23 @@ mod tests {
         let t0 = RowKey::Local("t0".into());
         let t1 = RowKey::Local("t1".into());
         assert_eq!(delegate.visible_task_keys(), [t1.clone(), t0.clone()]);
+        // Select in the reverse of the displayed order, using the real row action.
+        delegate.select_task(t0.clone(), SelectModifiers::default());
+        delegate.select_task(
+            t1.clone(),
+            SelectModifiers {
+                toggle: true,
+                ..SelectModifiers::default()
+            },
+        );
+        assert_eq!(
+            delegate
+                .selected_rows_in_order()
+                .iter()
+                .map(|row| row.key.clone())
+                .collect::<Vec<_>>(),
+            [t1.clone(), t0.clone()]
+        );
 
         let now = Instant::now();
         delegate.row_order.note_interaction(now);
@@ -6447,6 +6501,14 @@ mod tests {
         delegate.view_dirty = true;
         assert!(delegate.refresh_view_at(deadline));
         assert_eq!(delegate.visible_task_keys(), [t0, t1]);
+        assert_eq!(
+            delegate
+                .selected_rows_in_order()
+                .iter()
+                .map(|row| row.key.clone())
+                .collect::<Vec<_>>(),
+            delegate.visible_task_keys()
+        );
         assert_eq!(delegate.reorder_deadline(), None);
         Ok(())
     }
@@ -7024,11 +7086,12 @@ mod context_menu_tests {
             .position(|entry| *entry == MenuEntry::VerifyIntegrity)
             .expect("completed BT task offers verification");
         assert_eq!(
-            items.get(at + 1..at + 5),
+            items.get(at + 1..at + 6),
             Some(
                 &[
                     MenuEntry::MoveStorage,
                     MenuEntry::TaskSpeedLimits,
+                    MenuEntry::AddWebSeed,
                     MenuEntry::SuperSeeding,
                     MenuEntry::Redownload,
                 ][..]
@@ -7091,12 +7154,13 @@ mod context_menu_tests {
                 MenuEntry::CopyUrl
             };
             assert_eq!(
-                items.get(at + 3..at + 8),
+                items.get(at + 3..at + 9),
                 Some(
                     &[
                         MenuEntry::ForceRecheck,
                         MenuEntry::MoveStorage,
                         MenuEntry::TaskSpeedLimits,
+                        MenuEntry::AddWebSeed,
                         MenuEntry::SuperSeeding,
                         next,
                     ][..]
@@ -7234,6 +7298,7 @@ mod context_menu_tests {
             assert!(task_limits_visible(&[single]));
         }
         assert!(!task_limits_visible(&[http]));
+        assert!(!context_menu_items(&[http]).contains(&MenuEntry::AddWebSeed));
         for selection in [&[remote][..], &[unfinished, completed][..], &[][..]] {
             assert!(!move_storage_visible(selection), "{selection:?}");
             assert!(!task_limits_visible(selection), "{selection:?}");
@@ -7243,6 +7308,7 @@ mod context_menu_tests {
                 !items.contains(&MenuEntry::TaskSpeedLimits),
                 "{selection:?}"
             );
+            assert!(!items.contains(&MenuEntry::AddWebSeed), "{selection:?}");
         }
 
         // 超级做种：全体本机 BT，可多选、任意状态。

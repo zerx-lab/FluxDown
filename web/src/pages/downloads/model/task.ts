@@ -318,7 +318,7 @@ export function buildRemoteView(task: RemoteTaskDto): DownloadTaskView {
 }
 
 /** 「复制链接」用：originUrl 优先，空则回退 url（torrent 任务的 url 是哨兵）。 */
-export function shareUrl(view: DownloadTaskView): string {
+export function shareUrl(view: Pick<DownloadTaskView, 'url' | 'originUrl'>): string {
   return view.originUrl === '' ? view.url : view.originUrl
 }
 
@@ -326,7 +326,7 @@ export function shareUrl(view: DownloadTaskView): string {
  * 「复制下载地址」能给出的真实链接：本地导入的 `.torrent` 无来源时只有 `torrent-file://` 哨兵，
  * 返回空串（与 GPUI `copyable_share_url` 一致）。
  */
-export function copyableShareUrl(view: DownloadTaskView): string {
+export function copyableShareUrl(view: Pick<DownloadTaskView, 'url' | 'originUrl'>): string {
   const url = shareUrl(view)
   return url.startsWith('torrent-file://') ? '' : url
 }
