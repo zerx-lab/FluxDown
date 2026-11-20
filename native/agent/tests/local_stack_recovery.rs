@@ -379,10 +379,17 @@ async fn assert_full_quit(scheduled: bool) {
         close_reason.as_deref(),
         Some(fluxdown_protocol::CLOSE_REASON_SERVICE_QUIT)
     );
-    assert!(
-        !process_exists(daemon_pid),
-        "daemon must be gone before the agent releases its UI connections"
-    );
+    // The close frame is ordered after release of the daemon lease, not after PID reaping.
+    let lease = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(root.join("daemon.lock"))
+        .expect("open the daemon lease file");
+    lease
+        .try_lock()
+        .expect("daemon must release its lease before the agent closes UI connections");
+    drop(lease);
+    wait_for_process_exit(daemon_pid, Duration::from_secs(10)).await;
 
     let agent = stack.agent.as_mut().expect("agent child");
     let deadline = Instant::now() + Duration::from_secs(15);
