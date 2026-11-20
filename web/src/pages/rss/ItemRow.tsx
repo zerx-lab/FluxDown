@@ -32,7 +32,7 @@ export interface ItemRowProps {
   onViewImages: (item: RssItemDto) => void
 }
 
-function ItemRowImpl({ item, statusKey, selected, busy, canAct, mobile, onToggle, onAct }: ItemRowProps) {
+function ItemRowImpl({ item, statusKey, selected, busy, canAct, stale, mobile, onToggle, onAct, onViewImages }: ItemRowProps) {
   const units = useFileSizeUnits()
   const t = useT()
   const reason = reasonKey(item.reason)
