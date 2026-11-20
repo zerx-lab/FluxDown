@@ -267,6 +267,7 @@ CREATE TABLE IF NOT EXISTS rss_items (
     guid TEXT NOT NULL,
     title TEXT NOT NULL DEFAULT '',
     link TEXT NOT NULL DEFAULT '',
+    image_urls TEXT,
     enclosure_url TEXT NOT NULL DEFAULT '',
     resolver_item TEXT NOT NULL DEFAULT '',
     enclosure_length INTEGER NOT NULL DEFAULT 0,
@@ -567,6 +568,7 @@ CREATE TABLE IF NOT EXISTS rss_items (
     guid TEXT NOT NULL,
     title TEXT NOT NULL DEFAULT '',
     link TEXT NOT NULL DEFAULT '',
+    image_urls TEXT,
     enclosure_url TEXT NOT NULL DEFAULT '',
     resolver_item TEXT NOT NULL DEFAULT '',
     enclosure_length BIGINT NOT NULL DEFAULT 0,
@@ -1546,6 +1548,8 @@ impl Db {
         self.add_column_if_missing("rss_items", "fetch_failures", "BIGINT NOT NULL DEFAULT 0")
             .await?;
         self.add_column_if_missing("rss_items", "retry_after", "BIGINT NOT NULL DEFAULT 0")
+            .await?;
+        self.add_column_if_missing("rss_items", "image_urls", "TEXT")
             .await?;
         self.add_column_if_missing("tasks", "proxy_url", "TEXT NOT NULL DEFAULT ''")
             .await?;
@@ -5805,7 +5809,7 @@ impl Db {
     ) -> Result<Vec<RssItemInfo>, DbError> {
         let rows = sqlx::query(
             "SELECT source_id, guid, title, link, enclosure_url, enclosure_type, enclosure_length, pub_date, fetched_at, \
-             status, task_id, episode_key, resolver_item, reason FROM rss_items \
+             status, task_id, episode_key, resolver_item, reason, image_urls FROM rss_items \
              WHERE source_id = $1 AND status = 0 AND retry_after <= $3 \
              ORDER BY CASE WHEN reason = '' THEN 0 ELSE 1 END ASC, pub_date ASC, fetched_at ASC, guid ASC LIMIT $2",
         )
@@ -5828,7 +5832,7 @@ impl Db {
     ) -> Result<Vec<RssItemInfo>, DbError> {
         let rows = sqlx::query(
             "SELECT source_id, guid, title, link, enclosure_url, enclosure_type, enclosure_length, pub_date, fetched_at, \
-             status, task_id, episode_key, resolver_item, reason FROM rss_items WHERE source_id = $1 \
+             status, task_id, episode_key, resolver_item, reason, image_urls FROM rss_items WHERE source_id = $1 \
              ORDER BY pub_date DESC, fetched_at DESC, guid ASC LIMIT $2",
         )
         .bind(source_id)
@@ -5849,7 +5853,7 @@ impl Db {
     ) -> Result<Option<RssItemInfo>, DbError> {
         let items = sqlx::query(
             "SELECT source_id, guid, title, link, enclosure_url, enclosure_type, enclosure_length, pub_date, fetched_at, \
-             status, task_id, episode_key, resolver_item, reason FROM rss_items WHERE source_id = $1 AND guid = $2",
+             status, task_id, episode_key, resolver_item, reason, image_urls FROM rss_items WHERE source_id = $1 AND guid = $2",
         )
         .bind(source_id)
         .bind(guid)
@@ -5899,8 +5903,8 @@ impl Db {
         for item in items {
             let r = sqlx::query(
                 "INSERT INTO rss_items (source_id, guid, title, link, enclosure_url, enclosure_type, resolver_item, \
-                 enclosure_length, pub_date, fetched_at, status, task_id, episode_key, reason) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
+                 enclosure_length, pub_date, fetched_at, status, task_id, episode_key, reason, image_urls) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) \
                  ON CONFLICT (source_id, guid) DO NOTHING",
             )
             .bind(&item.source_id)
@@ -5917,12 +5921,56 @@ impl Db {
             .bind(&item.task_id)
             .bind(&item.episode_key)
             .bind(&item.reason)
+            .bind(item.image_urls.as_ref().map(serde_json::to_string).transpose().map_err(|e| sqlx::Error::Encode(Box::new(e)))?)
             .execute(&mut *tx)
             .await?;
             inserted += r.rows_affected();
         }
         tx.commit().await?;
         Ok(inserted)
+    }
+
+    /// Fill missing historical RSS image references without modifying item state.
+    pub(crate) async fn backfill_rss_images(
+        &self,
+        source_id: &str,
+        items: &[(&str, &[String])],
+    ) -> Result<bool, DbError> {
+        if items.is_empty() {
+            return Ok(false);
+        }
+        let missing: HashSet<String> = sqlx::query_scalar(
+            "SELECT guid FROM rss_items WHERE source_id = $1 AND image_urls IS NULL",
+        )
+        .bind(source_id)
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .collect();
+        if !items.iter().any(|(guid, _)| missing.contains(*guid)) {
+            return Ok(false);
+        }
+        let mut tx = self.pool.begin().await?;
+        let mut changed = false;
+        for &(guid, urls) in items {
+            if !missing.contains(guid) {
+                continue;
+            }
+            let json = serde_json::to_string(urls)
+                .map_err(|error| sqlx::Error::Encode(Box::new(error)))?;
+            let result = sqlx::query(
+                "UPDATE rss_items SET image_urls = $1 \
+                 WHERE source_id = $2 AND guid = $3 AND image_urls IS NULL",
+            )
+            .bind(json)
+            .bind(source_id)
+            .bind(guid)
+            .execute(&mut *tx)
+            .await?;
+            changed |= result.rows_affected() != 0;
+        }
+        tx.commit().await?;
+        Ok(changed)
     }
 
     /// 回填历史条目缺失的发布时间。
@@ -6362,6 +6410,14 @@ fn rss_item_from_row(row: &AnyRow) -> Result<RssItemInfo, sqlx::Error> {
         guid: row.try_get("guid")?,
         title: row.try_get("title").unwrap_or_default(),
         link: row.try_get("link").unwrap_or_default(),
+        image_urls: row
+            .try_get::<Option<String>, _>("image_urls")?
+            .map(|json| serde_json::from_str(&json))
+            .transpose()
+            .map_err(|e| sqlx::Error::ColumnDecode {
+                index: "image_urls".into(),
+                source: Box::new(e),
+            })?,
         enclosure_url: row.try_get("enclosure_url").unwrap_or_default(),
         resolver_item: row.try_get("resolver_item").unwrap_or_default(),
         enclosure_type: row.try_get("enclosure_type").unwrap_or_default(),
@@ -8967,6 +9023,66 @@ mod tests {
             .is_empty()
         );
         db.delete_config("pg_smoke_key").await.expect("clean cfg");
+    }
+
+    #[tokio::test]
+    async fn rss_images_upgrade_sqlite() -> Result<(), DbError> {
+        rss_images_upgrade("sqlite::memory:", SQLITE_SCHEMA).await
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty, disposable PostgreSQL database (set PG_RSS_UPGRADE_URL)"]
+    async fn rss_images_upgrade_postgres() -> anyhow::Result<()> {
+        let url = std::env::var("PG_RSS_UPGRADE_URL")?;
+        anyhow::ensure!(url.starts_with("postgres://") || url.starts_with("postgresql://"));
+        rss_images_upgrade(&url, POSTGRES_SCHEMA).await?;
+        Ok(())
+    }
+
+    async fn rss_images_upgrade(url: &str, schema: &str) -> Result<(), DbError> {
+        let db = Db::connect_uninitialized(url).await?;
+        // Run the old table definitions before production initialization performs the migration.
+        let legacy_schema = schema.replace("    image_urls TEXT,\n", "");
+        sqlx::raw_sql(AssertSqlSafe(legacy_schema))
+            .execute(&db.pool)
+            .await?;
+        db.insert_rss_source(&RssSourceInfo {
+            source_id: "rss-image-migration".into(),
+            ..Default::default()
+        })
+        .await?;
+        let source = "rss-image-migration";
+        sqlx::query(
+            "INSERT INTO rss_items (source_id, guid, status, task_id) VALUES ($1, 'known', 1, 'task'), ($1, 'expired', 2, '')",
+        )
+        .bind(source)
+        .execute(&db.pool)
+        .await?;
+
+        db.init_schema().await?;
+        let before = db
+            .rss_item(source, "known")
+            .await?
+            .ok_or(sqlx::Error::RowNotFound)?;
+        assert_eq!(before.image_urls, None);
+        let refs = ["https://example.com/cover.png".to_owned()];
+        assert!(db.backfill_rss_images(source, &[("known", &refs)]).await?);
+        let after = db
+            .rss_item(source, "known")
+            .await?
+            .ok_or(sqlx::Error::RowNotFound)?;
+        assert_eq!(after.image_urls.as_deref(), Some(refs.as_slice()));
+        assert_eq!(after.status, before.status);
+        assert_eq!(after.task_id, before.task_id);
+        assert!(!db.backfill_rss_images(source, &[("known", &[])]).await?);
+        assert_eq!(
+            db.rss_item(source, "expired")
+                .await?
+                .ok_or(sqlx::Error::RowNotFound)?
+                .image_urls,
+            None
+        );
+        Ok(())
     }
 
     /// pg 版 bt_guard 往返：BIGINT（> 4 GiB）/ BYTEA / NULL 过期 / ON CONFLICT upsert / 事件环。

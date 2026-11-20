@@ -243,6 +243,40 @@ impl AgentClient {
         });
         Box::pin(async move { receive.await.map_err(|_| unavailable_error())? })
     }
+
+    pub(crate) fn rss_image(
+        &self,
+        source_id: String,
+        guid: String,
+        index: usize,
+    ) -> AgentFuture<Vec<u8>> {
+        let config = self.config.clone();
+        let (mut send, receive) = oneshot::channel();
+        self.runtime.spawn(async move {
+            let fetch = fetch_rss_image(&config, &source_id, &guid, index);
+            tokio::select! {
+                biased;
+                () = send.closed() => {}
+                result = fetch => {
+                    if send.send(result).is_err() {
+                        log::trace!("RSS image result receiver was dropped");
+                    }
+                }
+            }
+        });
+        Box::pin(async move { receive.await.map_err(|_| unavailable_error())? })
+    }
+}
+
+async fn fetch_rss_image(
+    config: &AgentClientConfig,
+    source_id: &str,
+    guid: &str,
+    index: usize,
+) -> Result<Vec<u8>, RpcErrorData> {
+    let index = index.to_string();
+    let query = [("sourceId", source_id), ("guid", guid), ("index", &index)];
+    fetch_agent_png(config, "/api/web/rss-images", &query, 512 * 1024).await
 }
 
 async fn fetch_plugin_image(
@@ -258,6 +292,21 @@ async fn fetch_plugin_image(
     {
         return Err(internal_error());
     }
+    fetch_agent_png(
+        config,
+        &format!("/api/web/plugin-images/{session}/{id}"),
+        &[],
+        4 * 1024 * 1024,
+    )
+    .await
+}
+
+async fn fetch_agent_png(
+    config: &AgentClientConfig,
+    path: &str,
+    query: &[(&str, &str)],
+    max_bytes: usize,
+) -> Result<Vec<u8>, RpcErrorData> {
     let rpc_url =
         crate::agent_endpoint::discover_rpc_url(config.rpc_url.as_deref(), &config.bearer_path)
             .await
@@ -271,7 +320,7 @@ async fn fetch_plugin_image(
         _ => return Err(unavailable_error()),
     };
     let authority = uri.authority().ok_or_else(unavailable_error)?;
-    let image_url = format!("{scheme}://{authority}/api/web/plugin-images/{session}/{id}");
+    let image_url = format!("{scheme}://{authority}{path}");
     let token = tokio::fs::read_to_string(&config.bearer_path)
         .await
         .map_err(|_| unavailable_error())?;
@@ -291,6 +340,7 @@ async fn fetch_plugin_image(
     let client = CLIENT.as_ref().map_err(|_| unavailable_error())?;
     let response = client
         .get(image_url)
+        .query(query)
         .bearer_auth(token)
         .header(reqwest::header::ACCEPT, "image/png")
         .header(reqwest::header::CACHE_CONTROL, "no-store")
@@ -312,7 +362,7 @@ async fn fetch_plugin_image(
             .eq_ignore_ascii_case("image/png")
         || response
             .content_length()
-            .is_some_and(|length| length > 4 * 1024 * 1024)
+            .is_some_and(|length| length > max_bytes as u64)
     {
         return Err(protocol_error());
     }
@@ -320,7 +370,7 @@ async fn fetch_plugin_image(
     let mut chunks = response.bytes_stream();
     while let Some(chunk) = chunks.next().await {
         let chunk = chunk.map_err(|_| unavailable_error())?;
-        if body.len().saturating_add(chunk.len()) > 4 * 1024 * 1024 {
+        if body.len().saturating_add(chunk.len()) > max_bytes {
             return Err(protocol_error());
         }
         body.extend_from_slice(&chunk);

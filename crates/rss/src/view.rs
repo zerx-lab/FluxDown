@@ -1,6 +1,6 @@
 //! RSS 工作区：订阅列表、条目流和批量操作。
 
-use crate::{RssController, RssPort, editor};
+use crate::{RssController, RssPort, editor, images};
 use fluxdown_protocol::{
     AgentEvent, AgentSnapshot, ApplicationErrorCode, DaemonEvent, RssItemDto, RssSourceDto,
     ServiceEvent, WsServerMsg, method,
@@ -872,6 +872,33 @@ impl RssView {
                         cx,
                     )),
             )
+            .when(item.image_count > 0, |row| {
+                let label = self.t("rssViewImages", cx);
+                let source_id = item.source_id.clone();
+                let guid = item.guid.clone();
+                let count = item.image_count;
+                row.child(
+                    Button::new(SharedString::from(format!("rss-images-{source_id}-{guid}")))
+                        .ghost()
+                        .icon(Icon::new(FluxIcon::Image))
+                        .tooltip(label)
+                        .control(cx)
+                        .disabled(self.controller.stale)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            if !this.controller.stale {
+                                images::open(
+                                    this.translator.clone(),
+                                    this.controller.port.clone(),
+                                    &source_id,
+                                    &guid,
+                                    count,
+                                    window,
+                                    cx,
+                                );
+                            }
+                        })),
+                )
+            })
             .child(
                 h_flex()
                     .flex_none()

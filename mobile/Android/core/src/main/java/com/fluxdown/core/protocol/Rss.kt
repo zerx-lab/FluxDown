@@ -212,6 +212,7 @@ data class RssItemDto(
     /** 智能剧集归一键（空 = 未识别）。 */
     val episodeKey: String = "",
     val reason: String = "",
+    val imageCount: Int = 0,
 ) {
     val state: RssItemStatus get() = RssItemStatus.fromWire(status)
     val reasonCode: RssReason get() = RssReason.fromWire(reason)
@@ -235,6 +236,7 @@ data class RssItemDto(
                 taskId = v.str("taskId"),
                 episodeKey = v.str("episodeKey"),
                 reason = v.str("reason"),
+                imageCount = v.int("imageCount"),
             )
         }
 

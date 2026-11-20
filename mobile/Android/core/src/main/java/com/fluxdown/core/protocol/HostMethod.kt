@@ -101,6 +101,7 @@ object HostMethod {
     const val daemonFsList = "daemon.fs.list"
     const val daemonRssListSources = "daemon.rss.listSources"
     const val daemonRssGetItems = "daemon.rss.getItems"
+    const val daemonRssGetImage = "daemon.rss.getImage"
     const val daemonRssCreateSource = "daemon.rss.createSource"
     const val daemonRssUpdateSource = "daemon.rss.updateSource"
     const val daemonRssDeleteSource = "daemon.rss.deleteSource"

@@ -1,6 +1,7 @@
 import FluxDomain
 import FluxUI
 import SwiftUI
+import UIKit
 
 /// R2 条目流：某订阅的条目列表；搜索、按发布时间排序、选择模式（批量下载 / 忽略 / 已读）、
 /// 条目状态与关联任务状态联动（`HostState.tasks` 按 `taskId`，不另行轮询）。
@@ -138,6 +139,11 @@ struct RssItemsScreen: View {
             if hasTask {
                 Button(L("mobileRssOpenTask"), systemImage: FluxSymbol.openFile) {
                     container.router.showTask(item.taskId)
+                }
+                if item.imageCount > 0, !readOnly, !model.isSelecting, !model.expanded.contains(item.guid) {
+                    Button(L("mobileExpand"), systemImage: "chevron.down") {
+                        model.expanded.insert(item.guid)
+                    }
                 }
             }
             Button(downloadTitle(item, busy: busy), systemImage: "arrow.down.circle") {
@@ -502,6 +508,9 @@ private struct RssItemRow: View {
             }
             .font(.footnote)
             .buttonStyle(.borderless)
+            if item.imageCount > 0, !selecting, canAct {
+                RssItemImages(item: item)
+            }
         }
         .padding(.top, 2)
     }
@@ -532,6 +541,98 @@ private struct RssItemRow: View {
         if !meta.isEmpty { parts.append(meta) }
         if let reasonKey { parts.append(L(reasonKey)) }
         return parts.joined(separator: ", ")
+    }
+}
+
+private struct RssItemImages: View {
+    @Environment(AppContainer.self) private var container
+    let item: RssItemDto
+
+    var body: some View {
+        RssImageDisclosure(item: item)
+            .id(Identity(
+                hostId: container.host.id,
+                itemId: item.id,
+                count: item.imageCount
+            ))
+    }
+
+    private nonisolated struct Identity: Hashable {
+        let hostId: String
+        let itemId: String
+        let count: Int
+    }
+}
+
+private struct RssImageDisclosure: View {
+    let item: RssItemDto
+    @State private var requested = false
+
+    var body: some View {
+        Button(L("rssViewImages"), systemImage: "photo") { requested.toggle() }
+            .font(.footnote)
+            .buttonStyle(.borderless)
+        if requested {
+            ForEach(0..<item.imageCount, id: \.self) { index in
+                RssPreviewImage(sourceId: item.sourceId, guid: item.guid, index: index)
+            }
+        }
+    }
+}
+
+private struct RssPreviewImage: View {
+    @Environment(AppContainer.self) private var container
+    let sourceId: String
+    let guid: String
+    let index: Int
+    @State private var image: UIImage?
+    @State private var failed = false
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxHeight: 240)
+                    .accessibilityLabel(L("rssViewImages"))
+            } else if failed {
+                Text(L("rssImageLoadFailed"))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else {
+                ProgressView(L("rssImageLoading"))
+                    .font(.footnote)
+            }
+        }
+        .task { await load() }
+    }
+
+    private func load() async {
+        do {
+            let response: Reply = try await container.session.call(
+                HostMethod.daemonRssGetImage,
+                params: Params(sourceId: sourceId, guid: guid, index: index)
+            )
+            guard !Task.isCancelled else { return }
+            if let data = Data(base64Encoded: response.pngBase64), let decoded = UIImage(data: data) {
+                image = decoded
+            } else {
+                failed = true
+            }
+        } catch {
+            if !Task.isCancelled { failed = true }
+        }
+    }
+
+    private nonisolated struct Params: Encodable, Sendable {
+        let sourceId: String
+        let guid: String
+        let index: Int
+    }
+
+    private nonisolated struct Reply: Decodable, Sendable {
+        let pngBase64: String
     }
 }
 

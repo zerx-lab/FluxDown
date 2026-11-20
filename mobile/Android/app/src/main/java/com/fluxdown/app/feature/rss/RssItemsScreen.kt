@@ -1,8 +1,12 @@
 package com.fluxdown.app.feature.rss
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.util.Base64
 import androidx.activity.compose.BackHandler
 import androidx.annotation.StringRes
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -29,12 +33,17 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -48,6 +57,7 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fluxdown.app.R
 import com.fluxdown.app.actions.LocalTaskActions
 import com.fluxdown.app.feature.settings.PageMaxWidth
@@ -59,6 +69,7 @@ import com.fluxdown.app.shell.LocalAppContainer
 import com.fluxdown.app.shell.hostState
 import com.fluxdown.core.format.Format
 import com.fluxdown.core.model.RssSource
+import com.fluxdown.core.protocol.HostMethod
 import com.fluxdown.core.protocol.HostSection
 import com.fluxdown.core.protocol.Json
 import com.fluxdown.core.protocol.RssChipKind
@@ -70,7 +81,10 @@ import com.fluxdown.core.protocol.RssItemStatus
 import com.fluxdown.core.protocol.RssItems
 import com.fluxdown.core.protocol.RssLinkedTask
 import com.fluxdown.core.protocol.RssReason
+import com.fluxdown.core.protocol.callJson
+import com.fluxdown.core.protocol.jsonObject
 import com.fluxdown.core.protocol.long
+import com.fluxdown.core.protocol.str
 import com.fluxdown.core.store.Connection
 import com.fluxdown.fluxui.chrome.FluxGlassIconButton
 import com.fluxdown.fluxui.chrome.FluxPageHead
@@ -103,6 +117,9 @@ import com.fluxdown.fluxui.overlay.SwipeReveal
 import com.fluxdown.fluxui.theme.FluxText
 import com.fluxdown.fluxui.theme.FluxTheme
 import com.fluxdown.fluxui.theme.fluxPressable
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.text.DateFormat
 import java.util.Date
 
@@ -265,6 +282,7 @@ fun RssItemsScreen(sourceId: String) {
                                     else -> model.toggleExpanded(item.guid)
                                 }
                             },
+                            onExpand = { model.toggleExpanded(item.guid) },
                             onSelect = { model.startSelecting(item.guid) },
                             onDownload = { model.act(listOf(item.guid), RssItemAction.Download) },
                             onIgnore = { model.act(listOf(item.guid), RssItemAction.Ignore) },
@@ -466,6 +484,7 @@ private fun RssItemRow(
     canAct: Boolean,
     hasTask: Boolean,
     onTap: () -> Unit,
+    onExpand: () -> Unit,
     onSelect: () -> Unit,
     onDownload: () -> Unit,
     onIgnore: () -> Unit,
@@ -494,6 +513,9 @@ private fun RssItemRow(
     val rectBox = remember { RectBox() }
     val menu = buildList<FluxMenuItem> {
             if (hasTask) add(FluxMenuItem.Action(str(R.string.mobileRssOpenTask), onOpenTask, icon = FluxIcons.FolderOpen))
+            if (hasTask && item.imageCount > 0 && canAct && !selecting && !expanded) {
+                add(FluxMenuItem.Action(str(R.string.mobileExpand), onExpand))
+            }
             add(FluxMenuItem.Action(downloadLabel, onDownload, icon = FluxIcons.Download, enabled = canAct && !busy))
             if (ignorable) add(FluxMenuItem.Action(str(R.string.rssActionIgnore), onIgnore, icon = FluxIcons.EyeOff, enabled = canAct && !busy))
             if (item.effectiveLink.isNotEmpty()) add(FluxMenuItem.Action(str(R.string.copyUrl), onCopy, icon = FluxIcons.Copy))
@@ -562,11 +584,71 @@ private fun RssItemRow(
                             DetailAction(downloadLabel, FluxIcons.Download, onDownload, enabled = canAct && !busy)
                             if (ignorable) DetailAction(str(R.string.rssActionIgnore), FluxIcons.EyeOff, onIgnore, enabled = canAct && !busy)
                         }
+                        if (item.imageCount > 0 && !selecting && canAct) {
+                            RssItemImages(item)
+                        }
                     }
                 }
             }
         }
         FluxDivider(startInset = margin)
+    }
+}
+
+@Composable
+private fun RssItemImages(item: RssItemDto) {
+    val container = LocalAppContainer.current
+    val hostRef by container.host.collectAsStateWithLifecycle()
+    key(hostRef.id, item.sourceId, item.guid, item.imageCount) {
+        var requested by remember { mutableStateOf(false) }
+        FluxButton(
+            str(R.string.rssViewImages),
+            onClick = { requested = !requested },
+            variant = ButtonVariant.Ghost,
+            size = ButtonSize.Xs,
+        )
+        if (requested) {
+            repeat(item.imageCount) { index ->
+                key(index) { RssPreviewImage(item.sourceId, item.guid, index) }
+            }
+        }
+    }
+}
+
+private sealed interface RssImageState {
+    data object Loading : RssImageState
+    data object Failed : RssImageState
+    data class Ready(val bitmap: Bitmap) : RssImageState
+}
+
+@Composable
+private fun RssPreviewImage(sourceId: String, guid: String, index: Int) {
+    val container = LocalAppContainer.current
+    val state by produceState<RssImageState>(RssImageState.Loading) {
+        value = try {
+            val reply = container.session.callJson(
+                HostMethod.daemonRssGetImage,
+                jsonObject("sourceId" to sourceId, "guid" to guid, "index" to index),
+            )
+            withContext(Dispatchers.Default) {
+                val bytes = Base64.decode(reply.str("pngBase64"), Base64.DEFAULT)
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.let { RssImageState.Ready(it) }
+                    ?: RssImageState.Failed
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            RssImageState.Failed
+        }
+    }
+    when (val current = state) {
+        RssImageState.Loading -> FluxText(str(R.string.rssImageLoading), style = FluxTheme.type.sm)
+        RssImageState.Failed -> FluxText(str(R.string.rssImageLoadFailed), style = FluxTheme.type.sm)
+        is RssImageState.Ready -> Image(
+            bitmap = remember(current) { current.bitmap.asImageBitmap() },
+            contentDescription = str(R.string.rssViewImages),
+            modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp),
+        )
     }
 }
 

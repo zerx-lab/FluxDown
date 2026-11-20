@@ -1,14 +1,14 @@
 // 条目行（GPUI `RssView::render_item`）：桌面 64px 单行（选择 | 标题+元信息+原因 | 状态徽标 120px | 操作），
 // 移动端 76px 三行（标题 / 元信息 / 状态徽标+原因）+ 右侧 44px 操作，无 hover 依赖。
 
-import { Download, EllipsisVertical, EyeOff } from 'lucide-react'
+import { Download, EllipsisVertical, EyeOff, Image as ImageIcon } from 'lucide-react'
 import { memo } from 'react'
 import { useFileSizeUnits } from '../../lib/fileSizeUnits'
 import { useT } from '../../i18n'
 import { cn } from '../../lib/cn'
 import type { RssItemDto } from '../../lib/rpc'
 import { RSS_ITEM_STATUS } from '../../lib/rpc'
-import { ActionMenu, Badge, Button, Checkbox } from '../../ui'
+import { ActionMenu, Badge, Button, Checkbox, Tooltip } from '../../ui'
 import type { MenuEntry } from '../../ui'
 import { reasonKey } from './filter'
 import { bytesText, dateText } from './format'
@@ -23,11 +23,13 @@ export interface ItemRowProps {
   statusKey: string
   selected: boolean
   busy: boolean
+  stale: boolean
   /** 连接就绪且未在处理。 */
   canAct: boolean
   mobile: boolean
   onToggle: (guid: string) => void
   onAct: (guids: readonly string[], action: ItemAction) => void
+  onViewImages: (item: RssItemDto) => void
 }
 
 function ItemRowImpl({ item, statusKey, selected, busy, canAct, mobile, onToggle, onAct }: ItemRowProps) {
@@ -38,6 +40,7 @@ function ItemRowImpl({ item, statusKey, selected, busy, canAct, mobile, onToggle
   const size = bytesText(item.enclosureLength, units)
   const meta = [date !== '' ? `${t('rssPublishedAt')} · ${date}` : '', size].filter((part) => part !== '').join(' · ')
   const canIgnore = item.status === RSS_ITEM_STATUS.new
+  const hasImages = (item.imageCount ?? 0) > 0
   const taskMissing = item.status === RSS_ITEM_STATUS.downloaded && statusKey === 'rssTaskMissing'
   const downloadLabel = busy ? t('rssActionPreparing') : item.status === RSS_ITEM_STATUS.downloaded ? t('rssActionRedownload') : t('rssActionDownload')
   const status = (
@@ -56,6 +59,9 @@ function ItemRowImpl({ item, statusKey, selected, busy, canAct, mobile, onToggle
       { type: 'item', key: 'download', label: downloadLabel, icon: Download, disabled: !canAct, onSelect: () => onAct([item.guid], 'download') },
       ...(canIgnore
         ? [{ type: 'item', key: 'ignore', label: t('rssActionIgnore'), icon: EyeOff, disabled: !canAct, onSelect: () => onAct([item.guid], 'ignore') } satisfies MenuEntry]
+        : []),
+      ...(hasImages
+        ? [{ type: 'item', key: 'images', label: t('rssViewImages'), icon: ImageIcon, disabled: stale, onSelect: () => onViewImages(item) } satisfies MenuEntry]
         : []),
     ]
     return (
@@ -89,6 +95,11 @@ function ItemRowImpl({ item, statusKey, selected, busy, canAct, mobile, onToggle
         {reason ? <div className="truncate text-xs text-text-tertiary">{t(reason)}</div> : null}
       </div>
       <div className="flex w-[120px] shrink-0 justify-end">{status}</div>
+      {hasImages ? (
+        <Tooltip content={t('rssViewImages')}>
+          <Button variant="ghost" iconOnly icon={ImageIcon} aria-label={t('rssViewImages')} disabled={stale} onClick={() => onViewImages(item)} />
+        </Tooltip>
+      ) : null}
       <div
         className={cn(
           'flex shrink-0 items-center justify-end gap-0.5 transition-opacity',

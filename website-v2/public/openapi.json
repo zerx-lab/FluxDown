@@ -6081,6 +6081,13 @@
             "type": "string",
             "description": "去重主键。"
           },
+          "imageCount": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Number of available description image thumbnails.",
+            "default": 0,
+            "minimum": 0
+          },
           "link": {
             "type": "string"
           },

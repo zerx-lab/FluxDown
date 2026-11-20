@@ -393,10 +393,17 @@ pub fn rss_source_dto_to_engine(source: RssSourceDto) -> RssSourceInfo {
 #[must_use]
 pub fn rss_item_info_to_dto(item: RssItemInfo) -> RssItemDto {
     RssItemDto {
-        source_id: item.source_id,
         guid: item.guid,
         title: item.title,
         link: item.link,
+        image_count: if item.source_id.is_empty() {
+            0
+        } else {
+            item.image_urls
+                .as_ref()
+                .map_or(0, |urls| u8::try_from(urls.len()).unwrap_or_default())
+        },
+        source_id: item.source_id,
         enclosure_url: item.enclosure_url,
         enclosure_length: item.enclosure_length,
         pub_date: item.pub_date,
