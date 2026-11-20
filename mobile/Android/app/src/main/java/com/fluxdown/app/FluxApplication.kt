@@ -8,6 +8,7 @@ import android.util.Log
 import androidx.compose.runtime.snapshots.SnapshotStateSet
 import androidx.datastore.preferences.preferencesDataStore
 import com.fluxdown.app.data.AppearanceRepo
+import com.fluxdown.app.data.AppearanceState
 import com.fluxdown.app.data.DeviceSettings
 import com.fluxdown.app.data.HostRepo
 import com.fluxdown.app.data.SecretBox
@@ -18,6 +19,7 @@ import com.fluxdown.app.service.LocalActivity
 import com.fluxdown.app.diag.AppDiagnostics
 import com.fluxdown.app.service.DownloadServiceController
 import com.fluxdown.bridge.FluxBridge
+import com.fluxdown.core.format.Format
 import com.fluxdown.core.host.CreateTaskRequest
 import com.fluxdown.core.host.HostErrorCode
 import com.fluxdown.core.host.HostException
@@ -47,11 +49,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.plus
@@ -104,6 +107,10 @@ class AppContainer(context: Context) {
     private val storeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1))
 
     val appearance = AppearanceRepo(context.prefs)
+    /** null until DataStore loads; never publish a legacy placeholder for a saved IEC preference. */
+    val appearanceState: StateFlow<AppearanceState?> = appearance.state
+        .onEach { Format.setFileSizeUnits(it.fileSizeUnits) }
+        .stateIn(appScope, SharingStarted.Eagerly, null)
     val viewPrefs = ViewPrefsRepo(context.prefs)
 
     /** 批量导入（进程级：关闭「新建下载」Sheet 后仍继续，进度显示在下载页）。 */

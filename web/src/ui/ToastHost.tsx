@@ -31,7 +31,7 @@ export function ToastHost() {
           )}
         >
           <Icon icon={ICONS[item.kind]} className={cn('mt-px', ICON_TONE[item.kind])} />
-          <span className="min-w-0 flex-1 break-words">{item.text}</span>
+          <span className="max-h-[50dvh] min-w-0 flex-1 overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere]">{item.text}</span>
           <button
             type="button"
             aria-label={t('close')}

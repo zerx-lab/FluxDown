@@ -3,7 +3,7 @@ title: HTTP / HTTPS
 description: 多线程分段 HTTP/HTTPS 下载,支持运行时动态拆分、断点续传与文件校验。
 section: protocols
 order: 1
-sourceHash: "cf0c1307e8a8"
+sourceHash: "b845d35fefad"
 ---
 
 HTTP 和 HTTPS 是 FluxDown 的默认协议——只要不是 magnet 链接、`.torrent` 文件或 `.m3u8`/`.mpd` 流媒体地址,都会走这条路径下载。引擎会把大文件拆到多个连接并行下载,下载过程中动态调整连接数,并在暂停、崩溃或重启后从断点精确续传。
@@ -35,7 +35,7 @@ FluxDown 不会把分段数在开始时就锁死。下载过程中,任何一个�
 
 - FluxDown 会先通过 `ETag`/`Last-Modified` 重新校验远端文件是否发生变化。如果下载开始后服务器上的文件已经改变,它会丢弃已下载的部分重新开始,而不是把新旧内容悄悄拼接在一起。
 - 如果剩余的 `Range` 请求持续返回 `200 OK` 而不是 `206 Partial Content`, FluxDown 可以改用不带 `Range` 的普通 GET 重下。已下载至少 8 MiB 时,新文件会单独写入,校验和保存成功后才清理原断点。因为需要重新下载整个文件,显示进度会从零开始,且在替换成功前需要容纳两份文件的磁盘空间。
-  普通 GET 失败后,请手动恢复任务。强制退出后暂存目录可能残留。退出所有 FluxDown 进程后,只删除该任务日志所指向的 `.fluxdown-restart-*` 暂存目录,不要删除 `.fdownloading` 断点文件。
+  普通 GET 失败后,FluxDown 会保留原断点,等待你手动恢复。如果服务器仍忽略 `Range`,手动恢复可能再次下载整个文件。强制退出后暂存目录可能残留。退出所有 FluxDown 进程后,只删除该任务日志所指向的 `.fluxdown-restart-*` 暂存目录,不要删除 `.fdownloading` 断点文件。
 
 ## Cookie、请求头、User-Agent 与 Referer
 

@@ -349,14 +349,16 @@ export interface ManifestSelectionStat {
 
 /** 全局已选统计：计数 / Σsize（size===0 视为未知，计入 unknownCount 但不计入 size）。 */
 export function manifestSelectionStat(items: PreviewItemDto[], selectedItemIds: Set<string>): ManifestSelectionStat {
+  let count = 0
   let size = 0
   let unknown = 0
   for (const it of items) {
     if (!selectedItemIds.has(it.id)) continue
+    count++
     if (it.size === 0) unknown++
     else size += it.size
   }
-  return { count: selectedItemIds.size, size, unknownCount: unknown }
+  return { count, size, unknownCount: unknown }
 }
 
 /** 清单总大小（摘要区「N 项 · 总大小」，不做未知标注）。 */
@@ -451,6 +453,16 @@ export function buildManifestGroupItems(items: PreviewItemDto[], selectedItemIds
     result.push({ resolverItem: item.id, fileName: item.name, relPath: item.path, size: item.size })
   }
   return result
+}
+
+/** Export the checked set regardless of the current search or directory. The Web picker uses plugin defaults. */
+export function manifestExportRows(items: PreviewItemDto[], selectedItemIds: Set<string>) {
+  return items.filter((item) => selectedItemIds.has(item.id)).map(({ name, path, size }) => ({
+    name: path ? `${path}/${name}` : name,
+    url: '',
+    originUrl: '',
+    sizeBytes: size > 0 ? size : null,
+  }))
 }
 
 // =============================================================================

@@ -67,13 +67,22 @@ nonisolated struct PendingSelection: Equatable {
 }
 
 /// 多选的批量能力：继续 / 暂停 / 移动 各自的可用性（Resume / Pause 取「存在」）。
+/// 远程命令的 id 为云端任务 id（不带行前缀），已按 `RemoteTaskRules.canIssue` 过滤；导出不受命令资格限制。
 nonisolated struct SelectionCaps: Equatable {
-    var canResume = false
-    var canPause = false
-    var canMove = false
+    var canResume: Bool { !resumeIds.isEmpty || !remoteResumeIds.isEmpty }
+    var canPause: Bool { !pauseIds.isEmpty || !remotePauseIds.isEmpty }
+    var canMove: Bool { !moveIds.isEmpty }
+    var canDelete: Bool { hasLocal || !remoteDeleteIds.isEmpty }
+    var canExport: Bool { hasLocal || hasRemote }
+    /// 选中里是否有本机任务（删除沿用既有路径，不看状态）。
+    var hasLocal = false
+    var hasRemote = false
     var resumeIds: [String] = []
     var pauseIds: [String] = []
     var moveIds: [String] = []
+    var remoteResumeIds: [String] = []
+    var remotePauseIds: [String] = []
+    var remoteDeleteIds: [String] = []
 }
 
 /// 下载页的视图状态：筛选 / 折叠 / 多选 + 派生列表与分面（同 Android `DownloadsView`）。
@@ -182,8 +191,15 @@ final class DownloadsModel {
         if nextChrome != chrome { chrome = nextChrome }
 
         // 任务表分页载入中不能据空表裁剪选择（「已不存在」是删除推断，半份列表不成立）；载入完成再裁。
-        if !selection.isEmpty, !state.tasksLoading {
-            let kept = selection.intersection(state.tasks.lazy.map(\.taskId))
+        if !selection.isEmpty {
+            // 远程行随云端投影增删，不受本机任务表分页载入影响；本机任务只在载入完成后裁剪。
+            var kept = selection
+            let remoteIds = Set(remoteTasks(state).map { DownloadsRow.remoteIdPrefix + $0.id })
+            kept = kept.filter { !$0.hasPrefix(DownloadsRow.remoteIdPrefix) || remoteIds.contains($0) }
+            if !state.tasksLoading {
+                let localIds = Set(state.tasks.lazy.map(\.taskId))
+                kept = kept.filter { $0.hasPrefix(DownloadsRow.remoteIdPrefix) || localIds.contains($0) }
+            }
             if kept != selection { selection = kept } else { updateCaps() }
         }
 
@@ -280,6 +296,22 @@ final class DownloadsModel {
         return store.state.tasks.filter { selection.contains($0.taskId) }
     }
 
+    /// 选中的远程任务（列表顺序无关；按云端投影顺序）。
+    func selectedRemoteTasks() -> [RemoteTaskDto] {
+        guard let store, !selection.isEmpty else { return [] }
+        return selectedRemoteTasks(store.state)
+    }
+
+    private func selectedRemoteTasks(_ state: HostState) -> [RemoteTaskDto] {
+        remoteTasks(state).filter { selection.contains(DownloadsRow.remoteIdPrefix + $0.id) }
+    }
+
+    /// 命令目标的在线状态：presence 未知 = nil（不据此禁用）；与 `DevicesModel.targetOnline` 同口径（快照里的云设备）。
+    private func remoteTargetOnline(_ task: RemoteTaskDto, _ state: HostState) -> Bool? {
+        guard CloudPresence.isKnown(agentSections.connection(state), localReady: state.connection == .live) else { return nil }
+        return state.cloudDevices.first { $0.deviceId == task.toDevice }?.isOnline
+    }
+
     private func updateCaps() {
         guard let store, !selection.isEmpty else {
             if selectionCaps != SelectionCaps() { selectionCaps = SelectionCaps() }
@@ -287,6 +319,7 @@ final class DownloadsModel {
         }
         var caps = SelectionCaps()
         for task in store.state.tasks where selection.contains(task.taskId) {
+            caps.hasLocal = true
             switch task.status {
             case .paused, .failed: caps.resumeIds.append(task.taskId)
             case .downloading, .pending, .preparing: caps.pauseIds.append(task.taskId)
@@ -300,9 +333,15 @@ final class DownloadsModel {
             }
             if task.status != .completed, task.status != .unknown { caps.moveIds.append(task.taskId) }
         }
-        caps.canResume = !caps.resumeIds.isEmpty
-        caps.canPause = !caps.pauseIds.isEmpty
-        caps.canMove = !caps.moveIds.isEmpty
+        let state = store.state
+        let remote = selectedRemoteTasks(state)
+        caps.hasRemote = !remote.isEmpty
+        if !remote.isEmpty {
+            let online: (RemoteTaskDto) -> Bool? = { [self] in remoteTargetOnline($0, state) }
+            caps.remoteResumeIds = RemoteBatch.eligibleIds(.resume, in: remote, targetOnline: online)
+            caps.remotePauseIds = RemoteBatch.eligibleIds(.pause, in: remote, targetOnline: online)
+            caps.remoteDeleteIds = RemoteBatch.eligibleIds(.delete, in: remote, targetOnline: online)
+        }
         if caps != selectionCaps { selectionCaps = caps }
     }
 }

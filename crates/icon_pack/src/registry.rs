@@ -25,9 +25,15 @@ pub const FALLBACK_PACK: &str = "builtin:lucide";
 const MAX_CHAIN: usize = 8;
 
 /// 内置包（设置页按此顺序展示；`system` 只在桌面可用）。
-pub const BUILTIN_PACK_IDS: [&str; 4] = [SYSTEM_PACK_ID, "lucide", "material", "catppuccin"];
+pub const BUILTIN_PACK_IDS: [&str; 5] = [
+    SYSTEM_PACK_ID,
+    "lucide",
+    "material",
+    "catppuccin",
+    "thunder",
+];
 
-const BUILTIN_SOURCES: [(&str, &str); 3] = [
+const BUILTIN_SOURCES: [(&str, &str); 4] = [
     (
         "lucide",
         include_str!("../../../assets/icon-packs/lucide.json"),
@@ -39,6 +45,10 @@ const BUILTIN_SOURCES: [(&str, &str); 3] = [
     (
         "catppuccin",
         include_str!("../../../assets/icon-packs/catppuccin.json"),
+    ),
+    (
+        "thunder",
+        include_str!("../../../assets/icon-packs/thunder.json"),
     ),
 ];
 
@@ -247,6 +257,16 @@ mod tests {
             pack_svg(&state, "notes.docx")
         );
         assert_eq!(pack_svg(&state, "a.MP4"), pack_svg(&state, "b.mkv"));
+    }
+
+    #[test]
+    fn thunder_embeds_png_and_maps_download_types() {
+        let state = IconPackState::new("builtin:thunder");
+        let torrent = pack_svg(&state, "ubuntu.torrent");
+        assert!(torrent.contains("data:image/png;base64,"));
+        assert_ne!(torrent, pack_svg(&state, "a.mp4"));
+        assert_eq!(pack_svg(&state, "a.MKV"), pack_svg(&state, "b.mp4"));
+        assert_eq!(pack_svg(&state, "README"), pack_svg(&state, "x.unknownext"));
     }
 
     #[test]

@@ -213,6 +213,7 @@ mod tests {
             auth_supported: false,
             subscription_provider_ids: Vec::new(),
             resolver_urls: Vec::new(),
+            resolver_url_conflicts: Vec::new(),
             load_status: "Loaded".into(),
             load_error: String::new(),
             contributions: fluxdown_protocol::PluginContributionsDto::default(),

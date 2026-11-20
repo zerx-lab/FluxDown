@@ -108,6 +108,7 @@ pub fn build_menus(translator: &Translator) -> Vec<Menu> {
             t(translator, "btSuperSeeding"),
             dl::ToggleSuperSeedingSelected,
         ),
+        MenuItem::action(t(translator, "btAddWebSeed"), dl::AddWebSeedSelected),
         MenuItem::action(t(translator, "redownloadTask"), dl::RedownloadSelected),
         MenuItem::action(t(translator, "boostDownload"), dl::ToggleBoostSelected),
         MenuItem::action(t(translator, "menuOpenInWindow"), dl::OpenSelectedInWindow),
@@ -229,16 +230,7 @@ pub fn install_global_actions(cx: &mut App) {
     cx.on_action(|_: &dl::OpenQueueManager, cx| crate::windows::queue_manager::open(cx));
     cx.on_action(|_: &CheckUpdate, cx| crate::update_notices::check_now(cx));
     cx.on_action(|_: &OpenLogsFolder, cx| open_logs_folder(cx));
-    cx.on_action(|_: &About, cx| {
-        crate::windows::settings::reveal(
-            cx,
-            fluxdown_ui_settings::SettingsTarget {
-                page: "about",
-                tab: "",
-                row: None,
-            },
-        );
-    });
+    cx.on_action(|_: &About, cx| open_about(cx));
     cx.on_action(|_: &ToggleCommandPalette, cx| crate::command_palette::toggle(cx));
     install_download_fallbacks(cx);
 }
@@ -275,6 +267,7 @@ fn install_download_fallbacks(cx: &mut App) {
     forward_to_downloads::<dl::MoveStorageSelected>(cx);
     forward_to_downloads::<dl::TaskLimitsSelected>(cx);
     forward_to_downloads::<dl::ToggleSuperSeedingSelected>(cx);
+    forward_to_downloads::<dl::AddWebSeedSelected>(cx);
     forward_to_downloads::<dl::RedownloadSelected>(cx);
     forward_to_downloads::<dl::ToggleBoostSelected>(cx);
     forward_to_downloads::<dl::OpenSelectedInWindow>(cx);
@@ -378,7 +371,19 @@ pub fn request_quit(cx: &mut App) {
     });
 }
 
-fn open_logs_folder(cx: &mut App) {
+/// 打开设置「关于」页（菜单与状态栏版本条目共用）。
+pub(crate) fn open_about(cx: &mut App) {
+    crate::windows::settings::reveal(
+        cx,
+        fluxdown_ui_settings::SettingsTarget {
+            page: "about",
+            tab: "",
+            row: None,
+        },
+    );
+}
+
+pub(crate) fn open_logs_folder(cx: &mut App) {
     // 桌面端自身日志目录本地已知；agent 不可达时日志入口恰是最需要的。
     let dir = crate::app::agent_data_dir().join("logs");
     #[cfg(not(windows))]

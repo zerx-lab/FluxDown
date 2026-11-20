@@ -57,6 +57,7 @@ internal fun PluginDetailPage(pluginId: String) {
     val readOnly by remember { derivedStateOf { hostState.value.isReadOnly } }
     val plugins by rememberPlugins()
     val plugin = plugins.firstOrNull { it.identity == pluginId }
+    val conflicts = rememberResolverUrlConflicts(plugins, remember(pluginId) { setOf(pluginId) })
     val gate = rememberFlowInGate()
     var sheet by remember { mutableStateOf<PluginSheet?>(null) }
 
@@ -133,6 +134,11 @@ internal fun PluginDetailPage(pluginId: String) {
                             )
                         }
                     }
+                }
+            }
+            if (conflicts.isNotEmpty()) {
+                flowItem(index++, gate, "resolverUrlConflicts") {
+                    ResolverUrlConflictSection(conflicts)
                 }
             }
             flowItem(index++, gate, "info") { PluginInfoBlock(PluginDetail.of(plugin), env) }

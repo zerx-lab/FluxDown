@@ -26,9 +26,10 @@ use std::{
 
 use chrono::{Local, TimeZone as _};
 use fluxdown_protocol::{
-    AgentEvent, AgentSnapshot, DaemonEvent, ServiceEvent, TaskDto, TaskRuntimeDto,
-    TaskSpeedHistoryDto, TaskSpeedHistoryQuery, WsServerMsg,
+    AgentEvent, AgentSnapshot, ApplicationErrorCode, DaemonEvent, ServiceEvent, TaskDto,
+    TaskRuntimeDto, TaskSpeedHistoryDto, TaskSpeedHistoryQuery, WsServerMsg,
 };
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     ControlExt as _, FluxIcon, IconControlExt as _, form, form_field, segmented_tabs,
     tabular_numbers,
@@ -48,7 +49,6 @@ use gpui_component::{
     h_flex,
     input::{InputState, NumberInput},
     menu::{DropdownMenu as _, PopupMenuItem},
-    notification::Notification,
     v_flex,
 };
 
@@ -62,7 +62,8 @@ use crate::{
     components::{
         segment_progress::render_segment_progress,
         task_table::{
-            progress_bar_color, progress_track_color, task_menu_facts_for, task_status_color,
+            ShareLink, progress_bar_color, progress_track_color, task_menu_facts_for,
+            task_status_color,
         },
     },
     controller::{
@@ -81,7 +82,7 @@ use crate::{
         task_edit::{TaskEditTarget, open_change_url_dialog},
         task_properties::open_task_properties,
     },
-    strings::DownloadStrings,
+    strings::{DownloadStrings, can_save_html_failure, error_text, is_unexpected_html},
 };
 
 /// 做种页实时上传曲线保留的采样点数（每秒一次）。
@@ -207,6 +208,7 @@ pub struct TaskDetailView {
     activity_online: bool,
     closed: bool,
     last_error: Option<SharedString>,
+    saving_html: bool,
     seed_ratio: Entity<InputState>,
     seed_post_ratio: Entity<InputState>,
     seed_time_limit: Entity<InputState>,
@@ -354,6 +356,7 @@ impl TaskDetailView {
             speed_last_fetch: None,
             closed: false,
             last_error: None,
+            saving_html: false,
             seed_ratio,
             seed_post_ratio,
             seed_time_limit,
@@ -915,10 +918,12 @@ impl TaskDetailView {
         let Some(row) = self.store.get(&RowKey::Local(self.task_id.clone())) else {
             return;
         };
-        let url = row.share_url().to_owned();
+        let Some(url) = row.copyable_share_url().map(str::to_owned) else {
+            return;
+        };
         drop(row);
         cx.write_to_clipboard(ClipboardItem::new_string(url));
-        window.push_notification(Notification::success(self.strings.url_copied.clone()), cx);
+        window.push_notification(toast::success(self.strings.url_copied.clone()), cx);
     }
 
     /// 详情「常规」页「更换链接 / 修改线程数」按钮的编辑上下文（与右键菜单同一对话框）。
@@ -956,13 +961,78 @@ impl TaskDetailView {
         let Some(row) = self.store.get(&RowKey::Local(self.task_id.clone())) else {
             return;
         };
-        let message = self.strings.task_error_text(&row.error_message).to_owned();
+        let raw = &row.error_message;
+        // Keep Content-Type and redirect diagnostics in the clipboard, not in the localized UI.
+        let message = if is_unexpected_html(raw) {
+            raw.clone()
+        } else {
+            self.strings.task_error_text(raw).to_owned()
+        };
         drop(row);
         if message.is_empty() {
             return;
         }
         cx.write_to_clipboard(ClipboardItem::new_string(message));
         self.flash_copied(cx, |this| &mut this.error_copied);
+    }
+
+    fn confirm_save_html(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let title = self.t(cx, "taskSaveHtml");
+        let description = self.t(cx, "taskSaveHtmlConfirm");
+        let cancel = self.t(cx, "cancel");
+        let view = cx.entity().downgrade();
+        let task_id = self.task_id.clone();
+        window.open_alert_dialog(cx, move |dialog, _, cx| {
+            let view = view.clone();
+            let task_id = task_id.clone();
+            dialog
+                .title(fluxdown_ui_components::dialog_title(title.clone(), cx))
+                .description(description.clone())
+                .footer(fluxdown_ui_components::dialog_footer(
+                    Some(cancel.clone()),
+                    title.clone(),
+                    fluxdown_ui_components::DialogIntent::Confirm,
+                    cx,
+                ))
+                .on_ok(move |_, window, cx| {
+                    view.update(cx, |this, cx| this.save_html(task_id.clone(), window, cx))
+                        .is_ok()
+                })
+        });
+    }
+
+    fn save_html(&mut self, task_id: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.saving_html {
+            return;
+        }
+        self.saving_html = true;
+        cx.notify();
+        let request = self
+            .port
+            .execute(DownloadsCommand::SaveHtmlResponse { task_id });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = request.await;
+            let Ok(()) = this.update_in(cx, |this, window, cx| {
+                this.saving_html = false;
+                let notification = match result {
+                    Ok(_) => toast::success(this.t(cx, "taskSaveHtmlCreated")),
+                    Err(error)
+                        if matches!(
+                            error.code,
+                            ApplicationErrorCode::Conflict | ApplicationErrorCode::NotFound
+                        ) =>
+                    {
+                        toast::error(this.t(cx, "taskSaveHtmlUnavailable"))
+                    }
+                    Err(error) => toast::error(error_text(this.translator.read(cx), &error)),
+                };
+                window.push_notification(notification, cx);
+                cx.notify();
+            }) else {
+                return;
+            };
+        })
+        .detach();
     }
 
     /// 日志页「复制全部」：按界面显示顺序（新→旧）导出已加载的全部条目。
@@ -1192,7 +1262,7 @@ impl TaskDetailView {
         let tokens = theme.tokens().clone();
         let extended = theme.extended().clone();
         let size = if row.size_bytes > 0 {
-            row.size.clone()
+            format_bytes(row.size_bytes)
         } else {
             format_bytes(row.downloaded_bytes)
         };
@@ -1289,7 +1359,11 @@ impl TaskDetailView {
             .filter(|_| downloading)
             .map(|seconds| self.strings.format_eta(seconds));
         let size_label = SharedString::from(if row.size_bytes > 0 {
-            format!("{} / {}", format_bytes(row.downloaded_bytes), row.size)
+            format!(
+                "{} / {}",
+                format_bytes(row.downloaded_bytes),
+                format_bytes(row.size_bytes)
+            )
         } else {
             format_bytes(row.downloaded_bytes)
         });
@@ -1456,7 +1530,7 @@ impl TaskDetailView {
                     .when(row.size_bytes > 0, |this| {
                         this.child(detail_row(
                             self.t(cx, "infoSize"),
-                            SharedString::from(row.size.clone()),
+                            SharedString::from(format_bytes(row.size_bytes)),
                             cx,
                         ))
                     })
@@ -1558,13 +1632,32 @@ impl TaskDetailView {
                     .items_start()
                     .gap(tokens.spacing.sm)
                     .child(
-                        div()
+                        v_flex()
                             .flex_1()
                             .min_w_0()
-                            .text_color(tokens.colors.destructive)
-                            .child(SharedString::from(
-                                self.strings.task_error_text(&row.error_message).to_owned(),
-                            )),
+                            .items_start()
+                            .gap(tokens.spacing.xs)
+                            .child(div().text_color(tokens.colors.destructive).child(
+                                SharedString::from(
+                                    self.strings.task_error_text(&row.error_message).to_owned(),
+                                ),
+                            ))
+                            .when(
+                                row.state == TaskState::Failed
+                                    && can_save_html_failure(&row.error_message),
+                                |this| {
+                                    this.child(
+                                        Button::new("detail-save-html")
+                                            .outline()
+                                            .control(cx)
+                                            .label(self.t(cx, "taskSaveHtml"))
+                                            .disabled(self.saving_html)
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.confirm_save_html(window, cx);
+                                            })),
+                                    )
+                                },
+                            ),
                     )
                     .child(
                         Button::new("detail-copy-error")
@@ -1603,13 +1696,21 @@ impl TaskDetailView {
                 .flex_wrap()
                 .gap(tokens.spacing.sm)
                 .pt(tokens.spacing.md)
-                .child(
-                    Button::new("detail-copy-link")
-                        .outline()
-                        .control(cx)
-                        .icon(FluxIcon::Copy)
-                        .label(self.strings.copy_url.clone())
-                        .on_click(cx.listener(|this, _, window, cx| this.copy_link(window, cx))),
+                // 详情页没有「复制磁力链接」，磁力原文仍走这里；只藏无链接的哨兵任务。
+                .when(
+                    facts.is_some_and(|facts| facts.share_link != ShareLink::None),
+                    |this| {
+                        this.child(
+                            Button::new("detail-copy-link")
+                                .outline()
+                                .control(cx)
+                                .icon(FluxIcon::Copy)
+                                .label(self.strings.copy_url.clone())
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.copy_link(window, cx)),
+                                ),
+                        )
+                    },
                 )
                 .when(can_change_url, |this| {
                     this.child(
@@ -2187,7 +2288,11 @@ impl TaskDetailView {
     /// 上传限速字段（KB/s）：始终可编辑的数字输入，0 = 不限速。
     fn render_seed_upload_field(&self, cx: &mut Context<Self>) -> AnyElement {
         form_field(
-            self.t(cx, "btSeedUploadLimit"),
+            SharedString::from(format!(
+                "{} ({})",
+                self.t(cx, "btSeedUploadLimit"),
+                fluxdown_ui_components::size_units::rate_labels()[1]
+            )),
             NumberInput::new(&self.seed_upload_limit)
                 .control(cx)
                 .w_full(),

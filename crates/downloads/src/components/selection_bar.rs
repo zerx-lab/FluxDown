@@ -2,12 +2,12 @@
 //! 不遮挡任何任务行，紧挨刚点过的复选框，鼠标移动距离最短。
 
 use fluxdown_ui_components::{
-    FluxIcon, IconControlExt as _, tabular_numbers, toolbar_action_button, tooltip_view,
+    FluxIcon, IconControlExt as _, tabular_numbers, toast, toolbar_action_button, tooltip_view,
 };
 use fluxdown_ui_theme::active_theme;
 use gpui::{
-    Anchor, AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement as _, Styled, Window, div, px,
+    Anchor, AnyElement, ClipboardItem, Context, InteractiveElement as _, IntoElement,
+    ParentElement, SharedString, StatefulInteractiveElement as _, Styled, Window, div, px,
 };
 use gpui_component::{
     Icon, WindowExt as _,
@@ -18,9 +18,191 @@ use gpui_component::{
 
 use crate::{
     components::task_table::{ToolbarCommand, table_header_height},
-    model::{RowKey, TaskState, TaskStore},
+    model::{DownloadTaskView, RowKey, TaskState, TaskStore},
     pages::downloads::DownloadView,
 };
+
+fn push_task_info_cell(text: &mut String, value: &str, clipboard: bool) {
+    // Keep spreadsheet pastes from interpreting untrusted text as formulas or quoted cells.
+    if clipboard && value.trim_start().starts_with(['=', '+', '-', '@', '"']) {
+        text.push('\'');
+    }
+    for ch in value.chars() {
+        match ch {
+            '\\' => text.push_str("\\\\"),
+            '\t' => text.push_str("\\t"),
+            '\n' => text.push_str("\\n"),
+            '\r' => text.push_str("\\r"),
+            _ => text.push(ch),
+        }
+    }
+}
+
+const TASK_INFO_HEADER: &str = "Name\tURL\tSize (bytes)";
+
+fn push_task_info_row(
+    text: &mut String,
+    name: &str,
+    url: &str,
+    size: Option<u64>,
+    clipboard: bool,
+) {
+    text.push('\n');
+    push_task_info_cell(text, name, clipboard);
+    text.push('\t');
+    push_task_info_cell(text, url, clipboard);
+    text.push('\t');
+    if let Some(size) = size {
+        use std::fmt::Write as _;
+        if let Err(error) = write!(text, "{size}") {
+            eprintln!("could not format task size: {error}");
+        }
+    }
+}
+
+pub(crate) fn batch_link_info_text<'a>(
+    entries: impl IntoIterator<Item = &'a crate::model::new_download::UrlEntry>,
+) -> String {
+    let mut text = TASK_INFO_HEADER.to_owned();
+    for entry in entries {
+        let name = batch_entry_name(entry);
+        let size = batch_entry_size(&entry.url);
+        push_task_info_row(&mut text, &name, &entry.url, size, false);
+    }
+    text
+}
+
+fn batch_entry_size(url: &str) -> Option<u64> {
+    // Match the engine's eD2k wire fields, size ceiling, and MD4("") root for empty files.
+    let mut fields = url.split('|');
+    let (Some(scheme), Some(kind), Some(name), Some(size), Some(hash)) = (
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+    ) else {
+        return None;
+    };
+    if !scheme.eq_ignore_ascii_case("ed2k://")
+        || !kind.eq_ignore_ascii_case("file")
+        || name.is_empty()
+        || hash.len() != 32
+        || !hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    size.parse::<u64>().ok().filter(|&bytes| {
+        bytes <= 0x40_0000_0000
+            && (bytes != 0 || hash.eq_ignore_ascii_case("31d6cfe0d16ae931b73c59d7e0c089c0"))
+    })
+}
+
+fn batch_entry_name(entry: &crate::model::new_download::UrlEntry) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+
+    use crate::model::new_download::{percent_decode_utf8, url_file_segment};
+
+    if !entry.file_name.is_empty() {
+        return Cow::Borrowed(&entry.file_name);
+    }
+    let (scheme, rest) = entry.url.split_once(':').unwrap_or_default();
+    let (raw_name, p2p) = if scheme.eq_ignore_ascii_case("magnet") {
+        let query = rest.strip_prefix('?').unwrap_or_default();
+        let query = query.split('#').next().unwrap_or_default();
+        (
+            query.split('&').find_map(|part| part.strip_prefix("dn=")),
+            true,
+        )
+    } else if scheme.eq_ignore_ascii_case("ed2k") {
+        let mut fields = rest.split('|');
+        let name = match (fields.next(), fields.next()) {
+            (Some("//"), Some(kind)) if kind.eq_ignore_ascii_case("file") => fields.next(),
+            _ => None,
+        };
+        (name, true)
+    } else if rest.starts_with("//")
+        && ["http", "https", "ftp"]
+            .into_iter()
+            .any(|protocol| scheme.eq_ignore_ascii_case(protocol))
+    {
+        (url_file_segment(&entry.url), false)
+    } else {
+        (None, false)
+    };
+    let raw_name = raw_name.unwrap_or_default();
+    let name = if raw_name.contains('%') {
+        percent_decode_utf8(raw_name).map_or(Cow::Borrowed(raw_name), Cow::Owned)
+    } else {
+        Cow::Borrowed(raw_name)
+    };
+    if p2p && name.trim().is_empty() {
+        Cow::Borrowed("")
+    } else {
+        name
+    }
+}
+
+pub(crate) fn export_task_info_text(
+    rows: impl IntoIterator<Item = (impl AsRef<str>, u64)>,
+) -> String {
+    let mut text = TASK_INFO_HEADER.to_owned();
+    for (name, size) in rows {
+        let size = (size > 0).then_some(size);
+        push_task_info_row(&mut text, name.as_ref(), "", size, false);
+    }
+    text
+}
+
+fn task_info_text<'a>(
+    rows: impl IntoIterator<Item = std::cell::Ref<'a, DownloadTaskView>>,
+    clipboard: bool,
+) -> Option<String> {
+    let mut rows = rows.into_iter().peekable();
+    rows.peek()?;
+    let mut text = TASK_INFO_HEADER.to_owned();
+    for row in rows {
+        push_task_info_row(
+            &mut text,
+            &row.name,
+            row.copyable_share_url().unwrap_or_default(),
+            (row.size_bytes > 0).then_some(row.size_bytes),
+            clipboard,
+        );
+    }
+    Some(text)
+}
+
+pub(crate) fn save_task_info<T: 'static>(
+    text: String,
+    failed: String,
+    window: &mut Window,
+    cx: &mut Context<T>,
+) {
+    let directory = std::env::home_dir().unwrap_or_else(std::env::temp_dir);
+    let receiver = cx.prompt_for_new_path(&directory, Some("fluxdown-tasks.txt"));
+    cx.spawn_in(window, async move |this, cx| {
+        let error = match receiver.await {
+            Ok(Ok(Some(path))) => cx
+                .background_executor()
+                .spawn(async move { std::fs::write(path, text) })
+                .await
+                .err()
+                .map(|error| error.to_string()),
+            Ok(Ok(None)) => return,
+            Ok(Err(error)) => Some(format!("{error:#}")),
+            Err(error) => Some(error.to_string()),
+        };
+        if let Some(error) = error
+            && let Err(error) = this.update_in(cx, |_, window, cx| {
+                window.push_notification(toast::error(format!("{failed}: {error}")), cx);
+            })
+        {
+            eprintln!("window closed before reporting task export failure: {error:#}");
+        }
+    })
+    .detach();
+}
 
 fn retain_stale_tasks(store: &TaskStore, keys: &mut Vec<RowKey>) {
     keys.retain(|key| {
@@ -35,6 +217,35 @@ fn retain_stale_tasks(store: &TaskStore, keys: &mut Vec<RowKey>) {
 }
 
 impl DownloadView {
+    fn copy_selected_task_info(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rows = self
+            .table_state
+            .read(cx)
+            .delegate()
+            .selected_rows_in_order();
+        if let Some(text) = task_info_text(rows, true) {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            let label = self.translator.read(cx).text("taskInfoCopied").to_owned();
+            window.push_notification(toast::success(label), cx);
+        }
+    }
+
+    fn export_selected_task_info(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rows = self
+            .table_state
+            .read(cx)
+            .delegate()
+            .selected_rows_in_order();
+        if let Some(text) = task_info_text(rows, false) {
+            let failed = self
+                .translator
+                .read(cx)
+                .text("taskInfoExportFailed")
+                .to_owned();
+            save_task_info(text, failed, window, cx);
+        }
+    }
+
     fn selected_stale_keys(&self, cx: &gpui::App) -> Vec<RowKey> {
         let mut keys = self.table_state.read(cx).delegate().selected_keys();
         retain_stale_tasks(self.controller.store(), &mut keys);
@@ -287,6 +498,30 @@ impl DownloadView {
                 cx,
             ));
         }
+        let copy_label =
+            SharedString::from(self.translator.read(cx).text("copyTaskInfo").to_owned());
+        actions.push(self.icon_action(
+            "download-selection-copy-info",
+            copy_label,
+            Icon::new(FluxIcon::Copy).size(icon_size),
+            false,
+            Self::copy_selected_task_info,
+            cx,
+        ));
+        let export_label = SharedString::from(
+            self.translator
+                .read(cx)
+                .text("exportTaskInfoTxt")
+                .to_owned(),
+        );
+        actions.push(self.icon_action(
+            "download-selection-export-info",
+            export_label,
+            Icon::new(FluxIcon::Download).size(icon_size),
+            false,
+            Self::export_selected_task_info,
+            cx,
+        ));
         actions.push(self.selection_delete_menu(cx));
         let clear = self.icon_action(
             "download-selection-clear",
@@ -332,7 +567,7 @@ impl DownloadView {
 
 #[cfg(test)]
 mod tests {
-    use super::retain_stale_tasks;
+    use super::{batch_link_info_text, retain_stale_tasks, task_info_text};
     use crate::model::{DownloadTaskView, RowKey, TaskStore};
 
     fn local(id: &str, status: i32, missing: bool) -> DownloadTaskView {
@@ -348,6 +583,63 @@ mod tests {
 
     fn keys(ids: &[&str]) -> Vec<RowKey> {
         ids.iter().map(|id| RowKey::Local((*id).into())).collect()
+    }
+
+    #[test]
+    fn task_info_preserves_selected_rows_and_escapes_cell_boundaries() {
+        let store = TaskStore::default();
+        let mut known = local("known", 3, false);
+        known.name = "=报告\tpart\n2".to_owned();
+        known.origin_url = "https://example.com/original".to_owned();
+        let mut unknown = local("unknown", 0, false);
+        unknown.url = "torrent-file://local".to_owned();
+        unknown.size_bytes = 0;
+        store.replace_local(vec![known, unknown, local("unselected", 3, false)]);
+        let selected = keys(&["known", "removed", "unknown"]);
+        assert_eq!(
+            task_info_text(selected.iter().filter_map(|key| store.get(key)), true).as_deref(),
+            Some(
+                "Name\tURL\tSize (bytes)\n'=报告\\tpart\\n2\thttps://example.com/original\t1\nfile.bin\t\t"
+            )
+        );
+        assert_eq!(
+            task_info_text(selected.iter().filter_map(|key| store.get(key)), false).as_deref(),
+            Some(
+                "Name\tURL\tSize (bytes)\n=报告\\tpart\\n2\thttps://example.com/original\t1\nfile.bin\t\t"
+            )
+        );
+    }
+
+    #[test]
+    fn parsed_batch_exports_known_metadata_without_guessing_sizes() {
+        let magnet = "MAGNET:?xt=urn:btih:a&dn=My+Show%21";
+        let ed2k = "ED2K://|FILE|f%20x.iso|5044211712|1555B7DCA052B5958EE68DB58A42408D|/";
+        let unnamed_magnet = "magnet:?xt=urn:btih:b";
+        let unnamed_ed2k = "ed2k://|file||100|h|/";
+        let renamed = "ed2k://|file|ignored|100|1555B7DCA052B5958EE68DB58A42408D|/";
+        let empty = "ed2k://|file|empty.txt|0|31D6CFE0D16AE931B73C59D7E0C089C0|/";
+        let wrong_hash = "ed2k://|file|invalid.txt|0|1555B7DCA052B5958EE68DB58A42408D|/";
+        let p2p = crate::model::new_download::parse_entries(
+            &format!(
+                "{magnet}\n{ed2k}\n{unnamed_magnet}\n{unnamed_ed2k}\n{renamed}\n  out=keep%20name\n{empty}\n{wrong_hash}"
+            ),
+            false,
+        );
+        assert_eq!(
+            batch_link_info_text(&p2p),
+            format!(
+                "Name\tURL\tSize (bytes)\nMy+Show!\t{magnet}\t\nf x.iso\t{ed2k}\t5044211712\n\t{unnamed_magnet}\t\n\t{unnamed_ed2k}\t\nkeep%20name\t{renamed}\t100\nempty.txt\t{empty}\t0\ninvalid.txt\t{wrong_hash}\t"
+            )
+        );
+
+        let entries = crate::model::new_download::parse_entries(
+            "https://example.com/a%20b.zip?key=v\nftp://example.com/f\n  out=报告.zip\nhttps://example.com/",
+            false,
+        );
+        assert_eq!(
+            batch_link_info_text(&entries),
+            "Name\tURL\tSize (bytes)\na b.zip\thttps://example.com/a%20b.zip?key=v\t\n报告.zip\tftp://example.com/f\t\n\thttps://example.com/\t"
+        );
     }
 
     #[test]

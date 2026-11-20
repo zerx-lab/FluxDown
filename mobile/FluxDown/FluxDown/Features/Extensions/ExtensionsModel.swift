@@ -58,6 +58,18 @@ final class ExtensionsModel {
     private(set) var installPhase: InstallPhase?
     /// 安装 / 重载成功但缺基础组件：弹窗提醒（提醒式，不阻断）。
     var missingComponents: [String]?
+    struct ConflictNotice {
+        let identity: String
+        let plugins: [PluginDto]
+    }
+
+    private var conflictNotices: [ConflictNotice] = []
+    var conflictNotice: ConflictNotice? { conflictNotices.first }
+
+    func dismissConflictNotice() {
+        if !conflictNotices.isEmpty { conflictNotices.removeFirst() }
+    }
+
     /// 递增即要求所有被推入的子页返回（「前往组件设置」前先回到根页）。
     private(set) var popRequest = 0
 
@@ -103,11 +115,13 @@ final class ExtensionsModel {
 
     func setEnabled(_ plugin: PluginDto, _ enabled: Bool) async {
         await withBusy(plugin.identity) {
+            let target = session
             do throws(HostError) {
-                try await session.callVoid(
+                try await target.callVoid(
                     HostMethod.daemonPluginSetEnabled,
                     params: PluginSetEnabledParams(identity: plugin.identity, enabled: enabled)
                 )
+                if enabled { await noteResolverConflicts(target, identity: plugin.identity) }
             } catch {
                 toast(L("pluginOpEnabledFailed", ["message": ExtensionErrorText.describe(error)]), .error)
             }
@@ -175,6 +189,22 @@ final class ExtensionsModel {
         if !result.missingComponents.isEmpty { missingComponents = result.missingComponents }
     }
 
+    private func noteResolverConflicts(_ target: any HostSession, identity: String) async {
+        guard !identity.isEmpty, target === session else { return }
+        // The PluginsChanged projection may still be behind the mutation response.
+        let plugins: [PluginDto]
+        do throws(HostError) {
+            plugins = try await target.call(HostMethod.daemonPluginList)
+        } catch {
+            // A failed read does not turn a successful mutation into a failure.
+            return
+        }
+        guard target === session, plugins.contains(where: { plugin in
+            plugin.resolverUrlConflicts.contains { plugin.identity == identity || $0.otherIdentity == identity }
+        }) else { return }
+        conflictNotices.append(ConflictNotice(identity: identity, plugins: plugins))
+    }
+
     // MARK: 文件安装
 
     /// `.fileImporter` 选中的 `.fxplug` / `.zip`（仅远端主机）：先上传 blob（`POST /api/web/blobs/plugins`）
@@ -185,10 +215,12 @@ final class ExtensionsModel {
         defer { installPhase = nil }
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let target = session
         do throws(HostError) {
             let data = try Self.readPackage(url)
-            let result = try await installRemote(data)
+            let result = try await installRemote(data, target: target)
             toast(L("pluginOpInstallSuccess"), .success)
+            await noteResolverConflicts(target, identity: result.identity)
             noteMissing(result)
         } catch {
             toast(L("pluginOpInstallFailed", ["message": ExtensionErrorText.describe(error)]), .error)
@@ -208,7 +240,7 @@ final class ExtensionsModel {
         return data
     }
 
-    private func installRemote(_ data: Data) async throws(HostError) -> InstalledPlugin {
+    private func installRemote(_ data: Data, target: any HostSession) async throws(HostError) -> InstalledPlugin {
         guard case let .remote(id, _, endpoint) = container.host else {
             throw HostError(.invalidArgument, message: "not a remote host")
         }
@@ -223,7 +255,7 @@ final class ExtensionsModel {
             }
         }
         installPhase = .installing
-        return try await session.call(HostMethod.daemonPluginInstall, params: PluginInstallParams(blobId: blobId))
+        return try await target.call(HostMethod.daemonPluginInstall, params: PluginInstallParams(blobId: blobId))
     }
 
     // MARK: 市场
@@ -283,12 +315,14 @@ final class ExtensionsModel {
         guard !marketPending.contains(entry.pluginId) else { return }
         marketPending.insert(entry.pluginId)
         defer { marketPending.remove(entry.pluginId) }
+        let target = session
         do throws(HostError) {
-            let result: InstalledPlugin = try await session.call(
+            let result: InstalledPlugin = try await target.call(
                 HostMethod.daemonPluginMarketInstall,
                 params: PluginMarketInstallParams(pluginId: entry.pluginId, version: entry.version)
             )
             toast(L(request.isUpdate ? "pluginOpUpdateSuccess" : "pluginOpInstallSuccess"), .success)
+            await noteResolverConflicts(target, identity: result.identity)
             noteMissing(result)
         } catch {
             // 用户确认的版本已不是最新：刷新目录，按新版本重新确认权限。

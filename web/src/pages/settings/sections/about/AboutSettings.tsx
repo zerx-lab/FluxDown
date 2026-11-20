@@ -4,13 +4,16 @@
 
 import { useState } from 'react'
 import { useI18n, useT } from '../../../../i18n'
+import { copyText } from '../../../../lib/copy'
+import { diagnosticText } from '../../../../lib/diagnosticInfo'
+import { byteUnit, useFileSizeUnits } from '../../../../lib/fileSizeUnits'
 import { exportLogs, rpc, useRpcSelector } from '../../../../lib/rpc'
 import type { ReleaseNoteDto } from '../../../../lib/rpc'
 import { Button, toast } from '../../../../ui'
 import { rpcErrorText } from '../../../../lib/rpcErrorText'
 import { localizedReleaseBody, releaseDate, releaseNoteBlocks, stripVersionHeading } from '../../../../lib/releaseNotes'
 import { canCancel, canInstall, manualLine, manualUrl, statusLine, updateLineText, useUpdateStatus } from '../../../../lib/update'
-import { DaemonNumberRow, PrefDropdownRow, PrefSwitchRow, SettingsCustomRow, SettingsPage, SettingsRow, SettingsSection, useSettingsReadOnly, usePrefString } from '../../kit'
+import { DaemonNumberRow, PrefDropdownRow, PrefSwitchRow, SettingsCustomRow, SettingsPage, SettingsRow, SettingsSection, useSettingsReadOnly, usePrefBoolean, usePrefString } from '../../kit'
 
 const CHROME_STORE = 'https://chromewebstore.google.com/search/FluxDown'
 const FIREFOX_STORE = 'https://addons.mozilla.org/firefox/addon/fluxdown/'
@@ -180,14 +183,36 @@ function ExportRow() {
 }
 
 export function AboutSettings() {
+  const units = useFileSizeUnits()
   const t = useT()
-  const version = useRpcSelector((state) => state.hello?.serviceVersion ?? '')
+  const { locale } = useI18n()
+  const hello = useRpcSelector((state) => state.hello)
+  const version = hello?.serviceVersion ?? ''
+  const update = useUpdateStatus()
+  const autoCheck = usePrefBoolean('general.auto_check_update', true)
+  const silentSupported = update != null && (
+    update.installKind === 'windowsSetup'
+    || update.installKind === 'windowsPortable'
+    || update.installKind === 'macosApp'
+    || update.installKind === 'linuxAppImage'
+    || update.installKind === 'linuxPortable'
+  )
 
   return (
     <SettingsPage title={t('settingsCatAbout')} description={t('settingsCatAboutDesc')}>
       <SettingsSection title="FluxDown">
         <SettingsRow title={t('currentVersion')}>
-          <span className="text-sm tabular text-foreground">{version ? `v${version}` : '—'}</span>
+          <div className="flex flex-wrap items-center gap-2 desktop:justify-end">
+            <span className="text-sm tabular text-foreground">{version ? `v${version}` : '—'}</span>
+            <Button
+              onClick={() => {
+                copyText(diagnosticText({ serviceVersion: version, protocolVersion: hello?.protocolVersion ?? null, status: update, locale, userAgent: navigator.userAgent }))
+                toast.success(t('diagnosticInfoCopied'))
+              }}
+            >
+              {t('copyDiagnosticInfo')}
+            </Button>
+          </div>
         </SettingsRow>
       </SettingsSection>
       <SettingsSection title={t('softwareUpdate')}>
@@ -202,13 +227,22 @@ export function AboutSettings() {
           ]}
         />
         <PrefSwitchRow prefKey="general.auto_check_update" fallback titleKey="autoCheckUpdate" descKey="autoCheckUpdateBackgroundDesc" />
+        {silentSupported ? (
+          <PrefSwitchRow
+            prefKey="general.silent_auto_update"
+            fallback={false}
+            titleKey="silentAutoUpdate"
+            descKey="silentAutoUpdateDesc"
+            disabled={!autoCheck}
+          />
+        ) : null}
         <UpdateRow />
         <SettingsRow title={t('webServerReleases')}>
           <LinkButtons links={[{ label: 'GitHub', url: SERVER_RELEASES }]} />
         </SettingsRow>
       </SettingsSection>
       <SettingsSection title={t('logExport')} subtitle={t('logExportDesc')}>
-        <DaemonNumberRow configKey="log_max_size_mb" titleKey="logMaxSize" descKey="logMaxSizeDesc" unit="MB" />
+        <DaemonNumberRow configKey="log_max_size_mb" titleKey="logMaxSize" descKey="logMaxSizeDesc" unit={byteUnit(2, units)} />
         <ExportRow />
       </SettingsSection>
       <SettingsSection title={t('extensionCardTitle')} subtitle={t('extensionCardDesc')}>

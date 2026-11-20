@@ -144,6 +144,16 @@ async fn client_observes_daemon_stale_recovery_and_agent_restart_state_restorati
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires FLUXDOWN_TEST_DAEMON_BIN=<absolute fluxdownd path>"]
 async fn full_quit_stops_daemon_then_agent_and_tells_clients_not_to_reconnect() {
+    assert_full_quit(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires FLUXDOWN_TEST_DAEMON_BIN=<absolute fluxdownd path>"]
+async fn scheduled_quit_stops_daemon_then_agent_and_tells_clients_not_to_reconnect() {
+    assert_full_quit(true).await;
+}
+
+async fn assert_full_quit(scheduled: bool) {
     let daemon_binary = PathBuf::from(
         std::env::var_os("FLUXDOWN_TEST_DAEMON_BIN").expect("FLUXDOWN_TEST_DAEMON_BIN is required"),
     );
@@ -173,15 +183,26 @@ async fn full_quit_stops_daemon_then_agent_and_tells_clients_not_to_reconnect() 
     wait_snapshot(&mut client, 2, RECOVERY_WAIT, daemon_connected).await;
     let daemon_pid = wait_for_daemon_pid(&daemon_pid_file, None, RECOVERY_WAIT).await;
 
-    let mut control = connect_agent(agent_address, &token).await;
-    let accepted = rpc_call(
-        &mut control,
-        1,
-        fluxdown_protocol::method::SYSTEM_SHUTDOWN,
-        None,
-    )
-    .await;
-    assert_eq!(accepted["result"]["ok"], json!(true), "{accepted}");
+    if scheduled {
+        let accepted = rpc_call(
+            &mut client,
+            3,
+            fluxdown_protocol::method::AGENT_POWER_ARM,
+            Some(json!({"delaySecs": 1, "action": "quit"})),
+        )
+        .await;
+        assert_eq!(accepted["result"]["armed"], json!(true), "{accepted}");
+    } else {
+        let mut control = connect_agent(agent_address, &token).await;
+        let accepted = rpc_call(
+            &mut control,
+            1,
+            fluxdown_protocol::method::SYSTEM_SHUTDOWN,
+            None,
+        )
+        .await;
+        assert_eq!(accepted["result"]["ok"], json!(true), "{accepted}");
+    }
 
     let close_reason = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
@@ -353,6 +374,7 @@ fn spawn_agent(
         .env("FLUXDOWN_AGENT_BIND", agent_address.to_string())
         .env("FLUXCLOUD_BASE_URL", "http://127.0.0.1:1")
         .env_remove("FLUXDOWN_DATABASE_URL")
+        .env_remove("FLUXDOWN_SHUTDOWN_DRY_RUN")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())

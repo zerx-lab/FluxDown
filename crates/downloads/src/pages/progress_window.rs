@@ -7,7 +7,11 @@
 //! 开窗与关窗策略由宿主决定（见 [`crate::ProgressWindowTracker`]）。自动完成提示也复用本视图，
 //! 多项通过上一项 / 下一项浏览；删除或打开一项仅移除该项，最后一项处理完再请求关窗。
 
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 mod completions;
 
@@ -19,13 +23,15 @@ use fluxdown_protocol::{
 };
 use fluxdown_ui_components::{
     BusyExt as _, ControlExt as _, FluxIcon, IconControlExt as _, card, check_row, tabular_numbers,
+    tooltip_view,
 };
 use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_theme::active_theme;
 use gpui::{
-    AnyElement, App, Context, Entity, EventEmitter, FontWeight, InteractiveElement as _,
+    AnyElement, App, AppContext as _, Context, CursorStyle, DispatchPhase, Entity, EventEmitter,
+    ExternalDragPayload, FileDragPaths, FileDropEvent, FontWeight, InteractiveElement as _,
     IntoElement, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, Task,
-    Window, div, prelude::FluentBuilder as _, px,
+    Window, canvas, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     Disableable as _, Icon, WindowExt as _,
@@ -37,6 +43,7 @@ use crate::{
     components::{
         file_icon::task_file_icon,
         segment_progress::render_segment_progress,
+        task_drag::TaskDragPreview,
         task_table::{progress_bar_color, progress_track_color, task_status_color},
     },
     controller::{DownloadsCommand, DownloadsController, DownloadsPort},
@@ -70,6 +77,8 @@ const INFO_ROW_HEIGHT: f32 = 22.;
 const INFO_LABEL_WIDTH: f32 = 44.;
 /// 超过此值的剩余时间不可信，不显示。
 const MAX_ETA_SECS: u64 = 86_400;
+/// A Wayland target can finish the drag protocol before its asynchronous move completes.
+const WAYLAND_DRAG_RECHECK_DELAY: Duration = Duration::from_secs(2);
 
 /// 视图对宿主的事件。
 pub enum ProgressWindowEvent {
@@ -120,6 +129,8 @@ pub struct ProgressWindowView {
     delete_files: bool,
     /// 刚把产物复制到剪贴板的任务（按钮显示已复制）；完成集合切到下一项后自然失效。
     copied_task: Option<String>,
+    /// Wayland 投放可能移动原文件；收到源端拖拽结束事件时检查原路径。
+    wayland_drag_path: Option<PathBuf>,
     last_error: Option<SharedString>,
 }
 
@@ -156,6 +167,7 @@ impl ProgressWindowView {
             delete_files: false,
             last_error: None,
             copied_task: None,
+            wayland_drag_path: None,
         }
     }
 
@@ -538,6 +550,71 @@ impl ProgressWindowView {
         .detach();
     }
 
+    fn request_drag_rescan(&self, source: Option<PathBuf>, cx: &App) {
+        let port = Arc::clone(&self.port);
+        let executor = cx.background_executor().clone();
+        cx.background_executor()
+            .spawn(async move {
+                if let Some(path) = source
+                    && std::fs::metadata(&path).is_ok()
+                {
+                    executor.timer(WAYLAND_DRAG_RECHECK_DELAY).await;
+                    if std::fs::metadata(path).is_ok() {
+                        return;
+                    }
+                }
+                if let Err(error) = port.execute(DownloadsCommand::RescanFiles).await {
+                    eprintln!(
+                        "completion drag file rescan request failed: {:?} ({:?})",
+                        error.code, error.reason
+                    );
+                }
+            })
+            .detach();
+    }
+
+    fn resolve_drag_payload(
+        &mut self,
+        path: &Path,
+        track_move: bool,
+        cx: &App,
+    ) -> Option<ExternalDragPayload> {
+        let Ok(metadata) = std::fs::metadata(path) else {
+            self.request_drag_rescan(None, cx);
+            return None;
+        };
+        if track_move {
+            self.wayland_drag_path = Some(path.to_path_buf());
+        }
+        Some(ExternalDragPayload::Files(FileDragPaths::new([(
+            path.to_path_buf(),
+            metadata.is_dir(),
+        )])))
+    }
+
+    fn finish_wayland_drag(&mut self, cx: &App) {
+        if let Some(path) = self.wayland_drag_path.take() {
+            self.request_drag_rescan(Some(path), cx);
+        }
+    }
+
+    fn watch_wayland_drag(cx: &Context<Self>) -> gpui::Canvas<()> {
+        let ended = cx.listener(|this, _: &FileDropEvent, _, cx| this.finish_wayland_drag(cx));
+        // The target is outside this window; a hit-tested element's drop handler won't see this.
+        canvas(
+            |_, _, _| (),
+            move |_, _, window, _| {
+                window.on_mouse_event(move |event: &FileDropEvent, phase, window, cx| {
+                    if phase == DispatchPhase::Capture && matches!(event, FileDropEvent::Ended) {
+                        ended(event, window, cx);
+                    }
+                });
+            },
+        )
+        .absolute()
+        .size(px(0.))
+    }
+
     fn toggle_show_completion(&mut self, value: bool, cx: &mut Context<Self>) {
         cx.emit(ProgressWindowEvent::ShowCompletionChanged(value));
     }
@@ -553,6 +630,50 @@ impl ProgressWindowView {
             .items_center()
             .justify_center()
             .child(task_file_icon(row, px(FILE_ICON), window, cx))
+            .into_any_element()
+    }
+
+    fn with_completed_icon_drag(
+        &self,
+        icon: gpui::Div,
+        row: &DownloadTaskView,
+        file: Option<(PathBuf, bool)>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let compositor = cx.compositor_name();
+        let Some((path, is_dir)) =
+            file.filter(|_| completion_drag_supported(std::env::consts::OS, compositor))
+        else {
+            return icon.into_any_element();
+        };
+        let tip = self.t(
+            cx,
+            if is_dir {
+                "progressWindowDragFolder"
+            } else {
+                "progressWindowDragFile"
+            },
+        );
+        let track_move = compositor == "Wayland";
+        let preview = TaskDragPreview::single(row);
+        let view = cx.weak_entity();
+        icon.id("progress-drag-file")
+            .cursor(CursorStyle::OpenHand)
+            .tooltip(move |window, cx| tooltip_view(tip.clone(), window, cx))
+            .on_drag(path, move |_, offset, _, cx| {
+                cx.new(|_| preview.at_offset(offset))
+            })
+            .external_drag_payload(move |path: &PathBuf, window, cx| {
+                let payload = view.upgrade().and_then(|view| {
+                    view.update(cx, |this, cx| {
+                        this.resolve_drag_payload(path, track_move, cx)
+                    })
+                });
+                if payload.is_none() {
+                    cx.stop_active_drag(window);
+                }
+                payload
+            })
             .into_any_element()
     }
 
@@ -814,7 +935,11 @@ impl ProgressWindowView {
     /// 进度视图标题下的元信息行：协议 · 已下载 / 总大小。
     fn progress_meta(row: &DownloadTaskView) -> String {
         let size_label = if row.size_bytes > 0 {
-            format!("{} / {}", format_bytes(row.downloaded_bytes), row.size)
+            format!(
+                "{} / {}",
+                format_bytes(row.downloaded_bytes),
+                format_bytes(row.size_bytes)
+            )
         } else {
             format_bytes(row.downloaded_bytes)
         };
@@ -824,7 +949,7 @@ impl ProgressWindowView {
     /// 完成视图的元信息行：大小 · 耗时（耗时未知时只有大小）。
     fn completed_meta(&self, row: &DownloadTaskView, cx: &App) -> String {
         let size = if row.size_bytes > 0 {
-            row.size.clone()
+            format_bytes(row.size_bytes)
         } else {
             format_bytes(row.downloaded_bytes)
         };
@@ -1136,7 +1261,8 @@ impl ProgressWindowView {
     fn render_completed(
         &self,
         row: &DownloadTaskView,
-        icon: AnyElement,
+        file: Option<(PathBuf, bool)>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = active_theme(cx);
@@ -1157,6 +1283,30 @@ impl ProgressWindowView {
                 self.t(cx, "downloadCompleted"),
             )
         };
+        let icon = div()
+            .relative()
+            .flex_none()
+            .child(Self::render_icon_tile(row, window, cx))
+            .child(
+                div()
+                    .absolute()
+                    .right(px(-BADGE / 4.))
+                    .bottom(px(-BADGE / 4.))
+                    .size(px(BADGE))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_full()
+                    .border(extended.stroke.strong)
+                    .border_color(tokens.colors.surface)
+                    .bg(badge_color)
+                    .child(
+                        Icon::new(badge_icon)
+                            .size(px(10.))
+                            .text_color(tokens.colors.surface),
+                    ),
+            );
+        let icon = self.with_completed_icon_drag(icon, row, file, cx);
 
         v_flex()
             .child(
@@ -1165,27 +1315,7 @@ impl ProgressWindowView {
                     .gap(tokens.spacing.md)
                     .px(tokens.spacing.lg)
                     .pt(tokens.spacing.lg)
-                    .child(
-                        div().relative().flex_none().child(icon).child(
-                            div()
-                                .absolute()
-                                .right(px(-BADGE / 4.))
-                                .bottom(px(-BADGE / 4.))
-                                .size(px(BADGE))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded_full()
-                                .border(extended.stroke.strong)
-                                .border_color(tokens.colors.surface)
-                                .bg(badge_color)
-                                .child(
-                                    Icon::new(badge_icon)
-                                        .size(px(10.))
-                                        .text_color(tokens.colors.surface),
-                                ),
-                        ),
-                    )
+                    .child(icon)
                     .child(
                         v_flex()
                             .flex_1()
@@ -1224,16 +1354,15 @@ impl ProgressWindowView {
             .into_any_element()
     }
 
-    fn render_completed_footer(&self, missing: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn render_completed_footer(
+        &self,
+        missing: bool,
+        is_folder: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let folder_id = self.task_id.clone();
         let file_id = self.task_id.clone();
         let copy_id = self.task_id.clone();
-        // 多文件 BT 产物是目录：图标与提示随之变为「复制文件夹」。
-        let is_folder = !missing
-            && self
-                .row()
-                .and_then(|row| row.local_file_path())
-                .is_some_and(|path| path.is_dir());
         let copied = self.copied_task.as_deref() == Some(self.task_id.as_str());
         let copy_tooltip = match (copied, is_folder) {
             (true, true) => self.t(cx, "folderCopiedToClipboard"),
@@ -1292,6 +1421,19 @@ impl ProgressWindowView {
     }
 }
 
+fn completion_drag_supported(os: &str, compositor: &str) -> bool {
+    os == "macos" || (os == "linux" && compositor == "Wayland")
+}
+
+fn completion_drag_file(row: &DownloadTaskView) -> Option<(PathBuf, bool)> {
+    if !row.has_local_file() {
+        return None;
+    }
+    let path = row.local_file_path()?;
+    let is_dir = std::fs::metadata(&path).ok()?.is_dir();
+    Some((path, is_dir))
+}
+
 /// 耗时：`m:ss`，超过一小时 `h:mm:ss`。
 fn format_elapsed(seconds: u64) -> String {
     let (hours, minutes, secs) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
@@ -1308,10 +1450,11 @@ impl gpui::Render for ProgressWindowView {
         let (content, footer) = match self.row() {
             Some(row) if row.state == TaskState::Completed => {
                 let row = row.clone();
-                let icon = Self::render_icon_tile(&row, window, cx);
+                let file = completion_drag_file(&row);
+                let is_folder = file.as_ref().is_some_and(|(_, is_dir)| *is_dir);
                 (
-                    self.render_completed(&row, icon, cx),
-                    self.render_completed_footer(row.file_missing, cx),
+                    self.render_completed(&row, file, window, cx),
+                    self.render_completed_footer(row.file_missing, is_folder, cx),
                 )
             }
             Some(row) if self.completed.is_none() => {
@@ -1329,6 +1472,9 @@ impl gpui::Render for ProgressWindowView {
         v_flex()
             .size_full()
             .bg(surface)
+            .when(cx.compositor_name() == "Wayland", |view| {
+                view.child(Self::watch_wayland_drag(cx))
+            })
             .child(
                 div()
                     .id("progress-content")
@@ -1516,5 +1662,170 @@ mod tests {
                 assert_eq!(view.task_id(), "b");
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod completion_drag_tests {
+    use std::{
+        path::PathBuf,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::{Duration, SystemTime, UNIX_EPOCH},
+    };
+
+    use fluxdown_ui_i18n::I18nCatalog;
+    use gpui::{
+        AppContext as _, Context, Entity, FileDropEvent, IntoElement, ParentElement as _, Render,
+        Styled as _, TestApp, Window, div,
+    };
+
+    use super::{
+        DownloadTaskView, ExternalDragPayload, ProgressWindowView, TaskState, completion_drag_file,
+        completion_drag_supported,
+    };
+    use crate::controller::{DownloadsCommand, DownloadsPort, DownloadsResult, PortFuture};
+
+    #[derive(Default)]
+    struct Rescans(AtomicUsize);
+
+    impl DownloadsPort for Rescans {
+        fn execute(&self, command: DownloadsCommand) -> PortFuture<DownloadsResult> {
+            assert!(matches!(command, DownloadsCommand::RescanFiles));
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(DownloadsResult::Unit) })
+        }
+    }
+
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            if let Err(error) = std::fs::remove_dir_all(&self.0) {
+                eprintln!("remove completion drag test directory: {error}");
+            }
+        }
+    }
+
+    struct WaylandDragListener(Entity<ProgressWindowView>);
+
+    impl Render for WaylandDragListener {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(
+                self.0
+                    .update(cx, |_, cx| ProgressWindowView::watch_wayland_drag(cx)),
+            )
+        }
+    }
+
+    #[test]
+    fn completion_drag_is_offered_only_on_macos_and_linux_wayland() {
+        assert!(completion_drag_supported("macos", ""));
+        assert!(completion_drag_supported("linux", "Wayland"));
+        assert!(!completion_drag_supported("linux", "X11"));
+        assert!(!completion_drag_supported("linux", "headless"));
+        assert!(!completion_drag_supported("windows", ""));
+    }
+
+    #[test]
+    fn completion_drag_rescans_if_the_source_disappears_before_or_after_handoff()
+    -> std::io::Result<()> {
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).expect("clock");
+        let dir = std::env::temp_dir().join(format!(
+            "fluxdown-completion-drag-{}-{}",
+            std::process::id(),
+            nonce.as_nanos()
+        ));
+        std::fs::create_dir(&dir)?;
+        let _scratch = Scratch(dir.clone());
+        let file = dir.join("测试 file.bin");
+        let folder = dir.join("Torrent #1");
+        std::fs::write(&file, b"x")?;
+        std::fs::create_dir(&folder)?;
+
+        let mut dto = serde_json::from_value::<fluxdown_protocol::TaskDto>(serde_json::json!({
+            "taskId": "completion-drag",
+            "url": "https://example.test/file.bin",
+            "fileName": "测试 file.bin",
+            "saveDir": dir,
+            "status": 3,
+            "downloadedBytes": 1,
+            "totalBytes": 1,
+            "errorMessage": "",
+            "createdAt": "1",
+            "proxyUrl": "",
+            "queueId": "main",
+            "checksum": ""
+        }))
+        .expect("local task");
+        let mut row = DownloadTaskView::local(&dto, None, false);
+        row.state = TaskState::Downloading;
+        assert!(completion_drag_file(&row).is_none());
+        row.state = TaskState::Completed;
+        row.file_missing = true;
+        assert!(completion_drag_file(&row).is_none());
+        row.file_missing = false;
+        let (path, is_dir) = completion_drag_file(&row).expect("completed file is draggable");
+        assert_eq!((&path, is_dir), (&file, false));
+
+        let mut app = TestApp::new();
+        let rescans = Arc::new(Rescans::default());
+        let view = app.update(|cx| {
+            let catalog = I18nCatalog::load_embedded().expect("catalog");
+            let translator = cx.new(|_| catalog.translator("en"));
+            cx.new(|cx| {
+                ProgressWindowView::new(
+                    translator,
+                    "completion-drag".into(),
+                    rescans.clone(),
+                    true,
+                    cx,
+                )
+            })
+        });
+        let mut window = app.open_window(|_, _| WaylandDragListener(view.clone()));
+        let handoff = |app: &mut TestApp, path: &std::path::Path| {
+            app.update(|cx| view.update(cx, |this, cx| this.resolve_drag_payload(path, true, cx)))
+        };
+        let count = || rescans.0.load(Ordering::SeqCst);
+
+        std::fs::remove_file(&file)?;
+        assert!(completion_drag_file(&row).is_none());
+        assert!(handoff(&mut app, &path).is_none());
+        app.run_until_parked();
+        assert_eq!(count(), 1);
+
+        dto.url = "torrent-file://fixture".into();
+        dto.file_name = "Torrent #1".into();
+        let row = DownloadTaskView::local(&dto, None, false);
+        let (path, is_dir) = completion_drag_file(&row).expect("completed torrent is draggable");
+        assert_eq!((&path, is_dir), (&folder, true));
+        let ExternalDragPayload::Files(paths) =
+            handoff(&mut app, &path).expect("directory payload");
+        assert_eq!(paths.entries(), &[(folder.clone(), true)]);
+        window.simulate_event(FileDropEvent::Ended);
+        app.advance_clock(Duration::from_secs(2));
+        app.run_until_parked();
+        assert_eq!(count(), 1, "copy or cancellation leaves the source intact");
+
+        assert!(handoff(&mut app, &path).is_some());
+        std::fs::rename(&folder, dir.join("Moved Torrent #1"))?;
+        window.simulate_event(FileDropEvent::Ended);
+        assert_eq!(count(), 2, "the receiving app moved the source");
+        window.simulate_event(FileDropEvent::Ended);
+        assert_eq!(count(), 2, "the completed drag is no longer tracked");
+
+        let moved = dir.join("Moved Torrent #1");
+        std::fs::rename(&moved, &folder)?;
+        assert!(handoff(&mut app, &path).is_some());
+        window.simulate_event(FileDropEvent::Ended);
+        assert_eq!(count(), 2, "the target hasn't moved the source yet");
+        std::fs::rename(&folder, &moved)?;
+        app.advance_clock(Duration::from_secs(2));
+        app.run_until_parked();
+        assert_eq!(count(), 3, "a move completed after the protocol ended");
+        Ok(())
     }
 }

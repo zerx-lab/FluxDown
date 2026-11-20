@@ -592,6 +592,23 @@ impl Downloader {
         }
     }
 
+    /// 轮询任务行直到落库状态为 `status`。BT 句柄加入会话后就开始收数据，「下载中」(1)
+    /// 要等完成计划落库后才写，文件表有进度时任务行可能还是「等待中」(0)。
+    pub async fn wait_for_status(&self, task_id: &str, status: i32) -> TaskInfo {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let task = self.task(task_id).await;
+            if task.status == status {
+                return task;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for status {status}; task: {task:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
     /// 等任务的下载过程结束并交回 manager 收尾，返回落库的任务行。
     pub async fn wait_done(&mut self, task_id: &str) -> TaskInfo {
         loop {

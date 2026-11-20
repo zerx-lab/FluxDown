@@ -13,12 +13,12 @@ use fluxdown_protocol::{
     CloudReferralCodesResult, CloudReferralRecordsResult, CloudReferralSummary, RpcErrorData,
     method,
 };
+use fluxdown_ui_components::toast;
 use fluxdown_ui_i18n::Translator;
 use gpui::{AppContext as _, ClipboardItem, Context, Entity, SharedString, Subscription, Window};
 use gpui_component::{
     WindowExt as _,
     input::{InputEvent, InputState},
-    notification::Notification,
 };
 
 use crate::billing::{self, MAX_REFERRAL_CODES};
@@ -410,7 +410,7 @@ impl ReferralView {
     pub(crate) fn copy_code(&self, code: &str, window: &mut Window, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(code.to_owned()));
         window.push_notification(
-            Notification::success(self.text("accountReferralCodeCopied", cx)),
+            toast::success(self.text("accountReferralCodeCopied", cx)),
             cx,
         );
     }

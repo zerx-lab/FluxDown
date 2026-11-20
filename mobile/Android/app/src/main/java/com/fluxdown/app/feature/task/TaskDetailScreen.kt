@@ -66,8 +66,10 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import com.fluxdown.app.R
+import com.fluxdown.app.actions.LocalFileAvailability
 import com.fluxdown.app.actions.LocalTaskActions
 import com.fluxdown.app.actions.TaskActions
+import com.fluxdown.app.actions.rememberLocalFileAvailability
 import com.fluxdown.app.i18n.localizedTaskError
 import com.fluxdown.app.i18n.str
 import com.fluxdown.app.shell.LocalAppContainer
@@ -104,9 +106,7 @@ import com.fluxdown.fluxui.material.rememberFlowInGate
 import com.fluxdown.fluxui.overlay.FluxBanner
 import com.fluxdown.fluxui.overlay.FluxBannerKind
 import com.fluxdown.fluxui.overlay.FluxOverlayState
-import com.fluxdown.fluxui.overlay.FluxToastKind
 import com.fluxdown.fluxui.overlay.LocalFluxOverlays
-import com.fluxdown.fluxui.theme.FluxHaptics
 import com.fluxdown.fluxui.theme.FluxScaleGroup
 import com.fluxdown.fluxui.theme.FluxText
 import com.fluxdown.fluxui.theme.FluxTheme
@@ -307,7 +307,6 @@ private fun DetailHero(modelOf: () -> DetailModel?, gate: FlowInGate) {
     val context = LocalContext.current
     val actions = LocalTaskActions.current
     val overlays = LocalFluxOverlays.current
-    val haptics = FluxTheme.haptics
     val hostRef by LocalAppContainer.current.host.collectAsStateWithLifecycle()
     val remoteHost = hostRef is HostRef.Remote
     val category = model.category
@@ -338,7 +337,7 @@ private fun DetailHero(modelOf: () -> DetailModel?, gate: FlowInGate) {
             segments = model.flowSegments,
             state = model.flowState,
             height = FlowStripHeight.Lg,
-            semanticsLabel = task.progress?.let { Format.percent(it) },
+            semanticsLabel = model.progress?.let { Format.percent(it) },
         )
         Spacer(Modifier.height(16.dp))
         ReadoutRow(model)
@@ -359,7 +358,7 @@ private fun DetailHero(modelOf: () -> DetailModel?, gate: FlowInGate) {
         }
 
         Spacer(Modifier.height(18.dp))
-        ActionRow(model, remoteHost, context, actions, overlays, haptics)
+        ActionRow(model, remoteHost, context, actions, overlays)
 
         when (model.visual) {
             TaskVisualState.Failed -> {
@@ -455,7 +454,7 @@ private fun ReadoutRow(model: DetailModel) {
     val type = FluxTheme.type
     val task = model.task
     val done = model.visual == TaskVisualState.Completed || model.visual == TaskVisualState.Seeding || model.visual == TaskVisualState.Missing
-    val progress = task.progress
+    val progress = model.progress
     val pct = when {
         done -> "100.0"
         progress == null -> "—"
@@ -471,14 +470,24 @@ private fun ReadoutRow(model: DetailModel) {
         }
         Spacer(Modifier.weight(1f))
         Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            val totalText = if (task.totalBytes > 0) Format.bytes(task.totalBytes).toString() else str(R.string.unknownSize)
-            val sizeLine = remember(task.downloadedBytes, totalText, c) {
-                buildAnnotatedString {
-                    withStyle(SpanStyle(color = c.ink, fontWeight = FontWeight.SemiBold)) { append(Format.bytes(task.downloadedBytes).toString()) }
-                    withStyle(SpanStyle(color = c.inkMuted)) { append(" / $totalText") }
+            val fragments = if (done) null else model.hlsFragments
+            if (fragments != null) {
+                FluxText(
+                    str(R.string.hlsFragmentProgress, "done" to fragments.written, "total" to fragments.total),
+                    style = type.monoS,
+                    color = c.inkMuted,
+                    maxLines = 1,
+                )
+            } else {
+                val totalText = if (task.totalBytes > 0) Format.bytes(task.totalBytes).toString() else str(R.string.unknownSize)
+                val sizeLine = remember(task.downloadedBytes, totalText, c) {
+                    buildAnnotatedString {
+                        withStyle(SpanStyle(color = c.ink, fontWeight = FontWeight.SemiBold)) { append(Format.bytes(task.downloadedBytes).toString()) }
+                        withStyle(SpanStyle(color = c.inkMuted)) { append(" / $totalText") }
+                    }
                 }
+                BasicText(sizeLine, style = type.mono, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            BasicText(sizeLine, style = type.mono, maxLines = 1, overflow = TextOverflow.Ellipsis)
             val speed = when {
                 model.visual == TaskVisualState.Downloading && model.speedDown > 0 -> "↓ ${Format.speed(model.speedDown)}" to c.accentHi
                 model.visual == TaskVisualState.Seeding && model.speedUp > 0 -> "↑ ${Format.speed(model.speedUp)}" to c.mintText
@@ -496,8 +505,10 @@ private fun heroChips(model: DetailModel): List<Pair<String, String>> {
     val task = model.task
     val out = ArrayList<Pair<String, String>>(4)
     if (model.isTransferring) {
-        val eta = Format.etaSeconds(task.downloadedBytes, task.totalBytes, model.speedDown)
-        out += str(R.string.infoRemaining) to etaText(eta)
+        if (model.hlsFragments == null) {
+            val eta = Format.etaSeconds(task.downloadedBytes, task.totalBytes, model.speedDown)
+            out += str(R.string.infoRemaining) to etaText(eta)
+        }
         model.runtime?.activeTransfers?.let { out += str(R.string.detailActiveTransfers) to it.toString() }
     }
     if (task.protocol == TaskProtocol.Bt) {
@@ -509,6 +520,9 @@ private fun heroChips(model: DetailModel): List<Pair<String, String>> {
     return out
 }
 
+internal fun detailCanOpenFile(file: LocalFileAvailability): Boolean =
+    file == LocalFileAvailability.RegularFile
+
 @Composable
 private fun ActionRow(
     model: DetailModel,
@@ -516,13 +530,18 @@ private fun ActionRow(
     context: android.content.Context,
     actions: TaskActions,
     overlays: FluxOverlayState,
-    haptics: FluxHaptics,
 ) {
     val task = model.task
+    val file by rememberLocalFileAvailability(task, !remoteHost)
+    val completed = model.visual == TaskVisualState.Completed || model.visual == TaskVisualState.Seeding
     val primaryLabel: String
     val primaryIcon: ImageVector
     when (model.visual) {
-        TaskVisualState.Completed, TaskVisualState.Seeding, TaskVisualState.Missing -> {
+        TaskVisualState.Missing -> {
+            primaryLabel = str(R.string.redownloadTask)
+            primaryIcon = FluxIcons.RotateCw
+        }
+        TaskVisualState.Completed, TaskVisualState.Seeding -> {
             primaryLabel = str(R.string.openFile)
             primaryIcon = FluxIcons.ExternalLink
         }
@@ -539,23 +558,21 @@ private fun ActionRow(
             primaryIcon = FluxIcons.Pause
         }
     }
-    val missingToast = str(R.string.mobileFileMissingRedownload)
     val shareLabel = str(R.string.mobileShareLink)
     val moreLabel = str(R.string.moreActions)
     val folderLabel = str(R.string.detailActionFolder)
     val shareShort = str(R.string.detailActionShare)
     val moreShort = str(R.string.detailActionMore)
     var moreBounds by remember { mutableStateOf(Rect.Zero) }
+    val primaryEnabled = !completed || detailCanOpenFile(file)
     val onPrimary: () -> Unit = {
-        if (model.visual == TaskVisualState.Missing) {
-            haptics.reject()
-            overlays.toast(missingToast, FluxToastKind.Warn, FluxIcons.FileWarning)
-        } else {
-            actions.primary(task)
-        }
+        if (!completed) actions.primary(task, tryOpenFile = false)
+        else if (detailCanOpenFile(file)) actions.open(task)
     }
     val onFolder: () -> Unit = { if (!context.openFolder(task.saveDir)) actions.shareLink(task) }
-    val onMore: () -> Unit = { overlays.showMenu(moreBounds, actions.menuItems(task, model.boosted)) }
+    val onMore: () -> Unit = {
+        actions.showTaskMenu(moreBounds, task, model.boosted, file)
+    }
 
     // 等宽动作块：图标在上、短标签在下（对齐 iOS 地图 / 通讯录卡片）。每块只放一个短词，
     // 窄屏与大字号下不会再出现“图标 + 折成两行的文字”挤在胶囊里；主动作为强调色实心块。
@@ -564,9 +581,9 @@ private fun ActionRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         val tile = Modifier.weight(1f).fillMaxHeight()
-        // 远端主机的已完成文件在主机磁盘上，本机无法打开：不给「打开文件」主动作（iOS 同规则）
-        val remoteFile = remoteHost && (model.visual == TaskVisualState.Completed || model.visual == TaskVisualState.Seeding)
-        if (!remoteFile) FluxActionTile(primaryLabel, primaryIcon, onPrimary, tile, prominent = true)
+        if (primaryEnabled || file == LocalFileAvailability.Pending) {
+            FluxActionTile(primaryLabel, primaryIcon, onPrimary, tile, prominent = true, enabled = primaryEnabled)
+        }
         if (!remoteHost) FluxActionTile(folderLabel, FluxIcons.FolderOpen, onFolder, tile)
         FluxActionTile(shareShort, FluxIcons.Share2, { actions.shareLink(task) }, tile, contentDescription = shareLabel)
         FluxActionTile(

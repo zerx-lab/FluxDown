@@ -33,6 +33,7 @@ fn label_key(id: &str) -> &'static str {
         SYSTEM_PACK_ID => "fileIconPackSystem",
         "lucide" => "fileIconPackLucide",
         "material" => "fileIconPackMaterial",
+        "thunder" => "fileIconPackThunder",
         _ => "fileIconPackCatppuccin",
     }
 }

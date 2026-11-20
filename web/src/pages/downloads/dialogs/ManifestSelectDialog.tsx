@@ -1,3 +1,4 @@
+import { useByteFormatter } from '../../../lib/fileSizeUnits'
 // 多文件清单选择 → 建任务组（`daemon.group.create`）。
 // 由新建下载在单条 http(s) 链接经 `daemon.group.resolvePreview` 命中插件清单后打开（嵌套对话框，
 // 取消回到表单，确认建组后由调用方关闭表单）。交互采用下钻导航：
@@ -14,12 +15,14 @@ import { toastRpcError } from '../../../lib/rpcToast'
 import type { MenuEntry } from '../../../ui'
 import { routeBaseDir, routeFollows } from '../../../lib/categoryRoute'
 import { cn } from '../../../lib/cn'
+import { exportTaskInfo } from '../model/actions'
 import { FsPickerDialog } from './FsPickerDialog'
 import {
   buildManifestBreadcrumb,
   buildManifestGroupItems,
   manifestDefaultGroupName,
   manifestDirRowCheckState,
+  manifestExportRows,
   manifestInvertVisibleSelection,
   manifestRowsAt,
   manifestSelectAllVisible,
@@ -64,6 +67,7 @@ export function ManifestSelectDialog({
   onCancel: () => void
   onCreated: () => void
 }) {
+  const fmtBytes = useByteFormatter(formatBytes)
   const t = useT()
   const items = preview.items
   const [cwd, setCwd] = useState('')
@@ -155,8 +159,8 @@ export function ManifestSelectDialog({
     stat.count === 0
       ? t('manifestNoSelection')
       : stat.unknownCount > 0
-        ? `${t('manifestSelectedSummary', { count: stat.count, size: formatBytes(stat.size) })} ${t('manifestUnknownSizeNote', { count: stat.unknownCount })}`
-        : t('manifestSelectedSummary', { count: stat.count, size: formatBytes(stat.size) })
+        ? `${t('manifestSelectedSummary', { count: stat.count, size: fmtBytes(stat.size) })} ${t('manifestUnknownSizeNote', { count: stat.unknownCount })}`
+        : t('manifestSelectedSummary', { count: stat.count, size: fmtBytes(stat.size) })
 
   return (
     <>
@@ -166,11 +170,14 @@ export function ManifestSelectDialog({
         size="xl"
         modalLocked={submitting}
         title={t('manifestDialogTitle')}
-        description={`${t('manifestSummary', { count: items.length, size: formatBytes(totalSize) })}${host ? ` · ${host}` : ''}`}
+        description={`${t('manifestSummary', { count: items.length, size: fmtBytes(totalSize) })}${host ? ` · ${host}` : ''}`}
         footer={
           <div className="flex flex-wrap items-center justify-between gap-2">
             <FieldHint className="tabular min-w-0 truncate">{summary}</FieldHint>
             <DialogFooter className="ml-auto flex-wrap">
+              <Button variant="outline" disabled={stat.count === 0 || submitting} onClick={() => exportTaskInfo(manifestExportRows(items, selected))}>
+                {t('exportTaskInfoTxt')}
+              </Button>
               <Button variant="outline" className="mobile:hidden" disabled={submitting} onClick={onCancel}>
                 {t('cancel')}
               </Button>
@@ -309,7 +316,7 @@ export function ManifestSelectDialog({
                           ))}
                         </span>
                         <span className="tabular shrink-0 text-xs text-muted-foreground">
-                          {t('manifestItemsCount', { count: row.count })} · {row.unknown && row.size === 0 ? t('manifestDirSizeUnknown') : formatBytes(row.size)}
+                          {t('manifestItemsCount', { count: row.count })} · {row.unknown && row.size === 0 ? t('manifestDirSizeUnknown') : fmtBytes(row.size)}
                         </span>
                         <Icon icon={ChevronRight} size="md" className="text-text-tertiary" />
                       </button>
@@ -329,7 +336,7 @@ export function ManifestSelectDialog({
                       <span className="block truncate">{item.name}</span>
                       {showPath && item.path !== '' ? <span className="block truncate text-xs text-text-tertiary">{item.path}</span> : null}
                     </span>
-                    <span className="tabular shrink-0 text-xs text-muted-foreground">{item.size > 0 ? formatBytes(item.size) : t('manifestFileSizeUnknown')}</span>
+                    <span className="tabular shrink-0 text-xs text-muted-foreground">{item.size > 0 ? fmtBytes(item.size) : t('manifestFileSizeUnknown')}</span>
                   </label>
                 )
               })

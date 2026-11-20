@@ -5,9 +5,9 @@ use serde_json::Value;
 
 const CASES: &str = include_str!("fixtures/chrome_layout_cases.json");
 
-/// 用例里的目录；任一字段缺失或未知区域 / 承载条时为 `None`。
-fn catalog(cases: &Value) -> Option<Vec<ChromeItemSpec>> {
-    cases["catalog"]
+/// 用例目录（`catalog` 数组）；任一字段缺失或未知区域 / 承载条时为 `None`。
+fn catalog(items: &Value) -> Option<Vec<ChromeItemSpec>> {
+    items
         .as_array()?
         .iter()
         .map(|item| {
@@ -23,8 +23,13 @@ fn catalog(cases: &Value) -> Option<Vec<ChromeItemSpec>> {
                 ChromeZone::from_key(item["defaultZone"].as_str()?)?,
                 families,
             );
-            Some(if item["fixed"].as_bool() == Some(true) {
+            let spec = if item["fixed"].as_bool() == Some(true) {
                 spec.fixed()
+            } else {
+                spec
+            };
+            Some(if item["defaultHidden"].as_bool() == Some(true) {
+                spec.hidden_by_default()
             } else {
                 spec
             })
@@ -39,8 +44,19 @@ fn stored(case: &Value) -> Option<&Value> {
 #[test]
 fn normalize_cases() {
     let cases: Value = serde_json::from_str(CASES).expect("fixture json");
-    let catalog = catalog(&cases).expect("fixture catalog");
+    let catalog = catalog(&cases["catalog"]).expect("fixture catalog");
     for case in cases["normalize"].as_array().expect("normalize cases") {
+        let layout = ChromeLayout::from_value(stored(case), &catalog);
+        assert_eq!(layout.to_value(), case["expected"], "{}", case["name"]);
+    }
+}
+
+#[test]
+fn default_hidden_cases() {
+    let cases: Value = serde_json::from_str(CASES).expect("fixture json");
+    let section = &cases["defaultHidden"];
+    let catalog = catalog(&section["catalog"]).expect("fixture catalog");
+    for case in section["cases"].as_array().expect("default hidden cases") {
         let layout = ChromeLayout::from_value(stored(case), &catalog);
         assert_eq!(layout.to_value(), case["expected"], "{}", case["name"]);
     }
@@ -49,7 +65,7 @@ fn normalize_cases() {
 #[test]
 fn move_cases() {
     let cases: Value = serde_json::from_str(CASES).expect("fixture json");
-    let catalog = catalog(&cases).expect("fixture catalog");
+    let catalog = catalog(&cases["catalog"]).expect("fixture catalog");
     for case in cases["moves"].as_array().expect("move cases") {
         let mut layout = ChromeLayout::from_value(stored(case), &catalog);
         let movement = &case["move"];
@@ -68,7 +84,7 @@ fn move_cases() {
 #[test]
 fn visibility_cases() {
     let cases: Value = serde_json::from_str(CASES).expect("fixture json");
-    let catalog = catalog(&cases).expect("fixture catalog");
+    let catalog = catalog(&cases["catalog"]).expect("fixture catalog");
     for case in cases["visibility"].as_array().expect("visibility cases") {
         let mut layout = ChromeLayout::from_value(stored(case), &catalog);
         let set = &case["set"];
@@ -85,7 +101,7 @@ fn visibility_cases() {
 #[test]
 fn serialized_layout_round_trips() {
     let cases: Value = serde_json::from_str(CASES).expect("fixture json");
-    let catalog = catalog(&cases).expect("fixture catalog");
+    let catalog = catalog(&cases["catalog"]).expect("fixture catalog");
     let mut layout = ChromeLayout::default_for(&catalog);
     assert!(layout.move_item(&catalog, "limit", ChromeZone::TitleLeading, None));
     assert!(layout.set_hidden(&catalog, "limit", true));

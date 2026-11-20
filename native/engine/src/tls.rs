@@ -22,7 +22,7 @@ use crate::logger::{log_info, log_warn};
 
 /// client 说的 HTTP 版本。决定 ALPN，必须与 hyper 侧（`http1_only`）一致：只说 HTTP/1.1 的
 /// client 若在 ALPN 里提供 h2，服务端选 h2 后请求必失败。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum HttpVersion {
     /// 只说 HTTP/1.1（下载 client：每段一条连接，Range 语义最稳）。
     Http1,

@@ -67,6 +67,10 @@ const serif = (s: string) => s.replace(/<em>(.*?)<\/em>/g, '<span class="serif">
           ))
         }
       </dl>
+      <p class="mt-6 text-sm leading-relaxed text-muted">
+        {t.notes.refund}
+        <a class="link" href={`${href("/terms", lang)}#refunds`}>{t.notes.refundLink}</a>
+      </p>
     </div>
     <div class="rule"></div>
   </section>

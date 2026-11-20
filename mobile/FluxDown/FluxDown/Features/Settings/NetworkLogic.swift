@@ -81,6 +81,10 @@ enum NetworkProxyTest {
 /// 本页的每一行（页面渲染与设置搜索共用同一份可见性判定）。
 nonisolated enum NetworkRow: String, CaseIterable, Identifiable {
     case mode, type, host, port, username, password, noList, test
+    case protocolHttp, protocolFtp, protocolHls, protocolDash
+    #if FULL_FLAVOR
+    case protocolBt, protocolEd2k
+    #endif
     case rules, rulesAdd, rulesTest
     case siteAuth, siteAuthAdd, siteAuthClear
 
@@ -88,12 +92,13 @@ nonisolated enum NetworkRow: String, CaseIterable, Identifiable {
 
     /// 搜索面包屑里的分组名文案键。
     nonisolated enum Group {
-        case mode, manual, rules, siteAuth
+        case mode, manual, protocolProxy, rules, siteAuth
 
         var titleKey: String {
             switch self {
             case .mode: "proxySettings"
             case .manual: "proxyModeManual"
+            case .protocolProxy: "proxyProtocolSection"
             case .rules: "proxyRulesTitle"
             case .siteAuth: "settingsSiteAuthTitle"
             }
@@ -104,6 +109,10 @@ nonisolated enum NetworkRow: String, CaseIterable, Identifiable {
         switch self {
         case .mode: .mode
         case .type, .host, .port, .username, .password, .noList, .test: .manual
+        case .protocolHttp, .protocolFtp, .protocolHls, .protocolDash: .protocolProxy
+        #if FULL_FLAVOR
+        case .protocolBt, .protocolEd2k: .protocolProxy
+        #endif
         case .rules, .rulesAdd, .rulesTest: .rules
         case .siteAuth, .siteAuthAdd, .siteAuthClear: .siteAuth
         }
@@ -119,6 +128,14 @@ nonisolated enum NetworkRow: String, CaseIterable, Identifiable {
         case .password: "proxyPassword"
         case .noList: "proxyNoList"
         case .test: "proxyTestConnection"
+        case .protocolHttp: "proxyProtocolHttp"
+        case .protocolFtp: "proxyProtocolFtp"
+        case .protocolHls: "proxyProtocolHls"
+        case .protocolDash: "proxyProtocolDash"
+        #if FULL_FLAVOR
+        case .protocolBt: "proxyProtocolBt"
+        case .protocolEd2k: "proxyProtocolEd2k"
+        #endif
         case .rules: "proxyRulesTitle"
         case .rulesAdd: "proxyRulesAdd"
         case .rulesTest: "proxyRouteTest"
@@ -132,6 +149,11 @@ nonisolated enum NetworkRow: String, CaseIterable, Identifiable {
         switch self {
         case .mode: "proxySettingsDesc"
         case .noList: "proxyNoListDesc"
+        case .protocolHttp, .protocolFtp, .protocolHls, .protocolDash: "proxyProtocolUrlHint"
+        #if FULL_FLAVOR
+        case .protocolBt: "proxyProtocolBtUrlHint"
+        case .protocolEd2k: "proxyProtocolEd2kUrlHint"
+        #endif
         case .rules: "proxyRulesDesc"
         case .rulesTest: "proxyRouteTestDesc"
         case .siteAuth: "settingsSiteAuthDesc"
@@ -149,6 +171,14 @@ nonisolated enum NetworkRow: String, CaseIterable, Identifiable {
         case .username: "proxy_username"
         case .password: "proxy_password"
         case .noList: "proxy_no_list"
+        case .protocolHttp: "proxy_protocol_http"
+        case .protocolFtp: "proxy_protocol_ftp"
+        case .protocolHls: "proxy_protocol_hls"
+        case .protocolDash: "proxy_protocol_dash"
+        #if FULL_FLAVOR
+        case .protocolBt: "proxy_protocol_bt"
+        case .protocolEd2k: "proxy_protocol_ed2k"
+        #endif
         case .rules: "proxy_rules"
         case .test, .rulesAdd, .rulesTest, .siteAuth, .siteAuthAdd, .siteAuthClear: nil
         }
@@ -162,7 +192,7 @@ nonisolated enum NetworkRow: String, CaseIterable, Identifiable {
         default: break
         }
         switch group {
-        case .mode, .manual, .rules: return "globe"
+        case .mode, .manual, .protocolProxy, .rules: return "globe"
         case .siteAuth: return "key.fill"
         }
     }
@@ -177,7 +207,7 @@ nonisolated enum NetworkRow: String, CaseIterable, Identifiable {
     /// 站点凭据走 `daemon.siteAuth.*`（`daemon.*` 恒可用），与配置是否已加载无关。
     func isVisible(isLoaded: Bool) -> Bool {
         switch group {
-        case .mode, .manual, .rules: isLoaded
+        case .mode, .manual, .protocolProxy, .rules: isLoaded
         case .siteAuth: true
         }
     }

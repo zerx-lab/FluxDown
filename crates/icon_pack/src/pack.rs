@@ -538,13 +538,12 @@ fn parse_kinds(
 }
 
 /// 拒收会执行脚本、读外部资源或展开实体的 SVG。只做保守的字节扫描（宁可误拒）；TS 镜像
-/// `svgIsSafe` 逐条同一规则。
+/// `svgIsSafe` 逐条同一规则。位图只允许内嵌 PNG（`data:image/png;base64,`），不读外部资源。
 #[must_use]
 pub fn svg_is_safe(svg: &str) -> bool {
-    const FORBIDDEN: [&str; 10] = [
+    const FORBIDDEN: [&str; 9] = [
         "<script",
         "<foreignobject",
-        "<image",
         "<iframe",
         "<object",
         "<embed",
@@ -553,6 +552,7 @@ pub fn svg_is_safe(svg: &str) -> bool {
         "javascript:",
         "@import",
     ];
+    const INLINE_PNG: &[u8] = b"data:image/png;base64,";
     let lower = svg.to_ascii_lowercase();
     let start = lower.trim_start_matches(|char: char| char.is_ascii_whitespace());
     if !(start.starts_with("<svg") || start.starts_with("<?xml")) || !lower.contains("<svg") {
@@ -568,7 +568,7 @@ pub fn svg_is_safe(svg: &str) -> bool {
         }
         index
     };
-    // href / xlink:href 只允许文档内片段引用（`#id`）。
+    // href / xlink:href 只允许文档内片段引用（`#id`）或内嵌 PNG。
     for (index, _) in lower.match_indices("href") {
         let mut cursor = skip_space(index + 4);
         if bytes.get(cursor) != Some(&b'=') {
@@ -578,7 +578,10 @@ pub fn svg_is_safe(svg: &str) -> bool {
         if matches!(bytes.get(cursor), Some(b'"' | b'\'')) {
             cursor += 1;
         }
-        if bytes.get(cursor) != Some(&b'#') {
+        let inline_png = bytes
+            .get(cursor..)
+            .is_some_and(|rest| rest.starts_with(INLINE_PNG));
+        if bytes.get(cursor) != Some(&b'#') && !inline_png {
             return false;
         }
     }
@@ -624,9 +627,14 @@ mod tests {
         assert!(svg_is_safe(
             "<?xml version=\"1.0\"?><svg><path d=\"M0 0\"/></svg>"
         ));
+        assert!(svg_is_safe(
+            "<svg viewBox=\"0 0 8 8\"><image width=\"8\" height=\"8\" href=\"data:image/png;base64,iVBORw0KGgo=\"/></svg>"
+        ));
         for unsafe_svg in [
             "<svg><script>alert(1)</script></svg>",
             "<svg><image href=\"file:///etc/passwd\"/></svg>",
+            "<svg><image href=\"data:image/svg+xml;base64,PHN2Zz4=\"/></svg>",
+            "<svg><image href=\"https://x/a.png\"/></svg>",
             "<svg><use xlink:href=\"other.svg#a\"/></svg>",
             "<svg><use href = 'https://x/a.svg#a'/></svg>",
             "<svg><path fill=\"url(https://x/p)\"/></svg>",

@@ -3,6 +3,7 @@
 
 import { Download, EllipsisVertical, EyeOff } from 'lucide-react'
 import { memo } from 'react'
+import { useFileSizeUnits } from '../../lib/fileSizeUnits'
 import { useT } from '../../i18n'
 import { cn } from '../../lib/cn'
 import type { RssItemDto } from '../../lib/rpc'
@@ -30,10 +31,11 @@ export interface ItemRowProps {
 }
 
 function ItemRowImpl({ item, statusKey, selected, busy, canAct, mobile, onToggle, onAct }: ItemRowProps) {
+  const units = useFileSizeUnits()
   const t = useT()
   const reason = reasonKey(item.reason)
   const date = dateText(item.pubDate)
-  const size = bytesText(item.enclosureLength)
+  const size = bytesText(item.enclosureLength, units)
   const meta = [date !== '' ? `${t('rssPublishedAt')} · ${date}` : '', size].filter((part) => part !== '').join(' · ')
   const canIgnore = item.status === RSS_ITEM_STATUS.new
   const taskMissing = item.status === RSS_ITEM_STATUS.downloaded && statusKey === 'rssTaskMissing'

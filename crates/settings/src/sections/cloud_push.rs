@@ -10,6 +10,7 @@ use fluxdown_protocol::{
     AgentSessionDto, CloudNotifyChannelDto, CloudNotifyKindDto, CloudNotifyOverviewDto,
     CloudNotifyStateDto, CloudNotifyTestResult, RpcErrorData, method,
 };
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     ButtonVariant, ControlExt as _, DialogIntent, FluxIcon, IconControlExt as _, button, card,
     color_transition, dialog_footer, dialog_title, loading_button, tabular_numbers,
@@ -26,7 +27,6 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::{DropdownMenu as _, PopupMenuItem},
-    notification::Notification,
     skeleton::Skeleton,
     switch::Switch,
     v_flex,
@@ -195,7 +195,7 @@ fn skeleton_bar(width: f32, height: f32, cx: &App) -> Skeleton {
 
 /// 失败的异步结果用 toast 展示；成功返回 `true`。
 fn toast_failure(window: &mut Window, cx: &mut App, text: String) {
-    window.push_notification(Notification::error(text), cx);
+    window.push_notification(toast::error(text), cx);
 }
 
 /// 发起 agent RPC，结果在窗口内回调（可弹 toast / 关对话框）。
@@ -1225,10 +1225,10 @@ fn test_one(
         cx,
         move |result, window, cx| {
             let notification = match test_outcome(&translator, result, max_channels) {
-                Ok(()) => Notification::success(translator.text("cloudNotifyTestOk").to_owned()),
-                Err(detail) => Notification::error(
-                    translator.text_with("cloudNotifyTestFail", &[("error", &detail)]),
-                ),
+                Ok(()) => toast::success(translator.text("cloudNotifyTestOk").to_owned()),
+                Err(detail) => {
+                    toast::error(translator.text_with("cloudNotifyTestFail", &[("error", &detail)]))
+                }
             };
             window.push_notification(notification, cx);
         },
@@ -1608,9 +1608,9 @@ fn test_all(
                     store.set_transient(TESTING_ALL_KEY, Value::Bool(false), cx);
                 });
                 let notification = if failures.is_empty() {
-                    Notification::success(translator.text("cloudNotifyTestOk").to_owned())
+                    toast::success(translator.text("cloudNotifyTestOk").to_owned())
                 } else {
-                    Notification::error(
+                    toast::error(
                         translator
                             .text_with("cloudNotifyTestFail", &[("error", &failures.join("; "))]),
                     )

@@ -212,20 +212,9 @@ pub(crate) fn pick_static(list: &'static [&'static str], value: &str) -> Option<
     list.iter().copied().find(|candidate| *candidate == value)
 }
 
-/// 字节数 → `12.3 MiB`（二进制单位）。
+/// Torrent and evidence byte counts follow the device's unit labels.
 pub(crate) fn format_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
-    }
+    fluxdown_ui_components::size_units::format_bytes(bytes, 4)
 }
 
 /// 证据字段的取值类别。
@@ -569,9 +558,9 @@ mod tests {
     fn bytes_use_binary_units() {
         assert_eq!(format_bytes(0), "0 B");
         assert_eq!(format_bytes(1023), "1023 B");
-        assert_eq!(format_bytes(1024), "1.0 KiB");
-        assert_eq!(format_bytes(64 * 1024 * 1024), "64.0 MiB");
-        assert_eq!(format_bytes(u64::MAX), "16777216.0 TiB");
+        assert_eq!(format_bytes(1024), "1.0 KB");
+        assert_eq!(format_bytes(64 * 1024 * 1024), "64.0 MB");
+        assert_eq!(format_bytes(u64::MAX), "16777216.0 TB");
     }
 
     #[test]

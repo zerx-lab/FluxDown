@@ -11,7 +11,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import android.os.StatFs
-import android.text.format.Formatter
+import com.fluxdown.core.format.Format
 import android.util.Log
 import com.fluxdown.app.AppContainer
 import com.fluxdown.app.ui.defaultLocalSaveDir
@@ -50,7 +50,7 @@ internal object MobileCheckRunner {
             listOf(
                 MobileChecks.notifications(notificationState(app)),
                 background(app),
-                MobileChecks.storage(writable, free) { Formatter.formatShortFileSize(app, it) },
+                MobileChecks.storage(writable, free) { Format.bytes(it).toString() },
                 links(app),
                 MobileChecks.network(networkSnapshot(app)),
                 MobileChecks.engine(

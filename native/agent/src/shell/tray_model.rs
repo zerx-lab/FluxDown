@@ -112,13 +112,14 @@ fn cached_icon(
 }
 
 /// macOS 不给状态栏项设 tooltip（#953：macOS 27 上 tooltip 收不到移出事件而常驻），
-/// 倒计时改挂在「取消关机 / 睡眠」菜单项上。
+/// 倒计时改挂在取消完成动作的菜单项上。
 const COUNTDOWN_IN_MENU: bool = cfg!(target_os = "macos");
 
 fn build(translator: &Translator, inputs: &Inputs, countdown_in_menu: bool) -> TrayModel {
     let (countdown_key, cancel_key) = match inputs.power.action {
         PowerAction::Shutdown => ("shutdownCountdown", "trayCancelShutdown"),
         PowerAction::Sleep => ("sleepCountdown", "trayCancelSleep"),
+        PowerAction::Quit => ("quitCountdown", "trayCancelQuit"),
     };
     let remaining = inputs.power.countdown_remaining_secs.map(format_remaining);
     let tooltip = remaining.as_ref().map_or_else(
@@ -171,6 +172,7 @@ mod tests {
                 armed_delay_secs: Some(60),
                 countdown_remaining_secs: Some(65),
                 action: PowerAction::Shutdown,
+                ..PowerStatusDto::default()
             },
             icon: AppIconChoice::Default,
         };
@@ -202,6 +204,7 @@ mod tests {
                 "trayCancelShutdown",
             ),
             (PowerAction::Sleep, "sleepCountdown", "trayCancelSleep"),
+            (PowerAction::Quit, "quitCountdown", "trayCancelQuit"),
         ] {
             let inputs = Inputs {
                 visible: true,
@@ -210,6 +213,7 @@ mod tests {
                     armed_delay_secs: Some(0),
                     countdown_remaining_secs: Some(1),
                     action,
+                    ..PowerStatusDto::default()
                 },
                 icon: AppIconChoice::Default,
             };

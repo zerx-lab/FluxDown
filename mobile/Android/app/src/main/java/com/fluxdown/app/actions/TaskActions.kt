@@ -7,6 +7,8 @@ import android.content.Intent
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -18,6 +20,7 @@ import com.fluxdown.app.R
 import com.fluxdown.app.i18n.str
 import com.fluxdown.app.nav.AppNavigator
 import com.fluxdown.app.nav.SheetRoute
+import com.fluxdown.app.shell.LocalAppearance
 import com.fluxdown.core.host.HostErrorCode
 import com.fluxdown.core.host.HostException
 import com.fluxdown.core.host.HostSession
@@ -44,8 +47,73 @@ import com.fluxdown.fluxui.overlay.FluxOverlayState
 import com.fluxdown.fluxui.overlay.FluxToastKind
 import com.fluxdown.fluxui.theme.FluxHaptics
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
+
+internal enum class LocalFileAvailability {
+    Pending, RegularFile, Unavailable;
+
+    val canTryOpen: Boolean get() = this != Unavailable
+}
+
+internal fun Task.initialLocalFileAvailability(localHost: Boolean): LocalFileAvailability =
+    if (localHost && status == TaskStatus.Completed && !fileMissing && fileName.isNotEmpty()) {
+        LocalFileAvailability.Pending
+    } else {
+        LocalFileAvailability.Unavailable
+    }
+
+/** 普通文件才能交给系统查看器；多文件 BT 的顶层路径可能是目录。 */
+internal fun Task.openableLocalFile(localHost: Boolean): File? =
+    if (initialLocalFileAvailability(localHost).canTryOpen) {
+        File(saveDir, fileName).takeIf { it.isFile }
+    } else {
+        null
+    }
+
+internal fun Task.probeLocalFileAvailability(localHost: Boolean): LocalFileAvailability =
+    if (openableLocalFile(localHost) != null) LocalFileAvailability.RegularFile else LocalFileAvailability.Unavailable
+
+@Composable
+internal fun rememberLocalFileAvailability(task: Task, localHost: Boolean): State<LocalFileAvailability> {
+    val initial = task.initialLocalFileAvailability(localHost)
+    val result = remember(task.taskId, task.saveDir, task.fileName, initial) { mutableStateOf(initial) }
+    if (initial == LocalFileAvailability.Pending) {
+        LaunchedEffect(result) {
+            result.value = withContext(Dispatchers.IO) { task.probeLocalFileAvailability(localHost) }
+        }
+    }
+    return result
+}
+
+internal suspend fun dispatchLocalFile(
+    task: Task,
+    isCurrent: () -> Boolean,
+    onUnavailable: () -> Unit,
+    onOpen: (File) -> Unit,
+) {
+    val file = withContext(Dispatchers.IO) { task.openableLocalFile(localHost = true) }
+    if (!isCurrent()) return
+    if (file == null) onUnavailable() else onOpen(file)
+}
+
+/** Publishes a reserved slot before IO so existing rows never move or lose their press. */
+internal suspend fun showProbingTaskMenu(
+    task: Task,
+    isCurrent: () -> Boolean,
+    open: FluxMenuItem.Action,
+    rest: List<FluxMenuItem>,
+    show: (State<List<FluxMenuItem>>) -> Unit,
+) {
+    val items = mutableStateOf<List<FluxMenuItem>>(listOf(open.copy(visible = false)) + rest)
+    show(items)
+    dispatchLocalFile(task, isCurrent, onUnavailable = {}) {
+        items.value = listOf(open) + rest
+    }
+}
 
 /**
  * 任务动作的唯一分发点：行环钮、滑动、长按菜单、选择坞、详情页都经此调用，
@@ -62,6 +130,28 @@ class TaskActions(
     /** 当前主机是否为本机：远端主机的文件在主机磁盘上，本机无法打开。 */
     private val isLocalHost: () -> Boolean,
 ) {
+    internal fun showTaskMenu(
+        anchor: androidx.compose.ui.geometry.Rect,
+        task: Task,
+        boosted: Boolean,
+        file: LocalFileAvailability,
+        onSelect: (() -> Unit)? = null,
+    ) {
+        if (file != LocalFileAvailability.Pending || !isLocalHost()) {
+            overlays.showMenu(anchor, menuItems(task, boosted, file == LocalFileAvailability.RegularFile, onSelect))
+            return
+        }
+        val open = openMenuAction(task)
+        val rest = menuItems(task, boosted, opensFile = false, onSelect = onSelect)
+        // The owning shell outlives the originating lazy row and its probe.
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            showProbingTaskMenu(task, isLocalHost, open, rest) { overlays.showMenu(anchor, it) }
+        }
+    }
+
+    private fun openMenuAction(task: Task) =
+        FluxMenuItem.Action(s(R.string.openFile), { open(task) }, FluxIcons.ExternalLink)
+
     private fun s(id: Int, vararg args: Pair<String, Any?>) = context.str(id, *args)
 
     /** 只读（断连宽限后）拒绝写操作：toast(error) + REJECT。 */
@@ -89,6 +179,7 @@ class TaskActions(
     fun errorText(e: HostException): String = when (e.reason) {
         "taskFilesInUse" -> s(R.string.errReasonTaskFilesInUse)
         "taskFilesNotDeleted" -> s(R.string.errReasonTaskFilesNotDeleted)
+        "browserRequestRequired" -> s(R.string.taskErrorPostOnlyResume)
         else -> when (e.code) {
             HostErrorCode.Conflict -> s(R.string.localServiceConflict)
             HostErrorCode.InvalidArgument -> s(R.string.localServiceInvalidArgument)
@@ -141,6 +232,9 @@ class TaskActions(
             ),
         )
     }
+
+    /** 无确认删除（调用方已确认；选择坞含远程项时的本地部分）。 */
+    fun deleteNow(ids: List<String>, withFiles: Boolean, onDone: () -> Unit = {}) = delete(ids, withFiles, onDone)
 
     private fun delete(ids: List<String>, withFiles: Boolean, onDone: () -> Unit) = run({
         haptics.confirm()
@@ -252,31 +346,35 @@ class TaskActions(
         context.startActivity(Intent.createChooser(send, task.fileName).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
 
-    /** 本机已完成且文件仍在（iOS `hasLocalFile` 同条件）。远端主机的文件不在本机，不提供打开。 */
-    fun hasLocalFile(task: Task): Boolean =
-        isLocalHost() && task.status == TaskStatus.Completed && !task.fileMissing
-
-    /** 打开当前主机列表里的已完成文件：远端主机 / 不存在 → 警告；存在 → ACTION_VIEW（FileProvider）。 */
+    /** 打开当前主机列表里的已完成文件。 */
     fun open(task: Task) {
-        if (!hasLocalFile(task)) {
-            haptics.reject()
-            overlays.toast(s(R.string.mobileFileNotFound), FluxToastKind.Warn, FluxIcons.FileWarning)
-            return
-        }
-        openLocalFile(task)
+        if (isLocalHost()) openLocalFile(task, requireCurrentLocalHost = true)
+    }
+
+    internal fun openOrShowDetails(task: Task) {
+        if (!isLocalHost()) return
+        openLocalFile(task, requireCurrentLocalHost = true) { showDetails(task) }
     }
 
     /**
-     * 打开本机引擎的任务文件，不看当前查看的是哪台主机：完成提示里的本机任务（含 PC 下发到本机的）
-     * 在用户正查看远端主机时同样要能打开。调用方须保证 [task] 来自本机主机状态。
+     * 完成提示里的本机任务在查看远端时也可打开；调用方须保证任务来自本机主机状态。
      */
-    fun openLocalFile(task: Task) {
-        val file = File(task.saveDir, task.fileName)
-        if (task.fileMissing || !file.exists()) {
-            haptics.reject()
-            overlays.toast(s(R.string.mobileFileNotFound), FluxToastKind.Warn, FluxIcons.FileWarning)
-            return
+    fun openLocalFile(task: Task) = openLocalFile(task, requireCurrentLocalHost = false)
+
+    private fun openLocalFile(task: Task, requireCurrentLocalHost: Boolean, onUnavailable: (() -> Unit)? = null) {
+        scope.launch {
+            dispatchLocalFile(task, { !requireCurrentLocalHost || isLocalHost() }, onUnavailable = {
+                if (onUnavailable != null) {
+                    onUnavailable()
+                } else {
+                    haptics.reject()
+                    overlays.toast(s(R.string.mobileFileNotFound), FluxToastKind.Warn, FluxIcons.FileWarning)
+                }
+            }, onOpen = ::viewLocalFile)
         }
+    }
+
+    private fun viewLocalFile(file: File) {
         val uri = try {
             FileProvider.getUriForFile(context, "${context.packageName}.files", file)
         } catch (e: IllegalArgumentException) {
@@ -303,11 +401,13 @@ class TaskActions(
         }
     }
 
+    private fun showDetails(task: Task) = nav.push(com.fluxdown.app.nav.Route.TaskDetail(task.taskId))
+
     /** 行环钮的主动作（按状态）。 */
-    fun primary(task: Task) = when {
+    fun primary(task: Task, tryOpenFile: Boolean) = when {
         task.status == TaskStatus.Completed && task.fileMissing -> confirmRedownload(task)
-        task.status == TaskStatus.Completed && isLocalHost() -> open(task)
-        task.status == TaskStatus.Completed -> nav.push(com.fluxdown.app.nav.Route.TaskDetail(task.taskId))
+        task.status == TaskStatus.Completed && tryOpenFile && isLocalHost() -> openOrShowDetails(task)
+        task.status == TaskStatus.Completed -> showDetails(task)
         task.status == TaskStatus.Paused || task.status == TaskStatus.Failed -> resume(listOf(task.taskId))
         else -> pause(listOf(task.taskId))
     }
@@ -317,9 +417,12 @@ class TaskActions(
      * 位于重新下载与复制链接之前。顺序是单选（最稀有优先 / 按顺序下载，混选都不点亮）；
      * 首尾文件块是独立复选框（全部开启才勾上，点击设为反值）。
      */
-    fun menuItems(task: Task, boosted: Boolean, onSelect: (() -> Unit)? = null): List<FluxMenuItem> = buildList {
+    fun menuItems(task: Task, boosted: Boolean, opensFile: Boolean, onSelect: (() -> Unit)? = null): List<FluxMenuItem> = buildList {
         val st = task.status
-        if (hasLocalFile(task)) add(FluxMenuItem.Action(s(R.string.openFile), { open(task) }, FluxIcons.ExternalLink))
+        if (opensFile && isLocalHost()) add(openMenuAction(task))
+        if (st == TaskStatus.Completed && onSelect != null) {
+            add(FluxMenuItem.Action(s(R.string.mobileTaskDetail), { showDetails(task) }, FluxIcons.Info))
+        }
         if (task.canResume) add(FluxMenuItem.Action(s(R.string.resume), { resume(listOf(task.taskId)) }, FluxIcons.Play))
         if (task.canPause) add(FluxMenuItem.Action(s(R.string.pause), { pause(listOf(task.taskId)) }, FluxIcons.Pause))
         // 只有未结束的任务能优先下载（主机对已完成 / 失败任务拒绝 Boost）。
@@ -434,7 +537,7 @@ class TaskActions(
     private fun ColumnScope.TaskLimitsPrompt(task: Task) {
         var down by remember { mutableStateOf(BtTaskLimits.kibText(task.btDownloadLimitBps)) }
         var up by remember { mutableStateOf(BtTaskLimits.kibText(task.seedUploadLimitBps)) }
-        val unit = str(R.string.btGuardUnitKibps)
+        val unit = LocalAppearance.current.fileSizeUnits.rateLabel(1)
         val numeric = KeyboardOptions(keyboardType = KeyboardType.Number)
         FluxField(value = down, onValueChange = { down = limitDigits(it) }, label = str(R.string.btTaskLimitDownload), suffix = unit, mono = true, keyboardOptions = numeric)
         FluxField(value = up, onValueChange = { up = limitDigits(it) }, label = str(R.string.btTaskLimitUpload), suffix = unit, mono = true, keyboardOptions = numeric)

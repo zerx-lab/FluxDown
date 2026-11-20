@@ -8,6 +8,7 @@ use crate::{
     strings::error_text,
 };
 use fluxdown_protocol::{EditTaskParams, TaskEditSnapshot};
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     ControlExt as _, dialog_footer, dialog_title, field_hint, form, form_field,
 };
@@ -20,7 +21,6 @@ use gpui_component::{
     button::Button,
     input::{Input, InputEvent, InputState},
     menu::{DropdownMenu as _, PopupMenuItem},
-    notification::Notification,
     scroll::ScrollableElement as _,
     v_flex,
 };
@@ -369,7 +369,7 @@ impl PropertiesForm {
                         Ok(DownloadsResult::Unit) => {
                             form.error = None;
                             window.push_notification(
-                                Notification::success(
+                                toast::success(
                                     form.target.translator.read(cx).text("taskEditSaved"),
                                 ),
                                 cx,
@@ -383,7 +383,7 @@ impl PropertiesForm {
                                 .read(cx)
                                 .text("taskEditUnexpectedResult");
                             form.error = Some(message.into());
-                            window.push_notification(Notification::error(message), cx);
+                            window.push_notification(toast::error(message), cx);
                         }
                         Err(error) => {
                             let message = form.target.translator.read(cx).text_with(
@@ -394,7 +394,7 @@ impl PropertiesForm {
                                 )],
                             );
                             form.error = Some(message.clone().into());
-                            window.push_notification(Notification::error(message), cx);
+                            window.push_notification(toast::error(message), cx);
                         }
                     }
                     cx.notify();

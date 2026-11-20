@@ -261,7 +261,7 @@ impl RuleMatcher {
 
 /// 自定义代理 URL 的严格检查：scheme 在 [`PROXY_SCHEMES`] 内、有 host、有显式非零
 /// 端口、无路径。失败返回原因短语（wire `detail`）。
-fn check_proxy_url(raw: &str) -> Result<(), String> {
+pub(crate) fn check_proxy_url(raw: &str) -> Result<(), String> {
     let Some((scheme, rest)) = raw.split_once("://") else {
         return Err("missing scheme".to_string());
     };

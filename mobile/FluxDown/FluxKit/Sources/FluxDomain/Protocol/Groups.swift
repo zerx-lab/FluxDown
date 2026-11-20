@@ -396,13 +396,21 @@ public struct ManifestSelection: Sendable, Hashable {
         return item.variants.first { $0.id == id }
     }
 
-    /// 有效大小：选了规格且规格大小已知用规格，否则条目大小；0 = 未知。
+    /// 有效大小：显式规格用规格大小，否则用条目大小；0 = 未知。
     public func effectiveSize(of item: PreviewItemDto) -> Int64 {
-        if let variant = variant(for: item), variant.size > 0 { return variant.size }
-        return max(item.size, 0)
+        max(variant(for: item)?.size ?? item.size, 0)
     }
 
     public var selectedItems: [PreviewItemDto] { items.filter { selected.contains($0.id) } }
+
+    /// Checked files in manifest order, independent of the active search.
+    public func selectedExportRows() -> [(name: String, size: Int64)] {
+        items.compactMap { item in
+            guard selected.contains(item.id) else { return nil }
+            let name = item.path.isEmpty ? item.name : "\(item.path)/\(item.name)"
+            return (name, effectiveSize(of: item))
+        }
+    }
 
     /// 已选总大小（字节，未知条目计 0）与未知大小条目数。
     public var selectedSize: (bytes: Int64, unknown: Int) {

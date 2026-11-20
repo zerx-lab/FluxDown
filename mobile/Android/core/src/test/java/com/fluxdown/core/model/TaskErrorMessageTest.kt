@@ -15,11 +15,20 @@ class TaskErrorMessageTest {
             "taskErrorPostOnlyResume",
             TaskErrorMessage.match("  This task was started by a browser POST request and cannot be resumed; start it again from the browser\n")?.i18nKey,
         )
+        assertEquals(
+            "taskErrorUnexpectedHtml",
+            TaskErrorMessage.match(" server returned HTML page (Content-Type: text/html), redirected to /login\n")?.i18nKey,
+        )
+        assertEquals(
+            "taskErrorHtmlChanged",
+            TaskErrorMessage.match("the server did not return a complete HTML page; nothing was saved")?.i18nKey,
+        )
     }
 
     @Test
     fun unrelatedMessagePassesThrough() {
         assertNull(TaskErrorMessage.match("connection reset"))
         assertNull(TaskErrorMessage.match("This link only accepts POST requests (HTTP 405); start the download from the browser."))
+        assertNull(TaskErrorMessage.match("the server did not return a complete HTML page; nothing was saved."))
     }
 }
