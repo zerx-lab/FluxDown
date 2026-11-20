@@ -1,12 +1,15 @@
-//! 跨设备任务全量投影、本地执行路由、绑定评分与缺失宽限。
+//! 跨设备任务投影（只含本设备发起或执行的任务）、本地执行路由、绑定评分与缺失宽限。
 //!
 //! 角色：
 //! - 发起端：`dispatch` 经 FluxCloud 下发任务，`command` 控制远端任务；
 //! - 执行端：SSE 收到 `task.dispatch` 后逐条接单建 daemon 任务，并上报状态 / 进度；
 //!   收到 `task.command` 后映射到本机 daemon。
 //!
+//! 可见性按设备：FluxCloud 只把任务推给它的发起端与执行端，同账号的其它设备看不到；本机投影再按
+//! `involves_device` 兜一层。设备身份（`AgentState::device_id`）跨登出 / 重新登录不变。
+//!
 //! 执行端的「云端任务 → 本机 daemon 任务」绑定持久化在 `AgentState::remote_bindings`，
-//! 重启后不会为同一个云端任务重复建任务。
+//! 重启后不会为同一个云端任务重复建任务；登出 / 换号时按账号暂存，重新登录同一账号即恢复。
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -1009,8 +1012,12 @@ impl RemoteTaskService {
         {
             "task.dispatch" | "task.status" => {
                 let task = serde_json::from_value::<RemoteTaskDto>(event)?;
-                let canceled_here = task.status == RemoteTaskStatus::Canceled
-                    && task.to_device == self.local_device_id().await;
+                let local_device = self.local_device_id().await;
+                if !involves_device(&task, &local_device) {
+                    return Ok(None);
+                }
+                let canceled_here =
+                    task.status == RemoteTaskStatus::Canceled && task.to_device == local_device;
                 let remote_id = task.id.clone();
                 self.upsert_task(task, epoch).await?;
                 if canceled_here {
@@ -1849,7 +1856,9 @@ impl RemoteTaskService {
         let requested_at = Instant::now();
         let value = self.cloud.at_epoch(epoch).remote_tasks().await?;
         drop(self.cloud.lock_epoch(epoch).await?);
-        let tasks = parse_task_list(&value);
+        let local_device = self.local_device_id().await;
+        let mut tasks = parse_task_list(&value);
+        tasks.retain(|task| involves_device(task, &local_device));
         let stale = self.stale_bindings(&tasks, requested_at, epoch).await?;
         for (remote_id, reason) in &stale {
             self.discard_local_task_epoch(remote_id, epoch, *reason)
@@ -2478,6 +2487,12 @@ impl RemoteStatusExt for RemoteTaskStatus {
 /// 逐条解析：单条畸形任务只被跳过并记录，不让整份快照（以及设备名册 / 接单 / SSE）停摆。
 fn parse_task_list(value: &Value) -> Vec<RemoteTaskDto> {
     parse_list(value, &["tasks", "value"], "remote task")
+}
+
+/// 任务属于本设备：本设备是它的发起端或执行端。同账号其它设备之间的任务不进本机投影——FluxCloud 已按
+/// 设备过滤整拉与实时事件，这里再兜一层，旧版云端仍返回全账号任务时行为一致。本机身份缺失时不过滤。
+fn involves_device(task: &RemoteTaskDto, local_device: &str) -> bool {
+    local_device.is_empty() || task.from_device == local_device || task.to_device == local_device
 }
 
 fn parse_device_list(value: &Value) -> Vec<CloudDevice> {
@@ -3296,7 +3311,7 @@ mod tests {
             if state.snapshots.fetch_add(1, Ordering::SeqCst) == 0 {
                 return StatusCode::SERVICE_UNAVAILABLE.into_response();
             }
-            axum::Json(json!({"tasks": [{"id": "recovered", "url": "https://example.test/a", "status": "completed"}]})).into_response()
+            axum::Json(json!({"tasks": [{"id": "recovered", "url": "https://example.test/a", "fromDevice": "device-1", "toDevice": "device-2", "status": "completed"}]})).into_response()
         }
         let harness = Harness::new("snapshot_recovery", |router| {
             router
@@ -5068,6 +5083,49 @@ mod tests {
         assert_eq!(harness.service.tasks().await, merged);
         let persisted = harness.store.load().await.expect("persisted state");
         assert_eq!(persisted.remote_tasks, merged);
+        harness.finish().await;
+    }
+
+    /// 投影只收本机发起或执行的任务：旧版云端整拉 / 推送里夹带的同账号其它设备之间的任务一律不进投影。
+    #[tokio::test]
+    async fn tasks_between_other_devices_never_enter_the_projection() {
+        async fn snapshot() -> impl IntoResponse {
+            axum::Json(json!({"tasks": [
+                {"id": "mine", "toDevice": "device-2", "fromDevice": "device-1", "status": "downloading"},
+                {"id": "for-me", "toDevice": "device-1", "fromDevice": "device-2", "status": "paused"},
+                {"id": "foreign", "toDevice": "device-3", "fromDevice": "device-2", "status": "downloading"}
+            ]}))
+        }
+        let harness = Harness::new("foreign_tasks", |router| {
+            router.route("/api/v1/tasks/remote", get(snapshot))
+        })
+        .await;
+        let merged = harness.service.refresh_snapshot().await.expect("snapshot");
+        assert_eq!(
+            merged
+                .iter()
+                .map(|task| task.id.as_str())
+                .collect::<Vec<_>>(),
+            ["mine", "for-me"]
+        );
+        for kind in ["task.dispatch", "task.status"] {
+            harness
+                .service
+                .apply_remote_event(json!({
+                    "type": kind, "id": "foreign-live", "toDevice": "device-3",
+                    "fromDevice": "device-2", "status": "pending"
+                }))
+                .await
+                .expect("foreign event");
+        }
+        assert!(
+            harness
+                .service
+                .tasks()
+                .await
+                .iter()
+                .all(|task| task.id != "foreign-live")
+        );
         harness.finish().await;
     }
 

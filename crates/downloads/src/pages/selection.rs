@@ -53,11 +53,11 @@ const BT_CATEGORY_KEYS: [(&str, &str); 7] = [
     ("archive", "categoryArchive"),
     ("other", "categoryOther"),
 ];
-const BT_MIN_SIZES: [(i64, &str); 4] = [
-    (0, ""),
-    (10 << 20, "10 MB"),
-    (100 << 20, "100 MB"),
-    (1 << 30, "1 GB"),
+const BT_MIN_SIZES: [(i64, u8, usize); 4] = [
+    (0, 0, 0),
+    (10 << 20, 10, 2),
+    (100 << 20, 100, 2),
+    (1 << 30, 1, 3),
 ];
 
 struct BtFilter {
@@ -354,7 +354,7 @@ impl SelectionView {
             _ => None,
         };
         let task_name = SharedString::from(task_name);
-        let download_name = DownloadName::new(task_name.clone());
+        let download_name = DownloadName::with_fixed_name(task_name.clone());
         let name_input = matches!(state, SelectionState::Bt { .. }).then(|| {
             let initial = task_name.clone();
             cx.new(|cx| InputState::new(window, cx).default_value(initial))
@@ -927,7 +927,7 @@ impl SelectionView {
                 BT_MIN_SIZES
                     .iter()
                     .enumerate()
-                    .map(|(index, &(size, label))| {
+                    .map(|(index, &(size, value, power))| {
                         let button = Button::new(("bt-min-size", index));
                         let button = if filter.min_size == size {
                             button.primary()
@@ -939,7 +939,9 @@ impl SelectionView {
                             .label(if size == 0 {
                                 self.strings.bt_filter_any_size.clone()
                             } else {
-                                SharedString::from(label)
+                                let units = fluxdown_ui_components::size_units::labels();
+                                let unit = units.get(power).copied().unwrap_or("B");
+                                SharedString::from(format!("{value} {unit}"))
                             })
                             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                 if let Some(filter) = &mut this.bt_filter {
@@ -1588,6 +1590,12 @@ mod tests {
             for unchanged in ["  movie.mkv ", "   "] {
                 input.update(cx, |input, cx| input.set_value(unchanged, window, cx));
                 assert_eq!(view.name_override(cx), None);
+                view.download_name.set_auto(true, input, window, cx);
+                assert_eq!(&*input.read(cx).value(), "movie.mkv");
+                assert_eq!(view.name_override(cx), None);
+                view.download_name.set_auto(false, input, window, cx);
+                assert_eq!(&*input.read(cx).value(), unchanged);
+                assert_eq!(view.name_override(cx), None);
             }
             input.update(cx, |input, cx| input.set_value("  My Movie  ", window, cx));
             assert_eq!(view.name_override(cx).as_deref(), Some("My Movie"));
@@ -1597,6 +1605,11 @@ mod tests {
             view.download_name.set_auto(false, input, window, cx);
             assert_eq!(&*input.read(cx).value(), "  My Movie  ");
             assert_eq!(view.name_override(cx).as_deref(), Some("My Movie"));
+
+            for original in ["movie.mkv", "  movie.mkv  "] {
+                input.update(cx, |input, cx| input.set_value(original, window, cx));
+                assert_eq!(view.name_override(cx), None);
+            }
         });
     }
 

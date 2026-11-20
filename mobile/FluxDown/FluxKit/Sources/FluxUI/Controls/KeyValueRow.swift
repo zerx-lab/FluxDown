@@ -8,6 +8,7 @@ import UIKit
 /// - 值可选中（`.textSelection(.enabled)`）；`copyable` 时长按上下文菜单提供「复制」
 ///   （写入 `UIPasteboard` + success 触感，并回调 `onCopy` 供页面弹 Toast）。
 /// - `copyLabel` 由调用方本地化。
+/// - `copyValue` 可提供未本地化的诊断原文；缺省复制显示值。
 public struct KeyValueRow: View {
     public let key: String
     public let value: String
@@ -16,6 +17,7 @@ public struct KeyValueRow: View {
     public let tone: BadgeTone?
     public let copyLabel: String
     public let onCopy: (() -> Void)?
+    private let copyValue: String?
 
     @State private var copyCount = 0
     @Environment(\.fluxAccent) private var accent
@@ -27,6 +29,7 @@ public struct KeyValueRow: View {
         copyable: Bool = false,
         tone: BadgeTone? = nil,
         copyLabel: String = "Copy",
+        copyValue: String? = nil,
         onCopy: (() -> Void)? = nil
     ) {
         self.key = key
@@ -35,6 +38,7 @@ public struct KeyValueRow: View {
         self.copyable = copyable
         self.tone = tone
         self.copyLabel = copyLabel
+        self.copyValue = copyValue
         self.onCopy = onCopy
     }
 
@@ -69,7 +73,7 @@ public struct KeyValueRow: View {
     }
 
     private func copy() {
-        UIPasteboard.general.string = value
+        UIPasteboard.general.string = copyValue ?? value
         copyCount += 1
         onCopy?()
     }

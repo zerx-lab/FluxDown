@@ -124,6 +124,12 @@ export interface SetTaskSuperSeedingParams {
   enabled: boolean;
 }
 
+/** `daemon.task.addWebSeed` (BEP 19). */
+export interface AddTaskWebSeedParams {
+  taskId: string;
+  url: string;
+}
+
 export interface TaskDeleteParams {
   taskId: string;
   /** 同时删除磁盘文件，缺省 false。 */
@@ -458,11 +464,11 @@ export interface PreferencesPatchResult {
 }
 
 export interface PowerArmParams {
-  /** 倒计时秒数：没有任务时立即开始，否则全部任务完成后开始（0 = 完成后立即，仅有任务时接受）。 */
+  /** 完成模式在 daemon 在线且没有待完成任务时开始倒计时；0 仅在线且有任务时接受。 */
   delaySecs: number;
   /** 缺省 = shutdown。 */
   action?: PowerAction;
-  /** Replaces completion mode; delaySecs becomes a fixed 30-second cancellable warning. */
+  /** Replaces completion mode with a fixed 30-second cancellable warning; `quit` is not supported. */
   lowSpeed?: PowerLowSpeedCondition | null;
 }
 

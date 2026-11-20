@@ -228,6 +228,13 @@ jobs:
       - name: cargo nextest
         run: cargo nextest run --locked --no-tests=pass ${{ matrix.packages }}
 
+      - name: Scheduled quit stops agent and daemon
+        if: matrix.name == 'agent'
+        run: |
+          cargo build --locked -p fluxdown_daemon --bin fluxdownd
+          FLUXDOWN_TEST_DAEMON_BIN="$PWD/target/debug/fluxdownd" \
+            cargo nextest run --locked -p fluxdown_agent --test local_stack_recovery --run-ignored=only -E 'test(=scheduled_quit_stops_daemon_then_agent_and_tells_clients_not_to_reconnect)'
+
   web:
     name: Web SPA (lint + test + build)
     needs: changes
@@ -337,9 +344,11 @@ jobs:
         with:
           tool: cargo-ndk
       # NDK：runner 预装于 $ANDROID_HOME/ndk/<版本>，:bridge 自动取最高版本。
+      # GitHub runners have returned not-found for existing Central artifacts. Use Google's Central mirror
+      # for both plugin classpath and project dependencies; keep Google Maven and Plugin Portal unchanged.
       - name: Gradle test + assemble + lint
         run: >-
-          ./gradlew --no-daemon -Pfluxdown.abis=arm64-v8a
+          ./gradlew --no-daemon -Pfluxdown.abis=arm64-v8a -Pfluxdown.ciMavenCentralMirror=true
           :core:testDebugUnitTest :fluxui:testDebugUnitTest :bridge:testDebugUnitTest
           :app:assembleDebug :app:lintDebug
 

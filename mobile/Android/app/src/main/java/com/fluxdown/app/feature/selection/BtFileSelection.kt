@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.fluxdown.app.R
 import com.fluxdown.app.i18n.str
+import com.fluxdown.app.shell.LocalAppearance
 import com.fluxdown.app.shell.hostState
 import com.fluxdown.app.ui.label
 import com.fluxdown.app.ui.tileIcon
@@ -122,7 +123,8 @@ private fun flatten(folder: BtFolderNode, collapsed: Set<String>, out: MutableLi
 
 // ── X1 ───────────────────────────────────────────────────────────────────
 
-private val btSizeChoices = listOf(0L to "", 10L shl 20 to "10 MB", 100L shl 20 to "100 MB", 1L shl 30 to "1 GB")
+// (threshold bytes, amount, unit power): thresholds stay binary; only the suffix follows the display preference.
+private val btSizeChoices = listOf(Triple(0L, 0, 0), Triple(10L shl 20, 10, 2), Triple(100L shl 20, 100, 2), Triple(1L shl 30, 1, 3))
 
 private val btOtherCategory = Category.BUILTIN.last { it.isOther }
 
@@ -151,9 +153,10 @@ private fun BtFilters(
     }
     FluxText(str(R.string.btFilterMinSize), style = FluxTheme.type.sm, color = FluxTheme.colors.inkMuted)
     FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        for ((size, label) in btSizeChoices) {
+        val units = LocalAppearance.current.fileSizeUnits
+        for ((size, amount, power) in btSizeChoices) {
             FluxButton(
-                if (size == 0L) str(R.string.btFilterAnySize) else label, { onSize(size) },
+                if (size == 0L) str(R.string.btFilterAnySize) else "$amount ${units.byteLabel(power)}", { onSize(size) },
                 variant = if (size == minSize) ButtonVariant.Primary else ButtonVariant.Ghost, size = ButtonSize.Xs,
             )
         }

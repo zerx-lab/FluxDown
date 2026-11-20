@@ -180,18 +180,23 @@ public enum PluginFailure {
     }
 }
 
-/// 引擎产出的稳定任务错误消息；客户端按整串（trim 后）匹配并本地化展示，其余消息原样显示。
+/// 引擎产出的稳定任务错误消息；HTML 诊断按前缀匹配，其余按整串匹配。
 public enum TaskErrorMessage {
     /// 镜像 `native/engine/src/downloader.rs` 的 `POST_ONLY_ENDPOINT_MESSAGE`。
     public static let postOnlyEndpoint = "This link only accepts POST requests (HTTP 405); start the download from the browser"
     /// 镜像 `native/engine/src/downloader.rs` 的 `POST_ONLY_RESUME_MESSAGE`。
     public static let postOnlyResume = "This task was started by a browser POST request and cannot be resumed; start it again from the browser"
+    private static let unexpectedHtmlPrefix = "server returned HTML page (Content-Type: "
+    private static let htmlResponseChanged = "the server did not return a complete HTML page; nothing was saved"
 
     /// 命中稳定消息时返回共享 i18n 键，否则 nil。
     public static func localizationKey(for message: String) -> String? {
-        switch message.trimmingCharacters(in: .whitespacesAndNewlines) {
+        let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.hasPrefix(unexpectedHtmlPrefix) { return "taskErrorUnexpectedHtml" }
+        return switch text {
         case postOnlyEndpoint: "taskErrorPostOnlyEndpoint"
         case postOnlyResume: "taskErrorPostOnlyResume"
+        case htmlResponseChanged: "taskErrorHtmlChanged"
         default: nil
         }
     }

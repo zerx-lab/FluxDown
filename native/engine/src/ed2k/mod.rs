@@ -14,6 +14,7 @@ pub mod kad;
 pub mod link;
 pub mod peer;
 pub mod proto;
+mod proxy;
 pub mod server;
 pub mod server_subscription;
 pub mod status;
@@ -313,6 +314,10 @@ pub async fn load_client_config(db: &crate::db::Db) -> Result<ClientConfig, crat
         manual_servers,
         enable_upnp: flag(db.get_config("ed2k_enable_upnp").await?),
         enable_kad: flag(db.get_config("ed2k_enable_kad").await?),
+        proxy_protocol_ed2k: db
+            .get_config(crate::protocol_proxy::ED2K_KEY)
+            .await?
+            .unwrap_or_default(),
     })
 }
 
@@ -980,6 +985,7 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
                         KAD_FIND_TIMEOUT,
                         &params.cancel_token,
                         Some(live.kad()),
+                        &config.proxy_protocol_ed2k,
                     )
                     .await;
                     match kad_res {

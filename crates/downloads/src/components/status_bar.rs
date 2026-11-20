@@ -276,6 +276,12 @@ impl PowerActionKeys {
                 armed_after: "sleepArmedHint",
                 cancel: "sleepCancelButton",
             },
+            PowerAction::Quit => Self {
+                countdown: "quitCountdown",
+                armed_immediate: "quitArmedHintImmediate",
+                armed_after: "quitArmedHint",
+                cancel: "quitCancelButton",
+            },
         }
     }
 }
@@ -301,6 +307,7 @@ fn armed_text(
         let action = translator.text(match status.action {
             PowerAction::Shutdown => "powerActionShutdown",
             PowerAction::Sleep => "powerActionSleep",
+            PowerAction::Quit => "powerActionQuit",
         });
         return translator.text_with(
             "powerLowSpeedArmed",
@@ -576,7 +583,7 @@ impl DownloadView {
         let prompt = NumberPrompt {
             title: title.clone(),
             label: custom_label.clone(),
-            unit: SharedString::from(translator.text("statusSpeedLimitKbs").to_owned()),
+            unit: SharedString::from(fluxdown_ui_components::size_units::rate_labels()[1]),
             hint: Some(SharedString::from(translator.text(desc_key).to_owned())),
             cancel_label: SharedString::from(translator.text("cancel").to_owned()),
             confirm_label: SharedString::from(translator.text("confirm").to_owned()),
@@ -610,14 +617,15 @@ impl DownloadView {
                 for mb in SPEED_PRESETS_MB {
                     let bytes = mb_to_bytes(mb);
                     menu = menu.item(
-                        PopupMenuItem::new(SharedString::from(format!("{mb} MB/s")))
-                            .checked(bytes == value)
-                            .on_click({
-                                let view = view.clone();
-                                move |_, _, cx| {
-                                    apply_speed_limit(view.clone(), config_key, bytes, cx)
-                                }
-                            }),
+                        PopupMenuItem::new(SharedString::from(format!(
+                            "{mb} {}",
+                            fluxdown_ui_components::size_units::rate_labels()[2]
+                        )))
+                        .checked(bytes == value)
+                        .on_click({
+                            let view = view.clone();
+                            move |_, _, cx| apply_speed_limit(view.clone(), config_key, bytes, cx)
+                        }),
                     );
                 }
                 let mut recent_hit = false;
@@ -726,13 +734,16 @@ impl DownloadView {
         }
 
         let stats = self.controller.runtime_stats();
-        let has_work =
-            stats.active_tasks > 0 || stats.pending_tasks > 0 || stats.retry_pending_tasks > 0;
+        let has_work = stats.active_tasks > 0
+            || stats.pending_tasks > 0
+            || stats.retry_pending_tasks > 0
+            || stats.local_work_count.is_some_and(|n| n > 0);
         let action = read_power_action(self.controller.preference(POWER_ACTION_PREF));
         let title = SharedString::from(translator.text("shutdownTitle").to_owned());
         let action_items = [
             (PowerAction::Shutdown, "powerActionShutdown"),
             (PowerAction::Sleep, "powerActionSleep"),
+            (PowerAction::Quit, "powerActionQuit"),
         ]
         .map(|(item, key)| (item, SharedString::from(translator.text(key).to_owned())));
         let immediate_label = SharedString::from(translator.text("shutdownImmediate").to_owned());
@@ -773,7 +784,8 @@ impl DownloadView {
         };
         let low_label = SharedString::from(translator.text("powerLowSpeedEntry").to_owned());
         let low_translator = translator.clone();
-        let low_available = (stats.active_tasks > 0 || stats.retry_pending_tasks > 0)
+        let low_available = action != PowerAction::Quit
+            && (stats.active_tasks > 0 || stats.retry_pending_tasks > 0)
             && stats.local_work_count.is_some();
         let arm = move |minutes: i64| ShutdownRequest::Arm {
             delay: minutes_to_duration(minutes),

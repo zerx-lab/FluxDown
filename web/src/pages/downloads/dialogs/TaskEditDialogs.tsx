@@ -1,7 +1,8 @@
 // 重命名文件 / 更换下载链接 / 修改线程数 / BT 移动数据 / BT 任务限速：任务级小对话框，引擎稳定错误码映射为本地化文案。
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
+import { byteUnit, useFileSizeUnits } from '../../../lib/fileSizeUnits'
 import { useT } from '../../../i18n'
 import { RpcError, TASK_STATUS, rpc, useTask, useTasksLoading } from '../../../lib/rpc'
 import { rpcErrorText } from '../../../lib/rpcErrorText'
@@ -12,7 +13,7 @@ import { PathText } from '../../../ui/PathText'
 import { moveTaskStorage, resumeIfFailed } from '../model/actions'
 import { limitKibText, parseTaskSegments, taskLimitsParams } from '../model/taskEdit'
 import { FsPickerDialog } from './FsPickerDialog'
-import { closeChangeSegments, closeChangeUrl, closeMoveStorage, closeRename, closeTaskLimits } from './store'
+import { closeAddWebSeed, closeChangeSegments, closeChangeUrl, closeMoveStorage, closeRename, closeTaskLimits } from './store'
 import { mapEngineError } from './utils'
 
 /** 引擎稳定错误码 → 文案键（native/engine `rename_task` 契约，错误消息即错误码）。 */
@@ -44,6 +45,7 @@ interface TaskScopedProps {
 function SingleFieldDialog({
   title,
   label,
+  hint,
   placeholder,
   okLabel,
   initial,
@@ -54,6 +56,7 @@ function SingleFieldDialog({
 }: {
   title: string
   label: string
+  hint?: string
   placeholder: string
   okLabel: string
   initial: string
@@ -107,11 +110,36 @@ function SingleFieldDialog({
             onChange={(event) => setValue(event.target.value)}
           />
         </FormField>
+        {hint ? <FieldHint>{hint}</FieldHint> : null}
         {error ? <FieldError className="break-all">{error}</FieldError> : null}
         {/* 让回车提交：隐藏的提交按钮 */}
         <button type="submit" className="hidden" tabIndex={-1} aria-hidden />
       </Form>
     </Dialog>
+  )
+}
+
+export function AddWebSeedDialog({ taskId, session }: { taskId: string; session: number }) {
+  const t = useT()
+  const onClose = useCallback(() => closeAddWebSeed(session), [session])
+  return (
+    <TaskScoped
+      taskId={taskId}
+      onClose={onClose}
+      render={() => (
+        <SingleFieldDialog
+          title={t('btAddWebSeedTitle')}
+          label={t('btWebSeedUrl')}
+          placeholder="https://"
+          hint={t('btAddWebSeedHint')}
+          okLabel={t('confirm')}
+          initial=""
+          errors={{}}
+          onClose={onClose}
+          submit={(url) => rpc.daemon.task.addWebSeed({ taskId, url })}
+        />
+      )}
+    />
   )
 }
 
@@ -312,6 +340,7 @@ export function TaskLimitsDialog({ taskId }: { taskId: string }) {
 
 /** 任务级限速（KiB/s，0 = 不限）：初值取任务当前值，只下发改动的字段；未改直接关闭。 */
 function TaskLimitsBody({ taskId, initial }: { taskId: string; initial: readonly [string, string] }) {
+  const units = useFileSizeUnits()
   const t = useT()
   // 初值只在首次渲染时取：轮询 / 事件刷新任务行时不覆盖正在编辑的输入。
   const [first] = useState(initial)
@@ -356,7 +385,7 @@ function TaskLimitsBody({ taskId, initial }: { taskId: string; initial: readonly
             setError('')
           }}
         />
-        <span className="shrink-0 text-sm text-muted-foreground">{t('btGuardUnitKibps')}</span>
+        <span className="shrink-0 text-sm text-muted-foreground">{byteUnit(1, units)}/s</span>
       </div>
     </FormField>
   )

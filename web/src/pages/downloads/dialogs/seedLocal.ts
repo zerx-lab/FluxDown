@@ -1,3 +1,4 @@
+import { byteUnit, type FileSizeUnits } from '../../../lib/fileSizeUnits'
 // 「本机做种」表单 → `daemon.task.seedLocal` 参数：去空白、拆分 tracker、必填校验。纯函数，便于单测。
 
 import type { DaemonSeedLocalParams, SeedTorrentVersion } from '../../../lib/rpc'
@@ -9,8 +10,8 @@ export const SEED_TORRENT_VERSIONS: readonly SeedTorrentVersion[] = ['v1', 'v2',
 export const SEED_PIECE_LENGTHS: readonly number[] = [0, ...Array.from({ length: 11 }, (_, i) => 16_384 * 2 ** i)]
 
 /** 分片大小选项的显示文字（0 由调用方换成「自动」）：KiB / MiB 整数。 */
-export function pieceLengthLabel(bytes: number): string {
-  return bytes >= 1_048_576 ? `${bytes / 1_048_576} MiB` : `${bytes / 1024} KiB`
+export function pieceLengthLabel(bytes: number, units?: FileSizeUnits): string {
+  return bytes >= 1_048_576 ? `${bytes / 1_048_576} ${byteUnit(2, units)}` : `${bytes / 1024} ${byteUnit(1, units)}`
 }
 
 export interface SeedLocalForm {

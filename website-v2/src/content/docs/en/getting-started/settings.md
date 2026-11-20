@@ -30,6 +30,7 @@ Open **Settings** from the top bar's gear icon. The settings sidebar has nine ca
 | Theme Mode | Light, dark, or follow system. | Follow System |
 | Theme | Five built-in themes, filtered to the current light/dark mode: **Default Dark**, **Midnight Blue**, and **Nord** for dark mode; **Default Light** and **Warm Light** for light mode. You can also import a custom theme JSON and export the current one. | Default Dark / Default Light |
 | Theme Color | The app's accent color: Blue, Green, Violet, Rose, or Custom (hue slider + hex input). | Blue |
+| File Size Units | **Appearance → Interface**. Choose `KB / MB / GB` or IEC (`KiB / MiB / GiB`) for sizes and speeds. Both use powers of 1024. The preference is local to this device (or browser). | `KB / MB / GB` |
 | Interface Scale | Overall UI scale, from 80% to 150%. | 100% |
 | App Icon *(Windows only)* | Choose the icon used by the window, taskbar, and tray: the built-in icon, a built-in "bolt" alternative, or a custom image you provide. | Built-in icon |
 
@@ -81,7 +82,7 @@ A configured template always takes priority over auto-detection; if it fails to 
 | Tracker List | Custom tracker servers for peer discovery, one per line, on top of 25 built-in trackers (Asia-priority ordering). Can be reset to the built-in list. | 25 built-in trackers |
 | Tracker Subscription | Periodically fetch up-to-date trackers from community-maintained lists and merge them with the list above. | On |
 
-Some BT changes require restarting the BT engine to take effect (FluxDown shows a reminder in this category). DHT and UPnP are always enabled internally and have no separate toggle. Proxy settings (below) don't apply to BitTorrent downloads.
+Some BT changes require restarting the BT engine to take effect (FluxDown shows a reminder in this category). Configure BitTorrent's outbound proxy separately in **Settings → Proxy**.
 
 ### Anti-Leech, Block list and Event log
 
@@ -129,7 +130,15 @@ The **Block list** tab lets you browse, search, add, release, allow-list and exp
 
 The manual server fields stay editable in every mode and are kept when you switch modes: Manual uses them as the global proxy, Auto tries them as an alternative path, and site rules or tasks set to *Manual proxy* use them too.
 
-Proxy settings apply to HTTP/HTTPS/FTP/eD2K downloads only — BitTorrent downloads always connect directly.
+Under **Protocol-specific proxies**, configure separate routes for HTTP/HTTPS, FTP, HLS, DASH (including paired video and audio tracks), BitTorrent, and eD2K. Enter a proxy URL with an explicit port, such as `socks5://host:1080`. To include credentials, percent-encode reserved characters in the username and password. Leave a field blank to keep its previous behavior, or enter `direct://` to skip the proxy configured in FluxDown. This does not bypass an OS-level VPN or TUN.
+
+The saved endpoint is shown without credentials. In the Web app, pressing Enter, leaving the field, or switching settings sections submits the edit.
+
+For HTTP/HTTPS, FTP, HLS, and DASH, a task's own proxy and matching site rules take precedence, in that order. A protocol route is used when neither applies, before the global mode; a fixed route does not use Auto failover. A change applies the next time a transfer starts or resumes. These routes do not change egress for application updates or subscription feeds.
+
+The BitTorrent route overrides the BitTorrent proxy section above it and includes peer connections. SOCKS5 with UDP support is recommended for UDP trackers and DHT; changing the route rebuilds the BT session and continues active tasks. The eD2K route requires SOCKS5 with UDP support: server and peer connections use SOCKS5 TCP, and Kad uses SOCKS5 UDP. A SOCKS5 proxy does not forward incoming connections, so it can affect reachability and eD2K's High ID.
+
+To keep BT traffic off a mihomo upstream proxy, enter the SOCKS5 listener configured with `proxy: DIRECT` and `udp: true` in the **BitTorrent** protocol field. Other download protocols can keep using the global proxy.
 
 ## API Service
 

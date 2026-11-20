@@ -3,8 +3,14 @@ description: GPUI 下载页纯模型（新建/菜单/排序/任务组/来源构�
 condition: '[\s\S]'
 scope: "tool:edit, tool:write"
 globs:
-  - '**/crates/downloads/src/model/{new_download,aria2c,save_dir_history,speed_limit_recent,dispatch,mod,view_prefs,row_order,group_tree,directory_tree,source_composition,devices,file_rescan,bt_trackers,file_hash}.rs'
-  - '**/crates/downloads/src/components/{task_table,task_table_groups,task_table_directories}.rs'
+  - '**/crates/downloads/src/model/{new_download,aria2c,save_dir_history,speed_limit_recent,dispatch,mod,view_prefs,row_order,group_tree,directory_tree,series_title,source_composition,devices,file_rescan,bt_trackers,file_hash}.rs'
+  - '**/crates/downloads/src/components/{task_table,task_table_groups,task_table_directories,selection_bar}.rs'
+  - '**/crates/downloads/src/model/manifest.rs'
+  - '**/mobile/Android/app/src/main/java/com/fluxdown/app/ui/TaskInfoExport.kt'
+  - '**/mobile/Android/app/src/main/java/com/fluxdown/app/feature/newtask/LinkParser.kt'
+  - '**/mobile/FluxDown/FluxDown/Features/Downloads/DownloadsListScreen.swift'
+  - '**/mobile/FluxDown/FluxDown/Features/NewTask/LinkParser.swift'
+  - '**/mobile/FluxDown/FluxKit/Sources/FluxDomain/Protocol/Groups.swift'
   - '**/crates/downloads/src/pages/{task_edit,task_verify,task_detail,task_detail_ed2k}.rs'
   - '**/crates/downloads/tests/fixtures/**'
   - '**/web/src/pages/downloads/**'
@@ -77,6 +83,10 @@ interruptMode: never
 
 → Web `web/src/pages/downloads/model/directoryTree.ts`，共用 `crates/downloads/tests/fixtures/directory_tree_cases.json`。先筛选再建树，非根目录无直属任务且只有一个子目录才压缩，已折叠节点不跨过；任务组按组根整体纳入，云端按设备隔离，根外 / 未知目录分别展示。GPUI `task_table_directories.rs` / Web `groupRows.ts` 组合目录与任务组缩进；保存目录字段变化须使 `model/store.rs::same_view_fields` / Web `rowEngine.ts` 的视图失效，默认目录配置与 runtime fallback 变化同样重算。移动端尚无该分组入口，不镜像。
 
+## `crates/downloads/src/model/series_title.rs`（剧集名称提取，桌面端分组与建议下载子目录共用）
+
+→ Web `web/src/pages/downloads/model/groupRows.ts::contentBucket` 保持同一规则；两端共用 `crates/downloads/tests/fixtures/series_title_cases.json`。分组按设备隔离，不展开已有任务组来重新归类；移动端无该分组入口。
+
 ## `crates/downloads/src/components/task_table.rs` 宽松密度列表视图（`relaxed_meta` 副标题；宽松不合并列、状态列同舒适，行高 = max(64, 舒适)）
 
 → `web/src/pages/downloads/table/text.ts::relaxedMeta` + `table/cells.tsx` / `rowMetrics.ts`：副标题字段与顺序逐条对齐（`text.test.ts`）
@@ -104,6 +114,10 @@ interruptMode: never
 ## `crates/downloads/src/pages/task_detail_ed2k.rs`（详情「来源 / 网络」页签的纯函数：源状态 → 文案、冷却 / 下次找源是否在未来、「同时连接来源数」选项与当前值归一、LowID 源地址展示）
 
 → `web/src/pages/downloads/detail/ed2kStatus.ts` 逐条对齐（两端单测覆盖同一组边界：segments 为 0 / 9 / 负数、`retryAt` 已过期、`queueRank` 缺省、LowID 源无 `addr`）；HighID / LowID 与 UPnP 文案映射在 Web 另由设置页共用（`web/src/lib/ed2kNetwork.ts`）。两端都不重排 `peers`（服务端已按活跃度排序），渲染封顶 200 行；UPnP / Kad 开关写同步键 `ed2k.enable_upnp` / `ed2k.enable_kad`，「同时连接来源数」写 `daemon.task.setSegments`（当前值取 `Ed2kStatusDto.segments`，不是任务行）
+
+## 任务信息导出 TXT / TSV（`crates/downloads/src/components/selection_bar.rs::{export_task_info_text, task_info_text, batch_link_info_text}` + `model/manifest.rs::selected_export_rows`）
+
+→ Web `web/src/pages/downloads/model/actions.ts::taskInfoText`、`dialogs/model.ts::batchExportRow`、`dialogs/manifest.ts::manifestExportRows`；Android `ui/TaskInfoExport.kt::taskInfoText`、`feature/newtask/LinkParser.kt::{batchExportName, batchExportSize}`；iOS `Features/Downloads/DownloadsListScreen.swift::TaskInfoDocument`、`Features/NewTask/LinkParser.swift::{batchExportName, batchExportSize}`、`FluxDomain/Protocol/Groups.swift::selectedExportRows`。四端输出逐字一致：表头 `Name\tURL\tSize (bytes)`；单元格先转义 `\` 再转义制表符 / `\r` / `\n`；行间 `\n`、末尾无换行；本机任务链接取 `origin_url`、空则回退 `url`，`torrent-file://` 哨兵输出空字段；大小 ≤0 留空，但新建批次里有效的零字节 eD2k 链接写 `0`；新建批次名称先取 `out=`、再取链接自带名（HTTP/FTP 末段、magnet `dn`、eD2k 文件名）；解析清单只导勾选项，名称为 `path/name`，大小取所选规格。四端测试同改同跑：GPUI `selection_bar.rs` 单测 / `model/manifest_tests.rs`，Web `torrentShare.test.ts` / `dialogs/manifest.test.ts`，Android `TaskInfoExportTest.kt`，iOS `DownloadsTests.swift` / `GroupsProtocolTests.swift`
 
 ## 扩展 → Android App 的外部唤起载荷（`fluxDown/utils/android-intent.ts`：包名 `ANDROID_PACKAGE`、extra 键 `ANDROID_EXTRA`、Intent URI 编码；`fluxdown://download?url=&filename=&cookies=&referrer=&headers=` 协议参数同理）
 

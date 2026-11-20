@@ -266,7 +266,10 @@ fun ProvideDownloadsView(content: @Composable () -> Unit) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { view.run() }
     }
     val rowText = rememberRowText()
-    CompositionLocalProvider(LocalDownloadsView provides view, LocalRowText provides rowText) {
+    CompositionLocalProvider(
+        LocalDownloadsView provides view,
+        LocalRowText provides rowText,
+    ) {
         content()
     }
 }

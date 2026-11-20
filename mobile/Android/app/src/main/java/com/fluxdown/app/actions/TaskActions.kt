@@ -20,6 +20,7 @@ import com.fluxdown.app.R
 import com.fluxdown.app.i18n.str
 import com.fluxdown.app.nav.AppNavigator
 import com.fluxdown.app.nav.SheetRoute
+import com.fluxdown.app.shell.LocalAppearance
 import com.fluxdown.core.host.HostErrorCode
 import com.fluxdown.core.host.HostException
 import com.fluxdown.core.host.HostSession
@@ -537,7 +538,7 @@ class TaskActions(
     private fun ColumnScope.TaskLimitsPrompt(task: Task) {
         var down by remember { mutableStateOf(BtTaskLimits.kibText(task.btDownloadLimitBps)) }
         var up by remember { mutableStateOf(BtTaskLimits.kibText(task.seedUploadLimitBps)) }
-        val unit = str(R.string.btGuardUnitKibps)
+        val unit = LocalAppearance.current.fileSizeUnits.rateLabel(1)
         val numeric = KeyboardOptions(keyboardType = KeyboardType.Number)
         FluxField(value = down, onValueChange = { down = limitDigits(it) }, label = str(R.string.btTaskLimitDownload), suffix = unit, mono = true, keyboardOptions = numeric)
         FluxField(value = up, onValueChange = { up = limitDigits(it) }, label = str(R.string.btTaskLimitUpload), suffix = unit, mono = true, keyboardOptions = numeric)

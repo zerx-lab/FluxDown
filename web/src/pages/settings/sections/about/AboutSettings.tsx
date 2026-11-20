@@ -6,6 +6,7 @@ import { useState } from 'react'
 import { useI18n, useT } from '../../../../i18n'
 import { copyText } from '../../../../lib/copy'
 import { diagnosticText } from '../../../../lib/diagnosticInfo'
+import { byteUnit, useFileSizeUnits } from '../../../../lib/fileSizeUnits'
 import { exportLogs, rpc, useRpcSelector } from '../../../../lib/rpc'
 import type { ReleaseNoteDto } from '../../../../lib/rpc'
 import { Button, toast } from '../../../../ui'
@@ -182,6 +183,7 @@ function ExportRow() {
 }
 
 export function AboutSettings() {
+  const units = useFileSizeUnits()
   const t = useT()
   const { locale } = useI18n()
   const hello = useRpcSelector((state) => state.hello)
@@ -240,7 +242,7 @@ export function AboutSettings() {
         </SettingsRow>
       </SettingsSection>
       <SettingsSection title={t('logExport')} subtitle={t('logExportDesc')}>
-        <DaemonNumberRow configKey="log_max_size_mb" titleKey="logMaxSize" descKey="logMaxSizeDesc" unit="MB" />
+        <DaemonNumberRow configKey="log_max_size_mb" titleKey="logMaxSize" descKey="logMaxSizeDesc" unit={byteUnit(2, units)} />
         <ExportRow />
       </SettingsSection>
       <SettingsSection title={t('extensionCardTitle')} subtitle={t('extensionCardDesc')}>

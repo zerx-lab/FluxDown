@@ -6,6 +6,7 @@ import type { LucideIcon } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useT } from '../../../../i18n'
+import { useByteFormatter } from '../../../../lib/fileSizeUnits'
 import { METHOD, RpcError, call, rpc, rpcStore, useConfigValue, useDaemon, useServiceEvents } from '../../../../lib/rpc'
 import type { ComponentKind, ComponentStatus, ComponentStatusDto, EventFrame } from '../../../../lib/rpc'
 import { Badge, Button, Card, Icon, Input, InputWithAction, ProgressBar, Select, Spinner, confirmDialog, toast } from '../../../../ui'
@@ -88,6 +89,7 @@ interface InstallProgress {
 }
 
 function ComponentCard({ kind, stale }: { kind: ComponentKind; stale: boolean }) {
+  const fmtBytes = useByteFormatter(formatBytes)
   const t = useT()
   const title = t(TITLE_KEYS[kind])
   const components = useDaemon(selectComponents, EMPTY_COMPONENTS)
@@ -395,8 +397,8 @@ function ComponentCard({ kind, stale }: { kind: ComponentKind; stale: boolean })
               <ProgressBar value={fraction} />
               <div className="tabular text-caption text-muted-foreground">
                 {fraction === null
-                  ? `${formatBytes(progress.downloaded)} · ${t('componentsInstallUnknownSize')}`
-                  : `${(fraction * 100).toFixed(1)}%  ${formatBytes(progress.downloaded)} / ${formatBytes(progress.total)}`}
+                  ? `${fmtBytes(progress.downloaded)} · ${t('componentsInstallUnknownSize')}`
+                  : `${(fraction * 100).toFixed(1)}%  ${fmtBytes(progress.downloaded)} / ${fmtBytes(progress.total)}`}
               </div>
             </div>
           ) : null}

@@ -10,6 +10,7 @@ mod kit;
 mod motion;
 mod qr;
 mod sidebar;
+pub mod size_units;
 pub mod toast;
 mod tooltip;
 
@@ -25,7 +26,7 @@ pub use kit::{
 pub use motion::{SlidingHighlight, StateLayer, color_transition};
 pub use qr::{MAX_QR_TEXT_LENGTH, QrPalette, qr_image};
 pub use sidebar::{SidebarChange, SidebarPanel, SidebarState, sidebar_toggle_button};
-pub use tooltip::tooltip_view;
+pub use tooltip::{tooltip_view, truncated_text};
 
 use fluxdown_ui_theme::active_theme;
 use gpui::prelude::FluentBuilder as _;

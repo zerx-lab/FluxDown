@@ -1,3 +1,4 @@
+import { useByteFormatter } from '../../../lib/fileSizeUnits'
 import type { CSSProperties } from 'react'
 import { useT } from '../../../i18n'
 import { formatBytes } from '../model/task'
@@ -27,6 +28,7 @@ const C = 2 * Math.PI * R
 
 /** 常规页「来源构成」区块（环形图 + 图例 + 摘要）；尚无已下载字节时不渲染。 */
 export function SourcesSection({ view }: { view: DownloadTaskView }) {
+  const fmtBytes = useByteFormatter(formatBytes)
   const t = useT()
   const bytes = view.runtime?.sourceBytes ?? view.dto?.sourceBytes ?? null
   const comp = composeSources(view.protocol, view.downloadedBytes, bytes)
@@ -72,7 +74,7 @@ export function SourcesSection({ view }: { view: DownloadTaskView }) {
           </svg>
           <div className="absolute inset-0 flex flex-col items-center justify-center">
             <div className="text-xs text-text-tertiary">{t('infoDownloaded')}</div>
-            <div className="tabular text-sm font-medium text-foreground">{formatBytes(comp.downloaded)}</div>
+            <div className="tabular text-sm font-medium text-foreground">{fmtBytes(comp.downloaded)}</div>
           </div>
         </div>
         <div className="flex min-w-[11.25rem] flex-1 flex-col">
@@ -81,7 +83,7 @@ export function SourcesSection({ view }: { view: DownloadTaskView }) {
               <span className={`size-2 shrink-0 rounded-full bg-current ${COLOR[s.kind].className ?? ''}`} style={COLOR[s.kind].style} />
               <span className="min-w-0 flex-1 truncate text-foreground">{t(LABEL_KEY[s.kind])}</span>
               <span className="tabular shrink-0 text-foreground">{formatPercent(s.fraction)}</span>
-              <span className="tabular w-16 shrink-0 text-right text-text-tertiary">{formatBytes(s.bytes)}</span>
+              <span className="tabular w-16 shrink-0 text-right text-text-tertiary">{fmtBytes(s.bytes)}</span>
             </div>
           ))}
         </div>

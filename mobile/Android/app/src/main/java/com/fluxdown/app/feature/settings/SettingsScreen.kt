@@ -47,6 +47,7 @@ import com.fluxdown.app.nav.LocalNavigator
 import com.fluxdown.app.nav.Route
 import com.fluxdown.app.nav.SettingsPage
 import com.fluxdown.app.nav.SheetRoute
+import com.fluxdown.app.shell.LocalAppearance
 import com.fluxdown.app.shell.LocalAppContainer
 import com.fluxdown.app.shell.hostState
 import com.fluxdown.core.format.Format
@@ -91,7 +92,7 @@ fun SettingsScreen() {
     val hostState = hostState()
     val readOnly by remember { derivedStateOf { hostState.value.isReadOnly } }
     val host by container.host.collectAsState()
-    val appearance by container.appearance.state.collectAsState(initial = AppearanceState())
+    val appearance = LocalAppearance.current
     val cfg by remember { derivedStateOf { hostState.value.config } }
     val prefs by remember { derivedStateOf { hostState.value.sections[HostSection.agentPreferences] } }
     val info by remember { derivedStateOf { hostState.value.info } }

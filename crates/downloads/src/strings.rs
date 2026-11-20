@@ -69,6 +69,9 @@ pub(crate) struct DownloadStrings {
     pub(crate) pause_all: SharedString,
     pub(crate) resume: SharedString,
     pub(crate) resume_all: SharedString,
+    /// 右键菜单：可继续 / 可停止的全是做种任务时，「继续」「暂停」改用做种措辞。
+    pub(crate) resume_seeding: SharedString,
+    pub(crate) stop_seeding: SharedString,
     /// 状态栏批量按钮禁用时的 tooltip：说明为什么当前不可点。
     pub(crate) pause_all_unavailable: SharedString,
     pub(crate) resume_all_unavailable: SharedString,
@@ -89,6 +92,8 @@ pub(crate) struct DownloadStrings {
     pub(crate) status_error: SharedString,
     pub(crate) task_error_post_only_endpoint: SharedString,
     pub(crate) task_error_post_only_resume: SharedString,
+    task_error_unexpected_html: SharedString,
+    task_error_html_changed: SharedString,
     pub(crate) status_incomplete: SharedString,
     pub(crate) status_paused: SharedString,
     pub(crate) status_seeding: SharedString,
@@ -156,6 +161,7 @@ pub(crate) struct DownloadStrings {
     pub(crate) bt_force_recheck: SharedString,
     pub(crate) bt_move_storage: SharedString,
     pub(crate) bt_task_limits: SharedString,
+    pub(crate) bt_add_web_seed: SharedString,
     pub(crate) bt_super_seeding: SharedString,
     pub(crate) redownload_task: SharedString,
     pub(crate) copy_url: SharedString,
@@ -291,6 +297,8 @@ impl DownloadStrings {
             pause_all: shared(translator.text("pauseAll")),
             resume: shared(translator.text(keys::RESUME)),
             resume_all: shared(translator.text("resumeAll")),
+            resume_seeding: shared(translator.text("seedingResume")),
+            stop_seeding: shared(translator.text("btSeedStopSeeding")),
             pause_all_unavailable: shared(translator.text("pauseAllUnavailable")),
             resume_all_unavailable: shared(translator.text("resumeAllUnavailable")),
             resume_all_queue_stopped: shared(translator.text("resumeAllQueueStopped")),
@@ -308,6 +316,8 @@ impl DownloadStrings {
             status_error: shared(translator.text(keys::STATUS_ERROR)),
             task_error_post_only_endpoint: shared(translator.text("taskErrorPostOnlyEndpoint")),
             task_error_post_only_resume: shared(translator.text("taskErrorPostOnlyResume")),
+            task_error_unexpected_html: shared(translator.text("taskErrorUnexpectedHtml")),
+            task_error_html_changed: shared(translator.text("taskErrorHtmlChanged")),
             status_incomplete: shared(translator.text("tabDownloading")),
             status_paused: shared(translator.text(keys::STATUS_PAUSED)),
             status_seeding: shared(translator.text("statusSeeding")),
@@ -365,6 +375,7 @@ impl DownloadStrings {
             bt_force_recheck: shared(translator.text("btForceRecheck")),
             bt_move_storage: shared(translator.text("btMoveStorage")),
             bt_task_limits: shared(translator.text("btTaskLimits")),
+            bt_add_web_seed: shared(translator.text("btAddWebSeed")),
             bt_super_seeding: shared(translator.text("btSuperSeeding")),
             redownload_task: shared(translator.text("redownloadTask")),
             copy_url: shared(translator.text("copyUrl")),
@@ -1193,12 +1204,15 @@ fn group_digits(value: usize) -> String {
 }
 
 impl DownloadStrings {
-    /// 任务错误消息的显示文本：引擎两条稳定错误整串匹配（trim 后）时返回本地化文案，
-    /// 其余原样返回。仅用于显示 / 复制，逻辑判断仍用原始 `error_message`。
+    /// 本地化展示文本；详情复制可保留原始 HTML 诊断，逻辑判断仍用原始 `error_message`。
     pub(crate) fn task_error_text<'a>(&'a self, raw: &'a str) -> &'a str {
+        if is_unexpected_html(raw) {
+            return &self.task_error_unexpected_html;
+        }
         match raw.trim() {
             POST_ONLY_ENDPOINT_MESSAGE => &self.task_error_post_only_endpoint,
             POST_ONLY_RESUME_MESSAGE => &self.task_error_post_only_resume,
+            HTML_RESPONSE_CHANGED_MESSAGE => &self.task_error_html_changed,
             _ => raw,
         }
     }
@@ -1210,6 +1224,26 @@ const POST_ONLY_ENDPOINT_MESSAGE: &str =
 /// 镜像引擎 `native/engine/src/downloader.rs` 的 `POST_ONLY_RESUME_MESSAGE`；改动须同步。
 const POST_ONLY_RESUME_MESSAGE: &str = "This task was started by a browser POST request and cannot be resumed; start it again from the browser";
 
+// Stable messages persisted by the engine; the first prefix also matches existing failed tasks.
+const UNEXPECTED_HTML_PREFIX: &str = "server returned HTML page (Content-Type: ";
+const HTML_RESPONSE_CHANGED_MESSAGE: &str =
+    "the server did not return a complete HTML page; nothing was saved";
+
+pub(crate) fn is_unexpected_html(error: &str) -> bool {
+    error.starts_with(UNEXPECTED_HTML_PREFIX)
+}
+
+// Mirrors downloader::can_save_html_failure; login-page diagnostics are display only.
+pub(crate) fn can_save_html_failure(error: &str) -> bool {
+    error
+        .strip_prefix(UNEXPECTED_HTML_PREFIX)
+        .and_then(|details| details.split_once(") "))
+        .is_some_and(|(_, reason)| {
+            reason.starts_with("instead of the expected file")
+                || reason.starts_with("for a non-HTML download")
+        })
+}
+
 fn shared(value: &str) -> SharedString {
     SharedString::from(value.to_owned())
 }
@@ -1219,6 +1253,27 @@ mod tests {
     use chrono::{Local, TimeZone};
 
     use super::DownloadStrings;
+
+    #[test]
+    fn only_successful_html_failure_is_eligible_for_saving() {
+        for (message, expected) in [
+            (
+                "server returned HTML page (Content-Type: text/html) instead of the expected file — hint",
+                true,
+            ),
+            (
+                "server returned HTML page (Content-Type: non-HTML or missing) for a non-HTML download (HTML response filename) — hint",
+                true,
+            ),
+            (
+                "server returned HTML page (Content-Type: text/html) — HTTP 403 Forbidden",
+                false,
+            ),
+            ("request failed: HTTP 403 Forbidden", false),
+        ] {
+            assert_eq!(super::can_save_html_failure(message), expected, "{message}");
+        }
+    }
 
     #[test]
     fn datetime_keeps_seconds_across_midnight_and_rejects_out_of_range() {

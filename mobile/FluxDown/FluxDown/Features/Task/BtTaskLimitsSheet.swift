@@ -17,6 +17,7 @@ struct BtTaskLimitsSheet: View {
 
     var body: some View {
         let task = container.store.state.task(taskId)
+        let unit = SettingsRateUnit.kb.unitLabel(iec: container.appearance.fileSizeUnits == .iec)
         NavigationStack {
             Form {
                 if let task, draft != nil {
@@ -35,7 +36,7 @@ struct BtTaskLimitsSheet: View {
                             isValid: draft?.isDownloadValid ?? true,
                             keyboard: .numberPad,
                             prompt: "0",
-                            unit: L("statusSpeedLimitKbs")
+                            unit: unit
                         )
                     } header: {
                         Text(L("btTaskLimitDownload"))
@@ -47,7 +48,7 @@ struct BtTaskLimitsSheet: View {
                             isValid: draft?.isUploadValid ?? true,
                             keyboard: .numberPad,
                             prompt: "0",
-                            unit: L("statusSpeedLimitKbs")
+                            unit: unit
                         )
                     } header: {
                         Text(L("btTaskLimitUpload"))

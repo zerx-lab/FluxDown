@@ -84,18 +84,7 @@ fn source_key(source: &str) -> &'static str {
 
 /// 1024 进制的人类可读字节数（`0 B` / `1.5 KB` / `12.3 MB` / `1.0 GB`）。
 pub fn format_bytes(bytes: i64) -> String {
-    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
-    let mut value = bytes.max(0) as f64;
-    let mut unit = 0;
-    while value >= 1024. && unit < UNITS.len() - 1 {
-        value /= 1024.;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{} {}", bytes.max(0), UNITS[unit])
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
-    }
+    fluxdown_ui_components::size_units::format_bytes(bytes.max(0) as u64, 3)
 }
 
 /// 单个组件卡片的本地 UI 状态（快照之外：版本列表、进度、在途操作、路径输入框）。

@@ -21,10 +21,13 @@ import com.fluxdown.app.nav.Route
 import com.fluxdown.app.shell.LocalAppContainer
 import com.fluxdown.app.shell.hostState
 import com.fluxdown.app.ui.label
+import com.fluxdown.app.ui.TaskInfoRow
+import com.fluxdown.app.ui.rememberTaskInfoExport
 import com.fluxdown.core.model.Task
 import com.fluxdown.core.model.TaskStatus
 import com.fluxdown.core.protocol.HostCapability
 import com.fluxdown.core.protocol.RemoteCommandAction
+import com.fluxdown.core.protocol.RemoteTaskDto
 import com.fluxdown.core.protocol.RemoteTaskRules
 import com.fluxdown.core.protocol.has
 import com.fluxdown.fluxui.chrome.FluxRailHeader
@@ -135,10 +138,33 @@ private fun RailCategoryItems(view: DownloadsView, nested: Boolean) {
 }
 
 @Immutable
-private data class SelectionCaps(val canResume: Boolean, val canPause: Boolean, val hasLocal: Boolean) {
+private data class SelectionCaps(
+    val canResume: Boolean,
+    val canPause: Boolean,
+    val hasLocal: Boolean,
+    val canExport: Boolean,
+) {
     companion object {
-        val None = SelectionCaps(false, false, false)
+        val None = SelectionCaps(false, false, false, false)
     }
+}
+
+internal fun selectedTaskInfoRows(
+    local: List<Task>,
+    remote: List<RemoteTaskDto>,
+    visibleIds: List<String>,
+): List<TaskInfoRow> {
+    val rows = LinkedHashMap<String, TaskInfoRow>()
+    for (task in local) {
+        rows.putIfAbsent(task.taskId, TaskInfoRow(task.fileName, task.shareUrl, task.totalBytes.takeIf { it > 0 }))
+    }
+    for (task in remote) {
+        rows.putIfAbsent(
+            REMOTE_ID_PREFIX + task.id,
+            TaskInfoRow(task.fileName, task.url, task.totalBytes?.takeIf { it > 0 }),
+        )
+    }
+    return visibleIds.mapNotNull(rows::remove) + rows.values
 }
 
 /**
@@ -165,6 +191,7 @@ private fun SelectionDockContent(modifier: Modifier, reservedEnd: Dp) {
     val actions = LocalTaskActions.current
     val haptics = FluxTheme.haptics
     val host = hostState()
+    val exportTaskInfo = rememberTaskInfoExport()
     val context = LocalContext.current
     val overlays = LocalFluxOverlays.current
     val batch = remember(context, view, nav, overlays, haptics) { SelectionBatch(context, view, nav, overlays, haptics) }
@@ -172,7 +199,7 @@ private fun SelectionDockContent(modifier: Modifier, reservedEnd: Dp) {
     val selecting = nav.selecting
     val count = nav.selection.size
     val total by remember(view) { derivedStateOf { view.list.visibleIds.size } }
-    val caps by remember(host, nav, view) {
+    val caps by remember(host, nav, view, batch) {
         derivedStateOf {
             if (!nav.selecting || nav.selection.isEmpty()) {
                 SelectionCaps.None
@@ -187,12 +214,13 @@ private fun SelectionDockContent(modifier: Modifier, reservedEnd: Dp) {
                     if (t.canResume) resume = true
                     if (t.canPause) pause = true
                 }
-                for (r in batch.selected()) {
+                val remote = batch.selected()
+                for (r in remote) {
                     val online = view.remoteTargets[r.toDevice]?.online
                     if (RemoteTaskRules.canIssue(RemoteCommandAction.Resume, r, online)) resume = true
                     if (RemoteTaskRules.canIssue(RemoteCommandAction.Pause, r, online)) pause = true
                 }
-                SelectionCaps(resume, pause, local)
+                SelectionCaps(resume, pause, local, canExport = local || remote.isNotEmpty())
             }
         }
     }
@@ -265,14 +293,20 @@ private fun SelectionDockContent(modifier: Modifier, reservedEnd: Dp) {
     val moveLabel = stringResource(R.string.mobileDockMove)
     val deleteLabel = stringResource(R.string.delete)
     val selectedFmt = stringResource(R.string.selectedCount)
+    val exportLabel = stringResource(R.string.exportTaskInfoTxt)
 
-    val dockActions = remember(caps, actions, batch, resumeLabel, pauseLabel, moveLabel, deleteLabel) {
+    val dockActions = remember(caps, actions, batch, resumeLabel, pauseLabel, moveLabel, deleteLabel, exportLabel, exportTaskInfo) {
         buildList {
             if (caps.canResume) add(SelectionDockAction("resume", resumeLabel, FluxIcons.Play, ::resumeSelected))
             if (caps.canPause) add(SelectionDockAction("pause", pauseLabel, FluxIcons.Pause, ::pauseSelected))
             // 队列是本机概念：只含远程项时不提供「移动到队列」。
             if (caps.hasLocal) {
                 add(SelectionDockAction("move", moveLabel, FluxIcons.Rows3, { actions.moveToQueue(selectedTasks().map { it.taskId }) }))
+            }
+            if (caps.canExport) {
+                add(SelectionDockAction("export-info", exportLabel, FluxIcons.FileText, {
+                    exportTaskInfo(selectedTaskInfoRows(selectedTasks(), batch.selected(), view.list.visibleIds))
+                }))
             }
             add(SelectionDockAction("delete", deleteLabel, FluxIcons.Trash2, ::deleteSelected, danger = true))
         }

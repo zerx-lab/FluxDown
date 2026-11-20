@@ -4,7 +4,7 @@ import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
-import android.text.format.Formatter
+import com.fluxdown.core.format.Format
 import android.util.Log
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -33,6 +33,7 @@ import com.fluxdown.app.feature.settings.SettingsSearchContext
 import com.fluxdown.app.feature.settings.settingNumber
 import com.fluxdown.app.i18n.str
 import com.fluxdown.app.nav.SettingsPage
+import com.fluxdown.app.shell.LocalAppearance
 import com.fluxdown.app.shell.LocalAppContainer
 import com.fluxdown.app.shell.hostState
 import com.fluxdown.core.host.HostErrorCode
@@ -136,21 +137,20 @@ internal class LogExportModel(private val context: Context, private val containe
     var failure by mutableStateOf<String?>(null)
         private set
 
-    /** 本机日志总大小；远端主机 / 目录不在本机 → null（不显示该行）。 */
-    var sizeText by mutableStateOf<String?>(null)
+    /** 本机日志总大小（字节）；远端主机 / 目录不在本机 → null。 */
+    var sizeBytes by mutableStateOf<Long?>(null)
         private set
 
     /** 刷新当前日志大小：只在本机主机上统计（日志目录路径来自 `agent.diagnostics.logPaths`）。 */
     suspend fun refreshSize() {
         val live = container.store.state.value.connection == Connection.Live
         if (container.host.value !is HostRef.Local || !live) {
-            sizeText = null
+            sizeBytes = null
             return
         }
-        sizeText = try {
+        sizeBytes = try {
             val paths = LogPathsDto.fromJson(container.session.callJson(HostMethod.agentDiagnosticsLogPaths))
-            val total = withContext(Dispatchers.IO) { totalSize(listOf(paths.agentLogDir, paths.daemonLogDir)) }
-            total?.let { Formatter.formatShortFileSize(context, it) }
+            withContext(Dispatchers.IO) { totalSize(listOf(paths.agentLogDir, paths.daemonLogDir)) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: HostException) {
@@ -312,7 +312,7 @@ internal fun LogsSection(ctx: SettingsCtx, model: LogExportModel, scope: Corouti
     val container = LocalAppContainer.current
     val overlays = LocalFluxOverlays.current
     val actions = LocalTaskActions.current
-    val c = FluxTheme.colors
+    val units = LocalAppearance.current.fileSizeUnits
     val hostRef by container.host.collectAsStateWithLifecycle()
     val state = hostState()
     val live by remember { derivedStateOf { state.value.connection == Connection.Live } }
@@ -321,6 +321,7 @@ internal fun LogsSection(ctx: SettingsCtx, model: LogExportModel, scope: Corouti
     LaunchedEffect(hostRef, live) { model.refreshSize() }
 
     val exportDesc = str(R.string.logExportDesc)
+    val sizeUnitHint = str(R.string.mobileLogSizeUnitLabel, "unit" to units.byteLabel(2))
     val footer = if (ctx.form.has("log_max_size_mb") && ctx.synced("log_max_size_mb")) {
         exportDesc + "\n" + str(R.string.settingsSyncLegend)
     } else {
@@ -329,12 +330,17 @@ internal fun LogsSection(ctx: SettingsCtx, model: LogExportModel, scope: Corouti
     GlassSection(title = str(R.string.mobileLogsTitle), footer = footer) {
         settingNumber(
             ctx, "log_max_size_mb", R.string.logMaxSize, R.string.logMaxSizeDesc,
-            range = 1L..1024L, default = 10L, unit = R.string.mobileLogSizeUnit, id = "logs.maxSize",
+            range = 1L..1024L, default = 10L,
+            unitLabel = sizeUnitHint,
+            id = "logs.maxSize",
         )
-        model.sizeText?.let { size ->
+        model.sizeBytes?.let { bytes ->
             row {
                 SettingRowBox(ctx, "logs.currentSize", null) {
-                    FluxKeyValue(key = str(R.string.mobileLogCurrentSize), value = size)
+                    FluxKeyValue(
+                        key = str(R.string.mobileLogCurrentSize),
+                        value = Format.bytes(bytes, units).toString(),
+                    )
                 }
             }
         }
@@ -359,7 +365,7 @@ internal fun LogsSection(ctx: SettingsCtx, model: LogExportModel, scope: Corouti
                         FluxText(
                             text,
                             style = FluxTheme.type.sm,
-                            color = c.coralText,
+                            color = FluxTheme.colors.coralText,
                             modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 10.dp),
                         )
                     }

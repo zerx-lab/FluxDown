@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { PreviewItemDto } from '../../../lib/rpc'
-import { manifestRowsAt } from './manifest'
+import { manifestExportRows, manifestRowsAt, manifestSelectionStat } from './manifest'
 
 const item = (id: string, name: string, path = ''): PreviewItemDto => ({ id, name, path, size: 1, variants: [] })
 
@@ -47,4 +47,24 @@ describe('清单按名称自然序（与 GPUI manifest_tests 同组用例）', (
       'dup:x',
     ])
   })
+})
+
+test('exports only checked files with relative paths and default sizes', () => {
+  const items = [
+    { ...item('a', 'same.bin', 'first'), size: 50, variants: [{ id: 'large', label: 'Large', size: 150 }] },
+    { ...item('b', 'same.bin', 'second/nested'), size: 0 },
+    item('unchecked', 'skip.bin'),
+    item('root', 'root.bin'),
+  ]
+
+  expect(manifestExportRows(items, new Set(['root', 'b', 'a']))).toEqual([
+    { name: 'first/same.bin', url: '', originUrl: '', sizeBytes: 50 },
+    { name: 'second/nested/same.bin', url: '', originUrl: '', sizeBytes: null },
+    { name: 'root.bin', url: '', originUrl: '', sizeBytes: 1 },
+  ])
+  expect(manifestExportRows(items, new Set())).toEqual([])
+  // A replaced preview can leave checked IDs that no longer have a file to export.
+  const missing = new Set(['removed'])
+  expect(manifestSelectionStat(items, missing).count).toBe(0)
+  expect(manifestExportRows(items, missing)).toEqual([])
 })

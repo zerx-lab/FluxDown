@@ -744,7 +744,7 @@ pub struct ShellStatusDto {
     pub global_shortcuts: crate::shortcuts::GlobalShortcutsStatusDto,
 }
 
-/// 定时电源操作：到点关机还是睡眠（挂起到内存）。
+/// 定时完成动作：关机、睡眠或完全退出桌面应用。
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
@@ -752,6 +752,7 @@ pub enum PowerAction {
     #[default]
     Shutdown,
     Sleep,
+    Quit,
 }
 
 /// Low-speed power actions always allow this many seconds to cancel before execution.
@@ -767,14 +768,14 @@ pub struct PowerLowSpeedCondition {
     pub duration_secs: u64,
 }
 
-/// 定时关机 / 睡眠的调度状态（agent 拥有状态机与执行）。
+/// 定时电源动作的调度状态（agent 拥有状态机与执行）。
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct PowerStatusDto {
     /// 已排定的延迟（秒）；`None` = 未启用。
     pub armed_delay_secs: Option<u64>,
-    /// 全部任务结束（或排定时本就没有任务）、真正开始倒计时后的剩余秒数；等待任务完成阶段为 `None`。
+    /// 倒计时剩余秒数；等待触发条件（含 daemon 断连）或未启用时为 `None`。
     pub countdown_remaining_secs: Option<u64>,
     /// 已排定的操作；未启用时为默认值（旧 agent 缺省 = 关机）。
     #[serde(default)]
@@ -787,8 +788,8 @@ pub struct PowerStatusDto {
     pub low_speed_elapsed_secs: Option<u64>,
 }
 
-/// `agent.power.arm` 参数：没有任务时立即开始倒计时，否则全部任务完成后再等待 `delay_secs`
-/// 秒执行 `action`。`delay_secs = 0`（完成后立即）只在有任务时接受。
+/// `agent.power.arm` 参数：完成模式在 daemon 在线且没有待完成任务时开始 `delay_secs` 倒计时。
+/// `delay_secs = 0`（完成后立即）只在 daemon 在线且有待完成任务时接受。
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
@@ -797,7 +798,7 @@ pub struct PowerArmParams {
     /// 缺省 = 关机（旧客户端）。
     #[serde(default)]
     pub action: PowerAction,
-    /// When present, `delay_secs` is replaced by the fixed cancellable warning interval.
+    /// When present, `delay_secs` is replaced by the fixed cancellable warning interval; `quit` is not supported.
     #[serde(default)]
     pub low_speed: Option<PowerLowSpeedCondition>,
 }
@@ -1109,8 +1110,8 @@ pub struct CaptureCreateGroupParams {
 
 /// `agent.capture.submitTorrentFile` 参数。
 ///
-/// `silent=true`（系统打开 / 关联启动）全选文件直接建任务；`silent=false`（用户主动选择）
-/// 由 daemon 发 BT 文件选择请求。`saveDir` / `queueId` / `startPaused` 缺省维持旧行为
+/// `silent=true`（系统打开 / 关联启动）且「免打扰下载」与「跳过二次选择」偏好均开启时
+/// 全选文件直接建任务；否则（含 `silent=false` 用户主动选择）由 daemon 发 BT 文件选择请求。`saveDir` / `queueId` / `startPaused` 缺省维持旧行为
 /// （daemon 默认目录 / 默认队列 / 立即开始），新建下载表单入口携带表单值。
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

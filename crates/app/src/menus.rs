@@ -108,6 +108,7 @@ pub fn build_menus(translator: &Translator) -> Vec<Menu> {
             t(translator, "btSuperSeeding"),
             dl::ToggleSuperSeedingSelected,
         ),
+        MenuItem::action(t(translator, "btAddWebSeed"), dl::AddWebSeedSelected),
         MenuItem::action(t(translator, "redownloadTask"), dl::RedownloadSelected),
         MenuItem::action(t(translator, "boostDownload"), dl::ToggleBoostSelected),
         MenuItem::action(t(translator, "menuOpenInWindow"), dl::OpenSelectedInWindow),
@@ -266,6 +267,7 @@ fn install_download_fallbacks(cx: &mut App) {
     forward_to_downloads::<dl::MoveStorageSelected>(cx);
     forward_to_downloads::<dl::TaskLimitsSelected>(cx);
     forward_to_downloads::<dl::ToggleSuperSeedingSelected>(cx);
+    forward_to_downloads::<dl::AddWebSeedSelected>(cx);
     forward_to_downloads::<dl::RedownloadSelected>(cx);
     forward_to_downloads::<dl::ToggleBoostSelected>(cx);
     forward_to_downloads::<dl::OpenSelectedInWindow>(cx);

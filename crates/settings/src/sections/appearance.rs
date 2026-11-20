@@ -79,6 +79,18 @@ pub(crate) fn page(ctx: &SectionContext, _cx: &mut App) -> SettingsPage {
             .row(super::icon_pack::item(ctx)),
         SettingsSection::new()
             .title(ctx.t("settingsGroupInterface"))
+            .row(ctx.item(
+                "fileSizeUnits",
+                Some("fileSizeUnitsDesc"),
+                ctx.pref_dropdown(
+                    fluxdown_ui_components::size_units::PREF_KEY,
+                    "legacy",
+                    vec![
+                        ("legacy".into(), ctx.t("fileSizeUnitsLegacy")),
+                        ("iec".into(), ctx.t("fileSizeUnitsIec")),
+                    ],
+                ),
+            ))
             .row(ctx.item("uiScale", Some("uiScaleDesc"), ui_scale_field(ctx)))
             .row(ctx.item(
                 "fontFamily",

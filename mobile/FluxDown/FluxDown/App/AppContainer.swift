@@ -56,6 +56,13 @@ final class AppContainer {
         }
     }
 
+    /// Publish the formatting preference before invalidating views that read it.
+    func setFileSizeUnits(_ units: FileSizeUnits) {
+        guard units != appearance.fileSizeUnits else { return }
+        Format.setFileSizeUnits(units)
+        appearance.fileSizeUnits = units
+    }
+
     /// 是否本机主机（打开文件 / 在「文件」中显示 只对本机任务有意义）。
     var isLocalHost: Bool { host.isLocal }
 
