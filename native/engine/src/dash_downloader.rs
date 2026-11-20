@@ -1039,14 +1039,16 @@ async fn download_track_best_effort(
             // 与 HTTP 路径相同的三类"多段不可行"错误 → 清理多段残留（段行 +
             // 预分配临时文件）后回退单流；其余错误（取消/IO/磁盘满等）原样上抛
             // ——取消时段行与临时文件由 coordinated 路径【保留】以支持真续传。
-            Err(DownloadError::RangeNotSupported(status))
-            | Err(DownloadError::VersionChanged(status))
-            | Err(DownloadError::RangeMisaligned(status)) => {
+            Err(
+                error @ (DownloadError::RangeNotSupported(_)
+                    | DownloadError::VersionChanged(_)
+                    | DownloadError::RangeMisaligned(_)),
+            ) => {
                 log_info!(
                     "[dash-download] task {} track multi-segment aborted ({}) — \
                      falling back to single-stream",
                     p.task_id,
-                    status
+                    error
                 );
                 p.db.delete_segments(&p.task_id).await?;
                 let temp = PathBuf::from(format!("{}{}", dest_path.display(), TEMP_EXT));

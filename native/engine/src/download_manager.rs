@@ -469,6 +469,11 @@ fn without_urls(msg: &str) -> String {
 /// 的文案带类型化分类标签（平台 / 语言无关），有标签即以标签为准；无标签
 /// 的文案（其余协议、旧库存量）回退英文关键词。
 pub(crate) fn is_retriable_error(msg: &str) -> bool {
+    // The speculative GET cannot resume. Ignore transient wording in its cause
+    // rather than spending the task's retry budget on repeated full downloads.
+    if msg.starts_with(crate::downloader::RANGE_RESTART_FAILED_PREFIX) {
+        return false;
+    }
     if let Some(failure) = crate::net_failure::tag_of(msg) {
         return failure.retriable_same_path();
     }
@@ -18642,6 +18647,16 @@ mod tests {
         );
         let err = http_resp.error_for_status().unwrap_err();
         downloader::DownloadError::Request(err).to_string()
+    }
+
+    #[test]
+    fn full_get_fallback_interruption_requires_manual_resume() {
+        use crate::downloader::DownloadError;
+
+        let cause = DownloadError::Other("connection reset during response".into());
+        assert!(is_retriable_error(&cause.to_string()));
+        let failure = DownloadError::RangeRestartFailed(Box::new(cause));
+        assert!(!is_retriable_error(&failure.to_string()));
     }
 
     /// #636：5xx（含 503 Service Unavailable）在 reqwest 错误消息里必须被

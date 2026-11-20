@@ -3583,22 +3583,35 @@ async fn range_advertised_but_all_segments_get_200_falls_back_single_stream() {
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "binds a local port; run with --ignored"]
 async fn ignored_range_at_99_percent_finishes_with_plain_get() {
-    assert_ignored_range_restart(false).await;
+    assert_ignored_range_restart(RangeRestartCase::Success).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "binds a local port; run with --ignored"]
 async fn ignored_range_at_99_percent_keeps_checkpoint_if_plain_get_is_truncated() {
-    assert_ignored_range_restart(true).await;
+    assert_ignored_range_restart(RangeRestartCase::Truncated).await;
 }
 
-async fn assert_ignored_range_restart(truncated: bool) {
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "binds a local port; run with --ignored"]
+async fn ignored_range_at_99_percent_keeps_checkpoint_if_checksum_fails() {
+    assert_ignored_range_restart(RangeRestartCase::ChecksumMismatch).await;
+}
+
+#[derive(Clone, Copy)]
+enum RangeRestartCase {
+    Success,
+    Truncated,
+    ChecksumMismatch,
+}
+
+async fn assert_ignored_range_restart(case: RangeRestartCase) {
     use fluxdown_engine::downloader::TEMP_EXT;
 
-    let tag = if truncated {
-        "range-restart-truncated"
-    } else {
-        "range-restart"
+    let tag = match case {
+        RangeRestartCase::Success => "range-restart",
+        RangeRestartCase::Truncated => "range-restart-truncated",
+        RangeRestartCase::ChecksumMismatch => "range-restart-bad-checksum",
     };
     let work_dir = unique_dir(tag);
     let size = 16 * 1024 * 1024;
@@ -3606,7 +3619,8 @@ async fn assert_ignored_range_restart(truncated: bool) {
     let body = Arc::new(gen_body(size, 458));
     let mut server_state = ServerState::new(body.clone(), "range-restart");
     server_state.force_full_on_segment_range = true;
-    server_state.close_full_after = truncated.then_some(1024 * 1024);
+    server_state.close_full_after =
+        matches!(case, RangeRestartCase::Truncated).then_some(1024 * 1024);
     let server_state = Arc::new(server_state);
     let server = start_server(server_state.clone()).await;
     let url = server.url("/file");
@@ -3629,6 +3643,11 @@ async fn assert_ignored_range_restart(truncated: bool) {
     let mut original = body[..prefix].to_vec();
     original.resize(size, 0);
     tokio::fs::write(&checkpoint, &original).await.unwrap();
+    let checksum = if matches!(case, RangeRestartCase::ChecksumMismatch) {
+        format!("sha256={}", sha256_bytes(&original))
+    } else {
+        String::new()
+    };
 
     let (status, dest) = run_full(
         &work_dir,
@@ -3639,16 +3658,24 @@ async fn assert_ignored_range_restart(truncated: bool) {
         1,
         0,
         true,
-        "",
+        &checksum,
         &CancellationToken::new(),
     )
     .await;
 
     assert_eq!(server_state.plain_get_count.load(Ordering::SeqCst), 1);
     let saved_segments = db.load_segments(tag).await.unwrap();
-    if truncated {
+    if !matches!(case, RangeRestartCase::Success) {
         assert_eq!(status, 4);
         assert!(!dest.exists());
+        if matches!(case, RangeRestartCase::ChecksumMismatch) {
+            let row = db.load_task_by_id(tag).await.unwrap().unwrap();
+            assert!(
+                row.error_message.contains("checksum mismatch"),
+                "{}",
+                row.error_message
+            );
+        }
         assert_eq!(sha256_file(&checkpoint).await, sha256_bytes(&original));
         assert_eq!(
             saved_segments

@@ -51,8 +51,8 @@ use request_path::RequestPath;
 use crate::cdn::NodePool;
 use crate::db::Db;
 use crate::downloader::{
-    DownloadError, ProgressUpdate, SegmentProgressInfo, is_disk_full, is_range_not_satisfiable,
-    is_server_rejection,
+    DownloadError, ProgressUpdate, RangeRejection, SegmentProgressInfo, is_disk_full,
+    is_range_not_satisfiable, is_server_rejection,
 };
 use crate::events::{EngineEvent, EventSink};
 use crate::logger::{log_info, log_warn};
@@ -3086,7 +3086,9 @@ pub async fn run_coordinated_download(
                                 *slot = None;
                             }
 
-                            // No worker can service the remaining ranges.
+                            // 无存活 worker 时，无进度或浅进度的 Range 拒绝仍可清盘回退。
+                            // 深断点只有在明确收到 200 时才尝试独立的普通 GET；
+                            // 限流/连接拒绝和其它 Range 错误保留断点并报告失败。
                             let any_alive = worker_assign_txs.iter().any(|tx| tx.is_some())
                                 || segments.values().any(|s| s.state == SegState::Active);
                             if !any_alive && !all_done(&segments) {
@@ -3096,12 +3098,13 @@ pub async fn run_coordinated_download(
                                 let discard_ok = downloaded < RANGE_FAMILY_DISCARD_MAX;
                                 let ignored_range = matches!(
                                     &error,
-                                    DownloadError::RangeNotSupported(status)
-                                        if status == "200 OK"
+                                    DownloadError::RangeNotSupported(RangeRejection::Http(
+                                        reqwest::StatusCode::OK
+                                    ))
                                 );
                                 final_error = Some(if !any_data || (range_family && discard_ok) {
-                                    DownloadError::RangeNotSupported(format!(
-                                        "every connection rejected ({error})"
+                                    DownloadError::RangeNotSupported(RangeRejection::Other(
+                                        format!("every connection rejected ({error})"),
                                     ))
                                 } else if ignored_range {
                                     DownloadError::RangeResumeRejected
@@ -3135,8 +3138,8 @@ pub async fn run_coordinated_download(
                                 // 保留明确的限流错误：退避用尽时不再立即补发一个裸 GET。
                                 // 未观察到并发拒绝的 400/403 仍保留原无 Range 回退。
                                 final_error = Some(if conn_rejection && !may_recover && !any_data {
-                                    DownloadError::RangeNotSupported(format!(
-                                        "every connection rejected, no byte ever served: {error}"
+                                    DownloadError::RangeNotSupported(RangeRejection::Other(
+                                        format!("every connection rejected, no byte ever served: {error}"),
                                     ))
                                 } else {
                                     error
@@ -5576,7 +5579,9 @@ async fn do_segment_with_retry(
                     task_id,
                     seg_idx
                 );
-                return Err(DownloadError::RangeNotSupported(format!("416 ({e})")));
+                return Err(DownloadError::RangeNotSupported(
+                    RangeRejection::Other(format!("416 ({e})")),
+                ));
             }
             Err(e) => {
                 if cancel.is_cancelled() {
@@ -5967,7 +5972,9 @@ async fn do_segment(
             if sys_lease && total_downloaded.load(Ordering::Relaxed) == 0 {
                 record_single_conn_domain_persist(url, db);
             }
-            return Err(DownloadError::RangeNotSupported(resp.status().to_string()));
+            return Err(DownloadError::RangeNotSupported(
+                RangeRejection::Http(resp.status()),
+            ));
         }
         log_info!(
             "[coordinator] task {} seg {} 开放式首段收到 200 全量流（{}），\

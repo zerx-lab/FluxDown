@@ -26,6 +26,17 @@ use crate::transfer_activity::{TaskRuntime, TaskSegment, TransferTracker};
 // Error
 // ---------------------------------------------------------------------------
 
+pub(crate) const RANGE_RESTART_FAILED_PREFIX: &str =
+    "full GET fallback failed; partial download kept, resume manually: ";
+
+#[derive(Error, Debug)]
+pub enum RangeRejection {
+    #[error("{0}")]
+    Http(reqwest::StatusCode),
+    #[error("{0}")]
+    Other(String),
+}
+
 #[derive(Error, Debug)]
 pub enum DownloadError {
     #[error("request failed: {0}")]
@@ -43,11 +54,13 @@ pub enum DownloadError {
     /// Multi-segment assembly is impossible; the caller should fall back to
     /// single-stream mode.
     #[error("server does not support Range requests (returned {0} instead of 206 Partial Content)")]
-    RangeNotSupported(String),
+    RangeNotSupported(RangeRejection),
     /// Retrying ignored Range requests exhausted all workers, but a durable
     /// multi-segment checkpoint must not be discarded to try a full GET.
     #[error("server ignored the remaining Range requests; partial download kept")]
     RangeResumeRejected,
+    #[error("{prefix}{0}", prefix = RANGE_RESTART_FAILED_PREFIX)]
+    RangeRestartFailed(Box<DownloadError>),
     /// 服务器在 probe 与分段/续传请求之间【更换了文件】：Range 响应的强
     /// validator（ETag）与已落盘版本不一致，或 Last-Modified 不一致且响应
     /// `Content-Range` 总大小与已知总大小【也】不一致（分段路径下起点还须
@@ -3906,6 +3919,13 @@ async fn discard_segment_data(db: &Db, task_id: &str, path: &Path) -> Result<(),
     Ok(())
 }
 
+fn range_restart_failed(error: DownloadError) -> DownloadError {
+    match error {
+        DownloadError::Cancelled => error,
+        error => DownloadError::RangeRestartFailed(Box::new(error)),
+    }
+}
+
 /// Isolated, same-filesystem output for a speculative full restart. Until final
 /// rename, the original segment layout and partial file remain resumable.
 struct RangeRestart {
@@ -4624,7 +4644,19 @@ async fn run_download_inner(
             Err(DownloadError::RangeResumeRejected)
                 if spec_ref.current().range_window_cap().is_none() =>
             {
+                // 原断点仍占磁盘空间；暂存文件需要额外容纳一份完整响应。
+                if let Ok(required) = u64::try_from(effective_total_bytes)
+                    && let Some(available) =
+                        crate::disk_space::available_space_checked(save_dir.clone()).await
+                    && available < required.saturating_add(crate::disk_space::PRECHECK_MARGIN)
+                {
+                    return Err(DownloadError::Other(format!(
+                        "insufficient disk space for full GET: need {required} bytes plus margin, \
+                         have {available}; partial download kept"
+                    )));
+                }
                 let staged = RangeRestart::create(&save_dir)?;
+                tracing::info!(task_id = %p.task_id, path = %staged.path.display(), "HTTP fallback staging file");
                 log_info!(
                     "[download] task {} remaining Range requests returned 200; trying a full GET without discarding the checkpoint",
                     p.task_id
@@ -4660,20 +4692,27 @@ async fn run_download_inner(
                     false,
                     false,
                 )
-                .await?;
-                let len = tokio::fs::metadata(&staged.path).await?.len();
+                .await
+                .map_err(range_restart_failed)?;
+                let len = tokio::fs::metadata(&staged.path)
+                    .await
+                    .map_err(|error| range_restart_failed(error.into()))?
+                    .len();
+                // 没有可拼接的 Range 证据；只接受与探测长度完全一致的替换文件。
                 if i64::try_from(len) != Ok(effective_total_bytes) {
-                    return Err(DownloadError::Other(format!(
-                        "full GET after ignored Range returned {len} bytes, expected {effective_total_bytes}; partial download kept"
-                    )));
+                    return Err(range_restart_failed(DownloadError::Other(format!(
+                        "received {len} bytes, expected {effective_total_bytes}"
+                    ))));
                 }
                 range_restart = Some(staged);
                 actual_use_segments = false;
                 Some(result)
             }
-            Err(DownloadError::RangeNotSupported(status))
-            | Err(DownloadError::VersionChanged(status))
-            | Err(DownloadError::RangeMisaligned(status)) => {
+            Err(
+                error @ (DownloadError::RangeNotSupported(_)
+                    | DownloadError::VersionChanged(_)
+                    | DownloadError::RangeMisaligned(_)),
+            ) => {
                 // 多段尝试中止，回退单流。三种触发：
                 //   • RangeNotSupported：服务器无视 Range（返回 200 全量），或对任何
                 //     带 Range 的请求直接回 4xx 且全程未服务过一个字节（coordinator
@@ -4685,10 +4724,10 @@ async fn run_download_inner(
                 //     起点不符，如 123 盘失效签名 URL）；已写入段数据是错位垃圾，必须清空。
                 // 深进度且 Range 持续收到 200 时走上面的独立临时文件，不清理有效断点。
                 log_info!(
-                    "[download] task {} multi-segment aborted (server returned {}; no-Range or \
-                     mid-download file change) — clearing stale data, redownloading single-stream",
+                    "[download] task {} multi-segment aborted ({}) — \
+                     clearing stale data, redownloading single-stream",
                     p.task_id,
-                    status
+                    error
                 );
                 actual_use_segments = false;
                 if let Err(e) = crate::task_activity::record(
@@ -4696,7 +4735,7 @@ async fn run_download_inner(
                     p.sink.as_ref(),
                     &p.task_id,
                     "fallback",
-                    format!("HTTP 分段回退单流：{status}"),
+                    format!("HTTP 分段回退单流：{error}"),
                     Some(1),
                 )
                 .await
@@ -5128,23 +5167,12 @@ async fn run_download_inner(
         }
     }
     if range_restart.is_some() {
-        match discard_segment_data(&p.db, &p.task_id, checkpoint_path).await {
-            Ok(()) => {
-                if let Err(error) = p.db.update_task_progress(&p.task_id, actual_total).await {
-                    crate::logger::report_warning(
-                        "http-download",
-                        "persist completed restart",
-                        &error,
-                    );
-                }
-            }
-            Err(error) => {
-                crate::logger::report_warning(
-                    "http-download",
-                    "remove replaced checkpoint",
-                    &error,
-                );
-            }
+        // 新文件已保存；旧断点清理失败不应阻止记录完成进度。
+        if let Err(error) = discard_segment_data(&p.db, &p.task_id, checkpoint_path).await {
+            crate::logger::report_warning("http-download", "remove replaced checkpoint", &error);
+        }
+        if let Err(error) = p.db.update_task_progress(&p.task_id, actual_total).await {
+            crate::logger::report_warning("http-download", "persist completed restart", &error);
         }
     }
     let finalize_renamed = if chosen == actual_name {
@@ -10504,7 +10532,7 @@ mod single_resume_tests {
         let mut writer = tokio::io::BufWriter::with_capacity(1024, file);
         writer.write_all(b"new").await.expect("buffer write");
         assert!(matches!(
-            super::persist_single_progress(&mut writer, &db, "checkpoint", 6).await,
+            super::persist_single_progress(&mut writer, Some(&db), "checkpoint", 6).await,
             Err(DownloadError::Io(_))
         ));
         assert_eq!(
