@@ -7,7 +7,9 @@ use std::{
 };
 
 use fluxdown_protocol::{RemoteCommandAction, RemoteCommandParams, RemoteTaskStatus};
-use fluxdown_ui_components::{CheckState, FluxIcon, check_mark, tabular_numbers, tooltip_view};
+use fluxdown_ui_components::{
+    CheckState, FluxIcon, check_mark, tabular_numbers, tooltip_view, truncated_text,
+};
 use fluxdown_ui_icon_pack::FileKind;
 use fluxdown_ui_theme::active_theme;
 use gpui::{
@@ -2851,7 +2853,10 @@ impl DownloadTableDelegate {
                     .line_height(tokens.typography.sm.line_height)
                     .font_weight(tokens.typography.sm.weight)
                     .text_color(name_color)
-                    .child(name),
+                    .child(truncated_text(
+                        SharedString::from(format!("download-name-{}", task.key.task_id())),
+                        name,
+                    )),
             )
             .when_some(meta, |this, meta| {
                 this.child(
