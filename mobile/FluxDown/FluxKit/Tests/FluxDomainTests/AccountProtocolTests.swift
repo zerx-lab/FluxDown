@@ -189,6 +189,7 @@ struct AccountProtocolTests {
         #expect(AccountRules.errorKey(forReason: "remoteTaskGone") == "errReasonRemoteTaskGone")
         #expect(AccountRules.errorKey(HostError(.timeout)) == "localServiceDisconnected")
         #expect(AccountRules.errorKey(HostError(.conflict)) == "localServiceConflict")
+        #expect(AccountRules.errorKey(HostError(.conflict, reason: "taskFileClearPending")) == "errReasonTaskFileClearPending")
         #expect(AccountRules.errorKey(HostError(.notFound)) == "localServiceInvalidArgument")
         // 同一 reason 在同步场景换文案；未映射的 reason 回退按码。
         let untrusted = HostError(.unauthorized, reason: "deviceUntrusted")
