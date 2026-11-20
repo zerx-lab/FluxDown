@@ -77,6 +77,13 @@ test('only the marked RSS image denial is reported as an unverifiable proxy dest
   globalThis.fetch = async () => new Response(null, { status: 403 })
   const unmarked = await rejectionError(fetchRssImage('source', 'item', 0, signal))
   expect(unmarked instanceof RssImageProxyUnverifiableError).toBe(false)
+
+  globalThis.fetch = async () => new Response(null, {
+    status: 403,
+    headers: { 'X-FluxDown-Rss-Image-Proxy-Unverifiable': '0' },
+  })
+  const wrongMarker = await rejectionError(fetchRssImage('source', 'item', 0, signal))
+  expect(wrongMarker instanceof RssImageProxyUnverifiableError).toBe(false)
 })
 
 test('RSS rejects content with a PNG media type but a non-PNG signature', async () => {
