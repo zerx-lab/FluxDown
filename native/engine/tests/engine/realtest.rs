@@ -78,6 +78,7 @@ struct ServerState {
     /// 覆盖全量 GET 的 Content-Encoding 头值（如 "gzip, gzip" 多层 / "compress" 未知）。
     /// 设置时优先于 gzip_body 自动添加的 "gzip"。仅影响头部，不改 body。
     content_encoding_override: Option<String>,
+    compress_plain_get: bool,
     /// 全量 GET 不发 Content-Length（靠连接关闭定界），模拟 chunked/无 CL 服务器。
     omit_content_length_full: bool,
     /// 全量 GET 只发前 K 字节然后关闭（模拟传输中途断流/截断）。
@@ -173,6 +174,7 @@ impl ServerState {
             corrupt_range_get_nth: None,
             gzip_body: None,
             content_encoding_override: None,
+            compress_plain_get: false,
             omit_content_length_full: false,
             close_full_after: None,
             disable_close_full: std::sync::atomic::AtomicBool::new(false),
@@ -684,9 +686,18 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
         // 200 全量
         st.full_get_count.fetch_add(1, Ordering::SeqCst);
         // gzip 模式：发压缩体，Content-Length=压缩长度，附 Content-Encoding: gzip。
-        let send_body: Vec<u8> = match &st.gzip_body {
-            Some(g) => g.as_ref().clone(),
-            None => body.as_ref().clone(),
+        let compressed = st.compress_plain_get && req.range.is_none();
+        let send_body: Vec<u8> = if compressed {
+            use std::io::Write;
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            encoder.write_all(body.as_slice()).unwrap();
+            encoder.finish().unwrap()
+        } else {
+            match &st.gzip_body {
+                Some(g) => g.as_ref().clone(),
+                None => body.as_ref().clone(),
+            }
         };
         let cl = st
             .fake_full_content_length
@@ -698,7 +709,7 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
         }
         if let Some(ce) = &st.content_encoding_override {
             h.push_str(&format!("Content-Encoding: {}\r\n", ce));
-        } else if st.gzip_body.is_some() {
+        } else if compressed || st.gzip_body.is_some() {
             h.push_str("Content-Encoding: gzip\r\n");
         }
         if st.support_range && st.advertise_accept_ranges {
@@ -2506,7 +2517,7 @@ async fn run_full_with_spec(
         let mut status = 0;
         let mut staged_received = None;
         while let Some(u) = rx.recv().await {
-            if u.status >= 3 {
+            if matches!(u.status, 2..=4) {
                 status = u.status;
             }
             if u.staged_download {
@@ -3768,6 +3779,12 @@ async fn ignored_range_at_99_percent_with_window_cap_never_sends_plain_get() {
     assert_ignored_range_restart(RangeRestartCase::WindowCapped).await;
 }
 
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "binds a local port; run with --ignored"]
+async fn ignored_range_at_99_percent_rejects_compressed_plain_get() {
+    assert_ignored_range_restart(RangeRestartCase::Compressed).await;
+}
+
 #[derive(Clone, Copy)]
 enum RangeRestartCase {
     Success,
@@ -3776,6 +3793,7 @@ enum RangeRestartCase {
     ChecksumMismatch,
     Cancelled,
     WindowCapped,
+    Compressed,
 }
 
 async fn assert_ignored_range_restart(case: RangeRestartCase) {
@@ -3790,6 +3808,7 @@ async fn assert_ignored_range_restart(case: RangeRestartCase) {
         RangeRestartCase::ChecksumMismatch => "range-restart-bad-checksum",
         RangeRestartCase::Cancelled => "range-restart-cancelled",
         RangeRestartCase::WindowCapped => "range-restart-window-capped",
+        RangeRestartCase::Compressed => "range-restart-compressed",
     };
     let work_dir = unique_dir(tag);
     let size = 16 * 1024 * 1024;
@@ -3810,6 +3829,7 @@ async fn assert_ignored_range_restart(case: RangeRestartCase) {
         matches!(case, RangeRestartCase::Truncated).then_some(1024 * 1024);
     server_state.hold_plain_get_after =
         matches!(case, RangeRestartCase::Cancelled).then_some(1024 * 1024);
+    server_state.compress_plain_get = matches!(case, RangeRestartCase::Compressed);
     let server_state = Arc::new(server_state);
     let server = start_server(server_state.clone()).await;
     let url = server.url("/file");
@@ -3890,7 +3910,9 @@ async fn assert_ignored_range_restart(case: RangeRestartCase) {
         RangeRestartCase::Cancelled => {
             assert!((1..=1024 * 1024).contains(&staged_received.unwrap()));
         }
-        RangeRestartCase::WindowCapped => assert_eq!(staged_received, None),
+        RangeRestartCase::WindowCapped | RangeRestartCase::Compressed => {
+            assert_eq!(staged_received, None);
+        }
         _ => assert_eq!(staged_received, Some(full_size as i64)),
     }
     if capped {
@@ -3916,6 +3938,9 @@ async fn assert_ignored_range_restart(case: RangeRestartCase) {
                 "{}",
                 row.error_message
             );
+        }
+        if matches!(case, RangeRestartCase::Compressed) {
+            assert!(row.error_message.contains("requesting identity encoding"));
         }
         assert_eq!(sha256_file(&checkpoint).await, sha256_bytes(&original));
         assert_eq!(

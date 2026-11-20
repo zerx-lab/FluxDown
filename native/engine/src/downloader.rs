@@ -27,6 +27,8 @@ use crate::transfer_activity::{TaskRuntime, TaskSegment, TransferTracker};
 // Error
 // ---------------------------------------------------------------------------
 
+// Stored in error_message and used to suppress automatic retries for existing
+// tasks. Do not change this prefix without migrating those persisted messages.
 pub(crate) const RANGE_RESTART_FAILED_PREFIX: &str =
     "full GET fallback failed; partial download kept, resume manually: ";
 
@@ -63,7 +65,7 @@ pub enum DownloadError {
     #[error("server ignored the remaining Range requests; partial download kept")]
     RangeResumeRejected { total_bytes: i64 },
     #[error("{prefix}{0}", prefix = RANGE_RESTART_FAILED_PREFIX)]
-    RangeRestartFailed(Box<DownloadError>),
+    RangeRestartFailed(#[source] Box<DownloadError>),
     /// 服务器在 probe 与分段/续传请求之间【更换了文件】：Range 响应的强
     /// validator（ETag）与已落盘版本不一致，或 Last-Modified 不一致且响应
     /// `Content-Range` 总大小与已知总大小【也】不一致（分段路径下起点还须
@@ -2381,6 +2383,20 @@ pub(crate) fn download_error_chain_text(e: &DownloadError) -> String {
     format!("{e}{}", format_error_chain(StdError::source(e)))
 }
 
+fn download_terminal_error_message(error: &DownloadError) -> String {
+    // Display already includes the wrapped download error and its immediate
+    // source (e.g. reqwest's message). Append only the underlying causes.
+    let displayed_error = match error {
+        DownloadError::RangeRestartFailed(inner) => inner.as_ref(),
+        error => error,
+    };
+    let chain = format_error_chain(displayed_error.source().and_then(StdError::source));
+    crate::net_failure::append_tag(
+        format!("{error}{chain}"),
+        crate::net_failure::classify_download_error(error),
+    )
+}
+
 /// 探测请求的传输层失败描述：保留完整根因链（reqwest 的 Display 只有
 /// 「error sending request for url (…)」）。分类另由
 /// [`crate::net_failure::classify`] 给出，以标签形式追加在最终错误文案上。
@@ -3956,9 +3972,12 @@ pub(crate) async fn run_download_mode(mut params: DownloadParams, html_only: boo
     let preprobed = params.preprobed.take();
     let mut range_restart = None;
     let download = run_download_inner(&mut params, preprobed, html_only, &mut range_restart).await;
-    let download = match (download, range_restart.take()) {
-        (Err(error), Some(_)) => Err(range_restart_failed(error)),
-        (result, _) => result,
+    let staged_restart = range_restart.is_some();
+    let download = if let Some(staged) = range_restart.take() {
+        staged.finish(&params.db).await;
+        download.map_err(range_restart_failed)
+    } else {
+        download
     };
     let result = match download {
         Ok((total, renamed)) => {
@@ -3985,6 +4004,15 @@ pub(crate) async fn run_download_mode(mut params: DownloadParams, html_only: boo
         }
         Err(error) => Err(error),
     };
+    if staged_restart
+        && result.is_ok()
+        && let Err(error) = params
+            .db
+            .retry_http_checkpoint_cleanup(&params.task_id)
+            .await
+    {
+        crate::logger::report_warning("http-download", "clean old HTTP checkpoint", &error);
+    }
 
     match result {
         Ok((total, finalize_renamed)) => {
@@ -4018,21 +4046,7 @@ pub(crate) async fn run_download_mode(mut params: DownloadParams, html_only: boo
             // pause / cancel already handled upstream — nothing to do
         }
         Err(e) => {
-            let msg = e.to_string();
-            // 追加完整错误链（root cause），方便排查网络/TLS 等底层错误。
-            // msg 已包含 reqwest 顶层描述，这里从 source 的 source 开始
-            // 避免重复打印同一层信息。
-            let chain = if let Some(src) = StdError::source(&e) {
-                format_error_chain(src.source())
-            } else {
-                String::new()
-            };
-            // 类型化传输失败标签：manager 的 Auto 换路 / 自动重试只认标签，
-            // 不再从（可能本地化的）OS 错误文本里猜关键词。
-            let full_msg = crate::net_failure::append_tag(
-                format!("{}{}", msg, chain),
-                crate::net_failure::classify_download_error(&e),
-            );
+            let full_msg = download_terminal_error_message(&e);
             // checksum 失败时所有字节均已下载完毕（只是校验未通过），需特殊处理进度。
             let is_checksum_fail = matches!(e, DownloadError::ChecksumMismatch(_));
             crate::log_error!("[download] task {} error: {}", task_id_log, full_msg);
@@ -4259,26 +4273,232 @@ fn range_restart_failed(error: DownloadError) -> DownloadError {
 /// Isolated, same-filesystem output for a speculative full restart. Until final
 /// rename, the original segment layout and partial file remain resumable.
 struct RangeRestart {
+    dir: PathBuf,
     path: PathBuf,
 }
 
 impl RangeRestart {
-    fn create(dir: &Path) -> std::io::Result<Self> {
-        let dir = dir.join(format!(".fluxdown-restart-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir(&dir)?;
+    async fn create(db: &Db, dir: &Path) -> Result<Self, DownloadError> {
+        let dir = tokio::fs::canonicalize(dir)
+            .await?
+            .join(format!(".fluxdown-restart-{}", uuid::Uuid::new_v4()));
+        let key = dir
+            .to_str()
+            .ok_or_else(|| DownloadError::Other("non-UTF-8 staging path".into()))?;
+        db.record_http_restart_staging(key).await?;
+        tokio::fs::create_dir(&dir).await?;
+        tokio::fs::write(
+            dir.join("owner"),
+            dir.file_name()
+                .expect("generated staging name")
+                .as_encoded_bytes(),
+        )
+        .await?;
         Ok(Self {
             path: dir.join("download"),
+            dir,
         })
+    }
+
+    async fn finish(self, db: &Db) {
+        if let Err(error) = clean_http_restart_staging(&self.dir) {
+            crate::logger::report_warning("http-download", "clean staging directory", &error);
+        } else if let Some(key) = self.dir.to_str()
+            && let Err(error) = db.clear_http_restart_staging(key).await
+        {
+            crate::logger::report_warning("http-download", "clear staging record", &error);
+        }
     }
 }
 
 impl Drop for RangeRestart {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-        if let Some(dir) = self.path.parent() {
-            let _ = std::fs::remove_dir(dir);
+        let _ = clean_http_restart_staging(&self.dir);
+    }
+}
+
+pub(crate) fn http_checkpoint_identity(path: &Path) -> std::io::Result<String> {
+    let meta = std::fs::symlink_metadata(path)?;
+    if !meta.is_file() {
+        return Err(std::io::Error::other(
+            "HTTP checkpoint is not a regular file",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Ok(format!(
+            "{}:{}:{}:{}:{}",
+            meta.dev(),
+            meta.ino(),
+            meta.len(),
+            meta.mtime(),
+            meta.mtime_nsec()
+        ))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, FILE_FLAG_OPEN_REPARSE_POINT, GetFileInformationByHandle,
+        };
+        let file = std::fs::OpenOptions::new()
+            .access_mode(0)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)?;
+        let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), info.as_mut_ptr()) }
+            == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        let info = unsafe { info.assume_init() };
+        Ok(format!(
+            "{}:{}:{}:{}:{}:{}:{}:{}:{}",
+            info.dwVolumeSerialNumber,
+            info.nFileIndexHigh,
+            info.nFileIndexLow,
+            info.nFileSizeHigh,
+            info.nFileSizeLow,
+            info.ftCreationTime.dwHighDateTime,
+            info.ftCreationTime.dwLowDateTime,
+            info.ftLastWriteTime.dwHighDateTime,
+            info.ftLastWriteTime.dwLowDateTime,
+        ))
+    }
+}
+
+pub(crate) fn remove_replaced_http_checkpoint(
+    path: &Path,
+    expected: Option<&str>,
+    quarantine: &Path,
+) -> std::io::Result<()> {
+    let marker = quarantine.join("owner");
+    if !std::fs::symlink_metadata(quarantine)?.is_dir()
+        || !std::fs::symlink_metadata(&marker)?.is_file()
+        || std::fs::read(marker)?
+            != quarantine
+                .file_name()
+                .unwrap_or_default()
+                .as_encoded_bytes()
+    {
+        return Err(std::io::Error::other(
+            "checkpoint quarantine ownership mismatch",
+        ));
+    }
+    let retired = quarantine.join("checkpoint");
+    match std::fs::symlink_metadata(&retired) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let Some(expected) = expected.filter(|value| !value.is_empty()) else {
+                return Ok(());
+            };
+            match http_checkpoint_identity(path) {
+                Ok(actual) if actual == expected => std::fs::rename(path, &retired)?,
+                Ok(_) => return Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(error) => return Err(error),
+            }
+        }
+        Err(error) => return Err(error),
+    }
+    let retired_identity = http_checkpoint_identity(&retired)?;
+    if expected == Some(retired_identity.as_str()) {
+        return std::fs::remove_file(retired);
+    }
+    // A replacement raced with the move. Restore without overwriting any
+    // newer occupant; on conflict retain the quarantined file and its record.
+    match std::fs::hard_link(&retired, path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            // The prior attempt may have linked successfully but stopped
+            // before unlinking. Only discard the link if both names agree.
+            if http_checkpoint_identity(path)? != retired_identity {
+                return Err(error);
+            }
+        }
+        Err(error) => return Err(error),
+    }
+    std::fs::remove_file(retired)
+}
+
+pub(crate) fn clean_http_restart_staging(dir: &Path) -> std::io::Result<()> {
+    if !dir.is_absolute()
+        || !dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_prefix(".fluxdown-restart-"))
+            .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
+    {
+        return Err(std::io::Error::other("invalid HTTP restart staging path"));
+    }
+    match std::fs::symlink_metadata(dir) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => {
+            return Err(std::io::Error::other(
+                "HTTP restart staging path is not a directory",
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    }
+    let expected = dir
+        .file_name()
+        .expect("validated staging name")
+        .as_encoded_bytes();
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        use std::os::fd::{AsRawFd, FromRawFd};
+        use std::os::unix::fs::OpenOptionsExt;
+        let handle = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+            .open(dir)?;
+        // Resolve the marker and children relative to the same open directory.
+        let fd = unsafe {
+            libc::openat(
+                handle.as_raw_fd(),
+                c"owner".as_ptr(),
+                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+            )
+        };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let marker = unsafe { std::fs::File::from_raw_fd(fd) };
+        if !marker.metadata()?.is_file() {
+            return Err(std::io::Error::other("invalid HTTP staging marker"));
+        }
+        let mut owner = Vec::new();
+        marker.take(128).read_to_end(&mut owner)?;
+        if owner != expected {
+            return Err(std::io::Error::other("HTTP staging ownership mismatch"));
+        }
+        for name in [c"download", c"checkpoint", c"owner"] {
+            if unsafe { libc::unlinkat(handle.as_raw_fd(), name.as_ptr(), 0) } != 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    return Err(error);
+                }
+            }
         }
     }
+    #[cfg(not(unix))]
+    {
+        let marker = dir.join("owner");
+        if !std::fs::symlink_metadata(&marker)?.is_file() || std::fs::read(marker)? != expected {
+            return Err(std::io::Error::other("HTTP staging ownership mismatch"));
+        }
+        for name in ["download", "checkpoint", "owner"] {
+            match std::fs::remove_file(dir.join(name)) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    std::fs::remove_dir(dir)
 }
 
 /// 返回 `(actual_total, finalize_renamed)`:`finalize_renamed` 仅当 finalize
@@ -4989,8 +5209,9 @@ async fn run_download_inner(
                          have {available}; partial download kept"
                     ))));
                 }
-                let staged = RangeRestart::create(&save_dir)
-                    .map_err(|error| range_restart_failed(error.into()))?;
+                let staged = RangeRestart::create(&p.db, &save_dir)
+                    .await
+                    .map_err(range_restart_failed)?;
                 let staged = range_restart.insert(staged);
                 tracing::info!(task_id = %p.task_id, path = %staged.path.display(), "HTTP fallback staging file");
                 log_info!(
@@ -5021,7 +5242,6 @@ async fn run_download_inner(
                     &p.cancel_token,
                     &p.speed_limiter,
                     &spec_ref,
-                    &actual_name,
                     "",
                     "",
                     false,
@@ -5041,8 +5261,8 @@ async fn run_download_inner(
             }
             Err(
                 error @ (DownloadError::RangeNotSupported(_)
-                    | DownloadError::VersionChanged(_)
-                    | DownloadError::RangeMisaligned(_)),
+                | DownloadError::VersionChanged(_)
+                | DownloadError::RangeMisaligned(_)),
             ) => {
                 // 多段尝试中止，回退单流。三种触发：
                 //   • RangeNotSupported：服务器无视 Range（返回 200 全量），或对任何
@@ -5500,10 +5720,31 @@ async fn run_download_inner(
             }
         }
     }
-    if range_restart.is_some() {
-        // 新文件已保存；旧断点清理失败不应阻止记录完成进度。
-        if let Err(error) = discard_segment_data(&p.db, &p.task_id, checkpoint_path).await {
-            crate::logger::report_warning("http-download", "remove replaced checkpoint", &error);
+    if let Some(staged) = range_restart.as_ref() {
+        let cleanup = async {
+            // Bind the pending cleanup before reporting success. A retry may
+            // only remove this exact file, never a newer occupant of the path.
+            let dir = staged.dir.parent().expect("staging directory has a parent");
+            let path = dir.join(checkpoint_path.file_name().expect("checkpoint has a name"));
+            let identity = match http_checkpoint_identity(&path) {
+                Ok(identity) => identity,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+                Err(error) => return Err(DownloadError::Io(error)),
+            };
+            let path = path
+                .to_str()
+                .ok_or_else(|| DownloadError::Other("non-UTF-8 checkpoint path".into()))?;
+            p.db.record_http_checkpoint_cleanup(&p.task_id, p.spawn_gen, path, &identity)
+                .await?;
+            Ok::<(), DownloadError>(())
+        }
+        .await;
+        if let Err(error) = cleanup {
+            crate::logger::report_warning(
+                "http-download",
+                "record old HTTP checkpoint cleanup",
+                &error,
+            );
         }
         if let Err(error) = p.db.update_task_progress(&p.task_id, actual_total).await {
             crate::logger::report_warning("http-download", "persist completed restart", &error);
@@ -6330,6 +6571,11 @@ async fn download_single_once(
     // as unknown for progress reporting and skip the final size integrity check.
     // 至此只可能是【单层】受支持编码（多层/未知已被上方闸拦下）。
     let encoding = detect_content_encoding(resp.headers());
+    if !persist_checkpoint && encoding.is_some() {
+        return Err(DownloadError::Other(
+            "full GET returned a compressed response despite requesting identity encoding".into(),
+        ));
+    }
     if encoding.is_some() {
         log_info!(
             "[download-single] task {} server returned Content-Encoding: {:?} — \
@@ -6629,7 +6875,15 @@ async fn download_single_once(
                         {
                             crate::logger::report_warning("http-download", "persist progress after read failure", &cleanup_error);
                         }
-                        break 'body Err(single_body_error(e, downloaded, declared_end));
+                        let failure = staged.then(|| crate::net_failure::classify(&e)).flatten();
+                        let error = single_body_error(e, downloaded, declared_end);
+                        break 'body Err(match failure {
+                            Some(failure) => DownloadError::Other(crate::net_failure::append_tag(
+                                download_error_chain_text(&error),
+                                Some(failure),
+                            )),
+                            None => error,
+                        });
                     }
                     None => break 'body Ok(()),
                 }
@@ -7073,6 +7327,24 @@ mod tests {
             assert!(crate::auto_proxy::is_route_transport_error(&msg), "{msg}");
             assert!(crate::download_manager::is_retriable_error(&msg), "{msg}");
         }
+
+        let request = client.get(url).send().await.expect_err("closed port");
+        let cause = super::DownloadError::Request(request);
+        let cause_text = cause.to_string();
+        let error = super::range_restart_failed(cause);
+        let source = std::error::Error::source(&error).expect("wrapped download error");
+        let root_chain =
+            super::format_error_chain(source.source().expect("reqwest error").source());
+        assert!(!root_chain.is_empty());
+        let msg = super::download_terminal_error_message(&error);
+        assert!(msg.contains(&root_chain), "{msg}");
+        assert_eq!(msg.matches(&cause_text).count(), 1, "{msg}");
+        assert_eq!(
+            crate::net_failure::tag_of(&msg),
+            Some(crate::net_failure::NetFailure::Refused),
+            "{msg}"
+        );
+        assert!(!crate::download_manager::is_retriable_error(&msg), "{msg}");
     }
 
     // -----------------------------------------------------------------------

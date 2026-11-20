@@ -34,7 +34,11 @@ Download progress — including the exact byte ranges of every segment — is wr
 
 - FluxDown re-validates the remote file (via `ETag`/`Last-Modified`) before continuing. If the file changed on the server since the download started, it discards the partial data and starts over instead of silently splicing old and new bytes together.
 - If the remaining `Range` requests keep returning `200 OK` instead of `206 Partial Content`, FluxDown can try a full GET without `Range`. With at least 8 MiB already downloaded, it writes the replacement separately and keeps the original checkpoint until the new file is verified and saved. Progress starts again from zero because the whole file is downloaded again, and both copies need disk space until the replacement succeeds.
-  If the full GET fails, FluxDown keeps the original checkpoint and waits for you to resume manually. If the server still ignores `Range`, manual resume can trigger another full download. After a forced shutdown, the staging directory may remain. With all FluxDown processes stopped, remove only the `.fluxdown-restart-*` directory identified by the task's staging-file log. Do not remove the `.fdownloading` checkpoint.
+  If the full GET fails, FluxDown keeps the original checkpoint and waits for you to resume manually. If the server still ignores `Range`, manual resume can trigger another full download. If the server sends compressed data despite `Accept-Encoding: identity`, FluxDown stops the fallback and keeps the checkpoint. On exclusive database open, the engine reclaims recorded staging directories without scanning download folders. For unrecorded leftovers from older versions, stop all FluxDown processes and remove only the `.fluxdown-restart-*` directory identified in the task log, not the `.fdownloading` checkpoint.
+  For transport failures, the task error includes the underlying cause and any detected network failure category. This is diagnostic information, not a signal to retry automatically.
+  Recovery only uses records for the same engine data directory and skips staging directories whose ownership marker does not match.
+  If removing the old checkpoint or its segment records fails after completion, FluxDown retries on the next exclusive database open. It leaves a replacement file at the old path untouched.
+  If a file is moved into quarantine while its original path is being reused, FluxDown keeps the quarantined file until it can restore it without overwriting the occupant.
 
 ## Cookies, headers, User-Agent and Referer
 

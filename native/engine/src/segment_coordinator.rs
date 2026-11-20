@@ -5602,9 +5602,9 @@ async fn do_segment_with_retry(
                     task_id,
                     seg_idx
                 );
-                return Err(DownloadError::RangeNotSupported(
-                    RangeRejection::Other(format!("416 ({e})")),
-                ));
+                return Err(DownloadError::RangeNotSupported(RangeRejection::Other(
+                    format!("416 ({e})"),
+                )));
             }
             Err(e) => {
                 if cancel.is_cancelled() {
@@ -5995,9 +5995,9 @@ async fn do_segment(
             if sys_lease && total_downloaded.load(Ordering::Relaxed) == 0 {
                 record_single_conn_domain_persist(url, db);
             }
-            return Err(DownloadError::RangeNotSupported(
-                RangeRejection::Http(resp.status()),
-            ));
+            return Err(DownloadError::RangeNotSupported(RangeRejection::Http(
+                resp.status(),
+            )));
         }
         log_info!(
             "[coordinator] task {} seg {} 开放式首段收到 200 全量流（{}），\

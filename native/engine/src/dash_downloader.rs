@@ -1045,8 +1045,8 @@ async fn download_track_best_effort(
             // ——取消时段行与临时文件由 coordinated 路径【保留】以支持真续传。
             Err(
                 error @ (DownloadError::RangeNotSupported(_)
-                    | DownloadError::VersionChanged(_)
-                    | DownloadError::RangeMisaligned(_)),
+                | DownloadError::VersionChanged(_)
+                | DownloadError::RangeMisaligned(_)),
             ) => {
                 log_info!(
                     "[dash-download] task {} track multi-segment aborted ({}) — \
