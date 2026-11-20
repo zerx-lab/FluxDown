@@ -33,7 +33,7 @@ FluxDown doesn't just fix the segment count at the start. While segments are dow
 Download progress — including the exact byte ranges of every segment — is written to FluxDown's local database roughly every 3 seconds. Pausing a task, closing the app, or a crash therefore loses at most a few seconds of progress, never the whole file. On resume:
 
 - FluxDown re-validates the remote file (via `ETag`/`Last-Modified`) before continuing. If the file changed on the server since the download started, it discards the partial data and starts over instead of silently splicing old and new bytes together.
-- If the server no longer honours `Range` requests, or the previous multi-segment state is inconsistent, FluxDown restarts the download from scratch rather than producing a corrupted file.
+- If the remaining `Range` requests keep returning `200 OK` instead of `206 Partial Content`, FluxDown can try a full GET without `Range`. With at least 8 MiB already downloaded, it writes the replacement separately and keeps the original checkpoint until the new file is verified and saved. This retry downloads the entire file again and requires space for both files until it succeeds.
 
 ## Cookies, headers, User-Agent and Referer
 

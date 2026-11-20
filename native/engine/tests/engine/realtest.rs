@@ -139,6 +139,7 @@ struct ServerState {
     // --- 计数器（断言用）---
     head_count: AtomicUsize,
     full_get_count: AtomicUsize,
+    plain_get_count: AtomicUsize,
     range_get_count: AtomicUsize,
     swapped: AtomicUsize,
     rejected_range_count: AtomicUsize,
@@ -188,6 +189,7 @@ impl ServerState {
             drop_first_conns: AtomicUsize::new(0),
             head_count: AtomicUsize::new(0),
             full_get_count: AtomicUsize::new(0),
+            plain_get_count: AtomicUsize::new(0),
             range_get_count: AtomicUsize::new(0),
             swapped: AtomicUsize::new(0),
             rejected_range_count: AtomicUsize::new(0),
@@ -498,6 +500,9 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
         Some(v) => v == &format!("\"{}\"", etag) || v == &last_modified,
     };
     let wants_range = req.range.is_some() && st.support_range && if_range_matches;
+    if req.range.is_none() {
+        st.plain_get_count.fetch_add(1, Ordering::SeqCst);
+    }
 
     // 区间长度：probe 用 `bytes=0-0`（长度 1）；真实分段请求远大于 1。用这个
     // 区分，让下面两个故障注入钩子只作用于“分段” range GET，不影响 probe——
@@ -3573,6 +3578,98 @@ async fn range_advertised_but_all_segments_get_200_falls_back_single_stream() {
          download_single 只写出了空/截断文件）"
     );
     drop(server);
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "binds a local port; run with --ignored"]
+async fn ignored_range_at_99_percent_finishes_with_plain_get() {
+    assert_ignored_range_restart(false).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "binds a local port; run with --ignored"]
+async fn ignored_range_at_99_percent_keeps_checkpoint_if_plain_get_is_truncated() {
+    assert_ignored_range_restart(true).await;
+}
+
+async fn assert_ignored_range_restart(truncated: bool) {
+    use fluxdown_engine::downloader::TEMP_EXT;
+
+    let tag = if truncated {
+        "range-restart-truncated"
+    } else {
+        "range-restart"
+    };
+    let work_dir = unique_dir(tag);
+    let size = 16 * 1024 * 1024;
+    let prefix = size * 99 / 100;
+    let body = Arc::new(gen_body(size, 458));
+    let mut server_state = ServerState::new(body.clone(), "range-restart");
+    server_state.force_full_on_segment_range = true;
+    server_state.close_full_after = truncated.then_some(1024 * 1024);
+    let server_state = Arc::new(server_state);
+    let server = start_server(server_state.clone()).await;
+    let url = server.url("/file");
+    let db = Db::open(&work_dir).await.unwrap();
+    let name = "out.bin";
+    let checkpoint = work_dir.join(format!("{name}{TEMP_EXT}"));
+    insert_simple_task(&db, &work_dir, tag, &url, name, 1, size as i64).await;
+    db.insert_segments(
+        tag,
+        &[
+            (0, 0, prefix as i64 - 1),
+            (1, prefix as i64, size as i64 - 1),
+        ],
+    )
+    .await
+    .unwrap();
+    db.update_segment_progress(tag, 0, prefix as i64)
+        .await
+        .unwrap();
+    let mut original = body[..prefix].to_vec();
+    original.resize(size, 0);
+    tokio::fs::write(&checkpoint, &original).await.unwrap();
+
+    let (status, dest) = run_full(
+        &work_dir,
+        &db,
+        tag,
+        &url,
+        name,
+        1,
+        0,
+        true,
+        "",
+        &CancellationToken::new(),
+    )
+    .await;
+
+    assert_eq!(server_state.plain_get_count.load(Ordering::SeqCst), 1);
+    let saved_segments = db.load_segments(tag).await.unwrap();
+    if truncated {
+        assert_eq!(status, 4);
+        assert!(!dest.exists());
+        assert_eq!(sha256_file(&checkpoint).await, sha256_bytes(&original));
+        assert_eq!(
+            saved_segments
+                .iter()
+                .map(|seg| seg.downloaded_bytes)
+                .sum::<i64>(),
+            prefix as i64
+        );
+    } else {
+        assert_eq!(status, 3);
+        assert_eq!(sha256_file(&dest).await, sha256_bytes(&body));
+        assert!(!checkpoint.exists());
+        assert!(saved_segments.is_empty());
+    }
+    assert!(!std::fs::read_dir(&work_dir).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".fluxdown-restart-")
+    }));
 }
 
 /// fnOS multiple-download 式「Range 敌对」配额端点：任何带 Range 的请求一律

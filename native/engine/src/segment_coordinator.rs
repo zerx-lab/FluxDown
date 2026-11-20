@@ -516,9 +516,9 @@ const RANGE_VERDICT_UNKNOWN: u8 = 0;
 const RANGE_VERDICT_SUPPORTED: u8 = 1;
 const RANGE_VERDICT_UNSUPPORTED: u8 = 2;
 
-/// 「全员被拒 + 瞬时 200 家族」归一为 RangeNotSupported（触发清盘单流回退）
-/// 时允许丢弃的已下字节上限。低于此值：一次性下完的收益 > 重下代价；高于
-/// 此值：保留 fail-loud + 数据，用户 resume 重新 probe 后仍可多段续传。
+/// Below this threshold the existing fallback can discard the partial file.
+/// A deeper checkpoint is kept until a full-stream replacement is verified.
+/// This never classifies HTTP connection/rate-limit rejections as ignored Range.
 const RANGE_FAMILY_DISCARD_MAX: i64 = 8 * 1024 * 1024;
 
 /// 扩容有效判据：扩容后窗口吞吐 >= 扩容前吞吐 × 此系数才继续扩容，
@@ -3086,35 +3086,25 @@ pub async fn run_coordinated_download(
                                 *slot = None;
                             }
 
-                            // 安全检查：如果所有 worker 都已退休且无活跃分段，
-                            // 说明服务器甚至拒绝单连接 → 多段路线无法继续。
+                            // No worker can service the remaining ranges.
                             let any_alive = worker_assign_txs.iter().any(|tx| tx.is_some())
                                 || segments.values().any(|s| s.state == SegState::Active);
                             if !any_alive && !all_done(&segments) {
-                                // 归一为 RangeNotSupported 上抛（run_download_inner
-                                // 捕获后清盘回退单流 plain GET）的两种情形：
-                                //   • any_data==0：从未有任何段拿到过 206/写入数据，
-                                //     磁盘无可保留进度。Range 敌对的配额型端点
-                                //     （fnOS multiple-download 对带 Range 的请求回
-                                //     400，仅裸 GET 可用）唯一能下完的方式。
-                                //   • 触发错误本身是 RangeNotSupported（瞬时 200
-                                //     家族且重试打满）**且已下进度可忽略**（<
-                                //     RANGE_FAMILY_DISCARD_MAX）：服务器持续对
-                                //     Range 回 200 全量——plain GET 必然可用，丢弃
-                                //     少量已下数据换一次性下完。
-                                // 其余 any_data>0 的失败保留致命错误（fail-loud +
-                                // 数据保留）：403/429/400 是配额/并发问题，清盘重下
-                                // 反丢进度；深进度大文件即便是 200 家族也绝不清盘
-                                // ——resume 重新 probe 后仍有机会多段续传，无条件
-                                // 清盘会把 90% 进度的 4GB 文件整个重下。
                                 let downloaded = total_downloaded.load(Ordering::Relaxed);
                                 let range_family =
                                     matches!(error, DownloadError::RangeNotSupported(_));
                                 let discard_ok = downloaded < RANGE_FAMILY_DISCARD_MAX;
+                                let ignored_range = matches!(
+                                    &error,
+                                    DownloadError::RangeNotSupported(status)
+                                        if status == "200 OK"
+                                );
                                 final_error = Some(if !any_data || (range_family && discard_ok) {
                                     DownloadError::RangeNotSupported(format!(
                                         "every connection rejected ({error})"
                                     ))
+                                } else if ignored_range {
+                                    DownloadError::RangeResumeRejected
                                 } else {
                                     DownloadError::Other(format!(
                                         "服务器拒绝所有下载连接（包括单连接），无法继续下载：{error}"

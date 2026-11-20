@@ -44,6 +44,10 @@ pub enum DownloadError {
     /// single-stream mode.
     #[error("server does not support Range requests (returned {0} instead of 206 Partial Content)")]
     RangeNotSupported(String),
+    /// Retrying ignored Range requests exhausted all workers, but a durable
+    /// multi-segment checkpoint must not be discarded to try a full GET.
+    #[error("server ignored the remaining Range requests; partial download kept")]
+    RangeResumeRejected,
     /// 服务器在 probe 与分段/续传请求之间【更换了文件】：Range 响应的强
     /// validator（ETag）与已落盘版本不一致，或 Last-Modified 不一致且响应
     /// `Content-Range` 总大小与已知总大小【也】不一致（分段路径下起点还须
@@ -3902,6 +3906,31 @@ async fn discard_segment_data(db: &Db, task_id: &str, path: &Path) -> Result<(),
     Ok(())
 }
 
+/// Isolated, same-filesystem output for a speculative full restart. Until final
+/// rename, the original segment layout and partial file remain resumable.
+struct RangeRestart {
+    path: PathBuf,
+}
+
+impl RangeRestart {
+    fn create(dir: &Path) -> std::io::Result<Self> {
+        let dir = dir.join(format!(".fluxdown-restart-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir)?;
+        Ok(Self {
+            path: dir.join("download"),
+        })
+    }
+}
+
+impl Drop for RangeRestart {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+        if let Some(dir) = self.path.parent() {
+            let _ = std::fs::remove_dir(dir);
+        }
+    }
+}
+
 /// 返回 `(actual_total, finalize_renamed)`:`finalize_renamed` 仅当 finalize
 /// 阶段因目标名被占用而改名时为 `Some(新名)`,调用方须经完成信号上报
 /// (progress_reporter 对非空 file_name 锁存,空串 = 不变)。
@@ -4490,6 +4519,7 @@ async fn run_download_inner(
     // below.  Flipped to false when the server doesn't support Range requests
     // and we auto-fall back to single-stream within this attempt.
     let mut actual_use_segments = use_segments;
+    let mut range_restart = None;
     let single_result: Option<SingleDownloadResult> = if use_segments {
         // 多段下载：若服务器在 206 响应的 `Content-Range: bytes X-Y/<total>` 分母里
         // 自报的真实总大小大于规划（hint 偏小/文件仍在上传中增长），coordinator 会
@@ -4591,6 +4621,56 @@ async fn run_download_inner(
                 }
                 None
             }
+            Err(DownloadError::RangeResumeRejected)
+                if spec_ref.current().range_window_cap().is_none() =>
+            {
+                let staged = RangeRestart::create(&save_dir)?;
+                log_info!(
+                    "[download] task {} remaining Range requests returned 200; trying a full GET without discarding the checkpoint",
+                    p.task_id
+                );
+                if let Err(error) = crate::task_activity::record(
+                    &p.db,
+                    p.sink.as_ref(),
+                    &p.task_id,
+                    "fallback",
+                    "HTTP Range 续传失败，尝试普通 GET，保留原断点".to_string(),
+                    Some(1),
+                )
+                .await
+                {
+                    tracing::error!(task_id = %p.task_id, %error, "failed to persist HTTP fallback");
+                }
+                let result = download_single_once(
+                    &p.task_id,
+                    &p.url,
+                    &staged.path,
+                    effective_total_bytes,
+                    false,
+                    client,
+                    &p.db,
+                    &p.progress_tx,
+                    &p.cancel_token,
+                    &p.speed_limiter,
+                    &spec_ref,
+                    &actual_name,
+                    "",
+                    "",
+                    false,
+                    false,
+                    false,
+                )
+                .await?;
+                let len = tokio::fs::metadata(&staged.path).await?.len();
+                if i64::try_from(len) != Ok(effective_total_bytes) {
+                    return Err(DownloadError::Other(format!(
+                        "full GET after ignored Range returned {len} bytes, expected {effective_total_bytes}; partial download kept"
+                    )));
+                }
+                range_restart = Some(staged);
+                actual_use_segments = false;
+                Some(result)
+            }
             Err(DownloadError::RangeNotSupported(status))
             | Err(DownloadError::VersionChanged(status))
             | Err(DownloadError::RangeMisaligned(status)) => {
@@ -4603,10 +4683,7 @@ async fn run_download_inner(
                 //     与落盘版本不匹配，旧数据作废需重下。
                 //   • RangeMisaligned：服务器回 206 却发【从 0 的全量流】（Content-Range
                 //     起点不符，如 123 盘失效签名 URL）；已写入段数据是错位垃圾，必须清空。
-                // 注意：有已下数据的【瞬时 200】不会走到这里——coordinator 已在串行降级
-                // 路径就地完成下载，不返回这些错误，故此处 remove_file 只清理错位/作废/
-                // 全零的预分配数据，永不误删有效的多段进度（历史 0kb bug 已在 coordinator
-                // 侧消除）。
+                // 深进度且 Range 持续收到 200 时走上面的独立临时文件，不清理有效断点。
                 log_info!(
                     "[download] task {} multi-segment aborted (server returned {}; no-Range or \
                      mid-download file change) — clearing stale data, redownloading single-stream",
@@ -4711,6 +4788,11 @@ async fn run_download_inner(
             .saturating_sub(bytes_before);
         record_single_stream_rate(p, transferred, started.elapsed());
         Some(result)
+    };
+    let checkpoint_path = &temp_path;
+    let temp_path = match &range_restart {
+        Some(staged) => &staged.path,
+        None => checkpoint_path,
     };
 
     // 单流解压场景：落盘字节是【解压后】大小，与 probe 的【压缩】
@@ -5045,6 +5127,26 @@ async fn run_download_inner(
             }
         }
     }
+    if range_restart.is_some() {
+        match discard_segment_data(&p.db, &p.task_id, checkpoint_path).await {
+            Ok(()) => {
+                if let Err(error) = p.db.update_task_progress(&p.task_id, actual_total).await {
+                    crate::logger::report_warning(
+                        "http-download",
+                        "persist completed restart",
+                        &error,
+                    );
+                }
+            }
+            Err(error) => {
+                crate::logger::report_warning(
+                    "http-download",
+                    "remove replaced checkpoint",
+                    &error,
+                );
+            }
+        }
+    }
     let finalize_renamed = if chosen == actual_name {
         None
     } else {
@@ -5346,6 +5448,7 @@ async fn download_single(
             &last_modified_baseline,
             is_resume,
             clean_boundary,
+            true,
         )
         .await?;
         if result.latched_last_modified.is_some() {
@@ -5518,13 +5621,15 @@ fn single_body_error(
 
 async fn persist_single_progress(
     file: &mut tokio::io::BufWriter<File>,
-    db: &Db,
+    checkpoint: Option<&Db>,
     task_id: &str,
     downloaded: i64,
 ) -> Result<(), DownloadError> {
     file.flush().await?;
     file.get_ref().sync_data().await?;
-    db.update_task_progress(task_id, downloaded).await?;
+    if let Some(db) = checkpoint {
+        db.update_task_progress(task_id, downloaded).await?;
+    }
     Ok(())
 }
 
@@ -5550,7 +5655,10 @@ async fn download_single_once(
     is_resume: bool,
     // 上一轮有界窗口干净 EOF 后的衔接请求：起点取实际文件末尾，不向下对齐。
     clean_boundary: bool,
+    // A staged full GET must not alter the validator or progress of the original file.
+    persist_checkpoint: bool,
 ) -> Result<SingleDownloadResult, DownloadError> {
+    let checkpoint = persist_checkpoint.then_some(db);
     let physical_existing_len = match tokio::fs::metadata(dest).await {
         Ok(metadata) => i64::try_from(metadata.len()).map_err(|_| {
             DownloadError::Other(format!(
@@ -5695,6 +5803,15 @@ async fn download_single_once(
         refetched_full = true;
     }
     let mut resp = resp.error_for_status()?;
+    if !persist_checkpoint
+        && (resp.status() != reqwest::StatusCode::OK
+            || resp.headers().contains_key(reqwest::header::CONTENT_RANGE))
+    {
+        return Err(DownloadError::Other(format!(
+            "full GET after ignored Range returned an unexpected response ({}); partial download kept",
+            resp.status()
+        )));
+    }
 
     if want_resume && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT {
         let resp_etag = resp
@@ -5955,7 +6072,7 @@ async fn download_single_once(
             .unwrap_or("")
             .to_string()
     });
-    if let Some(lm) = &latched_last_modified {
+    if persist_checkpoint && let Some(lm) = &latched_last_modified {
         let etag = resp
             .headers()
             .get(reqwest::header::ETAG)
@@ -5971,7 +6088,9 @@ async fn download_single_once(
     }
     // 实际 GET 响应的命名证据（hint 模式唯一能看到 Content-Disposition 的地方）；
     // 先写者胜，续传轮次重复调用无害。
-    record_response_naming(db, task_id, &resp).await;
+    if persist_checkpoint {
+        record_response_naming(db, task_id, &resp).await;
+    }
 
     // Capture the response's own Content-Length before consuming the body.
     // For resumed downloads (206), this is the *remaining* length, not total.
@@ -5998,7 +6117,9 @@ async fn download_single_once(
         downloaded = 0;
         file = tokio::io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, File::create(dest).await?);
         // Reset DB progress so the UI doesn't show stale values
-        db.update_task_progress(task_id, 0).await?;
+        if let Some(db) = checkpoint {
+            db.update_task_progress(task_id, 0).await?;
+        }
     }
 
     // 注：旧版本会从实际下载响应的 Content-Disposition 中提取"更好的文件名"，
@@ -6050,7 +6171,9 @@ async fn download_single_once(
     loop {
         tokio::select! {
             _ = cancel_token.cancelled() => {
-                persist_single_progress(&mut file, db, task_id, downloaded).await?;
+                if persist_checkpoint {
+                    persist_single_progress(&mut file, checkpoint, task_id, downloaded).await?;
+                }
                 return Err(DownloadError::Cancelled);
             }
             result = tokio::time::timeout(CHUNK_STALL_TIMEOUT, stream.next()) => {
@@ -6062,7 +6185,9 @@ async fn download_single_once(
                 let chunk = match result {
                     Ok(c) => c,
                     Err(_) => {
-                        if let Err(cleanup_error) = persist_single_progress(&mut file, db, task_id, downloaded).await {
+                        if persist_checkpoint
+                            && let Err(cleanup_error) = persist_single_progress(&mut file, checkpoint, task_id, downloaded).await
+                        {
                             crate::logger::report_warning("http-download", "persist progress after stall", &cleanup_error);
                         }
                         return Err(single_stall_error(
@@ -6084,10 +6209,10 @@ async fn download_single_once(
                             let remaining = (chunk_len - offset) as u64;
                             let allowed = tokio::select! {
                                 _ = cancel_token.cancelled() => {
-                                    file.flush().await?;
-                                    file.get_ref().sync_data().await?;
-                                    downloaded += offset as i64;
-                                    db.update_task_progress(task_id, downloaded).await?;
+                                    if persist_checkpoint {
+                                        downloaded += offset as i64;
+                                        persist_single_progress(&mut file, checkpoint, task_id, downloaded).await?;
+                                    }
                                     return Err(DownloadError::Cancelled);
                                 }
                                 allowed = speed_limiter.consume(remaining) => allowed,
@@ -6120,17 +6245,15 @@ async fn download_single_once(
                         }
 
                         // DB persistence — periodic save for crash recovery.
-                        if last_db_save.elapsed().as_secs() >= DB_SAVE_INTERVAL_SECS {
-                            persist_single_progress(&mut file, db, task_id, downloaded).await?;
+                        if persist_checkpoint && last_db_save.elapsed().as_secs() >= DB_SAVE_INTERVAL_SECS {
+                            persist_single_progress(&mut file, checkpoint, task_id, downloaded).await?;
                             last_db_save = std::time::Instant::now();
                         }
                     }
                     Some(Err(e)) => {
-                        let checkpoint = async {
-                            persist_single_progress(&mut file, db, task_id, downloaded).await?;
-                            Ok::<(), DownloadError>(())
-                        }.await;
-                        if let Err(cleanup_error) = checkpoint {
+                        if persist_checkpoint
+                            && let Err(cleanup_error) = persist_single_progress(&mut file, checkpoint, task_id, downloaded).await
+                        {
                             crate::logger::report_warning("http-download", "persist progress after read failure", &cleanup_error);
                         }
                         return Err(single_body_error(e, downloaded, declared_end));
@@ -6157,7 +6280,7 @@ async fn download_single_once(
     {
         tracing::debug!("HTTP progress receiver closed");
     }
-    persist_single_progress(&mut file, db, task_id, downloaded).await?;
+    persist_single_progress(&mut file, checkpoint, task_id, downloaded).await?;
     Ok(SingleDownloadResult {
         response_content_length,
         decompressed: encoding.is_some(),
