@@ -969,17 +969,24 @@ async fn initialize_device_identity(
     let mut changed = false;
     let first_run = state.device_id.is_empty();
     if first_run {
-        // 沿用 Flutter 时代的 `cloud_device_id`（同一台机器迁移到 GPUI 后云端仍视为同一设备，
-        // 不多占设备名额）；找不到才生成新的。headless 实例不继承同机桌面安装版的身份。
-        match crate::device_identity::load_flutter_identity(engine_data_dir, server.is_none()).await
-        {
-            Some(legacy) => {
-                state.device_id = legacy.device_id;
-                if let Some(name) = legacy.device_name {
-                    state.device_name = name;
+        // 先找回旁路保存的身份（状态文件损坏被隔离时，云端仍认得这台设备）；再沿用 Flutter 时代的
+        // `cloud_device_id`（同一台机器迁移到 GPUI 后云端仍视为同一设备，不多占设备名额）；
+        // 都找不到才生成新的。headless 实例不继承同机桌面安装版的身份。
+        if let Some(saved) = store.load_device_id().await {
+            tracing::warn!("agent state had no device identity; restored the saved one");
+            state.device_id = saved;
+        } else {
+            match crate::device_identity::load_flutter_identity(engine_data_dir, server.is_none())
+                .await
+            {
+                Some(legacy) => {
+                    state.device_id = legacy.device_id;
+                    if let Some(name) = legacy.device_name {
+                        state.device_name = name;
+                    }
                 }
+                None => state.device_id = uuid::Uuid::new_v4().to_string(),
             }
-            None => state.device_id = uuid::Uuid::new_v4().to_string(),
         }
         // server 模式的兼容 API 分组在 daemon 迁移完成后由 `server_mode::apply_bootstrap` 决定。
         if server.is_none() {
@@ -1034,6 +1041,10 @@ pub(crate) async fn finalize_device_identity(
     changed |= state.account_uid != before;
     if changed {
         store.save(state).await?;
+    }
+    // 设备身份另存一份（内容不变不写盘）；失败只影响「状态文件损坏后找回身份」，不阻止启动。
+    if let Err(error) = store.save_device_id(&state.device_id).await {
+        tracing::warn!(error = %error, "could not save the device identity backup");
     }
     Ok(())
 }

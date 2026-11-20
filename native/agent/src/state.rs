@@ -43,7 +43,7 @@ pub struct PersistedSyncEntry {
     pub edited_at_ms: Option<i64>,
 }
 
-/// 单个账号的同步水位与条目；账号切换 / 登出时暂存，重新登录同一账号时恢复。
+/// 单个账号的同步水位、条目与远程任务接单绑定；账号切换 / 登出时暂存，重新登录同一账号时恢复。
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(default)]
@@ -51,10 +51,23 @@ pub struct AccountSyncData {
     pub revision: u64,
     pub entries: BTreeMap<String, PersistedSyncEntry>,
     pub pulled: bool,
+    /// 远程任务 → 本机 daemon 任务。设备身份跨登出不变、FluxCloud 登出也不终止任务，所以重新登录同一账号后
+    /// 本机仍是这些任务的执行端：恢复绑定才能接着上报进度、执行对端的暂停 / 取消，而不是凭 URL 猜。
+    pub remote_bindings: BTreeMap<String, String>,
 }
 
 /// 暂存账号数上限；超出时丢弃最先的账号，避免状态文件无限增长。
 const SYNC_STASH_LIMIT: usize = 8;
+
+/// 设备身份旁路文件名（与 `agent-state.json` 同目录、同权限）。
+const DEVICE_ID_FILE: &str = "device-id";
+
+/// 与 FluxCloud 设备身份契约一致：非空、≤128 字符、不含空白与控制字符。
+fn valid_device_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.chars().count() <= 128
+        && !id.chars().any(|c| c.is_whitespace() || c.is_control())
+}
 
 /// 云端推送的设备本地偏好；默认全关（上报开启必须经 UI 显式同意）。
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -111,8 +124,8 @@ pub struct AgentState {
 impl AgentState {
     /// 把账号维度的状态（同步水位 / 脏键 / 远程任务与绑定）切换到 `uid`；返回是否发生了切换。
     ///
-    /// 旧账号的同步数据暂存，重新登录同一账号时恢复；未登录期间产生的本地编辑（无所属账号）
-    /// 被首个登录账号接管。远程任务与接单绑定属于账号，切换即清空。
+    /// 旧账号的同步数据与接单绑定暂存，重新登录同一账号时恢复；未登录期间产生的本地编辑（无所属账号）
+    /// 被首个登录账号接管。远程任务投影属于账号，切换即清空，登录后由云端快照重建。
     pub fn bind_account(&mut self, uid: Option<&str>) -> bool {
         if self.account_uid.as_deref() == uid {
             return false;
@@ -121,6 +134,7 @@ impl AgentState {
             revision: self.sync.revision,
             entries: std::mem::take(&mut self.sync_entries),
             pulled: self.sync_pulled,
+            remote_bindings: std::mem::take(&mut self.remote_bindings),
         };
         let next = match (self.account_uid.take(), uid) {
             (Some(previous), _) => {
@@ -135,19 +149,21 @@ impl AgentState {
                     .unwrap_or_default()
             }
             // 未登录期间的本地编辑：新账号有暂存则恢复暂存，否则接管这些编辑（水位从 0 开始）。
+            // 未登录时没有绑定可接管。
             (None, Some(uid)) => self.sync_stash.remove(uid).unwrap_or(AccountSyncData {
                 revision: 0,
                 entries: current.entries,
                 pulled: false,
+                remote_bindings: BTreeMap::new(),
             }),
             (None, None) => AccountSyncData::default(),
         };
         self.sync.revision = next.revision;
         self.sync_entries = next.entries;
         self.sync_pulled = next.pulled;
+        self.remote_bindings = next.remote_bindings;
         self.account_uid = uid.map(str::to_owned);
         self.remote_tasks.clear();
-        self.remote_bindings.clear();
         self.refresh_sync_projection();
         self.reset_sync_runtime();
         true
@@ -353,6 +369,42 @@ impl StateStore {
             (bytes, self.generation.fetch_add(1, Ordering::SeqCst))
         };
         self.write_snapshot(generation, &bytes).await
+    }
+
+    /// 读取旁路保存的设备身份（`<data-dir>/device-id`）；不存在、读失败或内容不合法时返回 `None`。
+    ///
+    /// 设备身份是 FluxCloud 识别「同一台设备」的唯一依据（任务只对发起端 / 执行端可见）。它另存一份，
+    /// `agent-state.json` 损坏被隔离、以默认状态启动时仍能找回原身份，重新登录后认回自己的任务。
+    pub(crate) async fn load_device_id(&self) -> Option<String> {
+        let path = self.data_dir.join(DEVICE_ID_FILE);
+        match tokio::fs::read(&path).await {
+            Ok(bytes) => {
+                let id = String::from_utf8(bytes).ok()?;
+                let id = id.trim();
+                valid_device_id(id).then(|| id.to_owned())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                tracing::warn!(path = %path.display(), error = %error, "could not read the saved device identity");
+                None
+            }
+        }
+    }
+
+    /// 让旁路设备身份文件与 `device_id` 一致；内容相同不写盘（空闲静默：只在首次 / 身份变化时写一次）。
+    pub(crate) async fn save_device_id(&self, device_id: &str) -> Result<(), StateError> {
+        if !valid_device_id(device_id) {
+            return Ok(());
+        }
+        let path = self.data_dir.join(DEVICE_ID_FILE);
+        match tokio::fs::read(&path).await {
+            Ok(current) if current == device_id.as_bytes() => return Ok(()),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(StateError::Io(error)),
+        }
+        self.write_atomic(&path, ".device-id", device_id.as_bytes())
+            .await
     }
 
     /// 发布桌面 Gateway 的当前端点；与 bearer 同目录，不携带任何凭据。
@@ -561,6 +613,7 @@ async fn remove_stale_temp_files(dir: &Path) {
         // 清理时已消失的文件已达成目的；保留其他失败的诊断。
         if (name.starts_with(".agent-state.")
             || name.starts_with(".gateway-endpoint.")
+            || name.starts_with(".device-id.")
             || name.starts_with(crate::startup_failure::TEMP_PREFIX))
             && name.ends_with(".tmp")
             && let Err(error) = tokio::fs::remove_file(entry.path()).await
@@ -698,11 +751,12 @@ pub(crate) async fn apply_windows_dir_acl(_path: &Path) -> Result<(), StateError
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::sync::Arc;
 
     use tokio::sync::Mutex;
 
-    use super::{AgentState, PersistedSyncEntry, StateError, StateStore};
+    use super::{AgentState, DEVICE_ID_FILE, PersistedSyncEntry, StateError, StateStore};
 
     #[test]
     fn platform_lock_contention_error_is_recognized() {
@@ -776,14 +830,29 @@ mod tests {
         assert!(state.sync.dirty_keys.is_empty());
         assert!(state.remote_tasks.is_empty());
         assert!(state.remote_bindings.is_empty());
+        state
+            .remote_bindings
+            .insert("rb".to_owned(), "tb".to_owned());
 
-        // 登出后再登录 A：恢复 A 的水位与脏键。
+        // 登出后再登录 A：恢复 A 的水位、脏键与接单绑定（本机仍是这些任务的执行端），B 的绑定不串号。
         state.sync.revision = 5;
         assert!(state.bind_account(None));
         assert_eq!(state.account_uid, None);
+        assert!(state.remote_bindings.is_empty());
         assert!(state.bind_account(Some("user-a")));
         assert_eq!(state.sync.revision, 40);
         assert!(state.sync_entries["appearance.theme_mode"].dirty);
+        assert_eq!(
+            state.remote_bindings,
+            BTreeMap::from([("r1".to_owned(), "t1".to_owned())])
+        );
+        assert!(state.remote_tasks.is_empty(), "投影由云端快照重建");
+        assert!(state.bind_account(Some("user-b")));
+        assert_eq!(
+            state.remote_bindings,
+            BTreeMap::from([("rb".to_owned(), "tb".to_owned())])
+        );
+        assert!(state.bind_account(Some("user-a")));
 
         // 相同账号再次绑定是空操作。
         assert!(!state.bind_account(Some("user-a")));
@@ -985,6 +1054,56 @@ mod tests {
         drop(store);
         if let Err(error) = std::fs::remove_dir_all(&dir) {
             tracing::warn!(path = %dir.display(), error = %error, "remove recovered state directory");
+        }
+    }
+
+    /// 设备身份旁路文件：状态文件损坏被隔离后仍能读回原身份；不合法内容不被采用；内容相同不重写。
+    #[tokio::test]
+    async fn device_identity_backup_survives_a_corrupt_state_file() {
+        let dir = temp_dir("state_device_id");
+        let store = StateStore::open(dir.clone()).await.expect("open store");
+        assert_eq!(store.load_device_id().await, None);
+        store
+            .save_device_id("device-1")
+            .await
+            .expect("save device id");
+        let path = dir.join(DEVICE_ID_FILE);
+        let written = std::fs::metadata(&path)
+            .expect("device id file")
+            .modified()
+            .expect("mtime");
+        store
+            .save_device_id("device-1")
+            .await
+            .expect("save unchanged device id");
+        assert_eq!(
+            std::fs::metadata(&path)
+                .expect("device id file")
+                .modified()
+                .expect("mtime"),
+            written,
+            "内容相同不重写"
+        );
+
+        tokio::fs::write(dir.join("agent-state.json"), b"{ not json")
+            .await
+            .expect("write corrupt state");
+        assert!(store.load().await.expect("load").device_id.is_empty());
+        assert_eq!(store.load_device_id().await.as_deref(), Some("device-1"));
+
+        for invalid in ["", "has space", "a\u{0}b"] {
+            tokio::fs::write(&path, invalid)
+                .await
+                .expect("write invalid id");
+            assert_eq!(store.load_device_id().await, None, "{invalid:?}");
+        }
+        store
+            .save_device_id("bad id")
+            .await
+            .expect("invalid id is ignored");
+        drop(store);
+        if let Err(error) = std::fs::remove_dir_all(&dir) {
+            tracing::warn!(path = %dir.display(), error = %error, "remove device id directory");
         }
     }
 
