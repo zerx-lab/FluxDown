@@ -336,6 +336,9 @@
   **两层失败退避不能混为一谈**：订阅 feed 抓取按 `effective_interval_secs` 使用「配置间隔 × `2^fail_count`」，封顶 6h 但绝不短于配置间隔，成功清零，**不自动停用订阅**。条目的种子抓取失败由 `record_torrent_failure` 保持 `New` 并写 `torrent_fetch_failed`，退避为 `600s × 2^(fetch_failures-1)`、封顶 24h；`rss_items.fetch_failures` / `retry_after` 落库，重启不丢退避。`db::rss_dispatchable_items` 仅选到期条目，未失败条目优先，避免失效种子长期占住 `max_per_fetch`；建任务成功或用户手动下载清零条目退避，手动下载不受其限制。
 
   **条目图片预览**：`rss/preview.rs` 按需抓取已保存的图片引用并逐跳校验目标，生成有界缩略图。RSS 预览与 `plugin/images.rs` 共用 `raster.rs` 的栅格解码、缩放及解码并发限额。
+  `rss/parser.rs` 直接使用锁文件中已有的 `html5ever` tokenizer 解析 `<description>` 中的 HTML 片段，按 HTML 规则处理属性、字符引用和原始文本元素；`quick-xml` 只用于 feed 的 XML 层，正则不承担 HTML 分词。`image` 不再依赖 `plugins` feature：禁用插件的宿主也需要在引擎内限制源字节、解码尺寸和并发量，并把原图转换为有界 PNG 后才交给客户端。
+
+  **移动端核心体积实测**（完整 PR 对比，不是单个依赖的增量）：以 `main` 的 `d4ed9eda` 对比 `61841aa9`，两版均用 Rust 1.100.0、`--locked --release` 编译 `fluxdown_mobile` arm64。Android（NDK r29、API 26、默认 feature）`.so` 为 45,363,568 → 46,777,912 字节；iOS Store（部署目标 26.1、`--no-default-features`）`.a` 为 333,619,328 → 352,442,368 字节。两者都是核心库，不是 APK / IPA 大小。
 
   **enclosure MIME 参与种子识别**：`parser::extract_enclosure` / `map_entry` 保存下载目标声明的 `enclosure_type`（RSS enclosure / media:content、Atom enclosure link；没有 enclosure 时取回退链接的 type），去参数、去空白并转小写。`application/x-bittorrent` 即使 URL 没有扩展名也走「先抓种子字节 → 建 BT 任务」，不只看 URL 形态；magnet 不走种子抓取，二段 resolver 条目的计划不沿用 enclosure MIME。
 
