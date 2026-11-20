@@ -1792,8 +1792,6 @@ impl Db {
         sqlx::raw_sql(schema).execute(&self.pool).await?;
 
         // --- Schema migrations（幂等，只为升级旧库；新库建表已含全量列） ---
-        self.add_column_if_missing("http_restart_owned_staging", "parent_identity", "TEXT")
-            .await?;
         // bt_guard：strike 衰减改按「最近一次封禁到期时刻」起算。
         self.add_column_if_missing(
             "bt_guard_strikes",
@@ -10484,7 +10482,6 @@ mod tests {
         let offline = dir.join("offline");
         std::fs::rename(&save_dir, &offline).expect("take save directory offline");
         std::fs::create_dir(&save_dir).expect("leave an empty mount point");
-        std::fs::write(save_dir.join("placeholder"), b"not the mounted storage").unwrap();
 
         first_db.pool.close().await;
         drop(first_db);
@@ -10493,7 +10490,6 @@ mod tests {
         let (next_db, next_guard) = Db::open_exclusive(&dir)
             .await
             .expect("writer after release");
-        std::fs::remove_file(save_dir.join("placeholder")).unwrap();
         std::fs::remove_dir(&save_dir).expect("remove empty mount point");
         std::fs::rename(offline, save_dir).expect("bring save directory back online");
         next_db.recover_http_restart_staging().await;

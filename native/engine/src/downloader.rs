@@ -4471,9 +4471,8 @@ pub(crate) fn clean_http_restart_staging(dir: &Path) -> std::io::Result<()> {
                 "HTTP restart staging path is not a directory",
             ));
         }
-        // NotFound does not prove cleanup: an unmounted volume can leave
-        // an existing, empty mount point in place of the save directory.
-        // Preserve its recovery record until we actually remove the staging.
+        // Pass NotFound through: Db::recover_http_restart_staging checks the
+        // recorded save directory identity before clearing the registration.
         Err(error) => return Err(error),
     }
     let expected = name.as_bytes();
