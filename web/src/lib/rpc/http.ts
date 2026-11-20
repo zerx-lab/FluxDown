@@ -100,6 +100,8 @@ export async function exportLogs(): Promise<void> {
 const PLUGIN_IMAGE_MAX_BYTES = 4 * 1024 * 1024
 const RSS_IMAGE_MAX_BYTES = 512 * 1024
 
+export class RssImageProxyUnverifiableError extends Error {}
+
 /** Fetch one authenticated, bounded PNG resource for a live plugin view session. */
 export function fetchPluginImage(session: string, id: string, signal: AbortSignal): Promise<Blob> {
   return fetchBoundedPng(
@@ -130,6 +132,10 @@ async function fetchBoundedPng(url: string, maxBytes: number, label: string, sig
       redirect: 'error',
       signal: controller.signal,
     })
+    if (response.status === 403 && response.headers.get('X-FluxDown-Rss-Image-Proxy-Unverifiable') === '1') {
+      controller.abort()
+      throw new RssImageProxyUnverifiableError('RSS image proxy cannot verify the destination')
+    }
     if (
       !response.ok
       || response.headers.get('Content-Type')?.split(';', 1)[0]?.trim().toLowerCase() !== 'image/png'

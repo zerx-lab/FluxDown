@@ -1044,7 +1044,21 @@ impl DaemonService {
                     .ok_or_else(|| internal_error("RSS image unavailable".to_owned()))?;
                 let png = fluxdown_engine::rss::preview::load(&self.egress, &url)
                     .await
-                    .map_err(|_| internal_error("RSS image could not be loaded".to_owned()))?;
+                    .map_err(|error| {
+                        let message = "RSS image could not be loaded";
+                        if error.is::<fluxdown_engine::rss::preview::ProxyDestinationUnverifiable>()
+                        {
+                            RpcErrorObject::application(
+                                message,
+                                RpcErrorData::new(ApplicationErrorCode::Unavailable, false)
+                                    .with_reason(
+                                        fluxdown_protocol::ErrorReason::RssImageProxyUnverifiable,
+                                    ),
+                            )
+                        } else {
+                            internal_error(message.to_owned())
+                        }
+                    })?;
                 Ok(serde_json::json!({
                     "pngBase64": base64::engine::general_purpose::STANDARD.encode(png)
                 }))

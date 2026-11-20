@@ -2514,6 +2514,7 @@
   "rssViewImages": "View images",
   "rssImageLoadFailed": "Could not load image",
   "rssImageLoading": "Loading image…",
+  "rssImageProxyUnverifiable": "Image preview blocked: the destination cannot be verified through the proxy.",
   "rssInvalidNumber": "Enter a valid number within the allowed range.",
   "rssInvalidSizeRange": "Maximum size cannot be smaller than minimum size.",
   "rssFeedRequired": "Enter a feed URL.",

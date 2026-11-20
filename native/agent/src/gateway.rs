@@ -21,6 +21,7 @@ use axum::extract::{ConnectInfo, Path as AxumPath, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use fluxdown_protocol::error::RSS_IMAGE_PROXY_UNVERIFIABLE_HEADER;
 use fluxdown_protocol::method;
 use fluxdown_protocol::{
     ApplicationErrorCode, ClientHello, EventFrame, RpcErrorData, RpcErrorObject, RpcRequest,
@@ -2001,6 +2002,18 @@ async fn rss_image(
         Some(serde_json::json!({"sourceId": query.source_id, "guid": query.guid, "index": query.index})),
     ).await {
         Ok(payload) => payload,
+        Err(error)
+            if error.reason == Some(fluxdown_protocol::ErrorReason::RssImageProxyUnverifiable) =>
+        {
+            return (
+                StatusCode::FORBIDDEN,
+                [
+                    (RSS_IMAGE_PROXY_UNVERIFIABLE_HEADER, "1"),
+                    (header::CACHE_CONTROL.as_str(), "no-store"),
+                ],
+            )
+                .into_response();
+        }
         Err(_) => return StatusCode::BAD_GATEWAY.into_response(),
     };
     let Some(encoded) = payload.get("pngBase64").and_then(serde_json::Value::as_str) else {

@@ -586,7 +586,7 @@ private struct RssPreviewImage: View {
     let guid: String
     let index: Int
     @State private var image: UIImage?
-    @State private var failed = false
+    @State private var failureKey: String?
 
     var body: some View {
         Group {
@@ -596,8 +596,8 @@ private struct RssPreviewImage: View {
                     .scaledToFit()
                     .frame(maxHeight: 240)
                     .accessibilityLabel(L("rssViewImages"))
-            } else if failed {
-                Text(L("rssImageLoadFailed"))
+            } else if let failureKey {
+                Text(L(failureKey))
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } else {
@@ -609,7 +609,7 @@ private struct RssPreviewImage: View {
     }
 
     private func load() async {
-        do {
+        do throws(HostError) {
             let response: Reply = try await container.session.call(
                 HostMethod.daemonRssGetImage,
                 params: Params(sourceId: sourceId, guid: guid, index: index)
@@ -618,10 +618,13 @@ private struct RssPreviewImage: View {
             if let data = Data(base64Encoded: response.pngBase64), let decoded = UIImage(data: data) {
                 image = decoded
             } else {
-                failed = true
+                failureKey = "rssImageLoadFailed"
             }
         } catch {
-            if !Task.isCancelled { failed = true }
+            if !Task.isCancelled {
+                failureKey = error.reason == "rssImageProxyUnverifiable"
+                    ? "rssImageProxyUnverifiable" : "rssImageLoadFailed"
+            }
         }
     }
 

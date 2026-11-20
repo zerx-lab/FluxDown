@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use fluxdown_protocol::ErrorReason;
 use fluxdown_ui_components::{dialog_scroll_body, dialog_title};
 use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_theme::active_theme;
@@ -20,6 +21,7 @@ enum Preview {
     Loading,
     Ready(Arc<RenderImage>),
     Failed,
+    ProxyDestinationUnverifiable,
 }
 
 struct ImageDialog {
@@ -58,6 +60,11 @@ pub(super) fn open(
                                 Ok(image) => Preview::Ready(image),
                                 Err(_) => Preview::Failed,
                             }
+                        }
+                        Err(error)
+                            if error.reason == Some(ErrorReason::RssImageProxyUnverifiable) =>
+                        {
+                            Preview::ProxyDestinationUnverifiable
                         }
                         Err(_) => Preview::Failed,
                     };
@@ -104,24 +111,24 @@ impl Render for ImageDialog {
         let body = v_flex()
             .gap(tokens.spacing.md)
             .children(self.previews.iter().map(|preview| {
-                match preview {
-                    Preview::Ready(image) => img(image.clone())
-                        .w_full()
-                        .h(height)
-                        .object_fit(ObjectFit::Contain)
-                        .into_any_element(),
-                    Preview::Loading | Preview::Failed => {
-                        let (key, color) = if matches!(preview, Preview::Loading) {
-                            ("rssImageLoading", tokens.colors.muted_foreground)
-                        } else {
-                            ("rssImageLoadFailed", tokens.colors.destructive)
-                        };
-                        div()
-                            .text_color(color)
-                            .child(SharedString::from(translator.text(key).to_owned()))
-                            .into_any_element()
+                let (key, color) = match preview {
+                    Preview::Ready(image) => {
+                        return img(image.clone())
+                            .w_full()
+                            .h(height)
+                            .object_fit(ObjectFit::Contain)
+                            .into_any_element();
                     }
-                }
+                    Preview::Loading => ("rssImageLoading", tokens.colors.muted_foreground),
+                    Preview::Failed => ("rssImageLoadFailed", tokens.colors.destructive),
+                    Preview::ProxyDestinationUnverifiable => {
+                        ("rssImageProxyUnverifiable", tokens.colors.destructive)
+                    }
+                };
+                div()
+                    .text_color(color)
+                    .child(SharedString::from(translator.text(key).to_owned()))
+                    .into_any_element()
             }));
         dialog_scroll_body("rss-image-previews", None, body, cx)
     }

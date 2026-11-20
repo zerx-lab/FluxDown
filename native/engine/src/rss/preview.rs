@@ -11,6 +11,11 @@ use crate::raster;
 const TIMEOUT: Duration = Duration::from_secs(8);
 static REQUESTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(8);
 
+/// The configured proxy would resolve the image target outside our validation path.
+#[derive(Debug, thiserror::Error)]
+#[error("image proxy cannot verify the destination")]
+pub struct ProxyDestinationUnverifiable;
+
 /// Loads a bounded PNG preview from a stored RSS image URL without subscription credentials.
 pub async fn load(egress: &Egress, url: &str) -> anyhow::Result<Vec<u8>> {
     let _permit = REQUESTS.try_acquire()?;
@@ -90,12 +95,12 @@ async fn fetch(egress: &Egress, mut url: Url) -> anyhow::Result<Vec<u8>> {
 
 async fn ensure_direct_route(egress: &Egress, url: &Url) -> anyhow::Result<()> {
     let endpoint = egress.plan(url.as_str(), false).await?.proxy;
-    anyhow::ensure!(
-        endpoint.is_none_or(|proxy| url
-            .host_str()
-            .is_some_and(|host| host_matches_no_proxy(host, &proxy.no_proxy))),
-        "image proxy cannot verify the destination"
-    );
+    if endpoint.is_some_and(|proxy| {
+        !url.host_str()
+            .is_some_and(|host| host_matches_no_proxy(host, &proxy.no_proxy))
+    }) {
+        return Err(ProxyDestinationUnverifiable.into());
+    }
     Ok(())
 }
 
@@ -136,7 +141,7 @@ fn public_v4(ip: Ipv4Addr) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Egress, ensure_direct_route, load, public_ip};
+    use super::{Egress, ProxyDestinationUnverifiable, ensure_direct_route, load, public_ip};
     use crate::db::Db;
 
     #[tokio::test]
@@ -156,15 +161,14 @@ mod tests {
             &url::Url::parse("https://images.example.org/cover.png")?,
         )
         .await?;
-        assert!(
-            ensure_direct_route(
-                &egress,
-                &url::Url::parse("https://images.example.com/cover.png")?
-            )
+        let proxy_error = load(&egress, "https://images.example.com/cover.png")
             .await
-            .is_err()
-        );
-        assert!(load(&egress, "http://127.0.0.1/image.png").await.is_err());
+            .expect_err("an image outside the bypass list must not use the proxy");
+        assert!(proxy_error.is::<ProxyDestinationUnverifiable>());
+        let private_error = load(&egress, "http://127.0.0.1/image.png")
+            .await
+            .expect_err("private targets must still be rejected");
+        assert!(!private_error.is::<ProxyDestinationUnverifiable>());
         Ok(())
     }
 

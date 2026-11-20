@@ -68,6 +68,7 @@ import com.fluxdown.app.nav.SheetRoute
 import com.fluxdown.app.shell.LocalAppContainer
 import com.fluxdown.app.shell.hostState
 import com.fluxdown.core.format.Format
+import com.fluxdown.core.host.HostException
 import com.fluxdown.core.model.RssSource
 import com.fluxdown.core.protocol.HostMethod
 import com.fluxdown.core.protocol.HostSection
@@ -618,6 +619,7 @@ private fun RssItemImages(item: RssItemDto) {
 private sealed interface RssImageState {
     data object Loading : RssImageState
     data object Failed : RssImageState
+    data object ProxyDestinationUnverifiable : RssImageState
     data class Ready(val bitmap: Bitmap) : RssImageState
 }
 
@@ -637,6 +639,12 @@ private fun RssPreviewImage(sourceId: String, guid: String, index: Int) {
             }
         } catch (cancelled: CancellationException) {
             throw cancelled
+        } catch (error: HostException) {
+            if (error.reason == "rssImageProxyUnverifiable") {
+                RssImageState.ProxyDestinationUnverifiable
+            } else {
+                RssImageState.Failed
+            }
         } catch (_: Exception) {
             RssImageState.Failed
         }
@@ -644,6 +652,8 @@ private fun RssPreviewImage(sourceId: String, guid: String, index: Int) {
     when (val current = state) {
         RssImageState.Loading -> FluxText(str(R.string.rssImageLoading), style = FluxTheme.type.sm)
         RssImageState.Failed -> FluxText(str(R.string.rssImageLoadFailed), style = FluxTheme.type.sm)
+        RssImageState.ProxyDestinationUnverifiable ->
+            FluxText(str(R.string.rssImageProxyUnverifiable), style = FluxTheme.type.sm)
         is RssImageState.Ready -> Image(
             bitmap = remember(current) { current.bitmap.asImageBitmap() },
             contentDescription = str(R.string.rssViewImages),

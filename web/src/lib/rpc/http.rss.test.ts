@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
-import { fetchRssImage } from './http'
+import { fetchRssImage, RssImageProxyUnverifiableError } from './http'
 
 const PNG = Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3)
 const originalFetch = globalThis.fetch
@@ -63,6 +63,18 @@ test('one unavailable RSS image does not prevent another image from loading', as
   ])
   expect(results.map((result) => result.status)).toEqual(['rejected', 'fulfilled'])
   expect(controller.signal.aborted).toBe(false)
+})
+
+test('only the marked RSS image denial is reported as an unverifiable proxy destination', async () => {
+  const signal = new AbortController().signal
+  globalThis.fetch = async () => new Response(null, {
+    status: 403,
+    headers: { 'X-FluxDown-Rss-Image-Proxy-Unverifiable': '1' },
+  })
+  await expect(fetchRssImage('source', 'item', 0, signal)).rejects.toBeInstanceOf(RssImageProxyUnverifiableError)
+
+  globalThis.fetch = async () => new Response(null, { status: 403 })
+  await expect(fetchRssImage('source', 'item', 0, signal)).rejects.not.toBeInstanceOf(RssImageProxyUnverifiableError)
 })
 
 test('RSS rejects content with a PNG media type but a non-PNG signature', async () => {

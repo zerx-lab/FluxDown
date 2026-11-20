@@ -7,6 +7,7 @@ use std::pin::Pin;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
+use fluxdown_protocol::error::RSS_IMAGE_PROXY_UNVERIFIABLE_HEADER;
 use fluxdown_protocol::method;
 use fluxdown_protocol::{
     AgentEvent, ApplicationErrorCode, CLOSE_REASON_SERVICE_QUIT, DaemonEvent, EventFrame,
@@ -347,6 +348,15 @@ async fn fetch_agent_png(
         .send()
         .await
         .map_err(|_| unavailable_error())?;
+    if response.status() == reqwest::StatusCode::FORBIDDEN
+        && response
+            .headers()
+            .get(RSS_IMAGE_PROXY_UNVERIFIABLE_HEADER)
+            .is_some_and(|value| value == "1")
+    {
+        return Err(RpcErrorData::new(ApplicationErrorCode::Unavailable, false)
+            .with_reason(fluxdown_protocol::ErrorReason::RssImageProxyUnverifiable));
+    }
     let content_type = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)

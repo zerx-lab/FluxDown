@@ -64,6 +64,7 @@ export type ErrorReason =
   | 'taskFilesInUse'
   | 'taskFilesNotDeleted'
   | 'browserRequestRequired'
+  | 'rssImageProxyUnverifiable'
   | 'pairingCodeInvalid'
   | 'pairingSessionExpired'
   | 'pairingTimeout'
