@@ -1376,7 +1376,6 @@ impl Db {
         let mut db = Self::connect_uninitialized(&url).await?;
         db.staging_owner = Self::load_staging_owner(dir)?;
         db.init_schema().await?;
-        db.migrate_http_checkpoint_operations().await?;
         db.recover_http_restart_staging().await;
         Ok((db, guard))
     }
@@ -1414,28 +1413,42 @@ impl Db {
             guard.postgres_connection = Some(tokio::sync::Mutex::new(connection));
         }
         db.init_schema().await?;
-        db.migrate_http_checkpoint_operations().await?;
         db.recover_http_restart_staging().await;
         Ok((db, guard))
     }
 
     fn load_staging_owner(data_dir: &Path) -> Result<String, DbError> {
         let path = data_dir.join("http-restart-owner");
-        match std::fs::read_to_string(&path) {
-            Ok(owner) if uuid::Uuid::parse_str(&owner).is_ok() => Ok(owner),
-            Ok(_) => Err(DbError::InvalidConfig("invalid HTTP staging owner".into())),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let owner = uuid::Uuid::new_v4().to_string();
-                let mut file = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(path)?;
-                std::io::Write::write_all(&mut file, owner.as_bytes())?;
-                file.sync_all()?;
-                Ok(owner)
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                if let Ok(owner) = std::str::from_utf8(&bytes)
+                    && uuid::Uuid::parse_str(owner.trim()).is_ok()
+                {
+                    return Ok(owner.trim().to_owned());
+                }
+                crate::logger::report_warning(
+                    "http-download",
+                    "replace invalid staging owner; old recovery records will be left untouched",
+                    &std::io::Error::other(format!("invalid owner in {}", path.display())),
+                );
             }
-            Err(error) => Err(error.into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
         }
+        let owner = uuid::Uuid::new_v4().to_string();
+        let temporary = data_dir.join(format!(".http-restart-owner-{owner}.tmp"));
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        let written =
+            std::io::Write::write_all(&mut file, owner.as_bytes()).and_then(|()| file.sync_all());
+        drop(file);
+        if let Err(error) = written.and_then(|()| std::fs::rename(&temporary, &path)) {
+            let _remove_temporary = std::fs::remove_file(temporary);
+            return Err(error.into());
+        }
+        Ok(owner)
     }
 
     pub(crate) async fn record_http_restart_staging(&self, path: &str) -> Result<(), DbError> {
@@ -1456,41 +1469,6 @@ impl Db {
         Ok(())
     }
 
-    async fn migrate_http_checkpoint_operations(&self) -> Result<(), DbError> {
-        let exists_sql = match self.backend {
-            Backend::Sqlite => {
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'
-                                AND name = 'http_restart_checkpoint_cleanup'"
-            }
-            Backend::Postgres => {
-                "SELECT COUNT(*) FROM information_schema.tables
-                                  WHERE table_schema = current_schema()
-                                  AND table_name = 'http_restart_checkpoint_cleanup'"
-            }
-        };
-        let mut tx = self.pool.begin().await?;
-        if sqlx::query_scalar::<_, i64>(AssertSqlSafe(exists_sql))
-            .fetch_one(&mut *tx)
-            .await?
-            != 0
-        {
-            sqlx::query(
-                "INSERT INTO http_restart_checkpoint_operations
-                     (owner, task_id, epoch, path, file_identity, quarantine)
-                 SELECT owner, task_id, epoch, path, file_identity, quarantine
-                 FROM http_restart_checkpoint_cleanup WHERE 1 = 1
-                 ON CONFLICT (owner, quarantine) DO NOTHING",
-            )
-            .execute(&mut *tx)
-            .await?;
-            sqlx::query("DROP TABLE http_restart_checkpoint_cleanup")
-                .execute(&mut *tx)
-                .await?;
-        }
-        tx.commit().await?;
-        Ok(())
-    }
-
     pub(crate) async fn record_http_checkpoint_cleanup(
         &self,
         task_id: &str,
@@ -1498,8 +1476,11 @@ impl Db {
         path: &str,
         identity: &str,
     ) -> Result<(), DbError> {
-        let quarantine =
-            Path::new(path).with_file_name(format!(".fluxdown-retired-{}", uuid::Uuid::new_v4()));
+        let name = format!(".fluxdown-retired-{}", uuid::Uuid::new_v4());
+        let quarantine = Path::new(path).with_file_name(&name);
+        let quarantine_path = quarantine
+            .to_str()
+            .ok_or_else(|| DbError::InvalidConfig("non-UTF-8 checkpoint quarantine path".into()))?;
         let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
         {
@@ -1507,13 +1488,7 @@ impl Db {
             builder.mode(0o700);
         }
         builder.create(&quarantine)?;
-        std::fs::write(
-            quarantine.join("owner"),
-            quarantine
-                .file_name()
-                .expect("generated name")
-                .as_encoded_bytes(),
-        )?;
+        std::fs::write(quarantine.join("owner"), name.as_bytes())?;
         sqlx::query(
             "INSERT INTO http_restart_checkpoint_operations
                  (owner, task_id, epoch, path, file_identity, quarantine)
@@ -1524,7 +1499,7 @@ impl Db {
         .bind(epoch)
         .bind(path)
         .bind(identity)
-        .bind(quarantine.to_str().expect("UTF-8 checkpoint parent"))
+        .bind(quarantine_path)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1581,11 +1556,20 @@ impl Db {
             return Ok(());
         };
         let can_retire = epoch >= 0 && current == Some((3, epoch));
-        crate::downloader::remove_replaced_http_checkpoint(
-            Path::new(&path),
-            can_retire.then_some(identity.as_str()),
-            Path::new(quarantine),
-        )?;
+        // Keep the transaction with the filesystem work so cancelling this
+        // future cannot release the epoch guard while a move is still running.
+        let quarantine_path = PathBuf::from(quarantine);
+        let (mut tx, removal) = tokio::task::spawn_blocking(move || {
+            let removal = crate::downloader::remove_replaced_http_checkpoint(
+                Path::new(&path),
+                can_retire.then_some(identity.as_str()),
+                &quarantine_path,
+            );
+            (tx, removal)
+        })
+        .await
+        .map_err(std::io::Error::other)?;
+        removal?;
         if can_retire {
             // Unlike delete_segments(), preserve the completed task's progress and counters.
             sqlx::query("DELETE FROM task_segments WHERE task_id = $1")
@@ -1602,8 +1586,8 @@ impl Db {
         .await?;
         tx.commit().await?;
         // Never remove a nonempty quarantine: it may contain an unexpected file.
-        let _ = std::fs::remove_file(Path::new(quarantine).join("owner"));
-        let _ = std::fs::remove_dir(quarantine);
+        let _remove_owner = tokio::fs::remove_file(Path::new(quarantine).join("owner")).await;
+        let _remove_quarantine = tokio::fs::remove_dir(quarantine).await;
         Ok(())
     }
 
@@ -10428,10 +10412,13 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&dir).expect("create writer test dir");
+        std::fs::write(dir.join("http-restart-owner"), b"").expect("interrupted owner write");
 
         let (first_db, first_guard) = Db::open_exclusive(&dir).await.expect("first writer");
         let dir = dir.canonicalize().expect("canonical test directory");
-        let recorded = dir.join(format!(".fluxdown-restart-{}", uuid::Uuid::new_v4()));
+        let save_dir = dir.join("save");
+        std::fs::create_dir(&save_dir).expect("create save directory");
+        let recorded = save_dir.join(format!(".fluxdown-restart-{}", uuid::Uuid::new_v4()));
         let unrelated = dir.join(format!(".fluxdown-restart-{}", uuid::Uuid::new_v4()));
         first_db
             .record_http_restart_staging(recorded.to_str().expect("UTF-8 test path"))
@@ -10455,6 +10442,13 @@ mod tests {
         let second = Db::open_exclusive(&dir).await;
         assert!(matches!(second, Err(DbError::WriterLeaseHeld(_))));
         assert!(recorded.join("download").is_file());
+        std::fs::write(
+            dir.join("http-restart-owner"),
+            format!("{}\n", first_db.staging_owner),
+        )
+        .expect("write owner with trailing newline");
+        let offline = dir.join("offline");
+        std::fs::rename(&save_dir, &offline).expect("take save directory offline");
 
         first_db.pool.close().await;
         drop(first_db);
@@ -10463,6 +10457,8 @@ mod tests {
         let (next_db, next_guard) = Db::open_exclusive(&dir)
             .await
             .expect("writer after release");
+        std::fs::rename(offline, save_dir).expect("bring save directory back online");
+        next_db.recover_http_restart_staging().await;
         assert!(!recorded.exists());
         assert!(unrelated.join("download").is_file());
         next_db.pool.close().await;
@@ -10591,15 +10587,6 @@ mod tests {
         // Simulate a crash after the restore's hard link, before unlinking.
         std::fs::remove_file(&path).unwrap();
         std::fs::hard_link(&isolated, &path).unwrap();
-        // Preserve recovery across the previous worktree schema as well.
-        sqlx::raw_sql(
-            "CREATE TABLE http_restart_checkpoint_cleanup AS
-             SELECT * FROM http_restart_checkpoint_operations;
-             DELETE FROM http_restart_checkpoint_operations;",
-        )
-        .execute(&db.pool)
-        .await
-        .unwrap();
         db.pool.close().await;
         drop(guard);
 

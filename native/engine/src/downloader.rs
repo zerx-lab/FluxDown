@@ -4279,21 +4279,14 @@ struct RangeRestart {
 
 impl RangeRestart {
     async fn create(db: &Db, dir: &Path) -> Result<Self, DownloadError> {
-        let dir = tokio::fs::canonicalize(dir)
-            .await?
-            .join(format!(".fluxdown-restart-{}", uuid::Uuid::new_v4()));
+        let name = format!(".fluxdown-restart-{}", uuid::Uuid::new_v4());
+        let dir = tokio::fs::canonicalize(dir).await?.join(&name);
         let key = dir
             .to_str()
             .ok_or_else(|| DownloadError::Other("non-UTF-8 staging path".into()))?;
         db.record_http_restart_staging(key).await?;
         tokio::fs::create_dir(&dir).await?;
-        tokio::fs::write(
-            dir.join("owner"),
-            dir.file_name()
-                .expect("generated staging name")
-                .as_encoded_bytes(),
-        )
-        .await?;
+        tokio::fs::write(dir.join("owner"), name.as_bytes()).await?;
         Ok(Self {
             path: dir.join("download"),
             dir,
@@ -4313,7 +4306,7 @@ impl RangeRestart {
 
 impl Drop for RangeRestart {
     fn drop(&mut self) {
-        let _ = clean_http_restart_staging(&self.dir);
+        let _cleanup = clean_http_restart_staging(&self.dir);
     }
 }
 
@@ -4342,16 +4335,22 @@ pub(crate) fn http_checkpoint_identity(path: &Path) -> std::io::Result<String> {
         use windows_sys::Win32::Storage::FileSystem::{
             BY_HANDLE_FILE_INFORMATION, FILE_FLAG_OPEN_REPARSE_POINT, GetFileInformationByHandle,
         };
+        // Stable Windows metadata does not expose the volume serial and file
+        // index needed to distinguish different files at the same path.
+        // Open the reparse point itself rather than following a replacement.
         let file = std::fs::OpenOptions::new()
             .access_mode(0)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
             .open(path)?;
         let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+        // SAFETY: `file` owns a live handle and `info` points to writable storage
+        // for a BY_HANDLE_FILE_INFORMATION.
         if unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), info.as_mut_ptr()) }
             == 0
         {
             return Err(std::io::Error::last_os_error());
         }
+        // SAFETY: GetFileInformationByHandle initialized `info` on success.
         let info = unsafe { info.assume_init() };
         Ok(format!(
             "{}:{}:{}:{}:{}:{}:{}:{}:{}",
@@ -4423,11 +4422,12 @@ pub(crate) fn remove_replaced_http_checkpoint(
 }
 
 pub(crate) fn clean_http_restart_staging(dir: &Path) -> std::io::Result<()> {
+    let Some(name) = dir.file_name().and_then(|name| name.to_str()) else {
+        return Err(std::io::Error::other("invalid HTTP restart staging path"));
+    };
     if !dir.is_absolute()
-        || !dir
-            .file_name()
-            .and_then(|name| name.to_str())
-            .and_then(|name| name.strip_prefix(".fluxdown-restart-"))
+        || !name
+            .strip_prefix(".fluxdown-restart-")
             .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
     {
         return Err(std::io::Error::other("invalid HTTP restart staging path"));
@@ -4439,13 +4439,21 @@ pub(crate) fn clean_http_restart_staging(dir: &Path) -> std::io::Result<()> {
                 "HTTP restart staging path is not a directory",
             ));
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // A missing save directory can mean the storage is offline.
+            let parent = dir
+                .parent()
+                .ok_or_else(|| std::io::Error::other("missing HTTP staging parent"))?;
+            if !std::fs::metadata(parent)?.is_dir() {
+                return Err(std::io::Error::other(
+                    "HTTP staging parent is not a directory",
+                ));
+            }
+            return Ok(());
+        }
         Err(error) => return Err(error),
     }
-    let expected = dir
-        .file_name()
-        .expect("validated staging name")
-        .as_encoded_bytes();
+    let expected = name.as_bytes();
     #[cfg(unix)]
     {
         use std::io::Read;
@@ -4455,7 +4463,10 @@ pub(crate) fn clean_http_restart_staging(dir: &Path) -> std::io::Result<()> {
             .read(true)
             .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
             .open(dir)?;
-        // Resolve the marker and children relative to the same open directory.
+        // The marker and children must resolve against the same directory
+        // even if its pathname is replaced after validation. std::fs only
+        // offers pathname-based removal, not removal relative to an open fd.
+        // SAFETY: `handle` keeps the directory fd open and `owner` is a C string.
         let fd = unsafe {
             libc::openat(
                 handle.as_raw_fd(),
@@ -4466,6 +4477,7 @@ pub(crate) fn clean_http_restart_staging(dir: &Path) -> std::io::Result<()> {
         if fd < 0 {
             return Err(std::io::Error::last_os_error());
         }
+        // SAFETY: successful openat returned a new fd whose ownership transfers to File.
         let marker = unsafe { std::fs::File::from_raw_fd(fd) };
         if !marker.metadata()?.is_file() {
             return Err(std::io::Error::other("invalid HTTP staging marker"));
@@ -4476,6 +4488,7 @@ pub(crate) fn clean_http_restart_staging(dir: &Path) -> std::io::Result<()> {
             return Err(std::io::Error::other("HTTP staging ownership mismatch"));
         }
         for name in [c"download", c"checkpoint", c"owner"] {
+            // SAFETY: `handle` keeps the directory fd open and `name` is a C string.
             if unsafe { libc::unlinkat(handle.as_raw_fd(), name.as_ptr(), 0) } != 0 {
                 let error = std::io::Error::last_os_error();
                 if error.kind() != std::io::ErrorKind::NotFound {
@@ -5539,7 +5552,7 @@ async fn run_download_inner(
         // 传输错误），此时残留一个完整大小、内容错误的临时文件毫无意义——既
         // 占用磁盘，又会让后续 resume 基于 existing_len 做出错误判断。删除它，
         // 让下次重试从干净状态开始。删除失败仅记日志，不掩盖原始 checksum 错误。
-        let verified = match verify_checksum(&temp_path, &p.checksum).await {
+        let verified = match verify_checksum(temp_path, &p.checksum).await {
             Ok(verified) => verified,
             Err(e) => {
                 if let Err(rm_err) = tokio::fs::remove_file(&temp_path).await {
@@ -5625,7 +5638,7 @@ async fn run_download_inner(
     let target_name = if html_only {
         actual_name.clone()
     } else {
-        refine_completed_name(p, &temp_path, &actual_name).await
+        refine_completed_name(p, temp_path, &actual_name).await
     };
     let mut chosen = target_name.clone();
     let mut avoid: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -5636,7 +5649,7 @@ async fn run_download_inner(
     let mut attempt = 0u32;
     loop {
         let dst = save_dir.join(&chosen);
-        match claim_rename(&temp_path, &dst).await {
+        match claim_rename(temp_path, &dst).await {
             Ok(()) => break,
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 attempt += 1;
@@ -5724,8 +5737,14 @@ async fn run_download_inner(
         let cleanup = async {
             // Bind the pending cleanup before reporting success. A retry may
             // only remove this exact file, never a newer occupant of the path.
-            let dir = staged.dir.parent().expect("staging directory has a parent");
-            let path = dir.join(checkpoint_path.file_name().expect("checkpoint has a name"));
+            let dir = staged
+                .dir
+                .parent()
+                .ok_or_else(|| DownloadError::Other("staging directory has no parent".into()))?;
+            let name = checkpoint_path
+                .file_name()
+                .ok_or_else(|| DownloadError::Other("checkpoint has no file name".into()))?;
+            let path = dir.join(name);
             let identity = match http_checkpoint_identity(&path) {
                 Ok(identity) => identity,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),

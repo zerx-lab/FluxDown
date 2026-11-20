@@ -38,7 +38,7 @@ Download progress — including the exact byte ranges of every segment — is wr
   For transport failures, the task error includes the underlying cause and any detected network failure category. This is diagnostic information, not a signal to retry automatically.
   Recovery only uses records for the same engine data directory and skips staging directories whose ownership marker does not match.
   If removing the old checkpoint or its segment records fails after completion, FluxDown retries on the next exclusive database open. It leaves a replacement file at the old path untouched.
-  If a file is moved into quarantine while its original path is being reused, FluxDown keeps the quarantined file until it can restore it without overwriting the occupant.
+  `.fluxdown-retired-*` directories quarantine old checkpoints. If the original path is reused, a directory may hold a file that needs to be restored. Do not delete it manually; FluxDown restores the file when it can do so without overwriting the current occupant.
 
 ## Cookies, headers, User-Agent and Referer
 
