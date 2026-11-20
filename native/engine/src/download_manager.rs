@@ -25042,8 +25042,8 @@ mod tests {
         // Simulate a stop after committing the unlink intent but before touching disk.
         assert!(
             db.begin_task_file_clear("t-clear")
-            .await
-            .expect("mark pending")
+                .await
+                .expect("mark pending")
         );
         let stale_scan = [("t-clear".to_owned(), true)];
         assert!(
@@ -25083,8 +25083,8 @@ mod tests {
         insert_task_at_status(&db, "t-unlinked", &save_dir, "gone.bin", 3).await;
         assert!(
             db.begin_task_file_clear("t-unlinked")
-            .await
-            .expect("mark pending")
+                .await
+                .expect("mark pending")
         );
         recover_pending_file_clears(&db).await.expect("recover");
         assert!(
@@ -25278,11 +25278,7 @@ mod tests {
         let id = "pending-clear";
         insert_task_at_status(&db, id, &save_dir.to_string_lossy(), "done.bin", 3).await;
         db.update_task_progress(id, 9).await.expect("seed progress");
-        assert!(
-            db.begin_task_file_clear(id)
-                .await
-                .expect("commit intent")
-        );
+        assert!(db.begin_task_file_clear(id).await.expect("commit intent"));
         std::fs::remove_file(&path).expect("unlink before interrupted DB commit");
         std::fs::rename(&save_dir, &detached).expect("simulate detached save directory");
         recover_pending_file_clears(&db)
@@ -25887,11 +25883,7 @@ mod tests {
         insert_task_at_status(&db, id, &save_dir.to_string_lossy(), "done.bin", 3).await;
         let path = save_dir.join("done.bin");
         std::fs::write(&path, b"completed output").expect("seed output");
-        assert!(
-            db.begin_task_file_clear(id)
-                .await
-                .expect("commit intent")
-        );
+        assert!(db.begin_task_file_clear(id).await.expect("commit intent"));
         std::fs::rename(&save_dir, &detached).expect("simulate detached save directory");
 
         // An unreachable directory is not evidence of a successful unlink.
