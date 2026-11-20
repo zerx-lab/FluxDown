@@ -4310,6 +4310,35 @@ impl Drop for RangeRestart {
     }
 }
 
+pub(crate) fn http_staging_parent_identity(dir: &Path) -> std::io::Result<String> {
+    let parent = dir
+        .parent()
+        .ok_or_else(|| std::io::Error::other("missing HTTP staging parent"))?;
+    let meta = std::fs::symlink_metadata(parent)?;
+    if !meta.is_dir() {
+        return Err(std::io::Error::other(
+            "HTTP staging parent is not a directory",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Ok(format!("{}:{}", meta.dev(), meta.ino()))
+    }
+    #[cfg(windows)]
+    {
+        let info = http_windows_file_information(parent)?;
+        Ok(format!(
+            "{}:{}:{}:{}:{}",
+            info.dwVolumeSerialNumber,
+            info.nFileIndexHigh,
+            info.nFileIndexLow,
+            info.ftCreationTime.dwHighDateTime,
+            info.ftCreationTime.dwLowDateTime,
+        ))
+    }
+}
+
 pub(crate) fn http_checkpoint_identity(path: &Path) -> std::io::Result<String> {
     let meta = std::fs::symlink_metadata(path)?;
     if !meta.is_file() {
@@ -4331,27 +4360,7 @@ pub(crate) fn http_checkpoint_identity(path: &Path) -> std::io::Result<String> {
     }
     #[cfg(windows)]
     {
-        use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
-        use windows_sys::Win32::Storage::FileSystem::{
-            BY_HANDLE_FILE_INFORMATION, FILE_FLAG_OPEN_REPARSE_POINT, GetFileInformationByHandle,
-        };
-        // Stable Windows metadata does not expose the volume serial and file
-        // index needed to distinguish different files at the same path.
-        // Open the reparse point itself rather than following a replacement.
-        let file = std::fs::OpenOptions::new()
-            .access_mode(0)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(path)?;
-        let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
-        // SAFETY: `file` owns a live handle and `info` points to writable storage
-        // for a BY_HANDLE_FILE_INFORMATION.
-        if unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), info.as_mut_ptr()) }
-            == 0
-        {
-            return Err(std::io::Error::last_os_error());
-        }
-        // SAFETY: GetFileInformationByHandle initialized `info` on success.
-        let info = unsafe { info.assume_init() };
+        let info = http_windows_file_information(path)?;
         Ok(format!(
             "{}:{}:{}:{}:{}:{}:{}:{}:{}",
             info.dwVolumeSerialNumber,
@@ -4365,6 +4374,29 @@ pub(crate) fn http_checkpoint_identity(path: &Path) -> std::io::Result<String> {
             info.ftLastWriteTime.dwLowDateTime,
         ))
     }
+}
+
+#[cfg(windows)]
+fn http_windows_file_information(
+    path: &Path,
+) -> std::io::Result<windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION> {
+    use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        GetFileInformationByHandle,
+    };
+    // Stable Windows metadata does not expose the volume serial and file index.
+    let file = std::fs::OpenOptions::new()
+        .access_mode(0)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?;
+    let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+    // SAFETY: `file` owns a live handle and `info` points to writable storage.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), info.as_mut_ptr()) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: GetFileInformationByHandle initialized `info` on success.
+    Ok(unsafe { info.assume_init() })
 }
 
 pub(crate) fn remove_replaced_http_checkpoint(
@@ -4466,7 +4498,12 @@ pub(crate) fn clean_http_restart_staging(dir: &Path) -> std::io::Result<()> {
             )
         };
         if fd < 0 {
-            return Err(std::io::Error::last_os_error());
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::NotFound {
+                // Only an empty directory is safe to remove without a marker.
+                return std::fs::remove_dir(dir);
+            }
+            return Err(error);
         }
         // SAFETY: successful openat returned a new fd whose ownership transfers to File.
         let marker = unsafe { std::fs::File::from_raw_fd(fd) };
@@ -4491,6 +4528,11 @@ pub(crate) fn clean_http_restart_staging(dir: &Path) -> std::io::Result<()> {
     #[cfg(not(unix))]
     {
         let marker = dir.join("owner");
+        if let Err(error) = std::fs::symlink_metadata(&marker)
+            && error.kind() == std::io::ErrorKind::NotFound
+        {
+            return std::fs::remove_dir(dir);
+        }
         if !std::fs::symlink_metadata(&marker)?.is_file() || std::fs::read(marker)? != expected {
             return Err(std::io::Error::other("HTTP staging ownership mismatch"));
         }

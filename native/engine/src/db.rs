@@ -169,7 +169,7 @@ CREATE TABLE IF NOT EXISTS task_segments (
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS http_restart_owned_staging (
-    owner TEXT NOT NULL, path TEXT NOT NULL, PRIMARY KEY (owner, path)
+    owner TEXT NOT NULL, path TEXT NOT NULL, parent_identity TEXT, PRIMARY KEY (owner, path)
 );
 CREATE TABLE IF NOT EXISTS http_restart_checkpoint_operations (
     owner TEXT NOT NULL, task_id TEXT NOT NULL, epoch BIGINT NOT NULL,
@@ -479,7 +479,7 @@ CREATE TABLE IF NOT EXISTS task_segments (
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS http_restart_owned_staging (
-    owner TEXT NOT NULL, path TEXT NOT NULL, PRIMARY KEY (owner, path)
+    owner TEXT NOT NULL, path TEXT NOT NULL, parent_identity TEXT, PRIMARY KEY (owner, path)
 );
 CREATE TABLE IF NOT EXISTS http_restart_checkpoint_operations (
     owner TEXT NOT NULL, task_id TEXT NOT NULL, epoch BIGINT NOT NULL,
@@ -1452,11 +1452,15 @@ impl Db {
     }
 
     pub(crate) async fn record_http_restart_staging(&self, path: &str) -> Result<(), DbError> {
-        sqlx::query("INSERT INTO http_restart_owned_staging (owner, path) VALUES ($1, $2)")
-            .bind(&self.staging_owner)
-            .bind(path)
-            .execute(&self.pool)
-            .await?;
+        let parent_identity = crate::downloader::http_staging_parent_identity(Path::new(path))?;
+        sqlx::query(
+            "INSERT INTO http_restart_owned_staging (owner, path, parent_identity) VALUES ($1, $2, $3)",
+        )
+        .bind(&self.staging_owner)
+        .bind(path)
+        .bind(parent_identity)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -1614,16 +1618,34 @@ impl Db {
         if let Err(error) = self.recover_http_checkpoints().await {
             crate::logger::report_warning("http-download", "load old checkpoint cleanup", &error);
         }
-        let entries = sqlx::query_scalar::<_, String>(
-            "SELECT path FROM http_restart_owned_staging WHERE owner = $1",
+        let entries = sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT path, parent_identity FROM http_restart_owned_staging WHERE owner = $1",
         )
         .bind(&self.staging_owner)
         .fetch_all(&self.pool)
         .await;
         match entries {
             Ok(entries) => {
-                for path in entries {
-                    match crate::downloader::clean_http_restart_staging(Path::new(&path)) {
+                for (path, parent_identity) in entries {
+                    let dir = Path::new(&path);
+                    let parent_matches = || {
+                        parent_identity.as_ref().is_some_and(|expected| {
+                            crate::downloader::http_staging_parent_identity(dir)
+                                .is_ok_and(|actual| actual == *expected)
+                        })
+                    };
+                    let same_parent = parent_matches();
+                    let cleaned = match crate::downloader::clean_http_restart_staging(dir) {
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            // Absence is conclusive only on the recorded filesystem.
+                            if !(same_parent && parent_matches()) {
+                                continue;
+                            }
+                            Ok(())
+                        }
+                        result => result,
+                    };
+                    match cleaned {
                         Ok(()) => {
                             if let Err(error) = self.clear_http_restart_staging(&path).await {
                                 crate::logger::report_warning(
@@ -1770,6 +1792,8 @@ impl Db {
         sqlx::raw_sql(schema).execute(&self.pool).await?;
 
         // --- Schema migrations（幂等，只为升级旧库；新库建表已含全量列） ---
+        self.add_column_if_missing("http_restart_owned_staging", "parent_identity", "TEXT")
+            .await?;
         // bt_guard：strike 衰减改按「最近一次封禁到期时刻」起算。
         self.add_column_if_missing(
             "bt_guard_strikes",
@@ -10424,6 +10448,16 @@ mod tests {
             .record_http_restart_staging(recorded.to_str().expect("UTF-8 test path"))
             .await
             .expect("persist staging ownership");
+        let deleted = save_dir.join(format!(".fluxdown-restart-{}", uuid::Uuid::new_v4()));
+        let markerless = save_dir.join(format!(".fluxdown-restart-{}", uuid::Uuid::new_v4()));
+        for path in [&deleted, &markerless] {
+            std::fs::create_dir(path).unwrap();
+            first_db
+                .record_http_restart_staging(path.to_str().unwrap())
+                .await
+                .unwrap();
+        }
+        std::fs::remove_dir(&deleted).unwrap();
         for path in [&recorded, &unrelated] {
             std::fs::create_dir(path).expect("create staging");
             std::fs::write(path.join("download"), b"transfer").expect("write staging");
@@ -10450,6 +10484,7 @@ mod tests {
         let offline = dir.join("offline");
         std::fs::rename(&save_dir, &offline).expect("take save directory offline");
         std::fs::create_dir(&save_dir).expect("leave an empty mount point");
+        std::fs::write(save_dir.join("placeholder"), b"not the mounted storage").unwrap();
 
         first_db.pool.close().await;
         drop(first_db);
@@ -10458,10 +10493,17 @@ mod tests {
         let (next_db, next_guard) = Db::open_exclusive(&dir)
             .await
             .expect("writer after release");
+        std::fs::remove_file(save_dir.join("placeholder")).unwrap();
         std::fs::remove_dir(&save_dir).expect("remove empty mount point");
         std::fs::rename(offline, save_dir).expect("bring save directory back online");
         next_db.recover_http_restart_staging().await;
         assert!(!recorded.exists());
+        assert!(!markerless.exists());
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM http_restart_owned_staging")
+            .fetch_one(&next_db.pool)
+            .await
+            .unwrap();
+        assert_eq!(remaining, 0);
         assert!(unrelated.join("download").is_file());
         next_db.pool.close().await;
         drop(next_db);
