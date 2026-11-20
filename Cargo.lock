@@ -3545,6 +3545,7 @@ dependencies = [
  "windows 0.61.3",
  "windows-sys 0.59.0",
  "winreg 0.55.0",
+ "winresource",
  "x11rb",
  "zip",
 ]
@@ -3606,6 +3607,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "winresource",
 ]
 
 [[package]]

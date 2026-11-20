@@ -4,11 +4,18 @@ const WINDOWS_APP_ICON: &str = "../../assets/logo/windows/app_icon.ico";
 
 fn main() -> std::io::Result<()> {
     println!("cargo:rerun-if-changed={WINDOWS_APP_ICON}");
+    println!("cargo:rerun-if-changed=../../native/protocol/build/windows_version_info.rs");
+    println!("cargo:rerun-if-env-changed=FLUXDOWN_APP_VERSION");
 
     #[cfg(windows)]
     embed_windows_resources()?;
 
     Ok(())
+}
+
+#[cfg(windows)]
+mod version_info {
+    include!("../../native/protocol/build/windows_version_info.rs");
 }
 
 /// 资源 ID 1 是 Windows Explorer 与 GPUI Windows 后端共同读取的默认图标。
@@ -19,14 +26,7 @@ fn main() -> std::io::Result<()> {
 fn embed_windows_resources() -> std::io::Result<()> {
     let mut resources = winresource::WindowsResource::new();
     resources.set_icon(WINDOWS_APP_ICON);
-    resources.set("CompanyName", "FluxDown");
-    resources.set("ProductName", "FluxDown");
-    resources.set("FileDescription", "FluxDown");
+    version_info::apply_version_info(&mut resources, "FluxDown", "fluxdown-desktop.exe");
     resources.set("InternalName", "com.fluxdown.app");
-    resources.set("OriginalFilename", "fluxdown-desktop.exe");
-    resources.set(
-        "LegalCopyright",
-        "Copyright (C) 2026 FluxDown. All rights reserved.",
-    );
     resources.compile()
 }
