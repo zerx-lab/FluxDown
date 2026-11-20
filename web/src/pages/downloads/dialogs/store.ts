@@ -38,6 +38,7 @@ export interface DialogsState {
   moveStorage: string | null
   /** 「任务限速…」的 BT 任务 id。 */
   taskLimits: string | null
+  addWebSeed: { taskId: string; session: number } | null
   seedLocal: boolean
 }
 
@@ -51,6 +52,7 @@ let state: DialogsState = {
   changeSegments: null,
   moveStorage: null,
   taskLimits: null,
+  addWebSeed: null,
   seedLocal: false,
 }
 let counter = 0
@@ -68,8 +70,12 @@ const subscribe = (listener: () => void): (() => void) => {
   }
 }
 
+export function getDialogsState(): DialogsState {
+  return state
+}
+
 export function useDialogsState(): DialogsState {
-  return useSyncExternalStore(subscribe, () => state)
+  return useSyncExternalStore(subscribe, getDialogsState)
 }
 
 export function openNewDownload(options: NewDownloadOptions = {}): void {
@@ -162,6 +168,17 @@ export function openTaskLimits(taskId: string): void {
 
 export function closeTaskLimits(): void {
   publish({ taskLimits: null })
+}
+
+export function openAddWebSeed(taskId: string): void {
+  counter += 1
+  publish({ addWebSeed: { taskId, session: counter } })
+}
+
+export function closeAddWebSeed(session: number): void {
+  // 请求可以在面板关闭后完成，不能关闭后来打开的面板（即使是同一任务）。
+  if (state.addWebSeed?.session !== session) return
+  publish({ addWebSeed: null })
 }
 
 export function openSeedLocal(): void {

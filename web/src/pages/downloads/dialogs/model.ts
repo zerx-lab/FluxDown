@@ -50,6 +50,34 @@ function urlFileSegment(url: string): string | null {
   return segment === '' ? null : segment
 }
 
+export function batchExportRow(entry: UrlEntry) {
+  const fields = /^ed2k:\/\/\|file\|[^|]+\|(\+?[0-9]+)\|([0-9a-f]{32})(?:\||$)/i.exec(entry.url)
+  const size = Number(fields?.[1])
+  // The engine's eD2k ceiling is below Number.MAX_SAFE_INTEGER.
+  const knownSize = size <= 0x40_0000_0000 &&
+    (size !== 0 || fields?.[2]?.toLowerCase() === '31d6cfe0d16ae931b73c59d7e0c089c0')
+  return { name: batchEntryName(entry), url: entry.url, originUrl: '', sizeBytes: knownSize ? size : null }
+}
+
+function batchEntryName({ fileName, url }: UrlEntry): string {
+  if (fileName !== '') return fileName
+  if (/^magnet:\?/i.test(url)) {
+    const raw = url.slice(8).split('#', 1)[0]?.split('&').find((part) => part.startsWith('dn='))?.slice(3)
+    return decodedMetadataName(raw)
+  }
+  if (/^ed2k:\/\/\|file\|/i.test(url)) {
+    return decodedMetadataName(url.split('|', 3)[2])
+  }
+  const segment = /^(https?|ftp):\/\//i.test(url) ? urlFileSegment(url) : null
+  return segment === null ? '' : safeDecode(segment) ?? segment
+}
+
+function decodedMetadataName(raw: string | undefined): string {
+  if (raw === undefined) return ''
+  const name = safeDecode(raw) ?? raw
+  return rustTrim(name) === '' ? '' : name
+}
+
 const LEADING_URL = /^(?:https?|ftp):\/\/\S+/i
 const INLINE_URL = /(?:https?|ftp):\/\/\S+/i
 

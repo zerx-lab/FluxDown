@@ -8,6 +8,7 @@ import { FLAG_URLS } from '../../../lib/flags/flagUrls'
 import { flagTitle, resolveFlagUrl } from '../../../lib/flags/flags'
 import { cn } from '../../../lib/cn'
 import { ContextMenuArea, EmptyState } from '../../../ui'
+import { useFileSizeUnits, type FileSizeUnits } from '../../../lib/fileSizeUnits'
 import { formatBytes } from '../model/task'
 import type { TaskState } from '../model/task'
 import type { Translate } from '../table/text'
@@ -59,7 +60,7 @@ const NUMERIC: Record<PeerColumn, boolean> = {
   action: false,
 }
 
-const rate = (bps: number): string => (bps > 0 ? `${formatBytes(bps)}/s` : DASH)
+const rate = (bps: number, units: FileSizeUnits): string => (bps > 0 ? `${formatBytes(bps, units)}/s` : DASH)
 
 function TransportChip({ row }: { row: PeerRow }) {
   return (
@@ -71,10 +72,12 @@ function TransportChip({ row }: { row: PeerRow }) {
 
 /** 速度单元：非零用正文色，0 用三级文字色。 */
 function RateCell({ bps }: { bps: number }) {
-  return <span className={cn('tabular truncate text-right text-xs', bps > 0 ? 'text-foreground' : 'text-text-tertiary')}>{rate(bps)}</span>
+  const units = useFileSizeUnits()
+  return <span className={cn('tabular truncate text-right text-xs', bps > 0 ? 'text-foreground' : 'text-text-tertiary')}>{rate(bps, units)}</span>
 }
 
 function Cell({ column, row }: { column: PeerColumn; row: PeerRow }) {
+  const units = useFileSizeUnits()
   switch (column) {
     case 'addr':
       return null
@@ -87,9 +90,9 @@ function Cell({ column, row }: { column: PeerColumn; row: PeerRow }) {
     case 'transport':
       return <TransportChip row={row} />
     case 'downloaded':
-      return <span className="tabular truncate text-right text-xs text-muted-foreground">{formatBytes(row.downloaded)}</span>
+      return <span className="tabular truncate text-right text-xs text-muted-foreground">{formatBytes(row.downloaded, units)}</span>
     case 'uploaded':
-      return <span className="tabular truncate text-right text-xs text-muted-foreground">{formatBytes(row.uploaded)}</span>
+      return <span className="tabular truncate text-right text-xs text-muted-foreground">{formatBytes(row.uploaded, units)}</span>
     case 'downBps':
       return <RateCell bps={row.downBps} />
     case 'upBps':
@@ -97,7 +100,7 @@ function Cell({ column, row }: { column: PeerColumn; row: PeerRow }) {
     case 'groupDelivered':
       return (
         <span title={row.guard.ipGroup} className="tabular truncate text-right text-xs text-muted-foreground">
-          {row.guard.ipGroup === '' ? DASH : formatBytes(row.guard.groupDeliveredBytes)}
+          {row.guard.ipGroup === '' ? DASH : formatBytes(row.guard.groupDeliveredBytes, units)}
         </span>
       )
     case 'suspicion':
@@ -140,6 +143,7 @@ function Row({
   onEvidence: (row: PeerRow) => void
   onBanClient: (row: PeerRow) => void
 }) {
+  const units = useFileSizeUnits()
   const menu = [copyEntry(t('btCopyPeerAddr'), row.addr, null, t), ...peerGuardMenu(row, t, onEvidence, onBanClient)]
   const template = columns.map((c) => COLUMN_WIDTH[c]).join(' ')
 
@@ -156,9 +160,9 @@ function Row({
           <RowCopyButton label={t('btCopyPeerAddr')} value={row.addr} doneKey={null} />
         </div>
         <div className="tabular mt-1 flex flex-wrap items-center gap-x-3 text-xs text-text-tertiary">
-          <span className={row.downBps > 0 ? 'text-foreground' : undefined}>↓ {rate(row.downBps)}</span>
-          <span className={row.upBps > 0 ? 'text-foreground' : undefined}>↑ {rate(row.upBps)}</span>
-          <span>{formatBytes(row.downloaded)} / {formatBytes(row.uploaded)}</span>
+          <span className={row.downBps > 0 ? 'text-foreground' : undefined}>↓ {rate(row.downBps, units)}</span>
+          <span className={row.upBps > 0 ? 'text-foreground' : undefined}>↑ {rate(row.upBps, units)}</span>
+          <span>{formatBytes(row.downloaded, units)} / {formatBytes(row.uploaded, units)}</span>
           {row.client === '' ? null : (
             <span title={row.client} className="min-w-0 truncate whitespace-pre text-muted-foreground">
               {row.client}

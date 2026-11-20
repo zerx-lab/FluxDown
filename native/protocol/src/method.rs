@@ -18,6 +18,8 @@ pub const DAEMON_TASK_ACTIVITY: &str = "daemon.task.activity";
 /// 单任务速度历史（`TaskSpeedHistoryQuery` → `Option<TaskSpeedHistoryDto>`）。
 pub const DAEMON_TASK_SPEED_HISTORY: &str = "daemon.task.speedHistory";
 pub const DAEMON_TASK_CREATE: &str = "daemon.task.create";
+/// Replay a failed HTML response as a new task (`{taskId}` → `CreatedTask`).
+pub const DAEMON_TASK_SAVE_HTML: &str = "daemon.task.saveHtml";
 pub const DAEMON_TASK_PAUSE: &str = "daemon.task.pause";
 pub const DAEMON_TASK_RESUME: &str = "daemon.task.resume";
 pub const DAEMON_TASK_RENAME: &str = "daemon.task.rename";
@@ -81,6 +83,8 @@ pub const DAEMON_TASK_MOVE_STORAGE: &str = "daemon.task.moveStorage";
 pub const DAEMON_TASK_SET_BT_LIMITS: &str = "daemon.task.setBtLimits";
 /// 超级做种开关（`SetTaskSuperSeedingParams`）：任务完成（做种）后才实际生效，可提前设置。
 pub const DAEMON_TASK_SET_SUPER_SEEDING: &str = "daemon.task.setSuperSeeding";
+/// Appends a BEP 19 HTTP source to an existing BitTorrent task (`AddTaskWebSeedParams`).
+pub const DAEMON_TASK_ADD_WEB_SEED: &str = "daemon.task.addWebSeed";
 /// 立即向 tracker 重新汇报（`{taskId}`）；任务当前不在运行返回 `taskStateConflict`。
 pub const DAEMON_TASK_REANNOUNCE: &str = "daemon.task.reannounce";
 /// eD2K 任务实况（`DaemonEd2kStatusParams` → `Ed2kStatusDto`）：源列表、查询过的服务器、Kad 节点
@@ -493,6 +497,7 @@ pub const ALL_METHODS: &[&str] = &[
     DAEMON_TASK_SPEED_HISTORY,
     DAEMON_TASK_CREATE,
     DAEMON_TASK_CREATE_MANY,
+    DAEMON_TASK_SAVE_HTML,
     DAEMON_TASK_PAUSE,
     DAEMON_TASK_RESUME,
     DAEMON_TASK_RENAME,
@@ -521,6 +526,7 @@ pub const ALL_METHODS: &[&str] = &[
     DAEMON_TASK_MOVE_STORAGE,
     DAEMON_TASK_SET_BT_LIMITS,
     DAEMON_TASK_SET_SUPER_SEEDING,
+    DAEMON_TASK_ADD_WEB_SEED,
     DAEMON_TASK_REANNOUNCE,
     DAEMON_TASK_ED2K_STATUS,
     DAEMON_TASK_PAUSE_MANY,

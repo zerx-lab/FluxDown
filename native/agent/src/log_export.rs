@@ -419,9 +419,10 @@ fn is_secret_key(key: &str) -> bool {
     matches!(
         key.as_str(),
         "proxy_username" | "proxy_password" | "proxy_rules" | "webhook.endpoints"
-    ) || ["password", "secret", "token", "authorization", "cookie"]
-        .iter()
-        .any(|needle| key.contains(needle))
+    ) || key.starts_with("proxy_protocol_")
+        || ["password", "secret", "token", "authorization", "cookie"]
+            .iter()
+            .any(|needle| key.contains(needle))
 }
 
 fn redact_secret_values(value: &mut serde_json::Value) {
@@ -492,6 +493,7 @@ mod tests {
                     "proxy_username": "alice",
                     "proxy_password": "hunter2",
                     "proxy_url": "http://127.0.0.1:7890",
+                    "proxy_protocol_bt": "socks5://private-user:p2p-secret@relay.example:1080",
                     "webhook.endpoints":
                         "[{\"url\":\"https://hooks.example.com/x\",\"signSecret\":\"s3cr3t\"}]",
                     "max_concurrent_downloads": "3",
@@ -502,7 +504,14 @@ mod tests {
         let raw = serde_json::to_vec(&snapshot).expect("serialize snapshot");
         let cleaned = sanitize_json_export(&raw);
         let text = String::from_utf8(cleaned.clone()).expect("utf8");
-        for leaked in ["alice", "hunter2", "s3cr3t", "hooks.example.com"] {
+        for leaked in [
+            "alice",
+            "hunter2",
+            "s3cr3t",
+            "hooks.example.com",
+            "private-user",
+            "p2p-secret",
+        ] {
             assert!(!text.contains(leaked), "{leaked} leaked: {text}");
         }
         let value: serde_json::Value = serde_json::from_slice(&cleaned).expect("still JSON");

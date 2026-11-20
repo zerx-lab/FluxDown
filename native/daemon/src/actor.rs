@@ -120,6 +120,9 @@ pub enum ActorOperation {
     ResumeTask {
         task_id: String,
     },
+    SaveHtmlResponse {
+        task_id: String,
+    },
     RenameTask {
         task_id: String,
         file_name: String,
@@ -152,6 +155,10 @@ pub enum ActorOperation {
     SetTaskSuperSeeding {
         task_id: String,
         enabled: bool,
+    },
+    AddTaskWebSeed {
+        task_id: String,
+        url: String,
     },
     DeleteTask {
         task_id: String,
@@ -1000,10 +1007,15 @@ async fn dispatch_operation(
                         .await?
                         .and_then(|value| value.parse::<u16>().ok())
                         .unwrap_or(0);
-                    Ok::<_, fluxdown_engine::db::DbError>((cached, urls, listen_port))
+                    let proxy_url = engine
+                        .db
+                        .get_config(fluxdown_engine::protocol_proxy::ED2K_KEY)
+                        .await?
+                        .unwrap_or_default();
+                    Ok::<_, fluxdown_engine::db::DbError>((cached, urls, listen_port, proxy_url))
                 }
                 .await;
-                let (cached, urls, listen_port) = match inputs {
+                let (cached, urls, listen_port, proxy_url) = match inputs {
                     Ok(inputs) => inputs,
                     Err(error) => {
                         if ack
@@ -1024,6 +1036,7 @@ async fn dispatch_operation(
                         &urls,
                         listen_port,
                         &proxy,
+                        &proxy_url,
                     )
                     .await;
                     if maintenance_tx
@@ -1418,6 +1431,23 @@ async fn execute_operation(
                 ));
             }
         }
+        ActorOperation::AddTaskWebSeed { task_id, url } => {
+            #[cfg(feature = "bt")]
+            {
+                engine
+                    .manager
+                    .add_bt_web_seed(&task_id, &url)
+                    .await
+                    .map_err(bt_task_op_error)?;
+            }
+            #[cfg(not(feature = "bt"))]
+            {
+                let _ = (task_id, url);
+                return Err(ActorError::InvalidArgument(
+                    UNSUPPORTED_PROTOCOL_MESSAGE.to_owned(),
+                ));
+            }
+        }
         ActorOperation::BtTaskFiles { task_id } => {
             #[cfg(feature = "bt")]
             {
@@ -1632,6 +1662,20 @@ async fn execute_operation(
                 return Err(ActorError::InvalidArgument(BT_DISABLED_MESSAGE.to_owned()));
             }
             engine.manager.resume_task(&task_id).await;
+        }
+        ActorOperation::SaveHtmlResponse { task_id } => {
+            let task_id = engine
+                .manager
+                .save_html_response(&task_id)
+                .await
+                .map_err(|error| match error.as_str() {
+                    "not-found" => ActorError::NotFound,
+                    "not-an-html-failure" | "browser-request-unavailable" => {
+                        ActorError::TaskStateConflict(error)
+                    }
+                    _ => ActorError::Operation(error),
+                })?;
+            return Ok(ActorResult::Created(task_id));
         }
         ActorOperation::RenameTask { task_id, file_name } => engine
             .manager
@@ -2820,6 +2864,8 @@ fn bt_status_to_dto(
                     WebSeedState::Downloading => "downloading",
                     WebSeedState::BackingOff => "backingOff",
                     WebSeedState::Disabled => "disabled",
+                    WebSeedState::Pending => "pending",
+                    WebSeedState::Rejected => "rejected",
                 }
                 .to_owned(),
                 downloaded: seed.downloaded,
@@ -3076,10 +3122,16 @@ async fn patch_config(
     {
         return Err(ActorError::InvalidArgument(first.message()));
     }
-    if values
-        .keys()
-        .any(|key| key.starts_with("proxy_") || key == "global_user_agent")
-    {
+    for (key, value) in &values {
+        if fluxdown_engine::protocol_proxy::is_key(key) {
+            fluxdown_engine::protocol_proxy::validate(key, value)
+                .map_err(|error| ActorError::InvalidArgument(format!("{key}: {error}")))?;
+        }
+    }
+    if values.keys().any(|key| {
+        (key.starts_with("proxy_") && !fluxdown_engine::protocol_proxy::is_key(key))
+            || key == "global_user_agent"
+    }) {
         // 与引擎实际应用时一致地构建 client：非法代理或 UA（HeaderValue 规则）
         // 必须在提交前被拒绝，否则毒值落库后会导致下次启动失败。
         let proxy = fluxdown_engine::proxy_config::ProxyConfig::from_config_map(&merged);
@@ -3427,10 +3479,15 @@ async fn apply_live_config<'a>(
             .map_err(|error| ActorError::Operation(format!("{error:#}")))?;
     }
     let rules_key = fluxdown_engine::proxy_rules::PROXY_RULES_KEY;
-    if keys
+    let bt_proxy_changed = keys
         .iter()
-        .any(|key| key.starts_with("proxy_") && *key != rules_key)
-    {
+        .any(|key| fluxdown_engine::protocol_proxy::is_key(key))
+        && engine.manager.set_protocol_proxies(all);
+    if keys.iter().any(|key| {
+        key.starts_with("proxy_")
+            && *key != rules_key
+            && !fluxdown_engine::protocol_proxy::is_key(key)
+    }) {
         engine
             .manager
             .set_proxy_config(fluxdown_engine::proxy_config::ProxyConfig::from_config_map(
@@ -3443,7 +3500,8 @@ async fn apply_live_config<'a>(
             fluxdown_engine::proxy_config::ProxyConfig::from_config_map(all).rules,
         );
     }
-    let bt_session_rebuild = crate::config::bt_session_rebuild_needed(&keys, all);
+    let bt_session_rebuild =
+        bt_proxy_changed || crate::config::bt_session_rebuild_needed(&keys, all);
     if bt_session_rebuild || keys.iter().any(|key| key.starts_with("bt_")) {
         engine
             .manager
@@ -3457,7 +3515,9 @@ async fn apply_live_config<'a>(
     // eD2K 设置热生效：UPnP 开关立即建立 / 撤销映射；服务器列表、Kad 开关与引导节点
     // 订阅由各任务在下一轮找源前重读。监听端口只在监听器首次绑定时读取。
     #[cfg(feature = "ed2k")]
-    if keys.iter().any(|key| key.starts_with("ed2k_")) {
+    if keys.iter().any(|key| key.starts_with("ed2k_"))
+        || keys.contains(&fluxdown_engine::protocol_proxy::ED2K_KEY)
+    {
         fluxdown_engine::ed2k::apply_live_settings(&engine.db)
             .await
             .map_err(|error| ActorError::Operation(format!("{error:#}")))?;
@@ -4028,6 +4088,73 @@ mod tests {
         drop(engine);
         if let Err(error) = tokio::fs::remove_dir_all(dir).await {
             eprintln!("actor bt disabled test directory removal failed: {error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_protocol_proxy_rejects_the_whole_patch_without_exposing_credentials() {
+        let (_, dir) = open_db().await;
+        let dir_text = dir.to_string_lossy().into_owned();
+        let mut engine = fluxdown_engine::Engine::new(
+            fluxdown_engine::EngineConfig {
+                max_concurrent: 1,
+                speed_limit_bps: 0,
+                upload_limit_bps: 0,
+                default_save_dir: dir_text.clone(),
+                app_data_dir: dir_text,
+                bt_config: fluxdown_engine::bt_config::BtConfig::default(),
+                proxy_config: fluxdown_engine::proxy_config::ProxyConfig::default(),
+                user_agent: String::new(),
+                data_dir_override: Some(dir.clone()),
+                database_url: None,
+            },
+            std::sync::Arc::new(fluxdown_engine::NoopSink),
+            std::sync::Arc::new(fluxdown_engine::NoopSelection),
+        )
+        .await
+        .expect("construct engine");
+        let events =
+            crate::event_hub::DaemonEventHub::new(fluxdown_protocol::DaemonSnapshot::default(), 32);
+        let operation = |ed2k: &str| ActorOperation::PatchConfig {
+            expected_revision: 0,
+            values: BTreeMap::from([
+                ("proxy_protocol_ed2k".to_owned(), ed2k.to_owned()),
+                ("proxy_protocol_http".to_owned(), "direct://".to_owned()),
+            ]),
+        };
+        let invalid = execute_operation(
+            operation("http://alice:proxy-secret@relay.test:8080"),
+            &mut engine,
+            &events,
+        )
+        .await;
+        assert!(matches!(
+            &invalid,
+            Err(ActorError::InvalidArgument(message))
+                if message.starts_with("proxy_protocol_ed2k:")
+                    && !message.contains("alice") && !message.contains("proxy-secret")
+        ));
+        for key in ["proxy_protocol_ed2k", "proxy_protocol_http"] {
+            assert_eq!(engine.db.get_config(key).await.expect("read config"), None);
+        }
+        let valid = execute_operation(
+            ActorOperation::PatchConfig {
+                expected_revision: 0,
+                values: BTreeMap::from([(
+                    "proxy_protocol_http".to_owned(),
+                    "direct://".to_owned(),
+                )]),
+            },
+            &mut engine,
+            &events,
+        )
+        .await;
+        assert!(
+            matches!(valid, Ok(super::ActorResult::Config(snapshot)) if snapshot.revision == 1)
+        );
+        drop(engine);
+        if let Err(error) = tokio::fs::remove_dir_all(dir).await {
+            eprintln!("actor proxy test directory removal failed: {error}");
         }
     }
 

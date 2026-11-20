@@ -106,11 +106,13 @@ private func hlsLabel(height: Int64, bandwidth: Int64) -> String {
 
 private let btMinimumSizes: [Int64] = [0, 10 << 20, 100 << 20, 1 << 30]
 
-private func btMinimumSizeLabel(_ size: Int64) -> String {
+/// Preset thresholds stay binary (10 << 20 …); only the suffix follows the display preference.
+private func btMinimumSizeLabel(_ size: Int64, units: FileSizeUnits) -> String {
+    let iec = units == .iec
     switch size {
-    case 0: L("btFilterAnySize")
-    case 1 << 30: "1 GB"
-    default: "\(size >> 20) MB"
+    case 0: return L("btFilterAnySize")
+    case 1 << 30: return iec ? "1 GiB" : "1 GB"
+    default: return "\(size >> 20) \(iec ? "MiB" : "MB")"
     }
 }
 
@@ -151,7 +153,7 @@ private struct BtSelectionView: View {
         var seen = Set<String>()
         categoryRules = (other == nil ? rules + fallback : rules).filter { seen.insert($0.id).inserted }
         let otherID = other?.id ?? fallback.first?.id ?? "builtin_other"
-        let classified = files.count > 1 ? files.map { file in
+        let classified: [(Int32, String)] = files.count > 1 ? files.map { file in
             let path = file.path
             let separator = path.lastIndex(where: { $0 == "/" || $0 == "\\" })
             let start = separator.map { path.index(after: $0) } ?? path.startIndex
@@ -287,7 +289,7 @@ private struct BtSelectionView: View {
             }
             Picker(L("btFilterMinSize"), selection: $minimumSize) {
                 ForEach(btMinimumSizes, id: \.self) { size in
-                    Text(btMinimumSizeLabel(size)).tag(size)
+                    Text(btMinimumSizeLabel(size, units: container.appearance.fileSizeUnits)).tag(size)
                 }
             }
             .pickerStyle(.menu)

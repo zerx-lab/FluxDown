@@ -137,6 +137,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     category_route TEXT NOT NULL DEFAULT '',
     request_method TEXT NOT NULL DEFAULT '',
     edit_properties TEXT NOT NULL DEFAULT '{}',
+    html_only INTEGER NOT NULL DEFAULT 0,
     queue_order INTEGER NOT NULL DEFAULT 0,
     uploaded_bytes BIGINT NOT NULL DEFAULT 0,
     uploaded_at_completion BIGINT NOT NULL DEFAULT 0,
@@ -155,7 +156,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     bt_download_limit_bps INTEGER NOT NULL DEFAULT 0,
     bt_super_seeding INTEGER NOT NULL DEFAULT 0,
     bt_file_priorities TEXT NOT NULL DEFAULT '',
-    bt_file_renames TEXT NOT NULL DEFAULT ''
+    bt_file_renames TEXT NOT NULL DEFAULT '',
+    bt_web_seeds TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS task_segments (
     task_id TEXT NOT NULL,
@@ -435,6 +437,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     category_route TEXT NOT NULL DEFAULT '',
     request_method TEXT NOT NULL DEFAULT '',
     edit_properties TEXT NOT NULL DEFAULT '{}',
+    html_only INTEGER NOT NULL DEFAULT 0,
     queue_order INTEGER NOT NULL DEFAULT 0,
     uploaded_bytes BIGINT NOT NULL DEFAULT 0,
     uploaded_at_completion BIGINT NOT NULL DEFAULT 0,
@@ -453,7 +456,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     bt_download_limit_bps BIGINT NOT NULL DEFAULT 0,
     bt_super_seeding INTEGER NOT NULL DEFAULT 0,
     bt_file_priorities TEXT NOT NULL DEFAULT '',
-    bt_file_renames TEXT NOT NULL DEFAULT ''
+    bt_file_renames TEXT NOT NULL DEFAULT '',
+    bt_web_seeds TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS task_segments (
     task_id TEXT NOT NULL,
@@ -878,15 +882,17 @@ fn task_from_row(row: &AnyRow) -> Result<TaskInfo, sqlx::Error> {
         },
         properties: serde_json::from_str(row.try_get::<&str, _>("edit_properties")?)
             .map_err(|error| sqlx::Error::Decode(Box::new(error)))?,
+        html_only: row.try_get::<i32, _>("html_only")? != 0,
     })
 }
 
-const TASK_COLUMNS: &str = "id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at, proxy_url, queue_id, checksum, ignore_tls_errors, file_missing, completed_at, file_hash, segments, queue_order, uploaded_bytes, uploaded_at_completion, seeding_status, seeding_message, seeding_time_secs, seed_ratio_limit_milli, seed_post_ratio_limit_milli, seed_time_limit_minutes, seed_inactive_time_limit_minutes, seed_upload_limit_bps, bt_sequential, bt_first_last_pieces_first, bt_download_limit_bps, bt_super_seeding, referrer, group_id, rss_source_id, origin_url, auto_route, src_cdn_bytes, src_proxy_bytes, src_nic_bytes, edit_properties";
+const TASK_COLUMNS: &str = "id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at, proxy_url, queue_id, checksum, ignore_tls_errors, file_missing, completed_at, file_hash, segments, queue_order, uploaded_bytes, uploaded_at_completion, seeding_status, seeding_message, seeding_time_secs, seed_ratio_limit_milli, seed_post_ratio_limit_milli, seed_time_limit_minutes, seed_inactive_time_limit_minutes, seed_upload_limit_bps, bt_sequential, bt_first_last_pieces_first, bt_download_limit_bps, bt_super_seeding, referrer, group_id, rss_source_id, origin_url, auto_route, src_cdn_bytes, src_proxy_bytes, src_nic_bytes, edit_properties, html_only";
 
 /// 新建任务的完整落库行（[`Db::insert_new_tasks`]）。
 ///
 /// 一行 INSERT 携带创建时已知的全部列，取代「INSERT + 多条 UPDATE」；
 /// 字段全部借用调用方的准备结果，避免批量创建时逐字段复制。
+#[derive(Default)]
 pub struct NewTaskRow<'a> {
     pub id: &'a str,
     pub url: &'a str,
@@ -925,6 +931,9 @@ pub struct NewTaskRow<'a> {
     /// BT 选片（新任务按设置默认值落库）：按顺序下载 / 先下载首尾文件块。
     pub bt_sequential: bool,
     pub bt_first_last_pieces_first: bool,
+    pub(crate) html_only: bool,
+    pub(crate) edit_properties: Option<&'a str>,
+    pub(crate) inline_credentials: Option<&'a crate::auth::AuthProfile>,
 }
 
 /// 批量建任务的幂等记录（[`Db::insert_new_tasks`] 与任务行同事务写入）。
@@ -1752,6 +1761,8 @@ impl Db {
             .await?;
         self.add_column_if_missing("tasks", "bt_file_renames", "TEXT NOT NULL DEFAULT ''")
             .await?;
+        self.add_column_if_missing("tasks", "bt_web_seeds", "TEXT NOT NULL DEFAULT '[]'")
+            .await?;
         // 队列级上传限速（KB/s；0 = 不限）。BT add/re-add 时与任务级
         // 覆盖一起折算成 librqbit 上传上限，见 download_manager。
         self.add_column_if_missing("queues", "upload_limit_kbps", "BIGINT NOT NULL DEFAULT 0")
@@ -1777,6 +1788,8 @@ impl Db {
         self.add_column_if_missing("tasks", "request_method", "TEXT NOT NULL DEFAULT ''")
             .await?;
         self.add_column_if_missing("tasks", "edit_properties", "TEXT NOT NULL DEFAULT '{}'")
+            .await?;
+        self.add_column_if_missing("tasks", "html_only", "INTEGER NOT NULL DEFAULT 0")
             .await?;
         Ok(())
     }
@@ -1952,9 +1965,9 @@ impl Db {
                  created_at, proxy_url, queue_id, checksum, ignore_tls_errors, queue_order, cookies, referrer, \
                  extra_headers, origin_url, audio_url, resolver_plugin_id, group_id, resolver_item, unattended, \
                  bt_selected_files, resolver_choice_pending, category_route, request_method, \
-                 bt_sequential, bt_first_last_pieces_first) \
+                 bt_sequential, bt_first_last_pieces_first, html_only, edit_properties) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, \
-                 $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)",
+                 $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31)",
             )
             .bind(row.id)
             .bind(row.url)
@@ -1985,8 +1998,13 @@ impl Db {
             .bind(row.request_method)
             .bind(i32::from(row.bt_sequential))
             .bind(i32::from(row.bt_first_last_pieces_first))
+            .bind(i32::from(row.html_only))
+            .bind(row.edit_properties.unwrap_or("{}"))
             .execute(&mut *tx)
             .await?;
+            if let Some(profile) = row.inline_credentials {
+                crate::task_edit::insert_inline_credential(&mut tx, profile).await?;
+            }
             if !row.torrent_file_bytes.is_empty() {
                 sqlx::query(
                     "INSERT INTO torrent_files (task_id, file_bytes) VALUES ($1, $2)
@@ -2726,6 +2744,59 @@ impl Db {
         Ok(())
     }
 
+    /// User-added BEP 19 sources, separate from the original torrent or magnet.
+    #[cfg(feature = "bt")]
+    pub(crate) async fn task_web_seeds(&self, task_id: &str) -> Result<Vec<String>, DbError> {
+        let json: Option<String> =
+            sqlx::query_scalar("SELECT bt_web_seeds FROM tasks WHERE id = $1")
+                .bind(task_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        json.as_deref()
+            .map_or_else(|| Ok(Vec::new()), Self::decode_web_seeds)
+    }
+
+    #[cfg(feature = "bt")]
+    fn decode_web_seeds(json: &str) -> Result<Vec<String>, DbError> {
+        serde_json::from_str(json)
+            .map_err(|error| DbError::InvalidConfig(format!("BT web seeds: {error}")))
+    }
+
+    /// Loads only the persisted inputs needed by BT detail polling.
+    #[cfg(feature = "bt")]
+    pub(crate) async fn load_bt_status_inputs(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<(String, Option<Vec<u8>>, Vec<String>)>, DbError> {
+        let row: Option<(String, Option<Vec<u8>>, String)> = sqlx::query_as(
+            "SELECT tasks.url, torrent_files.file_bytes, tasks.bt_web_seeds
+             FROM tasks LEFT JOIN torrent_files ON torrent_files.task_id = tasks.id
+             WHERE tasks.id = $1",
+        )
+        .bind(task_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|(url, bytes, json)| Ok((url, bytes, Self::decode_web_seeds(&json)?)))
+            .transpose()
+    }
+
+    /// Persists the task's user-added sources without rewriting torrent metadata.
+    #[cfg(feature = "bt")]
+    pub(crate) async fn set_task_web_seeds(
+        &self,
+        task_id: &str,
+        seeds: &[String],
+    ) -> Result<(), DbError> {
+        let json = serde_json::to_string(seeds)
+            .map_err(|error| DbError::InvalidConfig(format!("BT web seeds: {error}")))?;
+        sqlx::query("UPDATE tasks SET bt_web_seeds = $1 WHERE id = $2")
+            .bind(json)
+            .bind(task_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// 任务落库的逐文件优先级与重命名表（原样返回两列文本，解析见
     /// `bt_task_files`）；任务不存在返回 `None`。
     pub async fn get_task_bt_file_state(
@@ -3117,9 +3188,10 @@ impl Db {
     /// 用同一套归一化规则处理。任务量通常是几十到几百条，一次性取回后在
     /// 内存比较比逐条查询更省 round-trip。
     pub async fn active_task_urls(&self) -> Result<Vec<(String, String)>, DbError> {
-        let rows = sqlx::query("SELECT id, url FROM tasks WHERE status IN (0, 1, 2, 5)")
-            .fetch_all(&self.pool)
-            .await?;
+        let rows =
+            sqlx::query("SELECT id, url FROM tasks WHERE status IN (0, 1, 2, 5) AND html_only = 0")
+                .fetch_all(&self.pool)
+                .await?;
         let mut out = Vec::with_capacity(rows.len());
         for row in &rows {
             out.push((row.try_get("id")?, row.try_get("url")?));
@@ -3214,10 +3286,15 @@ impl Db {
         .bind(id)
         .fetch_all(&mut *tx)
         .await?;
-        sqlx::query("DELETE FROM tasks WHERE id = $1")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
+        let properties: Option<Option<String>> = sqlx::query_scalar(
+            "DELETE FROM tasks WHERE id = $1 RETURNING NULLIF(edit_properties, '{}')",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(properties) = properties.flatten() {
+            crate::task_edit::delete_inline_credential(&mut tx, &properties).await?;
+        }
         tx.commit().await?;
         affected_sources.sort_unstable();
         affected_sources.dedup();
@@ -3279,12 +3356,17 @@ impl Db {
             let sources: Vec<String> = rss_query.fetch_all(&mut *tx).await?;
             affected_sources.extend(sources);
 
-            let sql = format!("DELETE FROM tasks WHERE id IN ({placeholders})");
-            let mut query = sqlx::query(AssertSqlSafe(sql));
+            let sql = format!(
+                "DELETE FROM tasks WHERE id IN ({placeholders}) RETURNING NULLIF(edit_properties, '{{}}')"
+            );
+            let mut query = sqlx::query_scalar(AssertSqlSafe(sql));
             for id in chunk {
                 query = query.bind(id.as_str());
             }
-            query.execute(&mut *tx).await?;
+            let properties: Vec<Option<String>> = query.fetch_all(&mut *tx).await?;
+            for properties in properties.into_iter().flatten() {
+                crate::task_edit::delete_inline_credential(&mut tx, &properties).await?;
+            }
         }
         tx.commit().await?;
         let mut affected_sources: Vec<_> = affected_sources.into_iter().collect();
@@ -10126,31 +10208,10 @@ mod tests {
             id,
             url: "http://example.test/a.bin",
             file_name: "a.bin",
-            name_inferred: false,
             save_dir: "/tmp",
-            segments: 0,
             status: 2,
-            error_message: "",
-            proxy_url: "",
             queue_id,
-            checksum: "",
-            ignore_tls_errors: false,
-            cookies: "",
-            referrer: "",
-            extra_headers_json: "",
-            origin_url: "",
-            audio_url: "",
-            resolver_plugin_id: "",
-            group_id: "",
-            resolver_item: "",
-            unattended: false,
-            resolver_choice_pending: false,
-            bt_selected_files: "",
-            category_route: "",
-            request_method: "",
-            torrent_file_bytes: &[],
-            bt_sequential: false,
-            bt_first_last_pieces_first: false,
+            ..Default::default()
         }
     }
 

@@ -1,6 +1,7 @@
 // 扩展设置的纯逻辑（无 React / 别名依赖，可被 bun test 直接加载）。
 // 语义与 crates/extensions（plugin_settings.rs / plugins.rs / plugin_auth.rs / managed_components.rs）逐条对齐。
 
+import { byteUnit, type FileSizeUnits } from '../../../../lib/fileSizeUnits'
 import type { MarketEntryDto, PluginAuthResponse, PluginDto, PluginRisk, SettingFieldDto } from '../../../../lib/rpc/protocol'
 
 // ── 插件设置校验 ────────────────────────────────────────────
@@ -566,17 +567,16 @@ export function safeHttpUrl(value: string): string | null {
 
 // ── 组件 ────────────────────────────────────────────────────
 
-/** 1024 进制的人类可读字节数（`0 B` / `1.5 KB` / `12.3 MB` / `1.0 GB`）。 */
-export function formatBytes(bytes: number): string {
-  const units = ['B', 'KB', 'MB', 'GB']
+/** 1024 进制的人类可读字节数；单位由设备本地显示偏好选择。 */
+export function formatBytes(bytes: number, units?: FileSizeUnits): string {
   const clamped = Math.max(0, bytes)
   let value = clamped
   let unit = 0
-  while (value >= 1024 && unit < units.length - 1) {
+  while (value >= 1024 && unit < 3) {
     value /= 1024
     unit += 1
   }
-  return unit === 0 ? `${Math.trunc(clamped)} B` : `${value.toFixed(1)} ${units[unit]}`
+  return unit === 0 ? `${Math.trunc(clamped)} ${byteUnit(unit, units)}` : `${value.toFixed(1)} ${byteUnit(unit, units)}`
 }
 
 export type MarketSort = 'default' | 'newest' | 'favorites'

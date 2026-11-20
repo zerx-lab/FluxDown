@@ -268,6 +268,8 @@ pub(super) fn web_seed_state_key(state: &str) -> Option<&'static str> {
         "downloading" => Some("btWebSeedStateDownloading"),
         "backingOff" => Some("btWebSeedStateBackingOff"),
         "disabled" => Some("btWebSeedStateDisabled"),
+        "pending" => Some("btWebSeedStatePending"),
+        "rejected" => Some("btWebSeedStateRejected"),
         _ => None,
     }
 }

@@ -56,6 +56,8 @@ How scripts are run:
 
 Called before protocol dispatch, on **every** start and resume of a task that matches `resolvers[0].match.urls` (resolution is lazy — see the [overview](/docs/en/plugins/overview/)). A resolver whose manifest has `multi: true` is additionally called once by the new-download window to pre-resolve a link (see [Manifests](#manifest-results)).
 
+When the resolved URL selects a different downloader protocol than the original URL, FluxDown may call `resolve` a second time using that protocol's proxy route. The second result replaces the first; it must still identify the same selected variant. If that format is no longer available, resolution fails rather than downloading a different format. A failed second call is reported as a resolver error.
+
 If a required setting has neither a stored value nor a `default`, the call fails with `缺少必填设置项` **before** your script runs.
 
 `ctx` fields:

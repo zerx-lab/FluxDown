@@ -53,11 +53,11 @@ const BT_CATEGORY_KEYS: [(&str, &str); 7] = [
     ("archive", "categoryArchive"),
     ("other", "categoryOther"),
 ];
-const BT_MIN_SIZES: [(i64, &str); 4] = [
-    (0, ""),
-    (10 << 20, "10 MB"),
-    (100 << 20, "100 MB"),
-    (1 << 30, "1 GB"),
+const BT_MIN_SIZES: [(i64, u8, usize); 4] = [
+    (0, 0, 0),
+    (10 << 20, 10, 2),
+    (100 << 20, 100, 2),
+    (1 << 30, 1, 3),
 ];
 
 struct BtFilter {
@@ -927,7 +927,7 @@ impl SelectionView {
                 BT_MIN_SIZES
                     .iter()
                     .enumerate()
-                    .map(|(index, &(size, label))| {
+                    .map(|(index, &(size, value, power))| {
                         let button = Button::new(("bt-min-size", index));
                         let button = if filter.min_size == size {
                             button.primary()
@@ -939,7 +939,9 @@ impl SelectionView {
                             .label(if size == 0 {
                                 self.strings.bt_filter_any_size.clone()
                             } else {
-                                SharedString::from(label)
+                                let units = fluxdown_ui_components::size_units::labels();
+                                let unit = units.get(power).copied().unwrap_or("B");
+                                SharedString::from(format!("{value} {unit}"))
                             })
                             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                 if let Some(filter) = &mut this.bt_filter {

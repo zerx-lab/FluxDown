@@ -287,6 +287,7 @@ pub async fn bootstrap(
     subscription_urls: &str,
     tcp_port: u16,
     proxy: &crate::proxy_config::ProxyConfig,
+    proxy_protocol_ed2k: &str,
 ) -> BootstrapReport {
     // `fetched`：从网址取到的节点，即使没有一个应答也值得留作已知节点。
     let (targets, fetched) = match source {
@@ -315,7 +316,7 @@ pub async fn bootstrap(
             Err(error) => return BootstrapReport::failed(error),
         },
     };
-    match node::bootstrap(&targets, tcp_port, BOOTSTRAP_WINDOW).await {
+    match node::bootstrap(&targets, tcp_port, BOOTSTRAP_WINDOW, proxy_protocol_ed2k).await {
         Ok(outcome) => {
             let mut contacts = outcome.live;
             contacts.extend(fetched);
@@ -425,7 +426,7 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_reports_why_there_is_nothing_to_contact() {
         let proxy = crate::proxy_config::ProxyConfig::default();
-        let known = bootstrap(BootstrapSource::Known, &[], "", 4662, &proxy).await;
+        let known = bootstrap(BootstrapSource::Known, &[], "", 4662, &proxy, "").await;
         assert!(!known.error.is_empty());
         assert_eq!(known.contacted, 0);
 
@@ -434,7 +435,7 @@ mod tests {
             port: 4672,
         };
         assert!(
-            !bootstrap(blank_host, &[], "", 4662, &proxy)
+            !bootstrap(blank_host, &[], "", 4662, &proxy, "")
                 .await
                 .error
                 .is_empty()
@@ -444,7 +445,7 @@ mod tests {
             port: 0,
         };
         assert!(
-            !bootstrap(no_port, &[], "", 4662, &proxy)
+            !bootstrap(no_port, &[], "", 4662, &proxy, "")
                 .await
                 .error
                 .is_empty()
@@ -457,6 +458,7 @@ mod tests {
             "# none",
             4662,
             &proxy,
+            "",
         );
         assert!(!no_url.await.error.is_empty());
     }

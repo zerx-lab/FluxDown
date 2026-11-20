@@ -32,6 +32,7 @@ use crate::model::{
     is_builtin_queue,
 };
 use crate::naming;
+use crate::protocol_proxy::{DownloadProtocol, ProtocolProxies};
 use crate::proxy_config::{ProxyConfig, ProxyMode};
 use crate::queue_order::{QueueOrderDelta, QueueOrderPublisher};
 use crate::segment_coordinator::is_single_conn_domain;
@@ -49,6 +50,8 @@ mod bt_archive;
 #[cfg(feature = "bt")]
 mod bt_storage_ops;
 mod group_dirs;
+#[cfg(feature = "plugins")]
+mod resolve_route;
 mod task_properties;
 pub use boost::BoostError;
 #[cfg(feature = "bt")]
@@ -1807,6 +1810,7 @@ enum StartPrelude {
 struct PreludeCtx {
     global: FileExistsBehavior,
     support: crate::file_exists::AskSupport,
+    html_only: bool,
     restart_missing: bool,
 }
 
@@ -2043,7 +2047,8 @@ async fn finalize_start_file_name(
     // 末段兜底出与 HLS 下载器空名分支一致的名称，使空名 HLS 任务同样纳入
     // dedup + 预订协调——否则两个同源、均探测不到名的并发 HLS 任务会各自
     // 塌缩为同一 .ts 并互相 truncate/交错写入而损坏内容。
-    if hls_downloader::is_hls_url(&params.url) {
+    let is_hls = !ctx.html_only && hls_downloader::is_hls_url(&params.url);
+    if is_hls {
         let base = if params.file_name.is_empty() {
             naming::extract_from_url(&params.url).unwrap_or_else(|| "download.ts".to_string())
         } else {
@@ -2068,7 +2073,8 @@ async fn finalize_start_file_name(
     // 下载器空名分支一致），使空名 DASH 任务也纳入 dedup + 预订协调；探测得到
     // 的 manifest 名（`manifest.mpd`）同样要把 .mpd 换成 .mp4，否则成品是
     // .mpd 后缀的 MP4。其余扩展名的非空名原样使用。必须在 dedup/预订之前完成。
-    if dash_downloader::is_dash_url(&params.url) {
+    let is_dash = !ctx.html_only && dash_downloader::is_dash_url(&params.url);
+    if is_dash {
         let is_mpd = params.file_name.to_ascii_lowercase().ends_with(".mpd");
         if params.file_name.is_empty() || is_mpd {
             let base = if params.file_name.is_empty() {
@@ -2103,14 +2109,10 @@ async fn finalize_start_file_name(
         // 同名任务（常见于同一 URL 重复添加）会在下载器内得到同一个名字而共享
         // 同一个 .fdownloading。用 URL 末段兜底，使其同样纳入 dedup + 预订；
         // 路径段只是占位（标记为推断名），完成期按实际 GET 响应精修。
+        let inferred = url_name.source != naming::NameSource::QueryDisposition;
         params.file_name = url_name.name;
-        if let Err(error) = persist_start_name(
-            &params.db,
-            &params.task_id,
-            &params.file_name,
-            url_name.source != naming::NameSource::QueryDisposition,
-        )
-        .await
+        if let Err(error) =
+            persist_start_name(&params.db, &params.task_id, &params.file_name, inferred).await
         {
             return StartPrelude::Failed {
                 error: error.into(),
@@ -2143,12 +2145,12 @@ async fn finalize_start_file_name(
         return StartPrelude::Proceed(None);
     }
     let save_path = std::path::PathBuf::from(&params.save_dir);
-    let is_hls = hls_downloader::is_hls_url(&params.url);
     // Overwrite authorizes the primary output, not an existing audio companion.
     // A manifest can declare separate audio even when audio_url is absent.
-    let companion_audio =
-        params.audio_url.is_some() || is_hls || dash_downloader::is_dash_url(&params.url);
-    if let Some(candidate) = task_target_path(&params.save_dir, &params.file_name) {
+    let companion_audio = !ctx.html_only && (params.audio_url.is_some() || is_hls || is_dash);
+    if !ctx.html_only
+        && let Some(candidate) = task_target_path(&params.save_dir, &params.file_name)
+    {
         let existing = match tokio::fs::metadata(&candidate).await {
             Ok(metadata) if metadata.is_file() => Some(metadata),
             Ok(_) => None,
@@ -2408,6 +2410,7 @@ struct HttpFamilyRun {
     use_hls: bool,
     use_dash: bool,
     use_ed2k: bool,
+    html_only: bool,
     /// `Some` = 从未起跑过：先跑启动序幕（探测/命名/文件已存在决策/dedup 预订）；
     /// `None` = 续传，名字已定，直接交给下载器。
     prelude: Option<PreludeCtx>,
@@ -2558,6 +2561,7 @@ async fn run_http_family_task(run: HttpFamilyRun) {
         use_hls,
         use_dash,
         use_ed2k,
+        html_only,
         mut prelude,
         reserved_set,
         done_tx,
@@ -2571,12 +2575,30 @@ async fn run_http_family_task(run: HttpFamilyRun) {
     let mut params = params;
     // 拦截阶段的插件请求跟随任务出口（Prepare 用起跑出口；改道 / PAC 后再同步一次）。
     crate::intercept::sync_egress(&params);
-    if !use_ed2k
+    // HTML saves replay the stored request, without resolver or Prepare patches.
+    if !html_only
+        && !use_ed2k
         && let Err(message) = prepare_request(&mut params, prelude.is_some(), resolver_patch).await
     {
         persist_task_failure(&task_id, message, &panic_db, &panic_progress_tx).await;
         send_task_done(&done_tx, TaskDone::finished(task_id, spawn_gen, None)).await;
         return;
+    }
+    if html_only {
+        if !reqwest::Url::parse(&params.url)
+            .is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
+            || !downloader::filename_looks_like_html(&params.file_name)
+        {
+            let message = "saving a web page requires an HTTP(S) URL and an HTML file name";
+            persist_task_failure(&task_id, message.into(), &panic_db, &panic_progress_tx).await;
+            send_task_done(&done_tx, TaskDone::finished(task_id, spawn_gen, None)).await;
+            return;
+        }
+        // Fetch a fresh, full response. Old sizes and ranges do not describe this page.
+        params.hint_file_size = -1;
+        params.segment_count = 1;
+        params.range_verified = false;
+        params.is_resume = false;
     }
     // 系统 PAC：在 resolver 补丁定下最终链接之后、任何网络请求之前修正出口。
     // 被取消时直接放行，由下载器在自己的取消检查点走正常终态。
@@ -2709,7 +2731,7 @@ async fn run_http_family_task(run: HttpFamilyRun) {
                     Ok(())
                 }
             } else {
-                std::panic::AssertUnwindSafe(downloader::run_download(params))
+                std::panic::AssertUnwindSafe(downloader::run_download_mode(params, html_only))
                     .catch_unwind()
                     .await
             };
@@ -3194,6 +3216,7 @@ impl PreparedTask {
             torrent_file_bytes: &self.torrent_file_bytes,
             bt_sequential: self.bt_sequential,
             bt_first_last_pieces_first: self.bt_first_last_pieces_first,
+            ..Default::default()
         }
     }
 }
@@ -3721,16 +3744,18 @@ pub struct ResolveOutcome {
     pub subject_url: String,
     /// 出口计划执行结果：换过路的路径与产出结果的一步。
     pub egress: crate::plugin::call_egress::EgressOutcome,
+    protocol_overrides: Arc<ProtocolProxies>,
 }
 
 /// 解析成功后交给起跑的出口（见 `DownloadManager::resolved_egress`）。
 #[cfg(feature = "plugins")]
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct ResolvedEgress {
     /// 下载按它匹配站点规则 / 做 Auto 决策（解析产物再由 `rule_route::apply` 重匹配）。
     subject_url: String,
     /// Auto 计划下解析所用的路径：下载只走这一条。
     pin: Option<ForcedRoute>,
+    protocol_overrides: Arc<ProtocolProxies>,
 }
 
 /// resolve 等待中的任务状态。Start 携 `QueuedTask`（再入覆盖 res 后分派）；
@@ -3766,7 +3791,8 @@ async fn collapse_resolve_variants(
     task_id: &str,
     res: &mut crate::plugin::ResolveResult,
     selector: &dyn HostSelection,
-) -> bool {
+    track_choice: bool,
+) -> Result<Option<resolve_route::VariantChoice>, ()> {
     const VARIANT_SELECTION_TIMEOUT_SECS: u64 = 60;
     let variants = std::mem::take(&mut res.variants);
     let default_idx = if (res.default_variant_index as usize) < variants.len() {
@@ -3806,7 +3832,7 @@ async fn collapse_resolve_variants(
         let chosen = outcome.into_inner();
         // -1 = 用户在弹窗点关闭/取消 → 取消任务（不收敛、不回退默认）。
         if chosen < 0 {
-            return true;
+            return Err(());
         }
         if (chosen as usize) < variants.len() {
             chosen
@@ -3814,8 +3840,7 @@ async fn collapse_resolve_variants(
             default_idx
         }
     };
-    apply_chosen_variant(res, variants, idx);
-    false
+    Ok(apply_resolved_variant(res, variants, idx, track_choice))
 }
 
 /// 把选中变体的非空字段覆盖到顶层（url/audioUrl/fileName/totalBytes）。
@@ -3845,14 +3870,33 @@ fn apply_chosen_variant(
 /// 静默变体收敛：不经 [`HostSelection`]，直接取 `default_variant_index`
 /// （越界按 0）——绝不为 N 个裂变子任务弹 N 个选择框（A1 契约）。
 #[cfg(feature = "plugins")]
-fn collapse_resolve_variants_silent(res: &mut crate::plugin::ResolveResult) {
+fn collapse_resolve_variants_silent(
+    res: &mut crate::plugin::ResolveResult,
+    track_choice: bool,
+) -> Option<resolve_route::VariantChoice> {
     let variants = std::mem::take(&mut res.variants);
     let idx = if (res.default_variant_index as usize) < variants.len() {
         res.default_variant_index
     } else {
         0
     };
+    apply_resolved_variant(res, variants, idx, track_choice)
+}
+
+#[cfg(feature = "plugins")]
+fn apply_resolved_variant(
+    res: &mut crate::plugin::ResolveResult,
+    variants: Vec<crate::plugin::ResolveVariant>,
+    idx: i32,
+    track_choice: bool,
+) -> Option<resolve_route::VariantChoice> {
+    let choice = if track_choice {
+        resolve_route::VariantChoice::new(&variants, idx as usize)
+    } else {
+        None
+    };
     apply_chosen_variant(res, variants, idx);
+    choice
 }
 
 /// 清单裂变（外部无 UI 入口自动展开，D6）自动启动的总大小阈值：Σsize 超过
@@ -3948,6 +3992,7 @@ pub struct DownloadManager {
     client: Client,
     /// Current proxy configuration — used to rebuild Client on config change.
     proxy_config: ProxyConfig,
+    protocol_proxies: Arc<ProtocolProxies>,
     /// All state for every actively-running download, keyed by task_id.
     /// Replaces the five separate maps that previously tracked the same set:
     ///   • active_tokens   (CancellationToken + generation)
@@ -4311,6 +4356,7 @@ impl DownloadManager {
             db,
             client,
             proxy_config,
+            protocol_proxies: Arc::new(ProtocolProxies::default()),
             active_tasks: HashMap::new(),
             pending_pauses: HashMap::new(),
             awaiting_decision: HashMap::new(),
@@ -4751,14 +4797,16 @@ impl DownloadManager {
         task_id: String,
         identity: String,
         req: crate::plugin::ResolveRequest,
-        plan: crate::plugin::call_egress::EgressPlan,
+        routing: (
+            Result<crate::plugin::call_egress::EgressPlan, crate::plugin::PluginError>,
+            resolve_route::ResolverRoutes,
+        ),
         kind: ResolveKind,
         generation: u64,
         unattended: bool,
         reselect: ResolverReselect,
         cancel: CancellationToken,
     ) {
-        use futures_util::FutureExt;
         let Some(pm) = self.plugin_manager.clone() else {
             return;
         };
@@ -4767,6 +4815,7 @@ impl DownloadManager {
         let selector = self.selector.clone();
         let second_stage = !req.resolver_item.is_empty();
         let subject_url = req.url.clone();
+        let (plan, routes) = routing;
         handle.spawn(async move {
             let mut identity = identity;
             // 多插件冲突待选：首次 resolve 前定案（站点默认 / 无人值守回退 / 询问用户），
@@ -4800,6 +4849,7 @@ impl DownloadManager {
                                 kind,
                                 generation,
                                 result: Ok(None),
+                                protocol_overrides: routes.overrides,
                                 cancelled: Some(crate::plugin::CancelReason::UserCancelled),
                                 subject_url,
                                 egress: crate::plugin::call_egress::EgressOutcome::default(),
@@ -4818,6 +4868,7 @@ impl DownloadManager {
                                 kind,
                                 generation,
                                 result: Err(error),
+                                protocol_overrides: routes.overrides,
                                 cancelled: None,
                                 subject_url,
                                 egress: crate::plugin::call_egress::EgressOutcome::default(),
@@ -4832,34 +4883,19 @@ impl DownloadManager {
             }
             // 同一占位 / 世代 / 取消令牌下按出口计划逐步解析：Auto 断在网络层时换路重跑，
             // 窗口内暂停 / 取消 / 删除照常丢弃整个 future。选择框只在成功后出现，重跑不重复询问。
-            let fut = std::panic::AssertUnwindSafe(pm.resolve_planned(&identity, req, Some(plan)));
-            // 暂停/取消/删除会 cancel 占位 token：立即丢弃 resolve future（释放
-            // resolve/yt-dlp 信号量槽位），且不回流——占位已由触发方清理。
-            let resolved = tokio::select! {
-                r = fut.catch_unwind() => r,
+            let retry_request = routes.may_retry().then(|| req.clone());
+            let (mut result, mut egress) = tokio::select! {
+                r = resolve_route::attempt(&pm, &identity, req, plan) => r,
                 _ = cancel.cancelled() => return,
-            };
-            let (mut result, egress) = match resolved {
-                Ok(r) => r,
-                Err(panic) => {
-                    let msg = panic
-                        .downcast_ref::<&str>()
-                        .map(|s| s.to_string())
-                        .or_else(|| panic.downcast_ref::<String>().cloned())
-                        .unwrap_or_else(|| "resolver panicked".to_string());
-                    (
-                        Err(crate::plugin::PluginError::Runtime(msg)),
-                        crate::plugin::call_egress::EgressOutcome::default(),
-                    )
-                }
             };
             // 多变体收敛：在 off-actor worker 内 await 用户选择（不阻塞 actor），
             // 收敛为单一直链后再回流。stale 场景由 on_resolve_ready 世代守卫兜底。
-            // 返回 true = 用户点关闭/取消 → 回流标记 cancelled，actor 取消任务。
+            // 用户关闭选择框时回流取消，不切换出口。
             // 二段解析（resolver_item 非空）与无人值守任务（tasks.unattended，
             // RSS/免打扰接管）绝不弹选择框：静默取默认变体（引擎自动裂变场景
             // 不为 N 个子任务弹 N 个选择框，A1 契约）。
             let mut cancelled = None;
+            let mut choice = None;
             if cancel.is_cancelled() {
                 return;
             }
@@ -4867,16 +4903,40 @@ impl DownloadManager {
                 && !res.variants.is_empty()
             {
                 if second_stage || unattended {
-                    collapse_resolve_variants_silent(res);
+                    choice = collapse_resolve_variants_silent(res, retry_request.is_some());
                 } else {
                     let selected = tokio::select! {
-                        c = collapse_resolve_variants(&task_id, res, selector.as_ref()) => c,
+                        c = collapse_resolve_variants(&task_id, res, selector.as_ref(), retry_request.is_some()) => c,
                         _ = cancel.cancelled() => return,
                     };
-                    if selected {
-                        cancelled = Some(crate::plugin::CancelReason::VariantSelectionCancelled);
+                    match selected {
+                        Ok(selected) => choice = selected,
+                        Err(()) => {
+                            cancelled = Some(crate::plugin::CancelReason::VariantSelectionCancelled);
+                        }
                     }
                 }
+            }
+            if cancelled.is_none()
+                && let Some(req) = retry_request
+                && let Ok(Some(res)) = &result
+                && let Some(protocol) = routes.retry_protocol(&subject_url, res)
+            {
+                // The source link may not reveal the final downloader. Resolve it
+                // once on the real protocol's exit before consuming a signed link.
+                let (replacement, replacement_egress) = tokio::select! {
+                    r = async {
+                        let plan = routes.retry_plan(&subject_url, protocol).await;
+                        resolve_route::attempt(&pm, &identity, req, plan).await
+                    } => r,
+                    _ = cancel.cancelled() => return,
+                };
+                result = replacement.and_then(|res| {
+                    resolve_route::accept_retry(
+                        &subject_url, res, choice.as_ref(), protocol, &routes.overrides,
+                    )
+                });
+                egress = replacement_egress;
             }
             if tx
                 .send(ResolveOutcome {
@@ -4888,6 +4948,7 @@ impl DownloadManager {
                     cancelled,
                     subject_url,
                     egress,
+                    protocol_overrides: routes.overrides,
                 })
                 .is_err()
             {
@@ -4914,7 +4975,11 @@ impl DownloadManager {
         task_id: &str,
         source_url: &str,
         proxy_url: &str,
-    ) -> crate::plugin::call_egress::EgressPlan {
+        has_audio: bool,
+    ) -> (
+        Result<crate::plugin::call_egress::EgressPlan, crate::plugin::PluginError>,
+        resolve_route::ResolverRoutes,
+    ) {
         self.resolved_egress.remove(task_id);
         let forced = self
             .auto_failover_pending
@@ -4925,14 +4990,16 @@ impl DownloadManager {
             .get(task_id)
             .map(AutoFailoverAttempts::tried_routes)
             .unwrap_or_default();
-        crate::plugin::call_egress::plan_call(
+        resolve_route::ResolverRoutes::new(
             &self.proxy_config,
+            self.protocol_proxies.clone(),
             source_url,
             crate::plugin::call_egress::PlanTask {
                 proxy_url,
                 forced,
                 tried: &tried,
             },
+            has_audio,
         )
     }
 
@@ -4966,22 +5033,34 @@ impl DownloadManager {
             ResolvedEgress {
                 subject_url: out.subject_url.clone(),
                 pin,
+                protocol_overrides: out.protocol_overrides.clone(),
             },
         );
     }
 
     /// 起跑出口输入（一次性消费）：插件解析过的任务以源链接定出口并钉定解析所用路径；
-    /// 否则用已排程的一次性备用链路。返回（替代任务链接的出口匹配链接, 强制路径）。
-    fn take_start_route(&mut self, task_id: &str) -> (Option<String>, Option<ForcedRoute>) {
+    /// 否则用已排程的一次性备用链路与当前协议配置。
+    fn take_start_route(
+        &mut self,
+        task_id: &str,
+    ) -> (
+        Option<String>,
+        Option<ForcedRoute>,
+        Option<Arc<ProtocolProxies>>,
+    ) {
         let pending = self
             .auto_failover_pending
             .remove(task_id)
             .map(ForcedRoute::failover);
         #[cfg(feature = "plugins")]
         if let Some(resolved) = self.resolved_egress.remove(task_id) {
-            return (Some(resolved.subject_url), resolved.pin.or(pending));
+            return (
+                Some(resolved.subject_url),
+                resolved.pin.or(pending),
+                Some(resolved.protocol_overrides),
+            );
         }
-        (None, pending)
+        (None, pending, None)
     }
 
     /// 先复查 DB 生命周期，再按结果分派。
@@ -5054,11 +5133,22 @@ impl DownloadManager {
                         &error,
                     );
                 }
-                // 清单裂变（外部无 UI 入口自动展开，D6）：resolve 结果携带 manifest
-                // 时不进入正常 Start/Resume 分派，改走 apply_manifest_fission（单
-                // 条目原地改写 / 多条目单事务裂变为组）。Start 与 Resume 两种 kind
-                // 均可能触达——旧任务被用户 resume 时同样应裂变。
+                // A page replay must never fan out into unrelated file downloads.
                 let has_manifest = applied.as_ref().is_some_and(|r| r.manifest.is_some());
+                if task.html_only && has_manifest {
+                    self.clear_pending_resolve(&task_id);
+                    self.active_tasks.remove(&task_id);
+                    persist_task_failure(
+                        &task_id,
+                        downloader::HTML_RESPONSE_CHANGED_MESSAGE.into(),
+                        &self.db,
+                        &self.progress_tx,
+                    )
+                    .await;
+                    self.drain_queue().await;
+                    return;
+                }
+                // A resolver may expand an ordinary download into a manifest.
                 if has_manifest {
                     self.pending_resolve.remove(&task_id);
                     self.active_tasks.remove(&task_id);
@@ -5669,7 +5759,7 @@ impl DownloadManager {
             extra_headers: queued.extra_headers.clone(),
             resolver_item: queued.resolver_item.clone(),
         };
-        let plan = self.resolve_egress_plan(&task_id, &req.url, &queued.proxy_url);
+        let plan = self.resolve_egress_plan(&task_id, &req.url, &queued.proxy_url, has_audio_track);
         self.pending_resolve.insert(
             task_id.clone(),
             PendingResolve::Start {
@@ -5891,7 +5981,7 @@ impl DownloadManager {
             extra_headers,
             resolver_item,
         };
-        let plan = self.resolve_egress_plan(task_id, &req.url, &task.proxy_url);
+        let plan = self.resolve_egress_plan(task_id, &req.url, &task.proxy_url, false);
         self.pending_resolve.insert(
             task_id.to_string(),
             PendingResolve::Resume {
@@ -6115,6 +6205,16 @@ impl DownloadManager {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     }
 
+    /// Installs device-local protocol routes. Running HTTP-family tasks keep their clients
+    /// until the next start or resume. Returns whether the BT session must be rebuilt.
+    pub fn set_protocol_proxies(&mut self, config: &HashMap<String, String>) -> bool {
+        let routes = ProtocolProxies::from_config(config);
+        let bt_changed =
+            routes.raw(DownloadProtocol::Bt) != self.protocol_proxies.raw(DownloadProtocol::Bt);
+        self.protocol_proxies = Arc::new(routes);
+        bt_changed
+    }
+
     /// Update proxy configuration.  Rebuilds the shared HTTP client so that
     /// all **new** downloads use the updated proxy settings.
     ///
@@ -6242,6 +6342,10 @@ impl DownloadManager {
     ) -> Result<bool, crate::db::DbError> {
         let url = task.url.as_str();
         if !task.proxy_url.is_empty()
+            || !self
+                .protocol_proxies
+                .raw(DownloadProtocol::for_http_family(url, false))
+                .is_empty()
             || !matches!(task.status, 1 | 5)
             || is_bt_url(url)
             || is_ed2k_url(url)
@@ -6670,29 +6774,41 @@ impl DownloadManager {
                 let upload_limit = self.upload_limit_bps;
                 let save_dir = self.default_save_dir.clone();
                 let data_dir = self.app_data_dir.clone();
-                let config = self.bt_config.clone();
+                let mut config = self.bt_config.clone();
+                let protocol_proxy = self.protocol_proxies.route(DownloadProtocol::Bt)?;
                 let global_proxy = self.proxy_config.clone();
                 let policy = self.bt_guard.policy();
                 let session = tokio::task::spawn_blocking(move || {
                     // 代理地址在建会话时定死：手动来源取「代理」页的服务器（与当前代理模式
                     // 无关），系统来源在这里检测系统代理（macOS / Linux 会拉起子进程，所以
                     // 放在阻塞线程上）。没有可用服务器时直连，设置页有对应提示。
-                    let proxy_url = config.session_proxy_url(&global_proxy, || {
-                        match crate::proxy_config::detect_system_proxy() {
-                            Ok(found) => found,
-                            Err(error) => {
-                                log_info!("[bt] 系统代理检测失败，BT 保持直连: {error:#}");
-                                None
+                    let protocol_fixed = protocol_proxy.is_some();
+                    let proxy_url = if let Some(proxy) = protocol_proxy {
+                        config.proxy_peers = true;
+                        config.proxy_enabled = proxy.mode != ProxyMode::None;
+                        proxy.manual_server_url_for_bt()
+                    } else {
+                        config.session_proxy_url(&global_proxy, || {
+                            match crate::proxy_config::detect_system_proxy() {
+                                Ok(found) => found,
+                                Err(error) => {
+                                    log_info!("[bt] 系统代理检测失败，BT 保持直连: {error:#}");
+                                    None
+                                }
                             }
-                        }
-                    });
+                        })
+                    };
                     if config.proxy_enabled && proxy_url.is_none() {
                         log_info!(
                             "[bt] 已开启 BT 代理（来源 {:?}），但没有可用的代理服务器，BT 保持直连",
                             config.proxy_source
                         );
                     }
-                    let route = config.session_route(proxy_url.as_deref());
+                    let mut route = config.session_route(proxy_url.as_deref());
+                    if protocol_fixed && proxy_url.is_some() {
+                        // The endpoint came from the protocol override, not the BitTorrent page's source.
+                        route.0 = crate::protocol_proxy::PROXY_ROUTE;
+                    }
                     log_info!(
                         "[bt] 会话出口 route={} endpoint={}（对端与 DHT {}）",
                         route.0,
@@ -7406,6 +7522,68 @@ impl DownloadManager {
         Ok(true)
     }
 
+    /// Appends a BEP 19 source without changing the torrent or its info hash.
+    /// The source is applied to the current handle and carried across session rebuilds.
+    ///
+    /// # Errors
+    /// The task is not a torrent, the URL is invalid, the list is full, or the live
+    /// session or storage rejected the addition. Without a handle, success means saved.
+    /// Consult [`Self::bt_status`] for the source's application state.
+    #[cfg(feature = "bt")]
+    pub async fn add_bt_web_seed(
+        &mut self,
+        task_id: &str,
+        url: &str,
+    ) -> Result<(), crate::bt_task_files::BtTaskOpError> {
+        use crate::bt_local_seed::{MAX_WEB_SEEDS, is_web_seed_url};
+        use crate::bt_task_files::BtTaskOpError;
+
+        let url = url.trim();
+        if !is_web_seed_url(url) {
+            return Err(BtTaskOpError::InvalidArgument(
+                "expected an absolute HTTP or HTTPS URL of at most 4096 bytes".to_owned(),
+            ));
+        }
+        let task = self
+            .db
+            .load_task_by_id(task_id)
+            .await?
+            .filter(|task| is_bt_url(&task.url))
+            .ok_or(BtTaskOpError::NotFound)?;
+        let mut seeds = self.db.task_web_seeds(task_id).await?;
+        let declared = if let Some(bytes) = self.db.load_torrent_file_bytes(task_id).await?
+            && !bytes.is_empty()
+        {
+            librqbit::torrent_from_bytes(&bytes)
+                .map_err(|error| {
+                    BtTaskOpError::Operation(format!("torrent parse error: {error:#}"))
+                })?
+                .url_list
+        } else if is_magnet(&task.url) {
+            librqbit::Magnet::parse(&bt_downloader::normalize_magnet(&task.url))
+                .map_err(|error| {
+                    BtTaskOpError::Operation(format!("magnet parse error: {error:#}"))
+                })?
+                .web_seeds
+        } else {
+            Vec::new()
+        };
+        let urls: HashSet<_> = declared.iter().chain(&seeds).map(String::as_str).collect();
+        if !urls.contains(url) && urls.len() >= MAX_WEB_SEEDS {
+            return Err(BtTaskOpError::InvalidArgument(format!(
+                "a torrent can have at most {MAX_WEB_SEEDS} web seeds"
+            )));
+        }
+        if let Some(bt) = &self.bt_session {
+            return bt.save_web_seed(&self.db, task_id, url, seeds).await;
+        }
+        if !seeds.iter().any(|seed| seed == url) {
+            seeds.push(url.to_owned());
+            self.db.set_task_web_seeds(task_id, &seeds).await?;
+        }
+        Ok(())
+    }
+
     /// 修改 BT 任务的选片方式（`None` = 该项不变），对齐 qBittorrent 右键「按顺序下载」
     /// 「先下载首尾文件块」；两项都关 = 最稀有优先。落库后若 BT 会话在，登记到会话并
     /// 热改已入册的句柄（下载中从下一个请求的块起生效）；否则下次启动时烘焙。
@@ -7949,7 +8127,16 @@ impl DownloadManager {
                 e
             ),
         }
+        self.register_bt_web_seeds(bt, &task.task_id).await;
         options
+    }
+
+    #[cfg(feature = "bt")]
+    async fn register_bt_web_seeds(&self, bt: &SharedBtSession, task_id: &str) {
+        match self.db.task_web_seeds(task_id).await {
+            Ok(seeds) => bt.register_web_seeds(task_id, seeds).await,
+            Err(error) => log_info!("[manager] web seeds of {task_id} unavailable: {error:#}"),
+        }
     }
 
     /// BT 被禁用时把仍停在「排队/下载中/准备中」的任务落回暂停(2)并广播，
@@ -8283,7 +8470,12 @@ impl DownloadManager {
                 self.auto_failover_pending.remove(task_id);
                 self.auto_failover_attempts.remove(task_id);
                 match self.db.delete_task(task_id).await {
-                    Ok(sources) => self.broadcast_deleted_rss_sources(sources).await,
+                    Ok(sources) => {
+                        if let Some(bt) = &self.bt_session {
+                            bt.clear_web_seeds(task_id).await;
+                        }
+                        self.broadcast_deleted_rss_sources(sources).await;
+                    }
                     Err(e) => log_info!(
                         "[manager] duplicate cleanup {}: DB delete error: {}",
                         task_id,
@@ -8307,9 +8499,15 @@ impl DownloadManager {
             if task.status == 4
                 && self.proxy_config.mode == ProxyMode::Auto
                 && task.proxy_url.is_empty()
-                // 出口由站点规则决定的任务不参与 Auto 故障转移：否则会被当成「直连已试过」
-                // 而排一次切到代理的立即重试，绕过规则。
+                // 站点规则与协议固定出口不参与 Auto 换路：否则会把其失败归因到 Auto，
+                // 并排程不适用的备用路径。出口标签记录实际下载协议的决定（含插件解析、
+                // 独立音轨）；源链接上的覆盖也保守地阻止换路，旧库空标签且无覆盖仍可换路。
                 && !crate::auto_proxy::route::is_rule_label(&task.auto_route)
+                && !crate::protocol_proxy::is_fixed_route(&task.auto_route)
+                && self
+                    .protocol_proxies
+                    .raw(DownloadProtocol::for_http_family(&task.url, false))
+                    .is_empty()
                 && !is_bt_url(&task.url)
                 && !is_ed2k_url(&task.url)
                 && let Some(host) = crate::segment_coordinator::extract_host(&task.url)
@@ -8511,7 +8709,7 @@ impl DownloadManager {
             // flux.task.requestRetry 命令式重试（受 max_auto_retries 约束）。
             #[cfg(feature = "plugins")]
             if let Some(pm) = &self.plugin_manager {
-                if task.status == 3 && !adopted {
+                if task.status == 3 && !adopted && !task.html_only {
                     let file_path = format!("{}/{}", task.save_dir, task.file_name);
                     // 轨对任务补充音频 sidecar 信息：mux 成功 → sidecar 已删，
                     // muxed=true；mux 失败降级 → sidecar 独立存在，audio_path=Some。
@@ -9717,6 +9915,125 @@ impl DownloadManager {
         }
     }
 
+    /// Save the page from a failed HTTP download as a separate, HTML-only task.
+    /// Each call creates a new copy of the page as it is served at that time.
+    pub async fn save_html_response(&mut self, task_id: &str) -> Result<String, String> {
+        let db_error = |error: DbError| format!("db: {error:#}");
+        let source = self
+            .db
+            .load_task_by_id(task_id)
+            .await
+            .map_err(db_error)?
+            .ok_or("not-found")?;
+        if source.status != 4
+            || source.html_only
+            || !downloader::can_save_html_failure(&source.error_message)
+            || crate::auth::site_key(&source.url).is_none()
+        {
+            return Err("not-an-html-failure".into());
+        }
+        let method = self
+            .db
+            .load_task_request_method(task_id)
+            .await
+            .map_err(db_error)?;
+        let replay = if method.is_empty() {
+            None
+        } else {
+            Some(
+                self.replayable_requests
+                    .get(task_id)
+                    .filter(|request| request.method == method)
+                    .cloned()
+                    .ok_or("browser-request-unavailable")?,
+            )
+        };
+        let task = self.insert_html_task(source, &method).await?;
+        let new_id = task.task_id.clone();
+        if let Some(replay) = replay {
+            self.replayable_requests.insert(new_id.clone(), replay);
+        }
+        let created = self.webhook_task_event(
+            crate::webhook::WebhookEventKind::TaskCreated,
+            crate::webhook::WebhookTask {
+                id: new_id.clone(),
+                file_name: task.file_name.clone(),
+                url: task.url.clone(),
+                save_dir: task.save_dir.clone(),
+                total_bytes: 0,
+                status: 0,
+                error_message: String::new(),
+            },
+            &task.queue_id,
+        );
+        if !self.suppress_bulk_broadcasts {
+            self.sink.emit(EngineEvent::TaskChanged(Box::new(task)));
+        }
+        self.emit_task_event(created);
+        self.resume_task_inner(&new_id).await;
+        Ok(new_id)
+    }
+
+    async fn insert_html_task(
+        &self,
+        mut source: TaskInfo,
+        method: &str,
+    ) -> Result<TaskInfo, String> {
+        let db_error = |error: DbError| format!("db: {error:#}");
+        let (mut cookies, referrer, mut headers) =
+            crate::task_edit::stored_context(&self.db, &source)
+                .await
+                .map_err(db_error)?;
+        source.task_id = Uuid::now_v7().to_string();
+        let profile =
+            crate::task_edit::protect_request_context(&source, &mut cookies, &mut headers);
+        let properties = crate::task_edit::TaskProperties {
+            user_agent: source.properties.user_agent,
+            auth_ref: source.properties.auth_ref,
+            credential_ref: profile
+                .as_ref()
+                .map(|profile| profile.auth_ref.clone())
+                .unwrap_or_default(),
+            ..Default::default()
+        };
+        let properties = serde_json::to_string(&properties).map_err(|error| error.to_string())?;
+        let headers = serde_json::to_string(&headers).map_err(|error| error.to_string())?;
+        let safe_name = naming::sanitize_filename(&source.file_name);
+        let stem = Path::new(&safe_name)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .filter(|stem| !stem.is_empty())
+            .unwrap_or("page");
+        let file_name = naming::sanitize_filename(&format!("{stem}.html"));
+        let row = NewTaskRow {
+            id: &source.task_id,
+            url: &source.url,
+            file_name: &file_name,
+            save_dir: &source.save_dir,
+            segments: 1,
+            proxy_url: &source.proxy_url,
+            queue_id: &source.queue_id,
+            ignore_tls_errors: source.ignore_tls_errors,
+            referrer: &referrer,
+            extra_headers_json: &headers,
+            origin_url: &source.origin_url,
+            // Replay the stored request as-is: no resolver binding, so resume never re-resolves.
+            resolver_plugin_id: "",
+            resolver_item: "",
+            request_method: method,
+            html_only: true,
+            edit_properties: Some(&properties),
+            inline_credentials: profile.as_ref(),
+            ..Default::default()
+        };
+        self.db
+            .insert_new_tasks(&[row], None)
+            .await
+            .map_err(db_error)?
+            .pop()
+            .ok_or_else(|| "created task is missing".into())
+    }
+
     /// 批量创建任务（幂等）。返回与 `specs` 同序的逐项结果；逐项拒绝（thunder
     /// 解码失败 / BT 被禁用 / checksum 畸形…）不影响同批其它项。
     ///
@@ -10260,13 +10577,28 @@ impl DownloadManager {
                 && self.probes_outstanding.load(Ordering::Relaxed) < META_PROBE_WINDOW
             {
                 let egress = self.task_http_context(
-                    &db_url,
+                    (
+                        &db_url,
+                        DownloadProtocol::for_http_family(&db_url, audio_url.is_some()),
+                        None,
+                    ),
                     &proxy_url,
                     &user_agent,
                     &queue_id,
                     ignore_tls_errors,
                     None,
                 );
+                let egress = match egress {
+                    Ok(egress) => egress,
+                    Err(error) => {
+                        crate::logger::report_warning(
+                            "download-manager",
+                            "metadata probe egress",
+                            &error,
+                        );
+                        return;
+                    }
+                };
                 let mut probe_spec = downloader::RequestSpec::from_captured(
                     method.as_deref(),
                     cookies,
@@ -10364,7 +10696,7 @@ impl DownloadManager {
             // 只探测队首窗口内的任务：批量导入的长队列不为每个任务发探测，
             // 轮到下载时自然得到名字与大小。
             let in_probe_window = self.pending_queue.len() < META_PROBE_WINDOW;
-            let probe_context = (!has_resolver && queued_hint == 0 && in_probe_window).then(|| {
+            let probe_context = if !has_resolver && queued_hint == 0 && in_probe_window {
                 let mut spec = downloader::RequestSpec::from_captured(
                     queued.method.as_deref(),
                     queued.cookies.clone(),
@@ -10373,16 +10705,34 @@ impl DownloadManager {
                     queued.body.clone(),
                 );
                 let egress = self.task_http_context(
-                    &queued.url,
+                    (
+                        &queued.url,
+                        DownloadProtocol::for_http_family(&queued.url, queued.audio_url.is_some()),
+                        None,
+                    ),
                     &queued.proxy_url,
                     &queued.user_agent,
                     &queued.queue_id,
                     queued.ignore_tls_errors,
                     None,
                 );
-                spec.egress = egress.router.clone();
-                (spec, egress.client, egress.proxy)
-            });
+                match egress {
+                    Ok(egress) => {
+                        spec.egress = egress.router;
+                        Some((spec, egress.client, egress.proxy))
+                    }
+                    Err(error) => {
+                        crate::logger::report_warning(
+                            "download-manager",
+                            "metadata probe egress",
+                            &error,
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
             let probe_extras = if probe_context.is_some() {
                 Some(
                     self.meta_probe_extras(
@@ -10687,13 +11037,14 @@ impl DownloadManager {
     /// 已排程的一次性备用链路或解析钉定的出口（仅任务启动路径消费），client 与标签同源于它。
     fn task_http_context(
         &self,
-        url: &str,
+        subject: (&str, DownloadProtocol, Option<&ProtocolProxies>),
         proxy_url: &str,
         user_agent: &str,
         queue_id: &str,
         ignore_tls_errors: bool,
         forced_route: Option<ForcedRoute>,
-    ) -> TaskEgress {
+    ) -> Result<TaskEgress, downloader::DownloadError> {
+        let (url, protocol, planned_overrides) = subject;
         let queue_ua = self
             .queues
             .get(queue_id)
@@ -10718,7 +11069,7 @@ impl DownloadManager {
                 crate::tls::HttpVersion::Http1,
             ) {
                 Ok(client) => {
-                    return TaskEgress {
+                    return Ok(TaskEgress {
                         client,
                         proxy,
                         route,
@@ -10730,13 +11081,13 @@ impl DownloadManager {
                             ignore_tls_errors,
                         ))),
                         pac: crate::pac_route::PacRouting::Off,
-                    };
+                    });
                 }
                 Err(e) => {
                     crate::logger::report_error("download-manager", "build proxy-rule client", &e);
                     // base 必须为 None：命中该规则的每个请求都会进入 `client_for`，
                     // 重建失败时报错让任务失败，而不是悄悄走全局 client 泄漏出去。
-                    return TaskEgress {
+                    return Ok(TaskEgress {
                         client: self.client.clone(),
                         proxy: self.proxy_config.resolve(),
                         route: "",
@@ -10748,7 +11099,7 @@ impl DownloadManager {
                             ignore_tls_errors,
                         ))),
                         pac: crate::pac_route::PacRouting::Off,
-                    };
+                    });
                 }
             }
         }
@@ -10760,6 +11111,32 @@ impl DownloadManager {
                 ignore_tls_errors,
             ))
         });
+        if proxy_url.is_empty()
+            && protocol != DownloadProtocol::Ed2k
+            && let Some(proxy) = planned_overrides
+                .unwrap_or(&self.protocol_proxies)
+                .route(protocol)?
+        {
+            let client = crate::client_cache::get(
+                &proxy,
+                resolved_ua,
+                ignore_tls_errors,
+                crate::tls::HttpVersion::Http1,
+            )?;
+            let route = if proxy.is_active() {
+                crate::protocol_proxy::PROXY_ROUTE
+            } else {
+                crate::protocol_proxy::DIRECT_ROUTE
+            };
+            return Ok(TaskEgress {
+                client,
+                proxy,
+                route,
+                auto_ctx: None,
+                router,
+                pac: crate::pac_route::PacRouting::Off,
+            });
+        }
         let pac = self.pac_routing(proxy_url);
         // ProxyMode::Auto 启动期决策（per-task 代理优先级更高，非空时跳过）。
         let auto = if proxy_url.is_empty() {
@@ -10796,14 +11173,14 @@ impl DownloadManager {
         if !needs_dedicated_client {
             let proxy = auto_override.unwrap_or_else(|| self.proxy_config.resolve());
             let route = static_route(&proxy);
-            return TaskEgress {
+            return Ok(TaskEgress {
                 client: self.global_client(&proxy),
                 proxy,
                 route,
                 auto_ctx,
                 router,
                 pac,
-            };
+            });
         }
 
         let proxy = if !proxy_url.is_empty() {
@@ -10816,7 +11193,7 @@ impl DownloadManager {
             self.proxy_config.resolve()
         };
         let route = static_route(&proxy);
-        match crate::client_cache::get(
+        let egress = match crate::client_cache::get(
             &proxy,
             resolved_ua,
             ignore_tls_errors,
@@ -10832,8 +11209,7 @@ impl DownloadManager {
             },
             Err(e) => {
                 log_info!("[manager] failed to build per-task client: {}", e);
-                // 构建失败降级为全局直连 client——不再对路由做任何声明
-                // （空标签），避免「标签说代理、实际走直连」的可追溯性谎言。
+                // 构建失败降级为全局直连 client，不声明代理出口。
                 TaskEgress {
                     client: self.client.clone(),
                     proxy: self.proxy_config.resolve(),
@@ -10843,7 +11219,8 @@ impl DownloadManager {
                     pac,
                 }
             }
-        }
+        };
+        Ok(egress)
     }
 
     /// hint 任务（不得发探测请求）的占位名：名字为空时按 URL（含预签名 URL 的
@@ -11474,7 +11851,33 @@ impl DownloadManager {
                 return;
             }
         } else {
-            let (route_subject, forced_route) = self.take_start_route(&task_id);
+            let (route_subject, forced_route, overrides) = self.take_start_route(&task_id);
+            let protocol = if use_ed2k {
+                DownloadProtocol::Ed2k
+            } else {
+                DownloadProtocol::for_http_family(&url, audio_url.is_some())
+            };
+            let egress = self.task_http_context(
+                (
+                    route_subject.as_deref().unwrap_or(&url),
+                    protocol,
+                    overrides.as_deref(),
+                ),
+                &proxy_url,
+                &user_agent,
+                &queue_id,
+                ignore_tls_errors,
+                forced_route,
+            );
+            let egress = match egress {
+                Ok(egress) => egress,
+                Err(error) => {
+                    persist_task_failure(&task_id, error.to_string(), &self.db, &self.progress_tx)
+                        .await;
+                    send_task_done(&done_tx, TaskDone::finished(task_id, spawn_gen, None)).await;
+                    return;
+                }
+            };
             let TaskEgress {
                 client: task_client,
                 proxy: task_proxy,
@@ -11482,14 +11885,7 @@ impl DownloadManager {
                 auto_ctx,
                 router: egress_router,
                 pac: pac_routing,
-            } = self.task_http_context(
-                route_subject.as_deref().unwrap_or(&url),
-                &proxy_url,
-                &user_agent,
-                &queue_id,
-                ignore_tls_errors,
-                forced_route,
-            );
+            } = egress;
             self.publish_task_route(&task_id, auto_route, &task_proxy.log_endpoint())
                 .await;
             // ---------------------------------------------------------------
@@ -11602,9 +11998,11 @@ impl DownloadManager {
                     use_hls,
                     use_dash,
                     use_ed2k,
+                    html_only: false,
                     prelude: Some(PreludeCtx {
                         global: self.file_exists_behavior,
                         support,
+                        html_only: false,
                         restart_missing: false,
                     }),
                     reserved_set,
@@ -12751,6 +13149,7 @@ impl DownloadManager {
                 return;
             }
         };
+        let html_only = task.html_only;
         // 任务持久化的原始 URL（拦截上下文 `sourceUrl`），早于 resolver 改写。
         let source_url = task.url.clone();
 
@@ -12774,6 +13173,7 @@ impl DownloadManager {
             }
             if let Some(name) = res.file_name
                 && !name.is_empty()
+                && !html_only
             {
                 task.file_name = name;
             }
@@ -12802,7 +13202,7 @@ impl DownloadManager {
         // 错误内容，因此明确失败，提示回浏览器重新发起。插件 resolve 已给出新的请求
         // （`plugin_resolved`）时不受此限。
         #[cfg(feature = "plugins")]
-        let request_replaced = plugin_resolved;
+        let request_replaced = plugin_resolved && !html_only;
         #[cfg(not(feature = "plugins"))]
         let request_replaced = false;
         let mut replay: Option<ReplayableRequest> = None;
@@ -12883,22 +13283,27 @@ impl DownloadManager {
         let spawn_gen = self.generation;
         let cancel_token = CancellationToken::new();
 
-        let use_ftp = is_ftp_url(&task.url);
-        let use_hls = hls_downloader::is_hls_url(&task.url);
+        let use_ftp = !html_only && is_ftp_url(&task.url);
+        let use_hls = !html_only && hls_downloader::is_hls_url(&task.url);
         // 轨对任务：从 DB 读回音频轨 URL，重建轨对下载（与 .mpd 后缀正交）。
-        let audio_url = self.db.load_audio_url(task_id).await.unwrap_or_default();
+        let audio_url = if html_only {
+            None
+        } else {
+            self.db.load_audio_url(task_id).await.unwrap_or_default()
+        };
         // 插件任务：本次 resolve 的输出是权威值（含"无音轨"）。DB 里的 audio_url
         // 对插件任务只是 sidecar 删除标记（run_track_pair_inner 兜底落库），其
         // ephemeral 直链早已过期，且插件设置可能已改为无音轨模式——绝不回退。
         // 非插件任务（浏览器轨对/重启恢复）照旧读 DB 重建。
         #[cfg(feature = "plugins")]
-        let audio_url = if plugin_resolved {
+        let audio_url = if plugin_resolved && !html_only {
             plugin_audio_url
         } else {
             audio_url
         };
-        let use_dash = dash_downloader::is_dash_url(&task.url) || audio_url.is_some();
-        let use_bt = is_bt_url(&task.url);
+        let use_dash =
+            !html_only && (dash_downloader::is_dash_url(&task.url) || audio_url.is_some());
+        let use_bt = !html_only && is_bt_url(&task.url);
         if use_bt && !self.bt_config.enabled {
             crate::log_warn!(
                 "[manager] cannot resume BT task {}: {}",
@@ -12910,7 +13315,7 @@ impl DownloadManager {
             self.park_bt_disabled_task(task_id).await;
             return;
         }
-        let use_ed2k = is_ed2k_url(&task.url);
+        let use_ed2k = !html_only && is_ed2k_url(&task.url);
 
         // Insert placeholder entry (handle filled in after tokio::spawn).
         self.active_tasks.insert(
@@ -13218,7 +13623,33 @@ impl DownloadManager {
             let persisted_ua = persisted_user_agent.unwrap_or_default();
             // 与 start 路径共用 `task_http_context`：一次性备用链路（Auto）与解析钉定的出口
             // 在此消费，站点规则 / Auto 决策 / 专属 client 的取舍只有这一份实现。
-            let (route_subject, forced_route) = self.take_start_route(&tid);
+            let (route_subject, forced_route, overrides) = self.take_start_route(&tid);
+            let protocol = if use_ed2k {
+                DownloadProtocol::Ed2k
+            } else {
+                DownloadProtocol::for_http_family(&task.url, audio_url.is_some())
+            };
+            let egress = self.task_http_context(
+                (
+                    route_subject.as_deref().unwrap_or(&task.url),
+                    protocol,
+                    overrides.as_deref(),
+                ),
+                &task.proxy_url,
+                &persisted_ua,
+                &task.queue_id,
+                task.ignore_tls_errors,
+                forced_route,
+            );
+            let egress = match egress {
+                Ok(egress) => egress,
+                Err(error) => {
+                    persist_task_failure(&tid, error.to_string(), &self.db, &self.progress_tx)
+                        .await;
+                    send_task_done(&done_tx, TaskDone::finished(tid, spawn_gen, None)).await;
+                    return;
+                }
+            };
             let TaskEgress {
                 client: task_client,
                 proxy: task_proxy,
@@ -13226,14 +13657,7 @@ impl DownloadManager {
                 auto_ctx,
                 router: egress_router,
                 pac: pac_routing,
-            } = self.task_http_context(
-                route_subject.as_deref().unwrap_or(&task.url),
-                &task.proxy_url,
-                &persisted_ua,
-                &task.queue_id,
-                task.ignore_tls_errors,
-                forced_route,
-            );
+            } = egress;
             let resume_user_agent = self
                 .resolved_task_ua(&persisted_ua, &task.queue_id)
                 .to_string();
@@ -13315,19 +13739,29 @@ impl DownloadManager {
             // 从未有过任何落盘进度的任务（稍后下载 / 排队中暂停后恢复 / 重启自动
             // 恢复 / 重新下载 / 答复后重入）等同全新起跑：经启动序幕统一处理命名、
             // 跳过、dedup 与「文件已存在」询问。
-            let fresh = self.never_started(&task, audio_url.is_some()).await;
-            let decision = match self.db.get_exists_decision(&tid).await {
-                Ok(value) => crate::file_exists::ExistsDecision::from_db(&value),
-                Err(error) => {
-                    crate::logger::report_error(
-                        "download-manager",
-                        "load file-exists decision",
-                        &error,
-                    );
-                    crate::file_exists::ExistsDecision::None
+            let fresh = if html_only {
+                task.downloaded_bytes == 0
+            } else {
+                self.never_started(&task, audio_url.is_some()).await
+            };
+            let decision = if html_only {
+                crate::file_exists::ExistsDecision::None
+            } else {
+                match self.db.get_exists_decision(&tid).await {
+                    Ok(value) => crate::file_exists::ExistsDecision::from_db(&value),
+                    Err(error) => {
+                        crate::logger::report_error(
+                            "download-manager",
+                            "load file-exists decision",
+                            &error,
+                        );
+                        crate::file_exists::ExistsDecision::None
+                    }
                 }
             };
-            let overwrite = if matches!(self.file_exists_behavior, FileExistsBehavior::Overwrite) {
+            let overwrite = if html_only {
+                crate::file_exists::OverwritePolicy::Never
+            } else if matches!(self.file_exists_behavior, FileExistsBehavior::Overwrite) {
                 crate::file_exists::OverwritePolicy::Any
             } else if !fresh && decision == crate::file_exists::ExistsDecision::Overwrite {
                 crate::file_exists::OverwritePolicy::Only(task.file_name.clone())
@@ -13335,7 +13769,11 @@ impl DownloadManager {
                 crate::file_exists::OverwritePolicy::Never
             };
             let support = ask_support(&task.url, audio_url.is_some(), replay.is_some());
-            let interceptor = self.task_interceptor(&tid, &source_url, &task.url).await;
+            let interceptor = if html_only {
+                crate::intercept::noop()
+            } else {
+                self.task_interceptor(&tid, &source_url, &task.url).await
+            };
             let run_meta = crate::intercept::RunMeta {
                 proxy_url: task.proxy_url.clone(),
                 ignore_tls_errors: task.ignore_tls_errors,
@@ -13416,9 +13854,11 @@ impl DownloadManager {
                     use_hls,
                     use_dash,
                     use_ed2k,
+                    html_only,
                     prelude: fresh.then_some(PreludeCtx {
                         global: self.file_exists_behavior,
                         support,
+                        html_only,
                         restart_missing,
                     }),
                     reserved_set,
@@ -13970,6 +14410,10 @@ impl DownloadManager {
                 return Err(DeleteTaskError::Record(error.into()));
             }
         }
+        #[cfg(feature = "bt")]
+        if let Some(bt) = &self.bt_session {
+            bt.clear_web_seeds(task_id).await;
+        }
         self.prune_group_dirs(group_dirs, &[task_id.to_string()])
             .await;
 
@@ -14160,6 +14604,10 @@ impl DownloadManager {
                 Ok(sources) => {
                     for task_id in &deleted {
                         self.replayable_requests.remove(task_id);
+                        #[cfg(feature = "bt")]
+                        if let Some(bt) = &self.bt_session {
+                            bt.clear_web_seeds(task_id).await;
+                        }
                     }
                     self.broadcast_deleted_rss_sources(sources).await;
                     self.prune_group_dirs(group_dirs, &deleted).await;
@@ -14537,25 +14985,19 @@ impl DownloadManager {
         use crate::bt_local_seed::LocalSeedError;
         use crate::bt_status::{BtStatusView, PeerCounts, PeerRow};
         let db_error = |error: crate::db::DbError| LocalSeedError::Operation(format!("{error:#}"));
-        let task = self
+        let (url, bytes, saved_web_seeds) = self
             .db
-            .load_task_by_id(task_id)
+            .load_bt_status_inputs(task_id)
             .await
             .map_err(db_error)?
             .ok_or_else(|| LocalSeedError::InvalidArgument("task not found".to_owned()))?;
-        let bytes = self
-            .db
-            .load_torrent_file_bytes(task_id)
-            .await
-            .map_err(db_error)?
-            .filter(|bytes| !bytes.is_empty());
         // 种子自带的 tracker 层（BEP 12；磁力链接每个 `tr=` 自成一层）、私有标记与 v2 info hash。
         let (info_hash, mut info_hash_v2, own_tiers, mut private): (
             String,
             Option<String>,
             Vec<Vec<String>>,
             bool,
-        ) = if let Some(bytes) = &bytes {
+        ) = if let Some(bytes) = bytes.as_deref().filter(|bytes| !bytes.is_empty()) {
             let parsed = librqbit::torrent_from_bytes(bytes).map_err(|error| {
                 LocalSeedError::InvalidArgument(format!("torrent parse error: {error}"))
             })?;
@@ -14574,12 +15016,12 @@ impl DownloadManager {
                 tiers,
                 parsed.info.data.private,
             )
-        } else if is_magnet(&task.url) {
-            let info_hash = TorrentSource::Magnet(task.url.clone())
+        } else if is_magnet(&url) {
+            let info_hash = TorrentSource::Magnet(url.clone())
                 .info_hash_hex()
                 .ok_or_else(|| LocalSeedError::InvalidArgument("invalid magnet link".to_owned()))?;
             let magnet =
-                librqbit::Magnet::parse(&crate::bt_downloader::normalize_magnet(&task.url)).ok();
+                librqbit::Magnet::parse(&crate::bt_downloader::normalize_magnet(&url)).ok();
             let info_hash_v2 = magnet
                 .as_ref()
                 .and_then(librqbit::Magnet::as_id32)
@@ -14619,10 +15061,29 @@ impl DownloadManager {
                 crate::bt_status::idle_tracker_rows(&own_tiers, &session)
             }
         };
-        let web_seeds = handle
-            .as_ref()
-            .map(|handle| crate::bt_status::web_seed_rows(handle.web_seeds()))
-            .unwrap_or_default();
+        let mut web_seeds = handle.as_ref().map_or_else(Vec::new, |handle| {
+            crate::bt_status::web_seed_rows(handle.web_seeds())
+        });
+        let web_seeds_enabled = match (&self.bt_session, &handle) {
+            (Some(bt), Some(_)) => bt.web_seeds_enabled(),
+            _ => self.bt_config.enable_webseed,
+        };
+        for url in saved_web_seeds {
+            if !web_seeds.iter().any(|seed| seed.url == url) {
+                use crate::bt_status::{WebSeedRow, WebSeedState};
+                web_seeds.push(WebSeedRow {
+                    url,
+                    state: if !web_seeds_enabled {
+                        WebSeedState::Disabled
+                    } else if handle.is_some() {
+                        WebSeedState::Rejected
+                    } else {
+                        WebSeedState::Pending
+                    },
+                    ..Default::default()
+                });
+            }
+        }
         if let Some(handle) = handle {
             // 磁力任务的 v2 哈希与私有标记在取得元数据后才知道。
             info_hash_v2 =
@@ -15293,6 +15754,7 @@ impl DownloadManager {
         let options = self.bt_task_options(task);
         let upload_limit_bps = options.upload_limit_bps;
         bt.register_task_options(&task_id, options).await;
+        self.register_bt_web_seeds(&bt, &task_id).await;
         // 在途登记与关停信号：会话重建（改监听类设置 / 禁用 BT）时，本任务不再向
         // 旧会话登记，由 `invalidate_bt_session` 在新会话上统一重新挂载。
         let reseed_guard = bt.begin_reseed(&task_id);
@@ -16784,12 +17246,23 @@ impl DownloadManager {
         &self,
         url: String,
     ) -> impl Future<Output = crate::meta_prober::LinkProbe> + Send + use<> {
-        let egress = self.task_http_context(&url, "", "", "", false, None);
-        let client = egress.client;
-        let router = egress.router;
+        let egress = self.task_http_context(
+            (&url, DownloadProtocol::for_http_family(&url, false), None),
+            "",
+            "",
+            "",
+            false,
+            None,
+        );
         async move {
             let lower = url.get(..8).unwrap_or(&url).to_ascii_lowercase();
-            if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+            if let Err(error) = &egress {
+                crate::logger::report_warning("download-manager", "link probe egress", error);
+            }
+            let Some(egress) = (lower.starts_with("http://") || lower.starts_with("https://"))
+                .then_some(egress)
+                .and_then(Result::ok)
+            else {
                 return crate::meta_prober::LinkProbe {
                     verdict: crate::meta_prober::LinkVerdict::Unknown,
                     final_url: url,
@@ -16797,10 +17270,10 @@ impl DownloadManager {
                     mime: String::new(),
                     total_bytes: 0,
                 };
-            }
+            };
             let mut spec = crate::downloader::RequestSpec::empty_get();
-            spec.egress = router;
-            crate::meta_prober::probe_link_kind(&url, &client, &spec).await
+            spec.egress = egress.router;
+            crate::meta_prober::probe_link_kind(&url, &egress.client, &spec).await
         }
     }
 
@@ -18180,7 +18653,11 @@ mod tests {
                 default_variant_index: 1,
                 ..Default::default()
             };
-            collapse_resolve_variants("t1", &mut res, &NoopSelection).await;
+            assert!(
+                collapse_resolve_variants("t1", &mut res, &NoopSelection, false)
+                    .await
+                    .is_ok()
+            );
             assert_eq!(res.url, "https://v.example.com/mid");
             assert!(res.variants.is_empty());
         }
@@ -18193,7 +18670,11 @@ mod tests {
                 default_variant_index: 9,
                 ..Default::default()
             };
-            collapse_resolve_variants("t1", &mut res, &NoopSelection).await;
+            assert!(
+                collapse_resolve_variants("t1", &mut res, &NoopSelection, false)
+                    .await
+                    .is_ok()
+            );
             assert_eq!(res.url, "https://v.example.com/a");
         }
 
@@ -18214,7 +18695,11 @@ mod tests {
                 }],
                 ..Default::default()
             };
-            collapse_resolve_variants("t1", &mut res, &NoopSelection).await;
+            assert!(
+                collapse_resolve_variants("t1", &mut res, &NoopSelection, false)
+                    .await
+                    .is_ok()
+            );
             assert_eq!(res.url, "https://v.example.com/audio");
             assert_eq!(res.file_name.as_deref(), Some("base.mp4"));
             assert_eq!(res.total_bytes, Some(2_000));
@@ -18266,8 +18751,9 @@ mod tests {
                 ],
                 ..Default::default()
             };
-            let cancelled = collapse_resolve_variants("t1", &mut res, &CancelSelection).await;
-            assert!(cancelled);
+            let selection =
+                collapse_resolve_variants("t1", &mut res, &CancelSelection, false).await;
+            assert!(selection.is_err());
             assert_eq!(res.url, "https://old.example.com");
         }
     }
@@ -20161,6 +20647,170 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "bt")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn web_seed_rejection_before_and_after_handle_publication() {
+        exercise_web_seed_status("web_seed_capacity", true).await;
+    }
+
+    #[cfg(feature = "bt")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn web_seed_disabled_with_published_handle() {
+        exercise_web_seed_status("web_seed_disabled", false).await;
+    }
+
+    #[cfg(feature = "bt")]
+    async fn exercise_web_seed_status(fixture: &str, enable_webseed: bool) {
+        use crate::{bt_local_seed::MAX_WEB_SEEDS, bt_status::WebSeedState};
+
+        let (work, port) = bt_test_dir(fixture);
+        let file = work.join("payload.bin");
+        std::fs::write(&file, b"web seed fixture").expect("payload");
+        let torrent = librqbit::create_torrent(
+            &file,
+            Default::default(),
+            &librqbit::spawn_utils::BlockingSpawner::new(1),
+        )
+        .await
+        .expect("create torrent")
+        .as_bytes()
+        .expect("torrent bytes");
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        // The manager hasn't received metadata; its declared-URL check has no
+        // visibility into the sources of the handle that is about to publish.
+        let id = "magnet-task";
+        db.insert_task(
+            id,
+            "magnet:?xt=urn:btih:def7006974f228ca39c44c806a0fb839a0469c97",
+            "payload.bin",
+            &work.to_string_lossy(),
+            2,
+            0,
+            "",
+            "",
+            "",
+            0,
+        )
+        .await
+        .expect("insert task");
+        let pending = "http://127.0.0.1:1/pending";
+        let rejected = "http://127.0.0.1:1/rejected";
+        let config = bt_test_config(port);
+        let mut mgr = bt_test_manager(
+            db,
+            &work,
+            BtConfig {
+                enable_webseed: false,
+                ..config.clone()
+            },
+        );
+        mgr.add_bt_web_seed(id, pending)
+            .await
+            .expect("save source before session creation");
+        let status = mgr.bt_status(id).await.expect("disabled status");
+        assert!(matches!(
+            status.web_seeds.as_slice(),
+            [seed] if seed.url == pending && seed.state == WebSeedState::Disabled
+        ));
+        if enable_webseed {
+            mgr.set_bt_config(config.clone());
+            let status = mgr.bt_status(id).await.expect("pending status");
+            assert!(matches!(
+                status.web_seeds.as_slice(),
+                [seed] if seed.url == pending && seed.state == WebSeedState::Pending
+            ));
+        }
+        mgr.ensure_bt_session().await.expect("BT session");
+        let bt = mgr.bt_session.clone().expect("live session");
+        if enable_webseed {
+            mgr.add_bt_web_seed(id, pending)
+                .await
+                .expect("duplicate source in fresh session");
+            let mut registered = librqbit::AddTorrentOptions::default();
+            bt.apply_task_options(id, &mut registered).await;
+            assert!(matches!(
+                registered.web_seeds.as_deref(),
+                Some([url]) if url == pending
+            ));
+        }
+        let mut opts = librqbit::AddTorrentOptions {
+            paused: true,
+            output_folder: Some(work.join("download").to_string_lossy().into_owned()),
+            web_seeds: enable_webseed.then(|| {
+                (0..MAX_WEB_SEEDS)
+                    .map(|index| format!("http://127.0.0.1:1/source-{index}"))
+                    .collect()
+            }),
+            ..Default::default()
+        };
+        if !enable_webseed {
+            mgr.register_bt_web_seeds(&bt, id).await;
+            bt.apply_task_options(id, &mut opts).await;
+        }
+        let response = bt
+            .session()
+            .add_torrent(librqbit::AddTorrent::from_bytes(torrent), Some(opts))
+            .await
+            .expect("add torrent to rqbit");
+        let librqbit::AddTorrentResponse::Added(_, handle) = response else {
+            panic!("expected a fresh torrent");
+        };
+
+        if !enable_webseed {
+            // rqbit retains the URL but disables its worker. Check the actual
+            // handle before publication can replay the saved URL.
+            assert!(matches!(
+                handle.web_seeds().as_slice(),
+                [seed] if seed.url == pending && seed.state == librqbit::WebSeedState::Disabled
+            ));
+        }
+        bt.store_handle(id, handle).await;
+        if enable_webseed {
+            let error = mgr
+                .add_bt_web_seed(id, rejected)
+                .await
+                .expect_err("full handle must reject a new source");
+            assert!(matches!(
+                error,
+                crate::bt_task_files::BtTaskOpError::InvalidArgument(message)
+                    if message == format!("a torrent can have at most {MAX_WEB_SEEDS} web seeds")
+            ));
+            assert_eq!(
+                mgr.db.task_web_seeds(id).await.expect("stored sources"),
+                [pending]
+            );
+            let status = mgr.bt_status(id).await.expect("published status");
+            assert_eq!(status.web_seeds.len(), MAX_WEB_SEEDS + 1);
+            assert!(
+                status
+                    .web_seeds
+                    .iter()
+                    .any(|seed| seed.url == pending && seed.state == WebSeedState::Rejected)
+            );
+            assert!(!status.web_seeds.iter().any(|seed| seed.url == rejected));
+        } else {
+            for requested_enabled in [false, true] {
+                // Changing the requested setting does not rebuild this session.
+                mgr.set_bt_config(BtConfig {
+                    enable_webseed: requested_enabled,
+                    ..config.clone()
+                });
+                let status = mgr.bt_status(id).await.expect("published disabled status");
+                assert!(matches!(
+                    status.web_seeds.as_slice(),
+                    [seed] if seed.url == pending && seed.state == WebSeedState::Disabled
+                ));
+            }
+        }
+        mgr.shutdown().await;
+        drop(bt);
+        if let Err(error) = std::fs::remove_dir_all(&work) {
+            tracing::debug!(%error, "BT web seed test directory cleanup skipped");
+        }
+    }
+
     /// #939 现场：启动续种的本地数据校验尚在途时，会话因监听类设置变更重建。
     /// 任务必须在新会话上继续做种（对齐 qBittorrent：改设置不打断做种），
     /// 旧会话连同其 runtime 必须真正释放（不 panic、不留继续上传的僵尸会话），
@@ -20215,6 +20865,10 @@ mod tests {
         let mut mgr = bt_test_manager(db, &work, config.clone());
         mgr.ensure_bt_session().await.expect("BT session");
         let old = mgr.bt_session.clone().expect("live session");
+        let web_seed = "http://127.0.0.1:1/payload.bin";
+        mgr.add_bt_web_seed("seed", web_seed)
+            .await
+            .expect("add source to completed task");
         let task = mgr
             .db
             .load_task_by_id("seed")
@@ -20268,6 +20922,15 @@ mod tests {
             );
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
+        let handle = new.cached_handle("seed").await.expect("reseeding handle");
+        let live_rows = crate::bt_status::web_seed_rows(handle.web_seeds());
+        let live_seed = live_rows
+            .iter()
+            .find(|seed| seed.url == web_seed)
+            .expect("saved source attached to the rebuilt handle");
+        let status = mgr.bt_status("seed").await.expect("reseeding status");
+        assert_eq!(status.web_seeds.as_slice(), std::slice::from_ref(live_seed));
+        drop(handle);
 
         mgr.shutdown().await;
         drop(new);

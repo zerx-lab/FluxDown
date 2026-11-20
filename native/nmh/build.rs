@@ -7,8 +7,14 @@
 
 fn main() {
     println!("cargo:rerun-if-env-changed=FLUXDOWN_APP_VERSION");
+    println!("cargo:rerun-if-changed=../protocol/build/windows_version_info.rs");
     #[cfg(windows)]
     embed_version_info();
+}
+
+#[cfg(windows)]
+mod version_info {
+    include!("../protocol/build/windows_version_info.rs");
 }
 
 /// Populate the standard `StringFileInfo` fields consumed by Explorer's
@@ -18,24 +24,12 @@ fn embed_version_info() {
     let mut res = winresource::WindowsResource::new();
     // Icon shared with the main application (path relative to this crate).
     res.set_icon("../../assets/logo/windows/app_icon.ico");
-    res.set("CompanyName", "FluxDown");
-    res.set("ProductName", "FluxDown");
-    res.set(
-        "FileDescription",
+    version_info::apply_version_info(
+        &mut res,
         "FluxDown Native Messaging Host (browser bridge)",
+        "fluxdown_nmh.exe",
     );
     res.set("InternalName", "fluxdown_nmh");
-    res.set("OriginalFilename", "fluxdown_nmh.exe");
-    res.set(
-        "LegalCopyright",
-        "Copyright (C) 2026 FluxDown. All rights reserved.",
-    );
-    let version = std::env::var("FLUXDOWN_APP_VERSION")
-        .ok()
-        .filter(|version| !version.is_empty())
-        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned());
-    res.set("FileVersion", &version);
-    res.set("ProductVersion", &version);
     if let Err(e) = res.compile() {
         // Don't fail the build on resource-compiler issues; just warn so the
         // binary still links (only the version block is missing).

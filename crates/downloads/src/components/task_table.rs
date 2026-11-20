@@ -7,7 +7,9 @@ use std::{
 };
 
 use fluxdown_protocol::{RemoteCommandAction, RemoteCommandParams, RemoteTaskStatus};
-use fluxdown_ui_components::{CheckState, FluxIcon, check_mark, tabular_numbers, tooltip_view};
+use fluxdown_ui_components::{
+    CheckState, FluxIcon, check_mark, tabular_numbers, tooltip_view, truncated_text,
+};
 use fluxdown_ui_icon_pack::FileKind;
 use fluxdown_ui_theme::active_theme;
 use gpui::{
@@ -42,6 +44,7 @@ use crate::{
         format_bytes,
         group_tree::GroupMeta,
         row_order::{InteractionHold, RowOrder},
+        series_title::series_title,
         view_prefs::{
             DateBucket, HeaderAlign, SortDir, ViewDensity, ViewGroupBy, ViewPrefs, ViewSortKey,
             state_group_key,
@@ -340,6 +343,21 @@ struct GroupBucket {
     order: i64,
 }
 
+fn content_group_bucket(task: &DownloadTaskView) -> Option<GroupBucket> {
+    let title = series_title(&task.name)?;
+    let folded = title.to_lowercase();
+    let key = if task.source == TaskSource::Remote {
+        format!("content:remote:{}\0{folded}", task.to_device)
+    } else {
+        format!("content:local:{folded}")
+    };
+    Some(GroupBucket {
+        key,
+        label: SharedString::from(title.to_owned()),
+        order: 0,
+    })
+}
+
 /// 自上次重算以来，影响可见行的变化范围。
 enum ViewChange {
     /// 没有影响排序 / 筛选 / 分组的变化：可见行与选中集都无需重算。
@@ -624,6 +642,8 @@ pub(crate) enum MenuEntry {
     MoveStorage,
     /// 任务级 BT 限速对话框（单选；条件见 [`task_limits_visible`]）。
     TaskSpeedLimits,
+    /// Add a BEP 19 source (single local BitTorrent task).
+    AddWebSeed,
     /// 超级做种勾选（可多选；条件见 [`super_seeding_visible`]）。
     SuperSeeding,
     /// 复制磁力链接（单选；条件见 [`TaskMenuFacts::can_share_torrent`]）。
@@ -715,6 +735,9 @@ pub(crate) fn context_menu_items(selection: &[TaskMenuFacts]) -> Vec<MenuEntry> 
     }
     if task_limits_visible(selection) {
         items.push(MenuEntry::TaskSpeedLimits);
+    }
+    if single_local_bt(selection) {
+        items.push(MenuEntry::AddWebSeed);
     }
     if super_seeding_visible(selection) {
         items.push(MenuEntry::SuperSeeding);
@@ -896,7 +919,7 @@ pub(crate) fn force_recheck_visible(selection: &[TaskMenuFacts]) -> bool {
 }
 
 /// 单选本机 BT 任务（任意状态）。
-fn single_local_bt(selection: &[TaskMenuFacts]) -> bool {
+pub(crate) fn single_local_bt(selection: &[TaskMenuFacts]) -> bool {
     matches!(selection, [only] if only.is_local && only.is_bt)
 }
 
@@ -1809,10 +1832,15 @@ impl DownloadTableDelegate {
             self.push_directories(&mut visible, &entities, &local, &remote);
             return visible;
         }
+        let mut ungrouped = Vec::new();
         let mut buckets = group_by_key(
             entities.into_iter().filter_map(|entity| {
-                self.entity_bucket(entity, &local, &remote)
-                    .map(|bucket| (bucket, entity))
+                if let Some(bucket) = self.entity_bucket(entity, &local, &remote) {
+                    Some((bucket, entity))
+                } else {
+                    ungrouped.push(entity);
+                    None
+                }
             }),
             |bucket: &GroupBucket| bucket.key.as_str(),
         );
@@ -1839,13 +1867,16 @@ impl DownloadTableDelegate {
                 }
             }
         }
+        for entity in ungrouped {
+            self.push_entity(&mut visible, entity);
+        }
         visible
     }
 
     fn group_bucket(&self, task: &DownloadTaskView) -> GroupBucket {
         let strings = &self.strings;
         match self.prefs.group_by {
-            ViewGroupBy::None | ViewGroupBy::Directory => GroupBucket {
+            ViewGroupBy::None | ViewGroupBy::Directory | ViewGroupBy::Content => GroupBucket {
                 key: String::new(),
                 label: SharedString::default(),
                 order: 0,
@@ -1946,6 +1977,25 @@ impl DownloadTableDelegate {
         self.visible_task_ids()
             .filter_map(|id| self.store.row(id).map(|row| row.key.clone()))
             .collect()
+    }
+
+    pub(crate) fn selected_rows_in_order(&self) -> Vec<std::cell::Ref<'_, DownloadTaskView>> {
+        let mut rows: Vec<_> = self
+            .visible_task_ids()
+            .filter_map(|id| {
+                let row = self.store.row(id)?;
+                self.selected_tasks.contains(&row.key).then_some(row)
+            })
+            .collect();
+        if rows.len() < self.selected_tasks.len() {
+            // A collapsed bucket or directory can still contain selected tasks.
+            let shown: HashSet<_> = rows.iter().map(|row| row.key.clone()).collect();
+            rows.extend(self.sorted_rows.iter().filter_map(|&id| {
+                let row = self.store.row(id)?;
+                (self.selected_tasks.contains(&row.key) && !shown.contains(&row.key)).then_some(row)
+            }));
+        }
+        rows
     }
 
     /// 可见任务行里（选中数, 总数）；不分配。
@@ -2552,7 +2602,7 @@ impl DownloadTableDelegate {
         let mut parts: Vec<String> = Vec::with_capacity(4);
         if task.state == TaskState::Completed {
             if task.size_bytes > 0 {
-                parts.push(task.size.clone());
+                parts.push(format_bytes(task.size_bytes));
             }
             parts.push(self.kind_label(task.kind).to_string());
         } else {
@@ -2803,7 +2853,10 @@ impl DownloadTableDelegate {
                     .line_height(tokens.typography.sm.line_height)
                     .font_weight(tokens.typography.sm.weight)
                     .text_color(name_color)
-                    .child(name),
+                    .child(truncated_text(
+                        SharedString::from(format!("download-name-{}", task.key.task_id())),
+                        name,
+                    )),
             )
             .when_some(meta, |this, meta| {
                 this.child(
@@ -2949,7 +3002,7 @@ impl DownloadTableDelegate {
             DownloadColumnKind::FileName => self.render_file_cell(task, cx),
             DownloadColumnKind::Progress => self.render_progress_cell(task, cx),
             DownloadColumnKind::Size if task.size_bytes > 0 => {
-                meta_cell(task.size.clone(), muted, true, cx)
+                meta_cell(format_bytes(task.size_bytes), muted, true, cx)
             }
             DownloadColumnKind::Status => self.render_status_cell(task, cx),
             DownloadColumnKind::Speed => match task
@@ -3334,6 +3387,11 @@ impl DownloadTableDelegate {
                 self.strings.bt_task_limits.clone(),
                 FluxIcon::Gauge,
                 Box::new(crate::actions::TaskLimitsSelected),
+            ),
+            MenuEntry::AddWebSeed => menu.menu_with_icon(
+                self.strings.bt_add_web_seed.clone(),
+                FluxIcon::Globe,
+                Box::new(crate::actions::AddWebSeedSelected),
             ),
             MenuEntry::SuperSeeding => {
                 let facts: Vec<_> = selected
@@ -4405,7 +4463,11 @@ fn seeding_upload_speed(task: &DownloadTaskView) -> Option<u64> {
 /// 已下 / 总量；总量未知时只给已下。
 fn bytes_progress(task: &DownloadTaskView) -> String {
     if task.size_bytes > 0 {
-        format!("{} / {}", format_bytes(task.downloaded_bytes), task.size)
+        format!(
+            "{} / {}",
+            format_bytes(task.downloaded_bytes),
+            format_bytes(task.size_bytes)
+        )
     } else {
         format_bytes(task.downloaded_bytes)
     }
@@ -5290,6 +5352,54 @@ mod tests {
     }
 
     #[test]
+    fn content_grouping_in_video_category_uses_titles_not_save_paths() -> Result<(), I18nError> {
+        let mut delegate = delegate(&[2, 2, 2, 2, 2])?;
+        let mut rows = delegate.store.local().to_vec();
+        for (row, (name, extension, dir)) in rows.iter_mut().zip([
+            ("节目.S01E01.mp4", "mp4", "/dl"),
+            ("节目 S02E03.mp4", "mp4", "/dl/another"),
+            ("节目.S03E01.txt", "txt", "/dl"),
+            ("Movie.mp4", "mp4", "/dl"),
+            ("Other.S01E02.mp4", "mp4", "/dl"),
+        ]) {
+            row.name = name.into();
+            row.file_extension = extension.into();
+            row.save_dir = dir.into();
+        }
+        delegate.store.replace_local(rows);
+        delegate.set_categories(Rc::new(CategoryIndex::from_dtos(
+            fluxdown_protocol::CustomCategoryDto::builtin_defaults(),
+        )));
+        delegate.set_directory_context("/dl".into(), HashMap::new());
+        delegate.set_filter(TableFilter::Download(DownloadFilter::with_category(
+            DownloadStatusFilter::All,
+            "builtin_video",
+        )));
+        delegate.prefs_mut().group_by = ViewGroupBy::Content;
+        delegate.refresh_view();
+
+        let folders = delegate
+            .visible
+            .iter()
+            .filter_map(|row| match row {
+                VisibleRow::GroupHeader { label, count, .. } => Some((label.as_ref(), *count)),
+                _ => None,
+            })
+            .collect::<Vec<(&str, usize)>>();
+        assert_eq!(folders, [("Other", 1), ("节目", 2)]);
+        delegate.toggle_group_collapsed("content:local:节目");
+        delegate.refresh_view();
+        assert_eq!(delegate.visible_task_ids().count(), 2);
+        assert!(
+            delegate
+                .visible
+                .iter()
+                .any(|row| matches!(row, VisibleRow::Task(super::RowId::Local(3))))
+        );
+        Ok(())
+    }
+
+    #[test]
     fn directory_grouping_tracks_task_moves_and_default_root_changes() -> Result<(), I18nError> {
         let mut delegate = delegate(&[3, 2, 2])?;
         let mut rows = delegate.store.local().to_vec();
@@ -5486,6 +5596,14 @@ mod tests {
         // 折叠的组也在「全选」范围内。
         delegate.select_all_tasks();
         assert_eq!(delegate.selection_summary().count, 4);
+        assert_eq!(
+            delegate
+                .selected_rows_in_order()
+                .iter()
+                .map(|row| row.key.clone())
+                .collect::<Vec<_>>(),
+            delegate.visible_task_keys()
+        );
 
         // Cmd/Ctrl 单击整组移出 / 并入选区。
         delegate.select_group(
@@ -6432,6 +6550,23 @@ mod tests {
         let t0 = RowKey::Local("t0".into());
         let t1 = RowKey::Local("t1".into());
         assert_eq!(delegate.visible_task_keys(), [t1.clone(), t0.clone()]);
+        // Select in the reverse of the displayed order, using the real row action.
+        delegate.select_task(t0.clone(), SelectModifiers::default());
+        delegate.select_task(
+            t1.clone(),
+            SelectModifiers {
+                toggle: true,
+                ..SelectModifiers::default()
+            },
+        );
+        assert_eq!(
+            delegate
+                .selected_rows_in_order()
+                .iter()
+                .map(|row| row.key.clone())
+                .collect::<Vec<_>>(),
+            [t1.clone(), t0.clone()]
+        );
 
         let now = Instant::now();
         delegate.row_order.note_interaction(now);
@@ -6447,6 +6582,14 @@ mod tests {
         delegate.view_dirty = true;
         assert!(delegate.refresh_view_at(deadline));
         assert_eq!(delegate.visible_task_keys(), [t0, t1]);
+        assert_eq!(
+            delegate
+                .selected_rows_in_order()
+                .iter()
+                .map(|row| row.key.clone())
+                .collect::<Vec<_>>(),
+            delegate.visible_task_keys()
+        );
         assert_eq!(delegate.reorder_deadline(), None);
         Ok(())
     }
@@ -7024,11 +7167,12 @@ mod context_menu_tests {
             .position(|entry| *entry == MenuEntry::VerifyIntegrity)
             .expect("completed BT task offers verification");
         assert_eq!(
-            items.get(at + 1..at + 5),
+            items.get(at + 1..at + 6),
             Some(
                 &[
                     MenuEntry::MoveStorage,
                     MenuEntry::TaskSpeedLimits,
+                    MenuEntry::AddWebSeed,
                     MenuEntry::SuperSeeding,
                     MenuEntry::Redownload,
                 ][..]
@@ -7091,12 +7235,13 @@ mod context_menu_tests {
                 MenuEntry::CopyUrl
             };
             assert_eq!(
-                items.get(at + 3..at + 8),
+                items.get(at + 3..at + 9),
                 Some(
                     &[
                         MenuEntry::ForceRecheck,
                         MenuEntry::MoveStorage,
                         MenuEntry::TaskSpeedLimits,
+                        MenuEntry::AddWebSeed,
                         MenuEntry::SuperSeeding,
                         next,
                     ][..]
@@ -7234,6 +7379,7 @@ mod context_menu_tests {
             assert!(task_limits_visible(&[single]));
         }
         assert!(!task_limits_visible(&[http]));
+        assert!(!context_menu_items(&[http]).contains(&MenuEntry::AddWebSeed));
         for selection in [&[remote][..], &[unfinished, completed][..], &[][..]] {
             assert!(!move_storage_visible(selection), "{selection:?}");
             assert!(!task_limits_visible(selection), "{selection:?}");
@@ -7243,6 +7389,7 @@ mod context_menu_tests {
                 !items.contains(&MenuEntry::TaskSpeedLimits),
                 "{selection:?}"
             );
+            assert!(!items.contains(&MenuEntry::AddWebSeed), "{selection:?}");
         }
 
         // 超级做种：全体本机 BT，可多选、任意状态。

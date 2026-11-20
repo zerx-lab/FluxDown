@@ -2,6 +2,7 @@ import FluxDomain
 import FluxUI
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 /// D1 下载列表（02-downloads §3）+ D2 多选（§4）：大标题 + 主机切换 `toolbarTitleMenu`，吸顶筛选区，
 /// `List(.insetGrouped)` 行（滑动 / 上下文菜单 / 圆环），系统工具栏的选择 / 视图菜单与底部批量工具栏。
@@ -30,6 +31,7 @@ struct DownloadsListScreen: View {
     @State private var pendingGroupDelete: GroupDeleteRequest?
     /// 多选底栏「删除」待确认的任务（确认 alert 由该按钮挂载）。
     @State private var pendingSelectionDelete: SelectionDeleteRequest?
+    @State private var taskInfoExport: TaskInfoDocument?
     #if FULL_FLAVOR
     /// 待确认「忽略插件重试」的任务（`daemon.plugin.ignoreRetry`）。
     @State private var ignoreRetryTaskId: String?
@@ -53,6 +55,7 @@ struct DownloadsListScreen: View {
                 prompt: L("searchTasksPlaceholder")
             )
             .toolbar { toolbarContent }
+            .taskInfoExporter($taskInfoExport)
             .toolbarVisibility(model.isSelecting ? .hidden : .automatic, for: .tabBar)
             .suppressesBottomAccessory("downloads.selecting", when: model.isSelecting)
             .safeAreaBar(edge: .top, spacing: 0) {
@@ -442,6 +445,13 @@ struct DownloadsListScreen: View {
                 #endif
                 Button(L("copyUrl"), systemImage: FluxSymbol.copy) { copySelectedLinks() }
                     .disabled(model.selection.isEmpty)
+                Button(L("exportTaskInfoTxt"), systemImage: "square.and.arrow.down") {
+                    let rows = TaskInfoRow.selected(
+                        local: model.selectedTasks(), remote: model.selectedRemoteTasks(), visibleIds: model.list.visibleIds
+                    )
+                    if !rows.isEmpty { taskInfoExport = TaskInfoDocument(rows) }
+                }
+                .disabled(!caps.canExport)
             }
             ToolbarSpacer(.flexible, placement: .bottomBar)
             ToolbarItem(placement: .bottomBar) {
@@ -581,6 +591,88 @@ struct DownloadsListScreen: View {
         }) { session throws(HostError) in
             try await session.deleteMany(ids, deleteFiles: false)
         }
+    }
+}
+
+nonisolated struct TaskInfoRow {
+    let name: String
+    let url: String
+    var size: Int64? = nil
+
+    static func selected(local: [DownloadTask], remote: [RemoteTaskDto], visibleIds: [String]) -> [Self] {
+        var rows: [String: Self] = [:]
+        var ids: [String] = []
+        for task in local where rows[task.taskId] == nil {
+            rows[task.taskId] = Self(name: task.fileName, url: task.shareUrl, size: task.totalBytes > 0 ? task.totalBytes : nil)
+            ids.append(task.taskId)
+        }
+        for task in remote {
+            let id = DownloadsRow.remoteIdPrefix + task.id
+            guard rows[id] == nil else { continue }
+            rows[id] = Self(name: task.fileName, url: task.url, size: task.totalBytes.flatMap { $0 > 0 ? $0 : nil })
+            ids.append(id)
+        }
+        let visible = visibleIds.compactMap { rows.removeValue(forKey: $0) }
+        return visible + ids.compactMap { rows[$0] }
+    }
+}
+
+nonisolated struct TaskInfoDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.plainText] }
+    let data: Data
+
+    init(_ rows: [TaskInfoRow]) {
+        func cell(_ value: String) -> String {
+            value.replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\t", with: "\\t")
+                .replacingOccurrences(of: "\r", with: "\\r")
+                .replacingOccurrences(of: "\n", with: "\\n")
+        }
+        var text = "Name\tURL\tSize (bytes)"
+        for row in rows {
+            let url = row.url.lowercased().hasPrefix("torrent-file://") ? "" : row.url
+            let size = row.size.map { String($0) } ?? ""
+            text += "\n\(cell(row.name))\t\(cell(url))\t\(size)"
+        }
+        data = Data(text.utf8)
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        guard let data = configuration.file.regularFileContents else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        self.data = data
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
+}
+
+private struct TaskInfoExporter: ViewModifier {
+    @Binding var document: TaskInfoDocument?
+    @Environment(ToastCenter.self) private var toasts
+
+    func body(content: Content) -> some View {
+        content.fileExporter(
+            isPresented: Binding(
+                get: { document != nil },
+                set: { if !$0 { document = nil } }
+            ),
+            document: document,
+            contentType: .plainText,
+            defaultFilename: "fluxdown-tasks.txt"
+        ) { result in
+            if case .failure = result {
+                toasts.show(text: L("taskInfoExportFailed"), tone: .error, systemImage: "exclamationmark.circle")
+            }
+        }
+    }
+}
+
+extension View {
+    func taskInfoExporter(_ document: Binding<TaskInfoDocument?>) -> some View {
+        modifier(TaskInfoExporter(document: document))
     }
 }
 

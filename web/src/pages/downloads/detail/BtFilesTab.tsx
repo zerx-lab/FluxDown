@@ -1,3 +1,4 @@
+import { useByteFormatter } from '../../../lib/fileSizeUnits'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { Files, Pen, SlidersHorizontal } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
@@ -229,6 +230,7 @@ function FileRow({
   options: readonly SelectOption<PriorityLevel>[]
   t: Translate
 }) {
+  const fmtBytes = useByteFormatter(formatBytes)
   const level = priorityLevel(file.priority)
   const fraction = progressFraction(file.downloaded, file.size)
   const menu = (): MenuEntry[] => {
@@ -268,7 +270,7 @@ function FileRow({
     <span className="truncate text-xs text-muted-foreground">{t(priorityLabelKey(level))}</span>
   )
   const progress = (
-    <div className="flex min-w-0 items-center gap-2" title={`${formatBytes(file.downloaded)} / ${formatBytes(file.size)}`}>
+    <div className="flex min-w-0 items-center gap-2" title={`${fmtBytes(file.downloaded)} / ${fmtBytes(file.size)}`}>
       <ProgressBar value={fraction} className="min-w-0 flex-1" />
       <span className="shrink-0 tabular-nums text-xs text-muted-foreground">{progressPercentText(fraction)}</span>
     </div>
@@ -285,13 +287,13 @@ function FileRow({
         <FileName path={file.path} />
         {layout === 'table' ? (
           <>
-            <span className="text-right tabular-nums text-xs text-muted-foreground">{formatBytes(file.size)}</span>
+            <span className="text-right tabular-nums text-xs text-muted-foreground">{fmtBytes(file.size)}</span>
             {progress}
             {priority}
           </>
         ) : (
           <div className="grid grid-cols-[5.5rem_minmax(0,1fr)_8.5rem] items-center gap-x-3">
-            <span className="tabular-nums text-xs text-muted-foreground">{formatBytes(file.size)}</span>
+            <span className="tabular-nums text-xs text-muted-foreground">{fmtBytes(file.size)}</span>
             {progress}
             {priority}
           </div>

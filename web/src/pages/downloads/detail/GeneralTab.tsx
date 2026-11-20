@@ -1,3 +1,4 @@
+import { useByteFormatter } from '../../../lib/fileSizeUnits'
 import { Copy, Download, Layers, Link2, Pen } from 'lucide-react'
 import { useT } from '../../../i18n'
 import { usePrefBool } from '../../../lib/rpc'
@@ -36,6 +37,7 @@ function formatEta(t: ReturnType<typeof useT>, seconds: number): string {
 }
 
 export function GeneralTab({ view }: { view: DownloadTaskView }) {
+  const fmtBytes = useByteFormatter(formatBytes)
   const t = useT()
   const { queueName } = useDownloads()
   const hideSource = usePrefBool(HIDE_TASK_SOURCE_PREF, false)
@@ -69,9 +71,9 @@ export function GeneralTab({ view }: { view: DownloadTaskView }) {
         <DetailRow label={t('infoStatus')}>
           <span className={STATE_TEXT[view.state]}>{taskStateLabel(t, view)}</span>
         </DetailRow>
-        {view.sizeBytes > 0 ? <DetailRow label={t('infoSize')}>{formatBytes(view.sizeBytes)}</DetailRow> : null}
-        {!completed ? <DetailRow label={t('infoDownloaded')}>{formatBytes(view.downloadedBytes)}</DetailRow> : null}
-        {downloading && view.speed !== null ? <DetailRow label={t('infoSpeed')}>{formatBytes(view.speed)}/s</DetailRow> : null}
+        {view.sizeBytes > 0 ? <DetailRow label={t('infoSize')}>{fmtBytes(view.sizeBytes)}</DetailRow> : null}
+        {!completed ? <DetailRow label={t('infoDownloaded')}>{fmtBytes(view.downloadedBytes)}</DetailRow> : null}
+        {downloading && view.speed !== null ? <DetailRow label={t('infoSpeed')}>{fmtBytes(view.speed)}/s</DetailRow> : null}
         {downloading && view.etaSeconds !== null && view.etaSeconds <= MAX_ETA_SECS ? (
           <DetailRow label={t('infoRemaining')}>{formatEta(t, view.etaSeconds)}</DetailRow>
         ) : null}
@@ -103,7 +105,7 @@ export function GeneralTab({ view }: { view: DownloadTaskView }) {
           <DetailRow label={t('infoError')}>
             <div className="flex items-center gap-1">
               <span className="min-w-0 flex-1 break-all text-destructive">{localizeTaskError(t, view.errorMessage)}</span>
-              <CopyButton text={localizeTaskError(t, view.errorMessage)} label={t('detailCopyError')} copiedLabel={t('detailErrorCopied')} />
+              <CopyButton text={view.errorMessage} label={t('detailCopyError')} copiedLabel={t('detailErrorCopied')} />
             </div>
           </DetailRow>
         ) : null}

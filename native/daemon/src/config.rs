@@ -376,6 +376,12 @@ pub fn bt_session_rebuild_needed(keys: &[&str], all: &HashMap<String, String>) -
     if keys.iter().any(|key| BT_SESSION_KEYS.contains(key)) {
         return true;
     }
+    if all
+        .get(fluxdown_engine::protocol_proxy::BT_KEY)
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return false;
+    }
     let manual_bt_proxy = all.get("bt_proxy_enabled").is_some_and(|v| v == "true")
         && all
             .get("bt_proxy_source")
@@ -385,9 +391,11 @@ pub fn bt_session_rebuild_needed(keys: &[&str], all: &HashMap<String, String>) -
             == fluxdown_engine::bt_config::BtProxySource::Manual;
     let rules_key = fluxdown_engine::proxy_rules::PROXY_RULES_KEY;
     manual_bt_proxy
-        && keys
-            .iter()
-            .any(|key| key.starts_with("proxy_") && *key != rules_key)
+        && keys.iter().any(|key| {
+            key.starts_with("proxy_")
+                && *key != rules_key
+                && !fluxdown_engine::protocol_proxy::is_key(key)
+        })
 }
 
 /// 从持久化配置构建 BT 防吸血配置（`bt_guard_*` 键，值域见 `fluxdown_protocol::DAEMON_CONFIG_FIELDS`）。
@@ -850,6 +858,18 @@ mod tests {
 
         let off = stored(&[("bt_proxy_enabled", "false")]);
         assert!(!super::bt_session_rebuild_needed(&["proxy_host"], &off));
+    }
+
+    #[test]
+    fn fixed_bt_route_ignores_changes_to_the_global_proxy_server() {
+        for route in ["direct://", "socks5://relay.test:1080"] {
+            let config = stored(&[("bt_proxy_enabled", "true"), ("proxy_protocol_bt", route)]);
+            assert!(!super::bt_session_rebuild_needed(&["proxy_host"], &config));
+            assert!(super::bt_session_rebuild_needed(
+                &["bt_proxy_source"],
+                &config
+            ));
+        }
     }
 
     #[test]

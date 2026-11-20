@@ -103,7 +103,7 @@ export function isPackRef(value: string): boolean {
   return (source === 'builtin' || source === 'custom') && id.length <= MAX_NAME_LEN && /^[a-z0-9_]+(-[a-z0-9_]+)*$/.test(id)
 }
 
-const FORBIDDEN = ['<script', '<foreignobject', '<image', '<iframe', '<object', '<embed', '<!entity', '<!doctype', 'javascript:', '@import']
+const FORBIDDEN = ['<script', '<foreignobject', '<iframe', '<object', '<embed', '<!entity', '<!doctype', 'javascript:', '@import']
 
 /**
  * 拒收会执行脚本、读外部资源或展开实体的 SVG（同 `svg_is_safe`，逐条同一规则）。
@@ -114,8 +114,8 @@ export function svgIsSafe(svg: string): boolean {
   const start = lower.replace(/^[ \t\n\f\r]+/, '')
   if (!(start.startsWith('<svg') || start.startsWith('<?xml')) || !lower.includes('<svg')) return false
   if (FORBIDDEN.some((needle) => lower.includes(needle))) return false
-  // href / xlink:href 与 url(...) 只允许文档内片段引用（`#id`）。
-  if (/href[ \t\n\f\r]*=(?![ \t\n\f\r]*["']?#)/.test(lower)) return false
+  // href / xlink:href 只允许文档内片段引用（`#id`）或内嵌 PNG；url(...) 只允许片段引用。
+  if (/href[ \t\n\f\r]*=(?![ \t\n\f\r]*["']?(?:#|data:image\/png;base64,))/.test(lower)) return false
   if (/url\((?![ \t\n\f\r"']*#)/.test(lower)) return false
   // 事件属性：空白后的 `on<字母>+` 紧跟 `=`。
   return !/[ \t\n\f\r]on[a-z]+[ \t\n\f\r]*=/.test(lower)

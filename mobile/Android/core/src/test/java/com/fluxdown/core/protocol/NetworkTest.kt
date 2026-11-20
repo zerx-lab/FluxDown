@@ -90,25 +90,26 @@ class NetworkTest {
         val siteAuth = listOf(NetworkRow.SiteAuth, NetworkRow.SiteAuthAdd, NetworkRow.SiteAuthClear)
         assertEquals(siteAuth, NetworkRow.visible(form(emptyMap())))
 
-        val loaded = listOf(
+        // bt_proxy_enabled 缺省（旧 daemon）按目录默认 false：「代理来源」「节点连接也走代理」隐藏
+        val loaded = NetworkRow.visible(form(mapOf("proxy_mode" to "none")))
+        assertEquals(listOf(
             NetworkRow.Mode,
             NetworkRow.Type, NetworkRow.Host, NetworkRow.Port,
             NetworkRow.Username, NetworkRow.Password, NetworkRow.NoList, NetworkRow.Test,
             NetworkRow.BtProxyEnabled,
+            NetworkRow.ProtocolHttp, NetworkRow.ProtocolFtp, NetworkRow.ProtocolHls,
+            NetworkRow.ProtocolDash, NetworkRow.ProtocolBt, NetworkRow.ProtocolEd2k,
             NetworkRow.Rules, NetworkRow.RulesAdd, NetworkRow.RulesTest,
-        ) + siteAuth
-        // bt_proxy_enabled 缺省（旧 daemon）按目录默认 false：「代理来源」「节点连接也走代理」隐藏
-        assertEquals(loaded, NetworkRow.visible(form(mapOf("proxy_mode" to "none"))))
-        assertTrue(NetworkRow.Host in loaded && NetworkRow.Test in loaded)
+        ) + siteAuth, loaded)
 
         val btProxy = NetworkRow.visible(form(mapOf("proxy_mode" to "none", "bt_proxy_enabled" to "true")))
         assertEquals(
             listOf(NetworkRow.BtProxyEnabled, NetworkRow.BtProxySource, NetworkRow.BtProxyPeers),
             btProxy.filter { it.group == NetworkRow.Group.BtProxy },
         )
-        // 分组顺序：BitTorrent 在手动代理之后、站点规则之前
+        // 分组顺序：BitTorrent 在手动代理之后、协议代理与站点规则之前
         assertEquals(btProxy.indexOf(NetworkRow.Test) + 1, btProxy.indexOf(NetworkRow.BtProxyEnabled))
-        assertEquals(btProxy.indexOf(NetworkRow.BtProxyPeers) + 1, btProxy.indexOf(NetworkRow.Rules))
+        assertEquals(btProxy.indexOf(NetworkRow.ProtocolEd2k) + 1, btProxy.indexOf(NetworkRow.Rules))
     }
 
     @Test

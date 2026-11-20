@@ -21,7 +21,7 @@
 //! 回连的入站流在监听器里按 `client_id` 匹配后交回等待方。
 
 use std::collections::{HashSet, VecDeque};
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::Duration;
@@ -113,7 +113,7 @@ pub struct SourceQuery {
 }
 
 /// 客户端运行期配置（来自 DB config，由引擎宿主注入）。
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct ClientConfig {
     /// TCP 监听端口（0 = 让 OS 选，登录时报实际绑定端口争取 HighID）。
     pub listen_port: u16,
@@ -125,6 +125,8 @@ pub struct ClientConfig {
     pub enable_upnp: bool,
     /// 是否启用 Kad DHT 找源。
     pub enable_kad: bool,
+    /// eD2K 专用 SOCKS5 URL；空值维持旧直连行为，`direct://` 明确直连。
+    pub proxy_protocol_ed2k: String,
 }
 
 /// 端口映射的句柄与启停代号。
@@ -243,9 +245,25 @@ impl Ed2kClient {
             self.config.clear_poison();
             poison.into_inner()
         });
+        let proxy_changed = guard.proxy_protocol_ed2k != config.proxy_protocol_ed2k;
         *guard = config;
         drop(guard);
         self.sync_upnp(false);
+        if proxy_changed {
+            let this = Arc::clone(self);
+            tokio::spawn(async move {
+                let mut session = this.server_tx.lock().await;
+                if session.take().is_some() {
+                    this.session_gen.fetch_add(1, Ordering::Relaxed);
+                    this.client_id.store(0, Ordering::Relaxed);
+                    if let Ok(mut server) = this.connected_server.lock() {
+                        *server = None;
+                    }
+                }
+                drop(session);
+                this.session_changed.notify_one();
+            });
+        }
         self.session_changed.notify_one();
     }
 
@@ -255,7 +273,12 @@ impl Ed2kClient {
     fn sync_upnp(self: &Arc<Self>, retry_failed: bool) {
         let port = u16::try_from(self.listen_port.load(Ordering::Relaxed)).unwrap_or(0);
         let enabled = match self.config.lock() {
-            Ok(config) => config.enable_upnp,
+            Ok(config) => {
+                let proxy = config.proxy_protocol_ed2k.trim();
+                config.enable_upnp
+                    && (proxy.is_empty()
+                        || proxy == crate::proxy_config::ProxyConfig::DIRECT_SENTINEL)
+            }
             Err(error) => {
                 log_error!("[ed2k-client] UPnP config lock poisoned: {}", error);
                 return;
@@ -391,6 +414,13 @@ impl Ed2kClient {
         }
     }
 
+    fn proxy(&self) -> Result<Option<crate::ed2k::proxy::Socks5>, DownloadError> {
+        let config = self.config.lock().map_err(|error| {
+            DownloadError::Ed2k(format!("server config lock poisoned: {error}"))
+        })?;
+        crate::ed2k::proxy::Socks5::parse(&config.proxy_protocol_ed2k)
+    }
+
     /// 本轮找源会查询的服务器（配置顺序的前 [`MAX_QUERY_SERVERS`] 台合法地址）。
     pub(crate) fn query_targets(&self) -> Vec<String> {
         let servers = match self.config.lock() {
@@ -450,14 +480,16 @@ impl Ed2kClient {
         self.wait_upnp_settled().await;
 
         let mut join: JoinSet<(String, Result<u32, DownloadError>)> = JoinSet::new();
+        let proxy = self.proxy()?.map(Arc::new);
         for server in servers {
             let Some((host, port)) = parse_hostport(&server) else {
                 continue;
             };
+            let proxy = proxy.clone();
             join.spawn(async move {
                 let result = match tokio::time::timeout(
                     SERVER_CONNECT_TIMEOUT,
-                    login_server(&host, port, listen_port),
+                    login_server(&host, port, listen_port, proxy.as_deref()),
                 )
                 .await
                 {
@@ -691,17 +723,33 @@ impl Ed2kClient {
     pub async fn connect_source(&self, source: Source) -> Result<TcpStream, DownloadError> {
         match source {
             Source::HighId(peer) => {
-                match tokio::time::timeout(
-                    PEER_CONNECT_TIMEOUT,
-                    TcpStream::connect((peer.ip, peer.port)),
-                )
+                let proxy = self.proxy()?;
+                match tokio::time::timeout(PEER_CONNECT_TIMEOUT, async {
+                    match proxy {
+                        Some(proxy) => {
+                            proxy
+                                .connect_ip(SocketAddr::new(peer.ip.into(), peer.port))
+                                .await
+                        }
+                        None => TcpStream::connect((peer.ip, peer.port))
+                            .await
+                            .map_err(DownloadError::Io),
+                    }
+                })
                 .await
                 {
-                    Ok(r) => r.map_err(DownloadError::Io),
+                    Ok(result) => result,
                     Err(_) => Err(DownloadError::Ed2k(format!("connect {peer} timed out"))),
                 }
             }
-            Source::LowId(low_id) => self.request_callback(low_id).await,
+            Source::LowId(low_id) => {
+                if self.proxy()?.is_some() {
+                    return Err(DownloadError::Ed2k(
+                        "SOCKS5 does not forward eD2K callbacks".into(),
+                    ));
+                }
+                self.request_callback(low_id).await
+            }
         }
     }
 
@@ -731,13 +779,14 @@ impl Ed2kClient {
             return Err(DownloadError::Ed2k("no ed2k servers configured".into()));
         }
 
+        let proxy = self.proxy()?;
         for server in &servers {
             let Some((host, port)) = parse_hostport(server) else {
                 continue;
             };
             match tokio::time::timeout(
                 SERVER_CONNECT_TIMEOUT,
-                login_server(&host, port, listen_port),
+                login_server(&host, port, listen_port, proxy.as_ref()),
             )
             .await
             {
@@ -843,15 +892,24 @@ impl Ed2kClient {
         // 并发对多台服务器发 GETSOURCES 并聚合：不同服务器索引不同文件，
         // 单服务器常常没有目标文件（实测 45.82.80.155 无此文件而 77.42.68.79 有）。
         let mut join: JoinSet<ServerAnswer> = JoinSet::new();
+        let proxy = self.proxy()?.map(Arc::new);
         for server in servers {
             let Some((host, port)) = parse_hostport(&server) else {
                 continue;
             };
             let hash = *file_hash;
+            let proxy = proxy.clone();
             join.spawn(async move {
-                let result =
-                    query_one_server(&host, port, listen_port, &hash, total_bytes, large_file)
-                        .await;
+                let result = query_one_server(
+                    &host,
+                    port,
+                    listen_port,
+                    &hash,
+                    total_bytes,
+                    large_file,
+                    proxy.as_deref(),
+                )
+                .await;
                 (server, result)
             });
         }
@@ -989,11 +1047,16 @@ async fn login_server(
     host: &str,
     port: u16,
     listen_port: u16,
+    proxy: Option<&crate::ed2k::proxy::Socks5>,
 ) -> Result<(TcpStream, u32), DownloadError> {
-    let mut stream = TcpStream::connect((host, port))
-        .await
-        .map_err(DownloadError::Io)?;
-    let login = proto::frame(OP_LOGINREQUEST, &build_login_payload(listen_port));
+    let advertised_port = if proxy.is_some() { 0 } else { listen_port };
+    let mut stream = match proxy {
+        Some(proxy) => proxy.connect(host, port).await?,
+        None => TcpStream::connect((host, port))
+            .await
+            .map_err(DownloadError::Io)?,
+    };
+    let login = proto::frame(OP_LOGINREQUEST, &build_login_payload(advertised_port));
     stream.write_all(&login).await.map_err(DownloadError::Io)?;
     let client_id = read_until_id_change(&mut stream).await?;
     Ok((stream, client_id))
@@ -1009,10 +1072,11 @@ async fn query_one_server(
     file_hash: &[u8; 16],
     total_bytes: u64,
     large_file: bool,
+    proxy: Option<&crate::ed2k::proxy::Socks5>,
 ) -> Result<Vec<(u32, u16)>, DownloadError> {
     let (mut stream, _client_id) = tokio::time::timeout(
         SERVER_CONNECT_TIMEOUT,
-        login_server(host, port, listen_port),
+        login_server(host, port, listen_port, proxy),
     )
     .await
     .map_err(|_| DownloadError::Ed2k("login timed out".into()))??;

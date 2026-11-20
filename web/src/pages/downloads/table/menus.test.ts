@@ -105,17 +105,17 @@ describe('buildTaskMenu BT operations', () => {
     ({ ...view, taskId, key: `l:${taskId}`, state: 'downloading', url: 'magnet:?xt=urn:btih:abc', btSequential: false, btFirstLastPiecesFirst: false, btSuperSeeding: false, ...patch }) as unknown as DownloadTaskView
   const keys = (views: DownloadTaskView[]) => build(views).map((entry) => entry.key)
 
-  test('single unfinished BT offers recheck, move, limits and super seeding in GPUI order', () => {
+  test('single unfinished BT offers recheck, move, limits, web seed and super seeding in GPUI order', () => {
     const all = keys([bt('a')])
     const at = all.indexOf('btForceRecheck')
     expect(at > all.indexOf('btPiecePicking')).toBe(true)
-    expect(all.slice(at, at + 4)).toEqual(['btForceRecheck', 'btMoveStorage', 'btTaskLimits', 'btSuperSeeding'])
+    expect(all.slice(at, at + 5)).toEqual(['btForceRecheck', 'btMoveStorage', 'btTaskLimits', 'btAddWebSeed', 'btSuperSeeding'])
   })
 
-  test('completed BT: no recheck, still move / limits / super seeding', () => {
+  test('completed BT: no recheck, still move / limits / web seed / super seeding', () => {
     const all = keys([bt('a', { state: 'completed' })])
     expect(all.includes('btForceRecheck')).toBe(false)
-    for (const key of ['btMoveStorage', 'btTaskLimits', 'btSuperSeeding']) expect(all.includes(key)).toBe(true)
+    for (const key of ['btMoveStorage', 'btTaskLimits', 'btAddWebSeed', 'btSuperSeeding']) expect(all.includes(key)).toBe(true)
   })
 
   test('super seeding check reflects all-on; mixed shows unchecked', () => {
@@ -129,8 +129,12 @@ describe('buildTaskMenu BT operations', () => {
   test('HTTP, remote or mixed selections hide BT operations', () => {
     for (const views of [[view], [bt('a', { source: 'remote' })], [bt('a'), view]]) {
       const all = keys(views)
-      for (const key of ['btForceRecheck', 'btTaskLimits', 'btSuperSeeding']) expect(all.includes(key)).toBe(false)
+      for (const key of ['btForceRecheck', 'btTaskLimits', 'btAddWebSeed', 'btSuperSeeding']) expect(all.includes(key)).toBe(false)
     }
+  })
+
+  test('multi-select of local torrents hides the single-task web seed action', () => {
+    expect(keys([bt('a'), bt('b')]).includes('btAddWebSeed')).toBe(false)
   })
 
   test('move is offered for any single local task, never for remote or multi-select', () => {

@@ -17,6 +17,7 @@ import {
   Magnet,
   FolderOpen,
   Gauge,
+  Globe,
   Pause,
   PanelRight,
   Pen,
@@ -85,13 +86,14 @@ import {
   canVerifyIntegrity,
   pieceOptionAllOn,
   pieceOrder,
+  singleLocalBt,
   superSeedingAllOn,
 } from '../model/taskEdit'
 import { canPause, canResumeSeeding, isSeeding } from '../model/task'
 import type { DownloadTaskView } from '../model/task'
 import { anyActive, anyResumable } from '../model/groupTree'
 import type { GroupCounts } from '../model/groupTree'
-import { openChangeSegments, openChangeUrl, openGroupDetail, openMoveStorage, openRename, openTaskEdit, openTaskLimits } from '../dialogs'
+import { openAddWebSeed, openChangeSegments, openChangeUrl, openGroupDetail, openMoveStorage, openRename, openTaskEdit, openTaskLimits } from '../dialogs'
 
 type Translate = (key: string, params?: Record<string, string | number>) => string
 
@@ -293,6 +295,9 @@ export function buildTaskMenu({ t, views, queues, queueName, showDetail, selecti
   }
   if (only && canSetTaskLimits(views)) {
     entries.push({ type: 'item', key: 'btTaskLimits', label: t('btTaskLimits'), icon: Gauge, onSelect: () => openTaskLimits(only.taskId) })
+  }
+  if (only && singleLocalBt(views)) {
+    entries.push({ type: 'item', key: 'btAddWebSeed', label: t('btAddWebSeed'), icon: Globe, onSelect: () => openAddWebSeed(only.taskId) })
   }
   if (canSetSuperSeeding(views)) {
     const superOn = superSeedingAllOn(views)

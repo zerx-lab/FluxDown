@@ -67,14 +67,16 @@ nonisolated struct PendingSelection: Equatable {
 }
 
 /// 多选的批量能力：继续 / 暂停 / 移动 各自的可用性（Resume / Pause 取「存在」）。
-/// 远程任务（`remote:` 行）只参与继续 / 暂停 / 删除，id 为云端任务 id（不带行前缀），已按 `RemoteTaskRules.canIssue` 过滤。
+/// 远程命令的 id 为云端任务 id（不带行前缀），已按 `RemoteTaskRules.canIssue` 过滤；导出不受命令资格限制。
 nonisolated struct SelectionCaps: Equatable {
     var canResume: Bool { !resumeIds.isEmpty || !remoteResumeIds.isEmpty }
     var canPause: Bool { !pauseIds.isEmpty || !remotePauseIds.isEmpty }
     var canMove: Bool { !moveIds.isEmpty }
     var canDelete: Bool { hasLocal || !remoteDeleteIds.isEmpty }
+    var canExport: Bool { hasLocal || hasRemote }
     /// 选中里是否有本机任务（删除沿用既有路径，不看状态）。
     var hasLocal = false
+    var hasRemote = false
     var resumeIds: [String] = []
     var pauseIds: [String] = []
     var moveIds: [String] = []
@@ -333,6 +335,7 @@ final class DownloadsModel {
         }
         let state = store.state
         let remote = selectedRemoteTasks(state)
+        caps.hasRemote = !remote.isEmpty
         if !remote.isEmpty {
             let online: (RemoteTaskDto) -> Bool? = { [self] in remoteTargetOnline($0, state) }
             caps.remoteResumeIds = RemoteBatch.eligibleIds(.resume, in: remote, targetOnline: online)
