@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn every_builtin_svg_loads_by_content_path() -> gpui::Result<()> {
-        for id in ["lucide", "material", "catppuccin"] {
+        for id in ["lucide", "material", "catppuccin", "thunder"] {
             let pack = builtin_pack(id).expect(id);
             let (_, icon) = pack
                 .matched_icon("a.zip", FileKind::Archive)
