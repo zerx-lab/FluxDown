@@ -27,6 +27,7 @@ import com.fluxdown.app.diag.AppDiagnostics
 import com.fluxdown.app.i18n.str
 import com.fluxdown.core.format.Format
 import com.fluxdown.core.model.HostRef
+import com.fluxdown.core.model.TaskStatus
 import com.fluxdown.core.store.Transfer
 import com.fluxdown.core.store.TransferSummary
 import kotlinx.coroutines.CoroutineScope
@@ -46,9 +47,13 @@ private const val NOTIFICATION_ID = 1001
 private const val TASK_PROGRESS_CHANNEL = "fluxdown_task_progress"
 private const val TASK_PROGRESS_ID = 1002
 private const val ACTION_DISMISS_TASK_PROGRESS = "com.fluxdown.app.action.DISMISS_TASK_PROGRESS"
+private const val ACTION_TASK_PROGRESS_PERMISSION_RESULT = "com.fluxdown.app.action.TASK_PROGRESS_PERMISSION_RESULT"
 
-/** 通知刷新最小间隔（≤ 1 Hz）。 */
+/** 汇总通知两轮更新之间至少间隔 1 秒。 */
 private const val THROTTLE_MS = 1_000L
+
+/** AOSP 按包估算入队速率（默认 5/s）；汇总与逐任务通知共用间隔，给同包其他通知留余量。 */
+private const val PROGRESS_POST_INTERVAL_MS = 300L
 
 /** 仅在已有刷新事件上低频对账；系统丢弃的通知不能跟随进度反复重发。 */
 private const val TASK_NOTICE_CHECK_MS = 5_000L
@@ -76,7 +81,11 @@ class DownloadService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var watcher: Job? = null
     private var notificationRefresh: Job? = null
-    private var lastShownAtMs = 0L
+    private var refreshRequested = false
+    private var foreground = false
+    private var lastSummaryAtMs = 0L
+    private var lastProgressPostAtMs = 0L
+    private var taskProgressAllowed: Boolean? = null
     private var lastTaskNoticeCheckAtMs = -TASK_NOTICE_CHECK_MS
     private val notificationManager by lazy { checkNotNull(getSystemService(NotificationManager::class.java)) }
     private val taskProgressSelection = TaskProgressSelection()
@@ -94,8 +103,10 @@ class DownloadService : Service() {
                 }
                 NotificationManager.ACTION_NOTIFICATION_CHANNEL_BLOCK_STATE_CHANGED -> {
                     if (intent.getStringExtra(NotificationManager.EXTRA_NOTIFICATION_CHANNEL_ID) != TASK_PROGRESS_CHANNEL) return
+                    taskProgressAllowed = null
                 }
-                NotificationManager.ACTION_APP_BLOCK_STATE_CHANGED -> Unit
+                NotificationManager.ACTION_APP_BLOCK_STATE_CHANGED,
+                ACTION_TASK_PROGRESS_PERMISSION_RESULT -> taskProgressAllowed = null
                 else -> return
             }
             // Use the same refresh budget as engine updates, including when progress is stalled.
@@ -121,25 +132,28 @@ class DownloadService : Service() {
             ContextCompat.registerReceiver(
                 this, notificationReceiver, IntentFilter(NotificationManager.ACTION_NOTIFICATION_CHANNEL_BLOCK_STATE_CHANGED).apply {
                     addAction(NotificationManager.ACTION_APP_BLOCK_STATE_CHANGED)
+                    addAction(ACTION_TASK_PROGRESS_PERMISSION_RESULT)
                 },
                 ContextCompat.RECEIVER_NOT_EXPORTED,
             )
-        }
-        // 前台服务异常退出时系统可能仍保留普通通知；重新启动后按当前任务重建。
-        for (entry in notificationManager.activeNotifications) {
-            if (entry.id == TASK_PROGRESS_ID && entry.notification.channelId == TASK_PROGRESS_CHANNEL) {
-                notificationManager.cancel(entry.tag, entry.id)
-            }
         }
         AppDiagnostics.event("download service created")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         lastStartId = startId
-        notificationRefresh?.cancel()
-        // startForegroundService 之后必须在数秒内 startForeground：先用当前量发出，再进入观察
         val container = (application as FluxApplication).container
-        show(container.localActivity.value)
+        taskProgressAllowed = null
+        if (!foreground) {
+            // 首次 startForegroundService 必须立即进入前台；卡片仍走错峰发布。
+            val activity = container.localActivity.value
+            val transfers = visibleTaskTransfers(activity)
+            showSummary(activity, transfers)
+            notificationRefresh = scope.launch {
+                showTaskNotifications(container, activity, transfers)
+                refreshNotifications(container)
+            }
+        }
         // 完成 / 失败通知的观察在应用作用域内：下载期间即使 Activity 已被划掉也不中断
         DownloadNotifier.attach(container, applicationContext)
         // 每次启动请求都重新开始观察（空闲宽限随之重新计时）：外部唤起会在新任务的状态到达之前请求启动，
@@ -159,6 +173,7 @@ class DownloadService : Service() {
                 }
             } else {
                 notificationRefresh?.cancel()
+                refreshRequested = false
                 taskProgressSelection.select(emptyList(), emptySet())
                 clearTaskNotifications()
                 delay(IDLE_GRACE_MS)
@@ -168,12 +183,25 @@ class DownloadService : Service() {
     }
 
     private fun requestNotificationRefresh() {
+        refreshRequested = true
         if (notificationRefresh?.isActive == true) return
-        notificationRefresh = scope.launch {
-            val wait = THROTTLE_MS - (SystemClock.elapsedRealtime() - lastShownAtMs)
+        val container = (application as FluxApplication).container
+        notificationRefresh = scope.launch { refreshNotifications(container) }
+    }
+
+    private suspend fun refreshNotifications(container: AppContainer) {
+        while (refreshRequested) {
+            val nextSummaryAt = maxOf(lastSummaryAtMs + THROTTLE_MS, lastProgressPostAtMs + PROGRESS_POST_INTERVAL_MS)
+            val wait = nextSummaryAt - SystemClock.elapsedRealtime()
             if (wait > 0) delay(wait)
-            val activity = (application as FluxApplication).container.localActivity.value
-            if (activity.busy) show(activity)
+            refreshRequested = false
+            val activity = container.localActivity.value
+            if (!activity.busy) return
+            // API 26–27 do not broadcast app/channel block state changes.
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) taskProgressAllowed = null
+            val transfers = visibleTaskTransfers(activity)
+            showSummary(activity, transfers)
+            showTaskNotifications(container, activity, transfers)
         }
     }
 
@@ -190,6 +218,7 @@ class DownloadService : Service() {
         AppDiagnostics.event("download service stopping: $reason")
         releaseWakeLock()
         stopForeground(STOP_FOREGROUND_REMOVE)
+        foreground = false
         watcher?.cancel()
         notificationRefresh?.cancel()
     }
@@ -201,6 +230,7 @@ class DownloadService : Service() {
         notificationRefresh?.cancel()
         releaseWakeLock()
         stopForeground(STOP_FOREGROUND_REMOVE)
+        foreground = false
         stopSelf()
     }
 
@@ -213,22 +243,30 @@ class DownloadService : Service() {
         super.onDestroy()
     }
 
-    /** 重复调用 `startForeground` 即更新通知，且不受通知权限影响；服务类型参数 Android 10 以下由 ServiceCompat 忽略。 */
-    private fun show(activity: LocalActivity) {
-        lastShownAtMs = SystemClock.elapsedRealtime()
-        val selected = if (activity.stale) emptyList() else taskProgressSelection.select(activity.transfers, shownTasks.keys)
-        val visible = if (selected.isNotEmpty() && notificationManager.areNotificationsEnabled() &&
+    private fun visibleTaskTransfers(activity: LocalActivity): List<Transfer> {
+        if (activity.stale) return emptyList()
+        val selected = taskProgressSelection.select(activity.transfers, shownTasks.keys)
+        return if (selected.isNotEmpty() && allowsTaskProgress()) selected else emptyList()
+    }
+
+    private fun allowsTaskProgress(): Boolean = taskProgressAllowed ?: (
+        notificationManager.areNotificationsEnabled() &&
             notificationManager.getNotificationChannel(TASK_PROGRESS_CHANNEL)?.importance != NotificationManager.IMPORTANCE_NONE
-        ) selected else emptyList()
+        ).also { taskProgressAllowed = it }
+
+    /** 重复调用 `startForeground` 即更新通知，且不受通知权限影响。 */
+    private fun showSummary(activity: LocalActivity, visible: List<Transfer>) {
         val hasIndividual = activity.transfers.size == 1 && visible.isNotEmpty()
         ServiceCompat.startForeground(
             this, NOTIFICATION_ID, buildNotification(this, activity, hasIndividual), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
         )
+        lastSummaryAtMs = SystemClock.elapsedRealtime()
+        lastProgressPostAtMs = lastSummaryAtMs
+        foreground = true
         if (activity.busy) holdWakeLock()
-        showTaskNotifications(visible)
     }
 
-    private fun showTaskNotifications(transfers: List<Transfer>) {
+    private fun removeTaskNotificationsExcept(transfers: List<Transfer>) {
         val posted = shownTasks.iterator()
         while (posted.hasNext()) {
             val (taskId, notice) = posted.next()
@@ -237,18 +275,31 @@ class DownloadService : Service() {
             notice.release()
             posted.remove()
         }
+    }
+
+    private fun currentTaskTransfer(container: AppContainer, snapshot: LocalActivity, selected: Transfer): Transfer? {
+        val activity = container.localActivity.value
+        if (!activity.busy || activity.stale || !allowsTaskProgress()) return null
+        if (activity === snapshot) return selected
+        return activity.transfers.firstOrNull { it.taskId == selected.taskId && it.status == TaskStatus.Downloading }
+    }
+
+    private suspend fun showTaskNotifications(container: AppContainer, activity: LocalActivity, transfers: List<Transfer>) {
+        removeTaskNotificationsExcept(transfers)
         val now = SystemClock.elapsedRealtime()
         var activeIds: Set<String>? = null
-        for (transfer in transfers) {
-            val notice = shownTasks.getOrPut(transfer.taskId) { newTaskProgressNotice(transfer.taskId) }
-            if (notice.transfer == transfer) {
+        for (selected in transfers) {
+            val taskId = selected.taskId
+            val candidate = currentTaskTransfer(container, activity, selected) ?: continue
+            val notice = shownTasks[taskId]
+            if (notice != null && notice.transfer == candidate) {
                 val ids = activeIds ?: if (now - lastTaskNoticeCheckAtMs >= TASK_NOTICE_CHECK_MS) {
                     lastTaskNoticeCheckAtMs = now
                     notificationManager.activeNotifications.mapNotNullTo(HashSet(shownTasks.size)) {
                         if (it.id == TASK_PROGRESS_ID && it.notification.channelId == TASK_PROGRESS_CHANNEL) it.tag else null
                     }.also { activeIds = it }
                 } else continue
-                if (transfer.taskId in ids) {
+                if (taskId in ids) {
                     notice.missingAtLastCheck = false
                     continue
                 }
@@ -258,13 +309,22 @@ class DownloadService : Service() {
                     continue
                 }
             }
+            val wait = lastProgressPostAtMs + PROGRESS_POST_INTERVAL_MS - SystemClock.elapsedRealtime()
+            val transfer = if (wait > 0) {
+                delay(wait)
+                // 离开下载、划除或关闭通道后不再发送排队中的卡片；进度取发送时的最新值。
+                if (shownTasks[taskId] !== notice) continue
+                currentTaskTransfer(container, activity, selected) ?: continue
+            } else candidate
+            val taskNotice = notice ?: newTaskProgressNotice(taskId).also { shownTasks[taskId] = it }
             val builder = progressBuilder(this, TASK_PROGRESS_CHANNEL)
-                .setContentIntent(notice.open)
-                .setDeleteIntent(notice.dismiss)
+                .setContentIntent(taskNotice.open)
+                .setDeleteIntent(taskNotice.dismiss)
             showTransfer(this, builder, transfer)
-            notificationManager.notify(transfer.taskId, TASK_PROGRESS_ID, builder.build())
-            notice.transfer = transfer
-            notice.missingAtLastCheck = false
+            notificationManager.notify(taskId, TASK_PROGRESS_ID, builder.build())
+            lastProgressPostAtMs = SystemClock.elapsedRealtime()
+            taskNotice.transfer = transfer
+            taskNotice.missingAtLastCheck = false
         }
     }
 
@@ -280,7 +340,7 @@ class DownloadService : Service() {
         return TaskProgressNotice(open, dismiss)
     }
 
-    private fun clearTaskNotifications() = showTaskNotifications(emptyList())
+    private fun clearTaskNotifications() = removeTaskNotificationsExcept(emptyList())
 
     private class TaskProgressNotice(val open: PendingIntent, val dismiss: PendingIntent) {
         var transfer: Transfer? = null
@@ -458,6 +518,16 @@ object DownloadServiceController {
         }
     }
 
+    /** 冷启动时服务还未发布通知，本机空闲也要清掉上个进程留下的逐任务卡片。 */
+    internal fun clearOrphanedTaskNotifications(context: Context) {
+        val manager = checkNotNull(context.getSystemService(NotificationManager::class.java))
+        for (entry in manager.activeNotifications) {
+            if (entry.id == TASK_PROGRESS_ID && entry.notification.channelId == TASK_PROGRESS_CHANNEL) {
+                manager.cancel(entry.tag, entry.id)
+            }
+        }
+    }
+
     /**
      * 进程级观察：本机由空闲变为有活动时就尝试拉起前台服务（界面不在前台时也尝试）。后台启动在 Android 12+
      * 多数会被拒——电池优化白名单内的应用豁免；被拒时回到前台由 [DownloadServiceEffect] 补拉。
@@ -470,6 +540,11 @@ object DownloadServiceController {
                 .distinctUntilChanged()
                 .collect { busy -> if (busy) start(app, "local activity") }
         }
+    }
+
+    /** The Android 13+ runtime permission dialog need not send the app block-state broadcast. */
+    internal fun onNotificationPermissionResult(context: Context) {
+        context.sendBroadcast(Intent(ACTION_TASK_PROGRESS_PERMISSION_RESULT).setPackage(context.packageName))
     }
 
     /** 需要请求通知权限：Android 13+、尚未授予、且从未请求过（避免每次冷启动打扰；拒绝后服务照常运行）。 */
