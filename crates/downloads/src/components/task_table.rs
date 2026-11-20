@@ -42,6 +42,7 @@ use crate::{
         format_bytes,
         group_tree::GroupMeta,
         row_order::{InteractionHold, RowOrder},
+        series_title::series_title,
         view_prefs::{
             DateBucket, HeaderAlign, SortDir, ViewDensity, ViewGroupBy, ViewPrefs, ViewSortKey,
             state_group_key,
@@ -338,6 +339,21 @@ struct GroupBucket {
     key: String,
     label: SharedString,
     order: i64,
+}
+
+fn content_group_bucket(task: &DownloadTaskView) -> Option<GroupBucket> {
+    let title = series_title(&task.name)?;
+    let folded = title.to_lowercase();
+    let key = if task.source == TaskSource::Remote {
+        format!("content:remote:{}\0{folded}", task.to_device)
+    } else {
+        format!("content:local:{folded}")
+    };
+    Some(GroupBucket {
+        key,
+        label: SharedString::from(title.to_owned()),
+        order: 0,
+    })
 }
 
 /// 自上次重算以来，影响可见行的变化范围。
@@ -1814,10 +1830,15 @@ impl DownloadTableDelegate {
             self.push_directories(&mut visible, &entities, &local, &remote);
             return visible;
         }
+        let mut ungrouped = Vec::new();
         let mut buckets = group_by_key(
             entities.into_iter().filter_map(|entity| {
-                self.entity_bucket(entity, &local, &remote)
-                    .map(|bucket| (bucket, entity))
+                if let Some(bucket) = self.entity_bucket(entity, &local, &remote) {
+                    Some((bucket, entity))
+                } else {
+                    ungrouped.push(entity);
+                    None
+                }
             }),
             |bucket: &GroupBucket| bucket.key.as_str(),
         );
@@ -1844,13 +1865,16 @@ impl DownloadTableDelegate {
                 }
             }
         }
+        for entity in ungrouped {
+            self.push_entity(&mut visible, entity);
+        }
         visible
     }
 
     fn group_bucket(&self, task: &DownloadTaskView) -> GroupBucket {
         let strings = &self.strings;
         match self.prefs.group_by {
-            ViewGroupBy::None | ViewGroupBy::Directory => GroupBucket {
+            ViewGroupBy::None | ViewGroupBy::Directory | ViewGroupBy::Content => GroupBucket {
                 key: String::new(),
                 label: SharedString::default(),
                 order: 0,
@@ -5319,6 +5343,54 @@ mod tests {
                 ..
             }
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn content_grouping_in_video_category_uses_titles_not_save_paths() -> Result<(), I18nError> {
+        let mut delegate = delegate(&[2, 2, 2, 2, 2])?;
+        let mut rows = delegate.store.local().to_vec();
+        for (row, (name, extension, dir)) in rows.iter_mut().zip([
+            ("节目.S01E01.mp4", "mp4", "/dl"),
+            ("节目 S02E03.mp4", "mp4", "/dl/another"),
+            ("节目.S03E01.txt", "txt", "/dl"),
+            ("Movie.mp4", "mp4", "/dl"),
+            ("Other.S01E02.mp4", "mp4", "/dl"),
+        ]) {
+            row.name = name.into();
+            row.file_extension = extension.into();
+            row.save_dir = dir.into();
+        }
+        delegate.store.replace_local(rows);
+        delegate.set_categories(Rc::new(CategoryIndex::from_dtos(
+            fluxdown_protocol::CustomCategoryDto::builtin_defaults(),
+        )));
+        delegate.set_directory_context("/dl".into(), HashMap::new());
+        delegate.set_filter(TableFilter::Download(DownloadFilter::with_category(
+            DownloadStatusFilter::All,
+            "builtin_video",
+        )));
+        delegate.prefs_mut().group_by = ViewGroupBy::Content;
+        delegate.refresh_view();
+
+        let folders = delegate
+            .visible
+            .iter()
+            .filter_map(|row| match row {
+                VisibleRow::GroupHeader { label, count, .. } => Some((label.as_ref(), *count)),
+                _ => None,
+            })
+            .collect::<Vec<(&str, usize)>>();
+        assert_eq!(folders, [("Other", 1), ("节目", 2)]);
+        delegate.toggle_group_collapsed("content:local:节目");
+        delegate.refresh_view();
+        assert_eq!(delegate.visible_task_ids().count(), 2);
+        assert!(
+            delegate
+                .visible
+                .iter()
+                .any(|row| matches!(row, VisibleRow::Task(super::RowId::Local(3))))
+        );
         Ok(())
     }
 

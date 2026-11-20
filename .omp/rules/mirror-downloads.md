@@ -3,7 +3,7 @@ description: GPUI 下载页纯模型（新建/菜单/排序/任务组/来源构�
 condition: '[\s\S]'
 scope: "tool:edit, tool:write"
 globs:
-  - '**/crates/downloads/src/model/{new_download,aria2c,save_dir_history,speed_limit_recent,dispatch,mod,view_prefs,row_order,group_tree,directory_tree,source_composition,devices,file_rescan,bt_trackers,file_hash}.rs'
+  - '**/crates/downloads/src/model/{new_download,aria2c,save_dir_history,speed_limit_recent,dispatch,mod,view_prefs,row_order,group_tree,directory_tree,series_title,source_composition,devices,file_rescan,bt_trackers,file_hash}.rs'
   - '**/crates/downloads/src/components/{task_table,task_table_groups,task_table_directories,selection_bar}.rs'
   - '**/crates/downloads/src/model/manifest.rs'
   - '**/mobile/Android/app/src/main/java/com/fluxdown/app/ui/TaskInfoExport.kt'
@@ -82,6 +82,10 @@ interruptMode: never
 ## `crates/downloads/src/model/directory_tree.rs`（相对默认下载根的嵌套目录分组、单分支压缩、后代计数与稳定折叠键）
 
 → Web `web/src/pages/downloads/model/directoryTree.ts`，共用 `crates/downloads/tests/fixtures/directory_tree_cases.json`。先筛选再建树，非根目录无直属任务且只有一个子目录才压缩，已折叠节点不跨过；任务组按组根整体纳入，云端按设备隔离，根外 / 未知目录分别展示。GPUI `task_table_directories.rs` / Web `groupRows.ts` 组合目录与任务组缩进；保存目录字段变化须使 `model/store.rs::same_view_fields` / Web `rowEngine.ts` 的视图失效，默认目录配置与 runtime fallback 变化同样重算。移动端尚无该分组入口，不镜像。
+
+## `crates/downloads/src/model/series_title.rs`（剧集名称提取，桌面端分组与建议下载子目录共用）
+
+→ Web `web/src/pages/downloads/model/groupRows.ts::contentBucket` 保持同一规则；两端共用 `crates/downloads/tests/fixtures/series_title_cases.json`。分组按设备隔离，不展开已有任务组来重新归类；移动端无该分组入口。
 
 ## `crates/downloads/src/components/task_table.rs` 宽松密度列表视图（`relaxed_meta` 副标题；宽松不合并列、状态列同舒适，行高 = max(64, 舒适)）
 

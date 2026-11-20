@@ -194,6 +194,7 @@
 - **Windows 上最小化的窗口边界报告为 `Windowed`，最大化状态要与平台标志取或**：只看 bounds 会把「最小化的最大化窗口」存成普通窗口 → `crates/app/src/windows/bounds.rs::resolve_maximized`、回归 `minimized_maximized_window_keeps_maximized`。
 - **gpui-fast 0.1.14 在 Windows 上关窗时，HWND 销毁后仍派发一次边界回调**：`on_close` 改为延后 `remove_window`，排在它前面的失焦回调先跑 `bounds_changed`，此时 `window_bounds()` 的 `GetWindowPlacement` 失败、得到零 / 负尺寸矩形；照写会覆盖窗口记忆，下次以默认尺寸居中打开（#1104，0.6.7 起主窗口 / 设置窗口都受影响）。观察者只记能被恢复读回的值，校验与恢复共用 → `crates/app/src/windows/bounds.rs::is_restorable`、回归 `destroyed_window_captures_are_not_persisted`。
 - **进度 / 完成窗口里「打开文件 / 文件夹」不等打开命令返回**：Windows 上它要等系统打开调用返回，可能比对方出现在前台还晚，窗口该关而不关；会关窗时点击即请宿主等对方接管前台 → `crates/downloads/src/pages/progress_window.rs::hand_off`。
+- **同名子目录预检必须区分有效与悬空的符号链接**：先用 `metadata` 跟随链接，允许链接到目录，拒绝链接到文件；仅在 `NotFound` 时再用 `symlink_metadata` 区分可创建的路径与悬空链接。悬空链接占用了目录名，不能等到引擎 `create_dir_all` 才报错 → `crates/downloads/src/model/new_download.rs::check_subfolder`，回归 `subfolder_check_distinguishes_directories_and_files`。
 - **Windows / Linux 标题栏菜单（gpui-component `AppMenuBar`）以「打开菜单时的焦点」为派发目标**：焦点为空（启动后未点列表）、在标题栏搜索框或不在下载页时，挂在下载页元素上的动作只沿标题栏冒泡、点了无效，且菜单项从不置灰；下载页动作须有应用级兜底（切到下载页、聚焦后派发；焦点已在下载页内视为下载页主动让出，不接管）。兜底里 `update` 窗口必须用 `AnyWindowHandle`，`WindowHandle<V>` 会租借根视图，冒泡到根视图监听器即 panic → `crates/app/src/menus.rs::dispatch_in_downloads`。
 - **GPUI 剪贴板写不了文件**：`ClipboardEntry::ExternalPaths` 在 gpui-fast 三个平台的写入路径都是空操作（macOS `pasteboard.rs::write`、Windows `clipboard.rs::write_to_clipboard`、Linux 只 `set_text`），`cx.write_to_clipboard` 不报错但剪贴板没有文件；「复制文件」改由常驻 agent 经 arboard `Set::file_list` 写入（Linux X11 内容归写入进程，实例须常驻）→ `native/agent/src/platform/clipboard_files.rs`、入口 `crates/downloads/src/pages/task_copy.rs`。
 - **弹层 / 滚动区的高度上限不能写固定 px**：行高（`density().nav_row` 等）随字体度量与界面缩放抬升，固定 `max_h(px(420.))` 在放大后装不下末行，「重置为默认列」被裁到滚动区底边外、看着像显示不全；上限按行高倍数推导，再按窗口可见高度收紧 → `crates/downloads/src/components/title_bar.rs`（`VIEW_MENU_MAX_BODY_ROWS`）。
@@ -213,6 +214,7 @@
 - **新增可省略的任务 DTO 字段须同步 Web 归一化契约测试**：Rust `TaskDto.properties` 在全默认时省略，Web `normalizeTask` 会补齐；只更新 `TASK_DEFAULTS` 而漏更新测试的独立期望，会同时破坏任务、快照、事件和转发帧的四个契约用例（#1146 CI）。默认值应对齐 Rust serde，非默认的编辑属性也须验证保留 → `native/protocol/src/task_edit.rs::TaskPropertiesDto`、`web/src/lib/rpc/normalize.ts::TASK_DEFAULTS`、`normalize.test.ts`。
 - **设置行的 `pointer-events-none` 不会禁用键盘与辅助技术操作**：偏好开关依赖另一开关时，除行级灰化外还须把 `disabled` 传给底层 `Switch`；静默自动更新关闭自动检查后必须原生禁用 → `web/src/pages/settings/kit/fields.tsx::PrefSwitchRow`。
 - **可在请求期间关闭的面板须按打开实例处理异步关闭**：任务 ID 相同也可能是新的表单。Web「添加 HTTP 源」每次打开分配会话 ID，用作 React key，关闭只清除匹配会话；迟到的成功回包不能清掉新面板或草稿 → `web/src/pages/downloads/dialogs/{store.ts,DownloadDialogsHost.tsx,TaskEditDialogs.tsx}`；回归 `web/src/pages/downloads/dialogs/store.test.ts`。
+- **Web 测试从 Rust 目录取共享夹具时，只能在测试运行时读取**：`tsc -b` 会检查 `src` 内测试，但 `docker/server.Dockerfile` 的 Web 阶段没有 `crates/` 或 `native/`，静态 JSON import 会报 `TS2307`。用 `Bun.file(new URL(relativePath, import.meta.url)).json()`，保留同一份夹具，且 CI 路径检查能识别引用 → `web/src/pages/downloads/model/groupRows.test.ts`（#1190）。
 
 ## 浏览器扩展
 

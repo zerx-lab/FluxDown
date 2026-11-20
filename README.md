@@ -44,6 +44,12 @@
 - **Automation & remote management** — RSS subscriptions, scheduled queues, webhooks, plugins and optional FluxCloud device collaboration
 - **Local-first** — free and open source, no ads, no account required for local downloads; resumable state stored locally by default
 
+In Desktop or Web, group downloads by **Series title** to fold individual episodes together without moving files. Names like `Show.S01E100` and `剧名第05话` are recognised. A trailing ` - 05` also works for extensionless names, videos, common subtitle files and `.nfo` files. Release suffixes like `v2`, `END` and `[1080p]` are supported. Subtitles can include language tags, flags and the video extension, as in `Show - 05.mkv.pt_BR.forced.srt`. Existing task groups and torrent bundles keep their own structure.
+
+For a single local download in Desktop, **Use a named subfolder** reuses or creates a folder under the displayed save location. Recognised episodes use the series title; other downloads use the file or magnet name. Folder names follow the filesystem's case rules: `Show` and `show` group together in the view but can be separate folders on case-sensitive storage. A manually entered or picked directory takes precedence.
+
+Desktop RSS only collects history on the first fetch. **Download all eligible** queues new and initially collected items matching the current search after confirmation. If the eligible items change, review the new results and confirm again.
+
 ## Features
 
 | Feature | Description |

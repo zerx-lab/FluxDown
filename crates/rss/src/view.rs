@@ -7,7 +7,7 @@ use fluxdown_protocol::{
 };
 use fluxdown_ui_components::{
     BusyExt as _, BusyHold, CheckState, ControlExt as _, FluxIcon, SidebarPanel, SidebarState,
-    caption_number, check_mark, nav_icon_color, tabular_numbers, toolbar_action_button,
+    caption_number, check_mark, nav_icon_color, tabular_numbers, toast, toolbar_action_button,
     tooltip_view,
 };
 use fluxdown_ui_i18n::Translator;
@@ -453,6 +453,70 @@ impl RssView {
             };
         })
         .detach();
+    }
+
+    fn confirm_download_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let query = self.search.read(cx).value().trim().to_lowercase();
+        let Some(source_id) = self.controller.selected_source.clone() else {
+            return;
+        };
+        let guids: HashSet<_> = self
+            .controller
+            .bulk_download_candidates(&query, self.oldest_first)
+            .map(str::to_owned)
+            .collect();
+        if guids.is_empty() || self.controller.stale || self.controller.loading {
+            return;
+        }
+        let count = guids.len().to_string();
+        let title = self.t("rssDownloadAllEligible", cx);
+        let description = SharedString::from(self.with(
+            "rssDownloadAllEligibleConfirm",
+            &[("count", &count)],
+            cx,
+        ));
+        let cancel = self.t("cancel", cx);
+        let view = cx.weak_entity();
+        window.open_alert_dialog(cx, move |alert, _, cx| {
+            let view = view.clone();
+            let query = query.clone();
+            let source_id = source_id.clone();
+            let guids = guids.clone();
+            alert
+                .title(fluxdown_ui_components::dialog_title(title.clone(), cx))
+                .description(description.clone())
+                .footer(fluxdown_ui_components::dialog_footer(
+                    Some(cancel.clone()),
+                    title.clone(),
+                    fluxdown_ui_components::DialogIntent::Confirm,
+                    cx,
+                ))
+                .on_ok(move |_, window, cx| {
+                    view.update(cx, |this, cx| {
+                        let current_query = this.search.read(cx).value().trim().to_lowercase();
+                        let eligible = (current_query == query)
+                            .then(|| {
+                                this.controller.confirmed_bulk_download(
+                                    &source_id,
+                                    &query,
+                                    this.oldest_first,
+                                    &guids,
+                                )
+                            })
+                            .flatten();
+                        if let Some(eligible) = eligible {
+                            this.act(eligible, "download", cx);
+                        } else {
+                            window.push_notification(
+                                toast::warning(this.t("rssDownloadAllEligibleChanged", cx)),
+                                cx,
+                            );
+                        }
+                        true
+                    })
+                    .unwrap_or(true)
+                })
+        });
     }
 
     fn confirm_delete(
@@ -1344,6 +1408,26 @@ impl Render for RssView {
                                         .child(self.t("rssSelectVisible", cx)),
                                 ),
                         )
+                        .when(!visible.is_empty(), |bar| {
+                            bar.child(
+                                Button::new("rss-download-all-eligible")
+                                    .ghost()
+                                    .label(self.t("rssDownloadAllEligible", cx))
+                                    .control(cx)
+                                    .disabled(
+                                        stale
+                                            || self.controller.loading
+                                            || !visible.iter().any(|&index| {
+                                                self.controller.is_bulk_download_candidate(
+                                                    &self.controller.items[index],
+                                                )
+                                            }),
+                                    )
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.confirm_download_all(window, cx);
+                                    })),
+                            )
+                        })
                         .when(selected_count > 0, |bar| {
                             bar.child(
                                 div()
