@@ -4439,18 +4439,9 @@ pub(crate) fn clean_http_restart_staging(dir: &Path) -> std::io::Result<()> {
                 "HTTP restart staging path is not a directory",
             ));
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            // A missing save directory can mean the storage is offline.
-            let parent = dir
-                .parent()
-                .ok_or_else(|| std::io::Error::other("missing HTTP staging parent"))?;
-            if !std::fs::metadata(parent)?.is_dir() {
-                return Err(std::io::Error::other(
-                    "HTTP staging parent is not a directory",
-                ));
-            }
-            return Ok(());
-        }
+        // NotFound does not prove cleanup: an unmounted volume can leave
+        // an existing, empty mount point in place of the save directory.
+        // Preserve its recovery record until we actually remove the staging.
         Err(error) => return Err(error),
     }
     let expected = name.as_bytes();

@@ -10449,6 +10449,7 @@ mod tests {
         .expect("write owner with trailing newline");
         let offline = dir.join("offline");
         std::fs::rename(&save_dir, &offline).expect("take save directory offline");
+        std::fs::create_dir(&save_dir).expect("leave an empty mount point");
 
         first_db.pool.close().await;
         drop(first_db);
@@ -10457,6 +10458,7 @@ mod tests {
         let (next_db, next_guard) = Db::open_exclusive(&dir)
             .await
             .expect("writer after release");
+        std::fs::remove_dir(&save_dir).expect("remove empty mount point");
         std::fs::rename(offline, save_dir).expect("bring save directory back online");
         next_db.recover_http_restart_staging().await;
         assert!(!recorded.exists());
