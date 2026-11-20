@@ -101,6 +101,8 @@ enum TaskDetailText {
         case "global:pac": return L("taskRouteGlobalPac")
         case "task:proxy": return L("taskRouteTaskProxy")
         case "task:direct": return L("taskRouteTaskDirect")
+        case "protocol:direct": return L("taskRouteProtocolDirect")
+        case "protocol:proxy": return L("taskRouteProtocolProxy")
         case "bt:direct": return L("taskRouteBtDirect")
         case "bt:trackers:manual": return L("taskRouteBtTrackersManual")
         case "bt:trackers:system": return L("taskRouteBtTrackersSystem")

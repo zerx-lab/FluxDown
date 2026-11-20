@@ -32,6 +32,7 @@ use crate::model::{
     is_builtin_queue,
 };
 use crate::naming;
+use crate::protocol_proxy::{DownloadProtocol, ProtocolProxies};
 use crate::proxy_config::{ProxyConfig, ProxyMode};
 use crate::queue_order::{QueueOrderDelta, QueueOrderPublisher};
 use crate::segment_coordinator::is_single_conn_domain;
@@ -49,6 +50,8 @@ mod bt_archive;
 #[cfg(feature = "bt")]
 mod bt_storage_ops;
 mod group_dirs;
+#[cfg(feature = "plugins")]
+mod resolve_route;
 mod task_properties;
 pub use boost::BoostError;
 #[cfg(feature = "bt")]
@@ -3741,16 +3744,18 @@ pub struct ResolveOutcome {
     pub subject_url: String,
     /// 出口计划执行结果：换过路的路径与产出结果的一步。
     pub egress: crate::plugin::call_egress::EgressOutcome,
+    protocol_overrides: Arc<ProtocolProxies>,
 }
 
 /// 解析成功后交给起跑的出口（见 `DownloadManager::resolved_egress`）。
 #[cfg(feature = "plugins")]
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct ResolvedEgress {
     /// 下载按它匹配站点规则 / 做 Auto 决策（解析产物再由 `rule_route::apply` 重匹配）。
     subject_url: String,
     /// Auto 计划下解析所用的路径：下载只走这一条。
     pin: Option<ForcedRoute>,
+    protocol_overrides: Arc<ProtocolProxies>,
 }
 
 /// resolve 等待中的任务状态。Start 携 `QueuedTask`（再入覆盖 res 后分派）；
@@ -3786,7 +3791,8 @@ async fn collapse_resolve_variants(
     task_id: &str,
     res: &mut crate::plugin::ResolveResult,
     selector: &dyn HostSelection,
-) -> bool {
+    track_choice: bool,
+) -> Result<Option<resolve_route::VariantChoice>, ()> {
     const VARIANT_SELECTION_TIMEOUT_SECS: u64 = 60;
     let variants = std::mem::take(&mut res.variants);
     let default_idx = if (res.default_variant_index as usize) < variants.len() {
@@ -3826,7 +3832,7 @@ async fn collapse_resolve_variants(
         let chosen = outcome.into_inner();
         // -1 = 用户在弹窗点关闭/取消 → 取消任务（不收敛、不回退默认）。
         if chosen < 0 {
-            return true;
+            return Err(());
         }
         if (chosen as usize) < variants.len() {
             chosen
@@ -3834,8 +3840,7 @@ async fn collapse_resolve_variants(
             default_idx
         }
     };
-    apply_chosen_variant(res, variants, idx);
-    false
+    Ok(apply_resolved_variant(res, variants, idx, track_choice))
 }
 
 /// 把选中变体的非空字段覆盖到顶层（url/audioUrl/fileName/totalBytes）。
@@ -3865,14 +3870,33 @@ fn apply_chosen_variant(
 /// 静默变体收敛：不经 [`HostSelection`]，直接取 `default_variant_index`
 /// （越界按 0）——绝不为 N 个裂变子任务弹 N 个选择框（A1 契约）。
 #[cfg(feature = "plugins")]
-fn collapse_resolve_variants_silent(res: &mut crate::plugin::ResolveResult) {
+fn collapse_resolve_variants_silent(
+    res: &mut crate::plugin::ResolveResult,
+    track_choice: bool,
+) -> Option<resolve_route::VariantChoice> {
     let variants = std::mem::take(&mut res.variants);
     let idx = if (res.default_variant_index as usize) < variants.len() {
         res.default_variant_index
     } else {
         0
     };
+    apply_resolved_variant(res, variants, idx, track_choice)
+}
+
+#[cfg(feature = "plugins")]
+fn apply_resolved_variant(
+    res: &mut crate::plugin::ResolveResult,
+    variants: Vec<crate::plugin::ResolveVariant>,
+    idx: i32,
+    track_choice: bool,
+) -> Option<resolve_route::VariantChoice> {
+    let choice = if track_choice {
+        resolve_route::VariantChoice::new(&variants, idx as usize)
+    } else {
+        None
+    };
     apply_chosen_variant(res, variants, idx);
+    choice
 }
 
 /// 清单裂变（外部无 UI 入口自动展开，D6）自动启动的总大小阈值：Σsize 超过
@@ -3968,6 +3992,7 @@ pub struct DownloadManager {
     client: Client,
     /// Current proxy configuration — used to rebuild Client on config change.
     proxy_config: ProxyConfig,
+    protocol_proxies: Arc<ProtocolProxies>,
     /// All state for every actively-running download, keyed by task_id.
     /// Replaces the five separate maps that previously tracked the same set:
     ///   • active_tokens   (CancellationToken + generation)
@@ -4331,6 +4356,7 @@ impl DownloadManager {
             db,
             client,
             proxy_config,
+            protocol_proxies: Arc::new(ProtocolProxies::default()),
             active_tasks: HashMap::new(),
             pending_pauses: HashMap::new(),
             awaiting_decision: HashMap::new(),
@@ -4771,14 +4797,16 @@ impl DownloadManager {
         task_id: String,
         identity: String,
         req: crate::plugin::ResolveRequest,
-        plan: crate::plugin::call_egress::EgressPlan,
+        routing: (
+            Result<crate::plugin::call_egress::EgressPlan, crate::plugin::PluginError>,
+            resolve_route::ResolverRoutes,
+        ),
         kind: ResolveKind,
         generation: u64,
         unattended: bool,
         reselect: ResolverReselect,
         cancel: CancellationToken,
     ) {
-        use futures_util::FutureExt;
         let Some(pm) = self.plugin_manager.clone() else {
             return;
         };
@@ -4787,6 +4815,7 @@ impl DownloadManager {
         let selector = self.selector.clone();
         let second_stage = !req.resolver_item.is_empty();
         let subject_url = req.url.clone();
+        let (plan, routes) = routing;
         handle.spawn(async move {
             let mut identity = identity;
             // 多插件冲突待选：首次 resolve 前定案（站点默认 / 无人值守回退 / 询问用户），
@@ -4820,6 +4849,7 @@ impl DownloadManager {
                                 kind,
                                 generation,
                                 result: Ok(None),
+                                protocol_overrides: routes.overrides,
                                 cancelled: Some(crate::plugin::CancelReason::UserCancelled),
                                 subject_url,
                                 egress: crate::plugin::call_egress::EgressOutcome::default(),
@@ -4838,6 +4868,7 @@ impl DownloadManager {
                                 kind,
                                 generation,
                                 result: Err(error),
+                                protocol_overrides: routes.overrides,
                                 cancelled: None,
                                 subject_url,
                                 egress: crate::plugin::call_egress::EgressOutcome::default(),
@@ -4852,34 +4883,19 @@ impl DownloadManager {
             }
             // 同一占位 / 世代 / 取消令牌下按出口计划逐步解析：Auto 断在网络层时换路重跑，
             // 窗口内暂停 / 取消 / 删除照常丢弃整个 future。选择框只在成功后出现，重跑不重复询问。
-            let fut = std::panic::AssertUnwindSafe(pm.resolve_planned(&identity, req, Some(plan)));
-            // 暂停/取消/删除会 cancel 占位 token：立即丢弃 resolve future（释放
-            // resolve/yt-dlp 信号量槽位），且不回流——占位已由触发方清理。
-            let resolved = tokio::select! {
-                r = fut.catch_unwind() => r,
+            let retry_request = routes.may_retry().then(|| req.clone());
+            let (mut result, mut egress) = tokio::select! {
+                r = resolve_route::attempt(&pm, &identity, req, plan) => r,
                 _ = cancel.cancelled() => return,
-            };
-            let (mut result, egress) = match resolved {
-                Ok(r) => r,
-                Err(panic) => {
-                    let msg = panic
-                        .downcast_ref::<&str>()
-                        .map(|s| s.to_string())
-                        .or_else(|| panic.downcast_ref::<String>().cloned())
-                        .unwrap_or_else(|| "resolver panicked".to_string());
-                    (
-                        Err(crate::plugin::PluginError::Runtime(msg)),
-                        crate::plugin::call_egress::EgressOutcome::default(),
-                    )
-                }
             };
             // 多变体收敛：在 off-actor worker 内 await 用户选择（不阻塞 actor），
             // 收敛为单一直链后再回流。stale 场景由 on_resolve_ready 世代守卫兜底。
-            // 返回 true = 用户点关闭/取消 → 回流标记 cancelled，actor 取消任务。
+            // 用户关闭选择框时回流取消，不切换出口。
             // 二段解析（resolver_item 非空）与无人值守任务（tasks.unattended，
             // RSS/免打扰接管）绝不弹选择框：静默取默认变体（引擎自动裂变场景
             // 不为 N 个子任务弹 N 个选择框，A1 契约）。
             let mut cancelled = None;
+            let mut choice = None;
             if cancel.is_cancelled() {
                 return;
             }
@@ -4887,16 +4903,40 @@ impl DownloadManager {
                 && !res.variants.is_empty()
             {
                 if second_stage || unattended {
-                    collapse_resolve_variants_silent(res);
+                    choice = collapse_resolve_variants_silent(res, retry_request.is_some());
                 } else {
                     let selected = tokio::select! {
-                        c = collapse_resolve_variants(&task_id, res, selector.as_ref()) => c,
+                        c = collapse_resolve_variants(&task_id, res, selector.as_ref(), retry_request.is_some()) => c,
                         _ = cancel.cancelled() => return,
                     };
-                    if selected {
-                        cancelled = Some(crate::plugin::CancelReason::VariantSelectionCancelled);
+                    match selected {
+                        Ok(selected) => choice = selected,
+                        Err(()) => {
+                            cancelled = Some(crate::plugin::CancelReason::VariantSelectionCancelled);
+                        }
                     }
                 }
+            }
+            if cancelled.is_none()
+                && let Some(req) = retry_request
+                && let Ok(Some(res)) = &result
+                && let Some(protocol) = routes.retry_protocol(&subject_url, res)
+            {
+                // The source link may not reveal the final downloader. Resolve it
+                // once on the real protocol's exit before consuming a signed link.
+                let (replacement, replacement_egress) = tokio::select! {
+                    r = async {
+                        let plan = routes.retry_plan(&subject_url, protocol).await;
+                        resolve_route::attempt(&pm, &identity, req, plan).await
+                    } => r,
+                    _ = cancel.cancelled() => return,
+                };
+                result = replacement.and_then(|res| {
+                    resolve_route::accept_retry(
+                        &subject_url, res, choice.as_ref(), protocol, &routes.overrides,
+                    )
+                });
+                egress = replacement_egress;
             }
             if tx
                 .send(ResolveOutcome {
@@ -4908,6 +4948,7 @@ impl DownloadManager {
                     cancelled,
                     subject_url,
                     egress,
+                    protocol_overrides: routes.overrides,
                 })
                 .is_err()
             {
@@ -4934,7 +4975,11 @@ impl DownloadManager {
         task_id: &str,
         source_url: &str,
         proxy_url: &str,
-    ) -> crate::plugin::call_egress::EgressPlan {
+        has_audio: bool,
+    ) -> (
+        Result<crate::plugin::call_egress::EgressPlan, crate::plugin::PluginError>,
+        resolve_route::ResolverRoutes,
+    ) {
         self.resolved_egress.remove(task_id);
         let forced = self
             .auto_failover_pending
@@ -4945,14 +4990,16 @@ impl DownloadManager {
             .get(task_id)
             .map(AutoFailoverAttempts::tried_routes)
             .unwrap_or_default();
-        crate::plugin::call_egress::plan_call(
+        resolve_route::ResolverRoutes::new(
             &self.proxy_config,
+            self.protocol_proxies.clone(),
             source_url,
             crate::plugin::call_egress::PlanTask {
                 proxy_url,
                 forced,
                 tried: &tried,
             },
+            has_audio,
         )
     }
 
@@ -4986,22 +5033,34 @@ impl DownloadManager {
             ResolvedEgress {
                 subject_url: out.subject_url.clone(),
                 pin,
+                protocol_overrides: out.protocol_overrides.clone(),
             },
         );
     }
 
     /// 起跑出口输入（一次性消费）：插件解析过的任务以源链接定出口并钉定解析所用路径；
-    /// 否则用已排程的一次性备用链路。返回（替代任务链接的出口匹配链接, 强制路径）。
-    fn take_start_route(&mut self, task_id: &str) -> (Option<String>, Option<ForcedRoute>) {
+    /// 否则用已排程的一次性备用链路与当前协议配置。
+    fn take_start_route(
+        &mut self,
+        task_id: &str,
+    ) -> (
+        Option<String>,
+        Option<ForcedRoute>,
+        Option<Arc<ProtocolProxies>>,
+    ) {
         let pending = self
             .auto_failover_pending
             .remove(task_id)
             .map(ForcedRoute::failover);
         #[cfg(feature = "plugins")]
         if let Some(resolved) = self.resolved_egress.remove(task_id) {
-            return (Some(resolved.subject_url), resolved.pin.or(pending));
+            return (
+                Some(resolved.subject_url),
+                resolved.pin.or(pending),
+                Some(resolved.protocol_overrides),
+            );
         }
-        (None, pending)
+        (None, pending, None)
     }
 
     /// 先复查 DB 生命周期，再按结果分派。
@@ -5700,7 +5759,7 @@ impl DownloadManager {
             extra_headers: queued.extra_headers.clone(),
             resolver_item: queued.resolver_item.clone(),
         };
-        let plan = self.resolve_egress_plan(&task_id, &req.url, &queued.proxy_url);
+        let plan = self.resolve_egress_plan(&task_id, &req.url, &queued.proxy_url, has_audio_track);
         self.pending_resolve.insert(
             task_id.clone(),
             PendingResolve::Start {
@@ -5922,7 +5981,7 @@ impl DownloadManager {
             extra_headers,
             resolver_item,
         };
-        let plan = self.resolve_egress_plan(task_id, &req.url, &task.proxy_url);
+        let plan = self.resolve_egress_plan(task_id, &req.url, &task.proxy_url, false);
         self.pending_resolve.insert(
             task_id.to_string(),
             PendingResolve::Resume {
@@ -6146,6 +6205,16 @@ impl DownloadManager {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     }
 
+    /// Installs device-local protocol routes. Running HTTP-family tasks keep their clients
+    /// until the next start or resume. Returns whether the BT session must be rebuilt.
+    pub fn set_protocol_proxies(&mut self, config: &HashMap<String, String>) -> bool {
+        let routes = ProtocolProxies::from_config(config);
+        let bt_changed =
+            routes.raw(DownloadProtocol::Bt) != self.protocol_proxies.raw(DownloadProtocol::Bt);
+        self.protocol_proxies = Arc::new(routes);
+        bt_changed
+    }
+
     /// Update proxy configuration.  Rebuilds the shared HTTP client so that
     /// all **new** downloads use the updated proxy settings.
     ///
@@ -6273,6 +6342,10 @@ impl DownloadManager {
     ) -> Result<bool, crate::db::DbError> {
         let url = task.url.as_str();
         if !task.proxy_url.is_empty()
+            || !self
+                .protocol_proxies
+                .raw(DownloadProtocol::for_http_family(url, false))
+                .is_empty()
             || !matches!(task.status, 1 | 5)
             || is_bt_url(url)
             || is_ed2k_url(url)
@@ -6701,29 +6774,41 @@ impl DownloadManager {
                 let upload_limit = self.upload_limit_bps;
                 let save_dir = self.default_save_dir.clone();
                 let data_dir = self.app_data_dir.clone();
-                let config = self.bt_config.clone();
+                let mut config = self.bt_config.clone();
+                let protocol_proxy = self.protocol_proxies.route(DownloadProtocol::Bt)?;
                 let global_proxy = self.proxy_config.clone();
                 let policy = self.bt_guard.policy();
                 let session = tokio::task::spawn_blocking(move || {
                     // 代理地址在建会话时定死：手动来源取「代理」页的服务器（与当前代理模式
                     // 无关），系统来源在这里检测系统代理（macOS / Linux 会拉起子进程，所以
                     // 放在阻塞线程上）。没有可用服务器时直连，设置页有对应提示。
-                    let proxy_url = config.session_proxy_url(&global_proxy, || {
-                        match crate::proxy_config::detect_system_proxy() {
-                            Ok(found) => found,
-                            Err(error) => {
-                                log_info!("[bt] 系统代理检测失败，BT 保持直连: {error:#}");
-                                None
+                    let protocol_fixed = protocol_proxy.is_some();
+                    let proxy_url = if let Some(proxy) = protocol_proxy {
+                        config.proxy_peers = true;
+                        config.proxy_enabled = proxy.mode != ProxyMode::None;
+                        proxy.manual_server_url_for_bt()
+                    } else {
+                        config.session_proxy_url(&global_proxy, || {
+                            match crate::proxy_config::detect_system_proxy() {
+                                Ok(found) => found,
+                                Err(error) => {
+                                    log_info!("[bt] 系统代理检测失败，BT 保持直连: {error:#}");
+                                    None
+                                }
                             }
-                        }
-                    });
+                        })
+                    };
                     if config.proxy_enabled && proxy_url.is_none() {
                         log_info!(
                             "[bt] 已开启 BT 代理（来源 {:?}），但没有可用的代理服务器，BT 保持直连",
                             config.proxy_source
                         );
                     }
-                    let route = config.session_route(proxy_url.as_deref());
+                    let mut route = config.session_route(proxy_url.as_deref());
+                    if protocol_fixed && proxy_url.is_some() {
+                        // The endpoint came from the protocol override, not the BitTorrent page's source.
+                        route.0 = crate::protocol_proxy::PROXY_ROUTE;
+                    }
                     log_info!(
                         "[bt] 会话出口 route={} endpoint={}（对端与 DHT {}）",
                         route.0,
@@ -8414,9 +8499,15 @@ impl DownloadManager {
             if task.status == 4
                 && self.proxy_config.mode == ProxyMode::Auto
                 && task.proxy_url.is_empty()
-                // 出口由站点规则决定的任务不参与 Auto 故障转移：否则会被当成「直连已试过」
-                // 而排一次切到代理的立即重试，绕过规则。
+                // 站点规则与协议固定出口不参与 Auto 换路：否则会把其失败归因到 Auto，
+                // 并排程不适用的备用路径。出口标签记录实际下载协议的决定（含插件解析、
+                // 独立音轨）；源链接上的覆盖也保守地阻止换路，旧库空标签且无覆盖仍可换路。
                 && !crate::auto_proxy::route::is_rule_label(&task.auto_route)
+                && !crate::protocol_proxy::is_fixed_route(&task.auto_route)
+                && self
+                    .protocol_proxies
+                    .raw(DownloadProtocol::for_http_family(&task.url, false))
+                    .is_empty()
                 && !is_bt_url(&task.url)
                 && !is_ed2k_url(&task.url)
                 && let Some(host) = crate::segment_coordinator::extract_host(&task.url)
@@ -10486,13 +10577,28 @@ impl DownloadManager {
                 && self.probes_outstanding.load(Ordering::Relaxed) < META_PROBE_WINDOW
             {
                 let egress = self.task_http_context(
-                    &db_url,
+                    (
+                        &db_url,
+                        DownloadProtocol::for_http_family(&db_url, audio_url.is_some()),
+                        None,
+                    ),
                     &proxy_url,
                     &user_agent,
                     &queue_id,
                     ignore_tls_errors,
                     None,
                 );
+                let egress = match egress {
+                    Ok(egress) => egress,
+                    Err(error) => {
+                        crate::logger::report_warning(
+                            "download-manager",
+                            "metadata probe egress",
+                            &error,
+                        );
+                        return;
+                    }
+                };
                 let mut probe_spec = downloader::RequestSpec::from_captured(
                     method.as_deref(),
                     cookies,
@@ -10590,7 +10696,7 @@ impl DownloadManager {
             // 只探测队首窗口内的任务：批量导入的长队列不为每个任务发探测，
             // 轮到下载时自然得到名字与大小。
             let in_probe_window = self.pending_queue.len() < META_PROBE_WINDOW;
-            let probe_context = (!has_resolver && queued_hint == 0 && in_probe_window).then(|| {
+            let probe_context = if !has_resolver && queued_hint == 0 && in_probe_window {
                 let mut spec = downloader::RequestSpec::from_captured(
                     queued.method.as_deref(),
                     queued.cookies.clone(),
@@ -10599,16 +10705,34 @@ impl DownloadManager {
                     queued.body.clone(),
                 );
                 let egress = self.task_http_context(
-                    &queued.url,
+                    (
+                        &queued.url,
+                        DownloadProtocol::for_http_family(&queued.url, queued.audio_url.is_some()),
+                        None,
+                    ),
                     &queued.proxy_url,
                     &queued.user_agent,
                     &queued.queue_id,
                     queued.ignore_tls_errors,
                     None,
                 );
-                spec.egress = egress.router.clone();
-                (spec, egress.client, egress.proxy)
-            });
+                match egress {
+                    Ok(egress) => {
+                        spec.egress = egress.router;
+                        Some((spec, egress.client, egress.proxy))
+                    }
+                    Err(error) => {
+                        crate::logger::report_warning(
+                            "download-manager",
+                            "metadata probe egress",
+                            &error,
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
             let probe_extras = if probe_context.is_some() {
                 Some(
                     self.meta_probe_extras(
@@ -10913,13 +11037,14 @@ impl DownloadManager {
     /// 已排程的一次性备用链路或解析钉定的出口（仅任务启动路径消费），client 与标签同源于它。
     fn task_http_context(
         &self,
-        url: &str,
+        subject: (&str, DownloadProtocol, Option<&ProtocolProxies>),
         proxy_url: &str,
         user_agent: &str,
         queue_id: &str,
         ignore_tls_errors: bool,
         forced_route: Option<ForcedRoute>,
-    ) -> TaskEgress {
+    ) -> Result<TaskEgress, downloader::DownloadError> {
+        let (url, protocol, planned_overrides) = subject;
         let queue_ua = self
             .queues
             .get(queue_id)
@@ -10944,7 +11069,7 @@ impl DownloadManager {
                 crate::tls::HttpVersion::Http1,
             ) {
                 Ok(client) => {
-                    return TaskEgress {
+                    return Ok(TaskEgress {
                         client,
                         proxy,
                         route,
@@ -10956,13 +11081,13 @@ impl DownloadManager {
                             ignore_tls_errors,
                         ))),
                         pac: crate::pac_route::PacRouting::Off,
-                    };
+                    });
                 }
                 Err(e) => {
                     crate::logger::report_error("download-manager", "build proxy-rule client", &e);
                     // base 必须为 None：命中该规则的每个请求都会进入 `client_for`，
                     // 重建失败时报错让任务失败，而不是悄悄走全局 client 泄漏出去。
-                    return TaskEgress {
+                    return Ok(TaskEgress {
                         client: self.client.clone(),
                         proxy: self.proxy_config.resolve(),
                         route: "",
@@ -10974,7 +11099,7 @@ impl DownloadManager {
                             ignore_tls_errors,
                         ))),
                         pac: crate::pac_route::PacRouting::Off,
-                    };
+                    });
                 }
             }
         }
@@ -10986,6 +11111,32 @@ impl DownloadManager {
                 ignore_tls_errors,
             ))
         });
+        if proxy_url.is_empty()
+            && protocol != DownloadProtocol::Ed2k
+            && let Some(proxy) = planned_overrides
+                .unwrap_or(&self.protocol_proxies)
+                .route(protocol)?
+        {
+            let client = crate::client_cache::get(
+                &proxy,
+                resolved_ua,
+                ignore_tls_errors,
+                crate::tls::HttpVersion::Http1,
+            )?;
+            let route = if proxy.is_active() {
+                crate::protocol_proxy::PROXY_ROUTE
+            } else {
+                crate::protocol_proxy::DIRECT_ROUTE
+            };
+            return Ok(TaskEgress {
+                client,
+                proxy,
+                route,
+                auto_ctx: None,
+                router,
+                pac: crate::pac_route::PacRouting::Off,
+            });
+        }
         let pac = self.pac_routing(proxy_url);
         // ProxyMode::Auto 启动期决策（per-task 代理优先级更高，非空时跳过）。
         let auto = if proxy_url.is_empty() {
@@ -11022,14 +11173,14 @@ impl DownloadManager {
         if !needs_dedicated_client {
             let proxy = auto_override.unwrap_or_else(|| self.proxy_config.resolve());
             let route = static_route(&proxy);
-            return TaskEgress {
+            return Ok(TaskEgress {
                 client: self.global_client(&proxy),
                 proxy,
                 route,
                 auto_ctx,
                 router,
                 pac,
-            };
+            });
         }
 
         let proxy = if !proxy_url.is_empty() {
@@ -11042,7 +11193,7 @@ impl DownloadManager {
             self.proxy_config.resolve()
         };
         let route = static_route(&proxy);
-        match crate::client_cache::get(
+        let egress = match crate::client_cache::get(
             &proxy,
             resolved_ua,
             ignore_tls_errors,
@@ -11058,8 +11209,7 @@ impl DownloadManager {
             },
             Err(e) => {
                 log_info!("[manager] failed to build per-task client: {}", e);
-                // 构建失败降级为全局直连 client——不再对路由做任何声明
-                // （空标签），避免「标签说代理、实际走直连」的可追溯性谎言。
+                // 构建失败降级为全局直连 client，不声明代理出口。
                 TaskEgress {
                     client: self.client.clone(),
                     proxy: self.proxy_config.resolve(),
@@ -11069,7 +11219,8 @@ impl DownloadManager {
                     pac,
                 }
             }
-        }
+        };
+        Ok(egress)
     }
 
     /// hint 任务（不得发探测请求）的占位名：名字为空时按 URL（含预签名 URL 的
@@ -11700,7 +11851,33 @@ impl DownloadManager {
                 return;
             }
         } else {
-            let (route_subject, forced_route) = self.take_start_route(&task_id);
+            let (route_subject, forced_route, overrides) = self.take_start_route(&task_id);
+            let protocol = if use_ed2k {
+                DownloadProtocol::Ed2k
+            } else {
+                DownloadProtocol::for_http_family(&url, audio_url.is_some())
+            };
+            let egress = self.task_http_context(
+                (
+                    route_subject.as_deref().unwrap_or(&url),
+                    protocol,
+                    overrides.as_deref(),
+                ),
+                &proxy_url,
+                &user_agent,
+                &queue_id,
+                ignore_tls_errors,
+                forced_route,
+            );
+            let egress = match egress {
+                Ok(egress) => egress,
+                Err(error) => {
+                    persist_task_failure(&task_id, error.to_string(), &self.db, &self.progress_tx)
+                        .await;
+                    send_task_done(&done_tx, TaskDone::finished(task_id, spawn_gen, None)).await;
+                    return;
+                }
+            };
             let TaskEgress {
                 client: task_client,
                 proxy: task_proxy,
@@ -11708,14 +11885,7 @@ impl DownloadManager {
                 auto_ctx,
                 router: egress_router,
                 pac: pac_routing,
-            } = self.task_http_context(
-                route_subject.as_deref().unwrap_or(&url),
-                &proxy_url,
-                &user_agent,
-                &queue_id,
-                ignore_tls_errors,
-                forced_route,
-            );
+            } = egress;
             self.publish_task_route(&task_id, auto_route, &task_proxy.log_endpoint())
                 .await;
             // ---------------------------------------------------------------
@@ -13453,7 +13623,33 @@ impl DownloadManager {
             let persisted_ua = persisted_user_agent.unwrap_or_default();
             // 与 start 路径共用 `task_http_context`：一次性备用链路（Auto）与解析钉定的出口
             // 在此消费，站点规则 / Auto 决策 / 专属 client 的取舍只有这一份实现。
-            let (route_subject, forced_route) = self.take_start_route(&tid);
+            let (route_subject, forced_route, overrides) = self.take_start_route(&tid);
+            let protocol = if use_ed2k {
+                DownloadProtocol::Ed2k
+            } else {
+                DownloadProtocol::for_http_family(&task.url, audio_url.is_some())
+            };
+            let egress = self.task_http_context(
+                (
+                    route_subject.as_deref().unwrap_or(&task.url),
+                    protocol,
+                    overrides.as_deref(),
+                ),
+                &task.proxy_url,
+                &persisted_ua,
+                &task.queue_id,
+                task.ignore_tls_errors,
+                forced_route,
+            );
+            let egress = match egress {
+                Ok(egress) => egress,
+                Err(error) => {
+                    persist_task_failure(&tid, error.to_string(), &self.db, &self.progress_tx)
+                        .await;
+                    send_task_done(&done_tx, TaskDone::finished(tid, spawn_gen, None)).await;
+                    return;
+                }
+            };
             let TaskEgress {
                 client: task_client,
                 proxy: task_proxy,
@@ -13461,14 +13657,7 @@ impl DownloadManager {
                 auto_ctx,
                 router: egress_router,
                 pac: pac_routing,
-            } = self.task_http_context(
-                route_subject.as_deref().unwrap_or(&task.url),
-                &task.proxy_url,
-                &persisted_ua,
-                &task.queue_id,
-                task.ignore_tls_errors,
-                forced_route,
-            );
+            } = egress;
             let resume_user_agent = self
                 .resolved_task_ua(&persisted_ua, &task.queue_id)
                 .to_string();
@@ -17057,12 +17246,23 @@ impl DownloadManager {
         &self,
         url: String,
     ) -> impl Future<Output = crate::meta_prober::LinkProbe> + Send + use<> {
-        let egress = self.task_http_context(&url, "", "", "", false, None);
-        let client = egress.client;
-        let router = egress.router;
+        let egress = self.task_http_context(
+            (&url, DownloadProtocol::for_http_family(&url, false), None),
+            "",
+            "",
+            "",
+            false,
+            None,
+        );
         async move {
             let lower = url.get(..8).unwrap_or(&url).to_ascii_lowercase();
-            if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+            if let Err(error) = &egress {
+                crate::logger::report_warning("download-manager", "link probe egress", error);
+            }
+            let Some(egress) = (lower.starts_with("http://") || lower.starts_with("https://"))
+                .then_some(egress)
+                .and_then(Result::ok)
+            else {
                 return crate::meta_prober::LinkProbe {
                     verdict: crate::meta_prober::LinkVerdict::Unknown,
                     final_url: url,
@@ -17070,10 +17270,10 @@ impl DownloadManager {
                     mime: String::new(),
                     total_bytes: 0,
                 };
-            }
+            };
             let mut spec = crate::downloader::RequestSpec::empty_get();
-            spec.egress = router;
-            crate::meta_prober::probe_link_kind(&url, &client, &spec).await
+            spec.egress = egress.router;
+            crate::meta_prober::probe_link_kind(&url, &egress.client, &spec).await
         }
     }
 
@@ -18453,7 +18653,11 @@ mod tests {
                 default_variant_index: 1,
                 ..Default::default()
             };
-            collapse_resolve_variants("t1", &mut res, &NoopSelection).await;
+            assert!(
+                collapse_resolve_variants("t1", &mut res, &NoopSelection, false)
+                    .await
+                    .is_ok()
+            );
             assert_eq!(res.url, "https://v.example.com/mid");
             assert!(res.variants.is_empty());
         }
@@ -18466,7 +18670,11 @@ mod tests {
                 default_variant_index: 9,
                 ..Default::default()
             };
-            collapse_resolve_variants("t1", &mut res, &NoopSelection).await;
+            assert!(
+                collapse_resolve_variants("t1", &mut res, &NoopSelection, false)
+                    .await
+                    .is_ok()
+            );
             assert_eq!(res.url, "https://v.example.com/a");
         }
 
@@ -18487,7 +18695,11 @@ mod tests {
                 }],
                 ..Default::default()
             };
-            collapse_resolve_variants("t1", &mut res, &NoopSelection).await;
+            assert!(
+                collapse_resolve_variants("t1", &mut res, &NoopSelection, false)
+                    .await
+                    .is_ok()
+            );
             assert_eq!(res.url, "https://v.example.com/audio");
             assert_eq!(res.file_name.as_deref(), Some("base.mp4"));
             assert_eq!(res.total_bytes, Some(2_000));
@@ -18539,8 +18751,9 @@ mod tests {
                 ],
                 ..Default::default()
             };
-            let cancelled = collapse_resolve_variants("t1", &mut res, &CancelSelection).await;
-            assert!(cancelled);
+            let selection =
+                collapse_resolve_variants("t1", &mut res, &CancelSelection, false).await;
+            assert!(selection.is_err());
             assert_eq!(res.url, "https://old.example.com");
         }
     }

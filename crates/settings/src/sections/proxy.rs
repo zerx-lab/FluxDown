@@ -1,7 +1,9 @@
 //! 代理：模式、手动服务器、连通性测试、站点凭据。
 
 use fluxdown_protocol::method;
-use fluxdown_protocol::proxy_rules::{PROXY_RULES_KEY, enabled_proxy_rule_count};
+use fluxdown_protocol::proxy_rules::{
+    PROXY_RULES_KEY, enabled_proxy_rule_count, proxy_display_endpoint,
+};
 use fluxdown_ui_components::{ButtonVariant, ControlExt as _, FluxIcon, loading_button};
 use fluxdown_ui_theme::active_theme;
 use gpui::prelude::FluentBuilder as _;
@@ -40,6 +42,7 @@ pub(crate) fn page(ctx: &SectionContext, cx: &mut App) -> SettingsPage {
     // 非手动模式下默认收起，只露一行摘要。
     sections.push(manual_section(ctx, mode == "manual", cx));
     sections.push(bt_section(ctx, cx));
+    sections.push(protocol_section(ctx, cx));
     sections.push(proxy_rules::group(ctx, cx));
     sections.push(site_auth::group(ctx, cx));
     SettingsPage::new(
@@ -75,7 +78,7 @@ fn mode_section(ctx: &SectionContext, rule_count: usize) -> SettingsSection {
     );
     let mut section = SettingsSection::new()
         .title(ctx.t("proxySettings"))
-        .subtitle(ctx.t("proxyBtNote"))
+        .subtitle(ctx.t("proxyProtocolNote"))
         .row(ctx.item("proxySettings", Some("proxySettingsDesc"), control));
     if rule_count > 0 {
         let hint = SharedString::from(ctx.translator.text_with(
@@ -262,6 +265,43 @@ fn manual_summary(proxy_type: &str, host: &str, port: &str) -> Option<String> {
         format!("{host}:{port}")
     };
     Some(format!("{} · {endpoint}", proxy_type.to_uppercase()))
+}
+
+/// 旧 BT 代理下方的各协议独立出口。
+fn protocol_section(ctx: &SectionContext, cx: &App) -> SettingsSection {
+    let store = ctx.store.read(cx);
+    let row = |key, title, hint: Option<&str>| {
+        let mut row = ctx.item(title, hint, ctx.daemon_secret_input(key));
+        let endpoint = proxy_display_endpoint(&store.daemon_str(key));
+        if !endpoint.is_empty() {
+            row = row.description(match hint {
+                Some(hint) => format!("{} · {endpoint}", ctx.t(hint)),
+                None => endpoint,
+            });
+        }
+        row
+    };
+    SettingsSection::new()
+        .title(ctx.t("proxyProtocolSection"))
+        .subtitle(ctx.t("proxyProtocolDesc"))
+        .row(row(
+            "proxy_protocol_http",
+            "proxyProtocolHttp",
+            Some("proxyProtocolUrlHint"),
+        ))
+        .row(row("proxy_protocol_ftp", "proxyProtocolFtp", None))
+        .row(row("proxy_protocol_hls", "proxyProtocolHls", None))
+        .row(row("proxy_protocol_dash", "proxyProtocolDash", None))
+        .row(row(
+            "proxy_protocol_bt",
+            "proxyProtocolBt",
+            Some("proxyProtocolBtUrlHint"),
+        ))
+        .row(row(
+            "proxy_protocol_ed2k",
+            "proxyProtocolEd2k",
+            Some("proxyProtocolEd2kUrlHint"),
+        ))
 }
 
 /// BitTorrent 走代理：总开关 + 代理来源 + 节点连接是否也走代理 + 一条提示。

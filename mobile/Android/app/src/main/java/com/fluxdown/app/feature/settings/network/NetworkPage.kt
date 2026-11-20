@@ -51,8 +51,8 @@ import com.fluxdown.core.protocol.NetworkPortInput
 import com.fluxdown.core.protocol.NetworkProxyMode
 import com.fluxdown.core.protocol.NetworkProxyTest
 import com.fluxdown.core.protocol.NetworkRow
-import com.fluxdown.core.protocol.SettingsCatalog
 import com.fluxdown.core.protocol.ProxyRule
+import com.fluxdown.core.protocol.SettingsCatalog
 import com.fluxdown.core.store.Connection
 import com.fluxdown.fluxui.controls.FluxActionRow
 import com.fluxdown.fluxui.controls.FluxFieldRow
@@ -243,7 +243,7 @@ internal fun NetworkPage() {
             }
             if (form.isLoaded) {
                 flowItem(index++, gate, "mode") {
-                    GlassSection(footer = str(R.string.proxyBtNote)) {
+                    GlassSection(footer = str(R.string.proxyProtocolNote)) {
                         row {
                             SettingRowBox(ctx, NetworkRow.Mode.rowId, "proxy_mode") {
                                 val title = str(R.string.proxySettings)
@@ -320,6 +320,7 @@ internal fun NetworkPage() {
                     )
                 }
                 flowItem(index++, gate, "btProxy") { BtProxySection(ctx) }
+                flowItem(index++, gate, "protocolProxy") { ProtocolProxySection(ctx) }
                 // 站点规则在任何模式下都生效（包括「不使用代理」和「自动」）。
                 flowItem(index++, gate, "rules") {
                     ProxyRulesSection(
@@ -501,6 +502,20 @@ private fun BtProxySection(ctx: SettingsCtx) {
     }
 }
 
+@Composable
+private fun ProtocolProxySection(ctx: SettingsCtx) {
+    GlassSection(title = str(R.string.proxyProtocolSection), footer = str(R.string.proxyProtocolDesc)) {
+        for (row in NetworkRow.entries.filter { it.group == NetworkRow.Group.Protocol }) {
+            val key = row.configKey ?: continue
+            val endpoint = ProxyRule.displayEndpoint(ctx.form.string(key)).ifEmpty { null }
+            settingText(
+                ctx, key, row.titleRes(), row.detailRes(), R.string.proxyRuleProxyUrlPlaceholder,
+                id = row.rowId, secret = true, detail = endpoint,
+            )
+        }
+    }
+}
+
 // ───────────────────────────── 系统代理 ─────────────────────────────
 
 @Composable
@@ -676,6 +691,12 @@ private fun NetworkRow.titleRes(): Int = when (this) {
     NetworkRow.BtProxyEnabled -> R.string.btProxyEnabled
     NetworkRow.BtProxySource -> R.string.btProxySource
     NetworkRow.BtProxyPeers -> R.string.btProxyPeers
+    NetworkRow.ProtocolHttp -> R.string.proxyProtocolHttp
+    NetworkRow.ProtocolFtp -> R.string.proxyProtocolFtp
+    NetworkRow.ProtocolHls -> R.string.proxyProtocolHls
+    NetworkRow.ProtocolDash -> R.string.proxyProtocolDash
+    NetworkRow.ProtocolBt -> R.string.proxyProtocolBt
+    NetworkRow.ProtocolEd2k -> R.string.proxyProtocolEd2k
     NetworkRow.Rules -> R.string.proxyRulesTitle
     NetworkRow.RulesAdd -> R.string.proxyRulesAdd
     NetworkRow.RulesTest -> R.string.proxyRouteTest
@@ -691,6 +712,9 @@ private fun NetworkRow.detailRes(): Int? = when (this) {
     NetworkRow.BtProxyEnabled -> R.string.btProxyEnabledDesc
     NetworkRow.BtProxySource -> R.string.btProxySourceDesc
     NetworkRow.BtProxyPeers -> R.string.btProxyPeersDesc
+    NetworkRow.ProtocolHttp, NetworkRow.ProtocolFtp, NetworkRow.ProtocolHls, NetworkRow.ProtocolDash -> R.string.proxyProtocolUrlHint
+    NetworkRow.ProtocolBt -> R.string.proxyProtocolBtUrlHint
+    NetworkRow.ProtocolEd2k -> R.string.proxyProtocolEd2kUrlHint
     NetworkRow.Rules -> R.string.proxyRulesDesc
     NetworkRow.RulesTest -> R.string.proxyRouteTestDesc
     NetworkRow.SiteAuth -> R.string.settingsSiteAuthDesc
@@ -702,6 +726,7 @@ private fun NetworkRow.Group.titleRes(): Int = when (this) {
     NetworkRow.Group.Mode -> R.string.proxySettings
     NetworkRow.Group.Manual -> R.string.proxyModeManual
     NetworkRow.Group.BtProxy -> R.string.proxyBtSection
+    NetworkRow.Group.Protocol -> R.string.proxyProtocolSection
     NetworkRow.Group.Rules -> R.string.proxyRulesTitle
     NetworkRow.Group.SiteAuth -> R.string.settingsSiteAuthTitle
 }
@@ -710,6 +735,7 @@ private fun NetworkRow.itemKey(): String = when (group) {
     NetworkRow.Group.Mode -> "mode"
     NetworkRow.Group.Manual -> "manual"
     NetworkRow.Group.BtProxy -> "btProxy"
+    NetworkRow.Group.Protocol -> "protocolProxy"
     NetworkRow.Group.Rules -> "rules"
     NetworkRow.Group.SiteAuth -> "siteAuth"
 }

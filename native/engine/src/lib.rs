@@ -98,6 +98,7 @@ pub(crate) mod path_scheduler;
 #[cfg(feature = "plugins")]
 pub mod plugin;
 mod proc;
+pub mod protocol_proxy;
 pub mod proxy_config;
 /// 站点代理规则：规则模型、严格校验、逐请求匹配与「测试网址」解释。
 pub mod proxy_rules;
@@ -354,7 +355,6 @@ impl Engine {
             config.max_concurrent,
             data_dir.clone(),
         );
-        #[cfg_attr(not(feature = "plugins"), allow(unused_mut))]
         let mut manager = DownloadManager::new(
             db.clone(),
             DownloadManagerConfig {
@@ -371,6 +371,7 @@ impl Engine {
             sink.clone(),
             selector.clone(),
         )?;
+        manager.set_protocol_proxies(&db.get_all_config().await?);
         // 组装并注入插件管理器（feature 关时整块不编译，下载主链路零变化）。
         #[cfg(feature = "plugins")]
         {
