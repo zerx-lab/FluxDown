@@ -19,12 +19,12 @@ function pngResponse() {
   return new Response(PNG, { headers: { 'Content-Type': 'image/png' } })
 }
 
-async function rejectionMessage(pending: Promise<unknown>): Promise<string> {
+async function rejectionError(pending: Promise<unknown>): Promise<Error> {
   const [result] = await Promise.allSettled([pending])
   if (result?.status !== 'rejected' || !(result.reason instanceof Error)) {
     throw new Error('Expected the image request to reject with an Error')
   }
-  return result.reason.message
+  return result.reason
 }
 
 test('RSS image uses same-origin bearer fetch and preserves the opaque item key', async () => {
@@ -71,16 +71,19 @@ test('only the marked RSS image denial is reported as an unverifiable proxy dest
     status: 403,
     headers: { 'X-FluxDown-Rss-Image-Proxy-Unverifiable': '1' },
   })
-  await expect(fetchRssImage('source', 'item', 0, signal)).rejects.toBeInstanceOf(RssImageProxyUnverifiableError)
+  const blocked = await rejectionError(fetchRssImage('source', 'item', 0, signal))
+  expect(blocked instanceof RssImageProxyUnverifiableError).toBe(true)
 
   globalThis.fetch = async () => new Response(null, { status: 403 })
-  await expect(fetchRssImage('source', 'item', 0, signal)).rejects.not.toBeInstanceOf(RssImageProxyUnverifiableError)
+  const unmarked = await rejectionError(fetchRssImage('source', 'item', 0, signal))
+  expect(unmarked instanceof RssImageProxyUnverifiableError).toBe(false)
 })
 
 test('RSS rejects content with a PNG media type but a non-PNG signature', async () => {
   globalThis.fetch = async () => new Response('<html>not an image</html>', { headers: { 'Content-Type': 'image/png' } })
 
-  expect(await rejectionMessage(fetchRssImage('source', 'item', 0, new AbortController().signal))).toBe('RSS image is not PNG')
+  const error = await rejectionError(fetchRssImage('source', 'item', 0, new AbortController().signal))
+  expect(error.message).toBe('RSS image is not PNG')
 })
 
 test('RSS rejects an oversized PNG even with no Content-Length', async () => {
@@ -92,7 +95,8 @@ test('RSS rejects an oversized PNG even with no Content-Length', async () => {
     cancel() { cancelled = true },
   }), { headers: { 'Content-Type': 'image/png' } })
 
-  expect(await rejectionMessage(fetchRssImage('source', 'item', 0, new AbortController().signal))).toBe('RSS image exceeds size limit')
+  const error = await rejectionError(fetchRssImage('source', 'item', 0, new AbortController().signal))
+  expect(error.message).toBe('RSS image exceeds size limit')
   expect(cancelled).toBe(true)
 })
 
@@ -111,5 +115,5 @@ test('RSS image abort forwards the caller reason to an in-flight request', async
   const controller = new AbortController()
   const pending = fetchRssImage('source', 'item', 0, controller.signal)
   controller.abort(new Error('closed'))
-  expect(await rejectionMessage(pending)).toBe('closed')
+  expect((await rejectionError(pending)).message).toBe('closed')
 })
