@@ -1056,6 +1056,8 @@ impl DaemonService {
                                     ),
                             )
                         } else {
+                            // Clients only show a generic failure; keep the cause diagnosable.
+                            fluxdown_engine::log_warn!("[rss] image preview failed: {error:#}");
                             internal_error(message.to_owned())
                         }
                     })?;
