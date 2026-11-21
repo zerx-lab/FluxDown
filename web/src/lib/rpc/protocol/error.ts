@@ -63,6 +63,7 @@ export type ErrorReason =
   | 'saveDirUnavailable'
   | 'taskFilesInUse'
   | 'taskFilesNotDeleted'
+  | 'taskFileClearPending'
   | 'browserRequestRequired'
   | 'pairingCodeInvalid'
   | 'pairingSessionExpired'

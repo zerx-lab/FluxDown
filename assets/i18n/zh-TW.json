@@ -2764,6 +2764,7 @@
   "errReasonTaskStateConflict": "任務目前狀態不允許該操作",
   "errReasonTaskDeviceMismatch": "只有目標裝置可以更新該任務",
   "errReasonSaveDirUnavailable": "該資料夾在目標裝置上不可用；請填寫符合其路徑格式的絕對路徑，或留空使用預設資料夾",
+  "errReasonTaskFileClearPending": "檔案清理尚未完成。請恢復原儲存位置並重試「僅刪除檔案」，再變更檔名或儲存位置。",
   "errReasonPairingCodeInvalid": "配對碼錯誤或已過期",
   "errReasonPairingTimeout": "對方未在時限內確認。請重新開始，並在對方裝置上核准要求",
   "errReasonPeerClockSkew": "兩台裝置的時間相差過大。請在兩台裝置上開啟自動設定日期與時間後重試",

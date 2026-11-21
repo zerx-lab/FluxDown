@@ -281,7 +281,9 @@ impl DownloadStrings {
             delete_task: shared(translator.text("deleteTask")),
             delete_task_and_file: shared(translator.text("deleteTaskAndFile")),
             clear_task_file: shared(translator.text("clearTaskFile")),
-            clear_task_file_confirmation: shared(translator.text("clearTaskFileConfirmation")),
+            clear_task_file_confirmation: shared(
+                translator.text("clearTaskFileConfirmWithBrowserNotice"),
+            ),
             clean_stale_tasks: shared(translator.text("cleanStaleTasks")),
             clean_stale_tasks_description: shared(translator.text("cleanStaleTasksDesc")),
             delete_confirm_with_file: shared(translator.text("deleteConfirmDescWithFile")),
@@ -1133,6 +1135,7 @@ pub(crate) fn error_text(
         ErrorReason::SaveDirUnavailable => Some("errReasonSaveDirUnavailable"),
         ErrorReason::TaskFilesInUse => Some("errReasonTaskFilesInUse"),
         ErrorReason::TaskFilesNotDeleted => Some("errReasonTaskFilesNotDeleted"),
+        ErrorReason::TaskFileClearPending => Some("errReasonTaskFileClearPending"),
         ErrorReason::BrowserRequestRequired => Some("taskErrorPostOnlyResume"),
         ErrorReason::CloudUnreachable => Some("accountErrorNetwork"),
         ErrorReason::SessionExpired => Some("errReasonSessionExpired"),

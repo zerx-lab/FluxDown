@@ -410,6 +410,10 @@ pub enum ActorError {
     /// 任务当前状态不允许该操作（如对已完成 / 失败任务设优先下载）。
     #[error("task state conflict: {0}")]
     TaskStateConflict(String),
+    #[error(
+        "Restore the original save location and retry Delete File Only before editing the path"
+    )]
+    TaskFileClearPending,
     /// 删除被拒：任务文件删不掉，任务记录已保留（`in_use` = 文件正被其他程序占用）。
     #[error("{message}")]
     TaskFilesKept { in_use: bool, message: String },
@@ -1681,7 +1685,10 @@ async fn execute_operation(
             .manager
             .rename_task(&task_id, &file_name)
             .await
-            .map_err(ActorError::Operation)?,
+            .map_err(|error| match error.as_str() {
+                "file-clear-pending" => ActorError::TaskFileClearPending,
+                _ => ActorError::Operation(error),
+            })?,
         ActorOperation::ChangeTaskUrl { task_id, url } => engine
             .manager
             .change_task_url(&task_id, &url)

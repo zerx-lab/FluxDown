@@ -2400,7 +2400,7 @@ impl Db {
     // 3 = explicit unlink pending. The scanner may only write states 0 and 1.
     pub(crate) async fn begin_task_file_clear(&self, id: &str) -> Result<bool, DbError> {
         let result = sqlx::query(
-            "UPDATE tasks SET file_missing = 3 WHERE id = $1 AND status = 3 AND file_missing IN (0, 3)",
+            "UPDATE tasks SET file_missing = 3 WHERE id = $1 AND status = 3 AND file_missing = 0",
         )
         .bind(id)
         .execute(&self.pool)
@@ -2464,8 +2464,7 @@ impl Db {
             .bind(id)
             .execute(&mut *tx)
             .await?;
-        // The new download must not inherit ownership of any old output, including
-        // artifacts left behind by best-effort cleanup.
+        // The new download must not inherit registrations from the previous transfer.
         sqlx::query("DELETE FROM task_artifacts WHERE task_id = $1")
             .bind(id)
             .execute(&mut *tx)
