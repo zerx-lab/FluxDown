@@ -11,7 +11,8 @@
 //! 用法：
 //!   cargo test -p fluxdown_engine --test engine realtest -- --ignored --nocapture --test-threads=1
 //!
-//! 默认 `#[ignore]`（绑定端口 + 略慢），需显式 `--ignored` 运行。
+//! 多数场景默认 `#[ignore]`。Range 回退回归由默认 CI 执行，以守住深断点
+//! 不被清盘的约束；持续返回 200 的场景须走完真实分段重试退避（约 30 秒）。
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -3849,6 +3850,14 @@ async fn assert_ignored_range_restart(case: RangeRestartCase) {
             .await
             .unwrap();
     }
+    let occupied = matches!(case, RangeRestartCase::Rejected(403)).then(|| {
+        use sha2::{Digest, Sha256};
+        let key = hex::encode(Sha256::digest(tag.as_bytes()));
+        work_dir.join(format!(".fluxdown-restart-{key}"))
+    });
+    if let Some(path) = &occupied {
+        tokio::fs::write(path, b"unrelated file").await.unwrap();
+    }
     let size = 16 * 1024 * 1024;
     let prefix = match case {
         RangeRestartCase::Shallow => 8 * 1024 * 1024 - 1,
@@ -4019,6 +4028,10 @@ async fn assert_ignored_range_restart(case: RangeRestartCase) {
         assert_eq!(sha256_file(&dest).await, sha256_bytes(&body));
         assert!(!checkpoint.exists());
         assert!(saved_segments.is_empty());
+    }
+    if let Some(path) = occupied {
+        assert_eq!(tokio::fs::read(&path).await.unwrap(), b"unrelated file");
+        tokio::fs::remove_file(path).await.unwrap();
     }
     assert!(range_restart_dirs(&work_dir).next().is_none());
 }

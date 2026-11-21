@@ -4288,11 +4288,11 @@ fn http_restart_dir(save_dir: &Path, task_id: &str) -> PathBuf {
     save_dir.join(format!(".fluxdown-restart-{key}"))
 }
 
-pub(crate) async fn clean_http_restart_for_task(
-    save_dir: &Path,
-    task_id: &str,
-) -> std::io::Result<()> {
-    clean_http_restart_staging(&http_restart_dir(save_dir, task_id)).await
+pub(crate) async fn clean_http_restart_for_task(save_dir: &Path, task_id: &str) {
+    let dir = http_restart_dir(save_dir, task_id);
+    if let Err(error) = clean_http_restart_staging(&dir).await {
+        tracing::warn!(task_id, path = %dir.display(), %error, "clean HTTP staging directory");
+    }
 }
 
 async fn clean_http_restart_staging(dir: &Path) -> std::io::Result<()> {
@@ -4652,9 +4652,7 @@ async fn run_download_inner(
     output::ensure_parent(&temp_path).await?;
     // Keep ownership through mode changes, stale-data cleanup, verification and final rename.
     let _temp_file_guard = TempFileGuard::acquire(&temp_path, &p.task_id).await?;
-    clean_http_restart_for_task(&save_dir, &p.task_id)
-        .await
-        .map_err(|error| range_restart_failed(error.into()))?;
+    clean_http_restart_for_task(&save_dir, &p.task_id).await;
 
     // 换源结算（见 `Db::settle_source_change`）：`change_task_url` 后首次续传按零容差
     // 比对新链接大小与旧总大小。不一致 = 换成了另一个文件——旧前缀若沿用会与新文件

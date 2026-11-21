@@ -1186,11 +1186,8 @@ async fn deferred_file_cleanup(
     // 配合下载器内新增的早期 cancel 检查已能覆盖绝大多数残留窗口。
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     let path = PathBuf::from(&save_dir).join(&file_name);
-    if !is_bt_url(&url)
-        && let Err(error) =
-            downloader::clean_http_restart_for_task(Path::new(&save_dir), &task_id).await
-    {
-        crate::logger::report_warning("download-manager", "remove HTTP staging directory", &error);
+    if !is_bt_url(&url) {
+        downloader::clean_http_restart_for_task(Path::new(&save_dir), &task_id).await;
     }
     if is_bt_url(&url) {
         if delete_files && is_safe_file_name(&file_name) {
@@ -1550,10 +1547,7 @@ async fn remove_deleted_task_files(
 ) -> Result<(), downloader::DownloadError> {
     let mut first_error = None;
     if !files.is_bt {
-        keep_first_cleanup_error(
-            &mut first_error,
-            downloader::clean_http_restart_for_task(Path::new(&files.save_dir), task_id).await,
-        );
+        downloader::clean_http_restart_for_task(Path::new(&files.save_dir), task_id).await;
     }
     let path = PathBuf::from(&files.save_dir).join(&files.file_name);
     let removes_final =
@@ -14193,18 +14187,8 @@ impl DownloadManager {
                 lock_reserved(&self.reserved_temp_paths).remove(&reserved);
             }
             let path = PathBuf::from(&t.save_dir).join(&t.file_name);
-            if !is_bt_url(&t.url)
-                && let Err(error) =
-                    downloader::clean_http_restart_for_task(Path::new(&t.save_dir), task_id).await
-            {
-                crate::logger::report_warning(
-                    "download-manager",
-                    "remove HTTP staging directory",
-                    &error,
-                );
-                if cleanup_error.is_none() {
-                    cleanup_error = Some(error.into());
-                }
+            if !is_bt_url(&t.url) {
+                downloader::clean_http_restart_for_task(Path::new(&t.save_dir), task_id).await;
             }
 
             if is_bt_url(&t.url) {
@@ -22627,6 +22611,39 @@ mod tests {
                 &error,
             );
         }
+    }
+
+    #[tokio::test]
+    async fn blocked_http_staging_does_not_prevent_task_deletion() {
+        use sha2::{Digest, Sha256};
+
+        let dir = unique_filetrack_test_dir("blocked_http_staging");
+        std::fs::create_dir_all(&dir).expect("create deletion fixture");
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect database");
+        let mut manager = sched_manager(&db, 1);
+        for (id, batch) in [("staging-single", false), ("staging-batch", true)] {
+            insert_task_at_status(&db, id, &dir.to_string_lossy(), "out.bin", 4).await;
+            let key = hex::encode(Sha256::digest(id.as_bytes()));
+            let occupied = dir.join(format!(".fluxdown-restart-{key}"));
+            std::fs::write(&occupied, b"unrelated file").expect("occupy staging path");
+            if batch {
+                let outcome = manager
+                    .delete_tasks_batch(&[id.to_owned()], false)
+                    .await
+                    .expect("batch delete");
+                assert_eq!((outcome.deleted, outcome.failed), (1, 0));
+            } else {
+                manager.delete_task(id, false).await.expect("delete task");
+            }
+            assert!(db.load_task_by_id(id).await.expect("load task").is_none());
+            assert_eq!(
+                std::fs::read(&occupied).expect("read unrelated file"),
+                b"unrelated file"
+            );
+        }
+        std::fs::remove_dir_all(dir).expect("remove deletion fixture");
     }
 
     /// 失败任务的文件名在本机不可能存在（组件超长，`remove_file` 返回
