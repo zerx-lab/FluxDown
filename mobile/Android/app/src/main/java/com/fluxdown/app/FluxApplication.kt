@@ -73,6 +73,7 @@ class FluxApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         AppDiagnostics.install(this)
+        DownloadServiceController.clearOrphanedTaskNotifications(this)
         container = AppContainer(this)
         // 本机出现下载活动时就尝试拉起前台服务——不限于界面在前台：RSS 自动下载、云端 / 局域网下发、
         // 队列调度都可能在后台产生任务。Android 12+ 后台启动多数会被拒（已在电池优化白名单时豁免），

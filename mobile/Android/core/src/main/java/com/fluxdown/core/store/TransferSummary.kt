@@ -2,8 +2,9 @@ package com.fluxdown.core.store
 
 import com.fluxdown.core.format.Format
 import com.fluxdown.core.model.HlsFragmentProgress
+import com.fluxdown.core.model.TaskStatus
 
-/** 一个正在下载的任务（进度通知的一行）。 */
+/** 一个正在准备或下载的任务（进度通知的一行）。 */
 data class Transfer(
     val taskId: String,
     val fileName: String,
@@ -11,6 +12,7 @@ data class Transfer(
     /** 0 = 未知大小。 */
     val totalBytes: Long,
     val speedBps: Long,
+    val status: TaskStatus,
     val hlsFragments: HlsFragmentProgress? = null,
 ) {
     /** 点播优先按媒体分片计数；无分片计数时按字节。 */
@@ -76,7 +78,7 @@ fun HostState.transfers(): List<Transfer> {
     return tasks.mapNotNull { t ->
         if (!t.status.isActive) return@mapNotNull null
         val fragments = runtime[t.taskId]?.hlsFragments?.takeIf { it.fraction != null }
-        Transfer(t.taskId, t.fileName, t.downloadedBytes, t.totalBytes, speeds[t.taskId]?.down ?: 0L, fragments)
+        Transfer(t.taskId, t.fileName, t.downloadedBytes, t.totalBytes, speeds[t.taskId]?.down ?: 0L, t.status, fragments)
     }
 }
 

@@ -64,10 +64,11 @@ object NotificationIntents {
     const val EXTRA_TASK = "fluxdown.task"
     const val EXTRA_HOST = "fluxdown.host"
 
-    /** 打开 [hostId] 的下载页；[taskId] 非空时再推入该任务详情。[code] 区分同时存在的多条通知。 */
-    fun pending(context: Context, hostId: String, taskId: String, code: Int): PendingIntent {
+    /** 打开 [hostId] 的下载页；[taskId] 非空时再推入该任务详情。[identity] 区分共用 [code] 的通知。 */
+    fun pending(context: Context, hostId: String, taskId: String, code: Int, identity: Uri? = null): PendingIntent {
         val intent = Intent(context, HomeActivity::class.java)
             .setAction(ACTION_OPEN)
+            .setData(identity)
             .putExtra(EXTRA_HOST, hostId)
             .putExtra(EXTRA_TASK, taskId)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)

@@ -350,7 +350,7 @@ jobs:
         run: >-
           ./gradlew --no-daemon -Pfluxdown.abis=arm64-v8a -Pfluxdown.ciMavenCentralMirror=true
           :core:testDebugUnitTest :fluxui:testDebugUnitTest :bridge:testDebugUnitTest
-          :app:assembleDebug :app:lintDebug
+          :app:testDebugUnitTest :app:assembleDebug :app:lintDebug
 
   # 发布对齐：iOS 核心（fluxdown_mobile）只在 ios-sideload / ios-testflight 打包时交叉编译，
   # Linux 门禁覆盖不到 Apple 移动目标的 cfg（librqbit 等依赖在 iOS 上的条件编译）。两种 flavor 与 build-core.sh 同参数，

@@ -91,6 +91,7 @@ internal fun NotifyPage() {
     val requestPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
         // 无论同意与否都记为已询问：之后不再弹框，拒绝则引导到系统通知设置
         DownloadServiceController.markNotificationPermissionAsked(context)
+        DownloadServiceController.onNotificationPermissionResult(context)
         DownloadNotifier.refreshAuthorization(context)
     }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { DownloadNotifier.refreshAuthorization(context) }
