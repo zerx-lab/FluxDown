@@ -147,13 +147,27 @@ impl DownloadManager {
                 .ok_or(BtTaskOpError::NotFound);
         }
         let files = self.bt_task_files(&task.task_id).await?;
-        let mut selected = files.files.iter().filter(|file| file.priority != 0);
-        if let Some(file) = selected.next()
-            && file.index == index
-            && selected.next().is_none()
-            && is_safe_file_name(&task.file_name)
+        let file = files
+            .files
+            .iter()
+            .find(|file| file.index == index && file.priority != 0)
+            .ok_or(BtTaskOpError::NotFound)?;
+        if !is_safe_file_name(&task.file_name) {
+            return Err(BtTaskOpError::NotFound);
+        }
+        let task_path = root.join(&task.file_name);
+        // Match the on-disk layout used by reseeding without a parts sidecar.
+        if tokio::fs::metadata(&task_path)
+            .await
+            .map_err(location_error)?
+            .is_dir()
         {
-            return Ok(root.join(&task.file_name));
+            let relative = Path::new(&file.path);
+            if bt_downloader::torrent_relative_path_is_safe(relative, cfg!(windows)) {
+                return Ok(task_path.join(relative));
+            }
+        } else if files.files.iter().filter(|file| file.priority != 0).count() == 1 {
+            return Ok(task_path);
         }
         Err(BtTaskOpError::NotFound)
     }

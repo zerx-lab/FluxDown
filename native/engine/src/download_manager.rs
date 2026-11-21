@@ -21332,6 +21332,41 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "bt")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn local_directory_seed_locates_nested_file_without_sidecar() {
+        let (work, port) = bt_test_dir("local_seed_location");
+        let content = work.join("content");
+        let nested = content.join("nested");
+        std::fs::create_dir_all(&nested).expect("nested directory");
+        let target = nested.join("payload.bin");
+        std::fs::write(&target, b"nested payload").expect("nested file");
+        std::fs::write(content.join("other.bin"), b"other payload").expect("other file");
+        let bytes = crate::bt_local_seed::build_torrent(&content, &Default::default())
+            .await
+            .expect("build torrent");
+        let plan = crate::bt_local_seed::plan_local_seed(&content, bytes).expect("plan");
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        let mut mgr = bt_test_manager(db, &work, bt_test_config(port));
+        let task = mgr
+            .create_local_seed(plan, "main".to_owned(), Default::default())
+            .await
+            .expect("create local seed");
+        let files = mgr.bt_task_files(&task).await.expect("seed files");
+        let index = files
+            .files
+            .iter()
+            .find(|file| file.path == "nested/payload.bin")
+            .expect("nested file in torrent")
+            .index;
+        let result = mgr.bt_file_location(&task, Some(index)).await;
+        mgr.shutdown().await;
+        std::fs::remove_dir_all(&work).expect("remove seed fixture");
+        assert_eq!(result.expect("locate nested seed file"), target);
+    }
+
     /// 本机做种：为磁盘上已有的文件生成种子，登记为已完成任务并开始做种；
     /// `unlimited` 把任务级限制全写成「不限制」，即便全局分享率上限已被超过也不会停。
     #[cfg(feature = "bt")]
