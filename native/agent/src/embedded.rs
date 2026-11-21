@@ -118,7 +118,11 @@ pub async fn start_embedded(
     state.gateway.lan_active = false;
     let new_device = state.device_id.is_empty();
     if new_device {
-        state.device_id = uuid::Uuid::new_v4().to_string();
+        // 状态文件损坏被隔离时先找回旁路保存的身份，云端仍认得这台设备。
+        state.device_id = match store.load_device_id().await {
+            Some(saved) => saved,
+            None => uuid::Uuid::new_v4().to_string(),
+        };
     }
     finalize_device_identity(
         &mut state,

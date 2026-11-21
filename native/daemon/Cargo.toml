@@ -37,3 +37,6 @@ plugins = ["fluxdown_engine/plugins", "fluxdown_engine_protocol/plugins"]
 components = ["fluxdown_engine/components", "fluxdown_engine_protocol/components"]
 bt = ["fluxdown_engine/bt", "fluxdown_engine_protocol/bt"]
 ed2k = ["fluxdown_engine/ed2k", "fluxdown_engine_protocol/ed2k"]
+
+[target."cfg(windows)".build-dependencies]
+winresource.workspace = true

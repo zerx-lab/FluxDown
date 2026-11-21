@@ -100,7 +100,7 @@ struct GroupsProtocolTests {
     private func items() -> [PreviewItemDto] {
         [
             PreviewItemDto(id: "a", name: "a.jpg", path: "2024", size: 1000),
-            PreviewItemDto(id: "v", name: "v.mp4", path: "", size: 0, variants: [
+            PreviewItemDto(id: "v", name: "v.mp4", path: "", size: 50, variants: [
                 PreviewVariantDto(id: "hd", label: "1080p", size: 9000),
                 PreviewVariantDto(id: "sd", label: "480p", size: 0),
             ]),
@@ -114,14 +114,15 @@ struct GroupsProtocolTests {
         selection.toggle("a")
         selection.toggle("v")
         #expect(selection.count == 2)
-        // 默认规格：条目大小（0 = 未知）。
-        #expect(selection.selectedSize == (1000, 1))
+        // 默认规格使用条目大小。
+        #expect(selection.selectedSize == (1050, 0))
         selection.chooseVariant("hd", for: "v")
         #expect(selection.selectedSize == (10_000, 0))
-        selection.chooseVariant("sd", for: "v") // 规格大小未知 → 回落条目大小（0）
+        selection.chooseVariant("sd", for: "v") // 显式规格未知，不回落到条目大小。
         #expect(selection.selectedSize == (1000, 1))
         selection.chooseVariant(nil, for: "v")
         #expect(selection.variant(for: items()[1]) == nil)
+        #expect(selection.selectedSize == (1050, 0))
 
         let all = items().map(\.id)
         selection.toggleAll(in: all)
@@ -133,6 +134,23 @@ struct GroupsProtocolTests {
         #expect(selection.selected == ["v", "z"])
         selection.clear()
         #expect(selection.selected.isEmpty)
+    }
+
+    @Test func exportRowsIncludeOnlyCheckedFilesWithRelativePathsAndEffectiveSizes() {
+        var selection = ManifestSelection(items: [
+            PreviewItemDto(id: "a", name: "same.bin", path: "first", size: 50, variants: [
+                PreviewVariantDto(id: "large", label: "Large", size: 150),
+            ]),
+            PreviewItemDto(id: "b", name: "same.bin", path: "second/nested", size: 0),
+            PreviewItemDto(id: "unchecked", name: "skip.bin", size: 20),
+            PreviewItemDto(id: "root", name: "root.bin", size: 1),
+        ])
+        #expect(selection.selectedExportRows().isEmpty)
+        selection.toggleAll(in: ["root", "b", "a"])
+        selection.chooseVariant("large", for: "a")
+        let rows = selection.selectedExportRows()
+        #expect(rows.map { $0.name } == ["first/same.bin", "second/nested/same.bin", "root.bin"])
+        #expect(rows.map { $0.size } == [150, 0, 1])
     }
 
     @Test func requestItemsComposeResolverItemWithVariant() {

@@ -1,4 +1,4 @@
-//! 顶栏「下载任务」主按钮的外观（设备本地偏好 `ui.new_task_button`，布局编辑模式下切换）。
+//! 顶栏「新建任务」主按钮的外观（设备本地偏好 `ui.new_task_button`，布局编辑模式下切换）。
 
 use serde::{Deserialize, de::DeserializeOwned};
 

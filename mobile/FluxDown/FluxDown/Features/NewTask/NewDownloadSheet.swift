@@ -40,6 +40,7 @@ private struct NewDownloadContent: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showDiscard = false
     @State private var showImporter = false
+    @State private var taskInfoExport: TaskInfoDocument?
     @State private var importerKind: ImporterKind = .text
     #if FULL_FLAVOR
     @State private var importingTorrent = false
@@ -102,6 +103,9 @@ private struct NewDownloadContent: View {
                         proxy.scrollTo(Self.probeId, anchor: .top)
                     }
                 }
+            }
+            .background {
+                Color.clear.taskInfoExporter($taskInfoExport)
             }
             .navigationTitle(L("newDownload"))
             .navigationBarTitleDisplayMode(.inline)
@@ -320,6 +324,14 @@ private struct NewDownloadContent: View {
                 Text(L("mobileNewDownloadPreviewMore", ["n": entries.count - 3]))
                     .font(.footnote.monospaced())
                     .foregroundStyle(.secondary)
+            }
+            if entries.count > 1 {
+                Button(L("exportTaskInfoTxt"), systemImage: "square.and.arrow.down") {
+                    taskInfoExport = TaskInfoDocument(entries.map {
+                        TaskInfoRow(name: batchExportName($0), url: $0.url, size: batchExportSize($0.url))
+                    })
+                }
+                .disabled(form.submitting)
             }
             if let duplicate {
                 Banner(text: L("mobileNewDownloadDuplicateUrl", ["name": duplicate]), tone: .warning, slim: true)

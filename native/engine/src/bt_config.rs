@@ -206,6 +206,55 @@ impl BtConfig {
             BtProxySource::System => detect_system()?.manual_server_url_for_bt(),
         }
     }
+
+    /// BT 会话出口的「链路」标签（`bt:*`，见 [`crate::auto_proxy::route`]）与脱敏端点
+    /// （`scheme://host:port`，有凭据时追加 ` (auth)`，**永不含凭据**）。`proxy_url` 是
+    /// [`Self::session_proxy_url`] 的结果；`None` = 直连。
+    ///
+    /// ```
+    /// use fluxdown_engine::bt_config::{BtConfig, BtProxySource};
+    ///
+    /// let config = BtConfig {
+    ///     proxy_enabled: true,
+    ///     proxy_source: BtProxySource::Manual,
+    ///     proxy_peers: true,
+    ///     ..BtConfig::default()
+    /// };
+    /// let (label, endpoint) = config.session_route(Some("socks5h://u:p@127.0.0.1:7890"));
+    /// assert_eq!(label, "bt:all:manual");
+    /// assert_eq!(endpoint, "socks5h://127.0.0.1:7890 (auth)");
+    /// assert_eq!(config.session_route(None).0, "bt:direct");
+    /// ```
+    #[must_use]
+    pub fn session_route(&self, proxy_url: Option<&str>) -> (&'static str, String) {
+        use crate::auto_proxy::route;
+        let Some(proxy_url) = proxy_url else {
+            return (route::BT_DIRECT, "direct".to_owned());
+        };
+        let label = match (self.proxy_peers, self.proxy_source) {
+            (true, BtProxySource::Manual) => route::BT_ALL_MANUAL,
+            (true, BtProxySource::System) => route::BT_ALL_SYSTEM,
+            (false, BtProxySource::Manual) => route::BT_TRACKERS_MANUAL,
+            (false, BtProxySource::System) => route::BT_TRACKERS_SYSTEM,
+        };
+        let endpoint = match url::Url::parse(proxy_url) {
+            Ok(parsed) => {
+                let auth = if parsed.username().is_empty() {
+                    ""
+                } else {
+                    " (auth)"
+                };
+                format!(
+                    "{}://{}:{}{auth}",
+                    parsed.scheme(),
+                    parsed.host_str().unwrap_or_default(),
+                    parsed.port_or_known_default().unwrap_or_default()
+                )
+            }
+            Err(error) => format!("(unparsable proxy url: {error})"),
+        };
+        (label, endpoint)
+    }
 }
 
 impl Default for BtConfig {

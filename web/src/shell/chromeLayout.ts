@@ -16,6 +16,8 @@ export interface ChromeItemSpec {
   families: readonly ChromeFamily[]
   /** 固定条目：可移动，但不能被隐藏。 */
   fixed?: boolean
+  /** 默认隐藏：存储布局里还没有摆放它（新用户、新增条目）时以隐藏状态加入，可在自定义布局里显示。 */
+  defaultHidden?: boolean
 }
 
 /** 完整布局：六个区域一个不缺；`hidden` 为手动隐藏的条目 id（目录顺序，与摆放位置无关）。 */
@@ -44,7 +46,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * 1. 非普通对象 → 默认布局；
  * 2. 按规范区域顺序，数组区域内仅保留「字符串、目录内 id、尚未放置、允许放入该区域」的元素；未知区域键与非数组值忽略；
  * 3. 未被放置的目录条目按目录顺序追加到各自默认区域末尾；
- * 4. `hidden` 须为数组，仅保留「字符串、目录内、非 fixed」的 id，去重并按目录顺序输出。
+ * 4. `hidden` 须为数组，仅保留「字符串、目录内、非 fixed」的 id，去重并按目录顺序输出；存储值里没摆放的 `defaultHidden` 条目也加入。
  */
 export function normalizeLayout(stored: unknown, catalog: readonly ChromeItemSpec[]): ChromeLayout {
   const specs = new Map(catalog.map((spec) => [spec.id, spec]))
@@ -73,6 +75,7 @@ export function normalizeLayout(stored: unknown, catalog: readonly ChromeItemSpe
     if (Array.isArray(stored.hidden)) hiddenStored = stored.hidden
   }
   // 未摆放条目插到默认区域第一个目录位置靠后的条目之前（没有则追加），新增内置入口不会落到插件入口之后。
+  const storedPlaced = new Set(placed)
   const order = new Map(catalog.map((spec, index) => [spec.id, index]))
   catalog.forEach((spec, index) => {
     if (placed.has(spec.id)) return
@@ -81,7 +84,9 @@ export function normalizeLayout(stored: unknown, catalog: readonly ChromeItemSpe
     zone.splice(at === -1 ? zone.length : at, 0, spec.id)
   })
   const hiddenSet = new Set(hiddenStored)
-  const hidden = catalog.filter((spec) => !spec.fixed && hiddenSet.has(spec.id)).map((spec) => spec.id)
+  const hidden = catalog
+    .filter((spec) => !spec.fixed && (hiddenSet.has(spec.id) || (spec.defaultHidden === true && !storedPlaced.has(spec.id))))
+    .map((spec) => spec.id)
   return { ...zones, hidden }
 }
 

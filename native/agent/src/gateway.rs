@@ -1,9 +1,11 @@
 //! agent 官方 UI Gateway：单一 RPC 会话、agent 快照与 daemon 透明转发。
 
+mod ipc;
 mod local;
 mod restart;
 mod session_auth;
 
+pub use ipc::IpcListener;
 pub use local::{LocalConnection, LocalEventError};
 pub(crate) use session_auth::RpcCredential;
 use session_auth::{
@@ -19,6 +21,7 @@ use axum::extract::{ConnectInfo, Path as AxumPath, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use fluxdown_protocol::error::RSS_IMAGE_PROXY_UNVERIFIABLE_HEADER;
 use fluxdown_protocol::method;
 use fluxdown_protocol::{
     ApplicationErrorCode, ClientHello, EventFrame, RpcErrorData, RpcErrorObject, RpcRequest,
@@ -147,6 +150,7 @@ impl GatewayService {
                     method::CAPABILITY_AGENT_AUTH.to_owned(),
                     method::CAPABILITY_AGENT_SYNC.to_owned(),
                     method::CAPABILITY_AGENT_REMOTE_TASKS.to_owned(),
+                    method::CAPABILITY_AGENT_REMOTE_BATCH.to_owned(),
                     method::CAPABILITY_AGENT_BILLING.to_owned(),
                     method::CAPABILITY_AGENT_REFERRALS.to_owned(),
                     method::CAPABILITY_AGENT_EXTERNAL_CAPTURE.to_owned(),
@@ -284,10 +288,14 @@ impl GatewayService {
             }
             method::AGENT_POWER_ARM => {
                 let params = parse_params::<fluxdown_protocol::PowerArmParams>(request.params)?;
-                let armed = self.local.power.arm(
-                    std::time::Duration::from_secs(params.delay_secs),
-                    params.action,
-                );
+                let armed = if let Some(condition) = params.low_speed {
+                    self.local.power.arm_low_speed(condition, params.action)
+                } else {
+                    self.local.power.arm(
+                        std::time::Duration::from_secs(params.delay_secs),
+                        params.action,
+                    )
+                };
                 Ok(serde_json::json!({ "armed": armed }))
             }
             method::AGENT_POWER_DISARM => {
@@ -616,6 +624,11 @@ impl GatewayService {
                         .await
                         .map(|()| serde_json::json!({ "ok": true })),
                 )
+            }
+            method::AGENT_REMOTE_COMMAND_MANY => {
+                let params =
+                    parse_params::<fluxdown_protocol::RemoteCommandManyParams>(request.params)?;
+                remote_value(self.remote.command_many(params).await)
             }
             method::AGENT_LINK_PAIRING_CODE
             | method::AGENT_LINK_STOP_PAIRING
@@ -1898,36 +1911,9 @@ pub(crate) fn ensure_exposed_auth_token(state: &mut crate::state::AgentState) ->
 fn remote_value<T: serde::Serialize>(
     result: Result<T, RemoteError>,
 ) -> Result<serde_json::Value, RpcErrorData> {
-    result.map_err(remote_error_data).and_then(to_value)
-}
-
-fn remote_error_data(error: RemoteError) -> RpcErrorData {
-    match error {
-        RemoteError::Daemon(error) => error,
-        RemoteError::Cloud(error) => cloud_error_data(error),
-        RemoteError::NotFound(_) => RpcErrorData::new(ApplicationErrorCode::NotFound, false),
-        RemoteError::TaskUnavailable(_) => RpcErrorData::new(ApplicationErrorCode::Conflict, false)
-            .with_reason(fluxdown_protocol::ErrorReason::TaskStateConflict),
-        RemoteError::InvalidArgument {
-            field,
-            reason,
-            message,
-        } => {
-            tracing::debug!(field, %message, "remote RPC argument rejected");
-            let mut data = invalid_field(field);
-            data.reason = reason;
-            data
-        }
-        RemoteError::InvalidAction(action) => {
-            tracing::debug!(%action, "unknown remote task action");
-            invalid_field("action")
-        }
-        RemoteError::Json(error) => internal_error("remote task response", error),
-        RemoteError::State(error) => internal_error("agent state", error),
-        RemoteError::Protocol(message) => internal_error("remote task protocol", message),
-        RemoteError::Kicked => RpcErrorData::new(ApplicationErrorCode::Conflict, false)
-            .with_reason(fluxdown_protocol::ErrorReason::OnlineDeviceLimit),
-    }
+    result
+        .map_err(RemoteError::into_rpc_error)
+        .and_then(to_value)
 }
 
 fn params_or_empty(params: Option<serde_json::Value>) -> serde_json::Value {
@@ -1997,6 +1983,7 @@ struct GatewayState {
 )]
 pub async fn serve(
     listener: TcpListener,
+    ipc: Option<IpcListener>,
     service: Arc<GatewayService>,
     api_host: Arc<AgentApiHost>,
     api_config: fluxdown_api::server::ApiServerConfig,
@@ -2015,6 +2002,7 @@ pub async fn serve(
     let rpc = Router::new()
         .route("/rpc", get(rpc_upgrade))
         .route("/api/web/plugin-images/{session}/{id}", get(plugin_image))
+        .route("/api/web/rss-images", get(rss_image))
         .with_state(state);
     let app = fluxdown_api::server::api_router(api_host, api_config).merge(rpc);
     // SPA fallback 只在 server 模式挂载，且 API / `/rpc` 路由优先。
@@ -2024,8 +2012,95 @@ pub async fn serve(
     };
     service
         .listener_control
-        .run(listener, app, bearer, cancel, endpoint_dir)
+        .run(listener, ipc, app, bearer, cancel, endpoint_dir)
         .await
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RssImageQuery {
+    source_id: String,
+    guid: String,
+    index: u8,
+}
+
+async fn rss_image(
+    State(state): State<GatewayState>,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<RssImageQuery>,
+) -> Response {
+    use base64::Engine as _;
+    if let Err(status) = authorize_image(&state, peer.ip(), &headers).await {
+        return status.into_response();
+    }
+    let payload: serde_json::Value = match state.service.daemon.call(
+        method::DAEMON_RSS_GET_IMAGE,
+        Some(serde_json::json!({"sourceId": query.source_id, "guid": query.guid, "index": query.index})),
+    ).await {
+        Ok(payload) => payload,
+        Err(error)
+            if error.reason == Some(fluxdown_protocol::ErrorReason::RssImageProxyUnverifiable) =>
+        {
+            return (
+                StatusCode::FORBIDDEN,
+                [
+                    (RSS_IMAGE_PROXY_UNVERIFIABLE_HEADER, "1"),
+                    (header::CACHE_CONTROL.as_str(), "no-store"),
+                ],
+            )
+                .into_response();
+        }
+        Err(_) => return StatusCode::BAD_GATEWAY.into_response(),
+    };
+    let Some(encoded) = payload.get("pngBase64").and_then(serde_json::Value::as_str) else {
+        return StatusCode::BAD_GATEWAY.into_response();
+    };
+    let Ok(png) = base64::engine::general_purpose::STANDARD.decode(encoded) else {
+        return StatusCode::BAD_GATEWAY.into_response();
+    };
+    if png.len() > 512 * 1024 {
+        return StatusCode::BAD_GATEWAY.into_response();
+    }
+    (
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "no-store"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        png,
+    )
+        .into_response()
+}
+
+async fn authorize_image(
+    state: &GatewayState,
+    peer: std::net::IpAddr,
+    headers: &HeaderMap,
+) -> Result<(), StatusCode> {
+    if crate::server_mode::bearer_token(headers).is_none()
+        || !crate::server_mode::origin_allowed(headers)
+    {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    match state.server.as_deref() {
+        Some(server) => {
+            server
+                .authorize_rpc_from(peer, headers, &state.bearer)
+                .await
+        }
+        None => {
+            authorize_desktop_rpc(
+                &state.service,
+                &state.throttle,
+                &state.bearer,
+                peer,
+                headers,
+            )
+            .await
+        }
+    }
+    .map(|_| ())
 }
 
 async fn plugin_image(
@@ -2034,34 +2109,8 @@ async fn plugin_image(
     AxumPath((session, id)): AxumPath<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    // Binary resources use headers only: never place access keys in an image URL.
-    if crate::server_mode::bearer_token(&headers).is_none()
-        || !crate::server_mode::origin_allowed(&headers)
-    {
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
-    match state.server.as_deref() {
-        Some(server) => {
-            if let Err(status) = server
-                .authorize_rpc_from(peer.ip(), &headers, &state.bearer)
-                .await
-            {
-                return status.into_response();
-            }
-        }
-        None => {
-            if let Err(status) = authorize_desktop_rpc(
-                &state.service,
-                &state.throttle,
-                &state.bearer,
-                peer.ip(),
-                &headers,
-            )
-            .await
-            {
-                return status.into_response();
-            }
-        }
+    if let Err(status) = authorize_image(&state, peer.ip(), &headers).await {
+        return status.into_response();
     }
     match state.service.blobs.plugin_image(&session, &id).await {
         Ok(bytes) => (
@@ -2090,10 +2139,26 @@ pub async fn load_or_create_bearer(
     let path = override_path
         .map(Path::to_path_buf)
         .unwrap_or_else(|| data_dir.join("agent.token"));
-    if let Ok(value) = tokio::fs::read_to_string(&path).await
-        && !value.trim().is_empty()
-    {
-        return Ok(value.trim().to_owned());
+    match tokio::fs::read_to_string(&path).await {
+        Ok(value) if !value.trim().is_empty() => return Ok(value.trim().to_owned()),
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        // 读不了（ACL 只授权给重装前的旧账户 SID、内容不是 UTF-8）：删掉后重建；桌面每次连接前
+        // 重读 bearer。删不掉时带上原因失败，不让 rename 报一个看不出缘由的拒绝访问。
+        Err(error) => {
+            tracing::warn!(path = %path.display(), error = %error, "agent token is unreadable; replacing it");
+            if let Err(remove) = tokio::fs::remove_file(&path).await
+                && remove.kind() != std::io::ErrorKind::NotFound
+            {
+                return Err(std::io::Error::new(
+                    remove.kind(),
+                    format!(
+                        "agent token {} is unreadable ({error}) and cannot be replaced: {remove}",
+                        path.display()
+                    ),
+                ));
+            }
+        }
     }
     let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
     let parent = path.parent().unwrap_or(data_dir);
@@ -3226,6 +3291,7 @@ mod tests {
             };
             let server_task = tokio::spawn(super::serve(
                 listener,
+                None,
                 service.clone(),
                 api_host,
                 api_config,
@@ -4175,6 +4241,7 @@ mod tests {
             refresh_token: "refresh".to_owned(),
             expires_at_unix: i64::MAX,
             session: None,
+            issuer: String::new(),
         });
         let response = tokio::time::timeout(
             Duration::from_secs(1),
@@ -4831,6 +4898,7 @@ mod tests {
             refresh_token: "refresh".to_owned(),
             expires_at_unix: i64::MAX,
             session: None,
+            issuer: String::new(),
         });
         let service = Arc::new(harness.service);
         let (responses, mut receiver) = tokio::sync::mpsc::channel(4);

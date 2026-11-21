@@ -3,8 +3,7 @@ package com.fluxdown.core.model
 /**
  * 引擎产生的稳定任务错误文案；`:app` 将 [i18nKey] 映射到 `R.string.<i18nKey>` 本地化展示。
  *
- * 字面量镜像 `native/engine/src/downloader.rs` 的 `POST_ONLY_ENDPOINT_MESSAGE` /
- * `POST_ONLY_RESUME_MESSAGE`（客户端不能依赖引擎）；改动引擎文案须同步此处。
+ * 字面量镜像 `native/engine/src/downloader.rs`；改动引擎文案须同步此处。
  */
 enum class TaskErrorMessage(val raw: String, val i18nKey: String) {
     PostOnlyEndpoint(
@@ -15,12 +14,21 @@ enum class TaskErrorMessage(val raw: String, val i18nKey: String) {
         "This task was started by a browser POST request and cannot be resumed; start it again from the browser",
         "taskErrorPostOnlyResume",
     ),
+    UnexpectedHtml(
+        "server returned HTML page (Content-Type: ",
+        "taskErrorUnexpectedHtml",
+    ),
+    HtmlChanged(
+        "the server did not return a complete HTML page; nothing was saved",
+        "taskErrorHtmlChanged",
+    ),
     ;
 
     companion object {
-        /** 去首尾空白后整串全等匹配；不做前缀/子串匹配。 */
+        /** HTML 诊断带动态详情，按前缀匹配；其余文案整串匹配。 */
         fun match(raw: String): TaskErrorMessage? {
             val s = raw.trim()
+            if (s.startsWith(UnexpectedHtml.raw)) return UnexpectedHtml
             return entries.firstOrNull { it.raw == s }
         }
     }

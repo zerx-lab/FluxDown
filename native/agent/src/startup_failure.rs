@@ -50,6 +50,9 @@ impl std::error::Error for StartupError {
 /// 启动失败记录的读写位置与「已开始服务」标记。
 pub(crate) struct StartupReport {
     path: PathBuf,
+    /// 端点目录本身写不进去时（Windows 上目录 ACL 属于旧账户 SID 等）改写的回退位置
+    /// （`local_service::local_fallback_dir`），桌面读不到主记录时读它。
+    fallback: Option<PathBuf>,
     serving: AtomicBool,
 }
 
@@ -57,26 +60,30 @@ impl StartupReport {
     pub(crate) fn new(directory: &Path) -> Self {
         Self {
             path: directory.join(AGENT_STARTUP_FAILURE_FILE),
+            fallback: fluxdown_protocol::local_service::local_fallback_dir(directory)
+                .map(|dir| dir.join(AGENT_STARTUP_FAILURE_FILE)),
             serving: AtomicBool::new(false),
         }
     }
 
-    /// Gateway 即将开始服务：此后的失败不再是启动失败；删除上一次留下的记录。
+    /// Gateway 即将开始服务：此后的失败不再是启动失败；删除上一次留下的记录（含回退位置）。
     pub(crate) async fn mark_serving(&self) {
         self.serving.store(true, Ordering::Release);
-        match tokio::fs::remove_file(&self.path).await {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => tracing::warn!(
-                path = %self.path.display(),
-                error = %error,
-                "could not remove the previous agent startup failure record"
-            ),
+        for path in std::iter::once(&self.path).chain(self.fallback.as_ref()) {
+            match tokio::fs::remove_file(path).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => tracing::warn!(
+                    path = %path.display(),
+                    error = %error,
+                    "could not remove the previous agent startup failure record"
+                ),
+            }
         }
     }
 
     /// 运行结束：开始服务之前就失败时记录环节与完整错误链。尽力而为——数据目录本身可能就是
-    /// 故障点，写不进去只记日志，不覆盖原错误。
+    /// 故障点：主位置写不进去时改写回退位置，都写不进去只记日志，不覆盖原错误。
     pub(crate) async fn finish(&self, result: &crate::runtime::AgentResult) {
         let Err(error) = result else {
             return;
@@ -93,12 +100,26 @@ impl StartupReport {
             at_ms: unix_millis(),
             version: fluxdown_protocol::APP_VERSION.to_owned(),
         };
-        if let Err(error) = write_record(&self.path, &record).await {
-            tracing::warn!(
-                path = %self.path.display(),
-                error = %error,
-                "could not write the agent startup failure record"
-            );
+        let Err(error) = write_record(&self.path, &record).await else {
+            return;
+        };
+        tracing::warn!(
+            path = %self.path.display(),
+            error = %error,
+            "could not write the agent startup failure record"
+        );
+        if let Some(fallback) = &self.fallback {
+            match write_record(fallback, &record).await {
+                Ok(()) => tracing::info!(
+                    path = %fallback.display(),
+                    "agent startup failure record written to the fallback directory"
+                ),
+                Err(error) => tracing::warn!(
+                    path = %fallback.display(),
+                    error = %error,
+                    "could not write the agent startup failure record to the fallback directory"
+                ),
+            }
         }
     }
 }

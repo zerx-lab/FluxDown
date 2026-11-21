@@ -446,6 +446,28 @@ pub fn rss_auto_download_text(
     ))
 }
 
+/// BT 重复添加通知文案：已有任务已完成时标题「此种子已下载完成」，否则「此种子已在
+/// 下载列表中」；正文指出已有任务名并说明未重复添加（名称为空时用无名版本）。
+/// `text(key, name)` 按 en / zh 基线键取文案并替换 `{name}`。
+pub fn duplicate_torrent_text(
+    existing_name: &str,
+    existing_completed: bool,
+    text: impl Fn(&str, Option<&str>) -> String,
+) -> (String, String) {
+    let title = if existing_completed {
+        text("duplicateTorrentDoneTitle", None)
+    } else {
+        text("duplicateTorrentExistsTitle", None)
+    };
+    let name = existing_name.trim();
+    let body = if name.is_empty() {
+        text("duplicateTorrentNoticeBodyUnnamed", None)
+    } else {
+        text("duplicateTorrentNoticeBody", Some(name))
+    };
+    (title, body)
+}
+
 /// 英文基线文案（headless 构建没有文案目录 / 目录加载失败时）；与 `assets/i18n/en.json` 同文。
 #[must_use]
 pub fn english_text(key: &str, count: Option<usize>) -> String {
@@ -458,6 +480,10 @@ pub fn english_text(key: &str, count: Option<usize>) -> String {
         "rssAutoDownloadedToast" => "RSS added {count} download(s)",
         "batchDownloadCompleted" => "{count} Downloads Complete",
         "andMoreFiles" => "and {count} more",
+        "duplicateTorrentDoneTitle" => "Torrent Already Downloaded",
+        "duplicateTorrentExistsTitle" => "Torrent Already Added",
+        "duplicateTorrentNoticeBody" => "Already in \"{name}\" — not added again",
+        "duplicateTorrentNoticeBodyUnnamed" => "Already in another task — not added again",
         "torrentFileAssociation" => "Associate .torrent Files",
         "magnetLinkAssociation" => "Take Over Magnet Links",
         "ed2kLinkAssociation" => "Associate ed2k Links",
@@ -505,9 +531,35 @@ impl NoticeText {
 #[cfg(test)]
 mod tests {
     use super::{
-        completion_text, english_text as english, icon_file_name, is_stale_icon_file,
-        rss_auto_download_text,
+        completion_text, duplicate_torrent_text, english_text as english, icon_file_name,
+        is_stale_icon_file, rss_auto_download_text,
     };
+
+    fn english_named(key: &str, name: Option<&str>) -> String {
+        let text = english(key, None);
+        match name {
+            Some(name) => text.replace("{name}", name),
+            None => text,
+        }
+    }
+
+    #[test]
+    fn duplicate_torrent_text_names_existing_task_and_state() {
+        assert_eq!(
+            duplicate_torrent_text("Movie", true, english_named),
+            (
+                "Torrent Already Downloaded".to_owned(),
+                "Already in \"Movie\" — not added again".to_owned()
+            )
+        );
+        assert_eq!(
+            duplicate_torrent_text("  ", false, english_named),
+            (
+                "Torrent Already Added".to_owned(),
+                "Already in another task — not added again".to_owned()
+            )
+        );
+    }
 
     #[test]
     fn notification_app_icon_files_are_tagged_and_only_stale_ones_are_removed() {

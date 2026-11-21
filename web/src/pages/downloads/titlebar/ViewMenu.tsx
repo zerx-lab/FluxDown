@@ -45,6 +45,7 @@ const GROUP_BY_KEY: Record<ViewGroupBy, string> = {
   queue: 'viewGroupQueue',
   site: 'viewGroupSite',
   directory: 'viewGroupDirectory',
+  content: 'viewGroupByContent',
 }
 
 const SORT_KEY_KEY: Record<ViewSortKey, string> = {

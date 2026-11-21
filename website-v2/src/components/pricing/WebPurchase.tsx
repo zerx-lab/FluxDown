@@ -261,15 +261,9 @@ export default function WebPurchase({ plan, lang }: { plan: PlanBrief; lang: Lan
   const money = (minor: number, currency = plan.currency) => formatMinor(minor, currency, lang);
   const estimate = Math.max(0, plan.priceMinor - (identity?.purchaseCreditMinor ?? 0));
   const referralDiscount = referralCheck ? Math.min(referralCheck.discountMinor, estimate) : 0;
-  // Waffo charges the fixed USD list price: campaign prices, upgrade credit and referral codes are rejected server-side.
+  // Waffo charges the fixed USD product price (campaign prices simply don't apply); upgrade credit and referral codes are rejected server-side.
   const waffoBlocked =
-    plan.priceMinor !== plan.basePriceMinor
-      ? t.waffoNoCampaign
-      : (identity?.purchaseCreditMinor ?? 0) > 0
-        ? t.waffoNoUpgrade
-        : normalizeCode(referralCode)
-          ? t.waffoNoReferral
-          : null;
+    (identity?.purchaseCreditMinor ?? 0) > 0 ? t.waffoNoUpgrade : normalizeCode(referralCode) ? t.waffoNoReferral : null;
   const methods: PayMethod[] = ["wxpay"];
   if (plan.priceUsdtMicros != null) methods.push("usdt");
   if (plan.waffoPriceMinor != null) methods.push("waffo");

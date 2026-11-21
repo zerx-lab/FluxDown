@@ -178,6 +178,25 @@ async fn run_agent(
     let endpoint_dir = server
         .is_none()
         .then(|| endpoint_dir(bearer_override.as_deref(), store.data_dir()));
+    // 本机 IPC 端点紧跟 TCP 之后建立（早于 daemon 与各服务装配）：界面在装配期间发起的连接
+    // 由内核排队。建不起来只记录原因，界面照常走 TCP。先于端点文件建立：Windows 随机管道名随
+    // 端点文件一起发布。
+    let ipc = match &endpoint_dir {
+        Some(directory) => match crate::gateway::IpcListener::bind(directory).await {
+            Ok(ipc) => {
+                tracing::info!(endpoint = %ipc.describe(), "fluxdown-agent gateway IPC listening");
+                if let Some(pipe) = ipc.published_pipe() {
+                    store.set_gateway_pipe(pipe);
+                }
+                Some(ipc)
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "gateway IPC endpoint unavailable; serving loopback TCP only");
+                None
+            }
+        },
+        None => None,
+    };
     if let Some(directory) = &endpoint_dir {
         store
             .save_gateway_endpoint(directory, bound)
@@ -264,7 +283,12 @@ async fn run_agent(
         .is_none()
         .then(|| crate::bundle_watch::spawn(lifecycle.clone(), cancel.clone()));
     let shell = ShellState::new(host.availability, daemon.clone(), events.clone());
-    let power = Arc::new(PowerService::new(events.clone()));
+    let power = PowerService::new(events.clone());
+    let power = Arc::new(if server.is_none() {
+        power.with_quit(lifecycle.clone())
+    } else {
+        power
+    });
     let power_task = tokio::spawn(power.clone().run(cancel.clone()));
     let (notice_tx, notice_rx) = crate::cloud_notify::notice_channel();
     // 提示音只在桌面宿主播放：headless server 没有「本机用户」，不发声。
@@ -467,6 +491,9 @@ async fn run_agent(
         },
     ));
     update.start(cancel.clone(), true);
+    if server.is_none() {
+        update.start_silent_updates(shell.clone(), cancel.clone());
+    }
     let cloud = Arc::new(cloud_api);
     let gateway = GatewayService::new(
         daemon.clone(),
@@ -576,6 +603,7 @@ async fn run_agent(
     // NMH 只服务浏览器扩展：其端点故障只记日志，不拖垮 agent；正常退出也不是故障。
     let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = crate::gateway::serve(
         listener,
+        ipc,
         gateway_service,
         api_host,
         api_config,
@@ -947,17 +975,24 @@ async fn initialize_device_identity(
     let mut changed = false;
     let first_run = state.device_id.is_empty();
     if first_run {
-        // 沿用 Flutter 时代的 `cloud_device_id`（同一台机器迁移到 GPUI 后云端仍视为同一设备，
-        // 不多占设备名额）；找不到才生成新的。headless 实例不继承同机桌面安装版的身份。
-        match crate::device_identity::load_flutter_identity(engine_data_dir, server.is_none()).await
-        {
-            Some(legacy) => {
-                state.device_id = legacy.device_id;
-                if let Some(name) = legacy.device_name {
-                    state.device_name = name;
+        // 先找回旁路保存的身份（状态文件损坏被隔离时，云端仍认得这台设备）；再沿用 Flutter 时代的
+        // `cloud_device_id`（同一台机器迁移到 GPUI 后云端仍视为同一设备，不多占设备名额）；
+        // 都找不到才生成新的。headless 实例不继承同机桌面安装版的身份。
+        if let Some(saved) = store.load_device_id().await {
+            tracing::warn!("agent state had no device identity; restored the saved one");
+            state.device_id = saved;
+        } else {
+            match crate::device_identity::load_flutter_identity(engine_data_dir, server.is_none())
+                .await
+            {
+                Some(legacy) => {
+                    state.device_id = legacy.device_id;
+                    if let Some(name) = legacy.device_name {
+                        state.device_name = name;
+                    }
                 }
+                None => state.device_id = uuid::Uuid::new_v4().to_string(),
             }
-            None => state.device_id = uuid::Uuid::new_v4().to_string(),
         }
         // server 模式的兼容 API 分组在 daemon 迁移完成后由 `server_mode::apply_bootstrap` 决定。
         if server.is_none() {
@@ -1000,6 +1035,7 @@ pub(crate) async fn finalize_device_identity(
             || credentials.refresh_token.is_empty()
             || credentials.session.is_none()
     }) {
+        tracing::warn!("FluxCloud session cleared: stored credentials are incomplete");
         state.credentials = None;
         // 凭证被判定无效：账号维度状态（同步水位 / 脏键 / 远程任务）随之隔离。
         state.bind_account(None);
@@ -1011,6 +1047,10 @@ pub(crate) async fn finalize_device_identity(
     changed |= state.account_uid != before;
     if changed {
         store.save(state).await?;
+    }
+    // 设备身份另存一份（内容不变不写盘）；失败只影响「状态文件损坏后找回身份」，不阻止启动。
+    if let Err(error) = store.save_device_id(&state.device_id).await {
+        tracing::warn!(error = %error, "could not save the device identity backup");
     }
     Ok(())
 }
@@ -1287,7 +1327,7 @@ pub fn resolve_agent_data_dir() -> Result<PathBuf, Box<dyn std::error::Error + S
 
 /// `<exe>/portable` 标记存在时返回 `<exe>/portable_data`。
 #[cfg(target_os = "windows")]
-fn portable_data_dir() -> Option<PathBuf> {
+pub(crate) fn portable_data_dir() -> Option<PathBuf> {
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(Path::to_path_buf))?;

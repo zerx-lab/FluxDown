@@ -1,6 +1,7 @@
 // 扩展设置的纯逻辑（无 React / 别名依赖，可被 bun test 直接加载）。
 // 语义与 crates/extensions（plugin_settings.rs / plugins.rs / plugin_auth.rs / managed_components.rs）逐条对齐。
 
+import { byteUnit, type FileSizeUnits } from '../../../../lib/fileSizeUnits'
 import type { MarketEntryDto, PluginAuthResponse, PluginDto, PluginRisk, SettingFieldDto } from '../../../../lib/rpc/protocol'
 
 // ── 插件设置校验 ────────────────────────────────────────────
@@ -408,9 +409,13 @@ export function hostsToConfirm(entry: MarketEntryDto, installed: PluginDto | und
 /** 安装 / 更新成功后的授权处理：无待授权 → none；市场预确认与 pending 吻合 → grant；其余 → dialog。 */
 export type PostInstallConsent = 'none' | 'grant' | 'dialog'
 
+export function hasPendingConsent(plugin: PluginDto): boolean {
+  return (plugin.consentPending?.length ?? 0) > 0 || (plugin.consentPendingHosts?.length ?? 0) > 0
+}
+
 export function postInstallConsent(plugin: PluginDto, confirmed: ConsentSet | null): PostInstallConsent {
-  const pending: ConsentSet = { permissions: plugin.consentPending, networkHosts: plugin.consentPendingHosts }
-  if (pending.permissions.length === 0 && pending.networkHosts.length === 0) return 'none'
+  if (!hasPendingConsent(plugin)) return 'none'
+  const pending: ConsentSet = { permissions: plugin.consentPending ?? [], networkHosts: plugin.consentPendingHosts ?? [] }
   if (confirmed !== null && consentMatches(confirmed, pending)) return 'grant'
   return 'dialog'
 }
@@ -433,8 +438,46 @@ export function liveDialogPlugins(plugins: readonly PluginDto[], open: DialogIde
     detail: find(open.detail),
     settings: find(open.settings),
     auth: find(open.auth),
-    consent: consent !== null && postInstallConsent(consent, null) === 'none' ? null : consent,
+    consent: consent !== null && hasPendingConsent(consent) ? consent : null,
   }
+}
+
+type ResolverConflictHint = 'pluginResolverUrlConflictsHint' | 'pluginResolverUrlPendingHint' | 'pluginResolverUrlDuplicateHint'
+
+export type ResolverUrlConflict = NonNullable<PluginDto['resolverUrlConflicts']>[number] & {
+  identity: string
+  hint: ResolverConflictHint
+}
+
+/** The host stores each overlap only on its first participant; match both identities. */
+export function resolverUrlConflicts(plugins: readonly PluginDto[], identity?: string): ResolverUrlConflict[] {
+  const enabled = new Set(plugins.filter((plugin) => plugin.enabled).map((plugin) => plugin.identity))
+  const conflicts: ResolverUrlConflict[] = []
+  for (const plugin of plugins) {
+    for (const conflict of plugin.resolverUrlConflicts ?? []) {
+      if (identity !== undefined && identity !== plugin.identity && identity !== conflict.otherIdentity) continue
+      const hint =
+        plugin.identity === conflict.otherIdentity
+          ? 'pluginResolverUrlDuplicateHint'
+          : plugin.enabled && enabled.has(conflict.otherIdentity)
+            ? 'pluginResolverUrlConflictsHint'
+            : 'pluginResolverUrlPendingHint'
+      conflicts.push({ identity: plugin.identity, ...conflict, hint })
+    }
+  }
+  return conflicts
+}
+
+export function resolverUrlConflictNotice(plugins: readonly PluginDto[], identity: string, t: (key: string) => string): string | null {
+  const conflicts = resolverUrlConflicts(plugins, identity)
+  if (conflicts.length === 0) return null
+  let activeHintShown = false
+  const pairs = conflicts.map(({ identity, pattern, otherIdentity, otherPattern, hint }) => {
+    const showHint = hint !== 'pluginResolverUrlConflictsHint' || !activeHintShown
+    activeHintShown ||= hint === 'pluginResolverUrlConflictsHint'
+    return `${showHint ? `${t(hint)}\n` : ''}${identity}: ${pattern}\n${otherIdentity}: ${otherPattern}`
+  })
+  return `${t('pluginResolverUrlConflictsTitle')}\n\n${pairs.join('\n\n')}`
 }
 
 // ── 插件登录挑战 ────────────────────────────────────────────
@@ -524,17 +567,16 @@ export function safeHttpUrl(value: string): string | null {
 
 // ── 组件 ────────────────────────────────────────────────────
 
-/** 1024 进制的人类可读字节数（`0 B` / `1.5 KB` / `12.3 MB` / `1.0 GB`）。 */
-export function formatBytes(bytes: number): string {
-  const units = ['B', 'KB', 'MB', 'GB']
+/** 1024 进制的人类可读字节数；单位由设备本地显示偏好选择。 */
+export function formatBytes(bytes: number, units?: FileSizeUnits): string {
   const clamped = Math.max(0, bytes)
   let value = clamped
   let unit = 0
-  while (value >= 1024 && unit < units.length - 1) {
+  while (value >= 1024 && unit < 3) {
     value /= 1024
     unit += 1
   }
-  return unit === 0 ? `${Math.trunc(clamped)} B` : `${value.toFixed(1)} ${units[unit]}`
+  return unit === 0 ? `${Math.trunc(clamped)} ${byteUnit(unit, units)}` : `${value.toFixed(1)} ${byteUnit(unit, units)}`
 }
 
 export type MarketSort = 'default' | 'newest' | 'favorites'

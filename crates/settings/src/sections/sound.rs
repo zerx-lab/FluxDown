@@ -12,6 +12,7 @@ use fluxdown_protocol::sound::{
     SOUND_VALUE_FILE_PREFIX, SOUND_VALUE_OFF, SOUND_VALUE_SYSTEM,
 };
 use fluxdown_protocol::{ApplicationErrorCode, ErrorReason, RpcErrorData, method};
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{ButtonVariant, FluxIcon, icon_button, tooltip_view};
 use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_theme::active_theme;
@@ -19,7 +20,7 @@ use gpui::{
     AnyWindowHandle, App, AsyncApp, Entity, InteractiveElement as _, ParentElement as _,
     PathPromptOptions, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
 };
-use gpui_component::{Icon, WindowExt as _, h_flex, notification::Notification};
+use gpui_component::{Icon, WindowExt as _, h_flex};
 use serde_json::json;
 
 use super::SectionContext;
@@ -322,7 +323,7 @@ fn preview_error_text(translator: &Translator, error: &RpcErrorData) -> String {
 
 fn notify_error(window_handle: AnyWindowHandle, cx: &mut AsyncApp, text: String) {
     let Ok(()) = window_handle.update(cx, move |_, window: &mut Window, cx| {
-        window.push_notification(Notification::error(text), cx);
+        window.push_notification(toast::error(text), cx);
     }) else {
         // 设置窗口已关闭，不再有可展示的位置。
         return;

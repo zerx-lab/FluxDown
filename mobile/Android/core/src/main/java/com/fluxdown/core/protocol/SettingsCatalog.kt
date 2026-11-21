@@ -188,6 +188,12 @@ object SettingsCatalog {
         daemon("proxy_port", text, ""),
         daemon("proxy_username", text, ""),
         daemon("proxy_password", text, ""),
+        daemon("proxy_protocol_http", text, ""),
+        daemon("proxy_protocol_ftp", text, ""),
+        daemon("proxy_protocol_hls", text, ""),
+        daemon("proxy_protocol_dash", text, ""),
+        daemon("proxy_protocol_bt", text, ""),
+        daemon("proxy_protocol_ed2k", text, ""),
         daemon("proxy_no_list", text, ""),
         daemon("proxy_rules", text, ""),
         // Webhook / 组件 / 日志

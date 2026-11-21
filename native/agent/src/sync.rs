@@ -647,7 +647,16 @@ impl SyncService {
             .ok_or_else(|| SyncError::Cloud(CloudError::unauthorized()))?;
         let (since, device_id, first_sync) = {
             let mut state = self.cloud.lock_epoch(epoch).await?;
-            state.bind_account(Some(&uid));
+            // 账号维度的投影随切换清空：远程任务 / 设备名册必须同步发布，否则 UI 仍显示旧账号的行，
+            // 对它们下发指令只会得到 `remoteTaskGone`。
+            if state.bind_account(Some(&uid)) {
+                self.events
+                    .publish(AgentEvent::RemoteTasksChanged(Vec::new()));
+                self.events
+                    .publish(AgentEvent::CloudDevicesChanged(Vec::new()));
+                self.events
+                    .publish(AgentEvent::SyncChanged(state.sync.clone()));
+            }
             (
                 state.sync.revision,
                 state.device_id.clone(),
@@ -1932,6 +1941,7 @@ mod tests {
                     refresh_token: "refresh".to_owned(),
                     expires_at_unix: i64::MAX,
                     session: Some(session),
+                    issuer: String::new(),
                 }),
                 ..Default::default()
             };
@@ -2385,6 +2395,7 @@ mod tests {
                 refresh_token: "refresh".to_owned(),
                 expires_at_unix: i64::MAX,
                 session: Some(session),
+                issuer: String::new(),
             }),
             ..Default::default()
         }));

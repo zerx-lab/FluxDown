@@ -217,6 +217,7 @@ struct LogsSection: View {
     @Environment(AppContainer.self) private var container
     @Environment(HostStore.self) private var store
     @Environment(ConfigEditor.self) private var editor
+    @Environment(AppearanceStore.self) private var appearance
 
     @State private var model = LogExportModel()
 
@@ -254,7 +255,10 @@ struct LogsSection: View {
                 .disabled(readOnly)
             }
             if editor.form.has(Self.maxSizeItem.key) {
-                ConfigNumberRow(item: Self.maxSizeItem, range: 1 ... 1024, fallback: 10, unitHint: L("mobileLogSizeUnit"))
+                ConfigNumberRow(
+                    item: Self.maxSizeItem, range: 1 ... 1024, fallback: 10,
+                    unitHint: L("mobileLogSizeUnitLabel", ["unit": appearance.fileSizeUnits == .iec ? "MiB" : "MB"])
+                )
                     .disabled(readOnly)
             }
             if let size = model.sizeText {

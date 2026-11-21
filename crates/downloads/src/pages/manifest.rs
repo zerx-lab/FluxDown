@@ -6,6 +6,7 @@ mod rows;
 use std::rc::Rc;
 
 use fluxdown_protocol::{CreateGroupRequest, CreateTaskRequest, ResolvePreviewResponse};
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     ControlExt as _, FluxIcon, field_hint, field_label, form, form_field, input_with_action,
 };
@@ -19,7 +20,6 @@ use gpui_component::{
     Disableable as _, WindowExt as _,
     button::Button,
     input::{Input, InputEvent, InputState},
-    notification::Notification,
     scroll::ScrollableElement as _,
     v_flex,
 };
@@ -239,10 +239,7 @@ impl ManifestView {
                         .update(cx, |input, cx| input.set_value(path, window, cx));
                 }
                 if failed {
-                    window.push_notification(
-                        Notification::error(this.t("filePickerErrorNative", cx)),
-                        cx,
-                    );
+                    window.push_notification(toast::error(this.t("filePickerErrorNative", cx)), cx);
                 }
                 cx.notify();
             }) else {

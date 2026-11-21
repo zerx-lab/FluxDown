@@ -7,7 +7,7 @@
 ; client, so the Flutter auto-updater (`setup.exe /SILENT`) upgrades in place.
 ; The GPUI in-app updater (native/agent/src/update/install) runs this installer with
 ; `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-` after the agent and daemon have exited;
-; the silent [Run] entry then relaunches the desktop with `--after-update`.
+; manual updates relaunch the desktop; /BACKGROUNDUPDATE restarts only the agent.
 
 #define MyAppName "FluxDown"
 #define MyAppPublisher "FluxDown"
@@ -32,6 +32,11 @@
   #define MySourceDir "..\..\build\gpui\windows-" + MyAppArch
 #endif
 
+; Numeric file version of the setup exe (Explorer "File version"). Mirrors the
+; VS_FIXEDFILEINFO that the desktop build script derives from FLUXDOWN_APP_VERSION;
+; without it Inno Setup stamps 0.0.0.0 whenever MyAppVersion is not purely numeric.
+#define MyAppFileVersion GetVersionNumbersString(MySourceDir + "\" + MyAppExeName)
+
 [Setup]
 AppId={{B7E3F2A1-5C4D-4E8F-9A6B-1D2E3F4A5B6C}
 AppName={#MyAppName}
@@ -41,6 +46,14 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
+VersionInfoVersion={#MyAppFileVersion}
+VersionInfoProductVersion={#MyAppFileVersion}
+VersionInfoTextVersion={#MyAppVersion}
+VersionInfoProductTextVersion={#MyAppVersion}
+VersionInfoCompany={#MyAppPublisher}
+VersionInfoProductName={#MyAppName}
+VersionInfoDescription={#MyAppName} Setup
+VersionInfoCopyright=Copyright (C) 2026 FluxDown. All rights reserved.
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
@@ -120,8 +133,8 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
 Filename: "{app}\{#MyAgentExeName}"; Parameters: "--launch-desktop"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent; Check: IsAdmin
 ; Silent (auto-)update: relaunch the UI. `--after-update` makes the desktop wait for the
 ; previous instance to finish exiting instead of forwarding activation to it.
-Filename: "{app}\{#MyAppExeName}"; Parameters: "--after-update"; Flags: nowait skipifdoesntexist skipifnotsilent runasoriginaluser; Check: not IsAdmin
-Filename: "{app}\{#MyAgentExeName}"; Parameters: "--launch-desktop --after-update"; Flags: nowait skipifdoesntexist skipifnotsilent; Check: IsAdmin
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--after-update"; Flags: nowait skipifdoesntexist skipifnotsilent runasoriginaluser; Check: not IsAdmin and not IsBackgroundUpdate
+Filename: "{app}\{#MyAgentExeName}"; Parameters: "--launch-desktop --after-update"; Flags: nowait skipifdoesntexist skipifnotsilent; Check: IsAdmin and not IsBackgroundUpdate
 
 [Registry]
 ; Autostart launches the resident agent (tray), same value the agent writes itself
@@ -142,13 +155,15 @@ Type: files; Name: "{userappdata}\FluxDown\FluxDown\shared_preferences.json"
 Type: dirifempty; Name: "{userappdata}\FluxDown\FluxDown"
 Type: dirifempty; Name: "{userappdata}\FluxDown"
 
-; NMH manifest JSON files written at runtime by the agent (native/agent/src/nmh.rs)
+; NMH manifest JSON files and the relay's pipe discovery file (endpoint.json, see
+; native/agent/src/nmh/endpoint_file.rs) written at runtime by the agent
 ; into the per-user data dir (never installed via [Files], so the standard
 ; uninstall never learns about them and leaves them on disk). The {app}
 ; entries cover manifests left behind by older releases that wrote them next
 ; to the exe.
 Type: files; Name: "{localappdata}\FluxDown\nmh\com.fluxdown.nmh.json"
 Type: files; Name: "{localappdata}\FluxDown\nmh\com.fluxdown.nmh.firefox.json"
+Type: files; Name: "{localappdata}\FluxDown\nmh\endpoint.json"
 Type: dirifempty; Name: "{localappdata}\FluxDown\nmh"
 Type: files; Name: "{app}\com.fluxdown.nmh.json"
 Type: files; Name: "{app}\com.fluxdown.nmh.firefox.json"
@@ -173,6 +188,11 @@ var
   LegacyFluxdownScheme, LegacyEd2kScheme, LegacyMagnetScheme: Boolean;
   { Directory of the all-users install found in HKLM ('' when none). }
   LegacyAllUsersDir: String;
+
+function IsBackgroundUpdate: Boolean;
+begin
+  Result := ExpandConstant('{param:BACKGROUNDUPDATE|0}') <> '0';
+end;
 
 function DesktopIconAlreadyExists: Boolean;
 begin
@@ -349,6 +369,12 @@ begin
     Log('Legacy all-users install in ' + LegacyDir + ' has no uninstaller; installing alongside it.');
     Exit;
   end;
+  { Background updates must never show UAC for a legacy all-users uninstall. }
+  if IsBackgroundUpdate then
+  begin
+    Result := FmtMessage(CustomMessage('LegacyAllUsersRemoveFailed'), [LegacyDir]);
+    Exit;
+  end;
 
   if SuppressibleMsgBox(FmtMessage(CustomMessage('LegacyAllUsersFound'), [LegacyDir]),
     mbInformation, MB_OKCANCEL, IDOK) <> IDOK then
@@ -463,7 +489,8 @@ begin
   { Force-kill every FluxDown process as a fallback in case Restart Manager
     fails: the resident agent/daemon/relay keep their exes locked otherwise.
     Matches by image name, so a legacy all-users copy is stopped too. }
-  Exec('taskkill', '/f /im {#MyAppExeName} /im {#MyAgentExeName} /im fluxdownd.exe /im fluxdown_nmh.exe /im {#LegacyExeName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if not IsBackgroundUpdate then
+    Exec('taskkill', '/f /im {#MyAppExeName} /im {#MyAgentExeName} /im fluxdownd.exe /im fluxdown_nmh.exe /im {#LegacyExeName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   { Upgrade installs must overwrite the previous uninstaller; a stray
     read-only attribute on it makes CreateFile fail with access denied.
     Clear the attribute up-front (no-op when the files do not exist). }
@@ -472,7 +499,7 @@ begin
   { Small delay to ensure file locks are released }
   Sleep(500);
   Result := RemoveLegacyAllUsersInstall;
-  if (Result <> '') and WizardSilent then
+  if (Result <> '') and WizardSilent and not IsBackgroundUpdate then
     RelaunchAfterAbortedUpdate;
 end;
 
@@ -483,6 +510,23 @@ begin
     MigrateLegacyAutostart;
     MigrateLegacyIntegrations;
     RestoreLegacyIntegrations;
+  end;
+end;
+
+{ Also runs on failure: leave the old/new agent available, never open the UI.
+  /NOCLOSEAPPLICATIONS prevents killing a window or task opened during setup. }
+procedure DeinitializeSetup;
+var
+  ResultCode: Integer;
+  Agent: String;
+begin
+  if not IsBackgroundUpdate then
+    Exit;
+  Agent := ExpandConstant('{app}\{#MyAgentExeName}');
+  if FileExists(Agent) then
+  begin
+    if not ExecAsOriginalUser(Agent, '--background-update', '', SW_HIDE, ewNoWait, ResultCode) then
+      Log(Format('Could not restart background agent (error %d).', [ResultCode]));
   end;
 end;
 

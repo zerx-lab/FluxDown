@@ -6,6 +6,7 @@
 use std::{rc::Rc, sync::Arc};
 
 use fluxdown_protocol::{MAX_TASK_SEGMENTS, RpcErrorData};
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     ControlExt as _, DialogIntent, dialog_footer, dialog_title, field_error, field_hint, form,
     form_field,
@@ -18,7 +19,6 @@ use gpui::{
 use gpui_component::{
     WindowExt as _,
     input::{Input, InputEvent, InputState},
-    notification::Notification,
 };
 
 use crate::{
@@ -419,7 +419,7 @@ fn submit_task_edit(
             Err(error) => Err(EditFailure::Edit(error)),
         };
         let notification = match result {
-            Ok(()) => success_notice.map(Notification::success),
+            Ok(()) => success_notice.map(toast::success),
             Err(failure) => {
                 let text = translator.read_with(cx, |translator, _| match (&failure, kind) {
                     (EditFailure::Edit(error), EditKind::ChangeUrl) => {
@@ -430,7 +430,7 @@ fn submit_task_edit(
                     }
                     (EditFailure::Resume(error), _) => error_text(translator, error),
                 });
-                Some(Notification::error(text))
+                Some(toast::error(text))
             }
         };
         if let Some(notification) = notification

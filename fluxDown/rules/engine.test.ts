@@ -185,6 +185,7 @@ describe("page / request / mirror / manifest 规则", () => {
     packs: [local([
       { id: "local.title", version: 1, tier: "local", stage: "page", match: { pageHost: ["v.example.com"] }, action: { kind: "title", selector: ".t", attr: "data-name" } },
       { id: "local.ad", version: 1, tier: "local", stage: "page", match: { pageHost: ["v.example.com"] }, action: { kind: "player", selector: ".ad", float: "hide" } },
+      { id: "local.mini", version: 1, tier: "local", stage: "page", match: { pageHost: ["v.example.com"] }, action: { kind: "player", selector: ".mini", float: "inset", top: 52 } },
       { id: "local.ref", version: 1, tier: "local", stage: "request", match: { host: ["cdn.example.com"] }, action: { kind: "headers", set: { Referer: "https://v.example.com/" } } },
       { id: "local.mirror", version: 1, tier: "local", stage: "normalize", match: {}, action: { kind: "mirror", hosts: ["cdn.example.com", "bak.example.net"] } },
       { id: "local.api", version: 1, tier: "local", stage: "body", match: { url: ["*/api/play*"] }, action: { kind: "manifest", path: "data.streams" } },
@@ -195,8 +196,9 @@ describe("page / request / mirror / manifest 规则", () => {
     expect(engine.pageHints("https://v.example.com/watch/1")).toEqual({
       titles: [{ selector: ".t", attr: "data-name" }],
       players: [{ selector: ".ad" }],
+      insets: [{ selector: ".mini", top: 52 }],
     });
-    expect(engine.pageHints("https://other.example.org/")).toEqual({ titles: [], players: [] });
+    expect(engine.pageHints("https://other.example.org/")).toEqual({ titles: [], players: [], insets: [] });
   });
 
   test("requestHeaders 按 URL host 匹配，名字小写", () => {

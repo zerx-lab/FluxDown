@@ -108,6 +108,21 @@ async fn apply_system(params: &mut DownloadParams, pac_url: &str) -> Option<Prox
     params.client = client;
     params.proxy_config = chosen.clone();
     route_through_proxy(params);
+    // 起跑时按静态系统代理（未检测到 → `global:direct`）落了标签；PAC 选中代理后改正。
+    if let Err(error) = params
+        .db
+        .set_task_auto_route(&params.task_id, route::GLOBAL_PAC)
+        .await
+    {
+        log_info!(
+            "[pac] task {} auto_route 落库失败: {error:#}",
+            params.task_id
+        );
+    }
+    params.sink.emit(EngineEvent::TaskRouteChanged {
+        task_id: params.task_id.clone(),
+        route: route::GLOBAL_PAC.to_owned(),
+    });
     Some(chosen)
 }
 

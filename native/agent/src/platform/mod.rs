@@ -27,6 +27,8 @@ mod file_icon;
 pub(crate) mod hotkey;
 #[cfg(target_os = "macos")]
 mod macos_cf;
+#[cfg(windows)]
+pub mod pipe_security;
 mod protocol_registry;
 #[cfg(windows)]
 mod windows_com;

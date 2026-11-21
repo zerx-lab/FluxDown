@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use fluxdown_protocol::{CloudEndpointDto, method};
 use fluxdown_ui_components::BusyHold;
+use fluxdown_ui_components::toast;
 use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_theme::active_theme;
 use gpui::{
@@ -14,7 +15,6 @@ use gpui::{
 };
 use gpui_component::WindowExt as _;
 use gpui_component::input::{InputEvent, InputState};
-use gpui_component::notification::Notification;
 
 use crate::controller::AccountController;
 use crate::errors::{ErrorContext, error_text};
@@ -408,7 +408,7 @@ impl AccountView {
                 this.devices_refreshing = false;
                 if reconnect && result.is_ok() {
                     window.push_notification(
-                        Notification::success(crate::t(
+                        toast::success(crate::t(
                             this.translator.read(cx),
                             "cloudConnectionRetryStarted",
                         )),
@@ -437,13 +437,13 @@ impl AccountView {
         let translator = self.translator.read(cx);
         match result {
             Ok(()) => window.push_notification(
-                Notification::success(crate::t(translator, "accountCloudRefreshDone")),
+                toast::success(crate::t(translator, "accountCloudRefreshDone")),
                 cx,
             ),
             Err(error) => {
                 let message = error_text(translator, &error, ErrorContext::General);
                 self.last_error = Some(message.clone());
-                window.push_notification(Notification::error(message), cx);
+                window.push_notification(toast::error(message), cx);
             }
         }
         cx.notify();
@@ -527,10 +527,7 @@ impl AccountView {
                 }) {
                     Ok(endpoint) => {
                         window.push_notification(
-                            Notification::success(crate::t(
-                                translator,
-                                "accountServerAddressSaved",
-                            )),
+                            toast::success(crate::t(translator, "accountServerAddressSaved")),
                             cx,
                         );
                         this.endpoint = Some(endpoint);
@@ -543,7 +540,7 @@ impl AccountView {
                         } else {
                             error_text(translator, &error, ErrorContext::General)
                         };
-                        window.push_notification(Notification::error(message), cx);
+                        window.push_notification(toast::error(message), cx);
                         if let Some(endpoint) = &this.endpoint {
                             let current = SharedString::from(endpoint.base_url.clone());
                             this.endpoint_input

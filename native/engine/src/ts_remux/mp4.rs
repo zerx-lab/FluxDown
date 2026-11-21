@@ -1,15 +1,17 @@
 //! MP4 文件头（ftyp + moov + mdat 头）构建。
 //!
-//! 字节布局与 `ts2mp4::convert_ts_to_mp4`（0.3.2）一致：mdat 内先放全部视频样本、
-//! 再放全部音频样本，各占一个 chunk。这里只需要样本大小（解复用第一遍统计），
-//! 样本字节由第二遍直接写到各自偏移，不进内存。时长相乘溢出时报错，不写出错误时长。
+//! mdat 内先放全部视频样本、再放全部音频样本，各占一个 chunk。这里只需要样本大小
+//! （解复用第一遍统计）与时间线（[`super::timing`]），样本字节由第二遍直接写到各自偏移，
+//! 不进内存。音轨的采样率、声道数与 AudioSpecificConfig 全部取自 ADTS 头，媒体时基
+//! 即采样率。时长 / 偏移超出 32 位盒字段时报错，不写出错误时长。
 //!
-//! 盒构建逻辑移植自 ts2mp4，许可：MIT License, Copyright (c) 2026 Seongchul Ahn
+//! 盒布局最初移植自 ts2mp4，许可：MIT License, Copyright (c) 2026 Seongchul Ahn
 //! （<https://github.com/aciddust/ts2mp4>）。
 
 use std::io::{self, ErrorKind};
 
-use super::demux::StreamMeta;
+use super::demux::{AacConfig, StreamMeta};
+use super::timing::{self, MOVIE_TIMESCALE, Runs, TrackTiming};
 
 const FTYP: [u8; 28] = [
     0x00, 0x00, 0x00, 0x1C, b'f', b't', b'y', b'p', b'i', b's', b'o', b'm', 0x00, 0x00, 0x02, 0x00,
@@ -30,13 +32,111 @@ const DINF: [u8; 36] = [
     0x00, 0x00, 0x00, 0x01,
 ];
 
+const VMHD: [u8; 20] = [
+    0x00, 0x00, 0x00, 0x14, b'v', b'm', b'h', b'd', 0x00, 0x00, 0x00, 0x01, // version + flags
+    0x00, 0x00, // graphics mode
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // opcolor
+];
+
+const SMHD: [u8; 16] = [
+    0x00, 0x00, 0x00, 0x10, b's', b'm', b'h', b'd', 0x00, 0x00, 0x00, 0x00, // version + flags
+    0x00, 0x00, // balance
+    0x00, 0x00, // reserved
+];
+
+/// 写出的两条轨的时长与音频参数，供宿主记日志与做音画时长自检。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Mp4Summary {
+    /// 视频轨呈现结束时刻（含起始推迟），毫秒。
+    pub video_ms: u64,
+    pub audio: Option<AudioSummary>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AudioSummary {
+    /// 音频轨呈现结束时刻（含起始推迟），毫秒。
+    pub end_ms: u64,
+    pub sample_rate: u32,
+    pub channels: u16,
+}
+
+struct AudioTrack {
+    timing: TrackTiming,
+    config: AacConfig,
+    /// 起始推迟（电影时基）。
+    delay: u64,
+}
+
+/// 两条轨的时间线与对齐结果；构建 moov 前算一次。
+struct Plan {
+    video: TrackTiming,
+    video_delay: u64,
+    audio: Option<AudioTrack>,
+}
+
+impl Plan {
+    fn new(meta: &StreamMeta, video_samples: usize, audio_samples: usize) -> io::Result<Self> {
+        if meta.video_timestamps.len() != video_samples
+            || meta.audio_timestamps.len() != audio_samples
+        {
+            return Err(io::Error::new(
+                ErrorKind::InvalidData,
+                "sample timestamps do not match samples",
+            ));
+        }
+        let mut video = timing::video(&meta.video_timestamps);
+        if audio_samples == 0 {
+            return Ok(Self {
+                video,
+                video_delay: 0,
+                audio: None,
+            });
+        }
+        let config = meta.audio_config.ok_or_else(|| {
+            io::Error::new(ErrorKind::InvalidData, "AAC samples without configuration")
+        })?;
+        let mut audio = timing::audio(&meta.audio_timestamps, config.sample_rate());
+        let (video_delay, audio_delay) = timing::align(&mut video, &mut audio);
+        Ok(Self {
+            video,
+            video_delay,
+            audio: Some(AudioTrack {
+                timing: audio,
+                config,
+                delay: audio_delay,
+            }),
+        })
+    }
+
+    fn video_end(&self) -> u64 {
+        self.video_delay + self.video.presented_movie()
+    }
+
+    fn audio_end(&self) -> Option<u64> {
+        self.audio
+            .as_ref()
+            .map(|audio| audio.delay + audio.timing.presented_movie())
+    }
+
+    fn summary(&self) -> Mp4Summary {
+        let to_ms = |ticks: u64| ticks / u64::from(MOVIE_TIMESCALE / 1000);
+        Mp4Summary {
+            video_ms: to_ms(self.video_end()),
+            audio: self.audio.as_ref().map(|audio| AudioSummary {
+                end_ms: to_ms(audio.delay + audio.timing.presented_movie()),
+                sample_rate: audio.config.sample_rate(),
+                channels: audio.config.channels(),
+            }),
+        }
+    }
+}
+
 fn overflow(what: &'static str) -> io::Error {
     io::Error::new(ErrorKind::Unsupported, what)
 }
 
-fn mul(a: u32, b: u32) -> io::Result<u32> {
-    a.checked_mul(b)
-        .ok_or_else(|| overflow("MP4 duration exceeds 32-bit range"))
+fn duration_u32(value: u64) -> io::Result<u32> {
+    u32::try_from(value).map_err(|_| overflow("MP4 duration exceeds 32-bit range"))
 }
 
 fn count_u32(len: usize) -> io::Result<u32> {
@@ -58,14 +158,22 @@ pub(super) fn build_header(
     meta: &StreamMeta,
     video_sizes: &[u32],
     audio_sizes: &[u32],
-) -> io::Result<Vec<u8>> {
+) -> io::Result<(Vec<u8>, Mp4Summary)> {
+    let plan = Plan::new(meta, video_sizes.len(), audio_sizes.len())?;
     let video_total: u64 = video_sizes.iter().map(|&size| u64::from(size)).sum();
     let audio_total: u64 = audio_sizes.iter().map(|&size| u64::from(size)).sum();
     let video_data_end =
         usize::try_from(video_total).map_err(|_| overflow("MP4 media exceeds address space"))?;
 
-    let probe = build_moov(meta, video_sizes, audio_sizes, 0, video_data_end)?;
-    let moov = build_moov(meta, video_sizes, audio_sizes, probe.len(), video_data_end)?;
+    let probe = build_moov(&plan, meta, video_sizes, audio_sizes, 0, video_data_end)?;
+    let moov = build_moov(
+        &plan,
+        meta,
+        video_sizes,
+        audio_sizes,
+        probe.len(),
+        video_data_end,
+    )?;
 
     let mdat_size = MDAT_HEADER_SIZE as u64 + video_total + audio_total;
     let mdat_size =
@@ -76,66 +184,48 @@ pub(super) fn build_header(
     header.extend_from_slice(&moov);
     header.extend_from_slice(&mdat_size.to_be_bytes());
     header.extend_from_slice(b"mdat");
-    Ok(header)
-}
-
-/// 视频样本时长（90kHz）：按 PTS 范围的 CFR 估计，PTS 不足时回落 3000（30fps）。
-fn video_sample_delta(frame_timestamps: &[(Option<u64>, Option<u64>)]) -> u32 {
-    let mut min: Option<u64> = None;
-    let mut max: Option<u64> = None;
-    let mut count: u64 = 0;
-    for &(pts, _) in frame_timestamps {
-        if let Some(pts) = pts {
-            count += 1;
-            min = Some(min.map_or(pts, |m| m.min(pts)));
-            max = Some(max.map_or(pts, |m| m.max(pts)));
-        }
-    }
-    if let (Some(min), Some(max)) = (min, max)
-        && count >= 2
-        && max > min
-    {
-        let delta = (max - min) / (count - 1);
-        if delta > 0 {
-            return delta as u32;
-        }
-    }
-    3000
+    Ok((header, plan.summary()))
 }
 
 fn build_moov(
+    plan: &Plan,
     meta: &StreamMeta,
     video_sizes: &[u32],
     audio_sizes: &[u32],
     moov_size: usize,
     video_data_end: usize,
 ) -> io::Result<Vec<u8>> {
-    let video_min_pts = meta
-        .frame_timestamps
-        .iter()
-        .filter_map(|&(pts, _)| pts)
-        .min();
-    let audio_min_pts = meta.audio_timestamps.iter().filter_map(|&pts| pts).min();
-    let global_min_pts = match (video_min_pts, audio_min_pts) {
-        (Some(v), Some(a)) => v.min(a),
-        (Some(v), None) => v,
-        (None, Some(a)) => a,
-        (None, None) => 0,
-    };
     let base_offset = FTYP.len() + moov_size + MDAT_HEADER_SIZE;
-    let has_audio = !audio_sizes.is_empty();
+    let duration = plan.audio_end().map_or(plan.video_end(), |audio_end| {
+        audio_end.max(plan.video_end())
+    });
 
-    let video_delta = video_sample_delta(&meta.frame_timestamps);
-    let duration = mul(count_u32(video_sizes.len())?, video_delta)?;
-
-    let mut moov = build_mvhd(duration, has_audio);
-    let offsets = composition_offsets(&meta.frame_timestamps, global_min_pts);
-    moov.extend_from_slice(&build_video_trak(meta, video_sizes, &offsets, base_offset)?);
-    if has_audio {
-        moov.extend_from_slice(&build_audio_trak(
-            meta,
+    let mut moov = build_mvhd(duration_u32(duration)?, plan.audio.is_some());
+    let video = Track {
+        id: 1,
+        timing: &plan.video,
+        delay: plan.video_delay,
+        handler: b"vide",
+        media_header: &VMHD,
+        volume: [0x00, 0x00],
+        width: meta.width,
+        height: meta.height,
+    };
+    moov.extend_from_slice(&video.build(build_video_stsd(meta), video_sizes, base_offset)?);
+    if let Some(audio) = &plan.audio {
+        let track = Track {
+            id: 2,
+            timing: &audio.timing,
+            delay: audio.delay,
+            handler: b"soun",
+            media_header: &SMHD,
+            volume: [0x01, 0x00],
+            width: 0,
+            height: 0,
+        };
+        moov.extend_from_slice(&track.build(
+            build_audio_stsd(audio.config),
             audio_sizes,
-            global_min_pts,
             base_offset + video_data_end,
         )?);
     }
@@ -149,8 +239,8 @@ fn build_mvhd(duration: u32, has_audio: bool) -> Vec<u8> {
         0x00, 0x00, 0x00, 0x00, // version + flags
         0x00, 0x00, 0x00, 0x00, // creation time
         0x00, 0x00, 0x00, 0x00, // modification time
-        0x00, 0x01, 0x5F, 0x90, // timescale = 90000
     ];
+    out.extend_from_slice(&MOVIE_TIMESCALE.to_be_bytes());
     out.extend_from_slice(&duration.to_be_bytes());
     out.extend_from_slice(&[
         0x00, 0x01, 0x00, 0x00, // rate
@@ -184,14 +274,14 @@ fn build_tkhd(track_id: u32, duration: u32, volume: [u8; 2], width: u16, height:
     out
 }
 
-fn build_mdhd(duration: u32) -> Vec<u8> {
+fn build_mdhd(timescale: u32, duration: u32) -> Vec<u8> {
     let mut out = vec![
         0x00, 0x00, 0x00, 0x20, b'm', b'd', b'h', b'd', //
         0x00, 0x00, 0x00, 0x00, // version + flags
         0x00, 0x00, 0x00, 0x00, // creation time
         0x00, 0x00, 0x00, 0x00, // modification time
-        0x00, 0x01, 0x5F, 0x90, // timescale = 90000
     ];
+    out.extend_from_slice(&timescale.to_be_bytes());
     out.extend_from_slice(&duration.to_be_bytes());
     out.extend_from_slice(&[0x55, 0xC4, 0x00, 0x00]); // language + pre-defined
     out
@@ -208,19 +298,93 @@ fn build_hdlr(handler: &[u8; 4]) -> Vec<u8> {
     out
 }
 
-/// `stts`（单条目）+ `stsc`（全部样本一个 chunk）+ `stsz` + `stco`（单偏移）。
+/// 一条轨的盒参数。
+struct Track<'a> {
+    id: u32,
+    timing: &'a TrackTiming,
+    /// 起始推迟（电影时基），写成空编辑。
+    delay: u64,
+    handler: &'a [u8; 4],
+    media_header: &'a [u8],
+    volume: [u8; 2],
+    width: u16,
+    height: u16,
+}
+
+impl Track<'_> {
+    fn build(&self, stsd: Vec<u8>, sizes: &[u32], chunk_offset: usize) -> io::Result<Vec<u8>> {
+        let mut stbl = stsd;
+        sample_tables(&mut stbl, self.timing, sizes, chunk_offset)?;
+
+        let mut minf = self.media_header.to_vec();
+        minf.extend_from_slice(&DINF);
+        minf.extend_from_slice(&boxed(b"stbl", &stbl));
+
+        let mut mdia = build_mdhd(
+            self.timing.timescale,
+            duration_u32(self.timing.media_duration())?,
+        );
+        mdia.extend_from_slice(&build_hdlr(self.handler));
+        mdia.extend_from_slice(&boxed(b"minf", &minf));
+
+        let duration = duration_u32(self.delay + self.timing.presented_movie())?;
+        let mut trak = build_tkhd(self.id, duration, self.volume, self.width, self.height);
+        if let Some(edts) = build_edts(self.delay, self.timing)? {
+            trak.extend_from_slice(&edts);
+        }
+        trak.extend_from_slice(&boxed(b"mdia", &mdia));
+        Ok(boxed(b"trak", &trak))
+    }
+}
+
+/// 编辑列表：起始推迟写空编辑（media_time = −1），首个呈现样本不在媒体时间 0 时
+/// 从它开始播放。两者都没有时不写。
+fn build_edts(delay: u64, timing: &TrackTiming) -> io::Result<Option<Vec<u8>>> {
+    if delay == 0 && timing.media_start == 0 {
+        return Ok(None);
+    }
+    let mut entries: Vec<(u32, i32)> = Vec::with_capacity(2);
+    if delay > 0 {
+        entries.push((duration_u32(delay)?, -1));
+    }
+    let media_time = i32::try_from(timing.media_start)
+        .map_err(|_| overflow("MP4 edit media time exceeds 32-bit range"))?;
+    entries.push((duration_u32(timing.presented_movie())?, media_time));
+
+    let mut elst = vec![0x00; 4]; // version + flags
+    elst.extend_from_slice(&count_u32(entries.len())?.to_be_bytes());
+    for (segment_duration, media_time) in entries {
+        elst.extend_from_slice(&segment_duration.to_be_bytes());
+        elst.extend_from_slice(&media_time.to_be_bytes());
+        elst.extend_from_slice(&[0x00, 0x01, 0x00, 0x00]); // media rate = 1.0
+    }
+    Ok(Some(boxed(b"edts", &boxed(b"elst", &elst))))
+}
+
+fn runs_box(kind: &[u8; 4], runs: &[(u32, u32)]) -> io::Result<Vec<u8>> {
+    let mut payload = Vec::with_capacity(8 + runs.len() * 8);
+    payload.extend_from_slice(&[0x00; 4]); // version + flags
+    payload.extend_from_slice(&count_u32(runs.len())?.to_be_bytes());
+    for &(count, value) in runs {
+        payload.extend_from_slice(&count.to_be_bytes());
+        payload.extend_from_slice(&value.to_be_bytes());
+    }
+    Ok(boxed(kind, &payload))
+}
+
+/// `stts` + `ctts`（有合成偏移时）+ `stsc`（全部样本一个 chunk）+ `stsz` + `stco`（单偏移）。
 fn sample_tables(
     out: &mut Vec<u8>,
+    timing: &TrackTiming,
     sizes: &[u32],
-    delta: u32,
     chunk_offset: usize,
 ) -> io::Result<()> {
     let count = count_u32(sizes.len())?;
 
-    let mut stts = vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
-    stts.extend_from_slice(&count.to_be_bytes());
-    stts.extend_from_slice(&delta.to_be_bytes());
-    out.extend_from_slice(&boxed(b"stts", &stts));
+    out.extend_from_slice(&runs_box(b"stts", &Runs::from_values(&timing.durations).0)?);
+    if !timing.ctts.0.is_empty() {
+        out.extend_from_slice(&runs_box(b"ctts", &timing.ctts.0)?);
+    }
 
     let mut stsc = vec![
         0x00, 0x00, 0x00, 0x00, // version + flags
@@ -239,51 +403,12 @@ fn sample_tables(
     }
     out.extend_from_slice(&boxed(b"stsz", &stsz));
 
+    let chunk_offset = u32::try_from(chunk_offset)
+        .map_err(|_| overflow("MP4 chunk offset exceeds 32-bit range"))?;
     let mut stco = vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
-    stco.extend_from_slice(&(chunk_offset as u32).to_be_bytes());
+    stco.extend_from_slice(&chunk_offset.to_be_bytes());
     out.extend_from_slice(&boxed(b"stco", &stco));
     Ok(())
-}
-
-fn build_video_trak(
-    meta: &StreamMeta,
-    sizes: &[u32],
-    composition_offsets: &[i32],
-    chunk_offset: usize,
-) -> io::Result<Vec<u8>> {
-    let delta = video_sample_delta(&meta.frame_timestamps);
-    let count = count_u32(sizes.len())?;
-    let duration = mul(count, delta)?;
-
-    let mut stbl = build_video_stsd(meta);
-    sample_tables(&mut stbl, sizes, delta, chunk_offset)?;
-    if !composition_offsets.is_empty() && composition_offsets.iter().any(|&o| o != 0) {
-        let mut ctts = Vec::with_capacity(8 + composition_offsets.len() * 8);
-        ctts.extend_from_slice(&[0x00; 4]); // version + flags
-        // 条目数字段写样本数，条目按 PES 时间戳逐条写（两者可能不等，播放器以条目为准）。
-        ctts.extend_from_slice(&count.to_be_bytes());
-        for &offset in composition_offsets {
-            ctts.extend_from_slice(&1u32.to_be_bytes());
-            ctts.extend_from_slice(&(offset as u32).to_be_bytes());
-        }
-        stbl.extend_from_slice(&boxed(b"ctts", &ctts));
-    }
-
-    let mut minf = vec![
-        0x00, 0x00, 0x00, 0x14, b'v', b'm', b'h', b'd', 0x00, 0x00, 0x00, 0x01, // vmhd
-        0x00, 0x00, // graphics mode
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // opcolor
-    ];
-    minf.extend_from_slice(&DINF);
-    minf.extend_from_slice(&boxed(b"stbl", &stbl));
-
-    let mut mdia = build_mdhd(duration);
-    mdia.extend_from_slice(&build_hdlr(b"vide"));
-    mdia.extend_from_slice(&boxed(b"minf", &minf));
-
-    let mut trak = build_tkhd(1, duration, [0x00, 0x00], meta.width, meta.height);
-    trak.extend_from_slice(&boxed(b"mdia", &mdia));
-    Ok(boxed(b"trak", &trak))
 }
 
 fn build_video_stsd(meta: &StreamMeta) -> Vec<u8> {
@@ -325,64 +450,27 @@ fn build_video_stsd(meta: &StreamMeta) -> Vec<u8> {
     boxed(b"stsd", &stsd)
 }
 
-fn build_audio_trak(
-    meta: &StreamMeta,
-    sizes: &[u32],
-    global_min_pts: u64,
-    chunk_offset: usize,
-) -> io::Result<Vec<u8>> {
-    let count = count_u32(sizes.len())?;
-    // 音轨固定描述为 48kHz 立体声 AAC-LC：1024 采样 @ 48kHz = 90kHz 时基下 1920。
-    let duration = mul(count, 1920)?;
-
-    let mut stbl = build_audio_stsd();
-    sample_tables(&mut stbl, sizes, 1920, chunk_offset)?;
-
-    let mut minf = vec![
-        0x00, 0x00, 0x00, 0x10, b's', b'm', b'h', b'd', 0x00, 0x00, 0x00, 0x00, // smhd
-        0x00, 0x00, // balance
-        0x00, 0x00, // reserved
-    ];
-    minf.extend_from_slice(&DINF);
-    minf.extend_from_slice(&boxed(b"stbl", &stbl));
-
-    let mut mdia = build_mdhd(duration);
-    mdia.extend_from_slice(&build_hdlr(b"soun"));
-    mdia.extend_from_slice(&boxed(b"minf", &minf));
-
-    let mut trak = build_tkhd(2, duration, [0x01, 0x00], 0, 0);
-    trak.extend_from_slice(&boxed(b"mdia", &mdia));
-
-    // 音频晚于全局最早 PTS 时加编辑列表。
-    if let Some(Some(first_audio_pts)) = meta.audio_timestamps.first()
-        && *first_audio_pts > global_min_pts
-    {
-        let delay_90khz = *first_audio_pts - global_min_pts;
-        let delay_48khz = ((delay_90khz as i64 * 48000) / 90000) as i32;
-        let media_duration_48khz = mul(count, 1024)?;
-        let segment_duration_90khz = u64::from(media_duration_48khz) * 90000 / 48000;
-
-        // elst 盒头长度字段固定写 36（实际 28 字节），外层 edts 长度按实际字节计。
-        let mut elst = vec![0x00, 0x00, 0x00, 0x24, b'e', b'l', b's', b't'];
-        elst.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01]);
-        elst.extend_from_slice(&(segment_duration_90khz as u32).to_be_bytes());
-        elst.extend_from_slice(&(delay_48khz as u32).to_be_bytes());
-        elst.extend_from_slice(&[0x00, 0x01, 0x00, 0x00]); // media rate = 1.0
-        trak.extend_from_slice(&boxed(b"edts", &elst));
-    }
-    Ok(boxed(b"trak", &trak))
-}
-
-fn build_audio_stsd() -> Vec<u8> {
+fn build_audio_stsd(config: AacConfig) -> Vec<u8> {
+    let sample_rate = config.sample_rate();
+    // 16.16 定点字段放不下 88.2k / 96k，按 ffmpeg 的做法写 0，以 mdhd 时基为准。
+    let rate_field = if sample_rate <= u32::from(u16::MAX) {
+        sample_rate << 16
+    } else {
+        0
+    };
     let mut mp4a = vec![
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // reserved
         0x00, 0x01, // data reference index
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // reserved
-        0x00, 0x02, // channel count = 2
+    ];
+    mp4a.extend_from_slice(&config.channels().to_be_bytes());
+    mp4a.extend_from_slice(&[
         0x00, 0x10, // sample size = 16
         0x00, 0x00, 0x00, 0x00, // pre-defined + reserved
-        0xBB, 0x80, 0x00, 0x00, // sample rate = 48000 << 16
-    ];
+    ]);
+    mp4a.extend_from_slice(&rate_field.to_be_bytes());
+
+    let [asc_high, asc_low] = config.audio_specific_config();
     let esds = [
         0x00, 0x00, 0x00, 0x00, // version + flags
         0x03, 0x19, 0x00, 0x01, 0x00, // ES_Descriptor
@@ -390,7 +478,7 @@ fn build_audio_stsd() -> Vec<u8> {
         0x00, 0x03, 0x00, // buffer size
         0x00, 0x01, 0xF4, 0x00, // max bitrate
         0x00, 0x01, 0xF4, 0x00, // avg bitrate
-        0x05, 0x02, 0x11, 0x90, // AudioSpecificConfig: AAC-LC, 48kHz, stereo
+        0x05, 0x02, asc_high, asc_low, // DecoderSpecificInfo: AudioSpecificConfig
         0x06, 0x01, 0x02, // SLConfigDescriptor
     ];
     mp4a.extend_from_slice(&boxed(b"esds", &esds));
@@ -398,26 +486,4 @@ fn build_audio_stsd() -> Vec<u8> {
     let mut stsd = vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
     stsd.extend_from_slice(&boxed(b"mp4a", &mp4a));
     boxed(b"stsd", &stsd)
-}
-
-/// 合成时间偏移：按 PES 逐条计算 PTS − DTS（i32 截断），再整体减去首条。
-fn composition_offsets(timestamps: &[(Option<u64>, Option<u64>)], global_min_pts: u64) -> Vec<i32> {
-    let min = global_min_pts as i64;
-    let mut offsets: Vec<i32> = timestamps
-        .iter()
-        .map(|&(pts, dts)| match (pts, dts) {
-            (Some(pts), Some(dts)) => {
-                let pts = (pts as i64 - min) as i32;
-                let dts = (dts as i64 - min) as i32;
-                pts.wrapping_sub(dts)
-            }
-            _ => 0,
-        })
-        .collect();
-    if let Some(&first) = offsets.first() {
-        for offset in &mut offsets {
-            *offset = offset.wrapping_sub(first);
-        }
-    }
-    offsets
 }

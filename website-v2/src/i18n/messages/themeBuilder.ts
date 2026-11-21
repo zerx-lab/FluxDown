@@ -242,7 +242,7 @@ export const themeBuilder = defineMessages({
     gpuiMock: {
       searchPlaceholder: "Search tasks...",
       view: "View",
-      newDownload: "New Download",
+      newDownload: "New Task",
       toggleMode: "Toggle dark / light preview",
       collapseSidebar: "Collapse sidebar",
       expandSidebar: "Expand sidebar",
@@ -534,7 +534,7 @@ export const themeBuilder = defineMessages({
     gpuiMock: {
       searchPlaceholder: "搜索任务...",
       view: "视图",
-      newDownload: "新建下载",
+      newDownload: "新建任务",
       toggleMode: "切换暗色 / 亮色预览",
       collapseSidebar: "收起侧栏",
       expandSidebar: "展开侧栏",

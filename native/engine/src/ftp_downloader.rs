@@ -61,6 +61,7 @@ fn ftp_runtime(
             })
             .collect(),
         source_bytes: None,
+        hls_fragments: None,
     }
 }
 
@@ -540,6 +541,7 @@ fn resolve_ftp_info_sync(
     Ok(FileInfo {
         file_name,
         name_source: crate::naming::NameSource::UrlPath,
+        html_attachment: false,
         total_bytes,
         supports_range,
         content_type: String::new(),
@@ -1357,6 +1359,8 @@ async fn run_ftp_download_inner(p: &DownloadParams) -> Result<i64, DownloadError
 
     // When total_bytes is unknown (server didn't report size), read actual file
     // size so the completion signal carries accurate byte counts.
+    let _local_work = crate::transfer_activity::LocalWorkGuard::new(p.sink.clone());
+
     let actual_total = if info.total_bytes > 0 {
         info.total_bytes
     } else {

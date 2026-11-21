@@ -20,6 +20,7 @@ interface Fixture {
     changed: boolean
     expected: StoredChromeLayout
   }[]
+  defaultHidden: { catalog: ChromeItemSpec[]; cases: { name: string; stored: unknown; expected: StoredChromeLayout }[] }
 }
 
 // 与 crates/shell/tests/fixtures 共用同一份用例（运行期读取：Docker 构建上下文不含 crates/）。
@@ -31,6 +32,14 @@ describe('chrome layout normalize (shared fixtures)', () => {
   for (const item of fixture.normalize) {
     test(item.name, () => {
       expect(serializeLayout(normalizeLayout(item.stored, fixture.catalog))).toEqual(item.expected)
+    })
+  }
+})
+
+describe('chrome layout default hidden (shared fixtures)', () => {
+  for (const item of fixture.defaultHidden.cases) {
+    test(item.name, () => {
+      expect(serializeLayout(normalizeLayout(item.stored, fixture.defaultHidden.catalog))).toEqual(item.expected)
     })
   }
 })

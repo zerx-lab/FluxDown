@@ -325,6 +325,8 @@ pub(super) struct TrackProgress {
     shape: TrackShape,
     written: AtomicI64,
     done: AtomicUsize,
+    // usize::MAX until the writer has validated or reset its resume prefix.
+    checkpointed: AtomicUsize,
     state: Mutex<TrackState>,
 }
 
@@ -360,6 +362,7 @@ impl TrackProgress {
             shape,
             written: AtomicI64::new(0),
             done: AtomicUsize::new(0),
+            checkpointed: AtomicUsize::new(usize::MAX),
             state: Mutex::new(state),
         }
     }
@@ -374,6 +377,16 @@ impl TrackProgress {
         *self.lock() = TrackState::new(&self.shape, done, written);
         self.written.store(written, Ordering::Relaxed);
         self.done.store(done, Ordering::Release);
+        self.mark_checkpoint(done);
+    }
+
+    pub(super) fn mark_checkpoint(&self, done: usize) {
+        self.checkpointed.store(done, Ordering::Release);
+    }
+
+    fn checkpointed(&self) -> Option<u64> {
+        let done = self.checkpointed.load(Ordering::Acquire);
+        (done != usize::MAX).then_some(done as u64)
     }
 
     /// 第 `idx` 段的响应头已到,body 预计 `length` 字节。
@@ -447,6 +460,28 @@ impl TaskProgress {
             audio,
             bitrate,
         }
+    }
+
+    /// 已按序写入与计划写入的媒体分片数；init 段不单独计数。
+    pub(super) fn fragments(&self) -> (u64, u64) {
+        let counts = |track: &TrackProgress| {
+            (
+                track.done.load(Ordering::Acquire) as u64,
+                track.shape.len() as u64,
+            )
+        };
+        let (video_done, video_total) = counts(&self.video);
+        let (audio_done, audio_total) = self.audio.as_deref().map_or((0, 0), counts);
+        (video_done + audio_done, video_total + audio_total)
+    }
+
+    pub(super) fn checkpointed_fragments(&self) -> Option<(u64, u64)> {
+        let video = self.video.checkpointed()?;
+        let (audio, audio_total) = match &self.audio {
+            Some(track) => (track.checkpointed()?, track.shape.len() as u64),
+            None => (0, 0),
+        };
+        Some((video + audio, self.video.shape.len() as u64 + audio_total))
     }
 
     /// `(已落盘字节, 总字节)`;总字节 0 = 未知。
@@ -677,6 +712,33 @@ mod tests {
         let (_, total) = progress.snapshot();
         let audio_total = 200_000 + 9 * 200_000;
         assert_eq!(total, 12_500_000 + audio_total);
+    }
+
+    #[test]
+    fn fragment_progress_counts_resumed_and_written_media_on_both_tracks() {
+        let video = Arc::new(TrackProgress::new(&segments(&[5.0; 3])));
+        let audio = Arc::new(TrackProgress::new(&segments(&[5.0; 2])));
+        video.resume(1_000, 1);
+        let progress = TaskProgress::new(
+            Arc::clone(&video),
+            Some(Arc::clone(&audio)),
+            VariantBitrate::default(),
+        );
+        assert_eq!(progress.checkpointed_fragments(), None);
+        audio.resume(100, 1);
+        assert_eq!(progress.checkpointed_fragments(), Some((2, 5)));
+        assert_eq!(progress.fragments(), (2, 5));
+
+        video.downloaded(2, 10_000);
+        assert_eq!(progress.fragments(), (2, 5));
+        video.wrote(1, 500, 1_500);
+        video.wrote(2, 10_000, 11_500);
+        assert_eq!(progress.fragments(), (4, 5));
+        audio.wrote(1, 50, 150);
+        assert_eq!(progress.fragments(), (5, 5));
+        // Only the video checkpoint advanced; the audio tail will be redone.
+        video.mark_checkpoint(3);
+        assert_eq!(progress.checkpointed_fragments(), Some((4, 5)));
     }
 
     #[test]

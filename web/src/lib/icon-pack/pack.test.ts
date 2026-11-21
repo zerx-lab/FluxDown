@@ -46,9 +46,12 @@ describe('svgIsSafe', () => {
   test('accepts fragment references and rejects active or external content', () => {
     expect(svgIsSafe('<svg viewBox="0 0 16 16"><use href="#a"/><path fill="url(#g)"/></svg>')).toBe(true)
     expect(svgIsSafe('<?xml version="1.0"?><svg><path d="M0 0"/></svg>')).toBe(true)
+    expect(svgIsSafe('<svg viewBox="0 0 8 8"><image width="8" height="8" href="data:image/png;base64,iVBORw0KGgo="/></svg>')).toBe(true)
     for (const svg of [
       '<svg><script>alert(1)</script></svg>',
       '<svg><image href="file:///etc/passwd"/></svg>',
+      '<svg><image href="data:image/svg+xml;base64,PHN2Zz4="/></svg>',
+      '<svg><image href="https://x/a.png"/></svg>',
       '<svg><use xlink:href="other.svg#a"/></svg>',
       "<svg><use href = 'https://x/a.svg#a'/></svg>",
       '<svg><path fill="url(https://x/p)"/></svg>',

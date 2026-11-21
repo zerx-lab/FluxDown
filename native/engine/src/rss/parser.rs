@@ -10,11 +10,15 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone};
-use feed_rs::model::Entry;
+use feed_rs::model::{Entry, FeedType};
 use feed_rs::parser as feed_parser;
+use html5ever::tokenizer::states::RawKind;
+use html5ever::tokenizer::{BufferQueue, Token, TokenSink, TokenSinkResult, Tokenizer};
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use sha2::{Digest, Sha256};
+use std::cell::RefCell;
+use url::Url;
 
 /// 单次抓取解析出的 feed。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -47,6 +51,8 @@ pub struct ParsedItem {
     pub enclosure_length: i64,
     /// 发布时间（Unix 秒，0 = 未知）。
     pub pub_date: i64,
+    /// Normalized external image URLs in display order.
+    pub image_urls: Vec<String>,
 }
 
 /// 单个 feed 响应体的大小上限（8 MiB）。
@@ -105,6 +111,19 @@ const GENERATED_ID_PREFIX: &str = "\u{1}fluxdown-noguid\u{1}";
 /// assert!(feed.items[0].enclosure_url.ends_with(".torrent"));
 /// ```
 pub fn parse_feed(bytes: &[u8]) -> Result<ParsedFeed, String> {
+    parse_feed_at(bytes, None)
+}
+
+const MAX_IMAGE_DESCRIPTION_BYTES: usize = 8 * 1024;
+const MAX_IMAGE_HTML_BYTES_PER_FEED: usize = 256 * 1024;
+const MAX_IMAGE_URL_BYTES_PER_FEED: usize = 512 * 1024;
+
+struct ImageBudget {
+    html_bytes: usize,
+    url_bytes: usize,
+}
+
+pub(super) fn parse_feed_at(bytes: &[u8], base: Option<&Url>) -> Result<ParsedFeed, String> {
     if bytes.len() > MAX_FEED_BYTES {
         return Err(format!(
             "feed too large ({} bytes, limit {MAX_FEED_BYTES})",
@@ -129,7 +148,16 @@ pub fn parse_feed(bytes: &[u8]) -> Result<ParsedFeed, String> {
         .parse(bytes)
         .map_err(|e| format!("failed to parse feed: {e}"))?;
 
-    let mut items: Vec<ParsedItem> = feed.entries.iter().map(map_entry).collect();
+    let rss2 = feed.feed_type == FeedType::RSS2;
+    let mut image_budget = ImageBudget {
+        html_bytes: MAX_IMAGE_HTML_BYTES_PER_FEED,
+        url_bytes: MAX_IMAGE_URL_BYTES_PER_FEED,
+    };
+    let mut items: Vec<ParsedItem> = feed
+        .entries
+        .iter()
+        .map(|entry| map_entry(entry, rss2, base, &mut image_budget))
+        .collect();
     fill_missing_pub_dates(&mut items, bytes);
     Ok(ParsedFeed {
         title: feed.title.map(|t| t.content).unwrap_or_default(),
@@ -144,7 +172,12 @@ pub fn parse_feed(bytes: &[u8]) -> Result<ParsedFeed, String> {
     })
 }
 
-fn map_entry(entry: &Entry) -> ParsedItem {
+fn map_entry(
+    entry: &Entry,
+    rss2: bool,
+    base: Option<&Url>,
+    budget: &mut ImageBudget,
+) -> ParsedItem {
     let (enclosure_url, enclosure_length, enclosure_mime) = extract_enclosure(entry);
     let link = entry
         .links
@@ -190,11 +223,104 @@ fn map_entry(entry: &Entry) -> ParsedItem {
         enclosure_type,
         resolver_item: String::new(),
         enclosure_length,
+        image_urls: match &entry.summary {
+            Some(summary) if rss2 => extract_image_urls(&summary.content, base, budget),
+            _ => Vec::new(),
+        },
         pub_date: entry
             .published
             .or(entry.updated)
             .map(|d| d.timestamp())
             .unwrap_or(0),
+    }
+}
+
+fn extract_image_urls(html: &str, base: Option<&Url>, budget: &mut ImageBudget) -> Vec<String> {
+    if html.len() > MAX_IMAGE_DESCRIPTION_BYTES
+        || html.len() > budget.html_bytes
+        || budget.url_bytes == 0
+    {
+        return Vec::new();
+    }
+    budget.html_bytes -= html.len();
+    let input = BufferQueue::default();
+    input.push_back(html.into());
+    let tokenizer = Tokenizer::new(
+        ImageSink {
+            base,
+            remaining_url_bytes: std::cell::Cell::new(budget.url_bytes),
+            urls: RefCell::new(Vec::new()),
+        },
+        Default::default(),
+    );
+    while !input.is_empty() {
+        match tokenizer.feed(&input) {
+            html5ever::tokenizer::TokenizerResult::Done
+            | html5ever::tokenizer::TokenizerResult::Script(()) => {}
+        }
+    }
+    tokenizer.end();
+    budget.url_bytes = tokenizer.sink.remaining_url_bytes.get();
+    tokenizer.sink.urls.into_inner()
+}
+
+struct ImageSink<'a> {
+    base: Option<&'a Url>,
+    remaining_url_bytes: std::cell::Cell<usize>,
+    urls: RefCell<Vec<String>>,
+}
+
+impl TokenSink for ImageSink<'_> {
+    type Handle = ();
+
+    fn process_token(&self, token: Token, _: u64) -> TokenSinkResult<()> {
+        let Token::TagToken(tag) = token else {
+            return TokenSinkResult::Continue;
+        };
+        if tag.kind != html5ever::tokenizer::StartTag {
+            return TokenSinkResult::Continue;
+        }
+        match tag.name.as_ref() {
+            "script" => return TokenSinkResult::RawData(RawKind::ScriptData),
+            "style" | "xmp" | "iframe" | "noembed" | "noframes" | "noscript" => {
+                return TokenSinkResult::RawData(RawKind::Rawtext);
+            }
+            "textarea" | "title" => return TokenSinkResult::RawData(RawKind::Rcdata),
+            "plaintext" => return TokenSinkResult::Plaintext,
+            "img" => {}
+            _ => return TokenSinkResult::Continue,
+        }
+        let mut urls = self.urls.borrow_mut();
+        if urls.len() >= 4 {
+            return TokenSinkResult::Continue;
+        }
+        if let Some(src) = tag
+            .attrs
+            .iter()
+            .find(|attr| attr.name.local.as_ref() == "src")
+        {
+            let value = src.value.trim();
+            if !value.is_empty()
+                && value.len() <= 4096
+                && let Ok(mut url) = Url::options().base_url(self.base).parse(value)
+                && matches!(url.scheme(), "https" | "http")
+                && url.host().is_some()
+                && url.username().is_empty()
+                && url.password().is_none()
+            {
+                url.set_fragment(None);
+                let length = url.as_str().len();
+                let remaining = self.remaining_url_bytes.get();
+                if length <= 4096
+                    && length <= remaining
+                    && !urls.iter().any(|old| old == url.as_str())
+                {
+                    self.remaining_url_bytes.set(remaining - length);
+                    urls.push(url.into());
+                }
+            }
+        }
+        TokenSinkResult::Continue
     }
 }
 
@@ -409,6 +535,76 @@ fn sha256_hex(input: &str) -> String {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    #[test]
+    fn description_images_survive_cdata_and_xml_escaping() -> Result<(), String> {
+        let base = url::Url::parse("https://cdn.example.test/feed/latest.xml")
+            .map_err(|e| e.to_string())?;
+        for description in [
+            r#"<![CDATA[<img src="../cover.png"><img src="../cover.png#dup"><img src="data:image/png;base64,x">]]>"#,
+            r#"&lt;img src="../cover.png"&gt;"#,
+        ] {
+            let xml = format!(
+                "<rss version=\"2.0\"><channel><title>Feed</title><item><guid>item</guid><title>Item</title><description>{description}</description></item></channel></rss>"
+            );
+            let feed = super::parse_feed_at(xml.as_bytes(), Some(&base))?;
+            assert_eq!(
+                feed.items.first().map(|item| item.image_urls.as_slice()),
+                Some(["https://cdn.example.test/cover.png".to_owned()].as_slice())
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn image_budget_limits_work_without_losing_feed_items() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use super::{
+            MAX_IMAGE_DESCRIPTION_BYTES, MAX_IMAGE_HTML_BYTES_PER_FEED,
+            MAX_IMAGE_URL_BYTES_PER_FEED,
+        };
+        use std::fmt::Write as _;
+
+        let base = url::Url::parse(&format!(
+            "https://cdn.example.test/{}/feed.xml",
+            "a".repeat(3500)
+        ))?;
+        let image = "<img src='cover.png'>";
+        let image_url_len = base.join("cover.png")?.as_str().len();
+        let short = MAX_IMAGE_URL_BYTES_PER_FEED / image_url_len;
+        let long = MAX_IMAGE_HTML_BYTES_PER_FEED / MAX_IMAGE_DESCRIPTION_BYTES;
+        for (entries, padding, expected) in [
+            (short + 2, 0, short),
+            (long + 2, MAX_IMAGE_DESCRIPTION_BYTES - image.len(), long),
+        ] {
+            let mut xml = String::from("<rss version='2.0'><channel><title>Feed</title>");
+            let oversized = "x".repeat(MAX_IMAGE_DESCRIPTION_BYTES);
+            write!(
+                xml,
+                "<item><guid>oversized</guid><title>Large description</title><description><![CDATA[{image}{oversized}]]></description></item>"
+            )?;
+            let tail = "x".repeat(padding);
+            for index in 0..entries {
+                write!(
+                    xml,
+                    "<item><guid>{index}</guid><title>Item</title><description><![CDATA[{image}{tail}]]></description></item>"
+                )?;
+            }
+            xml.push_str("</channel></rss>");
+            let parsed = super::parse_feed_at(xml.as_bytes(), Some(&base))?;
+            assert_eq!(parsed.items.len(), entries + 1);
+            assert!(parsed.items[0].image_urls.is_empty());
+            assert_eq!(
+                parsed
+                    .items
+                    .iter()
+                    .map(|item| item.image_urls.len())
+                    .sum::<usize>(),
+                expected
+            );
+        }
+        Ok(())
+    }
+
     use super::{MAX_FEED_BYTES, parse_feed, parse_loose_datetime};
 
     /// Mikan Project 的真实 feed 形状（issue #97 样例的最小复刻）。

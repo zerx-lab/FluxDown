@@ -1,6 +1,7 @@
 // 任务表 / 卡片共用的单元格与文案（移植 task_table.rs 的 status_label / status_detail / render_*_cell）。
 
 import { LoaderCircle } from 'lucide-react'
+import { useFileSizeUnits } from '../../../lib/fileSizeUnits'
 import { cn } from '../../../lib/cn'
 import { usePrefBool } from '../../../lib/rpc'
 import { FileIcon } from '../../../lib/icon-pack'
@@ -34,11 +35,12 @@ export function KindGlyph({ view, className, tile = false }: { view: DownloadTas
 }
 
 export function FileCell({ t, view, density, conflict }: { t: Translate; view: DownloadTaskView; density: ViewDensity; conflict: boolean }) {
+  const units = useFileSizeUnits()
   const twoLine = density !== 'compact'
   const relaxed = density === 'relaxed'
   const hideSource = usePrefBool(HIDE_TASK_SOURCE_PREF, false)
   // 宽松（旧 Flutter 默认布局）：名称中等字重 + 新副标题；其余密度：类别 · 站点。
-  const subtitle = relaxed ? relaxedMeta(t, view, hideSource) : fileCellMeta(t, view, hideSource)
+  const subtitle = relaxed ? relaxedMeta(t, view, hideSource, units) : fileCellMeta(t, view, hideSource)
   return (
     <div className="flex min-w-0 flex-col justify-center">
       <FileName t={t} view={view} className={relaxed ? 'text-sm font-medium' : 'text-sm'} conflict={conflict} />
@@ -86,14 +88,15 @@ function FileName({ t, view, className, conflict }: { t: Translate; view: Downlo
 }
 
 export function StatusCell({ t, view, density }: { t: Translate; view: DownloadTaskView; density: ViewDensity }) {
+  const units = useFileSizeUnits()
   const twoLine = density !== 'compact'
-  const detail = statusDetail(t, view)
+  const detail = statusDetail(t, view, units)
   const failedError = view.state === 'failed' && view.errorMessage.trim() !== ''
   const tooltip = failedError ? localizeTaskError(t, view.errorMessage) : twoLine ? undefined : (detail ?? undefined)
   return (
     <div className="tabular flex min-w-0 flex-col justify-center text-xs" title={tooltip}>
       <div className="flex min-w-0 items-center gap-1.5">
-        <span className={cn('truncate', taskStatusClass(view))}>{statusLabel(t, view)}</span>
+        <span className={cn('truncate', taskStatusClass(view))}>{statusLabel(t, view, units)}</span>
       </div>
       {twoLine && detail ? <div className="truncate text-xs text-text-tertiary">{detail}</div> : null}
     </div>

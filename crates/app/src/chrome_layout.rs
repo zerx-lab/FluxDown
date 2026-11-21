@@ -1,4 +1,4 @@
-//! 主窗口 chrome 布局的装配：布局目录（活动栏条目 + 下载控件 + 下载页顶栏控件）、
+//! 主窗口 chrome 布局的装配：布局目录（活动栏条目 + 下载控件 + 版本条目 + 下载页顶栏控件）、
 //! 控件注册与偏好回流。
 //!
 //! 布局存设备本地偏好 [`CHROME_LAYOUT_PREF`]（不在云同步目录，不随账号同步），含各条目的
@@ -11,6 +11,7 @@ use fluxdown_ui_downloads::{
     DownloadPageWidget, DownloadSearchBox, DownloadView, DownloadViewMenu, DownloadWidget,
     WidgetPlacement,
 };
+use fluxdown_ui_settings::{VERSION_WIDGET_ID, VERSION_WIDGET_LABEL_KEY, VersionButton};
 use fluxdown_ui_shell::{
     ChromeFamilies, ChromeFamily, ChromeItemSpec, ChromeZone, ShellView, ShellWidget,
 };
@@ -21,8 +22,9 @@ use crate::activity::{ActivityEntry, DOWNLOADS_ROUTE};
 /// 主窗口 chrome 布局偏好键（设备本地）。
 pub(crate) const CHROME_LAYOUT_PREF: &str = "ui.chrome_layout";
 
-/// 布局目录：活动栏条目在前（路由在上、动作在下），随后是下载控件（状态栏自左向右），
-/// 最后是下载页顶栏控件。下载页与设置是固定入口：可移动、不可隐藏。
+/// 布局目录：活动栏条目在前（路由在上、动作在下），随后是下载控件（状态栏自左向右）与
+/// 版本条目（默认状态栏最右，有更新时兼作更新入口），最后是下载页顶栏控件。下载页与设置是
+/// 固定入口：可移动、不可隐藏。
 pub(crate) fn catalog() -> Vec<ChromeItemSpec> {
     let activity = ActivityEntry::ALL.into_iter().map(|entry| {
         let (zone, families) = match entry {
@@ -58,7 +60,13 @@ pub(crate) fn catalog() -> Vec<ChromeItemSpec> {
         } else {
             ChromeFamilies::ALL
         };
-        ChromeItemSpec::new(widget.id(), zone, families)
+        let spec = ChromeItemSpec::new(widget.id(), zone, families);
+        // 剩余空间默认隐藏（状态栏右侧留给版本条目），可在自定义布局里显示。
+        if matches!(widget, DownloadWidget::DiskFree) {
+            spec.hidden_by_default()
+        } else {
+            spec
+        }
     });
     let page_widgets = DownloadPageWidget::ALL.into_iter().map(|widget| {
         ChromeItemSpec::new(
@@ -67,11 +75,25 @@ pub(crate) fn catalog() -> Vec<ChromeItemSpec> {
             ChromeFamilies::TITLE,
         )
     });
-    activity.chain(widgets).chain(page_widgets).collect()
+    // 版本号是文字条目，放不进窄活动栏。
+    let version = ChromeItemSpec::new(
+        VERSION_WIDGET_ID,
+        ChromeZone::StatusTrailing,
+        ChromeFamilies::TITLE_STATUS,
+    );
+    activity
+        .chain(widgets)
+        .chain([version])
+        .chain(page_widgets)
+        .collect()
 }
 
 /// 下载控件与下载页顶栏控件注册为 shell 控件：在 shell 的渲染里读取下载页状态绘制。
-pub(crate) fn widgets(downloads: &Entity<DownloadView>, cx: &mut gpui::App) -> Vec<ShellWidget> {
+pub(crate) fn widgets(
+    downloads: &Entity<DownloadView>,
+    version: &Entity<VersionButton>,
+    cx: &mut gpui::App,
+) -> Vec<ShellWidget> {
     let weak = downloads.downgrade();
     let status = DownloadWidget::ALL.into_iter().map(|widget| {
         let downloads = weak.clone();
@@ -87,8 +109,29 @@ pub(crate) fn widgets(downloads: &Entity<DownloadView>, cx: &mut gpui::App) -> V
         .chain([
             search_widget(search, weak.clone()),
             view_menu_widget(view_menu),
+            version_widget(version.clone()),
         ])
         .collect()
+}
+
+/// 版本条目：任何页面都显示；被用户隐藏时，有更新状态（新版本 / 下载中 / 待重启 / 失败）
+/// 仍临时显示，更新提示不随之丢失。
+fn version_widget(version: Entity<VersionButton>) -> ShellWidget {
+    let reveal = version.downgrade();
+    ShellWidget::new(
+        VERSION_WIDGET_ID,
+        VERSION_WIDGET_LABEL_KEY,
+        move |zone, _, cx| {
+            let anchor = placement(zone).menu_anchor;
+            version.update(cx, |button, cx| button.set_anchor(anchor, cx));
+            Some(version.clone().into_any_element())
+        },
+    )
+    .revealed_when(move |cx| {
+        reveal
+            .upgrade()
+            .is_some_and(|button| button.read(cx).needs_attention())
+    })
 }
 
 /// 搜索框：被布局隐藏时，快捷键唤出或仍有查询词则临时显示。

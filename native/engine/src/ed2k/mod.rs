@@ -14,6 +14,7 @@ pub mod kad;
 pub mod link;
 pub mod peer;
 pub mod proto;
+mod proxy;
 pub mod server;
 pub mod server_subscription;
 pub mod status;
@@ -313,6 +314,10 @@ pub async fn load_client_config(db: &crate::db::Db) -> Result<ClientConfig, crat
         manual_servers,
         enable_upnp: flag(db.get_config("ed2k_enable_upnp").await?),
         enable_kad: flag(db.get_config("ed2k_enable_kad").await?),
+        proxy_protocol_ed2k: db
+            .get_config(crate::protocol_proxy::ED2K_KEY)
+            .await?
+            .unwrap_or_default(),
     })
 }
 
@@ -628,7 +633,7 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
     // manager 传入的名字已做 dedup / 用户自定义 / 预订临时路径，必须沿用，
     // 否则同名文件会被覆盖且 DB 名与落盘名不一致。
     let file_name = resolve_file_name(&params.file_name, &link.file_name);
-    if file_name != link.file_name {
+    if params.is_resume && file_name != link.file_name {
         let siblings: HashSet<String> = params
             .db
             .list_active_sibling_file_names(&params.save_dir, &task_id)
@@ -637,6 +642,8 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
             .map(|n| n.to_lowercase())
             .collect();
         adopt_legacy_temp(
+            &params.db,
+            &task_id,
             save_dir,
             &link.file_name,
             &file_name,
@@ -754,6 +761,7 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
         };
         if pending.is_empty() {
             live.set_phase(TaskPhase::Verifying, 0);
+            let _local_work = crate::transfer_activity::LocalWorkGuard::new(params.sink.clone());
             let started = tokio::time::Instant::now();
             let verification =
                 finalize_and_verify(&params.db, &task_id, &temp_path, &link, part_size).await;
@@ -1004,6 +1012,7 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
                         KAD_FIND_TIMEOUT,
                         &params.cancel_token,
                         Some(live.kad()),
+                        &config.proxy_protocol_ed2k,
                     )
                     .await;
                     tracing::info!(
@@ -1501,6 +1510,7 @@ fn spawn_progress_reporter(context: ProgressReporterContext) -> tokio::task::Joi
                     })
                     .collect(),
                 source_bytes: None,
+                hls_fragments: None,
             };
             if progress_tx
                 .send(ProgressUpdate {
@@ -1648,6 +1658,8 @@ fn resolve_file_name(param_name: &str, link_name: &str) -> String {
 /// Migrate a matching legacy temporary file without losing its verified blocks.
 /// Missing files are expected; other I/O errors must not start a second download.
 async fn adopt_legacy_temp(
+    db: &crate::db::Db,
+    task_id: &str,
     save_dir: &Path,
     link_name: &str,
     name: &str,
@@ -1666,6 +1678,15 @@ async fn adopt_legacy_temp(
     }
     match tokio::fs::metadata(&legacy_temp).await {
         Ok(metadata) if metadata.is_file() && metadata.len() == total_bytes => {
+            // Only migrate an old path backed by verified blocks from this task.
+            if !db
+                .load_ed2k_blocks(task_id)
+                .await?
+                .iter()
+                .any(|(_, state, _, _)| *state == BLOCK_VERIFIED)
+            {
+                return Ok(());
+            }
             tokio::fs::rename(&legacy_temp, &new_temp)
                 .await
                 .map_err(DownloadError::Io)?;

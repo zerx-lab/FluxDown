@@ -25,6 +25,8 @@ const MAX_MIMES = 64;
 const MAX_HEADER_PREDICATES = 8;
 const MAX_MIRROR_HOSTS = 16;
 const MAX_EXTRACT_FIELDS = 32;
+/** player `inset` 的顶部避让上限（px）：足够容纳播放器顶部控件条，又不至于把浮钮推出小播放器。 */
+const MAX_PLAYER_INSET_TOP = 200;
 const ID_RE = /^(builtin|official|plugin|community|local)\.[a-z0-9][a-z0-9._-]{1,62}$/;
 const RESOURCE_TYPES = new Set([
   "video",
@@ -293,7 +295,12 @@ function checkRule(rule: SniffRuleV1, expectedTier: RuleTier): RuleProblem | nul
       if (sel) return sel;
       if (a.kind === "title" && a.attr !== undefined && typeof a.attr !== "string")
         return bad("attr_invalid", "attr 须为字符串");
-      if (a.kind === "player" && a.float !== "hide") return bad("player_float_invalid", "player.float 非法");
+      if (a.kind === "player") {
+        if (a.float === "inset") {
+          if (!Number.isInteger(a.top) || a.top < 1 || a.top > MAX_PLAYER_INSET_TOP)
+            return bad("player_top_invalid", `player.top 须为 1–${MAX_PLAYER_INSET_TOP} 的整数`);
+        } else if (a.float !== "hide") return bad("player_float_invalid", "player.float 非法");
+      }
       if (!hasHost(rule.match) && rule.tier !== "local")
         return bad("page_scope_required", "page 规则必须限定 host 或 pageHost");
       break;

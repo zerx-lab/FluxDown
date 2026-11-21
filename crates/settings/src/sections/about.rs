@@ -1,6 +1,6 @@
 //! 关于：版本、软件更新、日志导出、浏览器扩展与捐赠链接。
 
-use fluxdown_protocol::{ReleaseNoteDto, UpdatePhase, method};
+use fluxdown_protocol::{ReleaseNoteDto, UpdateInstallKind, UpdatePhase, method};
 use fluxdown_ui_components::{ButtonVariant, FluxIcon, button, loading_button};
 use fluxdown_ui_theme::active_theme;
 use gpui::{
@@ -35,7 +35,7 @@ pub(crate) fn page(ctx: &SectionContext, cx: &mut App) -> SettingsPage {
     )
     .sections([
         version_section(ctx),
-        update_section(ctx),
+        update_section(ctx, cx),
         logs_section(ctx, cx),
         links_section(ctx),
         open_source_section(ctx),
@@ -45,12 +45,38 @@ pub(crate) fn page(ctx: &SectionContext, cx: &mut App) -> SettingsPage {
 fn version_section(ctx: &SectionContext) -> SettingsSection {
     let version = SharedString::from(format!("v{APP_VERSION}"));
     let protocol = SharedString::from(fluxdown_protocol::PROTOCOL_VERSION.to_string());
+    let store = ctx.store();
+    let translator = ctx.translator.clone();
+    let copy = ctx.t("copyDiagnosticInfo");
     SettingsSection::new()
         .title(SharedString::from("FluxDown"))
         .row(ctx.item(
             "currentVersion",
             None,
-            Control::custom(move |_, _, _, cx: &mut App| body_text(cx).child(version.clone())),
+            Control::custom(move |_, _, _, cx: &mut App| {
+                let store = store.clone();
+                let translator = translator.clone();
+                h_flex()
+                    .gap(active_theme(cx).tokens().spacing.sm)
+                    .items_center()
+                    .child(body_text(cx).child(version.clone()))
+                    .child(
+                        button(
+                            "about-copy-diagnostics",
+                            copy.clone(),
+                            ButtonVariant::Secondary,
+                            cx,
+                        )
+                        .on_click(move |_, window, cx| {
+                            crate::version_button::copy_diagnostics(
+                                &store,
+                                &translator,
+                                window,
+                                cx,
+                            );
+                        }),
+                    )
+            }),
         ))
         .row(ctx.item(
             "protocolVersionLabel",
@@ -59,7 +85,7 @@ fn version_section(ctx: &SectionContext) -> SettingsSection {
         ))
 }
 
-fn update_section(ctx: &SectionContext) -> SettingsSection {
+fn update_section(ctx: &SectionContext, cx: &App) -> SettingsSection {
     let channels = vec![
         (SharedString::from("stable"), ctx.t("updateChannelStable")),
         (
@@ -67,7 +93,17 @@ fn update_section(ctx: &SectionContext) -> SettingsSection {
             ctx.t("updateChannelFrontier"),
         ),
     ];
-    SettingsSection::new()
+    let store = ctx.store.read(cx);
+    let silent_supported = matches!(
+        store.update_status().install_kind,
+        UpdateInstallKind::WindowsSetup
+            | UpdateInstallKind::WindowsPortable
+            | UpdateInstallKind::MacosApp
+            | UpdateInstallKind::LinuxAppImage
+            | UpdateInstallKind::LinuxPortable
+    );
+    let auto_check = store.pref_bool("general.auto_check_update", true);
+    let mut section = SettingsSection::new()
         .title(ctx.t("softwareUpdate"))
         .row(ctx.item(
             "updateChannel",
@@ -78,7 +114,18 @@ fn update_section(ctx: &SectionContext) -> SettingsSection {
             "autoCheckUpdate",
             Some("autoCheckUpdateBackgroundDesc"),
             ctx.pref_switch("general.auto_check_update", true),
-        ))
+        ));
+    if silent_supported {
+        section = section.row(
+            ctx.item(
+                "silentAutoUpdate",
+                Some("silentAutoUpdateDesc"),
+                ctx.pref_switch("general.silent_auto_update", false),
+            )
+            .disabled(!auto_check),
+        );
+    }
+    section
         .row(ctx.item(
             "checkUpdate",
             Some("checkUpdateDesc"),
@@ -330,6 +377,9 @@ fn localized_release_body<'a>(body: &'a str, locale: &str) -> &'a str {
 
 fn logs_section(ctx: &SectionContext, cx: &App) -> SettingsSection {
     const LOG_LEVEL_PREF: &str = "diagnostics.log_level";
+    let size = ctx
+        .daemon_number("log_max_size_mb")
+        .unit(fluxdown_ui_components::size_units::labels()[2]);
     let mut section = SettingsSection::new()
         .title(ctx.t("logExport"))
         .subtitle(ctx.t("logExportDesc"));
@@ -351,11 +401,7 @@ fn logs_section(ctx: &SectionContext, cx: &App) -> SettingsSection {
         ));
     }
     section
-        .row(ctx.item(
-            "logMaxSize",
-            Some("logMaxSizeDesc"),
-            ctx.daemon_number("log_max_size_mb").unit("MB"),
-        ))
+        .row(ctx.item("logMaxSize", Some("logMaxSizeDesc"), size))
         .row(ctx.item("logExportButton", None, export_control(ctx)))
 }
 

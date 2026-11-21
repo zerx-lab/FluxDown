@@ -286,6 +286,50 @@ impl ProxyConfig {
         }
     }
 
+    /// 供日志 / 诊断显示的出口端点：直连为 `direct`，代理为 `scheme://host:port`，
+    /// **永不含凭据**（有用户名时追加 ` (auth)`）。`System` / `Auto` 原始配置没有
+    /// 具体端点，分别显示 `system` / `auto`；调用方应传 [`Self::resolve`] 之后的配置。
+    ///
+    /// ```
+    /// use fluxdown_engine::proxy_config::{ProxyConfig, ProxyMode, ProxyType};
+    ///
+    /// let cfg = ProxyConfig {
+    ///     mode: ProxyMode::Manual,
+    ///     proxy_type: ProxyType::Http,
+    ///     host: "127.0.0.1".into(),
+    ///     port: 7897,
+    ///     username: "u".into(),
+    ///     password: "secret".into(),
+    ///     ..ProxyConfig::default()
+    /// };
+    /// assert_eq!(cfg.log_endpoint(), "http://127.0.0.1:7897 (auth)");
+    /// assert_eq!(ProxyConfig::default().log_endpoint(), "direct");
+    /// ```
+    #[must_use]
+    pub fn log_endpoint(&self) -> String {
+        match self.mode {
+            ProxyMode::None => "direct".to_owned(),
+            ProxyMode::System => "system".to_owned(),
+            ProxyMode::Auto => "auto".to_owned(),
+            ProxyMode::Manual if self.host.is_empty() || self.port == 0 => {
+                "direct (manual proxy incomplete)".to_owned()
+            }
+            ProxyMode::Manual => {
+                let host = if self.host.contains(':') && !self.host.starts_with('[') {
+                    format!("[{}]", self.host)
+                } else {
+                    self.host.clone()
+                };
+                let auth = if self.username.is_empty() {
+                    ""
+                } else {
+                    " (auth)"
+                };
+                format!("{}://{host}:{}{auth}", self.proxy_type.scheme(), self.port)
+            }
+        }
+    }
+
     /// BT 用的代理服务器地址：只看这里的服务器字段（类型 / 主机 / 端口 / 凭据），与
     /// 当前代理模式（不使用 / 系统 / 手动 / 自动）无关——BT 是否走代理、走哪个来源由
     /// [`BtConfig::session_proxy_url`](crate::bt_config::BtConfig::session_proxy_url) 决定。

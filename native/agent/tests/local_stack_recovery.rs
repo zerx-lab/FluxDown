@@ -139,11 +139,179 @@ async fn client_observes_daemon_stale_recovery_and_agent_restart_state_restorati
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires FLUXDOWN_TEST_DAEMON_BIN=<absolute fluxdownd path>"]
+async fn rss_image_proxy_denial_survives_daemon_and_agent_transports() {
+    use fluxdown_protocol::method;
+
+    let daemon_binary = PathBuf::from(
+        std::env::var_os("FLUXDOWN_TEST_DAEMON_BIN").expect("FLUXDOWN_TEST_DAEMON_BIN is required"),
+    );
+    assert!(daemon_binary.is_absolute() && daemon_binary.is_file());
+    let root = std::env::temp_dir().join(format!("fluxdown-rss-preview-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).expect("create local stack data dir");
+    let pid_file = root.join("daemon.pid");
+    let wrapper = create_daemon_wrapper(&root, &daemon_binary, &pid_file);
+    let address = reserve_address();
+    let token_file = root.join("agent").join("agent.token");
+    let mut stack = StackGuard::new(pid_file.clone());
+
+    let feed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let feed_address = feed.local_addr().unwrap();
+    let feed_task = tokio::spawn(async move {
+        let app = axum::Router::new().route(
+            "/feed.xml",
+            axum::routing::get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/rss+xml")],
+                    r#"<rss version="2.0"><channel><title>Preview test</title>
+                    <link>https://preview.invalid/</link><description>Preview test</description>
+                    <item><guid isPermaLink="false">cover</guid><title>Cover</title>
+                    <description><![CDATA[<img src="https://preview.invalid/cover.png">
+                    <img src="http://127.0.0.1/private.png">]]></description>
+                    <enclosure url="https://preview.invalid/download" length="1" type="application/octet-stream"/>
+                    </item></channel></rss>"#,
+                )
+            }),
+        );
+        axum::serve(feed, app)
+            .await
+            .expect("serve local RSS fixture");
+    });
+
+    stack.agent = Some(spawn_agent(
+        &root,
+        &wrapper,
+        reserve_address(),
+        address,
+        &token_file,
+    ));
+    let token = wait_for_token(&token_file, TOKEN_WAIT).await;
+    let mut socket = connect_agent(address, &token).await;
+    hello(&mut socket, 1).await;
+    let snapshot = wait_snapshot(&mut socket, 2, RECOVERY_WAIT, daemon_connected).await;
+    let created = rpc_call(
+        &mut socket,
+        100,
+        method::DAEMON_RSS_CREATE_SOURCE,
+        Some(json!({"url": format!("http://{feed_address}/feed.xml"), "autoDownload": false})),
+    )
+    .await;
+    let source_id = created["result"]["sourceId"].as_str().expect("source ID");
+    let refreshed = rpc_call(
+        &mut socket,
+        101,
+        method::DAEMON_RSS_REFRESH_SOURCE,
+        Some(json!({"sourceId": source_id})),
+    )
+    .await;
+    assert_eq!(refreshed["result"]["ok"], true, "{refreshed}");
+    let deadline = Instant::now() + RECOVERY_WAIT;
+    let guid = loop {
+        let items = rpc_call(
+            &mut socket,
+            102,
+            method::DAEMON_RSS_GET_ITEMS,
+            Some(json!({"sourceId": source_id})),
+        )
+        .await;
+        let rows = items["result"].as_array().expect("RSS items result");
+        if let Some(item) = rows.first() {
+            assert_eq!(item["imageCount"], 2, "{item}");
+            break item["guid"].as_str().expect("item GUID").to_owned();
+        }
+        assert!(Instant::now() < deadline, "RSS item was not persisted");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+
+    // Enable the proxy after fetching the fixture. Neither preview should reach the network.
+    let revision = daemon_revision(&snapshot);
+    let patched = rpc_call(
+        &mut socket,
+        103,
+        method::DAEMON_CONFIG_PATCH,
+        Some(json!({
+            "expectedRevision": revision,
+            "values": {"proxy_mode": "manual", "proxy_host": "127.0.0.1",
+                       "proxy_port": feed_address.port().to_string(), "proxy_no_list": ""}
+        })),
+    )
+    .await;
+    assert_eq!(
+        patched["result"]["revision"],
+        json!(revision + 1),
+        "{patched}"
+    );
+    let rpc = rpc_call(
+        &mut socket,
+        104,
+        method::DAEMON_RSS_GET_IMAGE,
+        Some(json!({"sourceId": source_id, "guid": guid, "index": 0})),
+    )
+    .await;
+    assert_eq!(
+        rpc["error"]["data"]["reason"], "rssImageProxyUnverifiable",
+        "{rpc}"
+    );
+
+    let http = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    for (index, status, marker) in [
+        ("0", reqwest::StatusCode::FORBIDDEN, Some("1")),
+        ("1", reqwest::StatusCode::BAD_GATEWAY, None),
+    ] {
+        let response = http
+            .get(format!("http://{address}/api/web/rss-images"))
+            .bearer_auth(&token)
+            .query(&[
+                ("sourceId", source_id),
+                ("guid", guid.as_str()),
+                ("index", index),
+            ])
+            .send()
+            .await
+            .expect("preview HTTP response");
+        assert_eq!(response.status(), status, "image index {index}");
+        assert_eq!(
+            response
+                .headers()
+                .get("x-fluxdown-rss-image-proxy-unverifiable")
+                .map(|value| value.to_str().unwrap()),
+            marker,
+            "image index {index}"
+        );
+    }
+
+    drop(socket);
+    terminate_child(stack.agent.as_mut().unwrap(), Duration::from_secs(10)).await;
+    stack.agent = None;
+    let daemon_pid = wait_for_daemon_pid(&pid_file, None, RECOVERY_WAIT).await;
+    send_signal(daemon_pid, "TERM");
+    wait_for_process_exit(daemon_pid, Duration::from_secs(10)).await;
+    stack.daemon_cleaned = true;
+    feed_task.abort();
+    std::fs::remove_dir_all(short_home(&root)).expect("remove isolated agent HOME");
+    std::fs::remove_dir_all(&root).expect("remove local stack data dir");
+}
+
 /// 完全退出（握手前 `system.shutdown`，即版本替换与托盘「退出」共用的路径）：daemon 先
 /// 优雅退出，agent 随后以 `service-quit` 关闭 UI 连接并正常退出，且不再拉起 daemon。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires FLUXDOWN_TEST_DAEMON_BIN=<absolute fluxdownd path>"]
 async fn full_quit_stops_daemon_then_agent_and_tells_clients_not_to_reconnect() {
+    assert_full_quit(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires FLUXDOWN_TEST_DAEMON_BIN=<absolute fluxdownd path>"]
+async fn scheduled_quit_stops_daemon_then_agent_and_tells_clients_not_to_reconnect() {
+    assert_full_quit(true).await;
+}
+
+async fn assert_full_quit(scheduled: bool) {
     let daemon_binary = PathBuf::from(
         std::env::var_os("FLUXDOWN_TEST_DAEMON_BIN").expect("FLUXDOWN_TEST_DAEMON_BIN is required"),
     );
@@ -173,15 +341,26 @@ async fn full_quit_stops_daemon_then_agent_and_tells_clients_not_to_reconnect() 
     wait_snapshot(&mut client, 2, RECOVERY_WAIT, daemon_connected).await;
     let daemon_pid = wait_for_daemon_pid(&daemon_pid_file, None, RECOVERY_WAIT).await;
 
-    let mut control = connect_agent(agent_address, &token).await;
-    let accepted = rpc_call(
-        &mut control,
-        1,
-        fluxdown_protocol::method::SYSTEM_SHUTDOWN,
-        None,
-    )
-    .await;
-    assert_eq!(accepted["result"]["ok"], json!(true), "{accepted}");
+    if scheduled {
+        let accepted = rpc_call(
+            &mut client,
+            3,
+            fluxdown_protocol::method::AGENT_POWER_ARM,
+            Some(json!({"delaySecs": 1, "action": "quit"})),
+        )
+        .await;
+        assert_eq!(accepted["result"]["armed"], json!(true), "{accepted}");
+    } else {
+        let mut control = connect_agent(agent_address, &token).await;
+        let accepted = rpc_call(
+            &mut control,
+            1,
+            fluxdown_protocol::method::SYSTEM_SHUTDOWN,
+            None,
+        )
+        .await;
+        assert_eq!(accepted["result"]["ok"], json!(true), "{accepted}");
+    }
 
     let close_reason = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
@@ -200,10 +379,17 @@ async fn full_quit_stops_daemon_then_agent_and_tells_clients_not_to_reconnect() 
         close_reason.as_deref(),
         Some(fluxdown_protocol::CLOSE_REASON_SERVICE_QUIT)
     );
-    assert!(
-        !process_exists(daemon_pid),
-        "daemon must be gone before the agent releases its UI connections"
-    );
+    // The close frame is ordered after release of the daemon lease, not after PID reaping.
+    let lease = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(root.join("daemon.lock"))
+        .expect("open the daemon lease file");
+    lease
+        .try_lock()
+        .expect("daemon must release its lease before the agent closes UI connections");
+    drop(lease);
+    wait_for_process_exit(daemon_pid, Duration::from_secs(10)).await;
 
     let agent = stack.agent.as_mut().expect("agent child");
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -353,6 +539,7 @@ fn spawn_agent(
         .env("FLUXDOWN_AGENT_BIND", agent_address.to_string())
         .env("FLUXCLOUD_BASE_URL", "http://127.0.0.1:1")
         .env_remove("FLUXDOWN_DATABASE_URL")
+        .env_remove("FLUXDOWN_SHUTDOWN_DRY_RUN")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())

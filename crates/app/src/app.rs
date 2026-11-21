@@ -661,6 +661,11 @@ fn apply_preferences(values: &BTreeMap<String, serde_json::Value>, cx: &mut App)
         crate::app_icon::apply_preference(values, &client, cx);
     }
     apply_activity_bar_preferences(values, cx);
+    let mut refresh_windows = fluxdown_ui_components::size_units::apply(
+        values
+            .get(fluxdown_ui_components::size_units::PREF_KEY)
+            .and_then(serde_json::Value::as_str),
+    );
     if let Some(locale) = values
         .get("general.locale")
         .and_then(serde_json::Value::as_str)
@@ -678,11 +683,11 @@ fn apply_preferences(values: &BTreeMap<String, serde_json::Value>, cx: &mut App)
             }
             changed
         });
-        if locale_changed {
-            // gpui-component 自带文案读进程级静态 locale，不在被追踪的状态里；retained 渲染
-            // 下只有整窗刷新才能让没读 Translator 的库控件换成新语言。
-            cx.refresh_windows();
-        }
+        refresh_windows |= locale_changed;
+    }
+    if refresh_windows {
+        // Component locale and size formatting are process-wide, outside tracked render state.
+        cx.refresh_windows();
     }
     // 界面语言（含跟随系统）一变，汉字主字体与回退链随之更新；未变时为空操作。
     let preference = han_font_preference(translator.read(cx));
