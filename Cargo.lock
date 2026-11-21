@@ -4698,7 +4698,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.21",
- "windows 0.58.0",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -6192,7 +6192,7 @@ dependencies = [
  "tokio",
  "tower-service",
  "tracing",
- "windows-registry 0.4.0",
+ "windows-registry 0.6.1",
 ]
 
 [[package]]
@@ -6207,7 +6207,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.58.0",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -7117,6 +7117,7 @@ dependencies = [
 [[package]]
 name = "librqbit"
 version = "9.1.0"
+source = "git+https://github.com/gulanthys/rqbit?rev=f246aed10c46c4771b55d72fe681fdab17627eab#f246aed10c46c4771b55d72fe681fdab17627eab"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -7180,6 +7181,7 @@ dependencies = [
 [[package]]
 name = "librqbit-bencode"
 version = "9.1.0"
+source = "git+https://github.com/gulanthys/rqbit?rev=f246aed10c46c4771b55d72fe681fdab17627eab#f246aed10c46c4771b55d72fe681fdab17627eab"
 dependencies = [
  "anyhow",
  "arrayvec",
@@ -7195,6 +7197,7 @@ dependencies = [
 [[package]]
 name = "librqbit-buffers"
 version = "9.1.0"
+source = "git+https://github.com/gulanthys/rqbit?rev=f246aed10c46c4771b55d72fe681fdab17627eab#f246aed10c46c4771b55d72fe681fdab17627eab"
 dependencies = [
  "bytes",
  "librqbit-clone-to-owned",
@@ -7205,6 +7208,7 @@ dependencies = [
 [[package]]
 name = "librqbit-clone-to-owned"
 version = "9.1.0"
+source = "git+https://github.com/gulanthys/rqbit?rev=f246aed10c46c4771b55d72fe681fdab17627eab#f246aed10c46c4771b55d72fe681fdab17627eab"
 dependencies = [
  "bytes",
 ]
@@ -7212,6 +7216,7 @@ dependencies = [
 [[package]]
 name = "librqbit-core"
 version = "9.1.0"
+source = "git+https://github.com/gulanthys/rqbit?rev=f246aed10c46c4771b55d72fe681fdab17627eab#f246aed10c46c4771b55d72fe681fdab17627eab"
 dependencies = [
  "anyhow",
  "bytes",
@@ -7241,6 +7246,7 @@ dependencies = [
 [[package]]
 name = "librqbit-dht"
 version = "9.1.0"
+source = "git+https://github.com/gulanthys/rqbit?rev=f246aed10c46c4771b55d72fe681fdab17627eab#f246aed10c46c4771b55d72fe681fdab17627eab"
 dependencies = [
  "anyhow",
  "backon",
@@ -7287,6 +7293,7 @@ dependencies = [
 [[package]]
 name = "librqbit-lsd"
 version = "9.1.0"
+source = "git+https://github.com/gulanthys/rqbit?rev=f246aed10c46c4771b55d72fe681fdab17627eab#f246aed10c46c4771b55d72fe681fdab17627eab"
 dependencies = [
  "anyhow",
  "atoi 3.1.1",
@@ -7305,6 +7312,7 @@ dependencies = [
 [[package]]
 name = "librqbit-peer-protocol"
 version = "9.1.0"
+source = "git+https://github.com/gulanthys/rqbit?rev=f246aed10c46c4771b55d72fe681fdab17627eab#f246aed10c46c4771b55d72fe681fdab17627eab"
 dependencies = [
  "anyhow",
  "bitvec",
@@ -7324,6 +7332,7 @@ dependencies = [
 [[package]]
 name = "librqbit-sha1-wrapper"
 version = "9.1.0"
+source = "git+https://github.com/gulanthys/rqbit?rev=f246aed10c46c4771b55d72fe681fdab17627eab#f246aed10c46c4771b55d72fe681fdab17627eab"
 dependencies = [
  "assert_cfg",
  "aws-lc-rs",
@@ -7333,6 +7342,7 @@ dependencies = [
 [[package]]
 name = "librqbit-tracker-comms"
 version = "9.1.0"
+source = "git+https://github.com/gulanthys/rqbit?rev=f246aed10c46c4771b55d72fe681fdab17627eab#f246aed10c46c4771b55d72fe681fdab17627eab"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -7361,6 +7371,7 @@ dependencies = [
 [[package]]
 name = "librqbit-upnp"
 version = "9.1.0"
+source = "git+https://github.com/gulanthys/rqbit?rev=f246aed10c46c4771b55d72fe681fdab17627eab#f246aed10c46c4771b55d72fe681fdab17627eab"
 dependencies = [
  "anyhow",
  "bstr",
@@ -8308,7 +8319,7 @@ version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "680998035259dcfcafe653688bf2aa6d3e2dc05e98be6ab46afb089dc84f1df8"
 dependencies = [
- "proc-macro-crate 1.3.1",
+ "proc-macro-crate 3.5.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -8893,7 +8904,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.45.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
