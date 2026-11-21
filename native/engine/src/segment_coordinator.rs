@@ -51,8 +51,8 @@ use request_path::RequestPath;
 use crate::cdn::NodePool;
 use crate::db::Db;
 use crate::downloader::{
-    DownloadError, ProgressUpdate, SegmentProgressInfo, is_disk_full, is_range_not_satisfiable,
-    is_server_rejection,
+    DownloadError, ProgressUpdate, RangeRejection, SegmentProgressInfo, is_disk_full,
+    is_range_not_satisfiable, is_server_rejection,
 };
 use crate::events::{EngineEvent, EventSink};
 use crate::logger::{log_info, log_warn};
@@ -516,9 +516,9 @@ const RANGE_VERDICT_UNKNOWN: u8 = 0;
 const RANGE_VERDICT_SUPPORTED: u8 = 1;
 const RANGE_VERDICT_UNSUPPORTED: u8 = 2;
 
-/// 「全员被拒 + 瞬时 200 家族」归一为 RangeNotSupported（触发清盘单流回退）
-/// 时允许丢弃的已下字节上限。低于此值：一次性下完的收益 > 重下代价；高于
-/// 此值：保留 fail-loud + 数据，用户 resume 重新 probe 后仍可多段续传。
+/// Below this threshold the existing fallback can discard the partial file.
+/// A deeper checkpoint is kept until a full-stream replacement is verified.
+/// This never classifies HTTP connection/rate-limit rejections as ignored Range.
 const RANGE_FAMILY_DISCARD_MAX: i64 = 8 * 1024 * 1024;
 
 /// 扩容有效判据：扩容后窗口吞吐 >= 扩容前吞吐 × 此系数才继续扩容，
@@ -3099,35 +3099,32 @@ pub async fn run_coordinated_download(
                                 *slot = None;
                             }
 
-                            // 安全检查：如果所有 worker 都已退休且无活跃分段，
-                            // 说明服务器甚至拒绝单连接 → 多段路线无法继续。
+                            // 无存活 worker 时，无进度或浅进度的 Range 拒绝仍可清盘回退。
+                            // 深断点上的 403/429/400 可能是配额、并发或请求限制；
+                            // 清盘不会解除限制，只会丢掉可续传的数据。
+                            // 只有 200 明确表示服务器忽略 Range，才另存一份普通 GET，
+                            // 在校验并保存成功前不碰原断点。
                             let any_alive = worker_assign_txs.iter().any(|tx| tx.is_some())
                                 || segments.values().any(|s| s.state == SegState::Active);
                             if !any_alive && !all_done(&segments) {
-                                // 归一为 RangeNotSupported 上抛（run_download_inner
-                                // 捕获后清盘回退单流 plain GET）的两种情形：
-                                //   • any_data==0：从未有任何段拿到过 206/写入数据，
-                                //     磁盘无可保留进度。Range 敌对的配额型端点
-                                //     （fnOS multiple-download 对带 Range 的请求回
-                                //     400，仅裸 GET 可用）唯一能下完的方式。
-                                //   • 触发错误本身是 RangeNotSupported（瞬时 200
-                                //     家族且重试打满）**且已下进度可忽略**（<
-                                //     RANGE_FAMILY_DISCARD_MAX）：服务器持续对
-                                //     Range 回 200 全量——plain GET 必然可用，丢弃
-                                //     少量已下数据换一次性下完。
-                                // 其余 any_data>0 的失败保留致命错误（fail-loud +
-                                // 数据保留）：403/429/400 是配额/并发问题，清盘重下
-                                // 反丢进度；深进度大文件即便是 200 家族也绝不清盘
-                                // ——resume 重新 probe 后仍有机会多段续传，无条件
-                                // 清盘会把 90% 进度的 4GB 文件整个重下。
                                 let downloaded = total_downloaded.load(Ordering::Relaxed);
                                 let range_family =
                                     matches!(error, DownloadError::RangeNotSupported(_));
                                 let discard_ok = downloaded < RANGE_FAMILY_DISCARD_MAX;
-                                final_error = Some(if !any_data || (range_family && discard_ok) {
-                                    DownloadError::RangeNotSupported(format!(
-                                        "every connection rejected ({error})"
+                                let ignored_range = matches!(
+                                    &error,
+                                    DownloadError::RangeNotSupported(RangeRejection::Http(
+                                        reqwest::StatusCode::OK
                                     ))
+                                );
+                                final_error = Some(if !any_data || (range_family && discard_ok) {
+                                    DownloadError::RangeNotSupported(RangeRejection::Other(
+                                        format!("every connection rejected ({error})"),
+                                    ))
+                                } else if ignored_range {
+                                    DownloadError::RangeResumeRejected {
+                                        total_bytes: effective_total_bytes,
+                                    }
                                 } else {
                                     DownloadError::Other(format!(
                                         "服务器拒绝所有下载连接（包括单连接），无法继续下载：{error}"
@@ -3157,12 +3154,14 @@ pub async fn run_coordinated_download(
                             if final_error.is_none() {
                                 // 已验证 Range 请求持续被限流时保留零进度裸 GET 回退；
                                 // 未验证的裸 GET 已经耗尽退避，不再发同一个请求。
-                                let tried_range = range_verdict.load(Ordering::Relaxed) == RANGE_VERDICT_SUPPORTED;
-                                final_error = Some(if conn_rejection && !any_data
+                                let tried_range =
+                                    range_verdict.load(Ordering::Relaxed) == RANGE_VERDICT_SUPPORTED;
+                                final_error = Some(if conn_rejection
+                                    && !any_data
                                     && (!may_recover || (rate_limited && tried_range))
                                 {
-                                    DownloadError::RangeNotSupported(format!(
-                                        "every connection rejected, no byte ever served: {error}"
+                                    DownloadError::RangeNotSupported(RangeRejection::Other(
+                                        format!("every connection rejected, no byte ever served: {error}"),
                                     ))
                                 } else {
                                     error
@@ -5605,7 +5604,9 @@ async fn do_segment_with_retry(
                     task_id,
                     seg_idx
                 );
-                return Err(DownloadError::RangeNotSupported(format!("416 ({e})")));
+                return Err(DownloadError::RangeNotSupported(RangeRejection::Other(
+                    format!("416 ({e})"),
+                )));
             }
             Err(e) => {
                 if cancel.is_cancelled() {
@@ -5996,7 +5997,9 @@ async fn do_segment(
             if sys_lease && total_downloaded.load(Ordering::Relaxed) == 0 {
                 record_single_conn_domain_persist(url, db);
             }
-            return Err(DownloadError::RangeNotSupported(resp.status().to_string()));
+            return Err(DownloadError::RangeNotSupported(RangeRejection::Http(
+                resp.status(),
+            )));
         }
         log_info!(
             "[coordinator] task {} seg {} 开放式首段收到 200 全量流（{}），\

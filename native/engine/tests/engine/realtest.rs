@@ -11,7 +11,8 @@
 //! 用法：
 //!   cargo test -p fluxdown_engine --test engine realtest -- --ignored --nocapture --test-threads=1
 //!
-//! 默认 `#[ignore]`（绑定端口 + 略慢），需显式 `--ignored` 运行。
+//! 多数场景默认 `#[ignore]`。Range 回退回归由默认 CI 执行，以守住深断点
+//! 不被清盘的约束；持续返回 200 的场景须走完真实分段重试退避（约 30 秒）。
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -57,6 +58,8 @@ struct ServerState {
     advertise_accept_ranges: bool,
     /// 200 全量响应里上报的 Content-Length（None = 诚实上报真实长度）。
     fake_full_content_length: Option<i64>,
+    /// Override the total returned by HEAD and the bytes=0-0 probe only.
+    probe_total: Option<i64>,
 
     // --- 故障注入钩子 ---
     /// 在累计第 N 个 *range* GET 完成后，把 body/etag 切换为 (新 body, 新 etag)。
@@ -76,18 +79,23 @@ struct ServerState {
     /// 覆盖全量 GET 的 Content-Encoding 头值（如 "gzip, gzip" 多层 / "compress" 未知）。
     /// 设置时优先于 gzip_body 自动添加的 "gzip"。仅影响头部，不改 body。
     content_encoding_override: Option<String>,
+    compress_plain_get: bool,
     /// 全量 GET 不发 Content-Length（靠连接关闭定界），模拟 chunked/无 CL 服务器。
     omit_content_length_full: bool,
     /// 全量 GET 只发前 K 字节然后关闭（模拟传输中途断流/截断）。
     close_full_after: Option<usize>,
     /// 运行时关闭 close_full_after（续传第二程需要服务器恢复完整传输）。
     disable_close_full: std::sync::atomic::AtomicBool,
+    /// 普通 GET 发出指定字节后保持连接打开，直到客户端取消。
+    hold_plain_get_after: Option<usize>,
     /// 206 响应是否携带 ETag/Last-Modified。false=剥离（模拟 CDN 边缘节点行为）。
     emit_validators_on_range: bool,
     /// 钩子 A（永久型）：对所有「分段」range GET（区间长度 end-start+1 > 1）强制
     /// 返回 200 全量，保留 probe 的 `bytes=0-0`（长度 1）走 206——复现“服务器支持
     /// Range，但对分段请求持续返回 200”（alist 代理迅雷/光鸭云盘真实行为）。
     force_full_on_segment_range: bool,
+    /// Ignore segment Range requests for the new tail after a 206 announced file growth.
+    ignore_range_from: Option<i64>,
     /// 钩子 B（一次性）：置为 true 后，下一次「分段」range GET 强制返回一次 200
     /// 全量（消费后自动复位为 false，其余请求照常 206）——复现“瞬时 200”。
     force_full_range_get_once: std::sync::atomic::AtomicBool,
@@ -143,6 +151,7 @@ struct ServerState {
     // --- 计数器（断言用）---
     head_count: AtomicUsize,
     full_get_count: AtomicUsize,
+    plain_get_count: AtomicUsize,
     range_get_count: AtomicUsize,
     swapped: AtomicUsize,
     rejected_range_count: AtomicUsize,
@@ -159,17 +168,21 @@ impl ServerState {
             support_range: true,
             advertise_accept_ranges: true,
             fake_full_content_length: None,
+            probe_total: None,
             swap_after_range_gets: None,
             swap_last_modified: None,
             drop_range_get_nth: None,
             corrupt_range_get_nth: None,
             gzip_body: None,
             content_encoding_override: None,
+            compress_plain_get: false,
             omit_content_length_full: false,
             close_full_after: None,
             disable_close_full: std::sync::atomic::AtomicBool::new(false),
+            hold_plain_get_after: None,
             emit_validators_on_range: true,
             force_full_on_segment_range: false,
+            ignore_range_from: None,
             force_full_range_get_once: std::sync::atomic::AtomicBool::new(false),
             html_error_on_segment_range: false,
             mislabel_segment_range: false,
@@ -197,6 +210,7 @@ impl ServerState {
             drop_first_conns: AtomicUsize::new(0),
             head_count: AtomicUsize::new(0),
             full_get_count: AtomicUsize::new(0),
+            plain_get_count: AtomicUsize::new(0),
             range_get_count: AtomicUsize::new(0),
             swapped: AtomicUsize::new(0),
             rejected_range_count: AtomicUsize::new(0),
@@ -431,7 +445,10 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
             (Some(g), None) => g.len() as i64,
             (None, None) => total,
         };
-        h.push_str(&format!("Content-Length: {}\r\n", cl));
+        h.push_str(&format!(
+            "Content-Length: {}\r\n",
+            st.probe_total.unwrap_or(cl)
+        ));
         if let Some(ce) = &st.content_encoding_override {
             h.push_str(&format!("Content-Encoding: {}\r\n", ce));
         } else if st.gzip_body.is_some() {
@@ -507,6 +524,9 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
         Some(v) => v == &format!("\"{}\"", etag) || v == &last_modified,
     };
     let wants_range = req.range.is_some() && st.support_range && if_range_matches;
+    if req.range.is_none() {
+        st.plain_get_count.fetch_add(1, Ordering::SeqCst);
+    }
 
     // 区间长度：probe 用 `bytes=0-0`（长度 1）；真实分段请求远大于 1。用这个
     // 区分，让下面两个故障注入钩子只作用于“分段” range GET，不影响 probe——
@@ -656,6 +676,10 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
     // 200（随后自动复位、恢复 206），模拟“瞬时 200”。
     let force_full = is_segment_range_get
         && (st.force_full_on_segment_range
+            || req
+                .range
+                .zip(st.ignore_range_from)
+                .is_some_and(|((start, _), from)| start >= from)
             || st.force_full_range_get_once.swap(false, Ordering::SeqCst));
     let wants_range = wants_range && !force_full;
 
@@ -663,9 +687,18 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
         // 200 全量
         st.full_get_count.fetch_add(1, Ordering::SeqCst);
         // gzip 模式：发压缩体，Content-Length=压缩长度，附 Content-Encoding: gzip。
-        let send_body: Vec<u8> = match &st.gzip_body {
-            Some(g) => g.as_ref().clone(),
-            None => body.as_ref().clone(),
+        let compressed = st.compress_plain_get && req.range.is_none();
+        let send_body: Vec<u8> = if compressed {
+            use std::io::Write;
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            encoder.write_all(body.as_slice()).unwrap();
+            encoder.finish().unwrap()
+        } else {
+            match &st.gzip_body {
+                Some(g) => g.as_ref().clone(),
+                None => body.as_ref().clone(),
+            }
         };
         let cl = st
             .fake_full_content_length
@@ -677,7 +710,7 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
         }
         if let Some(ce) = &st.content_encoding_override {
             h.push_str(&format!("Content-Encoding: {}\r\n", ce));
-        } else if st.gzip_body.is_some() {
+        } else if compressed || st.gzip_body.is_some() {
             h.push_str("Content-Encoding: gzip\r\n");
         }
         if st.support_range && st.advertise_accept_ranges {
@@ -688,6 +721,13 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
         h.push_str(&format!("Content-Type: {}\r\n", st.content_type));
         h.push_str("Connection: close\r\n\r\n");
         write_all(&mut stream, h.as_bytes()).await?;
+        if let Some(k) = st.hold_plain_get_after
+            && req.range.is_none()
+        {
+            write_all(&mut stream, &send_body[..k]).await?;
+            let _ = stream.read(&mut [0; 1]).await?;
+            return Ok(());
+        }
         if let Some(k) = st.close_full_after
             && !st.disable_close_full.load(Ordering::SeqCst)
         {
@@ -772,7 +812,11 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
     h.push_str("HTTP/1.1 206 Partial Content\r\n");
     h.push_str(&format!("Content-Length: {}\r\n", len));
     // 分母注入：序列非空时弹出首个值伪造服务器自报总大小（模拟文件仍在增长）。
-    let reported_total = {
+    let reported_total = if req.range == Some((0, Some(0)))
+        && let Some(probe_total) = st.probe_total
+    {
+        probe_total
+    } else {
         let mut seq = st
             .range_total_sequence
             .lock()
@@ -2434,19 +2478,54 @@ async fn run_full(
     checksum: &str,
     cancel: &CancellationToken,
 ) -> (i32, std::path::PathBuf) {
+    let (status, dest, _) = run_full_with_spec(
+        work_dir,
+        db,
+        task_id,
+        url,
+        file_name,
+        segment_count,
+        hint_file_size,
+        is_resume,
+        checksum,
+        cancel,
+        RequestSpec::empty_get(),
+    )
+    .await;
+    (status, dest)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_full_with_spec(
+    work_dir: &Path,
+    db: &Db,
+    task_id: &str,
+    url: &str,
+    file_name: &str,
+    segment_count: i32,
+    hint_file_size: i64,
+    is_resume: bool,
+    checksum: &str,
+    cancel: &CancellationToken,
+    spec: RequestSpec,
+) -> (i32, std::path::PathBuf, Option<i64>) {
     use fluxdown_engine::downloader::{DownloadParams, run_download};
 
     let client = test_client();
     let speed_limiter = SpeedLimiter::new(0);
     let (tx, mut rx) = mpsc::channel::<ProgressUpdate>(256);
-    let last_status = Arc::new(std::sync::atomic::AtomicI32::new(0));
-    let ls = last_status.clone();
     let collector = tokio::spawn(async move {
+        let mut status = 0;
+        let mut staged_received = None;
         while let Some(u) = rx.recv().await {
-            if u.status >= 3 {
-                ls.store(u.status, std::sync::atomic::Ordering::SeqCst);
+            if matches!(u.status, 2..=4) {
+                status = u.status;
+            }
+            if u.staged_download {
+                staged_received = u.transfer_bytes;
             }
         }
+        (status, staged_received)
     });
 
     let params = DownloadParams {
@@ -2482,7 +2561,7 @@ async fn run_full(
         selector: std::sync::Arc::new(fluxdown_engine::NoopSelection),
         checksum: checksum.to_string(),
         extra_headers: std::collections::HashMap::new(),
-        spec: RequestSpec::empty_get(),
+        spec,
         audio_url: None,
         use_server_time: false,
         overwrite: fluxdown_engine::file_exists::OverwritePolicy::Never,
@@ -2492,11 +2571,10 @@ async fn run_full(
 
     run_download(params).await;
 
-    collector
+    let (status, staged_received) = collector
         .await
         .expect("test background task must not panic");
-    let status = last_status.load(std::sync::atomic::Ordering::SeqCst);
-    (status, work_dir.join(file_name))
+    (status, work_dir.join(file_name), staged_received)
 }
 
 async fn insert_simple_task(
@@ -3664,6 +3742,310 @@ async fn assert_non_partial_range_falls_back(html_error: bool) {
         assert!(st.rejected_range_count.load(Ordering::SeqCst) > 0);
     }
     drop(server);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ignored_range_at_99_percent_finishes_with_plain_get() {
+    assert_ignored_range_restart(RangeRestartCase::Success).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ignored_range_after_expansion_uses_the_new_total_for_plain_get() {
+    assert_ignored_range_restart(RangeRestartCase::Expanded).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ignored_range_at_99_percent_keeps_checkpoint_if_plain_get_is_truncated() {
+    assert_ignored_range_restart(RangeRestartCase::Truncated).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ignored_range_at_99_percent_keeps_checkpoint_if_checksum_fails() {
+    assert_ignored_range_restart(RangeRestartCase::ChecksumMismatch).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ignored_range_at_99_percent_cancellation_removes_only_staging() {
+    assert_ignored_range_restart(RangeRestartCase::Cancelled).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ignored_range_at_99_percent_with_window_cap_never_sends_plain_get() {
+    assert_ignored_range_restart(RangeRestartCase::WindowCapped).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ignored_range_at_99_percent_rejects_compressed_plain_get() {
+    assert_ignored_range_restart(RangeRestartCase::Compressed).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ignored_range_below_8_mib_restarts_without_staging() {
+    assert_ignored_range_restart(RangeRestartCase::Shallow).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ignored_range_at_8_mib_restarts_with_staging() {
+    assert_ignored_range_restart(RangeRestartCase::Threshold).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn deep_checkpoint_does_not_stage_on_http_403() {
+    assert_ignored_range_restart(RangeRestartCase::Rejected(403)).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn deep_checkpoint_does_not_stage_on_http_429() {
+    assert_ignored_range_restart(RangeRestartCase::Rejected(429)).await;
+}
+
+#[derive(Clone, Copy)]
+enum RangeRestartCase {
+    Success,
+    Expanded,
+    Truncated,
+    ChecksumMismatch,
+    Cancelled,
+    WindowCapped,
+    Compressed,
+    Shallow,
+    Threshold,
+    Rejected(u16),
+}
+
+async fn assert_ignored_range_restart(case: RangeRestartCase) {
+    use std::time::Duration;
+
+    use fluxdown_engine::downloader::TEMP_EXT;
+
+    let tag = match case {
+        RangeRestartCase::Success => "range-restart",
+        RangeRestartCase::Expanded => "range-restart-expanded",
+        RangeRestartCase::Truncated => "range-restart-truncated",
+        RangeRestartCase::ChecksumMismatch => "range-restart-bad-checksum",
+        RangeRestartCase::Cancelled => "range-restart-cancelled",
+        RangeRestartCase::WindowCapped => "range-restart-window-capped",
+        RangeRestartCase::Compressed => "range-restart-compressed",
+        RangeRestartCase::Shallow => "range-restart-shallow",
+        RangeRestartCase::Threshold => "range-restart-threshold",
+        RangeRestartCase::Rejected(403) => "range-restart-403",
+        RangeRestartCase::Rejected(_) => "range-restart-429",
+    };
+    let work_dir = unique_dir(tag);
+    struct WorkDirCleanup<'a>(&'a std::path::Path);
+    impl Drop for WorkDirCleanup<'_> {
+        fn drop(&mut self) {
+            if let Err(error) = std::fs::remove_dir_all(self.0) {
+                eprintln!("remove HTTP fallback test directory: {error}");
+            }
+        }
+    }
+    let _work_dir_cleanup = WorkDirCleanup(&work_dir);
+    if matches!(case, RangeRestartCase::Success) {
+        use sha2::{Digest, Sha256};
+        let key = hex::encode(Sha256::digest(tag.as_bytes()));
+        let stale = work_dir.join(format!(".fluxdown-restart-{key}"));
+        tokio::fs::create_dir(&stale).await.unwrap();
+        tokio::fs::write(stale.join("download"), b"interrupted replacement")
+            .await
+            .unwrap();
+    }
+    let occupied = matches!(case, RangeRestartCase::Rejected(403)).then(|| {
+        use sha2::{Digest, Sha256};
+        let key = hex::encode(Sha256::digest(tag.as_bytes()));
+        work_dir.join(format!(".fluxdown-restart-{key}"))
+    });
+    if let Some(path) = &occupied {
+        tokio::fs::write(path, b"unrelated file").await.unwrap();
+    }
+    let size = 16 * 1024 * 1024;
+    let prefix = match case {
+        RangeRestartCase::Shallow => 8 * 1024 * 1024 - 1,
+        RangeRestartCase::Threshold => 8 * 1024 * 1024,
+        _ => size * 99 / 100,
+    };
+    let expanded = matches!(case, RangeRestartCase::Expanded);
+    let full_size = if expanded { size + 1024 * 1024 } else { size };
+    let body = Arc::new(gen_body(full_size, 458));
+    let mut server_state = ServerState::new(body.clone(), "range-restart");
+    if expanded {
+        // The first resumed segment's 206 reports more bytes than the
+        // probe. Requests for the newly appended tail then ignore Range.
+        server_state.probe_total = Some(size as i64);
+        server_state.ignore_range_from = Some(size as i64);
+    } else {
+        server_state.force_full_on_segment_range = true;
+    }
+    if let RangeRestartCase::Rejected(status) = case {
+        server_state.force_full_on_segment_range = false;
+        server_state.segment_range_rejection = Some(status);
+    }
+    server_state.close_full_after =
+        matches!(case, RangeRestartCase::Truncated).then_some(1024 * 1024);
+    server_state.hold_plain_get_after =
+        matches!(case, RangeRestartCase::Cancelled).then_some(1024 * 1024);
+    server_state.compress_plain_get = matches!(case, RangeRestartCase::Compressed);
+    let server_state = Arc::new(server_state);
+    let server = start_server(server_state.clone()).await;
+    let url = server.url("/file");
+    let db = Db::open(&work_dir).await.unwrap();
+    let name = "out.bin";
+    let checkpoint = work_dir.join(format!("{name}{TEMP_EXT}"));
+    insert_simple_task(&db, &work_dir, tag, &url, name, 1, size as i64).await;
+    db.insert_segments(
+        tag,
+        &[
+            (0, 0, prefix as i64 - 1),
+            (1, prefix as i64, size as i64 - 1),
+        ],
+    )
+    .await
+    .unwrap();
+    db.update_segment_progress(tag, 0, prefix as i64)
+        .await
+        .unwrap();
+    db.update_task_progress(tag, prefix as i64).await.unwrap();
+    let mut original = body[..prefix].to_vec();
+    original.resize(size, 0);
+    tokio::fs::write(&checkpoint, &original).await.unwrap();
+    let checksum = if matches!(case, RangeRestartCase::ChecksumMismatch) {
+        format!("sha256={}", sha256_bytes(&original))
+    } else {
+        String::new()
+    };
+
+    let cancel = CancellationToken::new();
+    let capped = matches!(case, RangeRestartCase::WindowCapped);
+    let spec = RequestSpec {
+        max_range_bytes: capped.then_some(1024 * 1024),
+        ..RequestSpec::empty_get()
+    };
+    let download = run_full_with_spec(
+        &work_dir, &db, tag, &url, name, 1, 0, true, &checksum, &cancel, spec,
+    );
+    tokio::pin!(download);
+    if matches!(case, RangeRestartCase::Cancelled) {
+        // Wait for bytes to reach the staging file, not just for the GET to arrive.
+        let staged = async {
+            loop {
+                if range_restart_dirs(&work_dir).any(|entry| {
+                    entry
+                        .path()
+                        .join("download")
+                        .metadata()
+                        .is_ok_and(|meta| meta.len() > 0)
+                }) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        };
+        tokio::select! {
+            outcome = &mut download => panic!("download ended before cancellation: {outcome:?}"),
+            result = tokio::time::timeout(Duration::from_secs(60), staged) => {
+                result.expect("plain GET did not write any staging bytes");
+            }
+        }
+        cancel.cancel();
+    }
+    let (status, dest, staged_received) = if matches!(case, RangeRestartCase::Cancelled) {
+        tokio::time::timeout(Duration::from_secs(5), &mut download)
+            .await
+            .expect("cancellation did not stop the staged GET")
+    } else {
+        download.await
+    };
+
+    assert_eq!(
+        server_state.plain_get_count.load(Ordering::SeqCst),
+        if capped || matches!(case, RangeRestartCase::Rejected(_)) {
+            0
+        } else {
+            1
+        }
+    );
+    match case {
+        RangeRestartCase::Truncated => assert_eq!(staged_received, Some(1024 * 1024)),
+        RangeRestartCase::Cancelled => {
+            assert!((1..=1024 * 1024).contains(&staged_received.unwrap()));
+        }
+        RangeRestartCase::WindowCapped
+        | RangeRestartCase::Compressed
+        | RangeRestartCase::Shallow
+        | RangeRestartCase::Rejected(_) => {
+            assert_eq!(staged_received, None);
+        }
+        _ => assert_eq!(staged_received, Some(full_size as i64)),
+    }
+    if capped {
+        // Only the rejected segment responses can contribute full responses here.
+        assert!(server_state.full_get_count.load(Ordering::SeqCst) > 0);
+    }
+    let saved_segments = db.load_segments(tag).await.unwrap();
+    if !matches!(
+        case,
+        RangeRestartCase::Success
+            | RangeRestartCase::Expanded
+            | RangeRestartCase::Shallow
+            | RangeRestartCase::Threshold
+    ) {
+        assert_eq!(
+            status,
+            if matches!(case, RangeRestartCase::Cancelled) {
+                0 // No terminal success or failure update on cancellation.
+            } else {
+                4
+            }
+        );
+        assert!(!dest.exists());
+        let row = db.load_task_by_id(tag).await.unwrap().unwrap();
+        assert_eq!(row.downloaded_bytes, prefix as i64);
+        if matches!(case, RangeRestartCase::Rejected(_)) {
+            assert!(server_state.rejected_range_count.load(Ordering::SeqCst) > 0);
+        }
+        if matches!(case, RangeRestartCase::ChecksumMismatch) {
+            assert!(
+                row.error_message.contains("checksum mismatch"),
+                "{}",
+                row.error_message
+            );
+        }
+        if matches!(case, RangeRestartCase::Compressed) {
+            assert!(row.error_message.contains("requesting identity encoding"));
+        }
+        assert_eq!(sha256_file(&checkpoint).await, sha256_bytes(&original));
+        assert_eq!(
+            saved_segments
+                .iter()
+                .map(|seg| seg.downloaded_bytes)
+                .sum::<i64>(),
+            prefix as i64
+        );
+    } else {
+        assert_eq!(status, 3);
+        let row = db.load_task_by_id(tag).await.unwrap().unwrap();
+        assert_eq!(row.total_bytes, full_size as i64);
+        assert_eq!(sha256_file(&dest).await, sha256_bytes(&body));
+        assert!(!checkpoint.exists());
+        assert!(saved_segments.is_empty());
+    }
+    if let Some(path) = occupied {
+        assert_eq!(tokio::fs::read(&path).await.unwrap(), b"unrelated file");
+        tokio::fs::remove_file(path).await.unwrap();
+    }
+    assert!(range_restart_dirs(&work_dir).next().is_none());
+}
+
+fn range_restart_dirs(work_dir: &Path) -> impl Iterator<Item = std::fs::DirEntry> {
+    std::fs::read_dir(work_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".fluxdown-restart-")
+        })
 }
 
 /// fnOS multiple-download 式「Range 敌对」配额端点：任何带 Range 的请求一律

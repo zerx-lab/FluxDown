@@ -33,7 +33,11 @@ FluxDown doesn't just fix the segment count at the start. While segments are dow
 Download progress — including the exact byte ranges of every segment — is written to FluxDown's local database roughly every 3 seconds. Pausing a task, closing the app, or a crash therefore loses at most a few seconds of progress, never the whole file. On resume:
 
 - FluxDown re-validates the remote file (via `ETag`/`Last-Modified`) before continuing. If the file changed on the server since the download started, it discards the partial data and starts over instead of silently splicing old and new bytes together.
-- If the server no longer honours `Range` requests, or the previous multi-segment state is inconsistent, FluxDown restarts the download from scratch rather than producing a corrupted file.
+- If the remaining `Range` requests keep returning `200 OK` instead of `206 Partial Content`, FluxDown can try a full GET without `Range`. With at least 8 MiB already downloaded, it writes the replacement separately and keeps the original checkpoint until the new file is verified and saved. Progress starts again from zero because the whole file is downloaded again, and both copies need disk space until the replacement succeeds.
+  If the full GET fails, FluxDown keeps the original checkpoint and waits for you to resume manually. If the server still ignores `Range`, manual resume can trigger another full download. If the server sends compressed data despite `Accept-Encoding: identity`, FluxDown stops the fallback and keeps the checkpoint.
+  For transport failures, the task error includes the underlying cause and any detected network failure category. This is diagnostic information, not a signal to retry automatically.
+  When a task starts again or is deleted, FluxDown tries to clear its `.fluxdown-restart-*` staging directory in the current save location. A crash or forced stop can leave a staging file as large as the download. If the save location changes, the old location is not checked; the fallback log identifies the staging path.
+  If removing the old checkpoint fails after the replacement is saved, FluxDown logs the failure and leaves any remaining checkpoint data in place. If FluxDown crashes after naming the final file but before recording completion, the old checkpoint may remain, and a later resume may download the file again under a deduplicated name.
 
 ## Cookies, headers, User-Agent and Referer
 

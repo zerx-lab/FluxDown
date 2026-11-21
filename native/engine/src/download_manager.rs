@@ -468,11 +468,19 @@ fn without_urls(msg: &str) -> String {
         .collect()
 }
 
+/// A failed speculative full GET cannot resume its own transfer.
+fn requires_manual_resume(msg: &str) -> bool {
+    msg.starts_with(crate::downloader::RANGE_RESTART_FAILED_PREFIX)
+}
+
 /// 判断错误信息是否属于可自动重试的瞬时网络错误。
 /// 排除永久性错误（404、403、checksum 等），仅重试网络层问题。HTTP 下载器
 /// 的文案带类型化分类标签（平台 / 语言无关），有标签即以标签为准；无标签
 /// 的文案（其余协议、旧库存量）回退英文关键词。
 pub(crate) fn is_retriable_error(msg: &str) -> bool {
+    if requires_manual_resume(msg) {
+        return false;
+    }
     if let Some(failure) = crate::net_failure::tag_of(msg) {
         return failure.retriable_same_path();
     }
@@ -1178,6 +1186,9 @@ async fn deferred_file_cleanup(
     // 配合下载器内新增的早期 cancel 检查已能覆盖绝大多数残留窗口。
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     let path = PathBuf::from(&save_dir).join(&file_name);
+    if !is_bt_url(&url) {
+        downloader::clean_http_restart_for_task(Path::new(&save_dir), &task_id).await;
+    }
     if is_bt_url(&url) {
         if delete_files && is_safe_file_name(&file_name) {
             if path.is_dir() {
@@ -1531,10 +1542,13 @@ fn keep_first_cleanup_error(first: &mut Option<std::io::Error>, result: std::io:
 /// 删除一个被删任务的磁盘文件：BT 的最终产物与 staging 目录；其余协议的临时文件、
 /// 独立音轨与最终产物；以及登记的衍生产物。
 async fn remove_deleted_task_files(
-    #[cfg_attr(not(feature = "bt"), allow(unused_variables))] task_id: &str,
+    task_id: &str,
     files: &DeleteFiles,
 ) -> Result<(), downloader::DownloadError> {
     let mut first_error = None;
+    if !files.is_bt {
+        downloader::clean_http_restart_for_task(Path::new(&files.save_dir), task_id).await;
+    }
     let path = PathBuf::from(&files.save_dir).join(&files.file_name);
     let removes_final =
         files.delete_files && files.owns_final && is_safe_file_name(&files.file_name);
@@ -2777,6 +2791,8 @@ struct TaskSpeedState {
     last_transfer_bytes: Option<i64>,
     /// 已观测、尚未随转发帧交给宿主（`EngineEvent::TaskTransferred`）的接收字节。
     unsent_transfer_bytes: i64,
+    /// Staged transfer is in flight until a terminal frame re-anchors progress.
+    staged_download: bool,
     /// Latest downloaded_bytes seen (transfer-baseline settlement).
     latest_bytes: i64,
     /// Resolved file_name (latched from the first non-empty update).
@@ -5685,7 +5701,9 @@ impl DownloadManager {
                 return;
             }
         };
-        let Some(queue_id) = task.filter(|t| t.status == 4).map(|t| t.queue_id) else {
+        let Some(task) =
+            task.filter(|t| t.status == 4 && !requires_manual_resume(&t.error_message))
+        else {
             return;
         };
         if from_interceptor {
@@ -5709,7 +5727,7 @@ impl DownloadManager {
             }
             *count += 1;
         }
-        self.retry_schedule(task_id, queue_id);
+        self.retry_schedule(task_id, task.queue_id);
         let tx = self.retry_tx.clone();
         let tid = task_id.to_string();
         tokio::spawn(async move {
@@ -6014,9 +6032,11 @@ impl DownloadManager {
     /// 防止用户明确取消的下载被自动重启。
     pub async fn is_task_in_error(&self, task_id: &str) -> bool {
         match self.db.load_task_by_id(task_id).await {
-            Ok(task) => {
-                task.is_some_and(|t| t.status == 4 && t.error_message != CANCELLED_ERROR_MESSAGE)
-            }
+            Ok(task) => task.is_some_and(|t| {
+                t.status == 4
+                    && t.error_message != CANCELLED_ERROR_MESSAGE
+                    && !requires_manual_resume(&t.error_message)
+            }),
             Err(error) => {
                 crate::logger::report_warning(
                     "download-manager",
@@ -8496,7 +8516,9 @@ impl DownloadManager {
             }
             // 本轮是否已排程恢复——决定 `task.failed` 是否应立即发出。
             let mut retry_pending = false;
+            let manual_resume = requires_manual_resume(&task.error_message);
             if task.status == 4
+                && !manual_resume
                 && self.proxy_config.mode == ProxyMode::Auto
                 && task.proxy_url.is_empty()
                 // 站点规则与协议固定出口不参与 Auto 换路：否则会把其失败归因到 Auto，
@@ -8745,7 +8767,7 @@ impl DownloadManager {
                         message: task.error_message.clone(),
                     })
                     .await;
-                    if !is_bt_url(&task.url) && !is_ed2k_url(&task.url) {
+                    if !manual_resume && !is_bt_url(&task.url) && !is_ed2k_url(&task.url) {
                         let ic = self.task_interceptor(task_id, &task.url, &task.url).await;
                         if crate::intercept::wants(
                             ic.as_ref(),
@@ -14166,6 +14188,9 @@ impl DownloadManager {
                 lock_reserved(&self.reserved_temp_paths).remove(&reserved);
             }
             let path = PathBuf::from(&t.save_dir).join(&t.file_name);
+            if !is_bt_url(&t.url) {
+                downloader::clean_http_restart_for_task(Path::new(&t.save_dir), task_id).await;
+            }
 
             if is_bt_url(&t.url) {
                 #[cfg(feature = "bt")]
@@ -17885,6 +17910,7 @@ pub async fn progress_reporter(
                 speed_from_transfer,
                 last_transfer_bytes: None,
                 unsent_transfer_bytes: 0,
+                staged_download: false,
                 latest_bytes: update.downloaded_bytes,
                 file_name: String::new(),
                 cached_segments: None,
@@ -17939,6 +17965,7 @@ pub async fn progress_reporter(
             state.unsent_transfer_bytes = state.unsent_transfer_bytes.saturating_add(fresh.max(0));
             state.last_transfer_bytes = Some(transfer);
         }
+        state.staged_download |= update.staged_download;
 
         // -----------------------------------------------------------------
         // Fixed-window speed calculation
@@ -18165,6 +18192,15 @@ pub async fn progress_reporter(
                         bytes: std::mem::take(&mut state.unsent_transfer_bytes),
                     });
                 }
+                if state.staged_download && matches!(update.status, 2..=4) {
+                    // All staged traffic was accounted above. The terminal
+                    // value may restore the old checkpoint, not represent I/O.
+                    sink.emit(EngineEvent::TaskTransferBaseline {
+                        task_id: update.task_id.clone(),
+                        downloaded_bytes: update.downloaded_bytes,
+                        previous_downloaded_bytes: None,
+                    });
+                }
                 sink.emit(EngineEvent::TaskProgress {
                     task_id: update.task_id.clone(),
                     status: update.status,
@@ -18270,7 +18306,7 @@ pub async fn progress_reporter(
         // block the progress consumption loop.  Under high throughput (many
         // HTTP segments + BT) the channel would back-pressure and stall BT
         // progress reporting if we awaited each DB write synchronously.
-        if update.status == 1 {
+        if update.status == 1 && !update.staged_download {
             let task_last_save = last_db_save.entry(update.task_id.clone()).or_insert(now);
             if task_last_save.elapsed().as_secs() >= downloader::DB_SAVE_INTERVAL_SECS {
                 let db_clone = db.clone();
@@ -19512,6 +19548,65 @@ mod tests {
         );
         let err = http_resp.error_for_status().unwrap_err();
         downloader::DownloadError::Request(err).to_string()
+    }
+
+    #[tokio::test]
+    async fn full_get_fallback_interruption_requires_manual_resume() {
+        const ID: &str = "interrupted-full-get";
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        db.seed_builtin_queues().await.expect("seed");
+        insert_paused_task_in_queue(&db, ID, "").await;
+        db.set_task_auto_route(ID, crate::auto_proxy::route::DIRECT)
+            .await
+            .expect("set direct route");
+        let cause = downloader::DownloadError::Other("download stalled: no body bytes".into());
+        let error = downloader::DownloadError::RangeRestartFailed(Box::new(cause));
+        db.update_task_status(ID, 4, &error.to_string())
+            .await
+            .expect("set fallback failure");
+
+        let mut mgr = sched_manager(&db, 1);
+        mgr.proxy_config = ProxyConfig {
+            mode: ProxyMode::Auto,
+            host: "127.0.0.1".into(),
+            port: 7890,
+            ..Default::default()
+        };
+        mgr.set_max_auto_retries(-1);
+        mgr.active_tasks.insert(
+            ID.into(),
+            ActiveTaskEntry {
+                token: CancellationToken::new(),
+                generation: 1,
+                handle: None,
+                is_bt: false,
+                queue_id: String::new(),
+            },
+        );
+        mgr.on_task_done(&TaskDone {
+            task_id: ID.into(),
+            generation: 1,
+            reserved_temp_path: None,
+            phase: TaskDonePhase::Finished,
+        })
+        .await;
+        assert!(mgr.retry_pending_task_ids().is_empty());
+        assert!(!mgr.is_task_in_error(ID).await);
+
+        #[cfg(feature = "plugins")]
+        {
+            mgr.plugin_request_retry(ID, 0).await;
+            assert!(mgr.retry_pending_task_ids().is_empty());
+
+            mgr.intercept_retry_marks
+                .lock()
+                .expect("marks")
+                .insert(ID.into());
+            mgr.plugin_request_retry(ID, 0).await;
+            assert!(mgr.retry_pending_task_ids().is_empty());
+        }
     }
 
     /// #636：5xx（含 503 Service Unavailable）在 reqwest 错误消息里必须被
@@ -22553,6 +22648,39 @@ mod tests {
                 &error,
             );
         }
+    }
+
+    #[tokio::test]
+    async fn blocked_http_staging_does_not_prevent_task_deletion() {
+        use sha2::{Digest, Sha256};
+
+        let dir = unique_filetrack_test_dir("blocked_http_staging");
+        std::fs::create_dir_all(&dir).expect("create deletion fixture");
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect database");
+        let mut manager = sched_manager(&db, 1);
+        for (id, batch) in [("staging-single", false), ("staging-batch", true)] {
+            insert_task_at_status(&db, id, &dir.to_string_lossy(), "out.bin", 4).await;
+            let key = hex::encode(Sha256::digest(id.as_bytes()));
+            let occupied = dir.join(format!(".fluxdown-restart-{key}"));
+            std::fs::write(&occupied, b"unrelated file").expect("occupy staging path");
+            if batch {
+                let outcome = manager
+                    .delete_tasks_batch(&[id.to_owned()], false)
+                    .await
+                    .expect("batch delete");
+                assert_eq!((outcome.deleted, outcome.failed), (1, 0));
+            } else {
+                manager.delete_task(id, false).await.expect("delete task");
+            }
+            assert!(db.load_task_by_id(id).await.expect("load task").is_none());
+            assert_eq!(
+                std::fs::read(&occupied).expect("read unrelated file"),
+                b"unrelated file"
+            );
+        }
+        std::fs::remove_dir_all(dir).expect("remove deletion fixture");
     }
 
     /// 失败任务的文件名在本机不可能存在（组件超长，`remove_file` 返回
@@ -26459,6 +26587,73 @@ mod tests {
                 (33 * MIB, Some(33 * MIB)),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn staged_download_accounts_received_bytes_before_restoring_checkpoint() {
+        const CHECKPOINT: i64 = 15 * 1024 * 1024;
+        const RECEIVED: i64 = 128 * 1024;
+        for terminal_status in [2, 4] {
+            let (tx, rx) = mpsc::channel(8);
+            let db = Db::connect("sqlite::memory:")
+                .await
+                .expect("connect mem db");
+            let sink = Arc::new(RecordingSink::new());
+            for (status, downloaded_bytes, download_baseline, transfer_bytes) in [
+                (1, CHECKPOINT, Some(CHECKPOINT), None),
+                (1, 0, Some(0), Some(0)),
+                (1, RECEIVED / 2, None, Some(RECEIVED)),
+                (terminal_status, CHECKPOINT, None, None),
+            ] {
+                tx.send(ProgressUpdate {
+                    task_id: "staged".into(),
+                    status,
+                    downloaded_bytes,
+                    download_baseline,
+                    transfer_bytes,
+                    staged_download: transfer_bytes.is_some(),
+                    ..Default::default()
+                })
+                .await
+                .expect("enqueue progress");
+            }
+            drop(tx);
+            progress_reporter(rx, db, sink.clone()).await;
+
+            let accounted: Vec<_> = sink
+                .events()
+                .into_iter()
+                .filter_map(|event| match event {
+                    EngineEvent::TaskTransferred { bytes, .. } => Some((0, bytes)),
+                    EngineEvent::TaskTransferBaseline {
+                        downloaded_bytes,
+                        previous_downloaded_bytes,
+                        ..
+                    } => {
+                        if downloaded_bytes == CHECKPOINT {
+                            assert_eq!(previous_downloaded_bytes, None);
+                        }
+                        Some((1, downloaded_bytes))
+                    }
+                    EngineEvent::TaskProgress {
+                        status,
+                        downloaded_bytes,
+                        ..
+                    } if status == terminal_status => Some((status, downloaded_bytes)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                accounted,
+                [
+                    (1, CHECKPOINT),
+                    (1, 0),
+                    (0, RECEIVED),
+                    (1, CHECKPOINT),
+                    (terminal_status, CHECKPOINT),
+                ],
+            );
+        }
     }
 
     /// 落盘字节按段跳变(HLS 整段缓冲后写盘)时,速度与宿主流量都跟随接收字节:
