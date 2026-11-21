@@ -2102,10 +2102,26 @@ pub async fn load_or_create_bearer(
     let path = override_path
         .map(Path::to_path_buf)
         .unwrap_or_else(|| data_dir.join("agent.token"));
-    if let Ok(value) = tokio::fs::read_to_string(&path).await
-        && !value.trim().is_empty()
-    {
-        return Ok(value.trim().to_owned());
+    match tokio::fs::read_to_string(&path).await {
+        Ok(value) if !value.trim().is_empty() => return Ok(value.trim().to_owned()),
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        // 读不了（ACL 只授权给重装前的旧账户 SID、内容不是 UTF-8）：删掉后重建；桌面每次连接前
+        // 重读 bearer。删不掉时带上原因失败，不让 rename 报一个看不出缘由的拒绝访问。
+        Err(error) => {
+            tracing::warn!(path = %path.display(), error = %error, "agent token is unreadable; replacing it");
+            if let Err(remove) = tokio::fs::remove_file(&path).await
+                && remove.kind() != std::io::ErrorKind::NotFound
+            {
+                return Err(std::io::Error::new(
+                    remove.kind(),
+                    format!(
+                        "agent token {} is unreadable ({error}) and cannot be replaced: {remove}",
+                        path.display()
+                    ),
+                ));
+            }
+        }
     }
     let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
     let parent = path.parent().unwrap_or(data_dir);

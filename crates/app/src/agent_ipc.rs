@@ -1,9 +1,10 @@
 //! 到本机 agent 的字节流：首选每用户 IPC（Unix domain socket / Windows Named Pipe），回环 TCP
 //! 作回退。两者之上跑同一套 WebSocket + JSON-RPC。
 //!
-//! IPC 端点名由 bearer 所在目录推导（契约见 `fluxdown_protocol::local_service`），不占端口、
-//! 不依赖端点发布文件。端点不存在 / 打不开 / 推导不一致都只表示「这条通道此刻不可用」，
-//! 由调用方照常走 TCP 流程（探测、拉起 agent、重读端点文件）。
+//! IPC 端点契约见 `fluxdown_protocol::local_service`：Unix socket 位于 bearer 所在私有目录；
+//! Windows 管道名由 agent 每次启动随机生成、随 bearer 同目录的端点发布文件（`pipe` 字段）公布，
+//! 只连通过名字校验的值。端点不存在 / 打不开 / 未发布都只表示「这条通道此刻不可用」，由调用方
+//! 照常走 TCP 流程（探测、拉起 agent、重读端点文件）。
 
 use std::io;
 use std::path::Path;
@@ -114,14 +115,31 @@ mod platform {
     use std::io;
     use std::path::Path;
 
-    use fluxdown_protocol::local_service::gateway_pipe_name;
+    use fluxdown_protocol::local_service::{
+        GATEWAY_ENDPOINT_FILE, LocalEndpoint, is_gateway_pipe_name,
+    };
     use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
 
     pub(crate) type Stream = NamedPipeClient;
 
-    /// 管道实例全被占用（`ERROR_PIPE_BUSY`）时按不可用返回：调用方本轮走 TCP，下一轮再试。
+    /// 读端点文件里 agent 发布的管道名再打开：名字不可推导，其他账户无法抢注冒充 agent 收下
+    /// bearer。文件缺 `pipe`（旧 agent / IPC 建不起来）按端点不存在处理。管道实例全被占用
+    /// （`ERROR_PIPE_BUSY`）时同样按不可用返回：调用方本轮走 TCP，下一轮再试。tokio 默认只授予
+    /// 服务端识别（`SECURITY_IDENTIFICATION`）级别，不允许冒用本进程身份。
     pub(super) async fn connect(directory: &Path) -> io::Result<Stream> {
-        ClientOptions::new().open(gateway_pipe_name(&directory.to_string_lossy()))
+        let bytes = tokio::fs::read(directory.join(GATEWAY_ENDPOINT_FILE)).await?;
+        let endpoint: LocalEndpoint = serde_json::from_slice(&bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let pipe = endpoint
+            .pipe
+            .filter(|pipe| is_gateway_pipe_name(pipe))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "agent did not publish a gateway IPC pipe",
+                )
+            })?;
+        ClientOptions::new().open(pipe)
     }
 }
 

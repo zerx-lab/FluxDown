@@ -67,8 +67,8 @@ const CHECK_NMH_POLICY: &str = "nmh_policy";
 const CHECK_NMH_COMSPEC: &str = "nmh_comspec";
 /// 类 Unix：属于其他用户的 NMH 启动脚本 / 清单（以后的自动注册改不了）。
 const CHECK_NMH_OWNERSHIP: &str = "nmh_ownership";
-/// 桌面宿主以提权身份运行：类 Unix 为 root；Windows 为 UAC 完整管理员令牌（浏览器中继连不上
-/// 本进程的命名管道，经它打开的文件也以管理员身份运行）。
+/// 桌面宿主以提权身份运行：类 Unix 为 root（浏览器中继连不上 root 的 socket）；Windows 为 UAC
+/// 完整管理员令牌（管道已用固定安全描述符，中继仍连得上，但经它打开的文件也以管理员身份运行）。
 #[cfg(any(unix, windows))]
 const CHECK_ELEVATED_RUN: &str = "elevated_run";
 

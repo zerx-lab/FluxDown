@@ -2872,6 +2872,7 @@ mod tests {
             dir.join(fluxdown_protocol::local_service::DAEMON_ENDPOINT_FILE),
             serde_json::to_vec(&fluxdown_protocol::local_service::LocalEndpoint {
                 rpc_url: rpc_url.to_owned(),
+                pipe: None,
             })
             .expect("endpoint json"),
         )

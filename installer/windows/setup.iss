@@ -155,13 +155,15 @@ Type: files; Name: "{userappdata}\FluxDown\FluxDown\shared_preferences.json"
 Type: dirifempty; Name: "{userappdata}\FluxDown\FluxDown"
 Type: dirifempty; Name: "{userappdata}\FluxDown"
 
-; NMH manifest JSON files written at runtime by the agent (native/agent/src/nmh.rs)
+; NMH manifest JSON files and the relay's pipe discovery file (endpoint.json, see
+; native/agent/src/nmh/endpoint_file.rs) written at runtime by the agent
 ; into the per-user data dir (never installed via [Files], so the standard
 ; uninstall never learns about them and leaves them on disk). The {app}
 ; entries cover manifests left behind by older releases that wrote them next
 ; to the exe.
 Type: files; Name: "{localappdata}\FluxDown\nmh\com.fluxdown.nmh.json"
 Type: files; Name: "{localappdata}\FluxDown\nmh\com.fluxdown.nmh.firefox.json"
+Type: files; Name: "{localappdata}\FluxDown\nmh\endpoint.json"
 Type: dirifempty; Name: "{localappdata}\FluxDown\nmh"
 Type: files; Name: "{app}\com.fluxdown.nmh.json"
 Type: files; Name: "{app}\com.fluxdown.nmh.firefox.json"

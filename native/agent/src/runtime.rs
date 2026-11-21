@@ -178,18 +178,16 @@ async fn run_agent(
     let endpoint_dir = server
         .is_none()
         .then(|| endpoint_dir(bearer_override.as_deref(), store.data_dir()));
-    if let Some(directory) = &endpoint_dir {
-        store
-            .save_gateway_endpoint(directory, bound)
-            .await
-            .map_err(|error| StartupError::new(AgentStartupFailureKind::DataDir, error))?;
-    }
     // 本机 IPC 端点紧跟 TCP 之后建立（早于 daemon 与各服务装配）：界面在装配期间发起的连接
-    // 由内核排队。建不起来只记录原因，界面照常走 TCP。
+    // 由内核排队。建不起来只记录原因，界面照常走 TCP。先于端点文件建立：Windows 随机管道名随
+    // 端点文件一起发布。
     let ipc = match &endpoint_dir {
         Some(directory) => match crate::gateway::IpcListener::bind(directory).await {
             Ok(ipc) => {
                 tracing::info!(endpoint = %ipc.describe(), "fluxdown-agent gateway IPC listening");
+                if let Some(pipe) = ipc.published_pipe() {
+                    store.set_gateway_pipe(pipe);
+                }
                 Some(ipc)
             }
             Err(error) => {
@@ -199,6 +197,12 @@ async fn run_agent(
         },
         None => None,
     };
+    if let Some(directory) = &endpoint_dir {
+        store
+            .save_gateway_endpoint(directory, bound)
+            .await
+            .map_err(|error| StartupError::new(AgentStartupFailureKind::DataDir, error))?;
+    }
     tracing::info!(address = %bound, "fluxdown-agent gateway listening");
 
     // daemon：显式 `FLUXDOWN_DAEMON_URL` 时只连该地址并让 daemon 严格绑定它；否则 daemon 用
@@ -1323,7 +1327,7 @@ pub fn resolve_agent_data_dir() -> Result<PathBuf, Box<dyn std::error::Error + S
 
 /// `<exe>/portable` 标记存在时返回 `<exe>/portable_data`。
 #[cfg(target_os = "windows")]
-fn portable_data_dir() -> Option<PathBuf> {
+pub(crate) fn portable_data_dir() -> Option<PathBuf> {
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(Path::to_path_buf))?;

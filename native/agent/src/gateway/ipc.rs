@@ -1,8 +1,9 @@
 //! UI Gateway 的本机 IPC 监听：Unix domain socket / Windows Named Pipe，与回环 TCP 并行服务
 //! 同一个 router。
 //!
-//! 桌面界面优先经它连接：端点名由 `agent.token` 所在目录推导（契约见
-//! `fluxdown_protocol::local_service`），不占端口、不依赖端点发布文件，也不经过网络栈
+//! 桌面界面优先经它连接（契约见 `fluxdown_protocol::local_service`）：Unix 端点是 `agent.token`
+//! 所在私有目录里的 socket；Windows 管道名每次启动随机生成，随 `gateway-endpoint.json` 的 `pipe`
+//! 字段发布，可推导的名字会被其他账户抢注并冒充 agent 收下 bearer。不占端口，也不经过网络栈
 //! （回环端口被占用 / 落入系统保留区间 / 被安全软件过滤时仍然可用）。鉴权与 TCP 完全一致
 //! （升级请求照常带 bearer）；对端按回环来源处理，处理器无需区分传输。
 //!
@@ -44,6 +45,11 @@ impl IpcListener {
     /// 端点的可读描述（socket 路径或管道名），仅用于日志。
     pub(crate) fn describe(&self) -> String {
         self.inner.describe()
+    }
+
+    /// 要写进端点发布文件的 Windows 管道名；Unix socket 由目录推导，返回 `None`。
+    pub(crate) fn published_pipe(&self) -> Option<String> {
+        self.inner.published_pipe()
     }
 }
 
@@ -106,6 +112,10 @@ mod platform {
             self.path.display().to_string()
         }
 
+        pub(super) fn published_pipe(&self) -> Option<String> {
+            None
+        }
+
         pub(super) async fn accept(&mut self) -> UnixStream {
             loop {
                 let stream = match self.listener.accept().await {
@@ -146,10 +156,11 @@ mod platform {
     use std::io;
     use std::path::Path;
 
-    use fluxdown_protocol::local_service::gateway_pipe_name;
-    use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
+    use fluxdown_protocol::local_service::GATEWAY_PIPE_PREFIX;
+    use tokio::net::windows::named_pipe::NamedPipeServer;
 
     use super::ACCEPT_RETRY_DELAY;
+    use crate::platform::pipe_security::create_pipe_instance;
 
     pub(crate) type Stream = NamedPipeServer;
 
@@ -160,12 +171,11 @@ mod platform {
     }
 
     impl Listener {
-        pub(super) async fn bind(endpoint_dir: &Path) -> io::Result<Self> {
-            let name = gateway_pipe_name(&endpoint_dir.to_string_lossy());
-            // 首个实例独占名字：已有存活的服务端（另一个 agent 或抢注者）时创建失败。
-            let first = ServerOptions::new()
-                .first_pipe_instance(true)
-                .create(&name)?;
+        /// 随机名 + 固定安全描述符（当前用户 + SYSTEM、中完整性；见 `platform::pipe_security`）：
+        /// 其他账户猜不到名字，agent 提权运行时未提权的桌面也能打开。
+        pub(super) async fn bind(_endpoint_dir: &Path) -> io::Result<Self> {
+            let name = format!("{GATEWAY_PIPE_PREFIX}{}", uuid::Uuid::new_v4().simple());
+            let first = create_pipe_instance(&name, true)?;
             Ok(Self {
                 name,
                 next: Some(first),
@@ -176,11 +186,15 @@ mod platform {
             self.name.clone()
         }
 
+        pub(super) fn published_pipe(&self) -> Option<String> {
+            Some(self.name.clone())
+        }
+
         pub(super) async fn accept(&mut self) -> NamedPipeServer {
             loop {
                 let server = match self.next.take() {
                     Some(server) => server,
-                    None => match ServerOptions::new().create(&self.name) {
+                    None => match create_pipe_instance(&self.name, false) {
                         Ok(server) => server,
                         Err(error) => {
                             tracing::warn!(error = %error, "gateway IPC pipe instance creation failed");
@@ -195,7 +209,7 @@ mod platform {
                     continue;
                 }
                 // 先备好下一个实例再交出已连接的：名字不出现空窗。
-                match ServerOptions::new().create(&self.name) {
+                match create_pipe_instance(&self.name, false) {
                     Ok(next) => self.next = Some(next),
                     Err(error) => {
                         tracing::warn!(error = %error, "gateway IPC pipe instance creation failed");
@@ -226,6 +240,10 @@ mod platform {
 
         pub(super) fn describe(&self) -> String {
             String::new()
+        }
+
+        pub(super) fn published_pipe(&self) -> Option<String> {
+            None
         }
 
         pub(super) async fn accept(&mut self) -> tokio::io::DuplexStream {
