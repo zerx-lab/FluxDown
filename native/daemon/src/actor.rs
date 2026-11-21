@@ -64,9 +64,18 @@ pub enum ActorOperation {
     ReannounceTask {
         task_id: String,
     },
+    AddBtManualPeer {
+        task_id: String,
+        address: String,
+    },
     /// BT 任务的文件表（`daemon.task.btFiles`）。
     BtTaskFiles {
         task_id: String,
+    },
+    /// Resolve a BT file or staging directory for desktop shell integration.
+    BtFileLocation {
+        task_id: String,
+        index: Option<u32>,
     },
     /// 修改 BT 任务的文件优先级（`daemon.task.setFilePriorities`）：`(文件下标, 级别)`。
     SetTaskFilePriorities {
@@ -391,6 +400,7 @@ pub enum ActorResult {
     BtStatus(Box<fluxdown_protocol::BtStatusDto>),
     BtPortStatus(Box<fluxdown_protocol::BtPortStatusDto>),
     BtFiles(Box<fluxdown_protocol::BtFilesDto>),
+    BtFileLocation(std::path::PathBuf),
 }
 
 /// actor 领域错误。
@@ -1447,6 +1457,42 @@ async fn execute_operation(
             #[cfg(not(feature = "bt"))]
             {
                 let _ = (task_id, url);
+                return Err(ActorError::InvalidArgument(
+                    UNSUPPORTED_PROTOCOL_MESSAGE.to_owned(),
+                ));
+            }
+        }
+        ActorOperation::AddBtManualPeer { task_id, address } => {
+            #[cfg(feature = "bt")]
+            {
+                engine
+                    .manager
+                    .add_bt_manual_peer(&task_id, &address)
+                    .await
+                    .map_err(bt_task_op_error)?;
+                return Ok(ActorResult::Unit);
+            }
+            #[cfg(not(feature = "bt"))]
+            {
+                let _ = (task_id, address);
+                return Err(ActorError::InvalidArgument(
+                    UNSUPPORTED_PROTOCOL_MESSAGE.to_owned(),
+                ));
+            }
+        }
+        ActorOperation::BtFileLocation { task_id, index } => {
+            #[cfg(feature = "bt")]
+            {
+                return engine
+                    .manager
+                    .bt_file_location(&task_id, index)
+                    .await
+                    .map(ActorResult::BtFileLocation)
+                    .map_err(bt_task_op_error);
+            }
+            #[cfg(not(feature = "bt"))]
+            {
+                let _ = (task_id, index);
                 return Err(ActorError::InvalidArgument(
                     UNSUPPORTED_PROTOCOL_MESSAGE.to_owned(),
                 ));

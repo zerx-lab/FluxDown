@@ -28,6 +28,14 @@ use crate::task_jobs::TaskJobGuard;
 /// 移动期间做种任务显示的说明。
 const MOVING_MESSAGE: &str = "moving data";
 
+fn location_error(error: std::io::Error) -> BtTaskOpError {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        BtTaskOpError::NotFound
+    } else {
+        BtTaskOpError::Operation(format!("could not locate BT task data: {error:#}"))
+    }
+}
+
 /// [`DownloadManager::begin_bt_move`] 的结果。
 pub enum BtMoveStart {
     /// 目标就是当前保存目录：无事可做。
@@ -73,6 +81,81 @@ impl DownloadManager {
             ));
         }
         Ok(task)
+    }
+
+    /// Resolve an existing staging directory or one completed BT file by torrent index.
+    ///
+    /// # Errors
+    /// Returns an error if the task is moving, the target is unavailable, or its path
+    /// cannot be established without guessing.
+    pub async fn bt_file_location(
+        &self,
+        task_id: &str,
+        index: Option<u32>,
+    ) -> Result<PathBuf, BtTaskOpError> {
+        let task = self.load_bt_task_for_op(task_id).await?;
+        let root = PathBuf::from(&task.save_dir);
+        let path = match index {
+            None if task.status != 3 => bt_downloader::bt_stage_dir(&task.save_dir, task_id),
+            Some(index) if task.status == 3 => {
+                self.completed_bt_file_location(&task, &root, index).await?
+            }
+            _ => return Err(BtTaskOpError::NotFound),
+        };
+        let canonical_root = tokio::fs::canonicalize(&root)
+            .await
+            .map_err(location_error)?;
+        let canonical_path = tokio::fs::canonicalize(&path)
+            .await
+            .map_err(location_error)?;
+        let metadata = tokio::fs::metadata(&canonical_path)
+            .await
+            .map_err(location_error)?;
+        if !canonical_path.starts_with(&canonical_root)
+            || canonical_path == canonical_root
+            || if index.is_some() {
+                !metadata.is_file()
+            } else {
+                !metadata.is_dir()
+            }
+        {
+            return Err(BtTaskOpError::NotFound);
+        }
+        // Keep the regular shell path rather than the Windows verbatim canonical path.
+        Ok(path)
+    }
+
+    async fn completed_bt_file_location(
+        &self,
+        task: &TaskInfo,
+        root: &Path,
+        index: u32,
+    ) -> Result<PathBuf, BtTaskOpError> {
+        let sidecar = crate::bt_partfile::sidecar_path(&self.app_data_dir, &task.task_id);
+        let sidecar_root = root.to_owned();
+        let layout = tokio::task::spawn_blocking(move || {
+            crate::bt_partfile::load_sidecar_layout(&sidecar, &sidecar_root)
+        })
+        .await
+        .map_err(|error| BtTaskOpError::Operation(format!("{error:#}")))?
+        .map_err(BtTaskOpError::Operation)?;
+        if let Some(layout) = layout {
+            let index = usize::try_from(index).map_err(|_| BtTaskOpError::NotFound)?;
+            return layout
+                .selected_path(index)
+                .map(Path::to_owned)
+                .ok_or(BtTaskOpError::NotFound);
+        }
+        let files = self.bt_task_files(&task.task_id).await?;
+        let mut selected = files.files.iter().filter(|file| file.priority != 0);
+        if let Some(file) = selected.next()
+            && file.index == index
+            && selected.next().is_none()
+            && is_safe_file_name(&task.file_name)
+        {
+            return Ok(root.join(&task.file_name));
+        }
+        Err(BtTaskOpError::NotFound)
     }
 
     /// 重命名 BT 任务里的一个文件（`path` 是任务目录内的新相对路径，`/` 或 `\` 分隔）。会话

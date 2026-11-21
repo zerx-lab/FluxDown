@@ -3,7 +3,7 @@ package com.fluxdown.core.model
 /**
  * 引擎产生的稳定任务错误文案；`:app` 将 [i18nKey] 映射到 `R.string.<i18nKey>` 本地化展示。
  *
- * 字面量镜像 `native/engine/src/downloader.rs`；改动引擎文案须同步此处。
+ * 字面量镜像引擎的持久化任务错误；改动引擎文案须同步此处。
  */
 enum class TaskErrorMessage(val raw: String, val i18nKey: String) {
     PostOnlyEndpoint(
@@ -21,6 +21,10 @@ enum class TaskErrorMessage(val raw: String, val i18nKey: String) {
     HtmlChanged(
         "the server did not return a complete HTML page; nothing was saved",
         "taskErrorHtmlChanged",
+    ),
+    MagnetMetadataTimeout(
+        "magnet metadata resolution took too long (300s) — no peers/DHT response; check trackers or network",
+        "taskErrorMagnetMetadataTimeout",
     ),
     ;
 

@@ -345,6 +345,20 @@ impl DaemonService {
                 })
                 .await
             }
+            method::DAEMON_TASK_ADD_BT_PEER => {
+                #[derive(serde::Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Params {
+                    task_id: String,
+                    address: String,
+                }
+                let params = parse_params::<Params>(params)?;
+                self.execute_unit(ActorOperation::AddBtManualPeer {
+                    task_id: params.task_id,
+                    address: params.address,
+                })
+                .await
+            }
             method::DAEMON_TASK_BT_FILES => {
                 let params = parse_params::<fluxdown_protocol::DaemonBtStatusParams>(params)?;
                 match self
@@ -355,6 +369,27 @@ impl DaemonService {
                     .await
                 {
                     Ok(ActorResult::BtFiles(files)) => to_value(*files),
+                    Ok(_) => Err(internal_error("unexpected actor result".to_owned())),
+                    Err(error) => Err(actor_error(error)),
+                }
+            }
+            method::DAEMON_TASK_BT_FILE_LOCATION => {
+                #[derive(serde::Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Params {
+                    task_id: String,
+                    index: Option<u32>,
+                }
+                let params = parse_params::<Params>(params)?;
+                match self
+                    .actor
+                    .execute(ActorOperation::BtFileLocation {
+                        task_id: params.task_id,
+                        index: params.index,
+                    })
+                    .await
+                {
+                    Ok(ActorResult::BtFileLocation(path)) => to_value(path),
                     Ok(_) => Err(internal_error("unexpected actor result".to_owned())),
                     Err(error) => Err(actor_error(error)),
                 }

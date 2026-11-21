@@ -38,6 +38,8 @@ public enum HostMethod {
     public static let daemonTaskSetPiecePicking = "daemon.task.setPiecePicking"
     /// BT 任务文件表（`{taskId}` → `BtFiles`，不含 padding 文件）；供详情「文件」页轮询。非 BT 任务返回 `notFound`。
     public static let daemonTaskBtFiles = "daemon.task.btFiles"
+    public static let daemonTaskBtFileLocation = "daemon.task.btFileLocation"
+    public static let daemonTaskAddBtPeer = "daemon.task.addBtPeer"
     /// 修改 BT 文件优先级（`SetBtFilePrioritiesParams`，部分更新：0 不下载 / 1 普通 / 6 高 / 7 最高）。
     /// 已完成任务 → `taskStateConflict`；会导致没有文件要下载 → `invalidArgument`。
     public static let daemonTaskSetFilePriorities = "daemon.task.setFilePriorities"

@@ -24,6 +24,7 @@ use librqbit::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::timeout;
 
 pub const PIECE_LEN: u32 = 16 * 1024;
@@ -54,16 +55,35 @@ fn remove_dir(dir: &Path) {
     }
 }
 
-/// 本地 HTTP tracker：对任何 announce 都回当前登记的对端（紧凑格式），并数请求数。
+struct TestDir(PathBuf);
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        remove_dir(&self.0);
+    }
+}
+
+/// 本地 HTTP tracker：返回紧凑格式的对端列表，并数请求数。
 pub struct Tracker {
     pub url: String,
     pub addr: SocketAddr,
     peer: Arc<Mutex<Option<SocketAddr>>>,
     hits: Arc<AtomicUsize>,
+    accept_task: JoinHandle<()>,
+}
+
+impl Drop for Tracker {
+    fn drop(&mut self) {
+        self.accept_task.abort();
+    }
 }
 
 impl Tracker {
     pub async fn start() -> Self {
+        Self::start_with(1800, false).await
+    }
+
+    async fn start_with(interval_secs: u64, first_announce_empty: bool) -> Self {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .await
             .expect("tracker listener");
@@ -71,19 +91,24 @@ impl Tracker {
         let peer: Arc<Mutex<Option<SocketAddr>>> = Arc::new(Mutex::new(None));
         let hits = Arc::new(AtomicUsize::new(0));
         let (shared, counter) = (Arc::clone(&peer), Arc::clone(&hits));
-        tokio::spawn(async move {
+        let accept_task = tokio::spawn(async move {
+            let mut connections = JoinSet::new();
             loop {
                 let Ok((mut socket, _)) = listener.accept().await else {
                     return;
                 };
-                counter.fetch_add(1, Ordering::SeqCst);
-                let peer = *shared.lock().expect("tracker peer");
-                tokio::spawn(async move {
+                let first = counter.fetch_add(1, Ordering::SeqCst) == 0;
+                let peer = if first && first_announce_empty {
+                    None
+                } else {
+                    *shared.lock().expect("tracker peer")
+                };
+                connections.spawn(async move {
                     let mut buf = [0u8; 4096];
                     if socket.read(&mut buf).await.is_err() {
                         return;
                     }
-                    let mut body = b"d8:intervali1800e5:peers".to_vec();
+                    let mut body = format!("d8:intervali{interval_secs}e5:peers").into_bytes();
                     match peer {
                         Some(SocketAddr::V4(addr)) => {
                             body.extend_from_slice(b"6:");
@@ -103,6 +128,7 @@ impl Tracker {
                         eprintln!("test tracker client went away");
                     }
                 });
+                while connections.try_join_next().is_some() {}
             }
         });
         Self {
@@ -110,6 +136,7 @@ impl Tracker {
             addr,
             peer,
             hits,
+            accept_task,
         }
     }
 
@@ -220,13 +247,7 @@ pub struct Seeder {
     pub torrent_bytes: Vec<u8>,
     /// `(种子内相对路径, 内容)`，按种子里的文件下标排列（混合种子的 padding 文件为全零）。
     pub files: Vec<(String, Vec<u8>)>,
-    dir: PathBuf,
-}
-
-impl Drop for Seeder {
-    fn drop(&mut self) {
-        remove_dir(&self.dir);
-    }
+    _dir: TestDir,
 }
 
 impl Seeder {
@@ -247,8 +268,8 @@ impl Seeder {
         upload_bps: Option<u32>,
         version: TorrentVersion,
     ) -> Self {
-        let dir = unique_dir("seed");
-        let content = dir.join(TORRENT_NAME);
+        let dir = TestDir(unique_dir("seed"));
+        let content = dir.0.join(TORRENT_NAME);
         for (rel, bytes) in files {
             let path = content.join(rel);
             std::fs::create_dir_all(path.parent().expect("file parent")).expect("content dir");
@@ -288,7 +309,7 @@ impl Seeder {
             .collect();
 
         let session = Session::new_with_opts(
-            dir.clone(),
+            dir.0.clone(),
             SessionOptions {
                 dht: None,
                 persistence: None,
@@ -336,7 +357,7 @@ impl Seeder {
             addr,
             torrent_bytes,
             files: ordered,
-            dir,
+            _dir: dir,
         }
     }
 
@@ -370,6 +391,7 @@ pub struct Downloader {
     pub engine: Engine,
     pub work: PathBuf,
     done_rx: mpsc::Receiver<TaskDone>,
+    dir: TestDir,
 }
 
 impl Downloader {
@@ -382,26 +404,27 @@ impl Downloader {
         tracker: &Tracker,
         configure: impl FnOnce(&mut BtConfig, &mut ProxyConfig),
     ) -> Self {
-        let work = unique_dir("leech");
-        std::fs::create_dir_all(&work).expect("work dir");
-        Self::start_in(work, tracker, configure).await
+        let dir = TestDir(unique_dir("leech"));
+        std::fs::create_dir_all(&dir.0).expect("work dir");
+        Self::start_in(dir, tracker, configure).await
     }
 
     /// 关停引擎后在同一个数据目录上重新起一台（模拟应用重启）：任务都不在新会话里。
     pub async fn restart(mut self, tracker: &Tracker) -> Self {
         self.engine.manager.shutdown().await;
-        let work = self.work.clone();
-        drop(self);
-        Self::start_in(work, tracker, |_, _| {}).await
+        let Self { engine, dir, .. } = self;
+        drop(engine);
+        Self::start_in(dir, tracker, |_, _| {}).await
     }
 
     /// BT 只开 TCP 监听：不碰 DHT / 端口映射 / 局域网发现，追加 tracker 只有测试 tracker
     /// （否则会去连内置的公共 tracker）。
     async fn start_in(
-        work: PathBuf,
+        dir: TestDir,
         tracker: &Tracker,
         configure: impl FnOnce(&mut BtConfig, &mut ProxyConfig),
     ) -> Self {
+        let work = dir.0.clone();
         let port = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .expect("ephemeral port")
             .local_addr()
@@ -451,6 +474,7 @@ impl Downloader {
             engine,
             work,
             done_rx,
+            dir,
         }
     }
 
@@ -689,8 +713,104 @@ impl Downloader {
 
     pub async fn shutdown(mut self) {
         self.engine.manager.shutdown().await;
-        let work = self.work.clone();
-        drop(self);
-        remove_dir(&work);
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn magnet_download_finds_seeder_on_automatic_tracker_reannounce() {
+    let tracker = Tracker::start_with(2, true).await;
+    let seeder = Seeder::start(
+        &[
+            ("a.bin", patterned(32 * 1024 + 3, 1)),
+            ("sub/b.bin", patterned(64 * 1024 + 7, 2)),
+        ],
+        &tracker,
+        None,
+    )
+    .await;
+    let share = fluxdown_engine::bt_local_seed::torrent_share(&seeder.torrent_bytes, &[])
+        .expect("torrent share");
+    // The fixture disables DHT and LSD. Only the second or later announce can reveal the peer.
+    let mut leech = Downloader::start(&tracker).await;
+    let id = leech.add_magnet(&share.magnet).await;
+    let task = timeout(Duration::from_secs(30), leech.wait_done(&id)).await;
+    let mut landed = Vec::new();
+    if let Ok(task) = &task {
+        for (rel, _) in &seeder.files {
+            landed.push(leech.landed(task, rel).await);
+        }
+    }
+    leech.shutdown().await;
+    seeder.session.stop().await;
+
+    let task = task.expect("magnet did not finish after tracker reannounce");
+    assert_eq!((task.status, task.error_message.as_str()), (3, ""));
+    assert!(tracker.hits() >= 2, "tracker was not reannounced");
+    assert_eq!(landed.len(), seeder.files.len());
+    for ((rel, expected), actual) in seeder.files.iter().zip(landed) {
+        assert_eq!(actual.as_deref(), Some(expected.as_slice()), "{rel}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn manually_added_peer_downloads_torrent_and_unresolved_magnet() {
+    let tracker = Tracker::start().await;
+    let seeder = Seeder::start(&[("payload.bin", patterned(48 * 1024, 3))], &tracker, None).await;
+    *tracker.peer.lock().expect("tracker peer") = None;
+    let share = fluxdown_engine::bt_local_seed::torrent_share(&seeder.torrent_bytes, &[])
+        .expect("torrent share");
+    for magnet in [false, true] {
+        let mut leech = Downloader::start(&tracker).await;
+        let previous_hits = tracker.hits();
+        let id = if magnet {
+            leech.add_magnet(&share.magnet).await
+        } else {
+            leech.add(&seeder, &[], false).await
+        };
+        timeout(Duration::from_secs(15), async {
+            while tracker.hits() <= previous_hits {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("initial empty announce");
+        let manager = &leech.engine.manager;
+        let address = seeder.addr.to_string();
+        if magnet {
+            assert!(
+                manager
+                    .bt_task_files(&id)
+                    .await
+                    .expect("pending magnet files")
+                    .files
+                    .is_empty()
+            );
+        }
+        assert!(matches!(
+            manager.add_bt_manual_peer(&id, "127.0.0.1:0").await,
+            Err(fluxdown_engine::bt_task_files::BtTaskOpError::InvalidArgument(_))
+        ));
+        timeout(Duration::from_secs(15), async {
+            loop {
+                match manager.add_bt_manual_peer(&id, &address).await {
+                    Ok(()) => break,
+                    Err(fluxdown_engine::bt_task_files::BtTaskOpError::StateConflict(_)) => {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                    Err(error) => panic!("submit peer: {error}"),
+                }
+            }
+        })
+        .await
+        .expect("task did not start accepting manual peers");
+        let task = timeout(Duration::from_secs(30), leech.wait_done(&id)).await;
+        let landed = match &task {
+            Ok(task) => leech.landed(task, "payload.bin").await,
+            Err(_) => None,
+        };
+        leech.shutdown().await;
+        assert_eq!(task.expect("download from manually added peer").status, 3);
+        assert_eq!(landed.as_deref(), Some(seeder.content_of("payload.bin")));
+    }
+    seeder.session.stop().await;
 }

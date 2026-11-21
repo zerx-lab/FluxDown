@@ -409,6 +409,10 @@ impl AgentDownloadsPort {
                 DownloadsCommand::AddWebSeed(params) => {
                     (method::DAEMON_TASK_ADD_WEB_SEED, serialize(params)?)
                 }
+                DownloadsCommand::AddBtPeer { task_id, address } => (
+                    method::DAEMON_TASK_ADD_BT_PEER,
+                    json!({ "taskId": task_id, "address": address }),
+                ),
                 DownloadsCommand::Reannounce { task_id } => {
                     (method::DAEMON_TASK_REANNOUNCE, json!({ "taskId": task_id }))
                 }
@@ -703,6 +707,28 @@ impl AgentDownloadsPort {
                     method::AGENT_PLATFORM_REVEAL_TASK,
                     json!({ "taskId": task_id }),
                 ),
+                DownloadsCommand::LocateBtFile { task_id, index } => {
+                    let path: String = client
+                        .call(
+                            method::DAEMON_TASK_BT_FILE_LOCATION,
+                            Some(json!({ "taskId": task_id, "index": index })),
+                        )
+                        .await?;
+                    #[cfg(windows)]
+                    {
+                        if index.is_some() {
+                            crate::shell_open::reveal_file(&path).await?;
+                        } else {
+                            crate::shell_open::directory(path).await?;
+                        }
+                        return Ok(DownloadsResult::Unit);
+                    }
+                    #[cfg(not(windows))]
+                    (
+                        method::AGENT_PLATFORM_OPEN_PATH,
+                        json!({ "path": path, "reveal": index.is_some() }),
+                    )
+                }
                 // 剪贴板不涉及前台授权，Windows 同样由常驻 agent 写入（进程常驻，X11 剪贴板内容不丢）。
                 DownloadsCommand::CopyTaskFiles { task_ids } => (
                     method::AGENT_PLATFORM_COPY_TASK_FILES,

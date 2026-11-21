@@ -42,6 +42,8 @@ object HostMethod {
     const val daemonTaskEd2kStatus = "daemon.task.ed2kStatus"
     /** BT 任务的文件表（`{taskId}` → `BtFilesDto`，不含 padding 文件），详情页「文件」可见时轮询；非 BT 任务返回 `notFound`。 */
     const val daemonTaskBtFiles = "daemon.task.btFiles"
+    const val daemonTaskBtFileLocation = "daemon.task.btFileLocation"
+    const val daemonTaskAddBtPeer = "daemon.task.addBtPeer"
     /** 修改 BT 文件优先级（`{taskId, priorities: [{index, priority}]}`，部分更新）；已完成返回 `taskStateConflict`，全不下载返回 `invalidArgument`。 */
     const val daemonTaskSetFilePriorities = "daemon.task.setFilePriorities"
     /** 重命名 BT 任务内的单个文件（`{taskId, index, path}`）。移动端不提供入口，列出仅为一一对应。 */

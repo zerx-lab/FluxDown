@@ -15,3 +15,9 @@ test('网页响应失败文案（前缀 / 整串）映射到 i18n key', () => {
   expect(taskErrorKey(HTML_RESPONSE_CHANGED_MESSAGE)).toBe('taskErrorHtmlChanged')
   expect(taskErrorKey(`${HTML_RESPONSE_CHANGED_MESSAGE} extra`)).toBeNull()
 })
+
+test('magnet metadata timeout maps to the retry guidance', () => {
+  const raw = 'magnet metadata resolution took too long (300s) — no peers/DHT response; check trackers or network'
+  expect(taskErrorKey(raw)).toBe('taskErrorMagnetMetadataTimeout')
+  expect(taskErrorKey('tracker timed out')).toBeNull()
+})

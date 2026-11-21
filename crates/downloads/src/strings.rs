@@ -94,6 +94,7 @@ pub(crate) struct DownloadStrings {
     pub(crate) task_error_post_only_resume: SharedString,
     task_error_unexpected_html: SharedString,
     task_error_html_changed: SharedString,
+    task_error_magnet_metadata_timeout: SharedString,
     pub(crate) status_incomplete: SharedString,
     pub(crate) status_paused: SharedString,
     pub(crate) status_seeding: SharedString,
@@ -318,6 +319,9 @@ impl DownloadStrings {
             task_error_post_only_resume: shared(translator.text("taskErrorPostOnlyResume")),
             task_error_unexpected_html: shared(translator.text("taskErrorUnexpectedHtml")),
             task_error_html_changed: shared(translator.text("taskErrorHtmlChanged")),
+            task_error_magnet_metadata_timeout: shared(
+                translator.text("taskErrorMagnetMetadataTimeout"),
+            ),
             status_incomplete: shared(translator.text("tabDownloading")),
             status_paused: shared(translator.text(keys::STATUS_PAUSED)),
             status_seeding: shared(translator.text("statusSeeding")),
@@ -1213,6 +1217,7 @@ impl DownloadStrings {
             POST_ONLY_ENDPOINT_MESSAGE => &self.task_error_post_only_endpoint,
             POST_ONLY_RESUME_MESSAGE => &self.task_error_post_only_resume,
             HTML_RESPONSE_CHANGED_MESSAGE => &self.task_error_html_changed,
+            MAGNET_METADATA_TIMEOUT_MESSAGE => &self.task_error_magnet_metadata_timeout,
             _ => raw,
         }
     }
@@ -1228,6 +1233,9 @@ const POST_ONLY_RESUME_MESSAGE: &str = "This task was started by a browser POST 
 const UNEXPECTED_HTML_PREFIX: &str = "server returned HTML page (Content-Type: ";
 const HTML_RESPONSE_CHANGED_MESSAGE: &str =
     "the server did not return a complete HTML page; nothing was saved";
+
+// Mirrors the terminal error persisted by bt_downloader.rs.
+const MAGNET_METADATA_TIMEOUT_MESSAGE: &str = "magnet metadata resolution took too long (300s) — no peers/DHT response; check trackers or network";
 
 pub(crate) fn is_unexpected_html(error: &str) -> bool {
     error.starts_with(UNEXPECTED_HTML_PREFIX)
@@ -1335,6 +1343,25 @@ mod tests {
             translator.text("taskErrorPostOnlyResume")
         );
         assert_eq!(strings.task_error_text("disk full"), "disk full");
+        Ok(())
+    }
+
+    #[test]
+    fn magnet_metadata_timeout_is_localized() -> Result<(), fluxdown_ui_i18n::I18nError> {
+        let catalog = fluxdown_ui_i18n::I18nCatalog::load_embedded()?;
+        let raw = "magnet metadata resolution took too long (300s) — no peers/DHT response; check trackers or network";
+        for locale in ["en", "zh"] {
+            let translator = catalog.translator(locale);
+            let strings = DownloadStrings::from_translator(&translator);
+            assert_eq!(
+                strings.task_error_text(raw),
+                translator.text("taskErrorMagnetMetadataTimeout")
+            );
+            assert_eq!(
+                strings.task_error_text("tracker timed out"),
+                "tracker timed out"
+            );
+        }
         Ok(())
     }
 

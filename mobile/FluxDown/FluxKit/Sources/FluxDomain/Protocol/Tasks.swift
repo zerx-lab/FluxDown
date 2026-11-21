@@ -188,6 +188,7 @@ public enum TaskErrorMessage {
     public static let postOnlyResume = "This task was started by a browser POST request and cannot be resumed; start it again from the browser"
     private static let unexpectedHtmlPrefix = "server returned HTML page (Content-Type: "
     private static let htmlResponseChanged = "the server did not return a complete HTML page; nothing was saved"
+    private static let magnetMetadataTimeout = "magnet metadata resolution took too long (300s) — no peers/DHT response; check trackers or network"
 
     /// 命中稳定消息时返回共享 i18n 键，否则 nil。
     public static func localizationKey(for message: String) -> String? {
@@ -197,6 +198,7 @@ public enum TaskErrorMessage {
         case postOnlyEndpoint: "taskErrorPostOnlyEndpoint"
         case postOnlyResume: "taskErrorPostOnlyResume"
         case htmlResponseChanged: "taskErrorHtmlChanged"
+        case magnetMetadataTimeout: "taskErrorMagnetMetadataTimeout"
         default: nil
         }
     }
