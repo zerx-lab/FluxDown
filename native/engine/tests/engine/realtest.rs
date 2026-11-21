@@ -3744,45 +3744,58 @@ async fn assert_non_partial_range_falls_back(html_error: bool) {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "binds a local port; run with --ignored"]
 async fn ignored_range_at_99_percent_finishes_with_plain_get() {
     assert_ignored_range_restart(RangeRestartCase::Success).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "binds a local port; run with --ignored"]
 async fn ignored_range_after_expansion_uses_the_new_total_for_plain_get() {
     assert_ignored_range_restart(RangeRestartCase::Expanded).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "binds a local port; run with --ignored"]
 async fn ignored_range_at_99_percent_keeps_checkpoint_if_plain_get_is_truncated() {
     assert_ignored_range_restart(RangeRestartCase::Truncated).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "binds a local port; run with --ignored"]
 async fn ignored_range_at_99_percent_keeps_checkpoint_if_checksum_fails() {
     assert_ignored_range_restart(RangeRestartCase::ChecksumMismatch).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "binds a local port; run with --ignored"]
 async fn ignored_range_at_99_percent_cancellation_removes_only_staging() {
     assert_ignored_range_restart(RangeRestartCase::Cancelled).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "binds a local port; run with --ignored"]
 async fn ignored_range_at_99_percent_with_window_cap_never_sends_plain_get() {
     assert_ignored_range_restart(RangeRestartCase::WindowCapped).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "binds a local port; run with --ignored"]
 async fn ignored_range_at_99_percent_rejects_compressed_plain_get() {
     assert_ignored_range_restart(RangeRestartCase::Compressed).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ignored_range_below_8_mib_restarts_without_staging() {
+    assert_ignored_range_restart(RangeRestartCase::Shallow).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ignored_range_at_8_mib_restarts_with_staging() {
+    assert_ignored_range_restart(RangeRestartCase::Threshold).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn deep_checkpoint_does_not_stage_on_http_403() {
+    assert_ignored_range_restart(RangeRestartCase::Rejected(403)).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn deep_checkpoint_does_not_stage_on_http_429() {
+    assert_ignored_range_restart(RangeRestartCase::Rejected(429)).await;
 }
 
 #[derive(Clone, Copy)]
@@ -3794,6 +3807,9 @@ enum RangeRestartCase {
     Cancelled,
     WindowCapped,
     Compressed,
+    Shallow,
+    Threshold,
+    Rejected(u16),
 }
 
 async fn assert_ignored_range_restart(case: RangeRestartCase) {
@@ -3809,10 +3825,36 @@ async fn assert_ignored_range_restart(case: RangeRestartCase) {
         RangeRestartCase::Cancelled => "range-restart-cancelled",
         RangeRestartCase::WindowCapped => "range-restart-window-capped",
         RangeRestartCase::Compressed => "range-restart-compressed",
+        RangeRestartCase::Shallow => "range-restart-shallow",
+        RangeRestartCase::Threshold => "range-restart-threshold",
+        RangeRestartCase::Rejected(403) => "range-restart-403",
+        RangeRestartCase::Rejected(_) => "range-restart-429",
     };
     let work_dir = unique_dir(tag);
+    struct WorkDirCleanup<'a>(&'a std::path::Path);
+    impl Drop for WorkDirCleanup<'_> {
+        fn drop(&mut self) {
+            if let Err(error) = std::fs::remove_dir_all(self.0) {
+                eprintln!("remove HTTP fallback test directory: {error}");
+            }
+        }
+    }
+    let _work_dir_cleanup = WorkDirCleanup(&work_dir);
+    if matches!(case, RangeRestartCase::Success) {
+        use sha2::{Digest, Sha256};
+        let key = hex::encode(Sha256::digest(tag.as_bytes()));
+        let stale = work_dir.join(format!(".fluxdown-restart-{key}"));
+        tokio::fs::create_dir(&stale).await.unwrap();
+        tokio::fs::write(stale.join("download"), b"interrupted replacement")
+            .await
+            .unwrap();
+    }
     let size = 16 * 1024 * 1024;
-    let prefix = size * 99 / 100;
+    let prefix = match case {
+        RangeRestartCase::Shallow => 8 * 1024 * 1024 - 1,
+        RangeRestartCase::Threshold => 8 * 1024 * 1024,
+        _ => size * 99 / 100,
+    };
     let expanded = matches!(case, RangeRestartCase::Expanded);
     let full_size = if expanded { size + 1024 * 1024 } else { size };
     let body = Arc::new(gen_body(full_size, 458));
@@ -3824,6 +3866,10 @@ async fn assert_ignored_range_restart(case: RangeRestartCase) {
         server_state.ignore_range_from = Some(size as i64);
     } else {
         server_state.force_full_on_segment_range = true;
+    }
+    if let RangeRestartCase::Rejected(status) = case {
+        server_state.force_full_on_segment_range = false;
+        server_state.segment_range_rejection = Some(status);
     }
     server_state.close_full_after =
         matches!(case, RangeRestartCase::Truncated).then_some(1024 * 1024);
@@ -3903,14 +3949,21 @@ async fn assert_ignored_range_restart(case: RangeRestartCase) {
 
     assert_eq!(
         server_state.plain_get_count.load(Ordering::SeqCst),
-        if capped { 0 } else { 1 }
+        if capped || matches!(case, RangeRestartCase::Rejected(_)) {
+            0
+        } else {
+            1
+        }
     );
     match case {
         RangeRestartCase::Truncated => assert_eq!(staged_received, Some(1024 * 1024)),
         RangeRestartCase::Cancelled => {
             assert!((1..=1024 * 1024).contains(&staged_received.unwrap()));
         }
-        RangeRestartCase::WindowCapped | RangeRestartCase::Compressed => {
+        RangeRestartCase::WindowCapped
+        | RangeRestartCase::Compressed
+        | RangeRestartCase::Shallow
+        | RangeRestartCase::Rejected(_) => {
             assert_eq!(staged_received, None);
         }
         _ => assert_eq!(staged_received, Some(full_size as i64)),
@@ -3920,7 +3973,13 @@ async fn assert_ignored_range_restart(case: RangeRestartCase) {
         assert!(server_state.full_get_count.load(Ordering::SeqCst) > 0);
     }
     let saved_segments = db.load_segments(tag).await.unwrap();
-    if !matches!(case, RangeRestartCase::Success | RangeRestartCase::Expanded) {
+    if !matches!(
+        case,
+        RangeRestartCase::Success
+            | RangeRestartCase::Expanded
+            | RangeRestartCase::Shallow
+            | RangeRestartCase::Threshold
+    ) {
         assert_eq!(
             status,
             if matches!(case, RangeRestartCase::Cancelled) {
@@ -3932,6 +3991,9 @@ async fn assert_ignored_range_restart(case: RangeRestartCase) {
         assert!(!dest.exists());
         let row = db.load_task_by_id(tag).await.unwrap().unwrap();
         assert_eq!(row.downloaded_bytes, prefix as i64);
+        if matches!(case, RangeRestartCase::Rejected(_)) {
+            assert!(server_state.rejected_range_count.load(Ordering::SeqCst) > 0);
+        }
         if matches!(case, RangeRestartCase::ChecksumMismatch) {
             assert!(
                 row.error_message.contains("checksum mismatch"),

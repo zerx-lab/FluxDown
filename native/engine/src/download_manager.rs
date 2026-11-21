@@ -1186,6 +1186,12 @@ async fn deferred_file_cleanup(
     // 配合下载器内新增的早期 cancel 检查已能覆盖绝大多数残留窗口。
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     let path = PathBuf::from(&save_dir).join(&file_name);
+    if !is_bt_url(&url)
+        && let Err(error) =
+            downloader::clean_http_restart_for_task(Path::new(&save_dir), &task_id).await
+    {
+        crate::logger::report_warning("download-manager", "remove HTTP staging directory", &error);
+    }
     if is_bt_url(&url) {
         if delete_files && is_safe_file_name(&file_name) {
             if path.is_dir() {
@@ -1539,10 +1545,16 @@ fn keep_first_cleanup_error(first: &mut Option<std::io::Error>, result: std::io:
 /// 删除一个被删任务的磁盘文件：BT 的最终产物与 staging 目录；其余协议的临时文件、
 /// 独立音轨与最终产物；以及登记的衍生产物。
 async fn remove_deleted_task_files(
-    #[cfg_attr(not(feature = "bt"), allow(unused_variables))] task_id: &str,
+    task_id: &str,
     files: &DeleteFiles,
 ) -> Result<(), downloader::DownloadError> {
     let mut first_error = None;
+    if !files.is_bt {
+        keep_first_cleanup_error(
+            &mut first_error,
+            downloader::clean_http_restart_for_task(Path::new(&files.save_dir), task_id).await,
+        );
+    }
     let path = PathBuf::from(&files.save_dir).join(&files.file_name);
     let removes_final =
         files.delete_files && files.owns_final && is_safe_file_name(&files.file_name);
@@ -14181,6 +14193,19 @@ impl DownloadManager {
                 lock_reserved(&self.reserved_temp_paths).remove(&reserved);
             }
             let path = PathBuf::from(&t.save_dir).join(&t.file_name);
+            if !is_bt_url(&t.url)
+                && let Err(error) =
+                    downloader::clean_http_restart_for_task(Path::new(&t.save_dir), task_id).await
+            {
+                crate::logger::report_warning(
+                    "download-manager",
+                    "remove HTTP staging directory",
+                    &error,
+                );
+                if cleanup_error.is_none() {
+                    cleanup_error = Some(error.into());
+                }
+            }
 
             if is_bt_url(&t.url) {
                 #[cfg(feature = "bt")]

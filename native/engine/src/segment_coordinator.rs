@@ -3100,8 +3100,10 @@ pub async fn run_coordinated_download(
                             }
 
                             // 无存活 worker 时，无进度或浅进度的 Range 拒绝仍可清盘回退。
-                            // 深断点只有在明确收到 200 时才尝试独立的普通 GET；
-                            // 限流/连接拒绝和其它 Range 错误保留断点并报告失败。
+                            // 深断点上的 403/429/400 可能是配额、并发或请求限制；
+                            // 清盘不会解除限制，只会丢掉可续传的数据。
+                            // 只有 200 明确表示服务器忽略 Range，才另存一份普通 GET，
+                            // 在校验并保存成功前不碰原断点。
                             let any_alive = worker_assign_txs.iter().any(|tx| tx.is_some())
                                 || segments.values().any(|s| s.state == SegState::Active);
                             if !any_alive && !all_done(&segments) {

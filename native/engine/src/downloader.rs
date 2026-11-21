@@ -62,7 +62,7 @@ pub enum DownloadError {
     RangeNotSupported(RangeRejection),
     /// Retrying ignored Range requests exhausted all workers, but a durable
     /// multi-segment checkpoint must not be discarded to try a full GET.
-    #[error("server ignored the remaining Range requests; partial download kept")]
+    #[error("server ignored the remaining Range requests; configured Range window prevents a full GET; partial download kept")]
     RangeResumeRejected { total_bytes: i64 },
     #[error("{prefix}{0}", prefix = RANGE_RESTART_FAILED_PREFIX)]
     RangeRestartFailed(#[source] Box<DownloadError>),
@@ -3972,9 +3972,10 @@ pub(crate) async fn run_download_mode(mut params: DownloadParams, html_only: boo
     let preprobed = params.preprobed.take();
     let mut range_restart = None;
     let download = run_download_inner(&mut params, preprobed, html_only, &mut range_restart).await;
-    let staged_restart = range_restart.is_some();
     let download = if let Some(staged) = range_restart.take() {
-        staged.finish(&params.db).await;
+        if let Err(error) = clean_http_restart_staging(&staged.dir).await {
+            crate::logger::report_warning("http-download", "clean staging directory", &error);
+        }
         download.map_err(range_restart_failed)
     } else {
         download
@@ -4004,15 +4005,6 @@ pub(crate) async fn run_download_mode(mut params: DownloadParams, html_only: boo
         }
         Err(error) => Err(error),
     };
-    if staged_restart
-        && result.is_ok()
-        && let Err(error) = params
-            .db
-            .retry_http_checkpoint_cleanup(&params.task_id)
-            .await
-    {
-        crate::logger::report_warning("http-download", "clean old HTTP checkpoint", &error);
-    }
 
     match result {
         Ok((total, finalize_renamed)) => {
@@ -4278,272 +4270,45 @@ struct RangeRestart {
 }
 
 impl RangeRestart {
-    async fn create(db: &Db, dir: &Path) -> Result<Self, DownloadError> {
-        let name = format!(".fluxdown-restart-{}", uuid::Uuid::new_v4());
-        let dir = tokio::fs::canonicalize(dir).await?.join(&name);
-        let key = dir
-            .to_str()
-            .ok_or_else(|| DownloadError::Other("non-UTF-8 staging path".into()))?;
-        db.record_http_restart_staging(key).await?;
+    async fn create(save_dir: &Path, task_id: &str) -> Result<Self, DownloadError> {
+        let dir = http_restart_dir(save_dir, task_id);
         tokio::fs::create_dir(&dir).await?;
-        tokio::fs::write(dir.join("owner"), name.as_bytes()).await?;
         Ok(Self {
             path: dir.join("download"),
             dir,
         })
     }
-
-    async fn finish(self, db: &Db) {
-        if let Err(error) = clean_http_restart_staging(&self.dir) {
-            crate::logger::report_warning("http-download", "clean staging directory", &error);
-        } else if let Some(key) = self.dir.to_str()
-            && let Err(error) = db.clear_http_restart_staging(key).await
-        {
-            crate::logger::report_warning("http-download", "clear staging record", &error);
-        }
-    }
 }
 
-impl Drop for RangeRestart {
-    fn drop(&mut self) {
-        let _cleanup = clean_http_restart_staging(&self.dir);
-    }
+fn http_restart_dir(save_dir: &Path, task_id: &str) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    let key = hex::encode(Sha256::digest(task_id.as_bytes()));
+    save_dir.join(format!(".fluxdown-restart-{key}"))
 }
 
-pub(crate) fn http_staging_parent_identity(dir: &Path) -> std::io::Result<String> {
-    let parent = dir
-        .parent()
-        .ok_or_else(|| std::io::Error::other("missing HTTP staging parent"))?;
-    let meta = std::fs::symlink_metadata(parent)?;
-    if !meta.is_dir() {
-        return Err(std::io::Error::other(
-            "HTTP staging parent is not a directory",
-        ));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        Ok(format!("{}:{}", meta.dev(), meta.ino()))
-    }
-    #[cfg(windows)]
-    {
-        let info = http_windows_file_information(parent)?;
-        Ok(format!(
-            "{}:{}:{}:{}:{}",
-            info.dwVolumeSerialNumber,
-            info.nFileIndexHigh,
-            info.nFileIndexLow,
-            info.ftCreationTime.dwHighDateTime,
-            info.ftCreationTime.dwLowDateTime,
-        ))
-    }
-}
-
-pub(crate) fn http_checkpoint_identity(path: &Path) -> std::io::Result<String> {
-    let meta = std::fs::symlink_metadata(path)?;
-    if !meta.is_file() {
-        return Err(std::io::Error::other(
-            "HTTP checkpoint is not a regular file",
-        ));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        Ok(format!(
-            "{}:{}:{}:{}:{}",
-            meta.dev(),
-            meta.ino(),
-            meta.len(),
-            meta.mtime(),
-            meta.mtime_nsec()
-        ))
-    }
-    #[cfg(windows)]
-    {
-        let info = http_windows_file_information(path)?;
-        Ok(format!(
-            "{}:{}:{}:{}:{}:{}:{}:{}:{}",
-            info.dwVolumeSerialNumber,
-            info.nFileIndexHigh,
-            info.nFileIndexLow,
-            info.nFileSizeHigh,
-            info.nFileSizeLow,
-            info.ftCreationTime.dwHighDateTime,
-            info.ftCreationTime.dwLowDateTime,
-            info.ftLastWriteTime.dwHighDateTime,
-            info.ftLastWriteTime.dwLowDateTime,
-        ))
-    }
-}
-
-#[cfg(windows)]
-fn http_windows_file_information(
-    path: &Path,
-) -> std::io::Result<windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION> {
-    use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
-    use windows_sys::Win32::Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-        GetFileInformationByHandle,
-    };
-    // Stable Windows metadata does not expose the volume serial and file index.
-    let file = std::fs::OpenOptions::new()
-        .access_mode(0)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
-        .open(path)?;
-    let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
-    // SAFETY: `file` owns a live handle and `info` points to writable storage.
-    if unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), info.as_mut_ptr()) } == 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: GetFileInformationByHandle initialized `info` on success.
-    Ok(unsafe { info.assume_init() })
-}
-
-pub(crate) fn remove_replaced_http_checkpoint(
-    path: &Path,
-    expected: Option<&str>,
-    quarantine: &Path,
+pub(crate) async fn clean_http_restart_for_task(
+    save_dir: &Path,
+    task_id: &str,
 ) -> std::io::Result<()> {
-    let marker = quarantine.join("owner");
-    if !std::fs::symlink_metadata(quarantine)?.is_dir()
-        || !std::fs::symlink_metadata(&marker)?.is_file()
-        || std::fs::read(marker)?
-            != quarantine
-                .file_name()
-                .unwrap_or_default()
-                .as_encoded_bytes()
-    {
-        return Err(std::io::Error::other(
-            "checkpoint quarantine ownership mismatch",
-        ));
-    }
-    let retired = quarantine.join("checkpoint");
-    match std::fs::symlink_metadata(&retired) {
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let Some(expected) = expected.filter(|value| !value.is_empty()) else {
-                return Ok(());
-            };
-            match http_checkpoint_identity(path) {
-                Ok(actual) if actual == expected => std::fs::rename(path, &retired)?,
-                Ok(_) => return Ok(()),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-                Err(error) => return Err(error),
-            }
-        }
-        Err(error) => return Err(error),
-    }
-    let retired_identity = http_checkpoint_identity(&retired)?;
-    if expected == Some(retired_identity.as_str()) {
-        return std::fs::remove_file(retired);
-    }
-    // A replacement raced with the move. Restore without overwriting any
-    // newer occupant; on conflict retain the quarantined file and its record.
-    match std::fs::hard_link(&retired, path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            // The prior attempt may have linked successfully but stopped
-            // before unlinking. Only discard the link if both names agree.
-            if http_checkpoint_identity(path)? != retired_identity {
-                return Err(error);
-            }
-        }
-        Err(error) => return Err(error),
-    }
-    std::fs::remove_file(retired)
+    clean_http_restart_staging(&http_restart_dir(save_dir, task_id)).await
 }
 
-pub(crate) fn clean_http_restart_staging(dir: &Path) -> std::io::Result<()> {
-    let Some(name) = dir.file_name().and_then(|name| name.to_str()) else {
-        return Err(std::io::Error::other("invalid HTTP restart staging path"));
-    };
-    if !dir.is_absolute()
-        || !name
-            .strip_prefix(".fluxdown-restart-")
-            .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
-    {
-        return Err(std::io::Error::other("invalid HTTP restart staging path"));
-    }
-    match std::fs::symlink_metadata(dir) {
+async fn clean_http_restart_staging(dir: &Path) -> std::io::Result<()> {
+    match tokio::fs::symlink_metadata(dir).await {
         Ok(meta) if meta.is_dir() => {}
-        Ok(_) => {
-            return Err(std::io::Error::other(
-                "HTTP restart staging path is not a directory",
-            ));
-        }
-        // Pass NotFound through: Db::recover_http_restart_staging checks the
-        // recorded save directory identity before clearing the registration.
+        Ok(_) => return Err(std::io::Error::other("HTTP staging path is not a directory")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
     }
-    let expected = name.as_bytes();
-    #[cfg(unix)]
-    {
-        use std::io::Read;
-        use std::os::fd::{AsRawFd, FromRawFd};
-        use std::os::unix::fs::OpenOptionsExt;
-        let handle = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
-            .open(dir)?;
-        // The marker and children must resolve against the same directory
-        // even if its pathname is replaced after validation. std::fs only
-        // offers pathname-based removal, not removal relative to an open fd.
-        // SAFETY: `handle` keeps the directory fd open and `owner` is a C string.
-        let fd = unsafe {
-            libc::openat(
-                handle.as_raw_fd(),
-                c"owner".as_ptr(),
-                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK,
-            )
-        };
-        if fd < 0 {
-            let error = std::io::Error::last_os_error();
-            if error.kind() == std::io::ErrorKind::NotFound {
-                // Only an empty directory is safe to remove without a marker.
-                return std::fs::remove_dir(dir);
-            }
-            return Err(error);
-        }
-        // SAFETY: successful openat returned a new fd whose ownership transfers to File.
-        let marker = unsafe { std::fs::File::from_raw_fd(fd) };
-        if !marker.metadata()?.is_file() {
-            return Err(std::io::Error::other("invalid HTTP staging marker"));
-        }
-        let mut owner = Vec::new();
-        marker.take(128).read_to_end(&mut owner)?;
-        if owner != expected {
-            return Err(std::io::Error::other("HTTP staging ownership mismatch"));
-        }
-        for name in [c"download", c"checkpoint", c"owner"] {
-            // SAFETY: `handle` keeps the directory fd open and `name` is a C string.
-            if unsafe { libc::unlinkat(handle.as_raw_fd(), name.as_ptr(), 0) } != 0 {
-                let error = std::io::Error::last_os_error();
-                if error.kind() != std::io::ErrorKind::NotFound {
-                    return Err(error);
-                }
-            }
-        }
+    match tokio::fs::remove_file(dir.join("download")).await {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
     }
-    #[cfg(not(unix))]
-    {
-        let marker = dir.join("owner");
-        if let Err(error) = std::fs::symlink_metadata(&marker)
-            && error.kind() == std::io::ErrorKind::NotFound
-        {
-            return std::fs::remove_dir(dir);
-        }
-        if !std::fs::symlink_metadata(&marker)?.is_file() || std::fs::read(marker)? != expected {
-            return Err(std::io::Error::other("HTTP staging ownership mismatch"));
-        }
-        for name in ["download", "checkpoint", "owner"] {
-            match std::fs::remove_file(dir.join(name)) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error),
-            }
-        }
+    match tokio::fs::remove_dir(dir).await {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        result => result,
     }
-    std::fs::remove_dir(dir)
 }
 
 /// 返回 `(actual_total, finalize_renamed)`:`finalize_renamed` 仅当 finalize
@@ -4881,6 +4646,9 @@ async fn run_download_inner(
     output::ensure_parent(&temp_path).await?;
     // Keep ownership through mode changes, stale-data cleanup, verification and final rename.
     let _temp_file_guard = TempFileGuard::acquire(&temp_path, &p.task_id).await?;
+    clean_http_restart_for_task(&save_dir, &p.task_id)
+        .await
+        .map_err(|error| range_restart_failed(error.into()))?;
 
     // 换源结算（见 `Db::settle_source_change`）：`change_task_url` 后首次续传按零容差
     // 比对新链接大小与旧总大小。不一致 = 换成了另一个文件——旧前缀若沿用会与新文件
@@ -5254,7 +5022,7 @@ async fn run_download_inner(
                          have {available}; partial download kept"
                     ))));
                 }
-                let staged = RangeRestart::create(&p.db, &save_dir)
+                let staged = RangeRestart::create(&save_dir, &p.task_id)
                     .await
                     .map_err(range_restart_failed)?;
                 let staged = range_restart.insert(staged);
@@ -5765,37 +5533,10 @@ async fn run_download_inner(
             }
         }
     }
-    if let Some(staged) = range_restart.as_ref() {
-        let cleanup = async {
-            // Bind the pending cleanup before reporting success. A retry may
-            // only remove this exact file, never a newer occupant of the path.
-            let dir = staged
-                .dir
-                .parent()
-                .ok_or_else(|| DownloadError::Other("staging directory has no parent".into()))?;
-            let name = checkpoint_path
-                .file_name()
-                .ok_or_else(|| DownloadError::Other("checkpoint has no file name".into()))?;
-            let path = dir.join(name);
-            let identity = match http_checkpoint_identity(&path) {
-                Ok(identity) => identity,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-                Err(error) => return Err(DownloadError::Io(error)),
-            };
-            let path = path
-                .to_str()
-                .ok_or_else(|| DownloadError::Other("non-UTF-8 checkpoint path".into()))?;
-            p.db.record_http_checkpoint_cleanup(&p.task_id, p.spawn_gen, path, &identity)
-                .await?;
-            Ok::<(), DownloadError>(())
-        }
-        .await;
-        if let Err(error) = cleanup {
-            crate::logger::report_warning(
-                "http-download",
-                "record old HTTP checkpoint cleanup",
-                &error,
-            );
+    if range_restart.is_some() {
+        // The replacement is verified and renamed; the checkpoint path is still guarded.
+        if let Err(error) = discard_segment_data(&p.db, &p.task_id, checkpoint_path).await {
+            crate::logger::report_warning("http-download", "clean old HTTP checkpoint", &error);
         }
         if let Err(error) = p.db.update_task_progress(&p.task_id, actual_total).await {
             crate::logger::report_warning("http-download", "persist completed restart", &error);

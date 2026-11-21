@@ -168,16 +168,6 @@ CREATE TABLE IF NOT EXISTS task_segments (
     PRIMARY KEY (task_id, segment_index),
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
-CREATE TABLE IF NOT EXISTS http_restart_owned_staging (
-    owner TEXT NOT NULL, path TEXT NOT NULL, parent_identity TEXT, PRIMARY KEY (owner, path)
-);
-CREATE TABLE IF NOT EXISTS http_restart_checkpoint_operations (
-    owner TEXT NOT NULL, task_id TEXT NOT NULL, epoch BIGINT NOT NULL,
-    path TEXT NOT NULL, file_identity TEXT NOT NULL, quarantine TEXT NOT NULL,
-    PRIMARY KEY (owner, quarantine)
-);
-CREATE INDEX IF NOT EXISTS http_restart_checkpoint_operations_task
-    ON http_restart_checkpoint_operations (task_id, owner);
 CREATE TABLE IF NOT EXISTS config (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -478,16 +468,6 @@ CREATE TABLE IF NOT EXISTS task_segments (
     PRIMARY KEY (task_id, segment_index),
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
-CREATE TABLE IF NOT EXISTS http_restart_owned_staging (
-    owner TEXT NOT NULL, path TEXT NOT NULL, parent_identity TEXT, PRIMARY KEY (owner, path)
-);
-CREATE TABLE IF NOT EXISTS http_restart_checkpoint_operations (
-    owner TEXT NOT NULL, task_id TEXT NOT NULL, epoch BIGINT NOT NULL,
-    path TEXT NOT NULL, file_identity TEXT NOT NULL, quarantine TEXT NOT NULL,
-    PRIMARY KEY (owner, quarantine)
-);
-CREATE INDEX IF NOT EXISTS http_restart_checkpoint_operations_task
-    ON http_restart_checkpoint_operations (task_id, owner);
 CREATE TABLE IF NOT EXISTS config (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -829,7 +809,6 @@ fn acquire_engine_file_lease(data_dir: &Path) -> Result<EngineWriteGuard, DbErro
 pub struct Db {
     pool: sqlx::AnyPool,
     backend: Backend,
-    staging_owner: String,
     /// CDN 上传租约已知为空的内存缓存，空闲 peek 据此免读数据库。
     cdn_lease_known_empty: Arc<AtomicBool>,
     activity_lock: Arc<tokio::sync::Mutex<()>>,
@@ -1373,10 +1352,8 @@ impl Db {
         let guard = acquire_engine_file_lease(dir)?;
         let db_path = dir.join("flux_down.db");
         let url = sqlite_url(&db_path);
-        let mut db = Self::connect_uninitialized(&url).await?;
-        db.staging_owner = Self::load_staging_owner(dir)?;
+        let db = Self::connect_uninitialized(&url).await?;
         db.init_schema().await?;
-        db.recover_http_restart_staging().await;
         Ok((db, guard))
     }
 
@@ -1396,8 +1373,7 @@ impl Db {
         data_dir: &Path,
     ) -> Result<(Self, EngineWriteGuard), DbError> {
         let mut guard = acquire_engine_file_lease(data_dir)?;
-        let mut db = Self::connect_uninitialized(url).await?;
-        db.staging_owner = Self::load_staging_owner(data_dir)?;
+        let db = Self::connect_uninitialized(url).await?;
         if db.backend == Backend::Postgres {
             let mut connection = db.pool.acquire().await?;
             let acquired = sqlx::query_scalar::<_, bool>("SELECT pg_try_advisory_lock($1)")
@@ -1413,260 +1389,7 @@ impl Db {
             guard.postgres_connection = Some(tokio::sync::Mutex::new(connection));
         }
         db.init_schema().await?;
-        db.recover_http_restart_staging().await;
         Ok((db, guard))
-    }
-
-    fn load_staging_owner(data_dir: &Path) -> Result<String, DbError> {
-        let path = data_dir.join("http-restart-owner");
-        match std::fs::read(&path) {
-            Ok(bytes) => {
-                if let Ok(owner) = std::str::from_utf8(&bytes)
-                    && uuid::Uuid::parse_str(owner.trim()).is_ok()
-                {
-                    return Ok(owner.trim().to_owned());
-                }
-                crate::logger::report_warning(
-                    "http-download",
-                    "replace invalid staging owner; old recovery records will be left untouched",
-                    &std::io::Error::other(format!("invalid owner in {}", path.display())),
-                );
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-        let owner = uuid::Uuid::new_v4().to_string();
-        let temporary = data_dir.join(format!(".http-restart-owner-{owner}.tmp"));
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
-        let written =
-            std::io::Write::write_all(&mut file, owner.as_bytes()).and_then(|()| file.sync_all());
-        drop(file);
-        if let Err(error) = written.and_then(|()| std::fs::rename(&temporary, &path)) {
-            let _remove_temporary = std::fs::remove_file(temporary);
-            return Err(error.into());
-        }
-        Ok(owner)
-    }
-
-    pub(crate) async fn record_http_restart_staging(&self, path: &str) -> Result<(), DbError> {
-        let parent_identity = crate::downloader::http_staging_parent_identity(Path::new(path))?;
-        sqlx::query(
-            "INSERT INTO http_restart_owned_staging (owner, path, parent_identity) VALUES ($1, $2, $3)",
-        )
-        .bind(&self.staging_owner)
-        .bind(path)
-        .bind(parent_identity)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    pub(crate) async fn clear_http_restart_staging(&self, path: &str) -> Result<(), DbError> {
-        sqlx::query("DELETE FROM http_restart_owned_staging WHERE owner = $1 AND path = $2")
-            .bind(&self.staging_owner)
-            .bind(path)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
-    pub(crate) async fn record_http_checkpoint_cleanup(
-        &self,
-        task_id: &str,
-        epoch: i64,
-        path: &str,
-        identity: &str,
-    ) -> Result<(), DbError> {
-        let name = format!(".fluxdown-retired-{}", uuid::Uuid::new_v4());
-        let quarantine = Path::new(path).with_file_name(&name);
-        let quarantine_path = quarantine
-            .to_str()
-            .ok_or_else(|| DbError::InvalidConfig("non-UTF-8 checkpoint quarantine path".into()))?;
-        let mut builder = std::fs::DirBuilder::new();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
-        }
-        builder.create(&quarantine)?;
-        std::fs::write(quarantine.join("owner"), name.as_bytes())?;
-        sqlx::query(
-            "INSERT INTO http_restart_checkpoint_operations
-                 (owner, task_id, epoch, path, file_identity, quarantine)
-                 VALUES ($1, $2, $3, $4, $5, $6)",
-        )
-        .bind(&self.staging_owner)
-        .bind(task_id)
-        .bind(epoch)
-        .bind(path)
-        .bind(identity)
-        .bind(quarantine_path)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    pub(crate) async fn retry_http_checkpoint_cleanup(&self, task_id: &str) -> Result<(), DbError> {
-        let quarantines = sqlx::query_scalar::<_, String>(
-            "SELECT quarantine FROM http_restart_checkpoint_operations WHERE owner = $1 AND task_id = $2",
-        )
-        .bind(&self.staging_owner)
-        .bind(task_id)
-        .fetch_all(&self.pool)
-        .await?;
-        let mut result = Ok(());
-        for quarantine in quarantines {
-            if let Err(error) = self.retry_http_checkpoint_entry(task_id, &quarantine).await {
-                result = Err(error);
-            }
-        }
-        result
-    }
-
-    async fn retry_http_checkpoint_entry(
-        &self,
-        task_id: &str,
-        quarantine: &str,
-    ) -> Result<(), DbError> {
-        let mut tx = match self.backend {
-            Backend::Sqlite => self.pool.begin_with("BEGIN IMMEDIATE").await?,
-            Backend::Postgres => self.pool.begin().await?,
-        };
-        // Serialize against set_segments_epoch before reading the operation.
-        let current_sql = match self.backend {
-            Backend::Postgres => {
-                "SELECT status, CAST(segments_epoch AS BIGINT) FROM tasks WHERE id = $1 FOR UPDATE"
-            }
-            Backend::Sqlite => {
-                "SELECT status, CAST(segments_epoch AS BIGINT) FROM tasks WHERE id = $1"
-            }
-        };
-        let current = sqlx::query_as::<_, (i32, i64)>(AssertSqlSafe(current_sql))
-            .bind(task_id)
-            .fetch_optional(&mut *tx)
-            .await?;
-        let Some((epoch, path, identity)) = sqlx::query_as::<_, (i64, String, String)>(
-            "SELECT epoch, path, file_identity FROM http_restart_checkpoint_operations
-             WHERE owner = $1 AND quarantine = $2",
-        )
-        .bind(&self.staging_owner)
-        .bind(quarantine)
-        .fetch_optional(&mut *tx)
-        .await?
-        else {
-            return Ok(());
-        };
-        let can_retire = epoch >= 0 && current == Some((3, epoch));
-        // Keep the transaction with the filesystem work so cancelling this
-        // future cannot release the epoch guard while a move is still running.
-        let quarantine_path = PathBuf::from(quarantine);
-        let (mut tx, removal) = tokio::task::spawn_blocking(move || {
-            let removal = crate::downloader::remove_replaced_http_checkpoint(
-                Path::new(&path),
-                can_retire.then_some(identity.as_str()),
-                &quarantine_path,
-            );
-            (tx, removal)
-        })
-        .await
-        .map_err(std::io::Error::other)?;
-        removal?;
-        if can_retire {
-            // Unlike delete_segments(), preserve the completed task's progress and counters.
-            sqlx::query("DELETE FROM task_segments WHERE task_id = $1")
-                .bind(task_id)
-                .execute(&mut *tx)
-                .await?;
-        }
-        sqlx::query(
-            "DELETE FROM http_restart_checkpoint_operations WHERE owner = $1 AND quarantine = $2",
-        )
-        .bind(&self.staging_owner)
-        .bind(quarantine)
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        // Never remove a nonempty quarantine: it may contain an unexpected file.
-        let _remove_owner = tokio::fs::remove_file(Path::new(quarantine).join("owner")).await;
-        let _remove_quarantine = tokio::fs::remove_dir(quarantine).await;
-        Ok(())
-    }
-
-    async fn recover_http_checkpoints(&self) -> Result<(), DbError> {
-        let ids = sqlx::query_scalar::<_, String>(
-            "SELECT DISTINCT task_id FROM http_restart_checkpoint_operations WHERE owner = $1",
-        )
-        .bind(&self.staging_owner)
-        .fetch_all(&self.pool)
-        .await?;
-        for id in ids {
-            if let Err(error) = self.retry_http_checkpoint_cleanup(&id).await {
-                crate::logger::report_warning(
-                    "http-download",
-                    "retry old checkpoint cleanup",
-                    &error,
-                );
-            }
-        }
-        Ok(())
-    }
-
-    async fn recover_http_restart_staging(&self) {
-        if let Err(error) = self.recover_http_checkpoints().await {
-            crate::logger::report_warning("http-download", "load old checkpoint cleanup", &error);
-        }
-        let entries = sqlx::query_as::<_, (String, Option<String>)>(
-            "SELECT path, parent_identity FROM http_restart_owned_staging WHERE owner = $1",
-        )
-        .bind(&self.staging_owner)
-        .fetch_all(&self.pool)
-        .await;
-        match entries {
-            Ok(entries) => {
-                for (path, parent_identity) in entries {
-                    let dir = Path::new(&path);
-                    let parent_matches = || {
-                        parent_identity.as_ref().is_some_and(|expected| {
-                            crate::downloader::http_staging_parent_identity(dir)
-                                .is_ok_and(|actual| actual == *expected)
-                        })
-                    };
-                    let same_parent = parent_matches();
-                    let cleaned = match crate::downloader::clean_http_restart_staging(dir) {
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                            // Absence is conclusive only on the recorded filesystem.
-                            if !(same_parent && parent_matches()) {
-                                continue;
-                            }
-                            Ok(())
-                        }
-                        result => result,
-                    };
-                    match cleaned {
-                        Ok(()) => {
-                            if let Err(error) = self.clear_http_restart_staging(&path).await {
-                                crate::logger::report_warning(
-                                    "http-download",
-                                    "clear staging record",
-                                    &error,
-                                );
-                            }
-                        }
-                        Err(error) => crate::logger::report_warning(
-                            "http-download",
-                            "recover staging directory",
-                            &error,
-                        ),
-                    }
-                }
-            }
-            Err(error) => {
-                crate::logger::report_warning("http-download", "load staging records", &error)
-            }
-        }
     }
 
     async fn connect_uninitialized(url: &str) -> Result<Self, DbError> {
@@ -1707,7 +1430,6 @@ impl Db {
         Ok(Self {
             pool,
             backend,
-            staging_owner: uuid::Uuid::new_v4().to_string(),
             activity_lock: Arc::new(tokio::sync::Mutex::new(())),
             event_order_gate: Arc::new(tokio::sync::Mutex::new(())),
             cdn_lease_known_empty: Arc::new(AtomicBool::new(false)),
@@ -3970,19 +3692,11 @@ impl Db {
     /// 段行加载/建行调用（顺序即正确性：先夺主权，旧 spawn 的迟到写从这一刻
     /// 起全部失效，不存在"重建后、夺权前"的空窗）。
     pub async fn set_segments_epoch(&self, task_id: &str, epoch: i64) -> Result<(), DbError> {
-        let mut tx = self.pool.begin().await?;
         sqlx::query("UPDATE tasks SET segments_epoch = $1 WHERE id = $2")
             .bind(epoch)
             .bind(task_id)
-            .execute(&mut *tx)
+            .execute(&self.pool)
             .await?;
-        // A numeric epoch can repeat after restart. Disable old retirement
-        // without dropping the only recovery record for a quarantined file.
-        sqlx::query("UPDATE http_restart_checkpoint_operations SET epoch = -1 WHERE task_id = $1 AND epoch >= 0")
-            .bind(task_id)
-            .execute(&mut *tx)
-            .await?;
-        tx.commit().await?;
         Ok(())
     }
 
@@ -10434,54 +10148,10 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&dir).expect("create writer test dir");
-        std::fs::write(dir.join("http-restart-owner"), b"").expect("interrupted owner write");
 
         let (first_db, first_guard) = Db::open_exclusive(&dir).await.expect("first writer");
-        let dir = dir.canonicalize().expect("canonical test directory");
-        let save_dir = dir.join("save");
-        std::fs::create_dir(&save_dir).expect("create save directory");
-        let recorded = save_dir.join(format!(".fluxdown-restart-{}", uuid::Uuid::new_v4()));
-        let unrelated = dir.join(format!(".fluxdown-restart-{}", uuid::Uuid::new_v4()));
-        first_db
-            .record_http_restart_staging(recorded.to_str().expect("UTF-8 test path"))
-            .await
-            .expect("persist staging ownership");
-        let deleted = save_dir.join(format!(".fluxdown-restart-{}", uuid::Uuid::new_v4()));
-        let markerless = save_dir.join(format!(".fluxdown-restart-{}", uuid::Uuid::new_v4()));
-        for path in [&deleted, &markerless] {
-            std::fs::create_dir(path).unwrap();
-            first_db
-                .record_http_restart_staging(path.to_str().unwrap())
-                .await
-                .unwrap();
-        }
-        std::fs::remove_dir(&deleted).unwrap();
-        for path in [&recorded, &unrelated] {
-            std::fs::create_dir(path).expect("create staging");
-            std::fs::write(path.join("download"), b"transfer").expect("write staging");
-            std::fs::write(
-                path.join("owner"),
-                path.file_name().unwrap().as_encoded_bytes(),
-            )
-            .expect("write ownership marker");
-        }
-        std::fs::write(recorded.join("checkpoint"), b"retired").expect("write old checkpoint");
-        let mut other_storage = first_db.clone();
-        other_storage.staging_owner = uuid::Uuid::new_v4().to_string();
-        other_storage.recover_http_restart_staging().await;
-        assert!(recorded.join("download").is_file());
-        drop(other_storage);
         let second = Db::open_exclusive(&dir).await;
         assert!(matches!(second, Err(DbError::WriterLeaseHeld(_))));
-        assert!(recorded.join("download").is_file());
-        std::fs::write(
-            dir.join("http-restart-owner"),
-            format!("{}\n", first_db.staging_owner),
-        )
-        .expect("write owner with trailing newline");
-        let offline = dir.join("offline");
-        std::fs::rename(&save_dir, &offline).expect("take save directory offline");
-        std::fs::create_dir(&save_dir).expect("leave an empty mount point");
 
         first_db.pool.close().await;
         drop(first_db);
@@ -10490,17 +10160,6 @@ mod tests {
         let (next_db, next_guard) = Db::open_exclusive(&dir)
             .await
             .expect("writer after release");
-        std::fs::remove_dir(&save_dir).expect("remove empty mount point");
-        std::fs::rename(offline, save_dir).expect("bring save directory back online");
-        next_db.recover_http_restart_staging().await;
-        assert!(!recorded.exists());
-        assert!(!markerless.exists());
-        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM http_restart_owned_staging")
-            .fetch_one(&next_db.pool)
-            .await
-            .unwrap();
-        assert_eq!(remaining, 0);
-        assert!(unrelated.join("download").is_file());
         next_db.pool.close().await;
         drop(next_db);
         drop(next_guard);
@@ -10510,132 +10169,6 @@ mod tests {
         {
             eprintln!("best-effort test directory cleanup: {error}");
         }
-    }
-
-    #[tokio::test]
-    async fn completed_http_checkpoint_cleanup_retries_without_deleting_reused_paths() {
-        let (db, dir) = open_test_db().await;
-        db.pool.close().await;
-        let (db, guard) = Db::open_exclusive(&dir).await.unwrap();
-        for id in ["retry", "file", "reused", "new-epoch"] {
-            insert_task(&db, id).await;
-            db.insert_segments(id, &[(0, 0, 99)]).await.unwrap();
-            db.set_segments_epoch(id, 7).await.unwrap();
-            db.update_task_progress(id, 100).await.unwrap();
-            db.update_task_status(id, 3, "").await.unwrap();
-            let path = dir.join(format!("{id}.fdownloading"));
-            std::fs::write(&path, b"old checkpoint").unwrap();
-            let identity = crate::downloader::http_checkpoint_identity(&path).unwrap();
-            db.record_http_checkpoint_cleanup(id, 7, path.to_str().unwrap(), &identity)
-                .await
-                .unwrap();
-            if id == "reused" {
-                let new_path = dir.join("replacement");
-                std::fs::write(&new_path, b"new task file").unwrap();
-                std::fs::remove_file(&path).unwrap();
-                std::fs::rename(new_path, path).unwrap();
-            }
-        }
-        // A restarted engine may allocate the same numeric epoch.
-        db.set_segments_epoch("new-epoch", 7).await.unwrap();
-        let held = dir.join("storage-offline");
-        let quarantine: String = sqlx::query_scalar(
-            "SELECT quarantine FROM http_restart_checkpoint_operations WHERE task_id = 'file'",
-        )
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
-        std::fs::rename(&quarantine, &held).unwrap();
-        assert!(db.retry_http_checkpoint_cleanup("file").await.is_err());
-        assert!(dir.join("file.fdownloading").exists());
-        std::fs::rename(held, quarantine).unwrap();
-        sqlx::raw_sql(
-            "CREATE TRIGGER block_segment_cleanup BEFORE DELETE ON task_segments
-             WHEN OLD.task_id = 'retry' BEGIN SELECT RAISE(ABORT, 'simulated failure'); END;",
-        )
-        .execute(&db.pool)
-        .await
-        .unwrap();
-        assert!(db.retry_http_checkpoint_cleanup("retry").await.is_err());
-        assert!(!dir.join("retry.fdownloading").exists());
-        assert!(!db.load_segments("retry").await.unwrap().is_empty());
-        sqlx::query("DROP TRIGGER block_segment_cleanup")
-            .execute(&db.pool)
-            .await
-            .unwrap();
-        db.pool.close().await;
-        drop(guard);
-
-        let (db, guard) = Db::open_exclusive(&dir).await.unwrap();
-        for id in ["retry", "file", "reused"] {
-            assert!(db.load_segments(id).await.unwrap().is_empty());
-            let task = db.load_task_by_id(id).await.unwrap().unwrap();
-            assert_eq!((task.status, task.downloaded_bytes), (3, 100));
-        }
-        assert!(!dir.join("file.fdownloading").exists());
-        assert_eq!(
-            std::fs::read(dir.join("reused.fdownloading")).unwrap(),
-            b"new task file"
-        );
-        assert!(dir.join("new-epoch.fdownloading").exists());
-        assert!(!db.load_segments("new-epoch").await.unwrap().is_empty());
-        drop(guard);
-        close_test_db(&db, dir).await;
-    }
-
-    #[tokio::test]
-    async fn http_checkpoint_restore_survives_new_epoch_and_interrupted_unlink() {
-        let (db, dir) = open_test_db().await;
-        db.pool.close().await;
-        let (db, guard) = Db::open_exclusive(&dir).await.unwrap();
-        let id = "restore";
-        insert_task(&db, id).await;
-        db.set_segments_epoch(id, 7).await.unwrap();
-        db.update_task_status(id, 3, "").await.unwrap();
-        let path = dir.join("original.fdownloading");
-        std::fs::write(&path, b"old checkpoint").unwrap();
-        let identity = crate::downloader::http_checkpoint_identity(&path).unwrap();
-        db.record_http_checkpoint_cleanup(id, 7, path.to_str().unwrap(), &identity)
-            .await
-            .unwrap();
-        let quarantine: String =
-            sqlx::query_scalar("SELECT quarantine FROM http_restart_checkpoint_operations")
-                .fetch_one(&db.pool)
-                .await
-                .unwrap();
-        let isolated = Path::new(&quarantine).join("checkpoint");
-        // A different file raced into the old name during isolation.
-        std::fs::remove_file(&path).unwrap();
-        std::fs::write(&isolated, b"file moved by race").unwrap();
-        std::fs::write(&path, b"current occupant").unwrap();
-        assert!(db.retry_http_checkpoint_cleanup(id).await.is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), b"current occupant");
-
-        db.set_segments_epoch(id, 7).await.unwrap();
-        db.insert_segments(id, &[(0, 0, 99)]).await.unwrap();
-        assert!(db.retry_http_checkpoint_cleanup(id).await.is_err());
-        let other = dir.join("second.fdownloading");
-        db.record_http_checkpoint_cleanup(id, 7, other.to_str().unwrap(), "")
-            .await
-            .unwrap();
-        db.update_task_status(id, 1, "").await.unwrap();
-        assert!(db.retry_http_checkpoint_cleanup(id).await.is_err());
-        assert_eq!(std::fs::read(&isolated).unwrap(), b"file moved by race");
-        // Allow the stale operation to run even with a reused completed epoch.
-        db.update_task_status(id, 3, "").await.unwrap();
-
-        // Simulate a crash after the restore's hard link, before unlinking.
-        std::fs::remove_file(&path).unwrap();
-        std::fs::hard_link(&isolated, &path).unwrap();
-        db.pool.close().await;
-        drop(guard);
-
-        let (db, guard) = Db::open_exclusive(&dir).await.unwrap();
-        assert_eq!(std::fs::read(&path).unwrap(), b"file moved by race");
-        assert!(!Path::new(&quarantine).exists());
-        assert!(!db.load_segments(id).await.unwrap().is_empty());
-        drop(guard);
-        close_test_db(&db, dir).await;
     }
 
     #[tokio::test]
