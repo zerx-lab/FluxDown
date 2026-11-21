@@ -578,7 +578,7 @@ async fn mux_audio_video(
 }
 
 async fn run_dash_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
-    log_info!("[dash-download] task {} starting, url={}", p.task_id, p.url);
+    log_info!("[dash-download] task {} starting", p.task_id);
 
     p.db.update_task_status(&p.task_id, 5, "").await?;
     if p.progress_tx

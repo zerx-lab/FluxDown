@@ -1517,7 +1517,7 @@ fn should_write_init(last_written: Option<&MapKey>, current: Option<&MapKey>) ->
 }
 
 async fn run_hls_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
-    log_info!("[hls-download] task {} starting, url={}", p.task_id, p.url);
+    log_info!("[hls-download] task {} starting", p.task_id);
 
     // Transition to status=5 (preparing)
     p.db.update_task_status(&p.task_id, 5, "").await?;

@@ -4326,11 +4326,7 @@ async fn run_download_inner(
     html_only: bool,
     range_restart: &mut Option<RangeRestart>,
 ) -> Result<(i64, Option<String>), DownloadError> {
-    log_info!(
-        "[download] task {} starting, url={}",
-        p.task_id,
-        crate::logger::sanitize_log_str(&p.url)
-    );
+    log_info!("[download] task {} starting", p.task_id);
     // 恢复任务进入 preparing 时保留已落库进度，避免 UI 在真正发出续传
     // Range 前短暂显示为 0。后续 status=1 继续复用同一基线，不重复查库。
     let (resume_downloaded, resume_total) = if p.is_resume {

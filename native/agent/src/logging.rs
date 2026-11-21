@@ -42,10 +42,69 @@ pub fn init_desktop() {
 
 /// 初始化移动端嵌入模式日志（进程内 daemon + agent）。必须在启动 daemon 之前调用：daemon
 /// 只在没有全局订阅者时才装自己的 stderr 订阅者。进程内只生效一次，重复调用沿用首次的目录。
-pub fn init_embedded(agent_data_dir: &Path, engine_data_dir: &Path) {
+pub fn init_embedded(agent_data_dir: &Path, engine_data_dir: &Path, external_dir: Option<&Path>) {
+    #[cfg(target_os = "android")]
+    {
+        if let Some(dir) = external_dir {
+            let header = android_header();
+            let private_dir = engine_data_dir.join("diagnostic-logs/agent");
+            match fluxdown_logfile::init_global_redacted(
+                dir,
+                "agent",
+                header,
+                redact,
+                Some(&private_dir),
+            ) {
+                Ok(log) => {
+                    install_subscriber(log);
+                    return;
+                }
+                Err(error) => eprintln!("could not initialize external agent log: {error}"),
+            }
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    let _external_dir = external_dir;
     init_at(agent_data_dir, engine_data_dir);
 }
 
+/// Active in-process Android agent log directory, including runtime fallback.
+#[cfg(target_os = "android")]
+pub fn active_android_log_dir() -> Option<&'static Path> {
+    fluxdown_logfile::global()?.path().parent()
+}
+
+#[cfg(target_os = "android")]
+fn redact(text: &str) -> String {
+    static URL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(fluxdown_logfile::ANDROID_DISK_URL_PATTERN)
+            .unwrap_or_else(|error| panic!("invalid Android URL redaction regex: {error}"))
+    });
+    crate::log_export::redact_text(&URL.replace_all(text, "[URL_REDACTED]"))
+}
+
+#[cfg(target_os = "android")]
+fn android_header() -> String {
+    format!(
+        "  version: {}\n  os/arch: android/{}",
+        fluxdown_protocol::APP_VERSION,
+        std::env::consts::ARCH,
+    )
+}
+
+#[cfg(target_os = "android")]
+fn init_at(_agent_data_dir: &Path, engine_data_dir: &Path) {
+    let dir = engine_data_dir.join("diagnostic-logs/agent");
+    match fluxdown_logfile::init_global_redacted(&dir, "agent", android_header(), redact, None) {
+        Ok(log) => install_subscriber(log),
+        Err(error) => eprintln!(
+            "could not initialize private agent log at {}: {error}",
+            dir.display()
+        ),
+    }
+}
+
+#[cfg(not(target_os = "android"))]
 fn init_at(agent_data_dir: &Path, engine_data_dir: &Path) {
     let dir = crate::log_export::agent_log_dir(agent_data_dir);
     let header = build_header(agent_data_dir, engine_data_dir);
@@ -83,6 +142,10 @@ fn init_at(agent_data_dir: &Path, engine_data_dir: &Path) {
             log
         }
     };
+    install_subscriber(log);
+}
+
+fn install_subscriber(log: &fluxdown_logfile::LogFile) {
     fluxdown_logfile::install_panic_hook();
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_ansi(false)
@@ -170,6 +233,7 @@ fn default_directives(level: Level) -> String {
     directives
 }
 
+#[cfg(not(target_os = "android"))]
 fn build_header(agent_data_dir: &Path, engine_data_dir: &Path) -> String {
     let mut header = String::new();
     let mut line = |key: &str, value: String| {

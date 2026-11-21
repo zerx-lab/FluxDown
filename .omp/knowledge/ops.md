@@ -18,9 +18,11 @@
 - desktop 收 `log` 门面：`fluxdown*` 与 `gpui*`（含显卡选择、D3D 特性级别、DirectComposition、设备丢失、draw 失败）按 `FLUXDOWN_LOG_LEVEL`（缺省 info），第三方只收 warn+；另记窗口打开参数、首个窗口 GPU 规格（软件渲染告警）、首帧耗时 / 10s 无首帧告警、UI 线程心跳看门狗（停摆 10/60/300s 告警，macOS 因 App Nap 不启用）、agent 连接状态迁移与 agent 进程拉起/退出。启动参数只记开关与位置参数个数，不记链接。
 - agent 收 `tracing`：`RUST_LOG` 非空时原样生效，否则 `warn` + 第一方 crate（含 `fluxdown_daemon`）按 `FLUXDOWN_LOG_LEVEL`；daemon 子进程 stderr 追加到同目录 `fluxdownd.stderr.log`（超 1MB 截断），拉起 / 非零退出（含存活时长）记入 `agent.log`。`--server` 模式仍是 stderr tracing。
 - 移动端本机主机（`native/mobile/src/local.rs`）在启动进程内 daemon **之前**调 `fluxdown_agent::logging::init_embedded`：daemon 只在无全局订阅者时才装 stderr 订阅者，顺序反了 agent / daemon 的 tracing 全部丢失（手机没有可读 stderr）。进程级只初始化一次。
-- Doctor 的日志目录检查、「打开日志目录」、日志导出都指向 `<agent 数据目录>/logs`（`log_export::agent_log_dir`）。嵌入宿主（`start_embedded`）的 Doctor 不产出 `app_listener` / `local_server` / `disk_sleep`（`DiagnosticsService::for_embedded_host`：无 TCP 网关 / NMH IPC / 兼容 API，也无机械盘），网关虽是 server 模式但放行 `agent.diagnostics.exportLogs`（`GatewayService::with_local_log_export`：只有同进程 App 能连，目标是 App 沙盒路径）。
+- Android 在应用专属外部 `files/logs/diagnostics/` 下写 `android/app-events.log`、`agent/agent.log` 和 `engine/fluxdown_*.log`。写入失败回退独立脱敏内部目录；发布器按组件合并文件通知，从 Rust 查询实际写入目录，不跨目录按时间排序。不迁移 DB、设置或历史日志。
+- Android 取证入口是共享 `Documents/FluxDown/Logs/`：首次通过系统目录选择器持久授权。运行中后台发布有界文本；Java 未捕获异常同步发布。写完暂存文件后才轮换，强制终止时可读取最近完整的 `*.txt` 或 `*.previous.txt`。不再更新旧 Download 副本。
+- Doctor、日志路径查询和 ZIP 导出读取实际 agent 日志目录（默认 `<agent 数据目录>/logs`），引擎路径来自 daemon。嵌入宿主的 Doctor 省略 `app_listener` / `local_server` / `disk_sleep`；网关允许同进程 App 在沙盒内导出 ZIP。
 
-**导出脱敏的唯一规则源**：`native/logfile/src/sanitize.rs::SANITIZE_PATTERNS`，由 `fluxdown_logfile::SANITIZE_PATTERNS` 导出；引擎 `logger::{sanitize_log_str,sanitize_log_bytes}` 与 agent `log_export::sanitize_text` 各自编译同一规则并按表顺序套用，不再维护两份正则。覆盖 URL userinfo、Telegram bot 路径令牌、敏感 query、超长 query、Cookie / Authorization、代理凭据与 Linux / Windows 用户目录；非 UTF-8 按有损解码后脱敏。规则用于导出，不代表原始落盘日志已脱敏；agent 的配置快照导出另先按结构清掉秘密字段（`sanitize_json_export`）。
+**文本脱敏规则源**：`native/logfile/src/sanitize.rs`。引擎和 agent 用共享规则脱敏导出文本；Android 写盘还移除完整 HTTP(S)/FTP(S) URL，因为签名可位于任意路径或查询参数中。下载启动只记协议和任务 ID。Android 宿主事件不记录异常消息。配置快照另用 `sanitize_json_export` 按结构清除秘密字段。
 
 ---
 

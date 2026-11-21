@@ -27,9 +27,12 @@ pub const SANITIZE_PATTERNS: &[(&str, &str)] = &[
         r#"(?i)(https?://[^?\s]{3,})\?[^\s,)\]}>"]{50,}"#,
         "$1?[QUERY_REDACTED]",
     ),
-    (r"(?i)(cookie\b[^:\r\n]*:\s*)\S+", "$1[REDACTED]"),
     (
-        r"(?i)(authorization\b[^:\r\n]*:\s*)(?:\S+\s+)?\S+",
+        r"(?i)((?:set-)?cookie\b[^:\r\n]*:[\t ]*)[^\r\n]+",
+        "$1[REDACTED]",
+    ),
+    (
+        r"(?i)(authorization\b[^:\r\n]*:[\t ]*)[^\r\n]+",
         "$1[REDACTED]",
     ),
     (
@@ -39,3 +42,6 @@ pub const SANITIZE_PATTERNS: &[(&str, &str)] = &[
     (r"/home/[^/\s]+/", "/home/***/"),
     (r"(?i)([A-Z]:\\users\\)[^\\\s]+\\", "$1***\\"),
 ];
+
+/// URLs may carry credentials in arbitrary path segments or query parameters.
+pub const ANDROID_DISK_URL_PATTERN: &str = r#"(?i)(?:https?|ftps?)://[^\s<>"\\]+"#;

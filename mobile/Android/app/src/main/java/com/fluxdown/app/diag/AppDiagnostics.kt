@@ -12,8 +12,6 @@ import android.util.Log
 import com.fluxdown.app.update.ApkInstaller
 import java.io.File
 import java.io.IOException
-import java.io.PrintWriter
-import java.io.StringWriter
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -34,48 +32,89 @@ private const val EXIT_REASONS_MAX = 32
  * 应用更新交给哪个安装程序及其返回、Kotlin 未捕获异常，以及系统给出的历史进程退出原因（`ApplicationExitInfo`，Android 11+）。
  * 用于区分「后台消失」是内存回收、冻结、崩溃、前台服务超时还是厂商系统清理，以及更新为何没装上。
  *
- * 只写应用私有目录 `noBackupFilesDir/diagnostics/`，随日志导出打包为 `android/` 目录，不上传。
+ * 优先写应用专属外部目录的 `logs/diagnostics/android/`，不可写则回退内部目录。
+ * 外置事件只记录状态、异常类型和代码栈，不记录异常消息；不上传。
  */
 object AppDiagnostics {
     private const val DIR = "diagnostics"
     private const val EVENTS = "app-events.log"
 
+    var externalLogRoot: File? = null
+        private set
+
+    private lateinit var privateDir: File
     @Volatile
     private var dir: File? = null
+    private var sharedLogs: SharedDiagnosticLogs? = null
 
     /** 进程启动时调用一次：定位目录、记录启动、安装未捕获异常记录（之后交回原处理器，崩溃语义不变）。 */
     fun install(context: Context) {
-        val root = File(context.noBackupFilesDir, DIR)
-        if (!root.isDirectory && !root.mkdirs()) {
-            Log.w(TAG, "cannot create ${root.path}")
-            return
+        // Separate from older private event logs, which could contain exception messages.
+        privateDir = File(context.noBackupFilesDir, "$DIR/redacted")
+        externalLogRoot = try {
+            context.getExternalFilesDir(null)?.let { File(it, "logs/diagnostics") }
+        } catch (e: SecurityException) {
+            Log.w(TAG, "external diagnostics storage unavailable", e)
+            null
         }
-        dir = root
-        event("process start pid=${Process.myPid()} sdk=${Build.VERSION.SDK_INT}")
+        dir = externalLogRoot?.let { File(it, "android") } ?: privateDir
+        val shared = SharedDiagnosticLogs(
+            context.applicationContext, externalLogRoot, File(context.filesDir, "fluxdown/diagnostic-logs"),
+        )
+        sharedLogs = shared
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
-            event("uncaught exception on ${thread.name}:\n${stackTrace(error)}")
-            previous?.uncaughtException(thread, error)
+            try {
+                event(crashSummary(error))
+                publishSharedLogs()
+            } finally {
+                previous?.uncaughtException(thread, error)
+            }
+        }
+        event("process start pid=${Process.myPid()} sdk=${Build.VERSION.SDK_INT}")
+        shared.watch()
+    }
+
+    /** Called after directory authorization on an IO thread, and synchronously on crash. */
+    internal fun publishSharedLogs() {
+        val shared = sharedLogs ?: return
+        dir?.let(shared::publishHost)
+        shared.publishNative()
+    }
+
+    /** 仅传入受控状态和计量，不传请求、用户数据或异常消息。 */
+    fun event(message: String) {
+        Log.i(TAG, message)
+        synchronized(this) {
+            val root = dir ?: return
+            try {
+                appendEvent(root, message)
+                sharedLogs?.publishHostLater(root)
+            } catch (e: IOException) {
+                Log.w(TAG, "event log write failed", e)
+                if (root == privateDir) return
+                dir = privateDir
+                try {
+                    appendEvent(privateDir, message)
+                    sharedLogs?.publishHostLater(privateDir)
+                } catch (fallback: IOException) {
+                    Log.w(TAG, "private event log write failed", fallback)
+                }
+            }
         }
     }
 
-    /** 追加一条带时间戳的事件（任意线程；写失败只记 logcat，诊断不能影响主流程）。 */
-    fun event(message: String) {
-        Log.i(TAG, message)
-        val root = dir ?: return
-        synchronized(this) {
-            val file = File(root, EVENTS)
-            try {
-                if (file.length() > EVENT_LOG_MAX_BYTES) {
-                    val rotated = File(root, "$EVENTS.1")
-                    if (rotated.exists() && !rotated.delete()) Log.w(TAG, "cannot delete ${rotated.path}")
-                    if (!file.renameTo(rotated)) Log.w(TAG, "cannot rotate ${file.path}")
-                }
-                file.appendText("${timestamp(System.currentTimeMillis())} $message\n")
-            } catch (e: IOException) {
-                Log.w(TAG, "event log write failed: ${e.message}")
-            }
+    private fun appendEvent(root: File, message: String) = try {
+        if (!root.mkdirs() && !root.isDirectory) throw IOException("cannot create diagnostics directory")
+        val file = File(root, EVENTS)
+        if (file.length() > EVENT_LOG_MAX_BYTES) {
+            val rotated = File(root, "$EVENTS.1")
+            if (rotated.exists() && !rotated.delete()) throw IOException("cannot remove previous event log")
+            if (!file.renameTo(rotated)) throw IOException("cannot rotate event log")
         }
+        file.appendText("${timestamp(System.currentTimeMillis())} $message\n")
+    } catch (e: SecurityException) {
+        throw IOException("diagnostics storage access denied", e)
     }
 
     /**
@@ -183,5 +222,17 @@ object AppDiagnostics {
     private fun timestamp(ms: Long): String =
         SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS Z", Locale.ROOT).format(Date(ms))
 
-    private fun stackTrace(error: Throwable): String = StringWriter().also { error.printStackTrace(PrintWriter(it)) }.toString()
+    private fun crashSummary(error: Throwable): String = buildString {
+        append("uncaught exception")
+        var cause: Throwable? = error
+        repeat(8) {
+            val current = cause ?: return@buildString
+            append("\n  ").append(current.javaClass.name)
+            for (frame in current.stackTrace.take(32)) {
+                append("\n    at ").append(frame.className).append('.').append(frame.methodName)
+                    .append(':').append(frame.lineNumber)
+            }
+            cause = current.cause
+        }
+    }
 }

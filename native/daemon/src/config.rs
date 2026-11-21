@@ -23,6 +23,9 @@ pub struct DaemonConfig {
     /// 是否发布 `daemon-endpoint.json`（独立进程为真，嵌入式为假）。
     pub publish_endpoint: bool,
     pub data_dir_override: Option<PathBuf>,
+    /// Android log path supplied by the app; independent of the database directory.
+    #[cfg(target_os = "android")]
+    pub log_dir_override: Option<PathBuf>,
     pub database_url: Option<String>,
     pub token_file_override: Option<PathBuf>,
     /// `FLUXDOWN_SAVE_DIR`：仅在库中 `default_save_dir` 尚未设置时播种（见 `init_default_config`）。
@@ -55,6 +58,8 @@ impl DaemonConfig {
             bind_fallback,
             publish_endpoint: true,
             data_dir_override: std::env::var_os("FLUXDOWN_DATA_DIR").map(PathBuf::from),
+            #[cfg(target_os = "android")]
+            log_dir_override: None,
             database_url: std::env::var("FLUXDOWN_DATABASE_URL")
                 .ok()
                 .filter(|value| !value.trim().is_empty()),
@@ -78,6 +83,8 @@ impl DaemonConfig {
             bind_fallback: false,
             publish_endpoint: false,
             data_dir_override: Some(data_dir),
+            #[cfg(target_os = "android")]
+            log_dir_override: None,
             database_url: None,
             token_file_override: None,
             save_dir_seed: save_dir_seed

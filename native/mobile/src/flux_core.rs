@@ -101,6 +101,25 @@ impl FluxCore {
         .await
     }
 
+    /// Android diagnostic sink directory, or `None` before the sink is initialized.
+    /// This does not acquire the host lock or perform IO.
+    pub fn android_log_directory(&self, engine: bool) -> Option<String> {
+        #[cfg(target_os = "android")]
+        {
+            let directory = if engine {
+                fluxdown_daemon::active_android_log_dir()
+            } else {
+                fluxdown_agent::logging::active_android_log_dir()
+            };
+            directory.and_then(|path| path.to_str()).map(str::to_owned)
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            let _engine = engine;
+            None
+        }
+    }
+
     /// `endpoint`：`http(s)://host:port` 或 `ws(s)://host:port`（规范化为 `ws(s)://…/rpc`）。
     /// 会完成连接、鉴权、握手与首个快照后才返回；密钥错误 / 主机不可达在此以错误返回。
     pub async fn open_remote(
