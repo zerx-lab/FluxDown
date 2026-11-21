@@ -20,6 +20,15 @@ impl fluxdown_ui_rss::RssPort for AgentRssPort {
     ) -> fluxdown_ui_rss::PortFuture<serde_json::Value> {
         self.client.call(method, Some(params))
     }
+
+    fn image(
+        &self,
+        source_id: String,
+        guid: String,
+        index: usize,
+    ) -> fluxdown_ui_rss::PortFuture<Vec<u8>> {
+        self.client.rss_image(source_id, guid, index)
+    }
 }
 
 pub struct AgentExtensionsPort {

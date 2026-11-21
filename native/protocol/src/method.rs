@@ -141,6 +141,7 @@ pub const DAEMON_FS_LIST: &str = "daemon.fs.list";
 
 pub const DAEMON_RSS_LIST_SOURCES: &str = "daemon.rss.listSources";
 pub const DAEMON_RSS_GET_ITEMS: &str = "daemon.rss.getItems";
+pub const DAEMON_RSS_GET_IMAGE: &str = "daemon.rss.getImage";
 pub const DAEMON_RSS_CREATE_SOURCE: &str = "daemon.rss.createSource";
 pub const DAEMON_RSS_UPDATE_SOURCE: &str = "daemon.rss.updateSource";
 pub const DAEMON_RSS_DELETE_SOURCE: &str = "daemon.rss.deleteSource";
@@ -566,6 +567,7 @@ pub const ALL_METHODS: &[&str] = &[
     DAEMON_FS_LIST,
     DAEMON_RSS_LIST_SOURCES,
     DAEMON_RSS_GET_ITEMS,
+    DAEMON_RSS_GET_IMAGE,
     DAEMON_RSS_CREATE_SOURCE,
     DAEMON_RSS_UPDATE_SOURCE,
     DAEMON_RSS_DELETE_SOURCE,
@@ -761,6 +763,7 @@ pub const ALL_METHODS: &[&str] = &[
 /// 会等待网络、下载或外部 IO 的 daemon 方法。daemon 对这些方法按请求并发处理，
 /// agent 网关也把它们放到独立于普通 daemon 命令的通道，避免长耗时调用堵住暂停/恢复/设置写入。
 pub const SLOW_DAEMON_METHODS: &[&str] = &[
+    DAEMON_RSS_GET_IMAGE,
     DAEMON_COMPONENT_LIST_VERSIONS,
     DAEMON_COMPONENT_INSTALL,
     DAEMON_PLUGIN_AUTH,

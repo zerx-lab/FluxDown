@@ -106,6 +106,7 @@ export const METHOD = {
 
   DAEMON_RSS_LIST_SOURCES: 'daemon.rss.listSources',
   DAEMON_RSS_GET_ITEMS: 'daemon.rss.getItems',
+  DAEMON_RSS_GET_IMAGE: 'daemon.rss.getImage',
   DAEMON_RSS_CREATE_SOURCE: 'daemon.rss.createSource',
   DAEMON_RSS_UPDATE_SOURCE: 'daemon.rss.updateSource',
   DAEMON_RSS_DELETE_SOURCE: 'daemon.rss.deleteSource',

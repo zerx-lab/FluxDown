@@ -3540,6 +3540,10 @@ pub struct RssItemDto {
     pub guid: String,
     pub title: String,
     pub link: String,
+    /// Number of available description image thumbnails.
+    #[serde(default)]
+    #[cfg_attr(feature = "openapi", schema(default = 0))]
+    pub image_count: u8,
     /// enclosure 直链（空 = 回退 `link`）。
     pub enclosure_url: String,
     /// enclosure 声明大小（字节，0 = 未知）。

@@ -3033,6 +3033,7 @@ fn validate_subscription_item(item: SubscriptionOutputItem) -> Result<ParsedItem
         resolver_item: item.resolver_item,
         enclosure_length: item.enclosure_length,
         pub_date: item.pub_date,
+        image_urls: Vec::new(),
     })
 }
 

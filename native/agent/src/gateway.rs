@@ -21,6 +21,7 @@ use axum::extract::{ConnectInfo, Path as AxumPath, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use fluxdown_protocol::error::RSS_IMAGE_PROXY_UNVERIFIABLE_HEADER;
 use fluxdown_protocol::method;
 use fluxdown_protocol::{
     ApplicationErrorCode, ClientHello, EventFrame, RpcErrorData, RpcErrorObject, RpcRequest,
@@ -1964,6 +1965,7 @@ pub async fn serve(
     let rpc = Router::new()
         .route("/rpc", get(rpc_upgrade))
         .route("/api/web/plugin-images/{session}/{id}", get(plugin_image))
+        .route("/api/web/rss-images", get(rss_image))
         .with_state(state);
     let app = fluxdown_api::server::api_router(api_host, api_config).merge(rpc);
     // SPA fallback 只在 server 模式挂载，且 API / `/rpc` 路由优先。
@@ -1977,40 +1979,101 @@ pub async fn serve(
         .await
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RssImageQuery {
+    source_id: String,
+    guid: String,
+    index: u8,
+}
+
+async fn rss_image(
+    State(state): State<GatewayState>,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<RssImageQuery>,
+) -> Response {
+    use base64::Engine as _;
+    if let Err(status) = authorize_image(&state, peer.ip(), &headers).await {
+        return status.into_response();
+    }
+    let payload: serde_json::Value = match state.service.daemon.call(
+        method::DAEMON_RSS_GET_IMAGE,
+        Some(serde_json::json!({"sourceId": query.source_id, "guid": query.guid, "index": query.index})),
+    ).await {
+        Ok(payload) => payload,
+        Err(error)
+            if error.reason == Some(fluxdown_protocol::ErrorReason::RssImageProxyUnverifiable) =>
+        {
+            return (
+                StatusCode::FORBIDDEN,
+                [
+                    (RSS_IMAGE_PROXY_UNVERIFIABLE_HEADER, "1"),
+                    (header::CACHE_CONTROL.as_str(), "no-store"),
+                ],
+            )
+                .into_response();
+        }
+        Err(_) => return StatusCode::BAD_GATEWAY.into_response(),
+    };
+    let Some(encoded) = payload.get("pngBase64").and_then(serde_json::Value::as_str) else {
+        return StatusCode::BAD_GATEWAY.into_response();
+    };
+    let Ok(png) = base64::engine::general_purpose::STANDARD.decode(encoded) else {
+        return StatusCode::BAD_GATEWAY.into_response();
+    };
+    if png.len() > 512 * 1024 {
+        return StatusCode::BAD_GATEWAY.into_response();
+    }
+    (
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "no-store"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        png,
+    )
+        .into_response()
+}
+
+async fn authorize_image(
+    state: &GatewayState,
+    peer: std::net::IpAddr,
+    headers: &HeaderMap,
+) -> Result<(), StatusCode> {
+    if crate::server_mode::bearer_token(headers).is_none()
+        || !crate::server_mode::origin_allowed(headers)
+    {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    match state.server.as_deref() {
+        Some(server) => {
+            server
+                .authorize_rpc_from(peer, headers, &state.bearer)
+                .await
+        }
+        None => {
+            authorize_desktop_rpc(
+                &state.service,
+                &state.throttle,
+                &state.bearer,
+                peer,
+                headers,
+            )
+            .await
+        }
+    }
+    .map(|_| ())
+}
+
 async fn plugin_image(
     State(state): State<GatewayState>,
     ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
     AxumPath((session, id)): AxumPath<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    // Binary resources use headers only: never place access keys in an image URL.
-    if crate::server_mode::bearer_token(&headers).is_none()
-        || !crate::server_mode::origin_allowed(&headers)
-    {
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
-    match state.server.as_deref() {
-        Some(server) => {
-            if let Err(status) = server
-                .authorize_rpc_from(peer.ip(), &headers, &state.bearer)
-                .await
-            {
-                return status.into_response();
-            }
-        }
-        None => {
-            if let Err(status) = authorize_desktop_rpc(
-                &state.service,
-                &state.throttle,
-                &state.bearer,
-                peer.ip(),
-                &headers,
-            )
-            .await
-            {
-                return status.into_response();
-            }
-        }
+    if let Err(status) = authorize_image(&state, peer.ip(), &headers).await {
+        return status.into_response();
     }
     match state.service.blobs.plugin_image(&session, &id).await {
         Ok(bytes) => (

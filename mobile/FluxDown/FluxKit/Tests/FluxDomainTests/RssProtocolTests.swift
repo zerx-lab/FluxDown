@@ -58,7 +58,7 @@ struct RssProtocolTests {
     @Test func itemDecodesStatusReasonAndTaskLink() throws {
         let json = """
         [{"sourceId":"s1","guid":"g1","title":"Show - 02 [1080p]","link":"https://x/1","enclosureUrl":"https://x/1.torrent",
-          "enclosureLength":734003200,"pubDate":1700000000,"fetchedAt":1700000050,"status":1,"taskId":"t9","episodeKey":"show:2","reason":""},
+          "enclosureLength":734003200,"pubDate":1700000000,"fetchedAt":1700000050,"status":1,"taskId":"t9","episodeKey":"show:2","reason":"","imageCount":2},
          {"sourceId":"s1","guid":"g2","title":"Other","link":"","enclosureUrl":"","enclosureLength":0,"pubDate":0,"fetchedAt":1,
           "status":3,"taskId":"","episodeKey":"","reason":"too_large"},
          {"sourceId":"s1","guid":"g3","title":"Future","link":"https://x/3","enclosureUrl":"","enclosureLength":0,"pubDate":0,
@@ -69,8 +69,10 @@ struct RssProtocolTests {
         #expect(items[0].taskId == "t9")
         #expect(items[0].enclosureLength == 734_003_200)
         #expect(items[0].effectiveLink == "https://x/1.torrent")
+        #expect(items[0].imageCount == 2)
         #expect(items[1].state == .filtered)
         #expect(items[1].reasonCode == .tooLarge)
+        #expect(items[1].imageCount == 0)
         #expect(items[1].reasonCode.i18nKey == "rssReasonTooLarge")
         #expect(items[2].state == .unknown(42))
         #expect(items[2].reasonCode == .unknown("brand_new_reason"))

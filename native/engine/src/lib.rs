@@ -104,6 +104,7 @@ pub mod proxy_config;
 pub mod proxy_rules;
 /// 排队顺序的增量发布（稳定排序键 + 差异计算）。
 pub mod queue_order;
+pub mod raster;
 /// `ProxyMode::Auto` 各路径单连接速率的跨重启折扣先验。
 pub mod route_health;
 /// RSS 订阅自动下载（feed 轮询 → 规则过滤 → 建任务）。

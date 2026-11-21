@@ -38,6 +38,7 @@ const FEED_ROUND1: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
     <guid isPermaLink="false">ep01</guid>
     <title>[ANi] 幼女战记 2 - 01 [1080P][Baha][WEB-DL]</title>
     <link>http://HOST/page/ep01</link>
+    <description><![CDATA[<img src="../cover.png">]]></description>
     <enclosure type="application/octet-stream" length="1024" url="http://HOST/dl/ep01.bin"/>
   </item>
   <item>
@@ -267,6 +268,13 @@ async fn rss_pipeline_seeds_then_downloads_only_matching_new_items() {
         .await
         .expect("items");
     assert_eq!(items.len(), 2, "both history items recorded");
+    assert_eq!(
+        items
+            .iter()
+            .find(|item| item.guid == "ep01")
+            .and_then(|item| item.image_urls.as_deref()),
+        Some([format!("http://{host}/cover.png")].as_slice()),
+    );
     assert!(
         items.iter().all(|i| i.status == RssItemStatus::SeedSkipped),
         "first round must never auto-download history: {items:?}"

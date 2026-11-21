@@ -34,7 +34,7 @@
 - `ed2k_hashset`(task_id PK, hashes BLOB)
 - `task_artifacts`(复合 PK task_id+file_name；追踪 sidecar/产物文件供清理)
 - `rss_sources`(id PK, `provider_id`/`provider_config`（订阅 provider 适配器与其不透明配置，旧数据默认 `rss`/空）, url, name, enabled, auto_download, start_paused, queue_id, save_dir, interval_minutes, include/exclude_pattern, use_regex, smart_episode, size_min/max_bytes, send_referer, notify_on_download, max_per_fetch, cookies, user_agent, proxy_url, last_fetch_at, last_success_at, last_error, fail_count, `seeded`（首轮是否已完成）, position)
-- `rss_items`(复合 PK source_id+guid, title, link, enclosure_url/length/type（声明的下载目标 MIME）, `resolver_item`（插件二段解析标识，空 = 普通直链）, pub_date, fetched_at, status 0..5, task_id 回链, episode_key, reason 原因码；`fetch_failures` / `retry_after` 持久化种子抓取失败退避；`ON DELETE CASCADE` 于 rss_sources)
+- `rss_items`(复合 PK source_id+guid, title, link, enclosure_url/length/type（声明的下载目标 MIME）, `image_urls`（JSON 数组文本；`NULL` 表示旧行尚未回填，`[]` 表示没有保存图片引用，不代表已扫描）, `resolver_item`（插件二段解析标识，空 = 普通直链）, pub_date, fetched_at, status 0..5, task_id 回链, episode_key, reason 原因码；`fetch_failures` / `retry_after` 持久化种子抓取失败退避；`ON DELETE CASCADE` 于 rss_sources)
 - `task_create_batches`(batch_id PK, results JSON, created_at BIGINT)：`daemon.task.createMany` 的幂等记录，与该块任务行**同一事务**写入；同键重放直接返回首次逐条结果；7 天前的记录在后续批量写入事务内顺带清理（无定时任务，符合空闲静默）。
 - 已完成记录保留（daemon 键 `completed_record_retention_days`，0–3650，默认 0 = 永不；不进云同步目录）：`DownloadManager::purge_expired_completed_records` 经 `Db::list_expired_completed_task_ids`（`status=3`、`completed_at` 非空且早于截止、排除 `seeding_status ∈ {1,8}`，按完成时间升序分 200 条一块）取 id，再走 `delete_tasks_batch(ids, false)`——**只删记录，永不删文件**。一次性迁移 `migration_completed_at_backfill` 把遗留的「已完成但 `completed_at` 为空」行补写为升级时刻（保留窗口自升级起算，SQLite / PostgreSQL 同一事务）。无定时器（空闲静默）：只在进程启动首次快照后、`on_task_done`、`daemon.task.rescan`、设置变更四处被动触发；任务完成与重扫两条路径 10 分钟去抖，启动与设置变更 `force` 绕过；保留期 0 直接返回。某块有清理失败的任务时本轮立即结束，避免重复选中。
 
@@ -334,6 +334,11 @@
 - `rss/`（`model`/`parser`/`filter`/`mod`）：订阅自动下载。`RssManager` 挂在 `DownloadManager.rss` 上；宿主只提供 60s 节拍（`tick_rss_sources()`）与回流 drain（`on_rss_event()`），抓取 off-actor，建任务仍收敛到 `create_task`。`subscription::SubscriptionProvider` 是 RSS 与插件订阅共用的 provider 分支：内置 `rss` provider 保持原流程；插件在 manifest 的 `subscriptions` 声明 `providerId` + `entry`，由 `PluginManager` 动态路由到 `globalThis.subscribe(ctx)`，返回规范化 `ParsedFeed`，并可通过 `flux.fetch` 请求平台接口。provider 不负责调度、退避、去重、过滤、落库或建任务。三层去重：guid → 单轮上限（超额留 `New` 下轮从旧到新续派）→ 智能剧集去重（识别失败即放行）。
 
   **两层失败退避不能混为一谈**：订阅 feed 抓取按 `effective_interval_secs` 使用「配置间隔 × `2^fail_count`」，封顶 6h 但绝不短于配置间隔，成功清零，**不自动停用订阅**。条目的种子抓取失败由 `record_torrent_failure` 保持 `New` 并写 `torrent_fetch_failed`，退避为 `600s × 2^(fetch_failures-1)`、封顶 24h；`rss_items.fetch_failures` / `retry_after` 落库，重启不丢退避。`db::rss_dispatchable_items` 仅选到期条目，未失败条目优先，避免失效种子长期占住 `max_per_fetch`；建任务成功或用户手动下载清零条目退避，手动下载不受其限制。
+
+  **条目图片预览**：`rss/preview.rs` 按需抓取已保存的图片引用并逐跳校验目标，生成有界缩略图。RSS 预览与 `plugin/images.rs` 共用 `raster.rs` 的栅格解码、缩放及解码并发限额。
+  `rss/parser.rs` 直接使用锁文件中已有的 `html5ever` tokenizer 解析 `<description>` 中的 HTML 片段，按 HTML 规则处理属性、字符引用和原始文本元素；`quick-xml` 只用于 feed 的 XML 层，正则不承担 HTML 分词。`image` 不再依赖 `plugins` feature：禁用插件的宿主也需要在引擎内限制源字节、解码尺寸和并发量，并把原图转换为有界 PNG 后才交给客户端。
+
+  **移动端核心体积实测**（完整 PR 对比，不是单个依赖的增量）：以 `main` 的 `d4ed9eda` 对比 `61841aa9`，两版均用 Rust 1.100.0、`--locked --release` 编译 `fluxdown_mobile` arm64。Android（NDK r29、API 26、默认 feature）`.so` 为 45,363,568 → 46,777,912 字节；iOS Store（部署目标 26.1、`--no-default-features`）`.a` 为 333,619,328 → 352,442,368 字节。两者都是核心库，不是 APK / IPA 大小。
 
   **enclosure MIME 参与种子识别**：`parser::extract_enclosure` / `map_entry` 保存下载目标声明的 `enclosure_type`（RSS enclosure / media:content、Atom enclosure link；没有 enclosure 时取回退链接的 type），去参数、去空白并转小写。`application/x-bittorrent` 即使 URL 没有扩展名也走「先抓种子字节 → 建 BT 任务」，不只看 URL 形态；magnet 不走种子抓取，二段 resolver 条目的计划不沿用 enclosure MIME。
 

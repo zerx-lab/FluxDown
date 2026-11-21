@@ -101,6 +101,7 @@ public enum HostMethod {
     public static let daemonFsList = "daemon.fs.list"
     public static let daemonRssListSources = "daemon.rss.listSources"
     public static let daemonRssGetItems = "daemon.rss.getItems"
+    public static let daemonRssGetImage = "daemon.rss.getImage"
     public static let daemonRssCreateSource = "daemon.rss.createSource"
     public static let daemonRssUpdateSource = "daemon.rss.updateSource"
     public static let daemonRssDeleteSource = "daemon.rss.deleteSource"

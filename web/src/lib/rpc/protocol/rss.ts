@@ -94,6 +94,8 @@ export interface RssItemDto {
   episodeKey: string;
   /** 稳定原因码（`excluded` / `too_large` / `dup_episode` / `seed_skipped` …，空 = 无），客户端负责本地化。 */
   reason: string;
+  /** 可查看的图片数（0 时省略），不传输图片 URL。 */
+  imageCount?: number;
 }
 
 /** 订阅地址验证请求（只读，不落库）；`providerId` 缺省为内置 RSS。 */

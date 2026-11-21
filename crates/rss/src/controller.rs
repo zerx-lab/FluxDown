@@ -509,6 +509,15 @@ mod tests {
         fn call(&self, _: &'static str, _: serde_json::Value) -> PortFuture<serde_json::Value> {
             Box::pin(async { Ok(json!([])) })
         }
+
+        fn image(&self, _: String, _: String, _: usize) -> PortFuture<Vec<u8>> {
+            Box::pin(async {
+                Err(fluxdown_protocol::RpcErrorData::new(
+                    fluxdown_protocol::ApplicationErrorCode::Unavailable,
+                    true,
+                ))
+            })
+        }
     }
 
     fn source(id: &str) -> Result<RssSourceDto, serde_json::Error> {
@@ -536,6 +545,7 @@ mod tests {
             task_id: task_id.into(),
             episode_key: String::new(),
             reason: String::new(),
+            image_count: 0,
         }
     }
 
