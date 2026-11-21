@@ -53,6 +53,9 @@ Click a task to open it. From top to bottom:
 - **Progress** — a large percentage readout, a segmented progress bar, and (once segment data exists) an IDM-style pixel grid where each cell reflects how full that byte range is, plus a legend listing each segment's number and percentage. When FluxDown proactively or reactively splits a slow segment, a running split count and the most recent split's byte range are shown alongside the progress bar.
 - **Info table** — Size, Downloaded, Speed, Remaining (ETA), Status, Threads (while active), Path, URL (with a one-click copy button), and an Error message row if the task failed.
 - **Actions** — a Pause/Resume button, and a destructive Delete Task & File button.
+- **BitTorrent files** — open the task's staging folder from the Files tab while the download is incomplete. After completion, right-click a downloaded file in that tab to reveal its actual location. A third-party file manager may open the containing folder without selecting the file.
+- **Magnet metadata** — if the file list cannot be fetched within five minutes, the task fails with a message to check the tracker or network and retry it manually.
+- **Known BitTorrent peer** — on the Peers tab, choose **Add Peer** on an active public task and enter its IP address and port. IPv6 addresses need brackets. You can also add a peer while the magnet is still fetching metadata; submitting an address does not mean it is connected.
 
 <!-- TODO(screenshot): 详情面板的 IDM 风格分段网格,展示动态拆分产生的多个分段 -->
 

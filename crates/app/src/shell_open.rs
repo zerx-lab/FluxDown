@@ -8,6 +8,7 @@
 //! （见 `windows/progress.rs`）。系统是否实际置前仍取决于 Windows 的焦点策略。
 
 use std::os::windows::process::CommandExt as _;
+use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
 
 use fluxdown_protocol::shell_open::{
@@ -39,6 +40,18 @@ pub(crate) async fn task(
         OPEN_TASK_ARG
     };
     run([flag.to_owned(), task.save_dir, task.file_name]).await
+}
+
+/// Reveal a file at the exact path resolved by the daemon, not a BT metadata path.
+pub(crate) async fn reveal_file(path: &str) -> Result<(), RpcErrorData> {
+    let path = Path::new(path);
+    let (Some(dir), Some(name)) = (
+        path.parent().and_then(Path::to_str),
+        path.file_name().and_then(|name| name.to_str()),
+    ) else {
+        return Err(RpcErrorData::new(ApplicationErrorCode::NotFound, false));
+    };
+    run([REVEAL_TASK_ARG.to_owned(), dir.to_owned(), name.to_owned()]).await
 }
 
 /// 用系统默认的目录处理程序打开已存在的目录。

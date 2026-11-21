@@ -100,6 +100,7 @@
   `librqbit-utp` 来自 `zerx-lab/librqbit-utp` 分支 `fluxdown/next`（上游 git main + LEDBAT，上游 PR ikatson/librqbit-utp#5）：
   crates.io 0.7.0 的分发循环遇 Windows `WSAECONNRESET(10054)` 即退出，整个会话 uTP 失效；上游发版并合入 LEDBAT 后删 patch。
   上游 PR 各自的 libtorrent 互通测试夹具在 `crates/librqbit/src/tests/interop/`（`RQBIT_TEST_LIBTORRENT_PYTHON` 指向装了 `libtorrent` 的 Python，`--ignored` 运行）。
+- **DHT 冷启动（#553）**：rqbit 的 `RecursiveRequest::request_one` 会收录有效的 `find_node` 引导响应者，即使没有返回邻居；节点 ID 和地址都匹配才刷新活跃状态，不用新地址的响应替旧地址续命。
 - **BT 选片（对齐 qBittorrent / libtorrent piece picker）**：fork `crates/librqbit/src/piece_picker.rs`。默认最稀有优先：
   每片可用度 = 连接中 peer 的位图计数（`PeerStates.availability`，位图到达 / HAVE 时计入，peer 离开 Live 时按入账方式扣回；
   位图到达即满的 peer 记一次「种子」而非逐片计数），平局按每次开局随机盐打散；已有 < 4 片时纯随机（libtorrent

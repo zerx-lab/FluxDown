@@ -211,6 +211,11 @@ pub enum DownloadsCommand {
     SetSuperSeeding(fluxdown_protocol::SetTaskSuperSeedingParams),
     /// Append a BEP 19 source to a BitTorrent task.
     AddWebSeed(fluxdown_protocol::AddTaskWebSeedParams),
+    /// 向活动 BT 任务提交一个手动 Peer。
+    AddBtPeer {
+        task_id: String,
+        address: String,
+    },
     /// 立即向 tracker 重新汇报（`daemon.task.reannounce`）；不在运行为 `taskStateConflict`。
     Reannounce {
         task_id: String,
@@ -331,6 +336,11 @@ pub enum DownloadsCommand {
     },
     RevealTask {
         task_id: String,
+    },
+    /// Locate a completed BT file by index, or open the task's staging directory if absent.
+    LocateBtFile {
+        task_id: String,
+        index: Option<u32>,
     },
     /// 把已完成任务的产物以文件形式写入系统剪贴板（`agent.platform.copyTaskFiles`，可在文件管理器
     /// 里粘贴）；任一产物已不在磁盘上即整体失败（`notFound`）。

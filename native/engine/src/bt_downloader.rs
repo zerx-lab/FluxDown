@@ -765,6 +765,7 @@ pub struct SharedBtSession {
     /// Protected by an async Mutex because it's accessed from both the
     /// main actor (pause/delete) and spawned download tasks (add/finish).
     handles: Mutex<HashMap<String, BtHandle>>,
+    pending_magnet_peers: std::sync::Mutex<HashMap<String, PendingMagnetPeers>>,
     /// Pending delete requests for tasks whose `add_torrent` call is still
     /// in progress (handle not yet in `handles`).  Keyed by task_id, value
     /// is the `delete_files` flag.  The detached add_torrent closure checks
@@ -848,6 +849,35 @@ pub struct SharedBtSession {
     /// `{hash}.torrent`).  Kept so that `clear_stale_fastresume` can remove a
     /// `.bitv` whose staging data no longer exists (BUG-BT-PHANTOM-PIECES).
     persistence_folder: PathBuf,
+}
+
+const MAX_MANUAL_MAGNET_PEERS: usize = 32;
+
+struct PendingMagnetPeers {
+    sender: mpsc::Sender<std::net::SocketAddr>,
+    submitted: HashSet<std::net::SocketAddr>,
+}
+
+struct MagnetPeersGuard {
+    session: Arc<SharedBtSession>,
+    task_id: String,
+    sender: mpsc::Sender<std::net::SocketAddr>,
+}
+
+impl Drop for MagnetPeersGuard {
+    fn drop(&mut self) {
+        let mut pending = self
+            .session
+            .pending_magnet_peers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if pending
+            .get(&self.task_id)
+            .is_some_and(|slot| slot.sender.same_channel(&self.sender))
+        {
+            pending.remove(&self.task_id);
+        }
+    }
 }
 
 impl SharedBtSession {
@@ -1237,6 +1267,7 @@ impl SharedBtSession {
             session,
             web_seeds_enabled: bt_config.enable_webseed,
             handles: Mutex::new(HashMap::new()),
+            pending_magnet_peers: std::sync::Mutex::new(HashMap::new()),
             pending_deletes: Mutex::new(HashMap::new()),
             inflight_adds: AtomicUsize::new(0),
             torrent_ids: Mutex::new(HashMap::new()),
@@ -1993,6 +2024,68 @@ impl SharedBtSession {
         self.session
             .reannounce(&handle)
             .map_err(|error| format!("{error:#}"))
+    }
+
+    fn register_magnet_peers(
+        self: &Arc<Self>,
+        task_id: &str,
+        opts: &mut AddTorrentOptions,
+    ) -> MagnetPeersGuard {
+        let (sender, receiver) = mpsc::channel(MAX_MANUAL_MAGNET_PEERS);
+        opts.magnet_peers = Some(receiver);
+        self.pending_magnet_peers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(
+                task_id.to_owned(),
+                PendingMagnetPeers {
+                    sender: sender.clone(),
+                    submitted: HashSet::new(),
+                },
+            );
+        MagnetPeersGuard {
+            session: self.clone(),
+            task_id: task_id.to_owned(),
+            sender,
+        }
+    }
+
+    /// Queue a manual endpoint through the active torrent or its magnet resolver.
+    ///
+    /// # Errors
+    /// The torrent is not accepting peers, the queue is full, or the network policy rejects it.
+    pub async fn add_manual_peer(
+        &self,
+        task_id: &str,
+        addr: std::net::SocketAddr,
+    ) -> Result<(), BtTaskOpError> {
+        if let Some(handle) = self.cached_handle(task_id).await {
+            return self
+                .session
+                .add_manual_peer(&handle, addr)
+                .map(|_| ())
+                .map_err(|error| BtTaskOpError::StateConflict(format!("{error:#}")));
+        }
+        let mut pending = self
+            .pending_magnet_peers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let slot = pending.get_mut(task_id).ok_or_else(|| {
+            BtTaskOpError::StateConflict("the task is not accepting peers".to_owned())
+        })?;
+        if slot.submitted.contains(&addr) {
+            return Ok(());
+        }
+        if slot.submitted.len() >= MAX_MANUAL_MAGNET_PEERS {
+            return Err(BtTaskOpError::StateConflict(
+                "too many manual peers for this metadata lookup".to_owned(),
+            ));
+        }
+        slot.sender.try_send(addr).map_err(|error| {
+            BtTaskOpError::StateConflict(format!("could not submit peer: {error:#}"))
+        })?;
+        slot.submitted.insert(addr);
+        Ok(())
     }
 
     /// 重命名会话里任务的一个文件：按句柄上的当前路径校验 `requested`（见
@@ -5232,12 +5325,14 @@ async fn readd_if_output_folder_mismatch(
     shared_bt.apply_task_options(task_id, &mut opts).await;
     let input = shared_bt.add_input(&source, &mut opts);
     let is_magnet = source.is_magnet();
+    let magnet_peers = is_magnet.then(|| shared_bt.register_magnet_peers(task_id, &mut opts));
     let add_abort = Arc::new(tokio::sync::Notify::new());
     let abort_for_task = add_abort.clone();
     let session_for_add = session.clone();
     let inflight = shared_bt.inflight_guard();
     let add_handle = tokio::spawn(async move {
         let _inflight = inflight;
+        let _magnet_peers = magnet_peers;
         tokio::select! {
             result = session_for_add.add_torrent(input, Some(opts)) => result,
             _ = abort_for_task.notified() => {
@@ -5488,10 +5583,14 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<BtInnerExit, DownloadErro
         let add_abort_for_task = add_abort.clone();
         // 清掉上一轮（超时/取消）遗留的 pending 意图，避免毒化本次 add。
         shared_bt.clear_pending_intents(&task_id).await;
+        let magnet_peers = torrent_source
+            .is_magnet()
+            .then(|| shared_bt.register_magnet_peers(&task_id, &mut add_opts));
         let add_handle = tokio::spawn(async move {
             // Move the guard into the task so it is dropped (and thus
             // decrements) when the task finishes normally *or* panics.
             let _inflight = inflight;
+            let _magnet_peers = magnet_peers;
             let result = tokio::select! {
                 r = session_for_add.add_torrent(add_input, Some(add_opts)) => r,
                 _ = add_abort_for_task.notified() => {
@@ -8076,6 +8175,7 @@ mod tests {
                 session,
                 web_seeds_enabled: true,
                 handles: Mutex::new(HashMap::new()),
+                pending_magnet_peers: std::sync::Mutex::new(HashMap::new()),
                 pending_deletes: Mutex::new(HashMap::new()),
                 inflight_adds: AtomicUsize::new(0),
                 torrent_ids: Mutex::new(HashMap::new()),

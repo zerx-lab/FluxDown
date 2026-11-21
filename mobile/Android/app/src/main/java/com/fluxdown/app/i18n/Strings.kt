@@ -28,6 +28,7 @@ private fun TaskErrorMessage.stringRes(): Int = when (this) {
     TaskErrorMessage.PostOnlyResume -> R.string.taskErrorPostOnlyResume
     TaskErrorMessage.UnexpectedHtml -> R.string.taskErrorUnexpectedHtml
     TaskErrorMessage.HtmlChanged -> R.string.taskErrorHtmlChanged
+    TaskErrorMessage.MagnetMetadataTimeout -> R.string.taskErrorMagnetMetadataTimeout
 }
 
 /** 引擎稳定错误文案 → 本地化文本；其余原样返回。 */

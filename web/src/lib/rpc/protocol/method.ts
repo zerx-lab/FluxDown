@@ -36,6 +36,8 @@ export const METHOD = {
   DAEMON_TASK_SET_PIECE_PICKING: 'daemon.task.setPiecePicking',
   /** BT 文件表（`TaskIdParams` → `BtFilesDto`）：详情页「文件」页签轮询；非 BT 任务 `notFound`。 */
   DAEMON_TASK_BT_FILES: 'daemon.task.btFiles',
+  DAEMON_TASK_BT_FILE_LOCATION: 'daemon.task.btFileLocation',
+  DAEMON_TASK_ADD_BT_PEER: 'daemon.task.addBtPeer',
   /** BT 文件优先级（`SetTaskFilePrioritiesParams`，部分更新）。已完成 → `taskStateConflict`；无文件可下 → `invalidArgument`。 */
   DAEMON_TASK_SET_FILE_PRIORITIES: 'daemon.task.setFilePriorities',
   /** 重命名 BT 任务内的单个文件（`RenameBtFileParams`）。 */

@@ -231,6 +231,7 @@ internal fun RemoteTaskRow(entry: RemoteRowEntry, style: RowStyle, flowIndex: In
         errorPostOnlyResume = str(R.string.taskErrorPostOnlyResume),
         errorUnexpectedHtml = str(R.string.taskErrorUnexpectedHtml),
         errorHtmlChanged = str(R.string.taskErrorHtmlChanged),
+        errorMagnetMetadataTimeout = str(R.string.taskErrorMagnetMetadataTimeout),
         statusCompleted = str(R.string.statusCompleted),
         statusDownloading = str(R.string.statusDownloading),
         statusPending = str(R.string.statusPending),
@@ -476,6 +477,7 @@ private data class RemoteRowStrings(
     val errorPostOnlyResume: String,
     val errorUnexpectedHtml: String,
     val errorHtmlChanged: String,
+    val errorMagnetMetadataTimeout: String,
 ) {
     fun taskError(raw: String?): String? = raw?.let {
         when (TaskErrorMessage.match(it)) {
@@ -483,6 +485,7 @@ private data class RemoteRowStrings(
             TaskErrorMessage.PostOnlyResume -> errorPostOnlyResume
             TaskErrorMessage.UnexpectedHtml -> errorUnexpectedHtml
             TaskErrorMessage.HtmlChanged -> errorHtmlChanged
+            TaskErrorMessage.MagnetMetadataTimeout -> errorMagnetMetadataTimeout
             null -> it
         }
     }

@@ -22,15 +22,16 @@ use fluxdown_ui_components::{
 use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_theme::active_theme;
 use gpui::{
-    AnyElement, App, ClipboardItem, Context, Div, FontWeight, Hsla, InteractiveElement as _,
-    IntoElement, ListAlignment, ListSizingBehavior, ListState, ParentElement, Pixels, SharedString,
-    StatefulInteractiveElement as _, Styled, Window, canvas, div, list,
-    prelude::FluentBuilder as _, px, relative,
+    AnyElement, App, AppContext as _, ClipboardItem, Context, Div, FontWeight, Hsla,
+    InteractiveElement as _, IntoElement, ListAlignment, ListSizingBehavior, ListState,
+    ParentElement, Pixels, SharedString, StatefulInteractiveElement as _, Styled, Window, canvas,
+    div, list, prelude::FluentBuilder as _, px, relative,
 };
 use gpui_component::{
     Disableable as _, Icon, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
+    input::{Input, InputState},
     menu::{ContextMenuExt as _, PopupMenuItem},
     skeleton::Skeleton,
     v_flex,
@@ -2557,6 +2558,94 @@ impl TaskDetailView {
         self.bt_frame(content, true, &look, cx)
     }
 
+    fn bt_add_peer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("192.0.2.1:6881 / [2001:db8::1]:6881")
+        });
+        let dialog_input = input.clone();
+        let title = self.t(cx, "btAddPeer");
+        let label = self.t(cx, "btPeerAddr");
+        let invalid = self.t(cx, "btAddPeerInvalid");
+        let submitted = self.t(cx, "btAddPeerSubmitted");
+        let cancel = self.strings.cancel.clone();
+        let task_id = self.task_id.clone();
+        let view = cx.weak_entity();
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let field = dialog_input.clone();
+            let ok_input = dialog_input.clone();
+            let (label, invalid, submitted, task_id, view) = (
+                label.clone(),
+                invalid.clone(),
+                submitted.clone(),
+                task_id.clone(),
+                view.clone(),
+            );
+            dialog
+                .title(fluxdown_ui_components::dialog_title(title.clone(), cx))
+                .content(move |content, _, cx| {
+                    content.child(fluxdown_ui_components::form(cx).child(
+                        fluxdown_ui_components::form_field(
+                            label.clone(),
+                            Input::new(&field).control(cx).w_full(),
+                            None,
+                            cx,
+                        ),
+                    ))
+                })
+                .footer(fluxdown_ui_components::dialog_footer(
+                    Some(cancel.clone()),
+                    title.clone(),
+                    fluxdown_ui_components::DialogIntent::Confirm,
+                    cx,
+                ))
+                .on_ok(move |_, window, cx| {
+                    let input = ok_input.read(cx).value();
+                    let address = input.trim();
+                    if !address.parse::<std::net::SocketAddr>().is_ok_and(|addr| {
+                        addr.port() != 0 && !addr.ip().is_unspecified() && !addr.ip().is_multicast()
+                    }) {
+                        window.push_notification(toast::error(invalid.clone()), cx);
+                        return false;
+                    }
+                    let submitted = submitted.clone();
+                    if view
+                        .update(cx, |this, cx| {
+                            let result = this.port.execute(DownloadsCommand::AddBtPeer {
+                                task_id: task_id.clone(),
+                                address: address.to_owned(),
+                            });
+                            cx.spawn_in(window, async move |this, cx| {
+                                let result = result.await;
+                                if this
+                                    .update_in(cx, |this, window, cx| match result {
+                                        Ok(_) => {
+                                            window.push_notification(toast::success(submitted), cx)
+                                        }
+                                        Err(error) => window.push_notification(
+                                            toast::error(error_text(
+                                                this.translator.read(cx),
+                                                &error,
+                                            )),
+                                            cx,
+                                        ),
+                                    })
+                                    .is_err()
+                                {
+                                    // View or window closed while submitting.
+                                }
+                            })
+                            .detach();
+                        })
+                        .is_err()
+                    {
+                        // View closed before confirmation.
+                    }
+                    true
+                })
+        });
+        input.update(cx, |state, cx| state.focus(window, cx));
+    }
+
     pub(super) fn render_bt_peers(
         &self,
         window: &mut Window,
@@ -2564,13 +2653,44 @@ impl TaskDetailView {
     ) -> AnyElement {
         let look = Look::new(cx);
         let layout = self.bt_layout(window, &look);
+        let can_add = self.activity_online
+            && self
+                .store
+                .get(&RowKey::Local(self.task_id.clone()))
+                .is_some_and(|row| {
+                    row.state == TaskState::Downloading
+                        || (row.state == TaskState::Pending && row.preparing)
+                        || (row.state == TaskState::Completed && row.seeding_status == 1)
+                })
+            && !self
+                .bt
+                .status
+                .as_ref()
+                .and_then(|status| status.dht)
+                .is_some_and(|dht| dht.state == fluxdown_protocol::BtDhtState::Private);
+        let add_peer = can_add.then(|| {
+            Button::new("bt-peer-add")
+                .outline()
+                .control(cx)
+                .label(self.t(cx, "btAddPeer"))
+                .on_click(cx.listener(|this, _, window, cx| this.bt_add_peer(window, cx)))
+        });
         let Some(status) = self.bt.status.as_ref() else {
             let content = if self.bt.failed {
                 div().into_any_element()
             } else {
                 skeleton_rows(&look, 4).into_any_element()
             };
-            return self.bt_frame(content, false, &look, cx);
+            return self.bt_frame(
+                v_flex()
+                    .gap(look.sm)
+                    .children(add_peer)
+                    .child(content)
+                    .into_any_element(),
+                false,
+                &look,
+                cx,
+            );
         };
         let guard_busy = &self.bt.guard_pending;
         let running = self.bt_task_running();
@@ -2669,6 +2789,7 @@ impl TaskDetailView {
         let body = v_flex()
             .w_full()
             .gap(look.sm)
+            .children(add_peer)
             .child(note(&look, summary, look.muted).font_features(tabular_numbers()))
             .child(content)
             .into_any_element();

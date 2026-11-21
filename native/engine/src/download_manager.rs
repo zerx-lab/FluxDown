@@ -15225,6 +15225,54 @@ impl DownloadManager {
             .map_err(BtTaskOpError::StateConflict)
     }
 
+    /// Submit a user-specified IP endpoint to an active BT task.
+    ///
+    /// # Errors
+    /// Returns an error for an unusable address or a task that cannot accept manual peers.
+    #[cfg(feature = "bt")]
+    pub async fn add_bt_manual_peer(
+        &self,
+        task_id: &str,
+        address: &str,
+    ) -> Result<(), crate::bt_task_files::BtTaskOpError> {
+        use crate::bt_task_files::BtTaskOpError;
+        let addr = address
+            .trim()
+            .parse::<std::net::SocketAddr>()
+            .ok()
+            .filter(|addr| {
+                addr.port() != 0 && !addr.ip().is_unspecified() && !addr.ip().is_multicast()
+            })
+            .ok_or_else(|| {
+                BtTaskOpError::InvalidArgument("expected IP address and port".to_owned())
+            })?;
+        let task = self
+            .db
+            .load_task_by_id(task_id)
+            .await?
+            .filter(|task| is_bt_url(&task.url))
+            .ok_or(BtTaskOpError::NotFound)?;
+        if !matches!(task.status, 1 | 5)
+            && !(task.status == 3 && task.seeding_status == SEEDING_STATUS_ACTIVE)
+        {
+            return Err(BtTaskOpError::StateConflict(
+                "the task is not running".to_owned(),
+            ));
+        }
+        if self.bt_move_running(task_id) {
+            return Err(BtTaskOpError::StateConflict(
+                "the task's data is being moved".to_owned(),
+            ));
+        }
+        self.bt_session
+            .as_ref()
+            .ok_or_else(|| {
+                BtTaskOpError::StateConflict("the BT session is not running".to_owned())
+            })?
+            .add_manual_peer(task_id, addr)
+            .await
+    }
+
     /// BT 任务的文件表（「文件」页）：每个非 padding 文件的路径、大小、已校验字节与优先级。
     ///
     /// 任务在会话里时取句柄实况；不在会话里（未启动 / 重启后尚未恢复 / 已完成未做种）时由

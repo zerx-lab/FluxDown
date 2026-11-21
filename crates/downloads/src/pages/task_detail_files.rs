@@ -1,5 +1,5 @@
 //! 任务详情「文件」页签（BT）：文件表（名称 / 大小 / 进度 / 优先级）、多选批量改优先级、
-//! 右键菜单（优先级子菜单 / 重命名）。
+//! 右键菜单（优先级子菜单 / 重命名 / 定位文件）与临时目录入口。
 //!
 //! 轮询生命周期与 Tracker / 连接页一致（见 `task_detail_bt.rs`）：页签渲染时登记可见并启动
 //! 2 s 轮询，不可见超过宽限期即停；任务切换作废旧循环；失败保留旧数据并在页内提示一行。
@@ -11,8 +11,8 @@ use fluxdown_protocol::{
 };
 use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
-    ControlExt as _, DialogIntent, dialog_footer, dialog_title, form, form_field, tabular_numbers,
-    tooltip_view,
+    ControlExt as _, DialogIntent, FluxIcon, dialog_footer, dialog_title, form, form_field,
+    tabular_numbers, tooltip_view,
 };
 use gpui::{
     Anchor, AnyElement, App, AppContext as _, ClickEvent, Context, InteractiveElement as _,
@@ -38,6 +38,7 @@ use super::{
 use crate::{
     controller::{DownloadsCommand, DownloadsResult, PortFuture},
     model::{
+        RowKey, TaskState,
         bt_files::{
             FileSelection, PriorityLevel, TargetLevel, apply_changes, leaves_nothing_to_download,
             priority_changes, progress_fraction, progress_percent_text, split_path, target_level,
@@ -106,6 +107,8 @@ struct FileRowText {
     rename: SharedString,
     priority_menu: SharedString,
     editable: bool,
+    completed: bool,
+    locate: SharedString,
     view: WeakEntity<TaskDetailView>,
 }
 
@@ -278,6 +281,25 @@ impl TaskDetailView {
         window.push_notification(toast::error(text), cx);
     }
 
+    fn bt_files_locate(&self, index: Option<u32>, window: &mut Window, cx: &mut Context<Self>) {
+        let pending = self.port.execute(DownloadsCommand::LocateBtFile {
+            task_id: self.task_id.clone(),
+            index,
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Err(error) = pending.await else {
+                return;
+            };
+            let Ok(()) = this.update_in(cx, |this, window, cx| {
+                this.bt_files_push_error(&error, window, cx);
+            }) else {
+                // 视图或窗口已释放。
+                return;
+            };
+        })
+        .detach();
+    }
+
     /// 把 `targets` 设为 `level`：只发有变化的条目；会导致没有文件可下载时拦下并提示。
     fn bt_files_set_priority(
         &mut self,
@@ -443,6 +465,23 @@ impl TaskDetailView {
 
     pub(super) fn render_bt_files(&self, cx: &mut Context<Self>) -> AnyElement {
         let look = Look::new(cx);
+        let state = self
+            .store
+            .get(&RowKey::Local(self.task_id.clone()))
+            .map(|row| row.state);
+        let completed = state == Some(TaskState::Completed);
+        let staging = state.filter(|_| !completed).map(|_| {
+            h_flex().child(
+                Button::new("bt-files-open-staging")
+                    .outline()
+                    .control(cx)
+                    .icon(FluxIcon::FolderOpen)
+                    .label(self.strings.open_folder.clone())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.bt_files_locate(None, window, cx);
+                    })),
+            )
+        });
         let failed = self
             .bt_files
             .failed
@@ -457,6 +496,7 @@ impl TaskDetailView {
                 .w_full()
                 .gap(look.sm)
                 .children(failed)
+                .children(staging)
                 .child(content)
                 .into_any_element();
         };
@@ -465,6 +505,7 @@ impl TaskDetailView {
                 .w_full()
                 .gap(look.sm)
                 .children(failed)
+                .children(staging)
                 .child(empty_state(&look, self.t(cx, "btFilesEmpty")))
                 .into_any_element();
         }
@@ -474,8 +515,9 @@ impl TaskDetailView {
         });
         let view = cx.weak_entity();
         let selected = self.bt_files.selection.selected();
+        let editable = data.editable && !completed;
         // 批量下拉只在有选区时出现：无选区时没有可显示的级别，「混合」只属于级别不一致的多选。
-        let toolbar = (data.editable && !selected.is_empty()).then(|| {
+        let toolbar = (editable && !selected.is_empty()).then(|| {
             let current = match target_level(&data.files, selected) {
                 TargetLevel::Same(level) => Some(level),
                 TargetLevel::Mixed | TargetLevel::None => None,
@@ -524,7 +566,9 @@ impl TaskDetailView {
             labels,
             rename: self.t(cx, "btFileRename"),
             priority_menu: self.t(cx, "btFileColumnPriority"),
-            editable: data.editable,
+            editable,
+            completed,
+            locate: self.strings.open_folder.clone(),
             view,
         });
         let rows = uniform_list(
@@ -545,7 +589,11 @@ impl TaskDetailView {
             .min_h_0()
             .gap(look.sm)
             .children(failed)
-            .children(toolbar)
+            .children(if staging.is_some() || toolbar.is_some() {
+                Some(h_flex().gap(look.sm).children(staging).children(toolbar))
+            } else {
+                None
+            })
             .child(
                 table_frame(&look)
                     .flex_1()
@@ -679,6 +727,27 @@ impl TaskDetailView {
             .child(progress_cell)
             .child(priority_cell);
         if !text.editable {
+            if text.completed && level != PriorityLevel::Skip && file.downloaded >= file.size {
+                let (label, view) = (text.locate.clone(), text.view.clone());
+                let generation = self.bt_files.generation;
+                return row
+                    .context_menu(move |menu, _, _| {
+                        let view = view.clone();
+                        menu.item(PopupMenuItem::new(label.clone()).on_click(
+                            move |_, window, cx| {
+                                let Ok(()) = view.update(cx, |this, cx| {
+                                    if this.bt_files.generation == generation {
+                                        this.bt_files_locate(Some(index), window, cx);
+                                    }
+                                }) else {
+                                    // 视图已释放。
+                                    return;
+                                };
+                            },
+                        ))
+                    })
+                    .into_any_element();
+            }
             return row.into_any_element();
         }
         let labels = Rc::clone(&text.labels);

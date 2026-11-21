@@ -128,6 +128,15 @@ async fn renamed_files_land_under_their_new_names() {
         .await
         .expect("rename c.txt while the task is not running");
     let stage = leech.stage_dir(&id).await;
+    assert_eq!(
+        leech
+            .engine
+            .manager
+            .bt_file_location(&id, None)
+            .await
+            .expect("locate resumed staging"),
+        stage
+    );
     assert!(
         stage.join("docs/说明 c.txt").is_file() && !stage.join("c.txt").exists(),
         "the staged file moved"
@@ -165,6 +174,24 @@ async fn renamed_files_land_under_their_new_names() {
     );
     assert_eq!(leech.landed(&task, "sub/b.bin").await, None);
     assert_eq!(leech.landed(&task, "c.txt").await, None);
+    let location = leech
+        .engine
+        .manager
+        .bt_file_location(&id, Some(b))
+        .await
+        .expect("locate the renamed completed file");
+    assert_eq!(
+        location,
+        leech.work.join(TORRENT_NAME).join("Renamed").join("B.bin")
+    );
+    assert!(matches!(
+        leech
+            .engine
+            .manager
+            .bt_file_location(&id, Some(u32::MAX))
+            .await,
+        Err(BtTaskOpError::NotFound)
+    ));
     // 已完成的任务不能再改名。
     assert!(matches!(
         leech.engine.manager.rename_bt_file(&id, a, "z.bin").await,

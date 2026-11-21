@@ -66,6 +66,8 @@ pub const DAEMON_TASK_BT_STATUS: &str = "daemon.task.btStatus";
 /// BT 任务的文件表（`DaemonBtStatusParams` 同形 `{taskId}` → `BtFilesDto`，不含 padding 文件），
 /// 供详情页「文件」页签轮询。非 BT 任务返回 `notFound`。
 pub const DAEMON_TASK_BT_FILES: &str = "daemon.task.btFiles";
+/// Resolve an existing BT staging directory or completed file for shell integration.
+pub const DAEMON_TASK_BT_FILE_LOCATION: &str = "daemon.task.btFileLocation";
 /// 修改 BT 任务的文件优先级（`SetTaskFilePrioritiesParams`，部分更新）：`0` 不下载 / `1` 普通 /
 /// `6` 高 / `7` 最高，下载中从下一次领片起生效。已完成任务返回 `taskStateConflict`；会导致没有
 /// 任何文件要下载、下标越界或级别非法返回 `invalidArgument`。
@@ -87,6 +89,8 @@ pub const DAEMON_TASK_SET_SUPER_SEEDING: &str = "daemon.task.setSuperSeeding";
 pub const DAEMON_TASK_ADD_WEB_SEED: &str = "daemon.task.addWebSeed";
 /// 立即向 tracker 重新汇报（`{taskId}`）；任务当前不在运行返回 `taskStateConflict`。
 pub const DAEMON_TASK_REANNOUNCE: &str = "daemon.task.reannounce";
+/// Queue a user-specified Peer for an active BT task.
+pub const DAEMON_TASK_ADD_BT_PEER: &str = "daemon.task.addBtPeer";
 /// eD2K 任务实况（`DaemonEd2kStatusParams` → `Ed2kStatusDto`）：源列表、查询过的服务器、Kad 节点
 /// 与本机网络状态（HighID / LowID、UPnP），供详情页轮询。非 eD2K 任务返回 `invalidArgument`。
 pub const DAEMON_TASK_ED2K_STATUS: &str = "daemon.task.ed2kStatus";
@@ -521,6 +525,7 @@ pub const ALL_METHODS: &[&str] = &[
     DAEMON_TASK_TORRENT_SHARE,
     DAEMON_TASK_BT_STATUS,
     DAEMON_TASK_BT_FILES,
+    DAEMON_TASK_BT_FILE_LOCATION,
     DAEMON_TASK_SET_FILE_PRIORITIES,
     DAEMON_TASK_RENAME_BT_FILE,
     DAEMON_TASK_RECHECK,
@@ -529,6 +534,7 @@ pub const ALL_METHODS: &[&str] = &[
     DAEMON_TASK_SET_SUPER_SEEDING,
     DAEMON_TASK_ADD_WEB_SEED,
     DAEMON_TASK_REANNOUNCE,
+    DAEMON_TASK_ADD_BT_PEER,
     DAEMON_TASK_ED2K_STATUS,
     DAEMON_TASK_PAUSE_MANY,
     DAEMON_TASK_RESUME_MANY,

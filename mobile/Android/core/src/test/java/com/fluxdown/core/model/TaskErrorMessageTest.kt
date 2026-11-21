@@ -23,6 +23,10 @@ class TaskErrorMessageTest {
             "taskErrorHtmlChanged",
             TaskErrorMessage.match("the server did not return a complete HTML page; nothing was saved")?.i18nKey,
         )
+        assertEquals(
+            "taskErrorMagnetMetadataTimeout",
+            TaskErrorMessage.match("magnet metadata resolution took too long (300s) — no peers/DHT response; check trackers or network")?.i18nKey,
+        )
     }
 
     @Test

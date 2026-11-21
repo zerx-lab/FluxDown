@@ -344,6 +344,8 @@ struct TasksProtocolTests {
         #expect(TaskErrorMessage.displayText(" server returned HTML page (Content-Type: text/html), redirected to /login\n", localize: { "L:" + $0 }) == "L:taskErrorUnexpectedHtml")
         #expect(TaskErrorMessage.localizationKey(for: "the server did not return a complete HTML page; nothing was saved") == "taskErrorHtmlChanged")
         #expect(TaskErrorMessage.localizationKey(for: "the server did not return a complete HTML page; nothing was saved.") == nil)
+        let timeout = "magnet metadata resolution took too long (300s) — no peers/DHT response; check trackers or network"
+        #expect(TaskErrorMessage.localizationKey(for: timeout) == "taskErrorMagnetMetadataTimeout")
     }
 
     // MARK: BT 选片
