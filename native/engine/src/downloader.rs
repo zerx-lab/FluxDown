@@ -62,7 +62,9 @@ pub enum DownloadError {
     RangeNotSupported(RangeRejection),
     /// Retrying ignored Range requests exhausted all workers, but a durable
     /// multi-segment checkpoint must not be discarded to try a full GET.
-    #[error("server ignored the remaining Range requests; configured Range window prevents a full GET; partial download kept")]
+    #[error(
+        "server ignored the remaining Range requests; configured Range window prevents a full GET; partial download kept"
+    )]
     RangeResumeRejected { total_bytes: i64 },
     #[error("{prefix}{0}", prefix = RANGE_RESTART_FAILED_PREFIX)]
     RangeRestartFailed(#[source] Box<DownloadError>),
@@ -4296,7 +4298,11 @@ pub(crate) async fn clean_http_restart_for_task(
 async fn clean_http_restart_staging(dir: &Path) -> std::io::Result<()> {
     match tokio::fs::symlink_metadata(dir).await {
         Ok(meta) if meta.is_dir() => {}
-        Ok(_) => return Err(std::io::Error::other("HTTP staging path is not a directory")),
+        Ok(_) => {
+            return Err(std::io::Error::other(
+                "HTTP staging path is not a directory",
+            ));
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
     }
