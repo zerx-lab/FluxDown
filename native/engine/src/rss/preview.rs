@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use reqwest::redirect::Policy;
@@ -48,12 +48,8 @@ async fn fetch(egress: &Egress, mut url: Url) -> anyhow::Result<Vec<u8>> {
             .referer(false);
         if let Host::Domain(host) = host {
             // Use only vetted addresses and let the connector race IPv4/IPv6 as usual.
-            let addresses: Vec<_> = tokio::net::lookup_host((host, port))
-                .await?
-                .filter(|address| public_ip(address.ip()))
-                .collect();
-            anyhow::ensure!(!addresses.is_empty(), "no public image address");
-            builder = builder.resolve_to_addrs(host, &addresses);
+            let resolved: Vec<_> = tokio::net::lookup_host((host, port)).await?.collect();
+            builder = builder.resolve_to_addrs(host, &vet_resolved(resolved)?);
         }
         let mut response = builder.build()?.get(url.clone()).send().await?;
         if response.status().is_redirection() {
@@ -104,6 +100,27 @@ async fn ensure_direct_route(egress: &Egress, url: &Url) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Keeps the public addresses of a resolved image host.
+fn vet_resolved(resolved: Vec<SocketAddr>) -> anyhow::Result<Vec<SocketAddr>> {
+    let any_resolved = !resolved.is_empty();
+    let all_fake = resolved.iter().all(|address| is_fake_ip(address.ip()));
+    let public: Vec<_> = resolved
+        .into_iter()
+        .filter(|address| public_ip(address.ip()))
+        .collect();
+    if public.is_empty() && any_resolved && all_fake {
+        // TUN-mode proxies (Clash / Surge fake-ip) answer every domain from
+        // 198.18.0.0/15 and pick the real destination themselves.
+        return Err(ProxyDestinationUnverifiable.into());
+    }
+    anyhow::ensure!(!public.is_empty(), "no public image address");
+    Ok(public)
+}
+
+fn is_fake_ip(ip: IpAddr) -> bool {
+    matches!(ip, IpAddr::V4(ip) if matches!(ip.octets(), [198, 18 | 19, ..]))
+}
+
 fn ensure_public_literal(host: &Host<&str>) -> anyhow::Result<()> {
     let public = match host {
         Host::Domain(_) => true, // Checked after resolution and pinned before connecting.
@@ -119,6 +136,13 @@ fn public_ip(ip: IpAddr) -> bool {
         IpAddr::V4(ip) => public_v4(ip),
         IpAddr::V6(ip) => {
             let [first, second, ..] = ip.segments();
+            // NAT64 well-known prefix 64:ff9b::/96 (DNS64 / IPv6-only networks) wraps an
+            // IPv4 target; validate that target. The local-use 64:ff9b:1::/48 stays rejected.
+            if let [0x0064, 0xff9b, 0, 0, 0, 0, high, low] = ip.segments() {
+                let [a, b] = high.to_be_bytes();
+                let [c, d] = low.to_be_bytes();
+                return public_v4(Ipv4Addr::new(a, b, c, d));
+            }
             // Limit to global unicast; reject special assignments, tunneling, and documentation.
             first & 0xe000 == 0x2000
                 && !(first == 0x2001 && (second <= 0x01ff || second == 0x0db8))
@@ -141,7 +165,9 @@ fn public_v4(ip: Ipv4Addr) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Egress, ProxyDestinationUnverifiable, ensure_direct_route, load, public_ip};
+    use super::{
+        Egress, ProxyDestinationUnverifiable, ensure_direct_route, load, public_ip, vet_resolved,
+    };
     use crate::db::Db;
 
     #[tokio::test]
@@ -174,7 +200,12 @@ mod tests {
 
     #[test]
     fn accepts_public_dual_stack_but_rejects_nonpublic_ipv6() -> anyhow::Result<()> {
-        for address in ["1.1.1.1", "2606:4700:4700::1111"] {
+        for address in [
+            "1.1.1.1",
+            "2606:4700:4700::1111",
+            // NAT64 of 1.1.1.1 (RFC 6052 well-known prefix).
+            "64:ff9b::101:101",
+        ] {
             assert!(public_ip(address.parse()?), "{address}");
         }
         for address in [
@@ -187,10 +218,29 @@ mod tests {
             "fc00::1",
             "2001:db8::1",
             "2002::1",
+            // NAT64 of 10.0.0.1, and the local-use NAT64 prefix.
+            "64:ff9b::a00:1",
+            "64:ff9b:1::101:101",
             "3fff::1",
         ] {
             assert!(!public_ip(address.parse()?), "{address}");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn tun_fake_ip_resolution_reports_an_unverifiable_proxy() -> anyhow::Result<()> {
+        let fake: std::net::SocketAddr = "198.18.0.7:443".parse()?;
+        let public: std::net::SocketAddr = "1.1.1.1:443".parse()?;
+        let private: std::net::SocketAddr = "10.0.0.1:443".parse()?;
+
+        let error = vet_resolved(vec![fake]).expect_err("fake-ip only");
+        assert!(error.is::<ProxyDestinationUnverifiable>());
+        assert_eq!(vet_resolved(vec![fake, public])?, vec![public]);
+        let error = vet_resolved(vec![fake, private]).expect_err("no public address");
+        assert!(!error.is::<ProxyDestinationUnverifiable>());
+        let error = vet_resolved(Vec::new()).expect_err("nothing resolved");
+        assert!(!error.is::<ProxyDestinationUnverifiable>());
         Ok(())
     }
 
