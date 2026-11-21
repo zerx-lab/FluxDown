@@ -153,6 +153,32 @@ function UpdateRow() {
   )
 }
 
+const HOST_LOG_LEVEL_PREF = 'diagnostics.log_level'
+
+function HostLogLevelRow() {
+  const t = useT()
+  const level = useRpcSelector((state) => state.snapshot?.preferences.values[HOST_LOG_LEVEL_PREF])
+  const options = [
+    { value: 'auto', label: t('diagnosticsLogLevelAuto') },
+    { value: 'debug', label: t('diagnosticsLogLevelDebug') },
+    { value: 'info', label: t('diagnosticsLogLevelInfo') },
+    { value: 'warn', label: t('diagnosticsLogLevelWarn') },
+    { value: 'error', label: t('diagnosticsLogLevelError') },
+  ]
+  // Supporting hosts publish the value even when it is set to Automatic.
+  if (!options.some(({ value }) => value === level)) return null
+  return (
+    <PrefDropdownRow
+      prefKey={HOST_LOG_LEVEL_PREF}
+      fallback="auto"
+      titleKey="diagnosticsLogLevel"
+      descKey="diagnosticsLogLevelDesc"
+      options={options}
+      immediate
+    />
+  )
+}
+
 function ExportRow() {
   const t = useT()
   const disabled = useSettingsReadOnly()
@@ -208,6 +234,7 @@ export function AboutSettings() {
         </SettingsRow>
       </SettingsSection>
       <SettingsSection title={t('logExport')} subtitle={t('logExportDesc')}>
+        <HostLogLevelRow />
         <DaemonNumberRow configKey="log_max_size_mb" titleKey="logMaxSize" descKey="logMaxSizeDesc" unit="MB" />
         <ExportRow />
       </SettingsSection>

@@ -416,7 +416,7 @@ pub enum PluginEvent {
     #[cfg(feature = "plugins")]
     Resolve(Box<ResolveOutcome>),
     #[cfg(feature = "plugins")]
-    Retry { task_id: String, delay_ms: u64 },
+    Retry(fluxdown_engine::download_manager::PluginRetryEvent),
 }
 
 /// off-actor 网络抓取回流，数据库提交只在 actor 内执行。
@@ -655,8 +655,8 @@ async fn run_actor(
                     #[cfg(feature = "plugins")]
                     PluginEvent::Resolve(outcome) => engine.manager.on_resolve_ready(*outcome).await,
                     #[cfg(feature = "plugins")]
-                    PluginEvent::Retry { task_id, delay_ms } => {
-                        engine.manager.plugin_request_retry(&task_id, delay_ms).await;
+                    PluginEvent::Retry(event) => {
+                        engine.manager.handle_plugin_retry_event(event).await;
                     }
                 }
             }

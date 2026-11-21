@@ -921,6 +921,16 @@ impl SyncService {
             .publish(AgentEvent::PreferencesChanged(preferences));
         Ok(revision)
     }
+
+    /// Project a preference whose durable source is managed outside the sync store.
+    pub(crate) async fn project_local_preference(&self, key: String, value: Value) -> u64 {
+        let mut state = self.state.lock().await;
+        state.preferences.values.insert(key, value);
+        state.preferences.revision = state.preferences.revision.saturating_add(1);
+        self.events
+            .publish(AgentEvent::PreferencesChanged(state.preferences.clone()));
+        state.preferences.revision
+    }
 }
 
 /// 解析云端条目（拉取项 / 推送冲突项）：坏条目只记录并跳过。

@@ -45,7 +45,7 @@ use crate::auto_proxy::{self, CandidateSource};
 use crate::db::Db;
 use crate::downloader;
 use crate::events::{EngineEvent, EventSink};
-use crate::logger::{log_error, log_info};
+use crate::logger::log_error;
 use crate::proxy_config::{ProxyConfig, ProxyMode};
 use crate::rss::filter::{CompiledRule, FilterRule, Verdict};
 use crate::rss::model::{RssItemInfo, RssItemStatus, RssSourceInfo};
@@ -374,7 +374,7 @@ impl RssManager {
             return None;
         }
         let id = source.source_id.clone();
-        log_info!("[rss] subscribed: {} ({})", source.display_name(), id);
+        tracing::info!(source_id = %id, "RSS subscription created");
         self.broadcast_sources().await;
         Some(id)
     }
@@ -537,7 +537,6 @@ impl RssManager {
             && !route.rule_hit
             && provider_id == RSS_PROVIDER_ID;
         let global_proxy = proxy.clone();
-        let fetch_url = source.url.clone();
         let provider = self
             .providers
             .get(&provider_id)
@@ -556,10 +555,12 @@ impl RssManager {
         let tx = self.tx.clone();
         tokio::spawn(async move {
             let source_id = base_request.source_id.clone();
+            let builtin = provider_id == RSS_PROVIDER_ID;
+            let provider_available = provider.is_some();
+            let started = std::time::Instant::now();
             let outcome = match provider {
                 Some(provider) => {
                     let result = fetch_with_auto_failover(
-                        &fetch_url,
                         direct_proxy,
                         eligible,
                         &global_proxy,
@@ -590,6 +591,15 @@ impl RssManager {
                     error: format!("subscription provider not installed: {provider_id}"),
                 },
             };
+            tracing::debug!(
+                source_id = %outcome.source_id,
+                builtin,
+                provider_available,
+                success = outcome.error.is_empty(),
+                items = outcome.feed.items.len(),
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "RSS provider poll finished"
+            );
             if tx.send(RssEvent::Fetched(Box::new(outcome))).is_err() {
                 tracing::debug!("RSS fetch owner stopped before result delivery");
             }
@@ -655,26 +665,31 @@ impl RssManager {
             .cloned()
             .or_else(|| self.fallback_provider.clone());
         async move {
+            let builtin = provider_id == RSS_PROVIDER_ID;
+            let provider_available = provider.is_some();
+            let started = std::time::Instant::now();
             let result = match provider {
                 Some(provider) => {
-                    fetch_with_auto_failover(
-                        &url,
-                        direct_proxy,
-                        eligible,
-                        &global_proxy,
-                        |proxy_cfg| {
-                            let mut req = base_request.clone();
-                            req.proxy = proxy_cfg;
-                            req.egress = route_egress.clone();
-                            provider.fetch(req)
-                        },
-                    )
+                    fetch_with_auto_failover(direct_proxy, eligible, &global_proxy, |proxy_cfg| {
+                        let mut req = base_request.clone();
+                        req.proxy = proxy_cfg;
+                        req.egress = route_egress.clone();
+                        provider.fetch(req)
+                    })
                     .await
                 }
                 None => Err(format!(
                     "subscription provider not installed: {provider_id}"
                 )),
             };
+            tracing::debug!(
+                builtin,
+                provider_available,
+                success = result.is_ok(),
+                items = result.as_ref().map_or(0, |feed| feed.items.len()),
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "RSS provider validation finished"
+            );
             match result {
                 Ok(feed) => RssValidateOutcome {
                     request_id,
@@ -771,20 +786,15 @@ impl RssManager {
         let global_proxy = proxy.clone();
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            let result = fetch_with_auto_failover(
-                &request.url,
-                direct_proxy,
-                eligible,
-                &global_proxy,
-                |proxy_cfg| {
+            let result =
+                fetch_with_auto_failover(direct_proxy, eligible, &global_proxy, |proxy_cfg| {
                     let mut req = request.clone();
                     req.proxy = proxy_cfg;
                     req.egress = route_egress.clone();
                     let referrer = referrer.clone();
                     async move { fetch_torrent(&req, &referrer).await }
-                },
-            )
-            .await;
+                })
+                .await;
             let (bytes, error) = match result {
                 Ok(bytes) => (bytes, String::new()),
                 Err(e) => (Vec::new(), e),
@@ -831,12 +841,11 @@ impl RssManager {
 
         if !outcome.error.is_empty() {
             let fail_count = source.fail_count.saturating_add(1);
-            log_error!(
-                "[rss] fetch failed ({} consecutive): {}: {}",
-                fail_count,
-                source.display_name(),
-                outcome.error
-            );
+            if fail_count == 2 {
+                tracing::warn!(source_id = %source.source_id, fail_count, "RSS polling degraded after consecutive failures");
+            } else {
+                tracing::debug!(source_id = %source.source_id, fail_count, "RSS poll failed; background polling will retry");
+            }
             let persisted = self
                 .record_runtime(
                     &source.source_id,
@@ -979,6 +988,9 @@ impl RssManager {
                 },
             )
             .await;
+        if persisted && source.fail_count >= 2 {
+            tracing::info!(source_id = %source.source_id, "RSS polling recovered");
+        }
 
         // 派发：`New` 状态的条目按发布时间从旧到新取，单轮不超过上限。
         // 首轮不派发（本轮全部是 SeedSkipped，但历史遗留的 New 也不该在
@@ -994,17 +1006,11 @@ impl RssManager {
         } else {
             Vec::new()
         };
-        log_info!(
-            "[rss] {} fetched: {} new item(s), {} to download{}",
-            source.display_name(),
-            fresh,
-            plans.len(),
-            if first_round {
-                " (first round: history marked read)"
-            } else {
-                ""
-            }
-        );
+        if first_round || fresh > 0 || !plans.is_empty() {
+            tracing::info!(source_id = %source.source_id, first_round, fresh, planned = plans.len(), "RSS poll changed feed state");
+        } else {
+            tracing::debug!(source_id = %source.source_id, backfilled, resolver_backfilled, "RSS poll had no new or dispatchable items");
+        }
         if fresh > 0 || backfilled > 0 || resolver_backfilled > 0 || !plans.is_empty() {
             self.broadcast_items(&source.source_id, Vec::new()).await;
         }
@@ -1045,12 +1051,11 @@ impl RssManager {
             )
             .await
         {
-            Ok(failures) => log_info!(
-                "[rss] torrent fetch failure #{} for {}/{}, next auto attempt in {}s",
+            Ok(failures) => tracing::debug!(
+                %source_id,
                 failures,
-                source_id,
-                guid,
-                torrent_retry_delay_secs(failures)
+                retry_secs = torrent_retry_delay_secs(failures),
+                "RSS torrent fetch retry scheduled"
             ),
             Err(e) => log_error!("[rss] record torrent failure failed: {}", e),
         }
@@ -1353,7 +1358,6 @@ fn resolve_route(proxy_url: &str, global: &ProxyConfig, url: &str, user_agent: &
 /// 各重试一次，命中即返回；全部候选也失败则返回最后一次错误。
 /// `eligible = false` 时只跑一次给定配置，行为与不做失败转移一致。
 async fn fetch_with_auto_failover<T, F, Fut>(
-    url: &str,
     direct_config: ProxyConfig,
     eligible: bool,
     global: &ProxyConfig,
@@ -1374,9 +1378,9 @@ where
     let candidates = auto_proxy::resolve_candidates(global);
     let attempted = !candidates.is_empty();
     for candidate in candidates {
-        log_info!(
-            "[rss] auto 模式直连抓取失败（{last_error}），改试{}代理重试: {url}",
-            candidate_label(candidate.source)
+        tracing::debug!(
+            proxy = candidate_label(candidate.source),
+            "RSS Auto fetch retry"
         );
         match attempt(candidate.config).await {
             Ok(feed) => return Ok(feed),
@@ -2161,7 +2165,6 @@ mod tests {
         let attempts = std::sync::Arc::new(std::sync::Mutex::new(0u32));
         let attempts_clone = attempts.clone();
         let result = fetch_with_auto_failover::<ParsedFeed, _, _>(
-            "http://feed.test/rss",
             ProxyConfig::default(),
             false, // 订阅有专属代理，或全局非 Auto：不重试
             &global,
@@ -2187,23 +2190,17 @@ mod tests {
         let global = auto_proxy_global();
         let modes_tried = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let modes_clone = modes_tried.clone();
-        let result = fetch_with_auto_failover(
-            "http://feed.test/rss",
-            ProxyConfig::default(),
-            true,
-            &global,
-            move |cfg| {
-                let modes = modes_clone.clone();
-                async move {
-                    modes.lock().expect("lock").push(cfg.mode.clone());
-                    if cfg.mode == ProxyMode::Manual {
-                        Ok(ParsedFeed::default())
-                    } else {
-                        Err("direct failed".to_string())
-                    }
+        let result = fetch_with_auto_failover(ProxyConfig::default(), true, &global, move |cfg| {
+            let modes = modes_clone.clone();
+            async move {
+                modes.lock().expect("lock").push(cfg.mode.clone());
+                if cfg.mode == ProxyMode::Manual {
+                    Ok(ParsedFeed::default())
+                } else {
+                    Err("direct failed".to_string())
                 }
-            },
-        )
+            }
+        })
         .await;
         assert!(
             result.is_ok(),
@@ -2222,7 +2219,6 @@ mod tests {
         let attempts = std::sync::Arc::new(std::sync::Mutex::new(0u32));
         let attempts_clone = attempts.clone();
         let result = fetch_with_auto_failover::<ParsedFeed, _, _>(
-            "http://feed.test/rss",
             ProxyConfig::default(),
             true,
             &global,

@@ -273,6 +273,23 @@ struct SearchSettingsTests {
         #expect(!localWithGateway.contains { $0.route == .api })
     }
 
+    @Test func indexShowsLogLevelOnlyWhenHostPublishesIt() {
+        let key = "diagnostics.log_level"
+        var state = loadedState()
+        func logLevelRoutes() -> Set<SettingsRoute> {
+            Set(SettingsIndex.entries(state: state, isLocalHost: false)
+                .filter { $0.id == "logs.level" }.map(\.route))
+        }
+        #expect(logLevelRoutes().isEmpty)
+        let invalidValues: [JSONValue] = [.null, .bool(true), .string("trace")]
+        for invalid in invalidValues {
+            state.preferences.values[key] = invalid
+            #expect(logLevelRoutes().isEmpty)
+        }
+        state.preferences.values[key] = .string("auto")
+        #expect(logLevelRoutes() == [.about, .diagnostics])
+    }
+
     @Test func indexFollowsRowVisibility() {
         // 配置未加载（连接前）：daemon 行不出现，偏好行仍在。
         let loading = SettingsIndex.entries(state: HostState(), isLocalHost: true)

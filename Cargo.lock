@@ -3604,7 +3604,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 
@@ -3799,6 +3798,9 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-tungstenite",
+ "tracing",
+ "tracing-log",
+ "tracing-subscriber",
  "windows 0.62.2",
  "winresource",
 ]

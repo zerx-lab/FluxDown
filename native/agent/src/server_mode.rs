@@ -293,10 +293,9 @@ pub fn run_blocking(host: crate::shell::ShellHost) -> AgentResult {
     use tracing_subscriber::Layer as _;
     use tracing_subscriber::layer::SubscriberExt as _;
     use tracing_subscriber::util::SubscriberInitExt as _;
-    let fmt_layer = tracing_subscriber::fmt::layer().with_filter(
-        tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-    );
+    let fmt_layer = tracing_subscriber::fmt::layer().with_filter(crate::logging::build_filter(
+        &crate::runtime::resolve_engine_data_dir(),
+    ));
     let subscriber = tracing_subscriber::registry().with(fmt_layer);
     if let Err(error) = subscriber.try_init() {
         // 嵌入式宿主可能已经设置订阅者；保留它，同时让 stderr 可观察未安装的原因。

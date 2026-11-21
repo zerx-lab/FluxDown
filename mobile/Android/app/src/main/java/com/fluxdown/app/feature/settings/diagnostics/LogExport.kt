@@ -30,6 +30,7 @@ import com.fluxdown.app.feature.settings.SettingRowBox
 import com.fluxdown.app.feature.settings.SettingsCtx
 import com.fluxdown.app.feature.settings.SettingsEntry
 import com.fluxdown.app.feature.settings.SettingsSearchContext
+import com.fluxdown.app.feature.settings.settingChoice
 import com.fluxdown.app.feature.settings.settingNumber
 import com.fluxdown.app.i18n.str
 import com.fluxdown.app.nav.SettingsPage
@@ -39,15 +40,18 @@ import com.fluxdown.core.host.HostErrorCode
 import com.fluxdown.core.host.HostException
 import com.fluxdown.core.model.HostRef
 import com.fluxdown.core.protocol.HostMethod
+import com.fluxdown.core.protocol.JsonValue
 import com.fluxdown.core.protocol.LogExportHttp
 import com.fluxdown.core.protocol.LogExportParams
 import com.fluxdown.core.protocol.LogExportResult
 import com.fluxdown.core.protocol.LogPathsDto
+import com.fluxdown.core.protocol.SettingsForm
 import com.fluxdown.core.protocol.callJson
 import com.fluxdown.core.store.Connection
 import com.fluxdown.fluxui.controls.FluxActionRow
 import com.fluxdown.fluxui.controls.FluxKeyValue
 import com.fluxdown.fluxui.controls.GlassSection
+import com.fluxdown.fluxui.controls.SelectOption
 import com.fluxdown.fluxui.icons.FluxIcons
 import com.fluxdown.fluxui.overlay.FluxToastKind
 import com.fluxdown.fluxui.overlay.LocalFluxOverlays
@@ -302,6 +306,22 @@ internal fun rememberLogExportModel(): LogExportModel {
     return remember(context, container) { LogExportModel(context, container) }
 }
 
+private const val LOG_LEVEL_KEY = "diagnostics.log_level"
+private const val LOG_LEVEL_ID = "logs.level"
+private val logLevelOptions = listOf(
+    "auto" to R.string.diagnosticsLogLevelAuto,
+    "debug" to R.string.diagnosticsLogLevelDebug,
+    "info" to R.string.diagnosticsLogLevelInfo,
+    "warn" to R.string.diagnosticsLogLevelWarn,
+    "error" to R.string.diagnosticsLogLevelError,
+)
+
+private fun supportsLogLevel(form: SettingsForm): Boolean {
+    // Do not treat the catalog default or an optimistic value as host support.
+    val level = (form.prefs[LOG_LEVEL_KEY] as? JsonValue.Str)?.value ?: return false
+    return logLevelOptions.any { (value, _) -> value == level }
+}
+
 /**
  * 日志分组：占用上限（`log_max_size_mb`，MB）、当前日志大小（仅本机）、导出日志（分享面板）。
  * 诊断页与关于页共用（同 iOS `LogsSection`）。[scope] 为页面级作用域：导出可能持续数分钟，
@@ -327,6 +347,11 @@ internal fun LogsSection(ctx: SettingsCtx, model: LogExportModel, scope: Corouti
         exportDesc
     }
     GlassSection(title = str(R.string.mobileLogsTitle), footer = footer) {
+        if (supportsLogLevel(ctx.form)) {
+            settingChoice(ctx, LOG_LEVEL_KEY, R.string.diagnosticsLogLevel, R.string.diagnosticsLogLevelDesc, id = LOG_LEVEL_ID) {
+                logLevelOptions.map { (value, label) -> SelectOption(value, str(label)) }
+            }
+        }
         settingNumber(
             ctx, "log_max_size_mb", R.string.logMaxSize, R.string.logMaxSizeDesc,
             range = 1L..1024L, default = 10L, unit = R.string.mobileLogSizeUnit, id = "logs.maxSize",
@@ -369,8 +394,11 @@ internal fun LogsSection(ctx: SettingsCtx, model: LogExportModel, scope: Corouti
     }
 }
 
-/** 搜索索引（日志行）：诊断页并入；与 [LogsSection] 共用可见性判定（`log_max_size_mb` 配置未加载时无该行）。 */
+/** 搜索索引（日志行）：与 [LogsSection] 共用可见性判定。 */
 internal fun logSearchEntries(ctx: SettingsSearchContext, page: SettingsPage, breadcrumb: String): List<SettingsEntry> = buildList {
+    if (supportsLogLevel(ctx.form)) {
+        add(ctx.entry(LOG_LEVEL_ID, page, LOGS_ITEM_KEY, R.string.diagnosticsLogLevel, R.string.diagnosticsLogLevelDesc, breadcrumb, FluxIcons.FileText))
+    }
     if (ctx.form.has("log_max_size_mb")) {
         add(ctx.entry("logs.maxSize", page, LOGS_ITEM_KEY, R.string.logMaxSize, R.string.logMaxSizeDesc, breadcrumb, FluxIcons.FileText))
     }

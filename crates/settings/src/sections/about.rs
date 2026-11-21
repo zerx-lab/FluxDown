@@ -26,7 +26,7 @@ const FLAG_ICONS: &str = "https://github.com/lipis/flag-icons";
 /// 更新说明正文的行高（字号倍数）：多行列表项与中文长句比控件文字需要更宽松的行距。
 const RELEASE_NOTES_LINE_HEIGHT: f32 = 1.6;
 
-pub(crate) fn page(ctx: &SectionContext, _cx: &mut App) -> SettingsPage {
+pub(crate) fn page(ctx: &SectionContext, cx: &mut App) -> SettingsPage {
     SettingsPage::new(
         "about",
         ctx.t("settingsCatAbout"),
@@ -36,7 +36,7 @@ pub(crate) fn page(ctx: &SectionContext, _cx: &mut App) -> SettingsPage {
     .sections([
         version_section(ctx),
         update_section(ctx),
-        logs_section(ctx),
+        logs_section(ctx, cx),
         links_section(ctx),
         open_source_section(ctx),
     ])
@@ -328,10 +328,29 @@ fn localized_release_body<'a>(body: &'a str, locale: &str) -> &'a str {
         .unwrap_or(body)
 }
 
-fn logs_section(ctx: &SectionContext) -> SettingsSection {
-    SettingsSection::new()
+fn logs_section(ctx: &SectionContext, cx: &App) -> SettingsSection {
+    const LOG_LEVEL_PREF: &str = "diagnostics.log_level";
+    let mut section = SettingsSection::new()
         .title(ctx.t("logExport"))
-        .subtitle(ctx.t("logExportDesc"))
+        .subtitle(ctx.t("logExportDesc"));
+    if ctx.store.read(cx).pref(LOG_LEVEL_PREF).is_some() {
+        let options = [
+            ("auto", "diagnosticsLogLevelAuto"),
+            ("debug", "diagnosticsLogLevelDebug"),
+            ("info", "diagnosticsLogLevelInfo"),
+            ("warn", "diagnosticsLogLevelWarn"),
+            ("error", "diagnosticsLogLevelError"),
+        ]
+        .into_iter()
+        .map(|(value, label)| (SharedString::from(value), ctx.t(label)))
+        .collect();
+        section = section.row(ctx.item(
+            "diagnosticsLogLevel",
+            Some("diagnosticsLogLevelDesc"),
+            ctx.pref_dropdown(LOG_LEVEL_PREF, "auto", options),
+        ));
+    }
+    section
         .row(ctx.item(
             "logMaxSize",
             Some("logMaxSizeDesc"),

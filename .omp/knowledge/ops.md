@@ -10,6 +10,8 @@
 **引擎滚动日志**：格式 `HH:MM:SS.mmm [Tag] message`；这不是 GPUI 界面与 agent 的日志格式。
 - 目录：Windows exe 同级 `logs/`；Linux `~/.local/share/fluxdown/logs/`。文件名 `fluxdown_YYYY-MM-DD.log`，单卷 2MB 分卷，总量超 `log_max_size_mb`（默认 10MB）从最旧删，保留 7 天。
 - Rust：`use crate::logger::log_info; log_info!("[mod] ...")`（Rust 2024 无 `#[macro_use]`，每文件显式 use）。
+- 进程诊断日志按后果分级：单次失败、换路尝试与退避为 Debug；正常生命周期、恢复及低频汇总为 Info；已发生的可恢复降级为 Warn；最终失败、不可用或完整性风险为 Error。逐消息细节只进 Trace，不记录载荷。该分级不改变任务活动历史。
+- `logging.conf` 放引擎数据根目录，仅保存 `log_level=auto|debug|info|warn|error`。GPUI / Web / Android / iOS 经 agent 修改当前主机；CLI `config set log_level` 修改本机。有效 `RUST_LOG` → `FLUXDOWN_LOG_LEVEL` → 文件 → 构建默认（dev Debug、release Info）。重启相应进程生效，不同步到云端。
 - GPUI 任务「日志」另走引擎数据库中的结构化活动历史（`engine/task_activity.rs`、`db.rs`），不是全局滚动文本文件：源端时间、跨重启 ID、查询分页与实时通知配合。当前保留七天且全库最多五万条，两者先到先清理；页面显示保留截断。同步事件入有界队列，持久化失败不广播成功记录，队列溢出/失败形成显式 `journal_overflow` 缺口；关机冲刷有界，不能因日志数据库不可用永久挂住。
 
 **GPUI 桌面链路（desktop / agent / daemon）**——desktop / agent 文本日志独立，daemon 沿用引擎滚动日志：

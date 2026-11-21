@@ -30,7 +30,6 @@ use crate::ed2k::proto::{
 };
 use crate::ed2k::server::PeerAddr;
 use crate::ed2k::status::{PeerInfo, PeerLive};
-use crate::logger::log_info;
 use crate::speed_limiter::SpeedLimiter;
 use crate::transfer_activity::TransferTracker;
 
@@ -390,11 +389,7 @@ impl PeerSession {
                 }
                 Ed2kMessage::QueueRank(rank) => {
                     // 排队是常态，独立于 stall。等待 ACCEPT（这里以 QUEUE_TIMEOUT 兜底）。
-                    let remote = stream
-                        .peer_addr()
-                        .map(|a| a.to_string())
-                        .unwrap_or_default();
-                    log_info!("[ed2k-peer] {} queued, rank={}", remote, rank);
+                    tracing::debug!(rank, "eD2K peer queued");
                     self.live.set_queued(rank);
                     wait_for_accept(stream, &self.live).await?;
                     self.live.set_transferring();

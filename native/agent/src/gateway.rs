@@ -83,6 +83,7 @@ pub struct GatewayService {
     open_associations: crate::open_association::OpenAssociationGuard,
     local: GatewayShell,
     server_mode: bool,
+    logging_dir: Option<std::path::PathBuf>,
     /// 嵌入宿主：`exportLogs` 的目标路径由同进程 App 给出（应用沙盒内），server 模式下仍放行。
     local_log_export: bool,
     link: Option<Arc<LinkService>>,
@@ -154,6 +155,7 @@ impl GatewayService {
             open_associations,
             local,
             server_mode: false,
+            logging_dir: None,
             local_log_export: false,
             link: None,
             access_key_epoch: tokio::sync::watch::Sender::new(0),
@@ -166,6 +168,11 @@ impl GatewayService {
     #[must_use]
     pub fn with_server_mode(mut self, enabled: bool) -> Self {
         self.server_mode = enabled;
+        self
+    }
+
+    pub(crate) fn with_logging_dir(mut self, path: std::path::PathBuf) -> Self {
+        self.logging_dir = Some(path);
         self
     }
 
@@ -1210,6 +1217,36 @@ impl GatewayService {
             .unwrap_or(true);
         let mut revision = 0_u64;
         for (key, value) in values {
+            if key == crate::logging::LEVEL_PREF {
+                let root = self
+                    .logging_dir
+                    .clone()
+                    .ok_or_else(|| RpcErrorData::new(ApplicationErrorCode::Unsupported, false))?;
+                let configured = value
+                    .as_str()
+                    .and_then(|value| fluxdown_logfile::startup::parse_setting(value).ok())
+                    .ok_or_else(|| invalid_field(crate::logging::LEVEL_PREF))?;
+                let _guard = self.gateway_patch_lock.lock().await;
+                tokio::task::spawn_blocking(move || {
+                    fluxdown_logfile::startup::write_level(&root, configured)
+                })
+                .await
+                .map_err(|error| {
+                    tracing::error!(%error, "log level configuration write task failed");
+                    RpcErrorData::new(ApplicationErrorCode::Internal, false)
+                })?
+                .map_err(|error| {
+                    tracing::error!(%error, "cannot save log level configuration");
+                    RpcErrorData::new(ApplicationErrorCode::Internal, false)
+                })?;
+                let level = fluxdown_logfile::startup::setting_name(configured);
+                let revision_now = self
+                    .sync
+                    .project_local_preference(key.clone(), level.into())
+                    .await;
+                revision = revision.max(revision_now);
+                continue;
+            }
             // JSON null = 恢复默认（墓碑）：本机移除该偏好 / daemon 键回到默认，并把删除同步给云端。
             let deleted = value.is_null();
             let result = if sync {

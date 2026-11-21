@@ -154,12 +154,6 @@ pub async fn run_with(
     let data_dir =
         fluxdown_engine::data_dir::resolve_data_dir(process_config.data_dir_override.as_deref())?;
     fluxdown_engine::logger::init_with_dir(&data_dir)?;
-    if let Err(error) = tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .try_init()
-    {
-        tracing::debug!(%error, "daemon tracing subscriber initialization failed; retaining existing subscriber");
-    }
 
     let _process_lease = match DaemonProcessLease::acquire(&data_dir)? {
         Some(lease) => lease,
@@ -742,11 +736,8 @@ fn take_engine_receivers(engine: &mut Engine) -> Result<EngineReceivers, std::io
             .ok_or_else(|| std::io::Error::other("plugin retry receiver already taken"))?;
         let retry_tx = plugin_tx.clone();
         tokio::spawn(async move {
-            while let Some((task_id, delay_ms)) = retry_events.recv().await {
-                if retry_tx
-                    .send(PluginEvent::Retry { task_id, delay_ms })
-                    .is_err()
-                {
+            while let Some(event) = retry_events.recv().await {
+                if retry_tx.send(PluginEvent::Retry(event)).is_err() {
                     break;
                 }
             }

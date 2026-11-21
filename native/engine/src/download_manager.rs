@@ -127,6 +127,28 @@ async fn handle_task_panic(
     persist_task_failure(task_id, msg, db, progress_tx).await;
 }
 
+fn log_terminal_task_failure(task: &crate::model::TaskInfo, generation: u64, auto_retries: u32) {
+    let transport_failure = crate::net_failure::tag_of(&task.error_message);
+    let http_status = extract_http_status(&task.error_message);
+    let protocol = if is_bt_url(&task.url) {
+        "bt"
+    } else if is_ed2k_url(&task.url) {
+        "ed2k"
+    } else {
+        crate::intercept::protocol_kind(&task.url, false).as_str()
+    };
+    tracing::error!(
+        task_id = %task.task_id,
+        protocol,
+        auto_retries,
+        downloaded_bytes = task.downloaded_bytes,
+        generation,
+        ?transport_failure,
+        ?http_status,
+        "download failed"
+    );
+}
+
 async fn persist_task_failure(
     task_id: &str,
     msg: String,
@@ -1814,6 +1836,7 @@ async fn probe_start_meta(params: &mut DownloadParams) -> crate::meta_prober::Pr
             ) => r,
         };
     }
+    let probe_started = std::time::Instant::now();
     let resolved = if crate::auto_probe::applies(params) {
         // Auto 多路径：起飞路径不及时应答 / 断在传输层时并行放出备选路径，
         // 胜出路径就地接管 params（client、代理配置、路由上下文与标签）。
@@ -1843,6 +1866,12 @@ async fn probe_start_meta(params: &mut DownloadParams) -> crate::meta_prober::Pr
     };
     match resolved {
         Ok((info, adapted, held)) => {
+            tracing::info!(
+                task_id = %params.task_id,
+                elapsed_ms = probe_started.elapsed().as_millis(),
+                outcome = "ready",
+                "HTTP probe completed"
+            );
             if let Some(adapted_spec) = &adapted {
                 downloader::persist_adapted_spec(&params.db, &params.task_id, adapted_spec).await;
             }
@@ -1855,10 +1884,12 @@ async fn probe_start_meta(params: &mut DownloadParams) -> crate::meta_prober::Pr
             meta
         }
         Err(error) => {
-            log_info!(
-                "[download] task {} prelude probe failed: {}",
-                params.task_id,
-                error
+            tracing::info!(
+                task_id = %params.task_id,
+                elapsed_ms = probe_started.elapsed().as_millis(),
+                transport_failure = ?crate::net_failure::classify_download_error(&error),
+                outcome = "failed",
+                "HTTP probe completed"
             );
             params.preprobed = Some(Err(error));
             crate::meta_prober::ProbedMeta::default()
@@ -3835,6 +3866,13 @@ fn apply_resolve_to_queued(queued: &mut QueuedTask, res: crate::plugin::ResolveR
     };
     queued.range_supported = res.range_supported;
 }
+#[cfg(feature = "plugins")]
+#[derive(Debug)]
+pub enum PluginRetryEvent {
+    Retry { task_id: String, delay_ms: u64 },
+    FailureSettled { task_id: String, generation: u64 },
+}
+
 pub struct DownloadManager {
     db: Db,
     client: Client,
@@ -4102,9 +4140,11 @@ pub struct DownloadManager {
     resolve_rx: Option<mpsc::UnboundedReceiver<ResolveOutcome>>,
     /// 插件 onError 命令式重试意图通道（bridge → actor `plugin_request_retry`）。
     #[cfg(feature = "plugins")]
-    plugin_retry_tx: mpsc::UnboundedSender<(String, u64)>,
+    plugin_retry_tx: mpsc::UnboundedSender<PluginRetryEvent>,
     #[cfg(feature = "plugins")]
-    plugin_retry_rx: Option<mpsc::UnboundedReceiver<(String, u64)>>,
+    plugin_retry_rx: Option<mpsc::UnboundedReceiver<PluginRetryEvent>>,
+    #[cfg(feature = "plugins")]
+    pending_failure_diagnostics: HashMap<String, u64>,
     /// resolve 等待中的任务（start 携 QueuedTask，resume 为标记）。
     #[cfg(feature = "plugins")]
     pending_resolve: HashMap<String, PendingResolve>,
@@ -4300,6 +4340,8 @@ impl DownloadManager {
             #[cfg(feature = "plugins")]
             plugin_retry_rx: Some(plugin_retry_rx),
             #[cfg(feature = "plugins")]
+            pending_failure_diagnostics: HashMap::new(),
+            #[cfg(feature = "plugins")]
             pending_resolve: HashMap::new(),
             #[cfg(feature = "plugins")]
             resume_applied: HashMap::new(),
@@ -4381,7 +4423,7 @@ impl DownloadManager {
 
     /// 暴露 plugin_retry_tx 供 bridge 构造（onError 命令式重试意图通道）。
     #[cfg(feature = "plugins")]
-    pub fn plugin_retry_sender(&self) -> mpsc::UnboundedSender<(String, u64)> {
+    pub fn plugin_retry_sender(&self) -> mpsc::UnboundedSender<PluginRetryEvent> {
         self.plugin_retry_tx.clone()
     }
 
@@ -4393,7 +4435,7 @@ impl DownloadManager {
 
     /// 交出 plugin_retry 接收端给 actor loop。
     #[cfg(feature = "plugins")]
-    pub fn take_plugin_retry_rx(&mut self) -> Option<mpsc::UnboundedReceiver<(String, u64)>> {
+    pub fn take_plugin_retry_rx(&mut self) -> Option<mpsc::UnboundedReceiver<PluginRetryEvent>> {
         self.plugin_retry_rx.take()
     }
 
@@ -5446,6 +5488,41 @@ impl DownloadManager {
         if count != self.retry_pending_reported {
             self.retry_pending_reported = count;
             self.sink.emit(EngineEvent::RetryPendingChanged { count });
+        }
+    }
+
+    #[cfg(feature = "plugins")]
+    pub async fn handle_plugin_retry_event(&mut self, event: PluginRetryEvent) {
+        match event {
+            PluginRetryEvent::Retry { task_id, delay_ms } => {
+                self.plugin_request_retry(&task_id, delay_ms).await;
+            }
+            PluginRetryEvent::FailureSettled {
+                task_id,
+                generation,
+            } => {
+                if self.pending_failure_diagnostics.get(&task_id) != Some(&generation) {
+                    return;
+                }
+                self.pending_failure_diagnostics.remove(&task_id);
+                if self.active_tasks.contains_key(&task_id)
+                    || self.retry_scheduled.contains_key(&task_id)
+                {
+                    return;
+                }
+                match self.db.load_task_by_id(&task_id).await {
+                    Ok(Some(task))
+                        if task.status == 4 && task.error_message != CANCELLED_ERROR_MESSAGE =>
+                    {
+                        let retries = self.auto_retry_counts.get(&task_id).copied().unwrap_or(0);
+                        log_terminal_task_failure(&task, generation, retries);
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        crate::logger::report_error("download", "load settled task failure", &error)
+                    }
+                }
+            }
         }
     }
 
@@ -8170,6 +8247,12 @@ impl DownloadManager {
             }
             // 本轮是否已排程恢复——决定 `task.failed` 是否应立即发出。
             let mut retry_pending = false;
+            #[cfg(feature = "plugins")]
+            self.pending_failure_diagnostics.remove(task_id);
+            let terminal_failure =
+                task.status == 4 && task.error_message != CANCELLED_ERROR_MESSAGE;
+            #[cfg(feature = "plugins")]
+            let mut terminal_failure = terminal_failure;
             if task.status == 4
                 && self.proxy_config.mode == ProxyMode::Auto
                 && task.proxy_url.is_empty()
@@ -8257,11 +8340,11 @@ impl DownloadManager {
                         }
                         AutoFailoverTarget::Direct => "直连",
                     };
-                    log_info!(
-                        "[manager] auto-proxy: task {} host {} 传输失败，立即换{}重试（每链路一次，不占通用重试配额）",
+                    tracing::debug!(
                         task_id,
                         host,
-                        label
+                        route = label,
+                        "transport failed; retrying on alternate route"
                     );
                     self.auto_failover_pending
                         .insert(task_id.to_string(), target);
@@ -8300,17 +8383,12 @@ impl DownloadManager {
                     let delay_secs = base
                         .saturating_mul(attempt as u64)
                         .min(MAX_AUTO_RETRY_DELAY_SECS);
-                    log_info!(
-                        "[manager] auto-retry {}/{} for task {} in {}s (error: {})",
-                        attempt,
-                        if max_retries == -1 {
-                            "∞".to_string()
-                        } else {
-                            max_retries.to_string()
-                        },
+                    tracing::debug!(
                         task_id,
+                        attempt,
+                        max_retries,
                         delay_secs,
-                        task.error_message
+                        "task retry scheduled"
                     );
                     let tx = self.retry_tx.clone();
                     let tid = task_id.to_string();
@@ -8323,12 +8401,6 @@ impl DownloadManager {
                     });
                     retry_pending = true;
                     self.retry_schedule(task_id, task.queue_id.clone());
-                } else {
-                    log_info!(
-                        "[manager] auto-retry exhausted for task {} ({} attempts), staying in error",
-                        task_id,
-                        max_retries
-                    );
                 }
             }
             // 跳过采纳的已有文件不是本任务产物：不打来源标记、不触发插件 onDone
@@ -8407,12 +8479,13 @@ impl DownloadManager {
                     })
                     .await;
                 } else if task.status == 4 {
-                    pm.notify(crate::plugin::PluginEvent::Error {
-                        task_id: task_id.to_string(),
-                        url: task.url.clone(),
-                        message: task.error_message.clone(),
-                    })
-                    .await;
+                    let mut work = pm
+                        .track_failure_notification(crate::plugin::PluginEvent::Error {
+                            task_id: task_id.to_string(),
+                            url: task.url.clone(),
+                            message: task.error_message.clone(),
+                        })
+                        .await;
                     if !is_bt_url(&task.url) && !is_ed2k_url(&task.url) {
                         let ic = self.task_interceptor(task_id, &task.url, &task.url).await;
                         if crate::intercept::wants(
@@ -8436,7 +8509,7 @@ impl DownloadManager {
                                 task_id.to_string(),
                             );
                             let retry_task_id = task_id.to_string();
-                            pm.runtime_handle().spawn(async move {
+                            work.push(pm.runtime_handle().spawn(async move {
                                 let delay = crate::intercept::drive::run_failed(
                                     ic.as_ref(),
                                     &notes,
@@ -8451,7 +8524,13 @@ impl DownloadManager {
                                         .lock()
                                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                                         .insert(retry_task_id.clone());
-                                    if retry_tx.send((retry_task_id.clone(), delay)).is_err() {
+                                    if retry_tx
+                                        .send(PluginRetryEvent::Retry {
+                                            task_id: retry_task_id.clone(),
+                                            delay_ms: delay,
+                                        })
+                                        .is_err()
+                                    {
                                         retry_marks
                                             .lock()
                                             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -8459,10 +8538,31 @@ impl DownloadManager {
                                         tracing::debug!("plugin retry receiver closed");
                                     }
                                 }
-                            });
+                            }));
                         }
                     }
+                    if terminal_failure && !retry_pending && !work.is_empty() {
+                        terminal_failure = false;
+                        self.pending_failure_diagnostics
+                            .insert(task_id.to_owned(), generation);
+                        let tx = self.plugin_retry_tx.clone();
+                        let task_id = task_id.to_owned();
+                        pm.runtime_handle().spawn(async move {
+                            for job in work {
+                                if let Err(error) = job.await {
+                                    tracing::warn!(%error, "plugin failure callback did not complete");
+                                }
+                            }
+                            if tx.send(PluginRetryEvent::FailureSettled { task_id, generation }).is_err() {
+                                tracing::debug!("plugin retry receiver closed");
+                            }
+                        });
+                    }
                 }
+            }
+            if terminal_failure && !retry_pending {
+                let retries = self.auto_retry_counts.get(task_id).copied().unwrap_or(0);
+                log_terminal_task_failure(&task, generation, retries);
             }
 
             // 文件哈希：校验和校验通过时下载器已把哈希写进库，但完成只经进度帧发布（不含
@@ -11079,7 +11179,13 @@ impl DownloadManager {
             self.resolved_egress.remove(&task_id);
             // Lazily initialise the shared BT session.
             if let Err(e) = self.ensure_bt_session().await {
-                crate::log_error!("[manager] failed to init BT session: {}", e);
+                tracing::error!(
+                    task_id,
+                    generation = spawn_gen,
+                    protocol = "bt",
+                    stage = "session_start",
+                    "download failed"
+                );
                 if let Err(db_error) = self
                     .db
                     .update_task_status(&task_id, 4, &e.to_string())
@@ -12624,7 +12730,13 @@ impl DownloadManager {
             self.resolved_egress.remove(task_id);
             // Lazily initialise the shared BT session.
             if let Err(e) = self.ensure_bt_session().await {
-                crate::log_error!("[manager] failed to init BT session for resume: {}", e);
+                tracing::error!(
+                    task_id,
+                    generation = spawn_gen,
+                    protocol = "bt",
+                    stage = "session_resume",
+                    "download failed"
+                );
                 if let Err(db_error) = self.db.update_task_status(task_id, 4, &e.to_string()).await
                 {
                     crate::logger::report_error(

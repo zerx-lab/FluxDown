@@ -83,7 +83,7 @@ impl std::fmt::Display for ConfigError {
             ConfigError::UnknownKey(k) => {
                 write!(
                     f,
-                    "unknown config key: {k} (valid keys: url, token, timeout)"
+                    "unknown config key: {k} (valid keys: url, token, timeout, log_level)"
                 )
             }
             ConfigError::InvalidValue { key, reason } => {
