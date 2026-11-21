@@ -4138,7 +4138,6 @@
   "aria2AdvancedOpenHint": "Se muestran todas las opciones compatibles. Edita el borrador y pulsa Aplicar para guardar, o exporta el borrador actual.",
   "aria2AdvancedBusy": "Ya hay una solicitud de opciones avanzadas en curso.",
   "clearTaskFile": "Eliminar solo el archivo",
-  "clearTaskFileConfirmation": "¿Eliminar de disco el archivo descargado de “{fileName}”? La tarea completada se conservará y podrás volver a descargarla. Esta acción no se puede deshacer.",
   "infoWrittenBytes": "Escrito",
   "btFileSortOriginal": "Orden original",
   "btFileSortType": "Por tipo",
@@ -4241,5 +4240,13 @@
   "btAddWebSeedTitle": "Añadir semilla web",
   "btAddWebSeedHint": "Para un torrent de un solo archivo, introduce la URL directa del archivo. Para un torrent de varios archivos, introduce la raíz del espejo que contenga la carpeta y las rutas de archivo originales del torrent. El servidor debe admitir solicitudes de rango HTTP. Consulta la lista de fuentes HTTP para ver las fuentes guardadas pero aún no aplicadas.",
   "btWebSeedStatePending": "Guardada, pendiente de aplicación",
-  "btWebSeedStateRejected": "Rechazada por la sesión del torrent"
+  "btWebSeedStateRejected": "Rechazada por la sesión del torrent",
+  "clearTaskFileConfirmWithBrowserNotice": "¿Eliminar de disco los archivos descargados de “{fileName}”? Esta acción no se puede deshacer. La tarea completada se conservará. Por lo general puedes volver a descargarla desde esta tarea, pero si se inició con un POST del navegador u otra solicitud distinta de GET, debes iniciarla de nuevo en el navegador.",
+  "rssViewImages": "Ver imágenes",
+  "rssImageLoadFailed": "No se pudo cargar la imagen",
+  "rssImageLoading": "Cargando imagen…",
+  "rssImageProxyUnverifiable": "Vista previa de imagen bloqueada: no se puede verificar el destino a través del proxy.",
+  "errReasonTaskFileClearPending": "La limpieza de archivos aún está pendiente. Restaura la ubicación de guardado original y vuelve a intentar «Eliminar solo el archivo» antes de cambiar el nombre del archivo o la ubicación de guardado.",
+  "mobileDlNotifTaskChannel": "Progreso de descarga individual",
+  "mobileDlNotifTaskChannelDesc": "Muestra una notificación de progreso aparte para cada descarga en este dispositivo"
 }
