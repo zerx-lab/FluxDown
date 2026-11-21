@@ -184,6 +184,7 @@
 - **「全部」命中不能抑制「其他」计数，手动分类须单独求值**：`CategoryIndex::for_each_match` 曾把 `Matcher::All` 也计作具体命中，导致未分类任务的侧栏计数为零；手动归入 `other` 也不能进入自动兜底分支。Rust／Web 均须满足一次扫描计数与逐项过滤等价，重复规则只计一次 → `crates/downloads/src/model/categories.rs`、`model/counts.rs::category_override_counts_match_filters_including_other`、Web `model/counts.test.ts`。
 
 - **顶栏主操作插槽不能占满横向空间**：`size_full()` 或把插槽单独包在 `flex_1()` 容器中，会把紧随其后的暂停 / 开始控件挤到搜索框旁；主按钮根节点用 `h_full().flex_none()`，弹性留白统一放在左区控件之后 → `crates/downloads/src/components/title_bar.rs::DownloadTitleBar::render`、`crates/shell/src/view.rs::render_title_bar`。
+- **短详情面板中的 HTTP 源列表必须按可用高度收缩**：只给列表固定最大高度时，外层面板会裁掉尾行，但列表尚未达到自身滚动阈值，滚轮无法看到尾行 → `crates/downloads/src/pages/task_detail_bt.rs::{web_seeds_section,render_bt_trackers}`：给 HTTP 源区分配相对高度上限，让表格和实际滚动视口可以收缩。
 - **插件详情的归档规则状态直接复用 protocol DTO**：`fluxdown_ui_extensions` 没有直接依赖 serde，另写 `Deserialize` 镜像会导致编译失败并让 wire 字段漂移；市场详情通过 `PluginDetail::default` 补齐仅已安装插件才有的状态 → `crates/extensions/src/components/plugin_detail.rs`（`PluginArchiveRulesDto` / `PluginDetail::from_market`）。
 
 - **渲染期要「先读后写」，值没变就不 `update`**：gpui-fast 把渲染期的 entity 写入记为外部修改，每帧写会让读该状态的其他 view（如 shell 顶栏）每帧重建 → `crates/components/src/sidebar/mod.rs`（`sample` 后的只读分支）、`crates/downloads/src/components/sidebar_layout.rs`。
