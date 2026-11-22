@@ -252,8 +252,11 @@ fn replace_and_record(
                 detail: "Portable update was interrupted during replacement; keep the backups and restore the installation manually.".to_owned(),
                 rollback_incomplete: true,
             });
-            write_record(pending, &record)?;
-            replace()
+            write_record(pending, &record)
+                .map_err(InstallError::storage(
+                    "write portable update recovery marker",
+                ))
+                .and_then(|()| replace())
         }
         Err(error) => Err(error),
     };
@@ -393,6 +396,20 @@ mod tests {
             }
             assert_eq!(rollback_status(&pending), rollback);
         }
+    }
+
+    #[test]
+    fn initial_write_failure_skips_replacement_and_relaunches() {
+        let dir = TempDir::new("portable-initial-write-failure").unwrap();
+        let pending = dir.path().join(PENDING_FILE);
+        write_record(&pending, &record()).unwrap();
+        fs::create_dir(pending.with_extension("worker.tmp")).unwrap();
+
+        let result = replace_and_record(&pending, record(), Ok(()), || {
+            panic!("replacement must not run without a persisted recovery marker");
+        });
+        assert_eq!(result.unwrap(), restart::RELAUNCH_ARG);
+        assert_eq!(rollback_status(&pending), None);
     }
 
     #[test]
