@@ -12528,6 +12528,14 @@ impl DownloadManager {
                 }
                 Err(error) => {
                     crate::logger::report_warning("download-manager", "wait for restart", &error);
+                    persist_task_failure(
+                        task_id,
+                        "Could not restart the download: the previous download did not stop in time."
+                            .into(),
+                        &self.db,
+                        &self.progress_tx,
+                    )
+                    .await;
                     self.drain_queue().await;
                     self.sync_queue_occupancy();
                     return;

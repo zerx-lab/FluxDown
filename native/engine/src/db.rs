@@ -3829,6 +3829,17 @@ impl Db {
         Ok(found != 0)
     }
 
+    pub(crate) async fn has_segment_checkpoint(&self, task_id: &str) -> Result<bool, DbError> {
+        let found: i32 = sqlx::query_scalar(
+            "SELECT CASE WHEN EXISTS (SELECT 1 FROM task_segments WHERE task_id = $1)
+             THEN 1 ELSE 0 END",
+        )
+        .bind(task_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(found != 0)
+    }
+
     pub async fn load_segments(&self, task_id: &str) -> Result<Vec<SegmentInfo>, DbError> {
         let rows = sqlx::query(
             "SELECT segment_index, start_byte, end_byte, downloaded_bytes

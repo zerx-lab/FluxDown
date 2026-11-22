@@ -1017,6 +1017,7 @@ async fn download_track_best_effort(
     single_segs: &[DashSegment],
     dest_path: &Path,
     role: DashTrack,
+    may_resume_legacy_audio: bool,
     track_len: Option<i64>,
     progress_base: i64,
     pair_total: i64,
@@ -1032,6 +1033,7 @@ async fn download_track_best_effort(
             url,
             dest_path,
             role,
+            may_resume_legacy_audio,
             len,
             progress_base,
             pair_total,
@@ -1124,13 +1126,16 @@ async fn download_track_coordinated(
     url: &str,
     dest_path: &Path,
     role: DashTrack,
+    may_resume_legacy_audio: bool,
     track_len: i64,
     progress_base: i64,
     pair_total: i64,
 ) -> Result<(i64, PathBuf), DownloadError> {
     let temp_path = PathBuf::from(format!("{}{}", dest_path.display(), TEMP_EXT));
     let _audio_lease = if role == DashTrack::Audio {
-        Some(output::reserve_audio_partial(&p.db, &p.task_id, &temp_path, false).await?)
+        let legacy_checkpoint =
+            may_resume_legacy_audio && p.db.has_segment_checkpoint(&p.task_id).await?;
+        Some(output::reserve_audio_partial(&p.db, &p.task_id, &temp_path, legacy_checkpoint).await?)
     } else {
         None
     };
@@ -1457,6 +1462,7 @@ async fn run_track_pair_inner(
             &video_seg,
             &dest_path,
             DashTrack::Video,
+            false,
             video_len,
             0,
             total_bytes,
@@ -1507,6 +1513,9 @@ async fn run_track_pair_inner(
             &audio_seg,
             &audio_path,
             DashTrack::Audio,
+            // Only when video was already complete on entry can surviving
+            // task-level segment rows belong to the interrupted audio track.
+            video_done,
             audio_len,
             video_bytes,
             total_bytes,
