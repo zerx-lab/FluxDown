@@ -186,8 +186,7 @@ internal class SharedDiagnosticLogs(
                 mutableStatus.value = Status.NeedsPermission
                 return
             }
-            val bytes = content() ?: return
-            writeDocument(tree, name, bytes)
+            content()?.let { writeDocument(tree, name, it) }
             failedDocuments.remove(name)
             mutableStatus.value = if (failedDocuments.isEmpty()) Status.Available else Status.Unavailable
         } catch (error: IOException) {

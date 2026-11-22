@@ -3820,7 +3820,7 @@
   "mobileDiagEngineStaleHint": "The connection to the download engine dropped and is being restored. Settings and actions are read-only meanwhile.",
   "mobileDiagEngineFailedHint": "Check that the host is online and its address and access key are correct, or switch to this phone.",
   "mobileLogsTitle": "Logs",
-  "androidSharedLogsHint": "After you authorize {path}, FluxDown copies recent local logs there. Web, FTP and magnet links and recognized credentials are filtered, but file names, paths and IP addresses may remain. Check the files before sharing.",
+  "androidSharedLogsHint": "After you authorize {path}, FluxDown copies recent local logs there. Web, FTP, magnet and eD2K links and recognized credentials are filtered, but file names, paths and IP addresses may remain. Check the files before sharing.",
   "androidSharedLogsAllowStorage": "Authorize the crash log folder",
   "androidSharedLogsFolderError": "Create and select Documents/FluxDown/Logs in internal shared storage.",
   "androidSharedLogsUnavailable": "Could not write to the shared log folder. Create it again if needed, then select it again.",

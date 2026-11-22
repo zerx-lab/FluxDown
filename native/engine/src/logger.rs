@@ -151,12 +151,17 @@ impl AppLogger {
 
     /// 写入一行日志，自动按日期切换文件、按大小分割。`flush` 为 true 时立即刷盘。
     fn write_impl(&self, message: &str, flush: bool) {
-        if let Err(error) = self.write_line(message, flush) {
+        if let Err(error) = self.write_line(message, flush, None) {
             self.record_failure("write", &error);
         }
     }
 
-    fn write_line(&self, message: &str, flush: bool) -> io::Result<()> {
+    fn write_line(
+        &self,
+        message: &str,
+        flush: bool,
+        level: Option<fluxdown_logfile::Level>,
+    ) -> io::Result<()> {
         #[cfg(target_os = "android")]
         let sanitized = sanitize_android_log(message);
         #[cfg(target_os = "android")]
@@ -164,7 +169,10 @@ impl AppLogger {
         let now = Local::now();
         let date_tag = now.format("%Y-%m-%d").to_string();
         let ts = now.format("%H:%M:%S%.3f").to_string();
-        let line = format!("{ts} {message}\n");
+        let line = match level {
+            Some(level) => format!("{ts} {} {message}\n", level.as_padded_str()),
+            None => format!("{ts} {message}\n"),
+        };
 
         let mut state = match self.state.lock() {
             Ok(state) => state,
@@ -736,12 +744,15 @@ pub fn write(message: &str) {
 
 /// Accept a formatted tracing event from the embedded Android subscriber.
 #[cfg(target_os = "android")]
-pub fn write_embedded_event(message: &str, flush: bool) -> bool {
+pub fn write_embedded_event(level: fluxdown_logfile::Level, message: &str) -> bool {
     let Some(logger) = LOGGER.get() else {
         return false;
     };
+    let flush = level == fluxdown_logfile::Level::Error;
     for line in message.lines().filter(|line| !line.is_empty()) {
-        logger.write_impl(line, flush);
+        if let Err(error) = logger.write_line(line, flush, Some(level)) {
+            logger.record_failure("write", &error);
+        }
     }
     true
 }
@@ -1031,6 +1042,7 @@ mod tests {
             "ftp://example.invalid/o'brien/private-ticket",
             "wss://example.invalid:8080/private-room",
             "magnet:?xt=urn:btih:private-hash&dn=private-name",
+            "ED2K://|file|Private File.iso|1024|0123456789abcdef0123456789abcdef|/",
         ] {
             assert_eq!(
                 sanitize_android_log(&format!("start {url}")),
@@ -1095,7 +1107,7 @@ mod tests {
                 let path = logger.file_path(&state.date_tag, state.part);
                 state.file = Some(std::fs::File::open(path)?);
             }
-            logger.write_line("crash diagnostic", true)?;
+            logger.write_line("crash diagnostic", true, None)?;
             let state = logger
                 .state
                 .lock()

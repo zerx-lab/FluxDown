@@ -40,7 +40,7 @@ pub fn init_desktop() {
 }
 
 /// Returns true if the engine sink is initialized and accepted the formatted event.
-pub type EngineLogSink = fn(&str, bool) -> bool;
+pub type EngineLogSink = fn(Level, &str) -> bool;
 
 /// Install the embedded process subscriber before starting the daemon.
 pub fn init_embedded(
@@ -173,7 +173,7 @@ fn install_subscriber(log: &fluxdown_logfile::LogFile, engine_sink: Option<Engin
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_ansi(false)
         .without_time()
-        .with_level(engine_sink.is_some())
+        .with_level(false)
         .with_target(true)
         .with_writer(LogFileWriter { engine_sink })
         .with_filter(build_filter(engine_sink.is_some()));
@@ -384,7 +384,7 @@ impl Drop for EventWriter {
             return;
         }
         if let Some(sink) = self.engine_sink
-            && sink(text, self.level == Level::Error)
+            && sink(self.level, text)
         {
             return;
         }

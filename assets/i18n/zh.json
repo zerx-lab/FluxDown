@@ -3820,7 +3820,7 @@
   "mobileDiagEngineStaleHint": "与下载引擎的连接已中断，正在恢复；期间设置与操作只读。",
   "mobileDiagEngineFailedHint": "请确认主机在线、地址与访问密钥正确，或切换回这台手机。",
   "mobileLogsTitle": "日志",
-  "androidSharedLogsHint": "授权 {path} 后，FluxDown 会将近期本机日志复制到该目录。网页、FTP 和磁力链接及可识别的凭据会被过滤，但文件名、路径和 IP 地址可能保留，分享前请检查。",
+  "androidSharedLogsHint": "授权 {path} 后，FluxDown 会将近期本机日志复制到该目录。网页、FTP、磁力和 eD2K 链接及可识别的凭据会被过滤，但文件名、路径和 IP 地址可能保留，分享前请检查。",
   "androidSharedLogsAllowStorage": "授权崩溃日志目录",
   "androidSharedLogsFolderError": "请在内部共享存储中创建并选择 Documents/FluxDown/Logs。",
   "androidSharedLogsUnavailable": "无法写入共享日志目录。如有需要，请重新创建该目录，再选择一次。",
