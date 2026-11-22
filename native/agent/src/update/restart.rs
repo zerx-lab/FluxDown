@@ -384,6 +384,27 @@ pub(super) fn detach(command: &mut std::process::Command) {
     command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
 }
 
+#[cfg(windows)]
+pub(super) fn spawn_portable_worker(
+    command: &mut std::process::Command,
+) -> std::io::Result<std::process::Child> {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    const ERROR_ACCESS_DENIED: i32 = 5;
+    command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB);
+    match command.spawn() {
+        Err(error) if error.raw_os_error() == Some(ERROR_ACCESS_DENIED) => {
+            tracing::warn!(
+                "portable update worker could not break away from the Windows Job; retrying without breakaway"
+            );
+            detach(command);
+            command.spawn()
+        }
+        result => result,
+    }
+}
+
 #[cfg(not(any(unix, windows)))]
 fn detach(_command: &mut std::process::Command) {}
 

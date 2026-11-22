@@ -153,8 +153,7 @@ fn start_worker(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(File::create(work.join("portable-update.log"))?);
-    restart::detach(&mut command);
-    let mut child = command.spawn()?;
+    let mut child = restart::spawn_portable_worker(&mut command)?;
     if let Err(error) = wait_ready(&mut child) {
         if child.try_wait()?.is_none() {
             child.kill()?;
@@ -215,7 +214,7 @@ fn apply(dest: &Path, root: &Path, pending: &Path) -> io::Result<()> {
         )
     })?;
     let running = process::lease(&data, process::RUNNING)?;
-    let mut record: PendingRecord = serde_json::from_slice(&fs::read(pending)?)?;
+    let record: PendingRecord = serde_json::from_slice(&fs::read(pending)?)?;
     let mut stdout = io::stdout().lock();
     stdout.write_all(&SIGNAL)?;
     stdout.flush()?;
@@ -223,7 +222,30 @@ fn apply(dest: &Path, root: &Path, pending: &Path) -> io::Result<()> {
     // EOF, including a crashed parent, is not authorization to touch the installation.
     let mode = CommitMode::read(&mut io::stdin().lock())?;
 
-    let result = match wait_for_exit(&running) {
+    let relaunch = replace_and_record(pending, record, wait_for_exit(&running), || {
+        install::replace_portable(root, dest, &[AGENT, DESKTOP, DAEMON])
+    })?;
+    drop(running);
+    drop(intent);
+    let (program, arg) = mode.relaunch(relaunch);
+    let mut command = Command::new(dest.join(program));
+    command
+        .arg(arg)
+        .current_dir(dest)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    restart::detach(&mut command);
+    command.spawn().map(drop)
+}
+
+fn replace_and_record(
+    pending: &Path,
+    mut record: PendingRecord,
+    drained: Result<(), InstallError>,
+    replace: impl FnOnce() -> Result<(), InstallError>,
+) -> io::Result<&'static str> {
+    let result = match drained {
         Ok(()) => {
             // Preserve backups if the worker dies after the first rename but before rollback.
             record.portable_failure = Some(PortableFailure {
@@ -231,7 +253,7 @@ fn apply(dest: &Path, root: &Path, pending: &Path) -> io::Result<()> {
                 rollback_incomplete: true,
             });
             write_record(pending, &record)?;
-            install::replace_portable(root, dest, &[AGENT, DESKTOP, DAEMON])
+            replace()
         }
         Err(error) => Err(error),
     };
@@ -269,18 +291,7 @@ fn apply(dest: &Path, root: &Path, pending: &Path) -> io::Result<()> {
             restart::RELAUNCH_ARG
         }
     };
-    drop(running);
-    drop(intent);
-    let (program, arg) = mode.relaunch(relaunch);
-    let mut command = Command::new(dest.join(program));
-    command
-        .arg(arg)
-        .current_dir(dest)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    restart::detach(&mut command);
-    command.spawn().map(drop)
+    Ok(relaunch)
 }
 
 fn write_record(pending: &Path, record: &PendingRecord) -> io::Result<()> {
@@ -313,5 +324,87 @@ fn wait_for_lock(lease: &File, timeout: Duration) -> io::Result<()> {
             }
             Err(TryLockError::Error(error)) => return Err(error),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::update::install::test_support::TempDir;
+
+    fn record() -> PendingRecord {
+        PendingRecord {
+            target_version: "2.0.0".into(),
+            from_version: "1.0.0".into(),
+            asset_name: "portable.zip".into(),
+            created_at_ms: 0,
+            channel: "stable".into(),
+            portable_failure: None,
+        }
+    }
+
+    fn rollback_status(path: &Path) -> Option<bool> {
+        serde_json::from_slice::<PendingRecord>(&fs::read(path).unwrap())
+            .unwrap()
+            .portable_failure
+            .map(|failure| failure.rollback_incomplete)
+    }
+
+    #[test]
+    fn commit_requires_explicit_authorization_and_selects_relaunch_target() {
+        assert!(matches!(
+            CommitMode::read(&mut &[][..]),
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof
+        ));
+        assert!(CommitMode::read(&mut &[0][..]).is_err());
+        let desktop = CommitMode::read(&mut &[1][..]).unwrap();
+        let background = CommitMode::read(&mut &[2][..]).unwrap();
+        assert_eq!(
+            desktop.relaunch(restart::AFTER_UPDATE_ARG),
+            (DESKTOP, restart::AFTER_UPDATE_ARG)
+        );
+        assert_eq!(
+            background.relaunch(restart::AFTER_UPDATE_ARG),
+            (AGENT, restart::BACKGROUND_UPDATE_ARG)
+        );
+    }
+
+    #[test]
+    fn replacement_persists_interruption_before_work_and_then_the_outcome() {
+        let dir = TempDir::new("portable-worker").unwrap();
+        let pending = dir.path().join(PENDING_FILE);
+        for rollback in [None, Some(false), Some(true)] {
+            write_record(&pending, &record()).unwrap();
+            let result = replace_and_record(&pending, record(), Ok(()), || {
+                assert_eq!(rollback_status(&pending), Some(true));
+                match rollback {
+                    None => Ok(()),
+                    Some(rollback_incomplete) => Err(InstallError::Replace {
+                        context: "replace portable files".into(),
+                        source: io::Error::from(io::ErrorKind::PermissionDenied),
+                        rollback_incomplete,
+                    }),
+                }
+            });
+            match rollback {
+                None => assert_eq!(result.unwrap(), restart::AFTER_UPDATE_ARG),
+                Some(false) => assert_eq!(result.unwrap(), restart::RELAUNCH_ARG),
+                Some(true) => assert!(result.is_err()),
+            }
+            assert_eq!(rollback_status(&pending), rollback);
+        }
+    }
+
+    #[test]
+    fn final_write_failure_keeps_recovery_marker_but_still_relaunches() {
+        let dir = TempDir::new("portable-write-failure").unwrap();
+        let pending = dir.path().join(PENDING_FILE);
+        write_record(&pending, &record()).unwrap();
+        let result = replace_and_record(&pending, record(), Ok(()), || {
+            fs::create_dir(pending.with_extension("worker.tmp")).unwrap();
+            Ok(())
+        });
+        assert_eq!(result.unwrap(), restart::AFTER_UPDATE_ARG);
+        assert_eq!(rollback_status(&pending), Some(true));
     }
 }

@@ -13,7 +13,7 @@ import { copyText } from '../lib/copy'
 import { diagnosticText } from '../lib/diagnosticInfo'
 import { exportLogs, rpc, useConnection, useRpcSelector } from '../lib/rpc'
 import { rpcErrorText } from '../lib/rpcErrorText'
-import { failureKey, ignoreVersion, statusLine, updateLineText, useUpdateStatus, useVersionBadge } from '../lib/update'
+import { failureKey, ignoreVersion, portableRecovery, statusLine, updateLineText, useUpdateStatus, useVersionBadge } from '../lib/update'
 import type { VersionBadge } from '../lib/update'
 import { popoverSide, resolveSide } from '../pages/downloads/statusbar/widget'
 import type { WidgetProps } from '../pages/downloads/statusbar/widget'
@@ -69,8 +69,8 @@ export function VersionControl({ orientation = 'horizontal', side }: WidgetProps
   const look = badge ? badgeLook(t, badge) : null
   const line = status ? statusLine(status) : null
   const title = `FluxDown ${versionLabel}`
-  const tooltip = badge?.kind === 'failed'
-    ? `${title} · ${t(failureKey(badge.failure))}`
+  const tooltip = badge?.kind === 'failed' && status
+    ? `${title} · ${t(portableRecovery(status) ? 'updatePortableRecoveryHint' : failureKey(badge.failure, status.installKind))}`
     : line ? `${title} · ${updateLineText(t, line)}` : title
   const channelLabel = t(channel === 'frontier' ? 'updateChannelFrontier' : 'updateChannelStable')
   const subtitle = line ? `${channelLabel} · ${updateLineText(t, line)}` : channelLabel

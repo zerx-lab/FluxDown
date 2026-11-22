@@ -63,7 +63,7 @@ export function manualReasonKey(reason: UpdateManualReason, kind: UpdateInstallK
 }
 
 /** 失败分类 → 文案键；缺省按未知失败。 */
-export function failureKey(failure: UpdateFailure | null | undefined): string {
+export function failureKey(failure: UpdateFailure | null | undefined, kind: UpdateInstallKind): string {
   switch (failure) {
     case 'network':
       return 'updateFailedNetwork'
@@ -72,7 +72,7 @@ export function failureKey(failure: UpdateFailure | null | undefined): string {
     case 'storage':
       return 'updateFailedStorage'
     case 'install':
-      return 'updateFailedInstall'
+      return kind === 'windowsPortable' ? 'updateFailedPortableInstall' : 'updateFailedInstall'
     case 'elevationCancelled':
       return 'updateFailedElevationCancelled'
     case 'installIncomplete':
@@ -82,6 +82,11 @@ export function failureKey(failure: UpdateFailure | null | undefined): string {
     case null:
       return 'updateFailedUnknown'
   }
+}
+
+export function portableRecovery(status: UpdateStatusDto): boolean {
+  return status.phase === 'failed' && status.installKind === 'windowsPortable'
+    && status.failure === 'install' && status.manualReason === 'unsupported'
 }
 
 /** 下载进度百分比（0–100）；大小未知时为 0。 */
@@ -109,12 +114,13 @@ export function statusLine(status: UpdateStatusDto): UpdateLine | null {
     case 'installing':
       return { key: 'updateInstalling' }
     case 'failed':
-      return { key: failureKey(status.failure) }
+      return { key: failureKey(status.failure, status.installKind) }
   }
 }
 
 /** 不可一键更新时的手动升级说明（仅在确有新版本时）。 */
 export function manualLine(status: UpdateStatusDto): UpdateLine | null {
+  if (portableRecovery(status)) return { key: 'updatePortableRecoveryHint' }
   if (!status.hasUpdate || !status.manualReason) return null
   return { key: manualReasonKey(status.manualReason, status.installKind) }
 }

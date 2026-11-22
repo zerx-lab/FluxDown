@@ -23,7 +23,7 @@ mod macos;
 mod replace;
 mod server;
 #[cfg(test)]
-mod test_support;
+pub(super) mod test_support;
 #[cfg(windows)]
 mod windows;
 
