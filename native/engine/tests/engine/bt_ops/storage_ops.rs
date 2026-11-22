@@ -27,6 +27,17 @@ fn pack() -> Vec<(&'static str, Vec<u8>)> {
 #[cfg(all(windows, any(feature = "plugins", feature = "components")))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn completed_files_allow_shared_read_during_upload_and_after_restart() {
+    check_shared_read_while_seeding(false).await;
+}
+
+#[cfg(all(windows, any(feature = "plugins", feature = "components")))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn magnet_completed_files_allow_shared_read_during_upload_and_after_restart() {
+    check_shared_read_while_seeding(true).await;
+}
+
+#[cfg(all(windows, any(feature = "plugins", feature = "components")))]
+async fn check_shared_read_while_seeding(use_magnet: bool) {
     use std::io::Read;
     use std::net::Ipv4Addr;
     use std::os::windows::fs::OpenOptionsExt;
@@ -43,7 +54,13 @@ async fn completed_files_allow_shared_read_during_upload_and_after_restart() {
     ];
     let origin = Seeder::start(&files, &tracker, None).await;
     let mut host = Downloader::start(&tracker).await;
-    let id = host.add(&origin, &[], false).await;
+    let id = if use_magnet {
+        let share = fluxdown_engine::bt_local_seed::torrent_share(&origin.torrent_bytes, &[])
+            .expect("create magnet link");
+        host.add_magnet(&share.magnet).await
+    } else {
+        host.add(&origin, &[], false).await
+    };
     let task = host.wait_done(&id).await;
     assert_eq!(task.status, 3, "{}", task.error_message);
     origin.session.stop().await;
