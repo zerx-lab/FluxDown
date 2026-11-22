@@ -411,6 +411,8 @@ internal class NewDownloadState(
             ).also { form ->
                 external?.let(form::addExternal)
                 form.syncAuto()
+                val fixed = external?.saveDir ?: offered.takeIf { external?.autoStart == true && it.isNotEmpty() }
+                fixed?.let(form::setSaveDirManually)
             }
         }
     }

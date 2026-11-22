@@ -24,6 +24,8 @@ data class ExternalDownload(
     val cookies: String = "",
     val referrer: String = "",
     val headers: Map<String, String> = emptyMap(),
+    val saveDir: String? = null,
+    val autoStart: Boolean? = null,
 ) {
     /**
      * 命中分类（且该分类配置了目录）的保存目录，规则同 agent `capture.rs::with_category_dir`：
@@ -129,6 +131,10 @@ object ExternalIntake {
             referrer = params["referrer"].orEmpty(),
             headers = decodeHeaders(params["headers"]),
         )
+            ?.copy(
+                saveDir = (params["saveDir"] ?: params["dir"])?.trim()?.takeIf { it.isNotEmpty() },
+                autoStart = params["autoStart"]?.let { it == "1" },
+            )
     }
 
     private fun normalize(
@@ -151,10 +157,8 @@ object ExternalIntake {
 
 /**
  * 「免打扰下载」（偏好 `download.silent_download`）下外部请求直接建任务的参数，规则同 agent
- * `capture.rs::ExternalPolicy`：保存目录 = 跟随上次保存位置 > 主机默认目录；免打扰自动分类开启（偏好
- * `download.silent_auto_category`，缺省开）时再把它作为 `offeredSaveDir` 交给 Rust 按分类规则路由，
- * 关闭时只用该目录。队列 / 分段取主机默认；[unattended] = 设备偏好
- * `download.silent_skip_selection`（跳过 BT 文件 / 画质 / 变体二次选择）。
+ * `capture.rs::ExternalPolicy` for legacy links. An explicit directory or `autoStart=1` uses a fixed
+ * destination (the supplied directory or the host default), without classification routing.
  */
 data class SilentCapture(val request: CreateTaskRequest) {
     val unattended: Boolean get() = request.unattended
@@ -169,16 +173,19 @@ data class SilentCapture(val request: CreateTaskRequest) {
         /** 免打扰关闭，或算不出任何保存目录（应退回确认弹层）时返回 null。 */
         fun plan(download: ExternalDownload, state: HostState): SilentCapture? {
             val prefs = state.preferences
-            if (!prefs.bool(SILENT_PREF, false)) return null
-            val remembered = if (prefs.bool(REMEMBER_LAST_SAVE_DIR_PREF, false)) prefs.string(LAST_SAVE_DIR_PREF, "").trim() else ""
-            val saveDir = remembered.ifEmpty { state.config["default_save_dir"].orEmpty().trim() }
+            if (!prefs.bool(SILENT_PREF, false) || download.autoStart == false) return null
+            val fixedDestination = download.saveDir != null || download.autoStart == true
+            val remembered = if (!fixedDestination && prefs.bool(REMEMBER_LAST_SAVE_DIR_PREF, false)) {
+                prefs.string(LAST_SAVE_DIR_PREF, "").trim()
+            } else ""
+            val saveDir = download.saveDir ?: remembered.ifEmpty { state.config["default_save_dir"].orEmpty().trim() }
             if (saveDir.isEmpty()) return null
             return SilentCapture(
                 CreateTaskRequest(
                     url = download.url,
                     fileName = download.fileName,
                     saveDir = saveDir,
-                    offeredSaveDir = saveDir.takeIf { prefs.bool(AUTO_CATEGORY_PREF, true) },
+                    offeredSaveDir = saveDir.takeIf { !fixedDestination && prefs.bool(AUTO_CATEGORY_PREF, true) },
                     unattended = prefs.bool(SKIP_SELECTION_PREF, false),
                     segments = state.config["default_segments"]?.trim()?.toIntOrNull() ?: 0,
                     queueId = state.defaultQueueId(),

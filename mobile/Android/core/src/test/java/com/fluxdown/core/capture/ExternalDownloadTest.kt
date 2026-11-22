@@ -84,6 +84,28 @@ class ExternalDownloadTest {
         assertNull(ExternalIntake.fromView("fluxdown://download?url=not-a-link"))
     }
 
+    @Test fun protocolDirectoryAndAutoStartRespectUserPreference() {
+        val link = "fluxdown://download?url=https%3A%2F%2Fx.test%2Fa.zip"
+        val dir = "/storage/emulated/0/下载  📁"
+        val explicit = ExternalIntake.fromView("$link&dir=/ignored&saveDir=${enc(dir)}&autoStart=1")!!
+        val prefs = mapOf(
+            SilentCapture.SILENT_PREF to true,
+            "download.remember_last_save_dir" to true,
+            "download.last_save_dir" to "/last",
+        )
+        assertEquals(dir, explicit.saveDir)
+        assertEquals("/alias", ExternalIntake.fromView("$link&dir=/alias")?.saveDir)
+        assertNull(SilentCapture.plan(explicit, state(emptyMap())))
+        val planned = SilentCapture.plan(explicit, state(prefs))!!.request
+        assertEquals(dir, planned.saveDir)
+        assertFalse(planned.startPaused)
+        assertNull(planned.offeredSaveDir)
+        val noDir = SilentCapture.plan(ExternalIntake.fromView("$link&autoStart=1")!!, state(prefs))!!.request
+        assertEquals("/dl", noDir.saveDir)
+        assertNull(noDir.offeredSaveDir)
+        assertNull(SilentCapture.plan(ExternalIntake.fromView("$link&autoStart=0")!!, state(prefs)))
+    }
+
     // ── 分享文本 ──
 
     @Test fun sharedTextExtractsFirstLink() {
