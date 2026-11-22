@@ -462,9 +462,9 @@ impl DownloadView {
                             .icon(Icon::new(FluxIcon::Trash2).text_color(destructive))
                             .on_click({
                                 let view = view.clone();
-                                move |_, _, cx| {
+                                move |_, window, cx| {
                                     let Ok(()) = view.update(cx, |this, cx| {
-                                        this.execute_toolbar(ToolbarCommand::Delete, cx);
+                                        this.confirm_delete_selected(false, window, cx);
                                     }) else {
                                         // 视图已释放，结束这次回调而不再更新状态。
                                         return;
@@ -482,7 +482,7 @@ impl DownloadView {
                                 let view = view.clone();
                                 move |_, window, cx| {
                                     let Ok(()) = view.update(cx, |this, cx| {
-                                        this.delete_selected_with_files(window, cx);
+                                        this.confirm_delete_selected(true, window, cx);
                                     }) else {
                                         // 视图已释放，结束这次回调而不再更新状态。
                                         return;

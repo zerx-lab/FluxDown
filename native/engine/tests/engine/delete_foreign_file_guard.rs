@@ -7,7 +7,7 @@
 //! - `delete_task` / `delete_tasks_batch` 带 `delete_files=true` 对未完成
 //!   （status≠3）任务**不得**删除 `save_dir/file_name`；
 //! - 对已完成（status=3）任务必须照常删除其产物；
-//! - `restart_task` 对从未启动的任务同样不得删除同名既有文件。
+//! - 删除未启动的任务后重新创建同名任务，启动时应编号避让同名既有文件。
 //!
 //! 复现场景：下载完成 A → 删任务保留文件 → 同链接重新添加为稍后下载 →
 //! 「删除任务和文件」曾把早前的成品 A 一并删掉。
@@ -17,7 +17,7 @@
 use std::sync::Arc;
 
 use fluxdown_engine::bt_config::BtConfig;
-use fluxdown_engine::download_manager::NewTaskSpec;
+use fluxdown_engine::download_manager::{FileExistsBehavior, NewTaskSpec};
 use fluxdown_engine::proxy_config::ProxyConfig;
 use fluxdown_engine::{Engine, EngineConfig, NoopSelection, NoopSink};
 
@@ -188,8 +188,8 @@ async fn batch_delete_files_on_never_started_tasks_keeps_foreign_files() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn restart_never_started_task_keeps_foreign_file() {
-    let work = std::env::temp_dir().join(format!("fluxdown-delguard-restart-{}", uniq()));
+async fn deleting_and_recreating_a_never_started_task_keeps_foreign_file() {
+    let work = std::env::temp_dir().join(format!("fluxdown-delguard-recreate-{}", uniq()));
     tokio::fs::create_dir_all(&work).await.expect("mkdir");
     let save_dir = work.to_string_lossy().into_owned();
     let existing = work.join("r.bin");
@@ -200,13 +200,34 @@ async fn restart_never_started_task_keeps_foreign_file() {
     let mut engine = make_engine(&work).await;
     let id = create_later_task(&mut engine, &save_dir, "r.bin").await;
 
-    // 「重新下载」的磁盘复位同步完成于函数返回前；随后的下载会因端口拒绝
-    // 而失败，但启动期 dedup 会另起新名，绝不触碰既有同名文件。
     engine
         .manager
-        .restart_task(&id)
+        .set_file_exists_behavior(FileExistsBehavior::Rename);
+    engine
+        .manager
+        .delete_task(&id, true)
         .await
-        .expect("restart task");
+        .expect("delete never-started task");
+    let recreated = create_later_task(&mut engine, &save_dir, "r.bin").await;
+    assert_ne!(recreated, id);
+    engine.manager.resume_task(&recreated).await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let task = engine
+                .db
+                .load_task_by_id(&recreated)
+                .await
+                .expect("load task")
+                .expect("recreated task");
+            if task.status == 4 {
+                assert_eq!(task.file_name, "r (1).bin");
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the renamed download fails on the closed port");
 
     let content = tokio::fs::read(&existing)
         .await

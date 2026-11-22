@@ -34,10 +34,27 @@ const REDOWNLOAD_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 // the command can reread state or touch any files.
 struct PendingRedownload {
     generation: u64,
-    deadline: tokio::time::Instant,
     timer: tokio::task::AbortHandle,
     recreate_if_present: bool,
     ack: oneshot::Sender<Result<ActorResult, ActorError>>,
+}
+
+enum WorkerEvent {
+    Done(TaskDone),
+    RedownloadTimeout(Result<(String, u64), tokio::task::JoinError>),
+}
+
+async fn next_worker_event(
+    done: &mut mpsc::Receiver<TaskDone>,
+    timers: &mut tokio::task::JoinSet<(String, u64)>,
+) -> WorkerEvent {
+    tokio::select! {
+        // If both are ready, consume the worker completion before its timeout.
+        biased;
+        Some(done) = done.recv() => WorkerEvent::Done(done),
+        Some(timer) = timers.join_next(), if !timers.is_empty() => WorkerEvent::RedownloadTimeout(timer),
+        else => std::future::pending().await,
+    }
 }
 
 /// 本机做种任务的登记选项（`daemon.task.seedLocal`）。
@@ -433,7 +450,7 @@ pub enum ActorError {
     TaskFilesKept { in_use: bool, message: String },
     #[error("{}", fluxdown_engine::downloader::POST_ONLY_RESUME_MESSAGE)]
     BrowserRequestRequired,
-    #[error("{}", fluxdown_engine::downloader::DownloadError::TaskRestartTimeout)]
+    #[error("Could not restart the download: the previous download did not stop in time.")]
     TaskRestartTimeout,
 }
 
@@ -678,7 +695,7 @@ async fn run_actor(
                                     (timer_id, generation)
                                 });
                                 redownloads.insert(task_id.clone(), PendingRedownload {
-                                    generation, deadline, timer, recreate_if_present: *recreate_if_present, ack,
+                                    generation, timer, recreate_if_present: *recreate_if_present, ack,
                                 });
                                 continue;
                             }
@@ -702,42 +719,40 @@ async fn run_actor(
                     }
                 }
             }
-            Some(done) = receivers.done.recv() => {
-                arm_db_memory_trim(db_memory_trim.as_mut(), &mut db_memory_trim_armed);
-                let request = if done.phase == fluxdown_engine::download_manager::TaskDonePhase::Finished
-                    && redownloads.get(&done.task_id)
-                        .is_some_and(|request| request.generation == done.generation)
-                {
-                    redownloads.remove(&done.task_id)
-                } else {
-                    None
-                };
-                let stopped_in_time = request.as_ref()
-                    .is_some_and(|request| tokio::time::Instant::now() < request.deadline);
-                engine.manager.on_task_done(&done).await;
-                if let Some(request) = request {
-                    request.timer.abort();
-                    if !stopped_in_time {
-                        drop(request.ack.send(Err(ActorError::TaskRestartTimeout)));
-                    } else if !request.ack.is_closed() {
-                        dispatch_operation(
-                            ActorOperation::RestartMissingFile {
-                                task_id: done.task_id,
-                                recreate_if_present: request.recreate_if_present,
-                            },
-                            request.ack, &mut engine, &events, &maintenance_tx,
-                        ).await;
+            event = next_worker_event(&mut receivers.done, &mut redownload_timers) => match event {
+                WorkerEvent::Done(done) => {
+                    arm_db_memory_trim(db_memory_trim.as_mut(), &mut db_memory_trim_armed);
+                    let request = if done.phase == fluxdown_engine::download_manager::TaskDonePhase::Finished
+                        && redownloads.get(&done.task_id)
+                            .is_some_and(|request| request.generation == done.generation)
+                    {
+                        redownloads.remove(&done.task_id)
+                    } else {
+                        None
+                    };
+                    engine.manager.on_task_done(&done).await;
+                    if let Some(request) = request {
+                        request.timer.abort();
+                        if !request.ack.is_closed() {
+                            dispatch_operation(
+                                ActorOperation::RestartMissingFile {
+                                    task_id: done.task_id,
+                                    recreate_if_present: request.recreate_if_present,
+                                },
+                                request.ack, &mut engine, &events, &maintenance_tx,
+                            ).await;
+                        }
                     }
                 }
-            }
-            Some(timer) = redownload_timers.join_next(), if !redownload_timers.is_empty() => {
-                if let Ok((task_id, generation)) = timer
-                    && redownloads.get(&task_id).is_some_and(|request| request.generation == generation)
-                    && let Some(request) = redownloads.remove(&task_id)
-                {
-                    drop(request.ack.send(Err(ActorError::TaskRestartTimeout)));
+                WorkerEvent::RedownloadTimeout(Ok((task_id, generation))) => {
+                    if redownloads.get(&task_id).is_some_and(|request| request.generation == generation)
+                        && let Some(request) = redownloads.remove(&task_id)
+                    {
+                        drop(request.ack.send(Err(ActorError::TaskRestartTimeout)));
+                    }
                 }
-            }
+                WorkerEvent::RedownloadTimeout(Err(_)) => {}
+            },
             Some(task_id) = receivers.retry.recv() => {
                 arm_db_memory_trim(db_memory_trim.as_mut(), &mut db_memory_trim_armed);
                 if engine.manager.is_task_in_error(&task_id).await {
@@ -4709,6 +4724,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn desktop_redownload_prefers_queued_completion_to_ready_timeout() {
+        use super::{TaskDone, WorkerEvent, next_worker_event};
+
+        let (send, mut done) = tokio::sync::mpsc::channel(1);
+        let mut timers = tokio::task::JoinSet::new();
+        let timer = timers.spawn(async { ("task".into(), 7) });
+        while !timer.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        send.send(TaskDone::finished("task".into(), 7))
+            .await
+            .unwrap();
+        let WorkerEvent::Done(event) = next_worker_event(&mut done, &mut timers).await else {
+            panic!("queued completion must beat a ready timeout");
+        };
+        assert_eq!((event.task_id.as_str(), event.generation), ("task", 7));
+    }
+
+    #[tokio::test]
     async fn desktop_redownload_timeout_retains_task_and_files() {
         desktop_redownload_while_worker_is_finishing(false).await;
     }
@@ -4849,6 +4883,10 @@ mod tests {
                     tokio::fs::remove_file(dir.join("sample.bin")).await.expect("remove published file");
                     assert!(db.update_task_file_missing(&id, true).await.unwrap());
                     finished_tx.send(done).await.expect("forward worker completion");
+                } else {
+                    tokio::time::pause();
+                    tokio::time::advance(super::REDOWNLOAD_STOP_TIMEOUT).await;
+                    tokio::time::resume();
                 }
             }
         );

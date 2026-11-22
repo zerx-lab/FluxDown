@@ -45,6 +45,7 @@ pub(crate) struct DownloadStrings {
     delete_confirm_with_file: SharedString,
     delete_confirm_keep_file: SharedString,
     batch_delete_confirm_with_file: SharedString,
+    batch_delete_confirm_keep_file: SharedString,
     pub(crate) too_many_windows_hint: SharedString,
     pub(crate) confirm: SharedString,
     pub(crate) cancel: SharedString,
@@ -185,7 +186,7 @@ pub(crate) struct DownloadStrings {
     pub(crate) group_copy_source_link: SharedString,
     pub(crate) group_delete: SharedString,
     pub(crate) group_delete_with_files: SharedString,
-    group_delete_confirm_with_file: SharedString,
+    group_delete_confirm_keep_file: SharedString,
     pub(crate) open_group_in_window: SharedString,
     group_items_count: SharedString,
     group_done_count: SharedString,
@@ -286,6 +287,9 @@ impl DownloadStrings {
             delete_confirm_keep_file: shared(translator.text("deleteConfirmDescKeepFile")),
             batch_delete_confirm_with_file: shared(
                 translator.text("batchDeleteConfirmDescWithFile"),
+            ),
+            batch_delete_confirm_keep_file: shared(
+                translator.text("batchDeleteConfirmDescKeepFile"),
             ),
             too_many_windows_hint: shared(translator.text("tooManyWindowsHint")),
             main_queue: shared(translator.text(keys::MAIN_QUEUE)),
@@ -391,7 +395,9 @@ impl DownloadStrings {
             group_copy_source_link: shared(translator.text("groupCopySourceLink")),
             group_delete: shared(translator.text("groupDelete")),
             group_delete_with_files: shared(translator.text("groupDeleteWithFiles")),
-            group_delete_confirm_with_file: shared(translator.text("deleteConfirmDescWithFile")),
+            group_delete_confirm_keep_file: shared(
+                translator.text("groupDeleteConfirmDescKeepFile"),
+            ),
             open_group_in_window: shared(translator.text("openGroupInWindowAction")),
             group_items_count: shared(translator.text("groupItemsCount")),
             group_done_count: shared(translator.text("groupDoneCount")),
@@ -445,23 +451,24 @@ impl DownloadStrings {
         SharedString::from(template.replace("{n}", &value))
     }
 
-    /// 「删除任务及文件」确认文案：单个带文件名，多个带数量。
-    pub(crate) fn delete_with_files_description(
+    /// 删除确认文案：单个带文件名，多个带数量。
+    pub(crate) fn delete_selection_description(
         &self,
         keys: &[crate::model::RowKey],
         store: &crate::model::TaskStore,
+        delete_files: bool,
     ) -> SharedString {
         if let [key] = keys {
-            let name = store
-                .get(key)
-                .map(|row| row.name.clone())
-                .unwrap_or_default();
-            SharedString::from(self.delete_confirm_with_file.replace("{fileName}", &name))
+            let row = store.get(key);
+            let name = row.as_ref().map_or("", |row| row.name.as_str());
+            self.delete_task_description(name, delete_files)
         } else {
-            SharedString::from(
-                self.batch_delete_confirm_with_file
-                    .replace("{count}", &keys.len().to_string()),
-            )
+            let template = if delete_files {
+                &self.batch_delete_confirm_with_file
+            } else {
+                &self.batch_delete_confirm_keep_file
+            };
+            SharedString::from(template.replace("{count}", &keys.len().to_string()))
         }
     }
 
@@ -475,12 +482,19 @@ impl DownloadStrings {
         SharedString::from(template.replace("{fileName}", name))
     }
 
-    /// 「删除任务组及文件」确认文案：复用单任务模板，代入组名。
-    pub(crate) fn group_delete_with_files_description(&self, group_name: &str) -> SharedString {
-        SharedString::from(
-            self.group_delete_confirm_with_file
-                .replace("{fileName}", group_name),
-        )
+    pub(crate) fn group_delete_description(
+        &self,
+        group_name: &str,
+        delete_files: bool,
+    ) -> SharedString {
+        if delete_files {
+            self.delete_task_description(group_name, true)
+        } else {
+            SharedString::from(
+                self.group_delete_confirm_keep_file
+                    .replace("{fileName}", group_name),
+            )
+        }
     }
 
     /// 组计数行各段（调用方以 ` · ` 连接）：总数恒在，其余为 0 的段省略；剩余时间只在

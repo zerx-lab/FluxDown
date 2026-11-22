@@ -313,9 +313,11 @@ async fn overwrite_answer_keeps_name_and_binds_decision() {
 }
 
 #[tokio::test]
-async fn skip_answer_adopts_existing_file_and_survives_restart_and_delete() {
+async fn skip_answer_adopts_existing_file_and_delete_recreate_keeps_it() {
     let (selector, answers) = FakeSelector::new(true);
-    let mut fx = fixture("skip", 1, selector.clone(), FileExistsBehavior::Ask).await;
+    let mut fx = fixture("skip", 1, selector, FileExistsBehavior::Ask).await;
+    let (url, server) = checksum_fixture_server();
+    fx.base_url = url;
     fx.write_existing("a.bin", b"mine");
     let id = fx.mgr.create_task(fx.spec("a.bin")).await.expect("create");
     fx.pump_until("parked", |mgr| parked(mgr, &id)).await;
@@ -324,33 +326,29 @@ async fn skip_answer_adopts_existing_file_and_survives_restart_and_delete() {
     assert_eq!(fx.decision(&id).await, "skip");
     assert!(fx.mgr.has_unowned_existing_path(&id).await);
 
-    // 重新下载重新占名，不删被采纳的用户文件。
+    // The desktop recreate path deletes the old task, then submits a fresh download.
     fx.mgr
-        .restart_task(&id)
+        .delete_task(&id, true)
         .await
-        .expect("restart adopted task");
-    assert_eq!(std::fs::read(fx.dir.join("a.bin")).expect("kept"), b"mine");
-    let renamed_partial = fx.dir.join(format!("a (1).bin{}", downloader::TEMP_EXT));
-    fx.pump_until("new output name reserved", |mgr| {
-        lock_reserved(&mgr.reserved_temp_paths).contains(&renamed_partial)
-    })
-    .await;
-
-    // 再次跳过后删除任务连同文件：采纳的文件同样保留。
-    let (selector2, _a2) = FakeSelector::new(false);
-    let mut fx2 = fixture("skip_delete", 1, selector2, FileExistsBehavior::Skip).await;
-    fx2.write_existing("b.bin", b"keep me");
-    let id2 = fx2
+        .expect("delete adopted task");
+    fx.mgr.set_file_exists_behavior(FileExistsBehavior::Rename);
+    let recreated = fx
         .mgr
-        .create_task(fx2.spec("b.bin"))
+        .create_task(fx.spec("a.bin"))
         .await
-        .expect("create");
-    fx2.pump_until_status(&id2, 3).await;
-    fx2.mgr.delete_task(&id2, true).await.expect("delete task");
+        .expect("recreate");
+    assert_ne!(recreated, id);
+    fx.pump_until_status(&recreated, 3).await;
+    assert_eq!(fx.name(&recreated).await, "a (1).bin");
     assert_eq!(
-        std::fs::read(fx2.dir.join("b.bin")).expect("adopted file survives"),
-        b"keep me"
+        std::fs::read(fx.dir.join("a.bin")).expect("adopted file survives"),
+        b"mine"
     );
+    assert_eq!(
+        std::fs::read(fx.dir.join("a (1).bin")).expect("new output"),
+        b"abc"
+    );
+    server.abort();
 }
 
 fn checksum_fixture_server() -> (String, tokio::task::JoinHandle<()>) {
@@ -444,15 +442,26 @@ async fn checksum_match_adopts_without_prompt_and_mismatch_cannot_skip() {
     answers.send(FileExistsChoice::Cancel).expect("cancel");
     fx.pump_until_status(&mismatch, 2).await;
 
+    fx.pump_until("adopted task retired", |mgr| {
+        mgr.redownload_worker_generation(&matched).is_none()
+    })
+    .await;
+    std::fs::remove_file(fx.dir.join("match.bin")).expect("remove adopted file");
+    assert!(
+        fx.db
+            .update_task_file_missing(&matched, true)
+            .await
+            .expect("mark missing")
+    );
     fx.write_existing("match.bin", b"locally edited");
     let sibling_partial = format!("match.bin{}", downloader::TEMP_EXT);
     fx.write_existing(&sibling_partial, b"another task's partial");
     fx.mgr
         .set_file_exists_behavior(FileExistsBehavior::Overwrite);
     fx.mgr
-        .restart_task(&matched)
+        .restart_missing_task_file(&matched)
         .await
-        .expect("restart checksum match");
+        .expect("redownload missing checksum match");
     fx.pump_until_status(&matched, 3).await;
     let new_name = fx.name(&matched).await;
     assert_ne!(new_name, "match.bin");
@@ -476,7 +485,7 @@ async fn checksum_match_adopts_without_prompt_and_mismatch_cannot_skip() {
 }
 
 #[tokio::test]
-async fn failed_restart_reset_leaves_adoption_protected() {
+async fn failed_missing_restart_reset_leaves_adoption_protected() {
     let (selector, _answers) = FakeSelector::new(false);
     let mut fx = fixture("restart_rollback", 1, selector, FileExistsBehavior::Skip).await;
     fx.write_existing("adopted.bin", b"abc");
@@ -484,25 +493,52 @@ async fn failed_restart_reset_leaves_adoption_protected() {
     spec.checksum = CHECKSUM.into();
     let id = fx.mgr.create_task(spec).await.expect("create");
     fx.pump_until_status(&id, 3).await;
+    fx.pump_until("adopted task retired", |mgr| {
+        mgr.redownload_worker_generation(&id).is_none()
+    })
+    .await;
+    std::fs::remove_file(fx.dir.join("adopted.bin")).expect("remove adopted file");
+    assert!(
+        fx.db
+            .update_task_file_missing(&id, true)
+            .await
+            .expect("mark missing")
+    );
+    fx.write_existing("adopted.bin", b"replacement");
+    fx.db
+        .insert_segments(&id, &[(0, 0, 2)])
+        .await
+        .expect("seed checkpoint");
     sqlx::query(
-        "CREATE TRIGGER reject_restart BEFORE UPDATE OF downloaded_bytes ON tasks
-         WHEN NEW.downloaded_bytes = 0 BEGIN SELECT RAISE(FAIL, 'reject restart'); END",
+        "CREATE TRIGGER reject_restart BEFORE DELETE ON task_segments
+         BEGIN SELECT RAISE(FAIL, 'reject restart'); END",
     )
     .execute(fx.db.pool())
     .await
     .expect("inject restart failure");
     fx.mgr
-        .restart_task(&id)
+        .restart_missing_task_file(&id)
         .await
-        .expect_err("trigger rejects reset");
+        .expect_err("trigger rejects checkpoint removal");
     assert_eq!(fx.status(&id).await, 3);
+    assert!(fx.mgr.has_unowned_existing_path(&id).await);
+    assert!(
+        fx.db
+            .has_segment_checkpoint(&id)
+            .await
+            .expect("original checkpoint")
+    );
+    sqlx::query("DROP TRIGGER reject_restart")
+        .execute(fx.db.pool())
+        .await
+        .expect("remove fault injection");
     fx.mgr
         .delete_task(&id, true)
         .await
         .expect("delete adopted task");
     assert_eq!(
         std::fs::read(fx.dir.join("adopted.bin")).expect("protected file"),
-        b"abc"
+        b"replacement"
     );
 }
 
@@ -599,9 +635,21 @@ async fn batch_delete_uses_the_name_claimed_when_the_worker_exits() {
         .await
         .expect("create restarting task");
     fx.db
-        .set_exists_decision(&id, ExistsDecision::RestartRename.as_db())
+        .update_task_status(&id, 3, "")
         .await
-        .expect("protect the old path");
+        .expect("complete task");
+    assert!(
+        fx.db
+            .update_task_file_missing(&id, true)
+            .await
+            .expect("mark missing")
+    );
+    assert!(
+        fx.db
+            .reset_missing_task_for_restart(&id)
+            .await
+            .expect("queue restart")
+    );
 
     let old_partial = format!("candidate.bin{}", downloader::TEMP_EXT);
     let new_partial = fx
@@ -616,9 +664,11 @@ async fn batch_delete_uses_the_name_claimed_when_the_worker_exits() {
     let handle = tokio::spawn(async move {
         // A name write already in flight can commit as the worker shuts down.
         cancelled.cancelled().await;
-        db.claim_restart_file_name(&task_id, "candidate (1).bin")
-            .await
-            .expect("finish claiming the new name");
+        assert!(
+            db.bind_missing_task_restart(&task_id, "candidate (1).bin")
+                .await
+                .expect("finish claiming the new name")
+        );
         tokio::fs::write(path, b"own partial")
             .await
             .expect("write new partial");
@@ -798,13 +848,13 @@ async fn never_started_task_deletion_preserves_another_tasks_partial() {
 }
 
 #[tokio::test]
-async fn never_started_task_restart_preserves_a_running_download() {
-    assert_restart_preserves_a_running_download(false).await;
+async fn never_started_task_start_preserves_a_running_download() {
+    assert_start_preserves_a_running_download(false).await;
 }
 
 #[tokio::test]
-async fn completed_task_restart_preserves_a_running_download() {
-    assert_restart_preserves_a_running_download(true).await;
+async fn missing_file_restart_preserves_a_running_download() {
+    assert_start_preserves_a_running_download(true).await;
 }
 
 async fn gated_download(
@@ -865,7 +915,7 @@ async fn wait_for_partial(path: &Path, min_size: u64) {
     .expect("task opened its partial");
 }
 
-async fn assert_restart_preserves_a_running_download(completed: bool) {
+async fn assert_start_preserves_a_running_download(restart_missing: bool) {
     let (selector, _answers) = FakeSelector::new(false);
     let mut fx = fixture(
         "restart_same_name",
@@ -880,10 +930,20 @@ async fn assert_restart_preserves_a_running_download(completed: bool) {
     second.start_paused = true;
     second.segments = 1;
     let second = fx.mgr.create_task(second).await.expect("new paused task");
-    if completed {
+    if restart_missing {
         fx.mgr.resume_task(&second).await;
         fx.pump_until_status(&second, 3).await;
+        fx.pump_until("completed task retired", |mgr| {
+            mgr.redownload_worker_generation(&second).is_none()
+        })
+        .await;
         std::fs::remove_file(fx.dir.join("same.bin")).expect("remove old output only");
+        assert!(
+            fx.db
+                .update_task_file_missing(&second, true)
+                .await
+                .expect("mark missing")
+        );
     }
     let prefix_len = downloader::BUF_WRITER_CAPACITY * 2;
     let (url, release, slow_server) = gated_download(prefix_len).await;
@@ -896,10 +956,14 @@ async fn assert_restart_preserves_a_running_download(completed: bool) {
     wait_for_partial(&partial, 1).await;
     assert_eq!(fx.status(&first).await, 1);
 
-    fx.mgr
-        .restart_task(&second)
-        .await
-        .expect("restart second task");
+    if restart_missing {
+        fx.mgr
+            .restart_missing_task_file(&second)
+            .await
+            .expect("redownload missing output");
+    } else {
+        fx.mgr.resume_task(&second).await;
+    }
     fx.pump_until_status(&second, 3).await;
     let output = fx.dir.join(fx.name(&second).await);
     assert_ne!(output, fx.dir.join("same.bin"));

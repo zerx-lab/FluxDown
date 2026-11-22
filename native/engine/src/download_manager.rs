@@ -1200,37 +1200,6 @@ fn cleanup_base_name(name: &str) -> &str {
     name.strip_suffix(downloader::TEMP_EXT).unwrap_or(name)
 }
 
-/// 「重新下载」的磁盘清理原语：删掉 `path`，`NotFound` 视为成功。
-///
-/// `contended = true`（刚取消过在途 spawn）时最多重试 10 次、每次间隔
-/// 100 ms：`pause_task_silent` 只 cancel token 不等 spawned task 退出，
-/// 而 Windows 上被写入方持有的文件 `remove_file` 会直接失败——不给这个
-/// 窗口留重试，残留的 `.fdownloading` 会被下一轮下载当成可续传数据，
-/// 「从零重下」的承诺就破了。仍失败只记日志，不阻断重启流程。
-async fn remove_file_retrying(task_id: &str, path: &Path, contended: bool) {
-    const MAX_ATTEMPTS: u32 = 10;
-    let attempts = if contended { MAX_ATTEMPTS } else { 1 };
-    for attempt in 1..=attempts {
-        match tokio::fs::remove_file(path).await {
-            Ok(()) => return,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
-            Err(e) => {
-                if attempt == attempts {
-                    log_info!(
-                        "[manager] restart_task {}: remove {} failed after {} attempt(s): {}",
-                        task_id,
-                        path.display(),
-                        attempt,
-                        e
-                    );
-                    return;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-        }
-    }
-}
-
 /// 延迟补扫只能按任务 ID 清理独占的 BT 暂存目录。
 /// 非 BT 残片使用可复用的文件名，不能在重新调度后再按路径清理。
 #[cfg(feature = "bt")]
@@ -1788,7 +1757,6 @@ struct PreludeCtx {
     support: crate::file_exists::AskSupport,
     html_only: bool,
     restart_missing: bool,
-    restart_rename: bool,
 }
 
 /// 协议对「文件已存在」询问/跳过的支持程度。
@@ -2117,14 +2085,6 @@ async fn finalize_start_file_name(
         };
     }
 
-    if ctx.restart_rename && !is_safe_file_name(&params.file_name) {
-        return StartPrelude::Failed {
-            error: downloader::DownloadError::Other(
-                "cannot reserve a safe output name for restart".to_owned(),
-            ),
-        };
-    }
-
     // Step 3.5：文件已存在决策——磁盘上已有同名最终文件时，在 dedup 之前按
     // 契约优先级选择动作。必须在 Step 4 之前判断：dedup 一旦介入就会把
     // file_name 改成不冲突的新名字，届时就再也对不上磁盘上这份文件了。
@@ -2141,7 +2101,6 @@ async fn finalize_start_file_name(
     // A manifest can declare separate audio even when audio_url is absent.
     let companion_audio = !ctx.html_only && (params.audio_url.is_some() || is_hls || is_dash);
     if !ctx.html_only
-        && !ctx.restart_rename
         && let Some(candidate) = task_target_path(&params.save_dir, &params.file_name)
     {
         let existing = match tokio::fs::metadata(&candidate).await {
@@ -2411,12 +2370,7 @@ async fn finalize_start_file_name(
         };
     }
     // Step 5: dedup 改名落库。
-    let persisted = if ctx.restart_rename {
-        params
-            .db
-            .claim_restart_file_name(&params.task_id, &deduped)
-            .await
-    } else if deduped != params.file_name {
+    let persisted = if deduped != params.file_name {
         params
             .db
             .set_task_file_name(&params.task_id, &deduped)
@@ -12217,7 +12171,6 @@ impl DownloadManager {
                         support,
                         html_only: false,
                         restart_missing: false,
-                        restart_rename: false,
                     }),
                     reserved_set,
                     done_tx,
@@ -12372,17 +12325,9 @@ impl DownloadManager {
         self.pause_task_inner(task_id, false, true, false).await;
     }
 
-    /// 「暂停后立刻恢复」的内部流程（重新下载）专用：静默暂停，
-    /// 但**不**把让出的槽位 drain 给排队头部，否则随后的 resume 只能挂起
-    /// `resume_requested`，待旧 spawn 收尾时已无容量而被挂到队尾。
-    /// 调用方必须随后调用 resume（其自身会 drain），或在放弃恢复时自行 drain。
-    async fn pause_task_keep_slot(&mut self, task_id: &str) {
-        self.pause_task_inner(task_id, false, false, false).await;
-    }
-
-    /// 只为重建下载连接的内部「暂停 → 恢复」（改线程数 / 换全局出口）：同
-    /// [`Self::pause_task_keep_slot`] 保留槽位，且暂停 Boost 目标时**不**结束 Boost——
-    /// 用户没有暂停它，让位任务必须继续让位。恢复请求在暂停时就挂上（`resume_requested`），
+    /// 只为重建下载连接的内部「暂停 → 恢复」（改线程数 / 换全局出口）：保留槽位，
+    /// 且暂停 Boost 目标时**不**结束 Boost——用户没有暂停它，让位任务必须继续让位。
+    /// 恢复请求在暂停时就挂上（`resume_requested`），
     /// 任务全程算作占用它的队列：唯一在途任务也不会发出 `queue.drained` / `queue.started`
     /// 误报边沿（见 [`Self::sync_queue_occupancy`]）。[`Self::reconcile_priority`] 同样把它
     /// 视作仍在途。调用方必须随后调用 resume；放弃恢复时调用
@@ -12435,7 +12380,7 @@ impl DownloadManager {
             let released_slot = std::mem::replace(&mut pending.resume_requested, false);
             pending.notify |= notify;
             // 挂起的恢复一直占着槽位（`pending_resume_slots`）；撤销后即让给排队任务，
-            // 与首次暂停的 drain 语义一致。保留槽位的内部暂停不 drain（随后即恢复）。
+            // 批删失败回滚时则由批量流程统一 drain。
             if released_slot && drain_freed_slot {
                 self.drain_queue().await;
             }
@@ -12725,155 +12670,6 @@ impl DownloadManager {
         self.resume_task_inner(task_id).await;
     }
 
-    /// 「重新下载」：把任务彻底退回未开始状态后重新启动——不管磁盘上是否
-    /// 已有产物，一律丢弃重下。
-    ///
-    /// 与 [`Self::resume_task`]（续传）的区别在于起飞前的复位：先取消在途
-    /// spawn，再删掉最终文件与 `.fdownloading` 临时文件、清空段行与
-    /// 进度/总大小/完成时间/错误信息，因此新一轮下载必定从 0 字节开始。
-    /// 复位全部同步完成于 resume 之前，UI 收到的全量快照即复位后状态。
-    ///
-    /// BT tasks use their own restart semantics. A worker timeout is returned
-    /// to the caller without changing the status the old worker is flushing.
-    pub async fn restart_task(&mut self, task_id: &str) -> Result<(), downloader::DownloadError> {
-        let unavailable =
-            || downloader::DownloadError::Other("Task cannot be redownloaded now".into());
-        if self.bt_move_running(task_id) {
-            return Err(unavailable());
-        }
-        let task = self
-            .db
-            .load_task_by_id(task_id)
-            .await?
-            .ok_or_else(unavailable)?;
-        if is_bt_url(&task.url) {
-            return Err(unavailable());
-        }
-        if task.file_clear_state == FileClearState::RestartPending {
-            self.resume_task(task_id).await;
-            return Ok(());
-        }
-        if task.file_clear_state != FileClearState::None {
-            return self.restart_missing_task_file(task_id).await;
-        }
-        // 在途哈希读的是即将被删除的上一次产物：立即停止并作废其结果。
-        self.file_hash_jobs.cancel(task_id);
-
-        // Stop the previous run before inspecting the paths it actually used.
-        let was_active =
-            self.active_tasks.contains_key(task_id) || matches!(task.status, 0 | 1 | 5);
-        if was_active {
-            log_info!(
-                "[manager] restart_task {}: cancelling in-flight spawn first",
-                task_id
-            );
-            self.pause_task_keep_slot(task_id).await;
-        }
-        if let Err(error) = self.wait_for_redownload_worker(task_id).await {
-            // The old worker still owns its final progress and status.
-            self.drain_queue().await;
-            self.sync_queue_occupancy();
-            return Err(error);
-        }
-
-        // 2. 同时读取最新名字与路径归属。未起跑的任务只有一个候选名，
-        // 即便有同名残片也不能清盘；重新占名会避开既有成品与残片。
-        let t = match self.db.load_cleanup_task(task_id).await {
-            Ok(Some(t)) => t,
-            Ok(None) => {
-                self.drain_queue().await;
-                self.sync_queue_occupancy();
-                return Err(unavailable());
-            }
-            Err(error) => {
-                crate::logger::report_error(
-                    "download-manager",
-                    "load restart file ownership",
-                    &error,
-                );
-                self.drain_queue().await;
-                self.sync_queue_occupancy();
-                return Err(error.into());
-            }
-        };
-        // Pause may already have changed a just-completed task's status.
-        let owns_final = task_owns_final_file(task.status) || task_owns_final_file(t.status);
-        let excluded = [task_id.to_owned()];
-        let claimed = !t.file_name.is_empty()
-            && (file_name_claimed_by_others(&self.db, &t.save_dir, &t.file_name, &excluded).await
-                || self.output_name_reserved(&t.save_dir, &t.file_name));
-        let owns_partial = !owns_final && owns_main_partial(&t);
-        let protected = t.unowned_path || claimed;
-        if !protected {
-            self.remove_restart_files(&t, owns_final, owns_partial, was_active, &excluded)
-                .await;
-        }
-        let decision = if protected || !owns_final && !owns_partial && !t.file_name.is_empty() {
-            crate::file_exists::ExistsDecision::RestartRename
-        } else {
-            crate::file_exists::ExistsDecision::None
-        };
-
-        // 3. 原子提交进度、完成态和命名决定。
-        if let Err(error) = self.db.reset_task_for_restart(task_id, decision).await {
-            crate::logger::report_error("download-manager", "reset task for restart", &error);
-            self.drain_queue().await;
-            self.sync_queue_occupancy();
-            return Err(error.into());
-        }
-        if let Err(error) = self.db.reset_task_speed_history(task_id).await {
-            crate::logger::report_error("download-manager", "reset speed history", &error);
-        }
-
-        self.resume_restarted_task(task_id).await;
-        Ok(())
-    }
-
-    /// Wait without aborting or detaching: a timed-out worker must stay tracked,
-    /// and the caller must not reset the task or touch its files.
-    async fn wait_for_redownload_worker(
-        &mut self,
-        task_id: &str,
-    ) -> Result<(), downloader::DownloadError> {
-        let mut deadline = None;
-        for slot in [
-            self.active_tasks
-                .get_mut(task_id)
-                .map(|entry| &mut entry.handle),
-            self.pending_pauses
-                .get_mut(task_id)
-                .map(|entry| &mut entry.handle),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            let Some(handle) = slot else { continue };
-            let deadline =
-                *deadline.get_or_insert_with(|| tokio::time::Instant::now() + DELETE_HANDLE_WAIT);
-            match tokio::time::timeout_at(deadline, handle).await {
-                Ok(result) => {
-                    *slot = None;
-                    if let Err(error) = result {
-                        crate::logger::report_error(
-                            "download-manager",
-                            "wait for redownload",
-                            &error,
-                        );
-                    }
-                }
-                Err(error) => {
-                    crate::logger::report_warning(
-                        "download-manager",
-                        "wait for redownload",
-                        &error,
-                    );
-                    return Err(downloader::DownloadError::TaskRestartTimeout);
-                }
-            }
-        }
-        Ok(())
-    }
-
     /// Generation the daemon must see finish before committing a redownload.
     pub fn redownload_worker_generation(&self, task_id: &str) -> Option<u64> {
         self.active_tasks
@@ -12970,7 +12766,7 @@ impl DownloadManager {
     }
 
     async fn resume_restarted_task(&mut self, task_id: &str) {
-        // 4. 内存态复位：重试配额/failover 标记/退避占用全部作废。
+        // 内存态复位：重试配额/failover 标记/退避占用全部作废。
         self.auto_retry_counts.remove(task_id);
         #[cfg(feature = "plugins")]
         self.intercept_retry_counts.remove(task_id);
@@ -12996,9 +12792,12 @@ impl DownloadManager {
             return;
         }
 
-        // 5. 重新起飞，并下发全量快照——TaskProgress 字段不全，进度归零必须
-        //    靠全量快照才能让 UI 看到。
-        log_info!("[manager] restart_task {}: reset done, resuming", task_id);
+        // 重新起飞，并下发全量快照——TaskProgress 字段不全，进度归零必须
+        // 靠全量快照才能让 UI 看到。
+        log_info!(
+            "[manager] restart_missing_task_file {}: reset done, resuming",
+            task_id
+        );
         self.resume_task(task_id).await;
         self.send_tasks_snapshot().await;
     }
@@ -13033,35 +12832,6 @@ impl DownloadManager {
         paths
     }
 
-    async fn remove_restart_files(
-        &self,
-        task: &crate::db::DeletionTask,
-        owns_final: bool,
-        owns_partial: bool,
-        was_active: bool,
-        exclude: &[String],
-    ) {
-        let id = &task.task_id;
-        let Some(path) = task_target_path(&task.save_dir, &task.file_name) else {
-            log_info!("[manager] restart_task {id}: unsafe file name, skipping disk cleanup");
-            return;
-        };
-        if owns_final {
-            remove_file_retrying(id, &path, was_active).await;
-        }
-        if owns_partial {
-            let temp = PathBuf::from(format!("{}{}", path.display(), downloader::TEMP_EXT));
-            remove_file_retrying(id, &temp, was_active).await;
-        }
-        for audio in self
-            .audio_cleanup_paths(task, exclude)
-            .await
-            .into_iter()
-            .flatten()
-        {
-            remove_file_retrying(id, &audio, was_active).await;
-        }
-    }
     /// Remove the outputs of a completed non-BT task without resetting its history.
     pub async fn clear_task_file(
         &mut self,
@@ -13630,13 +13400,10 @@ impl DownloadManager {
                 }
             }
         };
-        let restart_rename = decision == ExistsDecision::RestartRename;
         let fresh = if use_bt {
             false
         } else if html_only {
             task.downloaded_bytes == 0
-        } else if restart_rename {
-            true
         } else {
             match self.never_started(&task).await {
                 Ok(fresh) => fresh,
@@ -14078,7 +13845,7 @@ impl DownloadManager {
                 )
             };
             let task_unattended = self.db.is_task_unattended(&tid).await.unwrap_or(false);
-            let overwrite = if html_only || restart_rename || decision == ExistsDecision::Rename {
+            let overwrite = if html_only || decision == ExistsDecision::Rename {
                 crate::file_exists::OverwritePolicy::Never
             } else if matches!(self.file_exists_behavior, FileExistsBehavior::Overwrite) {
                 crate::file_exists::OverwritePolicy::Any
@@ -14179,7 +13946,6 @@ impl DownloadManager {
                         support,
                         html_only,
                         restart_missing,
-                        restart_rename,
                     }),
                     reserved_set,
                     done_tx,
@@ -15160,7 +14926,8 @@ impl DownloadManager {
 
     /// 完成态任务的「继续」只有一种含义：BT 停止做种后恢复做种。其余完成态一律
     /// 忽略（不改库、不发事件）——普通恢复流水线会把已完成的文件从头重下（#935），
-    /// 任何宿主 / 客户端直接调 resume 都不得触发；要重下只走 [`Self::restart_task`]。
+    /// 任何宿主 / 客户端直接调 resume 都不得触发；同一记录的缺失文件重下走
+    /// [`Self::restart_missing_task_file`]。
     /// 返回 `true` 表示任务是完成态且已处理完毕，调用方不得再走普通恢复路径。
     async fn resume_completed(&mut self, task_id: &str, task: &TaskInfo) -> bool {
         if task.status != 3 {
@@ -15171,7 +14938,7 @@ impl DownloadManager {
             return true;
         }
         log_info!(
-            "[manager] resume_task {}: completed task — ignored (redownload goes through restart_task)",
+            "[manager] resume_task {}: completed task — ignored (use redownload instead)",
             task_id
         );
         true
@@ -25794,86 +25561,17 @@ mod tests {
         }
     }
 
+    /// 缺失文件重下：启动前原子清空旧传输进度、完成信息与段行。
+    /// 占满下载槽，避免新 worker 在断言前修改这些字段。
     #[tokio::test]
-    async fn pr1241_restart_timeout_leaves_final_status_to_old_worker() {
-        let db = Db::connect("sqlite::memory:").await.unwrap();
-        let id = "restart-timeout";
-        db.insert_task(
-            id,
-            "http://127.0.0.1:1/file",
-            "file.bin",
-            "",
-            1,
-            12,
-            "",
-            "",
-            "",
-            0,
-        )
-        .await
-        .unwrap();
-        db.update_task_status(id, 2, "").await.unwrap();
-        db.update_task_progress(id, 5).await.unwrap();
-        db.insert_segments(id, &[(0, 0, 11)]).await.unwrap();
-        let mut manager = sched_manager(&db, 1);
-        let (finish, stopped) = tokio::sync::oneshot::channel();
-        let worker_db = db.clone();
-        let worker = tokio::spawn(async move {
-            stopped.await.unwrap();
-            worker_db.update_task_progress(id, 7).await.unwrap();
-        });
-        manager.pending_pauses.insert(
-            id.into(),
-            PendingPause {
-                generation: 1,
-                handle: Some(worker),
-                notify: false,
-                resume_requested: false,
-                queue_id: String::new(),
-                is_bt: false,
-            },
-        );
-        let result = manager.restart_task(id).await;
-        let before = db.load_task_by_id(id).await.unwrap().unwrap();
-        finish.send(()).unwrap();
-        manager
-            .pending_pauses
-            .get_mut(id)
-            .unwrap()
-            .handle
-            .take()
-            .unwrap()
-            .await
-            .unwrap();
-        manager
-            .on_task_done(&TaskDone::finished(id.into(), 1))
-            .await;
-        let after = db.load_task_by_id(id).await.unwrap().unwrap();
-        assert!(matches!(
-            result,
-            Err(downloader::DownloadError::TaskRestartTimeout)
-        ));
-        assert_eq!((before.status, before.downloaded_bytes), (2, 5));
-        assert_eq!((after.status, after.downloaded_bytes), (2, 7));
-        assert!(after.error_message.is_empty());
-        assert!(db.has_segment_checkpoint(id).await.unwrap());
-    }
-
-    /// 「重新下载」契约：磁盘产物被删、DB 进度/总大小/丢失标记/完成时间全部
-    /// 复位、段行清空。这些复位在 `restart_task` 内同步完成于 resume 之前，
-    /// 因此断言不与后续（必定失败的）下载 spawn 竞态。
-    #[tokio::test]
-    async fn restart_task_resets_progress_and_files() {
+    async fn missing_file_restart_resets_progress_and_checkpoints() {
         let dir = unique_filetrack_test_dir("restart_reset");
         std::fs::create_dir_all(&dir).expect("create test dir");
         let save_dir = dir.to_string_lossy().to_string();
-        let file_path = dir.join("done.bin");
-        std::fs::write(&file_path, b"stale payload").expect("write test file");
 
         let db = Db::connect("sqlite::memory:")
             .await
             .expect("connect mem db");
-        // 端口 1 必定拒绝连接：重启后的下载会立刻失败，零真实网络流量。
         db.insert_task(
             "t-restart",
             "http://127.0.0.1:1/x.bin",
@@ -25901,30 +25599,13 @@ mod tests {
             .await
             .expect("insert segments");
 
-        let mut mgr = DownloadManager::new(
-            db.clone(),
-            DownloadManagerConfig {
-                max_concurrent: 1,
-                speed_limit_bps: 0,
-                upload_limit_bps: 0,
-                default_save_dir: save_dir.clone(),
-                app_data_dir: String::new(),
-                data_dir: std::env::temp_dir(),
-                bt_config: BtConfig::default(),
-                proxy_config: ProxyConfig::default(),
-                user_agent: String::new(),
-            },
-            Arc::new(RecordingSink::new()),
-            Arc::new(crate::NoopSelection),
-        )
-        .expect("construct manager");
+        let mut mgr = sched_manager(&db, 1);
+        occupy_slot(&mut mgr, "busy", 1, "", false);
 
-        mgr.restart_task("t-restart").await.expect("restart task");
+        mgr.restart_missing_task_file("t-restart")
+            .await
+            .expect("restart missing file");
 
-        assert!(
-            !file_path.exists(),
-            "restart 必须丢弃上一轮的磁盘产物，即使它还在"
-        );
         let task = db
             .load_task_by_id("t-restart")
             .await
@@ -25932,7 +25613,7 @@ mod tests {
             .expect("task present");
         assert_eq!(task.downloaded_bytes, 0, "进度必须归零");
         assert_eq!(task.total_bytes, 0, "总大小必须归零，重下时重新探测");
-        assert!(!task.file_missing, "file_missing 标记必须清除");
+        assert_eq!(task.file_clear_state, FileClearState::RestartPending);
         assert_eq!(task.completed_at, "", "completed_at 必须清空");
         assert!(
             db.load_segments("t-restart")
@@ -25941,13 +25622,8 @@ mod tests {
                 .is_empty(),
             "段行必须清空，否则重下会按旧布局续传"
         );
-        // 重新下载必须真正起飞：完成态「继续」被忽略（#935），但 restart 先复位为 0 再恢复。
-        assert_ne!(task.status, 3, "重新下载后任务不得仍停在完成态");
-        assert!(
-            mgr.active_tasks.contains_key("t-restart")
-                || mgr.pending_queue.iter().any(|q| q.task_id == "t-restart"),
-            "已完成任务的重新下载必须重新开始下载"
-        );
+        assert_eq!(task.status, 0);
+        assert!(mgr.pending_queue.iter().any(|q| q.task_id == "t-restart"));
         cancel_all_active(&mgr);
 
         if let Err(error) = std::fs::remove_dir_all(&dir)
@@ -25960,7 +25636,7 @@ mod tests {
 
     /// 仅删文件、保留任务记录：与 `delete_task(delete_files=true)`
     /// 相反。文件被删、`file_missing` 落库为 true、任务行本身原样保留
-    /// （status 仍是 3，可用 `restart_task` 重新下载同一条记录）。
+    /// （status 仍是 3，可用 `restart_missing_task_file` 重新下载同一条记录）。
     #[tokio::test]
     async fn clear_task_file_deletes_disk_file_but_keeps_task_record() {
         let dir = unique_filetrack_test_dir("clear_file");

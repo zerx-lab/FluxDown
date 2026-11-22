@@ -1057,6 +1057,7 @@ pub(crate) struct DownloadTableDelegate {
     row_sweep: Option<RowSweep>,
     sweep_bounds: Rc<Cell<Bounds<Pixels>>>,
     sweep_scroll: Option<Task<()>>,
+    sweep_scroll_generation: u64,
     /// 这次左键是否按在文件拖出把手上。行在捕获阶段清掉，把手在捕获阶段置位，
     /// 行冒泡阶段的 [`Self::begin_row_sweep`] 读完即清。父捕获早于子捕获，所以不会
     /// 把同一次按下的置位清掉；没被读走的残留由下一次按下的行捕获清掉。
@@ -1147,6 +1148,7 @@ impl DownloadTableDelegate {
             row_sweep: None,
             sweep_bounds: Rc::new(Cell::new(Bounds::default())),
             sweep_scroll: None,
+            sweep_scroll_generation: 0,
             press_on_file_handle: false,
             suppress_sweep_click: false,
             pending_delete: HashSet::new(),
@@ -3803,13 +3805,13 @@ impl DownloadTableDelegate {
             ));
         }
         menu = menu.separator();
-        menu = menu.item(group_menu_item(
+        menu = menu.item(group_menu_item_windowed(
             self.strings.group_delete.clone(),
             FluxIcon::Trash2,
             Some(destructive),
             host,
             group_id,
-            DownloadView::group_delete,
+            |view, id, window, cx| view.confirm_group_delete(id, false, window, cx),
         ));
         menu = menu.item(group_menu_item_windowed(
             self.strings.group_delete_with_files.clone(),
@@ -3817,7 +3819,7 @@ impl DownloadTableDelegate {
             Some(destructive),
             host,
             group_id,
-            DownloadView::confirm_group_delete_with_files,
+            |view, id, window, cx| view.confirm_group_delete(id, true, window, cx),
         ));
         menu.item(group_menu_item_windowed(
             self.strings.open_group_in_window.clone(),
@@ -4900,41 +4902,60 @@ fn track_table_sweep(
     if sweep_scroll_step(table.read(cx), event.position, cx).is_some()
         && table.read(cx).delegate().sweep_scroll.is_none()
     {
-        table.update(cx, |table, cx| {
-            table.delegate_mut().sweep_scroll = Some(cx.spawn_in(window, async move |this, cx| {
-                loop {
-                    cx.background_executor()
-                        .timer(Duration::from_millis(55))
-                        .await;
-                    match this.update_in(cx, |table, window, cx| {
-                        if let Some((top, end)) =
-                            sweep_scroll_step(table, window.mouse_position(), cx)
-                        {
-                            table.delegate_mut().sweep_to(end);
-                            table.delegate().interaction_hold().note(Instant::now());
-                            // The new top row is usually already visible.
-                            table
-                                .vertical_scroll_handle
-                                .scroll_to_item_strict(top, ScrollStrategy::Top);
-                            cx.notify();
-                            true
-                        } else {
-                            let table = cx.entity().clone();
-                            window.defer(cx, move |_, cx| {
-                                table.update(cx, |table, _| {
-                                    table.delegate_mut().sweep_scroll = None
-                                });
-                            });
-                            false
-                        }
-                    }) {
-                        Ok(true) => {}
-                        Ok(false) | Err(_) => break,
-                    }
-                }
-            }));
-        });
+        table.update(cx, |table, cx| start_sweep_scroll(table, window, cx));
     }
+}
+
+fn start_sweep_scroll(
+    table: &mut TableState<DownloadTableDelegate>,
+    window: &mut Window,
+    cx: &mut Context<TableState<DownloadTableDelegate>>,
+) {
+    let delegate = table.delegate_mut();
+    delegate.sweep_scroll_generation = delegate.sweep_scroll_generation.wrapping_add(1);
+    let generation = delegate.sweep_scroll_generation;
+    delegate.sweep_scroll = Some(cx.spawn_in(window, async move |this, cx| {
+        loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(55))
+                .await;
+            match this.update_in(cx, |table, window, cx| {
+                if let Some((top, end)) = sweep_scroll_step(table, window.mouse_position(), cx) {
+                    table.delegate_mut().sweep_to(end);
+                    table.delegate().interaction_hold().note(Instant::now());
+                    // The new top row is usually already visible.
+                    table
+                        .vertical_scroll_handle
+                        .scroll_to_item_strict(top, ScrollStrategy::Top);
+                    cx.notify();
+                    true
+                } else {
+                    defer_sweep_scroll_reset(generation, window, cx);
+                    false
+                }
+            }) {
+                Ok(true) => {}
+                Ok(false) | Err(_) => break,
+            }
+        }
+    }));
+}
+
+fn defer_sweep_scroll_reset(
+    generation: u64,
+    window: &Window,
+    cx: &mut Context<TableState<DownloadTableDelegate>>,
+) {
+    let table = cx.entity();
+    window.defer(cx, move |_, cx| {
+        table.update(cx, |table, _| {
+            let delegate = table.delegate_mut();
+            // A new drag may already have started before this callback runs.
+            if delegate.sweep_scroll_generation == generation {
+                delegate.sweep_scroll = None;
+            }
+        });
+    });
 }
 
 fn sweep_scroll_step(
@@ -5132,13 +5153,16 @@ impl DownloadView {
         let store = self.controller.store();
         keys.iter()
             .filter_map(|key| {
+                let row = store.get(key)?;
+                if !delete_files {
+                    return task_command(&row, ToolbarCommand::Delete);
+                }
                 if key.is_local() {
                     return Some(DownloadsCommand::Delete {
                         task_id: key.task_id().to_owned(),
                         delete_files,
                     });
                 }
-                let row = store.get(key)?;
                 row.remote_can(RemoteCommandAction::Delete).then(|| {
                     DownloadsCommand::RemoteCommand(RemoteCommandParams {
                         task_id: key.task_id().to_owned(),
@@ -6278,6 +6302,22 @@ mod tests {
         }
         long.simulate_mouse_up(edge, MouseButton::Left);
         assert!(selected(&long).len() > viewport_end);
+
+        // Force the restart into the same effect cycle as the old timer's deferred
+        // cleanup instead of depending on input/timer dispatch order.
+        long.update(|host, window, cx| {
+            host.table.update(cx, |table, cx| {
+                super::start_sweep_scroll(table, window, cx);
+                let old_generation = table.delegate().sweep_scroll_generation;
+                super::defer_sweep_scroll_reset(old_generation, window, cx);
+                table.delegate_mut().finish_row_sweep();
+                super::start_sweep_scroll(table, window, cx);
+            });
+        });
+        long.read(|host, cx| assert!(host.table.read(cx).delegate().sweep_scroll.is_some()));
+        app.advance_clock(Duration::from_millis(60));
+        app.run_until_parked();
+        long.read(|host, cx| assert!(host.table.read(cx).delegate().sweep_scroll.is_none()));
         Ok(())
     }
 

@@ -2302,7 +2302,7 @@ impl Db {
     ///
     /// 一条语句内聚合 + 写入（主键前缀索引，≤ 512 行），不把段行搬进内存；
     /// `segments_epoch` 守卫使被新 spawn 夺权后的旧下载器 0 行生效。与
-    /// `restart_task` 的 `delete_segments`（同事务删段 + 进度归零）并发时不得
+    /// `delete_segments`（同事务删段 + 进度归零）并发时不得
     /// 出现「读到删前段和、写在归零之后」：SQLite 单语句天然原子；pg 读已提交
     /// 下子查询快照早于行锁，故先 `FOR UPDATE` 锁任务行，再以锁后的新快照聚合。
     pub async fn sync_task_progress_from_segments(
@@ -4618,38 +4618,6 @@ impl Db {
         Ok(())
     }
 
-    /// 将重新下载所需的进度、完成态和命名决定一起提交。任何一步失败都保留旧文件的归属。
-    pub(crate) async fn reset_task_for_restart(
-        &self,
-        task_id: &str,
-        decision: crate::file_exists::ExistsDecision,
-    ) -> Result<(), DbError> {
-        let mut tx = self.pool.begin().await?;
-        sqlx::query("DELETE FROM task_segments WHERE task_id = $1")
-            .bind(task_id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("DELETE FROM config WHERE key IN ($1, $2)")
-            .bind(format!("hls_resume_{task_id}"))
-            .bind(format!("hls_audio_resume_{task_id}"))
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query(
-            "UPDATE tasks SET downloaded_bytes = 0, total_bytes = 0,
-                 src_cdn_bytes = 0, src_proxy_bytes = 0, src_nic_bytes = 0,
-                 status = 0, error_message = '', completed_at = '', file_hash = '',
-                 file_missing = 0, exists_decision = $1,
-                 http_partial_name = '', audio_partial_name = '', audio_output_name = ''
-             WHERE id = $2",
-        )
-        .bind(decision.as_db())
-        .bind(task_id)
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        Ok(())
-    }
-
     // -----------------------------------------------------------------------
     // ED2K blocks / hashset
     // -----------------------------------------------------------------------
@@ -5603,21 +5571,6 @@ impl Db {
     pub async fn set_exists_decision(&self, task_id: &str, decision: &str) -> Result<(), DbError> {
         sqlx::query("UPDATE tasks SET exists_decision = $1 WHERE id = $2")
             .bind(decision)
-            .bind(task_id)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
-    /// 新名字与重下保护标记一起切换，避免恢复时把旧路径的残片当成本任务的断点。
-    pub(crate) async fn claim_restart_file_name(
-        &self,
-        task_id: &str,
-        file_name: &str,
-    ) -> Result<(), DbError> {
-        sqlx::query("UPDATE tasks SET file_name = $1, exists_decision = $2 WHERE id = $3")
-            .bind(file_name)
-            .bind(crate::file_exists::ExistsDecision::Rename.as_db())
             .bind(task_id)
             .execute(&self.pool)
             .await?;

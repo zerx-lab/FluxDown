@@ -11,14 +11,14 @@
 ## 引擎：下载与分段
 
 另见 AGENTS.md §4：anyhow 错误一律 `{e:#}`、pg 字节列必须 `BIGINT`、一个 data_dir 只有一个引擎写入者、RSS 无人值守链路、宿主下载走统一出口。
-- **逐任务「重命名」必须撤销全局覆盖授权**：只写 `exists_decision=rename` 不够，恢复路径还得生成 `OverwritePolicy::Never`，否则序幕和最终占名都可能覆盖已采纳的原件 → `native/engine/src/download_manager.rs`，回归 `file_exists_tests::checksum_match_adopts_without_prompt_and_mismatch_cannot_skip`（等新文件真正落盘再检查原件）。
-- **采纳任务重下先原子复位，再占新路径**：`db.rs::reset_task_for_restart` 同时提交待下载状态、进度清零和 `restart_rename`；启动序幕重新占名后才撤销旧路径保护。重下不清理旧路径，也不把同名 `.fdownloading` 当作自身断点 → 回归 `failed_restart_reset_leaves_adoption_protected` 与 `checksum_match_adopts_without_prompt_and_mismatch_cannot_skip`。
-- **批删不能拼接不同时刻的文件名与归属**：先等下载退出，再从同一任务行读取路径、状态和 `exists_decision`。否则重下时可能拿到旧路径和新归属，误删别人的残片 → `download_manager.rs::plan_batch_deletion`、回归 `batch_delete_uses_the_name_claimed_when_the_worker_exits`。
+- **逐任务「重命名」必须撤销全局覆盖授权**：只写 `exists_decision=rename` 不够，恢复路径还得生成 `OverwritePolicy::Never`，否则序幕和最终占名仍可能覆盖原文件 → `native/engine/src/download_manager.rs`。
+- **缺失文件重下先原子复位，再占新路径**：`db.rs::reset_missing_task_for_restart` 同时提交待下载状态、进度清零和 `RestartPending`；启动序幕重新占名后才撤销旧路径保护。复位不清理旧路径，也不把同名 `.fdownloading` 当作自身断点 → 回归 `failed_missing_restart_reset_leaves_adoption_protected` 与 `redownload_cleared_file_does_not_reuse_stale_outputs_or_checkpoints`。
+- **批删不能拼接不同时刻的文件名与归属**：先等下载退出，再从同一任务行读取路径、状态和归属标记。否则重下时可能拿到旧路径和新归属，误删别人的残片 → `download_manager.rs::plan_batch_deletion`、回归 `batch_delete_uses_the_name_claimed_when_the_worker_exits`。
 - **超时后不能按旧名字补清残片**：原名可被后续任务复用，成品、`.fdownloading` 与独立音轨均不能按旧名延迟删除；只补扫任务 ID 独占的 BT 暂存目录。占名随下载 worker 释放，不从数据库反推并移除预订 → `download_manager.rs::ReservedTempPath`、回归 `checksum_worker_timeout_preserves_existing_file_and_next_tasks_partial`。
 - **仅删记录不能清理残片**：入口、超时二次清盘、HLS 直播丢弃和 BT 启动孤儿清扫都要保留数据，不能只在删成品前判断 `delete_files` → `native/engine/src/download_manager.rs`，回归 `record_only_delete_keeps_disk_data_for_single_and_batch`。
 - **同名残片不能证明任务曾启动**：「仅删记录」可能留下已预分配到全长的残片；同名新任务只看自己的 DB 进度或协议断点，防止单流把别人的满尺寸残片直接当成成品 → `download_manager.rs::never_started`、回归 `never_started_task_does_not_resume_another_tasks_partial`。
-- **候选名不是残片归属**：单删、批删和重新下载都要凭同一查询中的任务状态、下载进度或任务 ID 绑定的断点判断能否清盘。未起跑的同名任务必须保留别人的残片，重下先避名 → `db.rs::load_cleanup_task` / `load_deletion_facts`，回归 `never_started_task_deletion_preserves_another_tasks_partial`、`never_started_task_restart_preserves_a_running_download`。
-- **成品、主残片、独立音轨分开认领**：旧完成状态不能证明当前 `.fdownloading` 归属；HLS/DASH 类型也不能证明存在独立音轨。删除前查实际音轨名的登记和占用；HTTP 单流开盘即登记残片，避免 0 字节残片被当成外来文件 → `download_manager.rs::{owns_main_partial,audio_cleanup_paths}`、`output.rs::{reserve_audio_partial,publish_audio}`；回归 `completed_task_restart_preserves_a_running_download`、`hls_delete_only_removes_registered_audio_outputs`、`zero_byte_single_stream_partial_is_deleted`。
+- **候选名不是残片归属**：单删和批删都要凭同一查询中的任务状态、下载进度或任务 ID 绑定的断点判断能否清盘。未起跑的同名任务必须保留别人的残片，普通启动也要避让在用路径 → `db.rs::load_cleanup_task` / `load_deletion_facts`，回归 `never_started_task_deletion_preserves_another_tasks_partial`、`never_started_task_start_preserves_a_running_download`。
+- **成品、主残片、独立音轨分开认领**：旧完成状态不能证明当前 `.fdownloading` 归属；HLS/DASH 类型也不能证明存在独立音轨。删除前查实际音轨名的登记和占用；HTTP 单流开盘即登记残片，避免 0 字节残片被当成外来文件 → `download_manager.rs::{owns_main_partial,audio_cleanup_paths}`、`output.rs::{reserve_audio_partial,publish_audio}`；回归 `missing_file_restart_preserves_a_running_download`、`hls_delete_only_removes_registered_audio_outputs`、`zero_byte_single_stream_partial_is_deleted`。
 - **HLS 批删要先停写、再读计划、最后清盘**：停写信号只阻止定稿，不能顺手删除已录数据或断点，否则读计划失败时会保留任务记录却丢掉内容 → `hls_downloader.rs::run_live_recording`、回归 `hls_live_batch_delete_plan_failure_preserves_recording`。
 
 - **组件 Release 回退以可用资产为准，不以 HTTP 200 为准**：yt-dlp 列表和安装共用平台二进制与校验资产检查；所有来源失败时保留各来源的错误，避免官网缓存缺 tag 掩盖直连 403 → `native/engine/src/components/{mod.rs,ytdlp.rs}`，回归 `unusable_mirror_falls_back_to_installable_windows_versions`、`github_403_uses_only_the_requested_cached_ytdlp_release`。
@@ -309,7 +309,6 @@
 
 - **Windows toast 线程不得逐条 `RoInitialize` / `RoUninitialize`**：headless `--server` 无其它 apartment，拆掉最后一个会卸载 WinRT 服务端，进程级缓存的激活工厂悬空，下一条通知 `0xC0000005` 崩溃。用从未初始化过 COM 的短命线程，让 windows-core 经 `CoIncrementMTAUsage` 常驻进程 MTA → `native/agent/src/notification/windows.rs`（`runtime::show` 调用处注释）、`native/agent/src/sound/backend.rs`（同模式）。
 - **写 `Zone.Identifier` 会刷新 NTFS 主文件修改时间**：开启「使用服务器文件时间」时必须写标记后回写原时间；设置时间只申请 `FILE_WRITE_ATTRIBUTES` 避免共享冲突；后台 fdatasync 要先释放复制句柄再通知（最后一个句柄关闭时 NTFS 会把修改时间刷成当前时间，晚于 `apply_server_mtime` 会覆盖服务器时间）→ `native/engine/src/mark_of_the_web.rs::spawn_mark_downloaded`（`keep_mtime`）、回归 `zone_identifier_keeps_mtime_only_when_requested`，`native/engine/src/segment_coordinator.rs::FileSyncGate::kick_background`。
-- **暂停 / 删除 / 重新下载清盘要给「写入方还没松手」留重试窗口**：`pause_task_silent` 只取消 token 不等 spawned task 退出，Windows 上被写入方持有的文件 `remove_file` 直接失败；残留的 `.fdownloading` 会被下一轮当成可续传数据，「从零重下」的承诺就破了 → `native/engine/src/download_manager.rs::remove_file_retrying`。
 - **仅删文件后的重下不能用旧文件名探测续传资格**：原路径可能已有替代文件或同名音视频残片。`Db::reset_missing_task_for_restart` 清旧进度并持久化 `RestartPending`；`finalize_start_file_name` 为同一任务选定无冲突的写入路径后才清除该标记。回归见 `redownload_cleared_file_does_not_reuse_stale_outputs_or_checkpoints`。
 - **测试删目录前必须先关连接池**：Windows 上 sqlite 文件句柄未释放时 `remove_dir_all` 静默失败，残留目录曾在 temp 累积 1400+ 个，并导致陈旧库被继承的历史 flaky → `native/engine/src/db.rs::close_test_db`（测试辅助）。
 - **自更新替换文件要把杀毒 / 搜索索引的短暂占用当瞬时错误重试**（拒绝访问、共享冲突、锁冲突、映射节被占用）→ `native/agent/src/update/install/replace.rs::is_transient`。
