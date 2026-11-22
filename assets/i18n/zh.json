@@ -1781,7 +1781,7 @@
   "updateFailedStorage": "无法保存更新包（磁盘已满或没有权限）。",
   "updateFailedInstall": "安装更新失败。",
   "updatePortableInstallHint": "如果文件被占用，请完全退出 FluxDown 和正在使用其扩展的浏览器后重试。如果系统拒绝访问，请检查便携目录的权限。",
-  "updatePortableRecoveryHint": "上次更新未能还原全部程序文件。请保留 portable_data 和备份文件，用官方便携包手动恢复程序。",
+  "updatePortableRecoveryHint": "请保留 portable_data 和备份。关闭 FluxDown，用官方便携包恢复程序并确认能正常运行。然后再次关闭 FluxDown，将应用数据目录中的 updates/pending.json 移走，再启动以恢复应用内更新。",
   "updateFailedElevationCancelled": "已取消授权，更新未安装。",
   "updateFailedIncomplete": "上次更新没有安装完成，请重试或手动下载更新。",
   "updateFailedUnknown": "更新失败。",

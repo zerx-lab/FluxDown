@@ -394,6 +394,9 @@ impl UpdateService {
 
     /// 查询渠道最新版本；返回检查后的状态。
     pub async fn check(self: &Arc<Self>, channel: &str) -> Result<UpdateStatusDto, UpdateError> {
+        if self.recovery_required().await {
+            return Ok(self.status());
+        }
         self.check_inner(channel, false).await
     }
 
@@ -1142,9 +1145,7 @@ impl UpdateService {
             if self.pref(PREF_AUTO_CHECK).and_then(|value| value.as_bool()) == Some(false) {
                 continue;
             }
-            if self.target.kind == fluxdown_protocol::UpdateInstallKind::WindowsPortable
-                && self.status().failure == Some(UpdateFailure::Install)
-            {
+            if self.recovery_required().await {
                 continue;
             }
             let channel = self

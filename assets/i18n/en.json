@@ -1781,7 +1781,7 @@
   "updateFailedStorage": "Couldn't save the update package (disk full or no permission).",
   "updateFailedInstall": "Installing the update failed.",
   "updatePortableInstallHint": "If a file is in use, close FluxDown and any browser using its extension, then retry. If access is denied, check the portable folder's permissions.",
-  "updatePortableRecoveryHint": "The previous update could not restore all program files. Keep portable_data and the backups, then restore the program from an official portable package.",
+  "updatePortableRecoveryHint": "Keep portable_data and the backups. Close FluxDown, restore the program from an official portable package, and verify it works. Then close FluxDown again, move updates/pending.json out of the app data directory, and restart to re-enable in-app updates.",
   "updateFailedElevationCancelled": "Authorization was cancelled, so the update wasn't installed.",
   "updateFailedIncomplete": "The last update didn't finish installing. Try again or download it manually.",
   "updateFailedUnknown": "The update failed.",

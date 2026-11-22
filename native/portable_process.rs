@@ -18,16 +18,44 @@ mod tests;
 /// The OS releases its shared lifetime lease when the process exits, even on a crash.
 pub(crate) fn admit() -> io::Result<bool> {
     static RUNNING_LEASE: OnceLock<File> = OnceLock::new();
-    let exe = std::env::current_exe()?;
-    Ok(while_starting(&exe, |data| {
+    let exe = std::env::current_exe().inspect_err(|error| {
+        log_startup_failure(None, format_args!("could not locate executable: {error}"));
+    })?;
+    let result = while_starting(&exe, |data| {
         if let Some(data) = data {
             let running = shared_lease(data, RUNNING)?;
             running.try_lock_shared().map_err(io::Error::from)?;
             RUNNING_LEASE.get_or_init(|| running);
         }
         Ok(())
-    })?
-    .is_some())
+    })
+    .map(|admitted| admitted.is_some());
+    match &result {
+        Ok(true) => {}
+        Ok(false) => log_startup_failure(
+            exe.file_stem(),
+            format_args!("startup blocked by a portable update"),
+        ),
+        Err(error) => log_startup_failure(
+            exe.file_stem(),
+            format_args!("could not acquire the portable installation lease: {error}"),
+        ),
+    }
+    result
+}
+
+// GUI binaries can be denied startup before their normal logger is available.
+fn log_startup_failure(name: Option<&std::ffi::OsStr>, reason: std::fmt::Arguments<'_>) {
+    use std::io::Write;
+
+    let name = name.unwrap_or_default().to_string_lossy();
+    let log = std::env::temp_dir().join(format!("FluxDown-{name}-portable-startup.log"));
+    if File::create(log)
+        .and_then(|mut file| writeln!(file, "{reason}"))
+        .is_err()
+    {
+        eprintln!("{reason}");
+    }
 }
 
 /// Serialize process admission or a launch with the updater's transition to draining.

@@ -208,7 +208,12 @@ fn apply(dest: &Path, root: &Path, pending: &Path) -> io::Result<()> {
     }
     let data = dest.join(process::DATA_DIR);
     let intent = process::lease(&data, process::INTENT)?;
-    intent.try_lock().map_err(io::Error::from)?;
+    wait_for_lock(&intent, Duration::from_secs(3)).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("acquire portable update startup gate: {error}"),
+        )
+    })?;
     let running = process::lease(&data, process::RUNNING)?;
     let mut record: PendingRecord = serde_json::from_slice(&fs::read(pending)?)?;
     let mut stdout = io::stdout().lock();
@@ -233,7 +238,11 @@ fn apply(dest: &Path, root: &Path, pending: &Path) -> io::Result<()> {
     let relaunch = match result {
         Ok(()) => {
             record.portable_failure = None;
-            write_record(pending, &record)?;
+            if let Err(error) = write_record(pending, &record) {
+                eprintln!(
+                    "portable files replaced, but the recovery record could not be cleared: {error}"
+                );
+            }
             restart::AFTER_UPDATE_ARG
         }
         Err(error) => {
@@ -250,7 +259,9 @@ fn apply(dest: &Path, root: &Path, pending: &Path) -> io::Result<()> {
                 detail,
                 rollback_incomplete,
             });
-            write_record(pending, &record)?;
+            if let Err(error) = write_record(pending, &record) {
+                eprintln!("could not record portable update failure: {error}");
+            }
             if rollback_incomplete {
                 // The old application may no longer be usable. Keep its backups and do not start it.
                 return Err(io::Error::other(error));
@@ -279,23 +290,28 @@ fn write_record(pending: &Path, record: &PendingRecord) -> io::Result<()> {
 }
 
 fn wait_for_exit(running: &File) -> Result<(), InstallError> {
-    let deadline = Instant::now() + DRAIN_TIMEOUT;
+    wait_for_lock(running, DRAIN_TIMEOUT).map_err(|error| {
+        InstallError::Task(format!(
+            "wait for FluxDown desktop, agent or daemon to exit: {error}"
+        ))
+    })
+}
+
+fn wait_for_lock(lease: &File, timeout: Duration) -> io::Result<()> {
+    let deadline = Instant::now() + timeout;
     loop {
-        match running.try_lock() {
+        match lease.try_lock() {
             Ok(()) => return Ok(()),
             Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
                 thread::sleep(Duration::from_millis(50));
             }
             Err(TryLockError::WouldBlock) => {
-                return Err(InstallError::Task(
-                    "timed out waiting for FluxDown desktop, agent or daemon to exit".to_owned(),
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "lock is still held",
                 ));
             }
-            Err(TryLockError::Error(error)) => {
-                return Err(InstallError::Task(format!(
-                    "wait for portable processes: {error}"
-                )));
-            }
+            Err(TryLockError::Error(error)) => return Err(error),
         }
     }
 }
