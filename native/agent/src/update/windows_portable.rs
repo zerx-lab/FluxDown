@@ -23,6 +23,32 @@ const READY_TIMEOUT: Duration = Duration::from_secs(10);
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 const SIGNAL: [u8; 1] = [1];
 
+#[derive(Clone, Copy)]
+#[repr(u8)]
+pub(super) enum CommitMode {
+    Desktop = 1,
+    Background = 2,
+}
+
+impl CommitMode {
+    fn read(input: &mut impl Read) -> io::Result<Self> {
+        let mut byte = [0];
+        input.read_exact(&mut byte)?;
+        match byte[0] {
+            1 => Ok(Self::Desktop),
+            2 => Ok(Self::Background),
+            _ => Err(io::Error::other("invalid portable update commit mode")),
+        }
+    }
+
+    fn relaunch(self, desktop_arg: &str) -> (&str, &str) {
+        match self {
+            Self::Desktop => (DESKTOP, desktop_arg),
+            Self::Background => (AGENT, restart::BACKGROUND_UPDATE_ARG),
+        }
+    }
+}
+
 /// Register a running Windows desktop-stack process with the portable installer.
 /// Returns false during installation. Installed builds have no lease.
 ///
@@ -190,7 +216,7 @@ fn apply(dest: &Path, root: &Path, pending: &Path) -> io::Result<()> {
     stdout.flush()?;
     drop(stdout);
     // EOF, including a crashed parent, is not authorization to touch the installation.
-    read_signal(&mut io::stdin().lock())?;
+    let mode = CommitMode::read(&mut io::stdin().lock())?;
 
     let result = match wait_for_exit(&running) {
         Ok(()) => {
@@ -234,9 +260,10 @@ fn apply(dest: &Path, root: &Path, pending: &Path) -> io::Result<()> {
     };
     drop(running);
     drop(intent);
-    let mut command = Command::new(dest.join(DESKTOP));
+    let (program, arg) = mode.relaunch(relaunch);
+    let mut command = Command::new(dest.join(program));
     command
-        .arg(relaunch)
+        .arg(arg)
         .current_dir(dest)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
