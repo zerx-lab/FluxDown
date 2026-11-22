@@ -28,7 +28,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
-import com.fluxdown.app.i18n.str
 import com.fluxdown.app.actions.LocalTaskActions
 import com.fluxdown.app.actions.TaskActions
 import com.fluxdown.app.data.DeviceSettings
