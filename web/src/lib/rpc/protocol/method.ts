@@ -278,6 +278,7 @@ export const METHOD = {
   AGENT_PLATFORM_SET_APP_ICON: 'agent.platform.setAppIcon',
   AGENT_PLATFORM_APP_ICON_IMAGE: 'agent.platform.appIconImage',
   AGENT_PLATFORM_SYNC_WINDOW_ICONS: 'agent.platform.syncWindowIcons',
+  AGENT_PLATFORM_ACK_TRAY_DOWNLOADS: 'agent.platform.ackTrayDownloads',
   AGENT_SOUND_PREVIEW: 'agent.sound.preview',
   AGENT_CAPTURE_SUBMIT: 'agent.capture.submit',
   AGENT_CAPTURE_SUBMIT_TORRENT_FILE: 'agent.capture.submitTorrentFile',

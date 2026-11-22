@@ -232,7 +232,10 @@ fn open_with(cx: &mut App, focus: bool) -> Option<WindowHandle<Root>> {
         }
         crate::plugin_contributions::attach_main_window(cx);
 
-        let root = cx.new(|cx| Root::new(shell, window, cx));
+        let root = cx.new(|cx| Root::new(shell.clone(), window, cx));
+        if cfg!(windows) {
+            watch_tray_downloads(&root, &shell, &session, window, cx);
+        }
         WindowRegistry::persist_bounds(RememberedWindow::Main, client, &root, window, cx);
         install_close_policy(window, cx);
         root
@@ -245,6 +248,80 @@ fn open_with(cx: &mut App, focus: bool) -> Option<WindowHandle<Root>> {
         cx.defer(crate::service_notices::replay_pending);
     }
     handle
+}
+
+fn watch_tray_downloads(
+    root: &gpui::Entity<Root>,
+    shell: &gpui::Entity<ShellView>,
+    session: &gpui::Entity<crate::session::AgentSession>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let check = {
+        let shell = shell.clone();
+        let session = session.clone();
+        let was_visible = std::cell::Cell::new(false);
+        Rc::new(move |window: &Window, cx: &App| {
+            let visible = window.is_window_active()
+                && shell.read(cx).active_route() == Some(&crate::activity::DOWNLOADS_ROUTE)
+                && session.read(cx).tray_downloads_ready();
+            let previously_visible = was_visible.replace(visible);
+            if visible
+                && !previously_visible
+                && let Some(snapshot) = session.read(cx).latest()
+            {
+                acknowledge_tray_downloads(&snapshot.epoch, snapshot.sequence, cx);
+            }
+        })
+    };
+    root.update(cx, |_, cx| {
+        let activation = check.clone();
+        cx.observe_window_activation(window, move |_, window, cx| activation(window, cx))
+            .detach();
+        let route = check.clone();
+        cx.observe_in(shell, window, move |_, _, window, cx| route(window, cx))
+            .detach();
+        let readiness = check.clone();
+        cx.subscribe_in(session, window, move |_, _, signal, window, cx| {
+            use crate::session::SessionSignal;
+            use fluxdown_protocol::{AgentEvent, DaemonEvent, ServiceEvent};
+
+            if match signal {
+                SessionSignal::Event(frame) => matches!(
+                    &frame.event,
+                    ServiceEvent::Agent(
+                        AgentEvent::DaemonConnectionChanged(_)
+                            | AgentEvent::DaemonSnapshotReplaced(_)
+                            | AgentEvent::Daemon(
+                                DaemonEvent::TablesReloading { .. }
+                                    | DaemonEvent::SnapshotReplaced(_)
+                            )
+                    )
+                ),
+                _ => true,
+            } {
+                readiness(window, cx);
+            }
+        })
+        .detach();
+        check(window, cx);
+    });
+}
+
+fn acknowledge_tray_downloads(epoch: &str, sequence: u64, cx: &App) {
+    use fluxdown_protocol::method::AGENT_PLATFORM_ACK_TRAY_DOWNLOADS;
+
+    let client = Desktop::global(cx).client.clone();
+    let caller = client.clone();
+    let params = serde_json::json!({ "epoch": epoch, "sequence": sequence });
+    client.spawn_background(async move {
+        if let Err(error) = caller
+            .call::<_, serde_json::Value>(AGENT_PLATFORM_ACK_TRAY_DOWNLOADS, Some(params))
+            .await
+        {
+            log::debug!("failed to acknowledge tray downloads: {:?}", error.code);
+        }
+    });
 }
 
 /// 导入闸门挂起状态同步到下载页：挂起期间「全部开始」必须可点（它是唯一解除入口）。

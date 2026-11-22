@@ -102,6 +102,8 @@ pub(crate) fn route_daemon_event(
 ) {
     match event {
         fluxdown_protocol::DaemonEvent::TaskNotice(notice) => {
+            #[cfg(all(windows, feature = "desktop"))]
+            events.record_tray_result(&notice);
             if let Some(sounds) = sounds {
                 crate::sound::offer(sounds, &notice);
             }

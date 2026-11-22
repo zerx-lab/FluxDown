@@ -277,6 +277,8 @@ object HostMethod {
     const val agentPlatformAppIconImage = "agent.platform.appIconImage"
     /** 为桌面界面进程现有窗口补设应用图标；仅桌面，移动端不使用。 */
     const val agentPlatformSyncWindowIcons = "agent.platform.syncWindowIcons"
+    /** 确认 Windows 托盘下载提示；移动端不使用。 */
+    const val agentPlatformAckTrayDownloads = "agent.platform.ackTrayDownloads"
     /** 由 agent 在本机播放一次提示音偏好值；仅桌面，移动端不使用。 */
     const val agentSoundPreview = "agent.sound.preview"
     const val agentCaptureSubmit = "agent.capture.submit"

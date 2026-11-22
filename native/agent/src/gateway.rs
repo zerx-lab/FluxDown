@@ -695,6 +695,20 @@ impl GatewayService {
                 self.platform_app_icon_image(params).await
             }
             method::AGENT_PLATFORM_SYNC_WINDOW_ICONS => self.platform_sync_window_icons().await,
+            method::AGENT_PLATFORM_ACK_TRAY_DOWNLOADS => {
+                #[cfg(all(windows, feature = "desktop"))]
+                {
+                    #[derive(serde::Deserialize)]
+                    struct SeenCursor {
+                        epoch: String,
+                        sequence: u64,
+                    }
+                    let seen = parse_params::<SeenCursor>(request.params)?;
+                    self.events
+                        .acknowledge_tray_downloads(&seen.epoch, seen.sequence);
+                }
+                Ok(serde_json::json!({ "ok": true }))
+            }
             method::AGENT_SOUND_PREVIEW => {
                 let params =
                     parse_params::<fluxdown_protocol::sound::SoundPreviewParams>(request.params)?;

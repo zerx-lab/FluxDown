@@ -18,6 +18,162 @@ struct AgentEventState {
     epoch: String,
     sequence: u64,
     snapshot: AgentSnapshot,
+    #[cfg(all(feature = "desktop", any(windows, test)))]
+    tray: TrayRound,
+}
+
+#[cfg(all(feature = "desktop", any(windows, test)))]
+#[derive(Default)]
+struct TrayRound {
+    tasks: std::collections::HashMap<String, TrayTask>,
+    failure_sequence: u64,
+    change_sequence: u64,
+    acknowledged_sequence: u64,
+    sequence: u64,
+    reconcile_failures: bool,
+}
+
+#[cfg(all(feature = "desktop", any(windows, test)))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TrayTask {
+    Unfinished,
+    Running,
+    Canceled,
+    Completed,
+    Failed,
+}
+
+#[cfg(all(feature = "desktop", any(windows, test)))]
+impl TrayTask {
+    fn is_unfinished(&self) -> bool {
+        matches!(self, Self::Unfinished | Self::Running)
+    }
+
+    fn cancel(&mut self) {
+        if self.is_unfinished() {
+            *self = Self::Canceled;
+        }
+    }
+}
+
+#[cfg(all(feature = "desktop", any(windows, test)))]
+impl TrayRound {
+    fn set(&mut self, id: &str, next: TrayTask) {
+        if self.tasks.get(id) == Some(&next) {
+            return;
+        }
+        if next.is_unfinished() && !self.tasks.values().any(TrayTask::is_unfinished) {
+            self.tasks.clear();
+            self.reconcile_failures = false;
+        }
+        if let Some(task) = self.tasks.get_mut(id) {
+            *task = next;
+        } else {
+            self.tasks.insert(id.to_owned(), next);
+        }
+        self.mark_changed(next);
+    }
+
+    fn mark_changed(&mut self, next: TrayTask) {
+        self.change_sequence = self.change_sequence.max(self.sequence);
+        if next == TrayTask::Failed {
+            self.failure_sequence = self.failure_sequence.max(self.sequence);
+        }
+    }
+
+    fn acknowledge(&mut self, sequence: u64) {
+        self.acknowledged_sequence = self.acknowledged_sequence.max(sequence);
+    }
+
+    fn observe_status(&mut self, id: &str, status: i32, error: &str) {
+        match status {
+            0 => self.set(id, TrayTask::Unfinished),
+            1 | 5 => self.set(id, TrayTask::Running),
+            4 if error == "deleted" => self.cancel(id),
+            // A live status=4 may still be retried; defer red until the terminal notice.
+            2 | 4 if self.tasks.get(id) == Some(&TrayTask::Running) => {
+                self.set(id, TrayTask::Unfinished);
+            }
+            _ => {}
+        }
+    }
+
+    fn cancel(&mut self, id: &str) {
+        if let Some(task) = self.tasks.get_mut(id) {
+            task.cancel();
+        }
+    }
+
+    fn reconcile(&mut self, snapshot: &DaemonSnapshot) {
+        if snapshot.tables_loading() {
+            return;
+        }
+        // Only live/queued work enters from the snapshot. A paused task counts only
+        // if it was already in this round or later resumes.
+        for row in &snapshot.tasks {
+            if matches!(row.status, 0 | 1 | 5) {
+                self.observe_status(&row.task_id, row.status, &row.error_message);
+            }
+        }
+        self.reconcile_failures = false;
+        for (id, task) in &mut self.tasks {
+            let next = match snapshot.task(id).map(|row| row.status) {
+                Some(2) if task.is_unfinished() => TrayTask::Unfinished,
+                Some(3) => TrayTask::Completed,
+                Some(4) if *task == TrayTask::Failed => continue,
+                Some(4) if snapshot.runtime_stats.retry_pending_tasks == 0 => TrayTask::Failed,
+                // The snapshot reports the retry count, not which tasks are waiting.
+                Some(4) => {
+                    self.reconcile_failures = true;
+                    continue;
+                }
+                None if task.is_unfinished() => TrayTask::Canceled,
+                _ => continue,
+            };
+            if *task != next {
+                *task = next;
+                self.change_sequence = self.change_sequence.max(self.sequence);
+                if next == TrayTask::Failed {
+                    self.failure_sequence = self.failure_sequence.max(self.sequence);
+                }
+            }
+        }
+    }
+
+    fn apply(&mut self, event: &AgentEvent, snapshot: &DaemonSnapshot) {
+        use fluxdown_protocol::WsServerMsg;
+
+        match event {
+            AgentEvent::DaemonSnapshotReplaced(_)
+            | AgentEvent::Daemon(DaemonEvent::SnapshotReplaced(_)) => self.reconcile(snapshot),
+            AgentEvent::Daemon(DaemonEvent::RuntimeStatsChanged(stats))
+                if self.reconcile_failures && stats.retry_pending_tasks == 0 =>
+            {
+                self.reconcile(snapshot);
+            }
+            AgentEvent::Daemon(DaemonEvent::Engine(WsServerMsg::TaskProgress {
+                task_id,
+                status,
+                error_message,
+                ..
+            })) => self.observe_status(task_id, *status, error_message),
+            AgentEvent::Daemon(DaemonEvent::TaskChanged(task)) => {
+                self.observe_status(&task.task_id, task.status, &task.error_message);
+            }
+            AgentEvent::Daemon(DaemonEvent::TasksChanged(tasks)) => {
+                for task in tasks {
+                    self.observe_status(&task.task_id, task.status, &task.error_message);
+                }
+            }
+            AgentEvent::Daemon(DaemonEvent::TaskDeleted { task_id }) => self.cancel(task_id),
+            AgentEvent::Daemon(DaemonEvent::TasksDeleted { task_ids }) => {
+                for id in task_ids {
+                    self.cancel(id);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// agent 物化投影的唯一同步边界。
@@ -38,6 +194,8 @@ impl AgentEventHub {
                 epoch: Uuid::new_v4().to_string(),
                 sequence: 0,
                 snapshot,
+                #[cfg(all(feature = "desktop", any(windows, test)))]
+                tray: TrayRound::default(),
             })),
             events,
         }
@@ -109,6 +267,76 @@ impl AgentEventHub {
         read(&state.snapshot)
     }
 
+    #[cfg(all(feature = "desktop", any(windows, test)))]
+    pub(crate) fn record_tray_result(&self, notice: &fluxdown_protocol::TaskNoticeDto) {
+        let Some(task) = &notice.task else {
+            return;
+        };
+        let next = match notice.event.as_str() {
+            "task.created" => TrayTask::Unfinished,
+            "task.started" => TrayTask::Running,
+            "task.completed" => TrayTask::Completed,
+            "task.failed" => TrayTask::Failed,
+            _ => return,
+        };
+        let mut state = lock_or_recover(&self.state);
+        // A notice can arrive before its task row; an older visible snapshot must
+        // not acknowledge it. The corresponding task frame advances the cursor.
+        let visible = state
+            .snapshot
+            .daemon
+            .task(&task.id)
+            .is_some_and(|row| match next {
+                TrayTask::Unfinished => matches!(row.status, 0 | 2),
+                TrayTask::Running => matches!(row.status, 1 | 5),
+                TrayTask::Completed => row.status == 3,
+                TrayTask::Failed => row.status == 4,
+                TrayTask::Canceled => false,
+            });
+        state.tray.sequence = if visible {
+            state.sequence
+        } else {
+            state.sequence.saturating_add(1)
+        };
+        state.tray.set(&task.id, next);
+    }
+
+    #[cfg(all(feature = "desktop", any(windows, test)))]
+    pub(crate) fn acknowledge_tray_downloads(&self, epoch: &str, sequence: u64) {
+        let mut state = lock_or_recover(&self.state);
+        if state.epoch == epoch && sequence <= state.sequence {
+            state.tray.acknowledge(sequence);
+        }
+    }
+
+    #[cfg(all(feature = "desktop", any(windows, test)))]
+    pub(crate) fn tray_download_dot(&self) -> Option<crate::shell::DownloadDot> {
+        use crate::shell::DownloadDot;
+        let state = lock_or_recover(&self.state);
+        if !state.snapshot.daemon_connected {
+            return None;
+        }
+        let tray = &state.tray;
+        let stats = &state.snapshot.daemon.runtime_stats;
+        if tray.failure_sequence > tray.acknowledged_sequence {
+            Some(DownloadDot::Failed)
+        } else if tray.change_sequence <= tray.acknowledged_sequence {
+            None
+        } else if stats.active_tasks > 0
+            || stats.pending_tasks > 0
+            || stats.retry_pending_tasks > 0
+            || tray.tasks.values().any(TrayTask::is_unfinished)
+        {
+            Some(DownloadDot::Downloading)
+        } else if !tray.tasks.is_empty()
+            && tray.tasks.values().all(|task| *task == TrayTask::Completed)
+        {
+            Some(DownloadDot::Completed)
+        } else {
+            None
+        }
+    }
+
     /// daemon 增量先更新缓存，再发布 agent sequence。
     pub fn apply_daemon_event(&self, event: DaemonEvent) -> Arc<EventFrame> {
         self.publish(AgentEvent::Daemon(event))
@@ -126,6 +354,17 @@ impl AgentEventHub {
         let mut state = lock_or_recover(&self.state);
         apply_agent_event(&mut state.snapshot, &event);
         state.sequence = state.sequence.saturating_add(1);
+        #[cfg(all(feature = "desktop", any(windows, test)))]
+        {
+            let AgentEventState {
+                snapshot,
+                tray,
+                sequence,
+                ..
+            } = &mut *state;
+            tray.sequence = *sequence;
+            tray.apply(&event, &snapshot.daemon);
+        }
         let frame = Arc::new(EventFrame {
             epoch: state.epoch.clone(),
             sequence: state.sequence,
@@ -151,6 +390,149 @@ fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "desktop")]
+    fn acknowledge_current(hub: &AgentEventHub) {
+        let snapshot = hub.snapshot();
+        hub.acknowledge_tray_downloads(&snapshot.epoch, snapshot.sequence);
+    }
+
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn tray_dot_requires_a_successful_round_and_acknowledges_failure() {
+        use crate::shell::DownloadDot;
+        use fluxdown_protocol::{TaskNoticeDto, TaskNoticeTaskDto};
+
+        let hub = AgentEventHub::new(AgentSnapshot {
+            daemon_connected: true,
+            ..AgentSnapshot::default()
+        });
+        let notice = |id: &str, event: &str| {
+            hub.record_tray_result(&TaskNoticeDto {
+                delivery_id: String::new(),
+                event: event.to_owned(),
+                timestamp_ms: 0,
+                queue_id: String::new(),
+                queue_name: String::new(),
+                task: Some(TaskNoticeTaskDto {
+                    id: id.to_owned(),
+                    ..TaskNoticeTaskDto::default()
+                }),
+            });
+            hub.publish(fluxdown_protocol::AgentEvent::DaemonConnectionChanged(true));
+        };
+        notice("a", "task.started");
+        notice("b", "task.created");
+        let before_failure = hub.snapshot();
+        notice("a", "task.failed");
+        hub.acknowledge_tray_downloads(&before_failure.epoch, before_failure.sequence);
+        assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Failed));
+        acknowledge_current(&hub);
+        assert_eq!(hub.tray_download_dot(), None);
+        notice("b", "task.completed");
+        assert_eq!(hub.tray_download_dot(), None);
+        notice("c", "task.started");
+        notice("d", "task.created");
+        assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Downloading));
+        let seen = hub.snapshot();
+        acknowledge_current(&hub);
+        assert_eq!(hub.tray_download_dot(), None);
+        notice("c", "task.completed");
+        assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Downloading));
+        notice("d", "task.completed");
+        hub.acknowledge_tray_downloads(&seen.epoch, seen.sequence);
+        assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Completed));
+        acknowledge_current(&hub);
+        assert_eq!(hub.tray_download_dot(), None);
+
+        notice("e", "task.started");
+        notice("f", "task.created");
+        notice("e", "task.completed");
+        hub.apply_daemon_event(DaemonEvent::TaskDeleted {
+            task_id: "f".to_owned(),
+        });
+        assert_eq!(hub.tray_download_dot(), None);
+    }
+
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn tray_dot_reconciles_terminal_tasks_after_disconnect() -> Result<(), serde_json::Error> {
+        use crate::shell::DownloadDot;
+        use fluxdown_protocol::AgentEvent;
+
+        for (status, expected) in [(3, DownloadDot::Completed), (4, DownloadDot::Failed)] {
+            let hub = AgentEventHub::new(AgentSnapshot::default());
+            hub.replace_daemon_snapshot(DaemonSnapshot {
+                tasks: vec![tray_task("a", 1)?],
+                ..DaemonSnapshot::default()
+            });
+            hub.publish(AgentEvent::DaemonConnectionChanged(true));
+            assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Downloading));
+            acknowledge_current(&hub);
+            hub.publish(AgentEvent::DaemonConnectionChanged(false));
+            hub.replace_daemon_snapshot(DaemonSnapshot {
+                tasks: vec![tray_task("a", status)?],
+                ..DaemonSnapshot::default()
+            });
+            assert_eq!(hub.tray_download_dot(), None);
+            hub.publish(AgentEvent::DaemonConnectionChanged(true));
+            assert_eq!(hub.tray_download_dot(), Some(expected));
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn tray_dot_ignores_old_paused_work_until_resume() -> Result<(), serde_json::Error> {
+        use crate::shell::DownloadDot;
+        use fluxdown_protocol::AgentEvent;
+
+        let hub = AgentEventHub::new(AgentSnapshot::default());
+        hub.replace_daemon_snapshot(DaemonSnapshot {
+            tasks: vec![tray_task("old", 2)?, tray_task("today", 1)?],
+            ..DaemonSnapshot::default()
+        });
+        hub.publish(AgentEvent::DaemonConnectionChanged(true));
+        hub.replace_daemon_snapshot(DaemonSnapshot {
+            tasks: vec![tray_task("old", 2)?, tray_task("today", 3)?],
+            ..DaemonSnapshot::default()
+        });
+        assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Completed));
+        acknowledge_current(&hub);
+
+        hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("old", 1)?));
+        assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Downloading));
+        hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("old", 2)?));
+        acknowledge_current(&hub);
+        hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("old", 1)?));
+        assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Downloading));
+        acknowledge_current(&hub);
+        hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("old", 1)?));
+        assert_eq!(hub.tray_download_dot(), None);
+
+        hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("old", 2)?));
+        hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("later", 1)?));
+        hub.replace_daemon_snapshot(DaemonSnapshot {
+            tasks: vec![tray_task("old", 2)?, tray_task("later", 3)?],
+            ..DaemonSnapshot::default()
+        });
+        assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Downloading));
+        Ok(())
+    }
+
+    #[cfg(feature = "desktop")]
+    fn tray_task(id: &str, status: i32) -> Result<TaskDto, serde_json::Error> {
+        serde_json::from_value(serde_json::json!({
+            "taskId": id,
+            "url": "https://example.com/file",
+            "fileName": "file.bin",
+            "saveDir": "/tmp",
+            "status": status,
+            "downloadedBytes": 0,
+            "totalBytes": 100,
+            "createdAt": "1"
+        }))
+    }
+
     use fluxdown_protocol::{
         AgentSnapshot, DaemonEvent, DaemonSnapshot, SnapshotBody, TaskDto, WsServerMsg,
     };

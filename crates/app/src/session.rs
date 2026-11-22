@@ -94,6 +94,13 @@ impl AgentSession {
             .is_some_and(|body| body.daemon.tables_loading())
     }
 
+    pub(crate) fn tray_downloads_ready(&self) -> bool {
+        !self.stale
+            && self
+                .agent_snapshot()
+                .is_some_and(|body| body.daemon_connected && !body.daemon.tables_loading())
+    }
+
     /// 已可呈现界面：拿到快照，或已确认离线（宽限已过 / 不可恢复），不必再等。
     #[must_use]
     pub fn is_settled(&self) -> bool {
