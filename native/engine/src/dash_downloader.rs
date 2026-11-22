@@ -2766,6 +2766,7 @@ async fn download_track(
     // 避免泄漏。带检查点的轨道保留它:检查点只记录已完整落盘的段,续传时
     // 会截断到该偏移,丢弃半截数据。
     let temp_path = PathBuf::from(format!("{}{}", dest_path.display(), TEMP_EXT));
+    let started = std::time::Instant::now();
     let _audio_lease = if role == DashTrack::Audio {
         Some(
             output::reserve_audio_partial(
@@ -2803,6 +2804,22 @@ async fn download_track(
     {
         crate::logger::report_warning("dash-download", "remove_temporary_file", &error);
     }
+    tracing::info!(
+        task_id = %p.task_id,
+        track = match role {
+            DashTrack::Video => "video",
+            DashTrack::Audio => "audio",
+        },
+        outcome = match &result {
+            Ok(_) => "completed",
+            Err(DownloadError::Cancelled) => "cancelled",
+            Err(_) => "failed",
+        },
+        media_segments = media_segs.len(),
+        track_bytes = result.as_ref().ok().map(|(bytes, _)| *bytes),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "DASH track transfer finished"
+    );
     result
 }
 
