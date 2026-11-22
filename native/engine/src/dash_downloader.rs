@@ -3717,6 +3717,52 @@ mod tests {
         ))
     }
 
+    #[tokio::test]
+    async fn pr1241_legacy_dash_audio_requires_its_segment_checkpoint() {
+        let dir = scratch_dir("legacy_audio");
+        let db = dash_db(&dir).await;
+        let url = "http://127.0.0.1:1/audio";
+        let p = dash_params(
+            url,
+            &dir,
+            &db,
+            std::sync::Arc::new(crate::intercept::NoopInterceptor),
+            true,
+        );
+        let dest = dir.join("out.audio.m4a");
+        let temp = format!("{}{}", dest.display(), super::TEMP_EXT);
+        std::fs::write(&temp, b"legacy audio").unwrap();
+        p.cancel_token.cancel();
+        let spec = run_spec(&p);
+        let run = || {
+            super::download_track_coordinated(
+                &p,
+                &spec,
+                url,
+                &dest,
+                super::DashTrack::Audio,
+                true,
+                12,
+                12,
+                24,
+            )
+        };
+        let without_checkpoint = run().await;
+        db.insert_segments(&p.task_id, &[(0, 0, 11)]).await.unwrap();
+        let with_checkpoint = run().await;
+        let registered = db.audio_partial_name(&p.task_id).await.unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(
+            matches!(without_checkpoint, Err(super::DownloadError::Io(error))
+            if error.kind() == std::io::ErrorKind::AlreadyExists)
+        );
+        assert!(matches!(
+            with_checkpoint,
+            Err(super::DownloadError::Cancelled)
+        ));
+        assert_eq!(registered, "out.audio.m4a.fdownloading");
+    }
+
     /// 按 `id` 顺序给每个分片返回改写地址的 `segments` 阶段，对清单分片做过滤。
     async fn rewritten_run(
         address: std::net::SocketAddr,

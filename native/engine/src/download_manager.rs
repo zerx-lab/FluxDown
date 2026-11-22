@@ -25043,6 +25043,56 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn pr1241_restart_timeout_reports_failure_without_resetting_checkpoint() {
+        let db = Db::connect("sqlite::memory:").await.unwrap();
+        let id = "restart-timeout";
+        db.insert_task(
+            id,
+            "http://127.0.0.1:1/file",
+            "file.bin",
+            "",
+            1,
+            12,
+            "",
+            "",
+            "",
+            0,
+        )
+        .await
+        .unwrap();
+        db.update_task_status(id, 2, "").await.unwrap();
+        db.update_task_progress(id, 5).await.unwrap();
+        db.insert_segments(id, &[(0, 0, 11)]).await.unwrap();
+        let mut manager = sched_manager(&db, 1);
+        let mut progress = manager.take_progress_rx().unwrap();
+        let worker = tokio::spawn(std::future::pending());
+        let abort = worker.abort_handle();
+        manager.pending_pauses.insert(
+            id.into(),
+            PendingPause {
+                generation: 1,
+                handle: Some(worker),
+                notify: false,
+                resume_requested: false,
+                queue_id: String::new(),
+                is_bt: false,
+            },
+        );
+        manager.restart_task(id).await;
+        abort.abort();
+        let update = progress
+            .try_recv()
+            .expect("restart failure visible to host");
+        assert_eq!(update.task_id, id);
+        assert_eq!(update.status, 4);
+        assert!(update.error_message.contains("did not stop in time"));
+        let task = db.load_task_by_id(id).await.unwrap().unwrap();
+        assert_eq!(task.error_message, update.error_message);
+        assert_eq!(task.downloaded_bytes, 5);
+        assert!(db.has_segment_checkpoint(id).await.unwrap());
+    }
+
     /// 「重新下载」契约：磁盘产物被删、DB 进度/总大小/丢失标记/完成时间全部
     /// 复位、段行清空。这些复位在 `restart_task` 内同步完成于 resume 之前，
     /// 因此断言不与后续（必定失败的）下载 spawn 竞态。
