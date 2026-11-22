@@ -2889,6 +2889,18 @@ mod tests {
         }
     }
 
+    struct GatewayTestDirectory(std::path::PathBuf);
+
+    impl Drop for GatewayTestDirectory {
+        fn drop(&mut self) {
+            if let Err(error) = std::fs::remove_dir_all(&self.0)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!(path = %self.0.display(), %error, "gateway test cleanup failed");
+            }
+        }
+    }
+
     struct TestGateway {
         service: Arc<GatewayService>,
         state: Arc<tokio::sync::Mutex<crate::state::AgentState>>,
@@ -2899,6 +2911,7 @@ mod tests {
         bound_ip: std::net::IpAddr,
         cancel: tokio_util::sync::CancellationToken,
         server_task: tokio::task::JoinHandle<Result<(), std::io::Error>>,
+        cleanup: GatewayTestDirectory,
     }
 
     #[tokio::test]
@@ -3087,12 +3100,24 @@ mod tests {
             allow_local_platform: bool,
             address: &str,
         ) -> Self {
-            Self::new_bound_link(label, server_mode, allow_local_platform, address, true).await
+            Self::new_bound_link(
+                label,
+                server_mode,
+                allow_local_platform,
+                address,
+                true,
+                false,
+            )
+            .await
         }
 
         /// 不装配直连服务的网关（精简宿主）：不下发 `agent.deviceLink` 能力。
         async fn new_without_link(label: &str) -> Self {
-            Self::new_bound_link(label, false, false, "127.0.0.1:0", false).await
+            Self::new_bound_link(label, false, false, "127.0.0.1:0", false, false).await
+        }
+
+        async fn new_with_logging(label: &str) -> Self {
+            Self::new_bound_link(label, false, false, "127.0.0.1:0", true, true).await
         }
 
         async fn new_bound_link(
@@ -3101,12 +3126,14 @@ mod tests {
             allow_local_platform: bool,
             address: &str,
             attach_link: bool,
+            attach_logging: bool,
         ) -> Self {
             let dir = std::env::temp_dir().join(format!(
                 "fluxdown_agent_{label}_{}_{}",
                 std::process::id(),
                 uuid::Uuid::new_v4()
             ));
+            let cleanup = GatewayTestDirectory(dir.clone());
             let store = Arc::new(
                 crate::state::StateStore::open(dir.clone())
                     .await
@@ -3265,6 +3292,9 @@ mod tests {
             if attach_link {
                 gateway = gateway.with_link(link.clone());
             }
+            if attach_logging {
+                gateway = gateway.with_logging_dir(dir.join("engine-data"));
+            }
             let service = Arc::new(gateway);
             let cancel = tokio_util::sync::CancellationToken::new();
             let server_handle = if server_mode {
@@ -3313,6 +3343,7 @@ mod tests {
                 bound_ip: bound.ip(),
                 cancel,
                 server_task,
+                cleanup,
             }
         }
 
@@ -3331,11 +3362,12 @@ mod tests {
                 state,
                 store,
                 api_token: _,
-                dir,
+                dir: _,
                 endpoint_dir: _,
                 bound_ip: _,
                 cancel,
                 server_task,
+                cleanup,
             } = self;
             cancel.cancel();
             server_task
@@ -3345,9 +3377,53 @@ mod tests {
             drop(service);
             drop(state);
             drop(store);
-            if let Err(error) = tokio::fs::remove_dir_all(&dir).await {
-                tracing::warn!(path = %dir.display(), %error, "gateway test cleanup failed");
-            }
+            drop(cleanup);
+        }
+
+        async fn patch_log_level(&self, level: &str) -> RpcResponse {
+            self.call(
+                fluxdown_protocol::method::AGENT_PREFERENCES_PATCH,
+                serde_json::json!({"values": {(crate::logging::LEVEL_PREF): level}}),
+            )
+            .await
+        }
+
+        async fn wire_snapshot(&self) -> serde_json::Value {
+            let response = self
+                .call(
+                    fluxdown_protocol::method::SYSTEM_SNAPSHOT,
+                    serde_json::json!({}),
+                )
+                .await;
+            let RpcResponse::Success(snapshot) = response else {
+                panic!("snapshot failed: {response:?}");
+            };
+            snapshot.result
+        }
+
+        async fn assert_log_level_rejected(
+            &self,
+            level: &str,
+            code: ApplicationErrorCode,
+            field: Option<&str>,
+        ) {
+            let before = self.wire_snapshot().await;
+            let preferences = self.state.lock().await.preferences.clone();
+            let response = self.patch_log_level(level).await;
+            let RpcResponse::Failure(failure) = response else {
+                panic!("log level patch unexpectedly succeeded: {response:?}");
+            };
+            let data = failure.error.data.expect("log level error data");
+            assert_eq!(data.code, code);
+            assert_eq!(data.field.as_deref(), field);
+            assert!(!data.retryable);
+            assert_eq!(self.state.lock().await.preferences, preferences);
+            let after = self.wire_snapshot().await;
+            assert_eq!(after["sequence"], before["sequence"]);
+            assert_eq!(
+                after["body"]["snapshot"]["preferences"],
+                before["body"]["snapshot"]["preferences"]
+            );
         }
 
         async fn patch_gateway(&self, params: serde_json::Value) -> serde_json::Value {
@@ -3410,6 +3486,72 @@ mod tests {
             assert_eq!(&*self.api_token.get(), "original-token");
             assert_eq!(self.service.events.snapshot().sequence, sequence);
         }
+    }
+
+    #[tokio::test]
+    async fn log_level_preference_patch_persists_and_projects() {
+        let harness = TestGateway::new_with_logging("log_level_persists").await;
+        let response = harness.patch_log_level(" debug ").await;
+        let RpcResponse::Success(success) = response else {
+            panic!("log level patch failed: {response:?}");
+        };
+        assert_eq!(success.result["ok"], true);
+        assert!(
+            success.result["revision"]
+                .as_u64()
+                .is_some_and(|rev| rev > 0)
+        );
+        assert_eq!(
+            fluxdown_logfile::startup::read_level(&harness.dir.join("engine-data"))
+                .expect("read persisted log level"),
+            Some(fluxdown_logfile::Level::Debug)
+        );
+        let snapshot = harness.wire_snapshot().await;
+        let preferences = &snapshot["body"]["snapshot"]["preferences"];
+        assert_eq!(preferences["values"][crate::logging::LEVEL_PREF], "debug");
+        assert_eq!(preferences["revision"], success.result["revision"]);
+        harness.finish().await;
+    }
+
+    #[tokio::test]
+    async fn log_level_preference_patch_rejects_invalid_value() {
+        let harness = TestGateway::new_with_logging("log_level_invalid").await;
+        harness
+            .assert_log_level_rejected(
+                "trace",
+                ApplicationErrorCode::InvalidArgument,
+                Some(crate::logging::LEVEL_PREF),
+            )
+            .await;
+        assert!(!harness.dir.join("engine-data").exists());
+        harness.finish().await;
+    }
+
+    #[tokio::test]
+    async fn log_level_preference_patch_requires_logging_dir() {
+        let harness = TestGateway::new("log_level_unsupported").await;
+        harness
+            .assert_log_level_rejected("debug", ApplicationErrorCode::Unsupported, None)
+            .await;
+        harness.finish().await;
+    }
+
+    #[tokio::test]
+    async fn log_level_preference_patch_does_not_publish_on_write_failure() {
+        let harness = TestGateway::new_with_logging("log_level_write_failure").await;
+        // A file cannot replace this directory, even with elevated permissions.
+        tokio::fs::create_dir_all(
+            harness
+                .dir
+                .join("engine-data")
+                .join(fluxdown_logfile::startup::FILE_NAME),
+        )
+        .await
+        .expect("obstruct log level file");
+        harness
+            .assert_log_level_rejected("debug", ApplicationErrorCode::Internal, None)
+            .await;
+        harness.finish().await;
     }
 
     #[tokio::test]

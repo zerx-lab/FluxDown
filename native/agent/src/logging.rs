@@ -341,6 +341,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn log_level_preference_seed_projects_disk_setting_or_auto() {
+        struct TestDirectory(std::path::PathBuf);
+
+        impl Drop for TestDirectory {
+            fn drop(&mut self) {
+                if let Err(error) = std::fs::remove_dir_all(&self.0) {
+                    eprintln!("logging startup test cleanup failed: {error}");
+                }
+            }
+        }
+
+        let dir =
+            std::env::temp_dir().join(format!("fluxdown_agent_log_seed_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).expect("create logging startup test directory");
+        let dir = TestDirectory(dir);
+        let config = dir.0.join(fluxdown_logfile::startup::FILE_NAME);
+        for (contents, expected) in [
+            (None, "auto"),
+            (Some("log_level=warn\n"), "warn"),
+            (Some("log_level=invalid\n"), "auto"),
+        ] {
+            if let Some(contents) = contents {
+                std::fs::write(&config, contents).expect("write startup log level fixture");
+            }
+            let mut state = crate::state::AgentState::default();
+            let _ = state
+                .preferences
+                .values
+                .insert(LEVEL_PREF.to_owned(), "debug".into());
+            seed_level_preference(&mut state, &dir.0);
+            assert_eq!(state.preferences.values[LEVEL_PREF], expected);
+        }
+    }
+
+    #[test]
     fn default_filter_keeps_third_party_quiet() {
         assert_eq!(
             default_directives(Level::Info),

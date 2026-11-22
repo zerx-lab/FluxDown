@@ -439,11 +439,7 @@ fn cmd_config(action: ConfigCmd, json: bool, data_dir: &Path) -> Result<(), Conf
         path: data_dir.join(startup::FILE_NAME).display().to_string(),
         source,
     };
-    let read_level = || {
-        startup::read_level(data_dir)
-            .map(startup::setting_name)
-            .map_err(io_error)
-    };
+    let read_level = || startup::read_level(data_dir).map(startup::setting_name);
     match action {
         ConfigCmd::Set { key, value } if key == startup::KEY => {
             let level =
@@ -461,7 +457,7 @@ fn cmd_config(action: ConfigCmd, json: bool, data_dir: &Path) -> Result<(), Conf
             Ok(())
         }
         ConfigCmd::Get { key: Some(key) } if key == startup::KEY => {
-            println!("{}", read_level()?);
+            println!("{}", read_level().map_err(io_error)?);
             Ok(())
         }
         ConfigCmd::Set { key, value } => {
@@ -478,20 +474,20 @@ fn cmd_config(action: ConfigCmd, json: bool, data_dir: &Path) -> Result<(), Conf
             println!("unset {key}");
             Ok(())
         }
-        ConfigCmd::Get { key } => {
+        ConfigCmd::Get { key: Some(key) } => {
             let cfg = CliConfig::load()?;
-            match key {
-                Some(k) => {
-                    let v = cfg.get(&k)?.unwrap_or_default();
-                    println!("{v}");
-                    Ok(())
-                }
-                None => print_config_list(&cfg, json, read_level()?),
-            }
+            let value = cfg.get(&key)?.unwrap_or_default();
+            println!("{value}");
+            Ok(())
         }
-        ConfigCmd::List => {
+        ConfigCmd::Get { key: None } | ConfigCmd::List => {
             let cfg = CliConfig::load()?;
-            print_config_list(&cfg, json, read_level()?)
+            let level = match read_level() {
+                Ok(level) => level,
+                Err(error) if error.kind() == std::io::ErrorKind::InvalidData => "(invalid)",
+                Err(error) => return Err(io_error(error)),
+            };
+            print_config_list(&cfg, json, level)
         }
         ConfigCmd::Path => {
             println!("{}", fluxdown_cli::config::config_path()?.display());
