@@ -351,6 +351,13 @@ async fn run(cli: Cli, data_dir: &Path) -> i32 {
             Err(e) => {
                 fluxdown_engine::logger::report_error("cli", "config command", &e);
                 eprintln!("fluxdown: {e}");
+                if matches!(e, ConfigError::UnknownKey(_)) {
+                    eprintln!(
+                        "fluxdown: {} is a separate host setting stored in {}",
+                        startup::KEY,
+                        startup::FILE_NAME
+                    );
+                }
                 e.exit().code()
             }
         };

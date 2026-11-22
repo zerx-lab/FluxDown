@@ -22,6 +22,9 @@
 //! | Linux | `$XDG_CONFIG_HOME/fluxdown/cli.toml`（默认 `~/.config/fluxdown/`） |
 //! | macOS | `~/Library/Application Support/dev.zerx.fluxdown/cli.toml` |
 //!
+//! 主机日志级别 `log_level` 由 CLI 命令单独读写引擎数据目录下的 `logging.conf`，
+//! 不是本模块或 [`CliConfig`] 支持的键。
+//!
 //! ## 安全
 //!
 //! `token` 以明文存储（与 `gh`/`aws`/`docker` CLI 一致）。在 Unix 上文件权限
@@ -38,7 +41,7 @@ use crate::exit::ExitCode;
 /// 配置文件名（放在平台配置目录下）。
 const CONFIG_FILE: &str = "cli.toml";
 
-/// 可持久化的配置键（`config set <key> <value>` 的合法 key）。
+/// [`CliConfig`] 支持的 `cli.toml` 键，按 [`CliConfig::entries`] 的输出顺序排列。
 pub const KEYS: [&str; 3] = ["url", "token", "timeout"];
 
 /// 配置操作错误，携带最贴近的退出码。手写 `Display`/`Error`（与 `client.rs`
@@ -47,7 +50,7 @@ pub const KEYS: [&str; 3] = ["url", "token", "timeout"];
 pub enum ConfigError {
     /// 无法定位平台配置目录。
     NoConfigDir,
-    /// 未知的配置键。
+    /// `cli.toml` 不支持的配置键。
     UnknownKey(String),
     /// 键的值格式非法（如 timeout 非数字）。
     InvalidValue {
@@ -81,10 +84,14 @@ impl std::fmt::Display for ConfigError {
                 f.write_str("cannot determine a config directory on this platform")
             }
             ConfigError::UnknownKey(k) => {
-                write!(
-                    f,
-                    "unknown config key: {k} (valid keys: url, token, timeout, log_level)"
-                )
+                write!(f, "unknown cli.toml key: {k} (valid keys: ")?;
+                for (i, key) in KEYS.iter().enumerate() {
+                    if i != 0 {
+                        f.write_str(", ")?;
+                    }
+                    f.write_str(key)?;
+                }
+                f.write_str(")")
             }
             ConfigError::InvalidValue { key, reason } => {
                 write!(f, "invalid value for {key}: {reason}")
@@ -122,7 +129,7 @@ impl ConfigError {
     }
 }
 
-/// 持久化的 CLI 配置。所有字段可选：未设置的项回退到环境变量/默认值。
+/// `cli.toml` 中的客户端配置。所有字段可选：未设置的项回退到环境变量/默认值。
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CliConfig {
     /// 服务基址（对应 `--url` / `FLUXDOWN_URL`）。
