@@ -762,8 +762,22 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
         if pending.is_empty() {
             live.set_phase(TaskPhase::Verifying, 0);
             let _local_work = crate::transfer_activity::LocalWorkGuard::new(params.sink.clone());
-
-            match finalize_and_verify(&params.db, &task_id, &temp_path, &link, part_size).await {
+            let started = tokio::time::Instant::now();
+            let verification =
+                finalize_and_verify(&params.db, &task_id, &temp_path, &link, part_size).await;
+            tracing::info!(
+                %task_id,
+                total_bytes,
+                parts = hash::part_count(total_bytes, part_size),
+                outcome = match &verification {
+                    Ok(()) => "verified",
+                    Err(DownloadError::Ed2kIntegrity(_)) => "integrity_failure",
+                    Err(_) => "verification_error",
+                },
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "eD2K disk verification finished"
+            );
+            match verification {
                 Ok(()) => break 'outer Ok(total_bytes as i64),
                 Err(DownloadError::Ed2kIntegrity(_)) if finalize_retries < FINALIZE_MAX_RETRIES => {
                     let rows = params.db.load_ed2k_blocks(&task_id).await?;
@@ -952,19 +966,31 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
                 // 服务器找源（可能空/失败），Kad 作为去中心化补充。
                 // 竞速 cancel_token：删除/暂停任务时立即中止 ~96s 的服务器扫描，
                 // 避免 handle wait 超时 → 文件被占 → 僵尸任务复活。
+                let started = tokio::time::Instant::now();
                 let server_res = tokio::select! {
                     biased;
                     () = params.cancel_token.cancelled() => break 'outer Err(DownloadError::Cancelled),
                     r = client.find_sources(&link.root_hash, total_bytes, large_file) => r,
                 };
+                tracing::info!(
+                    %task_id,
+                    targets = targets.len(),
+                    reported = server_res.as_ref().map_or(0, |q| q.servers.len()),
+                    answered = server_res.as_ref().map_or(0, |q| {
+                        q.servers.iter().filter(|server| server.result.is_ok()).count()
+                    }),
+                    sources = server_res.as_ref().map_or(0, |q| q.sources.len()),
+                    query_completed = server_res.is_ok(),
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "eD2K server discovery finished"
+                );
                 let mut merged: Vec<Source> = match server_res {
                     Ok(query) => {
                         live.servers_answered(&query.servers);
                         query.sources
                     }
-                    Err(error) => {
+                    Err(_) => {
                         live.servers_answered(&[]);
-                        log_info!("[ed2k] server source query failed; trying Kad: {}", error);
                         Vec::new()
                     }
                 };
@@ -976,6 +1002,7 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
                     Vec::new()
                 };
                 if !nodes_dat.is_empty() {
+                    let started = tokio::time::Instant::now();
                     let kad_res = crate::ed2k::kad::node::find_sources_kad(
                         &link.root_hash,
                         total_bytes,
@@ -988,6 +1015,17 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
                         &config.proxy_protocol_ed2k,
                     )
                     .await;
+                    tracing::info!(
+                        %task_id,
+                        outcome = match &kad_res {
+                            Ok(_) => "completed",
+                            Err(DownloadError::Cancelled) => "cancelled",
+                            Err(_) => "failed",
+                        },
+                        sources = kad_res.as_ref().map_or(0, Vec::len),
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "eD2K Kad discovery finished"
+                    );
                     match kad_res {
                         Ok(peers) => {
                             let mut seen: HashSet<Source> = merged.iter().copied().collect();
@@ -1002,14 +1040,29 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
                         Err(DownloadError::Cancelled) => {
                             break 'outer Err(DownloadError::Cancelled);
                         }
-                        Err(error) => log_info!("[ed2k] Kad source query failed: {}", error),
+                        Err(_) => {} // Discovery failure is summarized above.
                     }
+                } else {
+                    tracing::debug!(
+                        %task_id,
+                        enabled = config.enable_kad,
+                        "eD2K Kad discovery skipped"
+                    );
                 }
                 // 已被 integrity 拉黑的源不算可用源：否则每轮找源都会拿回同一批
                 // 坏源、重置重试计数并立刻再找，任务永不收敛也无任何错误提示。
                 let before = merged.len();
                 merged.retain(|s| !integrity_bl.contains(s));
                 let had_blacklisted = merged.len() < before;
+                tracing::info!(
+                    %task_id,
+                    usable_sources = merged.len(),
+                    integrity_banned = before - merged.len(),
+                    idle_connections = idle.len(),
+                    pending_parts = pending.len(),
+                    elapsed_ms = now.elapsed().as_millis() as u64,
+                    "eD2K source discovery round finished"
+                );
                 if !merged.is_empty() {
                     sources = merged;
                     backoff.clear();
@@ -1272,20 +1325,10 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
                         // 完整性违规 → 拉黑该源；纯网络失败 → 退避。
                         last_error.insert(src, source.to_string());
                         if matches!(source, DownloadError::Ed2kIntegrity(_)) {
-                            log_info!(
-                                "[ed2k] block {} from {:?} INTEGRITY violation: {} — blacklisting",
-                                bi,
-                                src,
-                                source
-                            );
+                            tracing::debug!(%task_id, part = bi, "eD2K integrity violation; source banned");
                             integrity_bl.insert(src);
                         } else {
-                            log_info!(
-                                "[ed2k] block {} from {:?} failed: {} — backoff",
-                                bi,
-                                src,
-                                source
-                            );
+                            tracing::debug!(%task_id, part = bi, "eD2K part transfer failed; source in backoff");
                             backoff.insert(src);
                         }
                     }

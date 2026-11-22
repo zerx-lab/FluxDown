@@ -869,19 +869,13 @@ impl Ed2kClient {
         // 保持持久会话（供 LowID callback 中转）+ 监听器就绪，best-effort。
         let listen_port = match self.ensure_listener().await {
             Ok(port) => port,
-            Err(error) => {
-                log_info!(
-                    "[ed2k-client] listener unavailable; querying sources without callbacks: {}",
-                    error
-                );
+            Err(_) => {
+                tracing::debug!("eD2K listener unavailable; querying without callbacks");
                 0
             }
         };
-        if let Err(error) = self.ensure_server_session().await {
-            log_info!(
-                "[ed2k-client] persistent session unavailable; using standalone source queries: {}",
-                error
-            );
+        if self.ensure_server_session().await.is_err() {
+            tracing::debug!("eD2K persistent session unavailable; using standalone queries");
         }
 
         let servers = self.query_targets();
@@ -922,11 +916,7 @@ impl Ed2kClient {
             let (server, raw) = match res {
                 Ok((server, Ok(sources))) => (server, sources),
                 Ok((server, Err(error))) => {
-                    log_info!(
-                        "[ed2k-client] server {} source query failed: {}",
-                        server,
-                        error
-                    );
+                    tracing::debug!("eD2K standalone server source query failed");
                     query.servers.push(ServerQuery {
                         addr: server,
                         result: Err(error.to_string()),
@@ -968,11 +958,6 @@ impl Ed2kClient {
                 }
             }
         }
-        log_info!(
-            "[ed2k-client] find_sources: {} sources aggregated across {} servers",
-            query.sources.len(),
-            query.servers.len()
-        );
         Ok(query)
     }
 }

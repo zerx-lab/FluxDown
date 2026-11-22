@@ -1517,7 +1517,7 @@ fn should_write_init(last_written: Option<&MapKey>, current: Option<&MapKey>) ->
 }
 
 async fn run_hls_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
-    log_info!("[hls-download] task {} starting, url={}", p.task_id, p.url);
+    tracing::info!(task_id = %p.task_id, resume = p.is_resume, "HLS task starting");
 
     // Transition to status=5 (preparing)
     p.db.update_task_status(&p.task_id, 5, "").await?;
@@ -1580,13 +1580,27 @@ async fn run_hls_download_with_ffmpeg(
         spec: &spec,
         header_origin_url: &p.url,
     };
+    let playlist_started = std::time::Instant::now();
+    let playlist = parse_m3u8(&p.client, &p.url, &root_ctx, &p.cancel_token)
+        .await
+        .map_err(RequestFailure::into_error)
+        .map_err(|e| if confirmed_hls { reject_not_hls(e) } else { e });
+    if let Err(error) = &playlist {
+        tracing::info!(
+            task_id = %p.task_id,
+            outcome = match error {
+                DownloadError::Cancelled => "cancelled",
+                DownloadError::NotAnHlsPlaylist(_) => "not_hls",
+                _ => "failed",
+            },
+            elapsed_ms = playlist_started.elapsed().as_millis() as u64,
+            "HLS root playlist lookup finished"
+        );
+    }
     let FetchedPlaylist {
         content,
         raw: root_raw,
-    } = parse_m3u8(&p.client, &p.url, &root_ctx, &p.cancel_token)
-        .await
-        .map_err(RequestFailure::into_error)
-        .map_err(|e| if confirmed_hls { reject_not_hls(e) } else { e })?;
+    } = playlist?;
 
     // media_playlist_url 是"实际列出 segment/key 的播放列表 URL"：
     // master→media 两级结构里是选中的 media playlist(selected_uri),
@@ -1798,6 +1812,15 @@ async fn run_hls_download_with_ffmpeg(
             VariantBitrate::default(),
         ),
     };
+    tracing::info!(
+        task_id = %p.task_id,
+        segments = segments.len(),
+        live = live.is_some(),
+        fragmented_mp4 = is_fmp4,
+        separate_audio = audio_uri.is_some(),
+        elapsed_ms = playlist_started.elapsed().as_millis() as u64,
+        "HLS playlist selected"
+    );
 
     // 点播视频轨的插件分片过滤:被丢弃的分片不再下载,其余保持原绝对序号(AES-128
     // 隐式 IV 依赖它)。指纹随任务持久化,续传时过滤结果变化则放弃续传全量重下。
@@ -2149,7 +2172,8 @@ async fn run_hls_download_with_ffmpeg(
     }
 
     let key_cache: KeyCache = Arc::new(Mutex::new(HashMap::new()));
-    let mut last_report = std::time::Instant::now();
+    let transfer_started = std::time::Instant::now();
+    let mut last_report = transfer_started;
 
     // -----------------------------------------------------------------------
     // Bounded-concurrency segment download.
@@ -2358,7 +2382,7 @@ async fn run_hls_download_with_ffmpeg(
                 Some((idx, Err(e))) => {
                     // A segment failed permanently. Cancel siblings and stop;
                     // the partial prefix already on disk is kept for resume.
-                    log_info!(
+                    tracing::debug!(
                         "[hls-download] task {} segment {} failed: {}",
                         p.task_id,
                         idx,
@@ -2460,7 +2484,7 @@ async fn run_hls_download_with_ffmpeg(
                 // set_len(start_pos) 兜底一致)。回退失败仅记录日志,不掩盖
                 // 原始写入错误。
                 if let Err(trunc_err) = file.set_len(seg_start_pos as u64).await {
-                    log_info!(
+                    tracing::error!(
                         "[hls] task {} segment {} rollback set_len({}) failed: {}",
                         p.task_id,
                         seg_idx,
@@ -2624,6 +2648,19 @@ async fn run_hls_download_with_ffmpeg(
         }
         None => {}
     }
+    tracing::info!(
+        task_id = %p.task_id,
+        outcome = match &fatal_error {
+            None => "completed",
+            Some(DownloadError::Cancelled) => "cancelled",
+            Some(_) => "failed",
+        },
+        segments_written = next_to_write - first_idx,
+        video_bytes = downloaded_bytes,
+        audio_bytes,
+        elapsed_ms = transfer_started.elapsed().as_millis() as u64,
+        "HLS VOD transfer finished"
+    );
 
     let checkpoint = format_resume_checkpoint(
         next_to_write,
@@ -2735,6 +2772,26 @@ struct FinalizeInput {
 /// 点播沿用任务令牌(暂停/取消时保留 temp 供续传);直播被用户停止时任务令牌已
 /// 取消,调用方传入独立令牌,使已录内容仍能定稿。
 async fn finalize_recording(
+    p: &DownloadParams,
+    input: FinalizeInput,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<i64, DownloadError> {
+    let started = std::time::Instant::now();
+    let result = finalize_recording_inner(p, input, cancel).await;
+    tracing::info!(
+        task_id = %p.task_id,
+        outcome = match &result {
+            Ok(_) => "completed",
+            Err(DownloadError::Cancelled) => "cancelled",
+            Err(_) => "failed",
+        },
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "HLS recording finalization finished"
+    );
+    result
+}
+
+async fn finalize_recording_inner(
     p: &DownloadParams,
     input: FinalizeInput,
     cancel: &tokio_util::sync::CancellationToken,
@@ -4560,7 +4617,8 @@ async fn run_live_track(run: LiveRun) -> Result<LiveOutcome, DownloadError> {
     let mut last_map: Option<MapKey> = None;
     let mut regressions = 0u32;
     let mut failures = 0u32;
-    let mut last_db_save = std::time::Instant::now();
+    let started = std::time::Instant::now();
+    let mut last_db_save = started;
 
     let end = 'record: loop {
         let cycle_started = std::time::Instant::now();
@@ -4745,13 +4803,7 @@ async fn run_live_track(run: LiveRun) -> Result<LiveOutcome, DownloadError> {
                     .await?;
                 last_db_save = std::time::Instant::now();
             }
-            log_info!(
-                "[hls-download] task {} live {} segment seq {} done, {} bytes total",
-                task_id,
-                label,
-                sequence,
-                written_bytes
-            );
+            tracing::trace!(%task_id, track = label, sequence, written_bytes, "HLS live segment written");
         }
 
         // 被插件丢弃的分片永远不会进入写入循环,游标因此不会越过它们:本轮窗口内
@@ -4785,12 +4837,18 @@ async fn run_live_track(run: LiveRun) -> Result<LiveOutcome, DownloadError> {
     };
 
     file.flush().await.map_err(write_failure)?;
-    log_info!(
-        "[hls-download] task {} live {} recording ended after {} segment(s), {} bytes",
-        task_id,
-        label,
+    tracing::info!(
+        %task_id,
+        track = label,
+        outcome = match &end {
+            LiveEnd::EndList => "end_list",
+            LiveEnd::Stopped => "stopped",
+            LiveEnd::GaveUp(_) => "gave_up",
+        },
         recorded,
-        written_bytes
+        written_bytes,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "HLS live track recording ended"
     );
     Ok(LiveOutcome {
         bytes: written_bytes,

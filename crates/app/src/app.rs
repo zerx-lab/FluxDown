@@ -882,6 +882,55 @@ pub(crate) fn agent_data_dir() -> std::path::PathBuf {
     DesktopPaths::from_env().agent_data_dir
 }
 
+/// Engine data root for host startup settings; mirrors the agent's daemon data directory.
+pub(crate) fn engine_data_dir() -> std::path::PathBuf {
+    use std::path::PathBuf;
+
+    if let Some(path) = env::var_os("FLUXDOWN_DATA_DIR") {
+        return PathBuf::from(path);
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(env::var_os("HOME").unwrap_or_else(|| ".".into()))
+                    .join(".local")
+                    .join("share")
+            })
+            .join("fluxdown")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        PathBuf::from(env::var_os("HOME").unwrap_or_else(|| ".".into()))
+            .join("Library")
+            .join("Application Support")
+            .join("fluxdown")
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let exe = env::current_exe().ok();
+        if let Some(path) = exe.as_deref().and_then(portable_data_dir_for_exe) {
+            return path;
+        }
+        env::var_os("LOCALAPPDATA")
+            .or_else(|| env::var_os("APPDATA"))
+            .map_or_else(
+                || {
+                    exe.as_deref()
+                        .and_then(Path::parent)
+                        .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+                },
+                |path| PathBuf::from(path).join("FluxDown"),
+            )
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        PathBuf::from(".")
+    }
+}
+
 fn agent_token_path() -> std::path::PathBuf {
     DesktopPaths::from_env().agent_token
 }

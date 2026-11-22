@@ -10,14 +10,16 @@
 **引擎滚动日志**：格式 `HH:MM:SS.mmm [Tag] message`；这不是 GPUI 界面与 agent 的日志格式。
 - 目录：Windows exe 同级 `logs/`；Linux `~/.local/share/fluxdown/logs/`。文件名 `fluxdown_YYYY-MM-DD.log`，单卷 2MB 分卷，总量超 `log_max_size_mb`（默认 10MB）从最旧删，保留 7 天。
 - Rust：`use crate::logger::log_info; log_info!("[mod] ...")`（Rust 2024 无 `#[macro_use]`，每文件显式 use）。
+- 进程诊断日志按后果分级：单次失败、换路尝试与退避为 Debug；正常生命周期、恢复及低频汇总为 Info；已发生的可恢复降级为 Warn；最终失败、不可用或完整性风险为 Error。逐消息细节只进 Trace，不记录载荷。该分级不改变任务活动历史。
+- `logging.conf` 放引擎数据根目录，仅保存 `log_level=auto|debug|info|warn|error`。GPUI / Web / Android / iOS 经 agent 修改当前主机；CLI `config set log_level` 修改本机。有效 `RUST_LOG` → `FLUXDOWN_LOG_LEVEL` → 文件 → 构建默认（dev Debug、release Info）。重启相应进程生效，不同步到云端。
 - GPUI 任务「日志」另走引擎数据库中的结构化活动历史（`engine/task_activity.rs`、`db.rs`），不是全局滚动文本文件：源端时间、跨重启 ID、查询分页与实时通知配合。当前保留七天且全库最多五万条，两者先到先清理；页面显示保留截断。同步事件入有界队列，持久化失败不广播成功记录，队列溢出/失败形成显式 `journal_overflow` 缺口；关机冲刷有界，不能因日志数据库不可用永久挂住。
 
 **GPUI 桌面链路（desktop / agent / daemon）**——desktop / agent 文本日志独立，daemon 沿用引擎滚动日志：
 - `fluxdownd`：沿用引擎 `logger`（`<engine 数据目录>/logs/fluxdown_*.log`）；`main` 返回错误时带完整错误链落盘。目录总大小上限是 **daemon 配置键** `log_max_size_mb`，唯一类型/范围/默认值目录在 `native/protocol/src/daemon_config.rs`（整数 1–1024 MB，默认 10）；`native/daemon/src/actor.rs::{apply_log_limit,log_limit_bytes}` 在启动加载及该键提交后应用，缺失/非法持久值回退默认。它不控制 desktop / agent 的固定 2MB 单文件轮转。
 - `fluxdown-desktop` 与 `fluxdown-agent`（非 `--server`）：共用 `native/logfile`（`fluxdown_logfile`，零依赖），写 `<agent 数据目录>/logs/{desktop,agent}.log`。单文件 2MB 轮转为 `.log.1`（只留一份，每进程 ≤4MB）；每个文件开头有会话头（版本、exe、参数形态、平台、`SESSIONNAME`/显示协议、`GPUI_*`/`ZED_*` 原值、其余 `FLUXDOWN_*` 只记名字），轮转后重写；同一消息（数字归一）每 60s 只落 10 条，其余汇总成 `[suppressed N repeats over Ts]`；UTC 时间戳；panic 带回溯。
-- desktop 收 `log` 门面：`fluxdown*` 与 `gpui*`（含显卡选择、D3D 特性级别、DirectComposition、设备丢失、draw 失败）按 `FLUXDOWN_LOG_LEVEL`（缺省 info），第三方只收 warn+；另记窗口打开参数、首个窗口 GPU 规格（软件渲染告警）、首帧耗时 / 10s 无首帧告警、UI 线程心跳看门狗（停摆 10/60/300s 告警，macOS 因 App Nap 不启用）、agent 连接状态迁移与 agent 进程拉起/退出。启动参数只记开关与位置参数个数，不记链接。
-- agent 收 `tracing`：`RUST_LOG` 非空时原样生效，否则 `warn` + 第一方 crate（含 `fluxdown_daemon`）按 `FLUXDOWN_LOG_LEVEL`；daemon 子进程 stderr 追加到同目录 `fluxdownd.stderr.log`（超 1MB 截断），拉起 / 非零退出（含存活时长）记入 `agent.log`。`--server` 模式仍是 stderr tracing。
-- 移动端本机主机（`native/mobile/src/local.rs`）在启动进程内 daemon **之前**调 `fluxdown_agent::logging::init_embedded`：daemon 只在无全局订阅者时才装 stderr 订阅者，顺序反了 agent / daemon 的 tracing 全部丢失（手机没有可读 stderr）。进程级只初始化一次。
+- desktop 收 `log` 门面；有效 `RUST_LOG` 通过桥接支持 tracing 指令，否则 `fluxdown*` 与 `gpui*` 按启动级别输出，其他 target 至多收 Warn。另记窗口打开参数、GPU 规格、首帧耗时与 10s 超时、UI 心跳停摆和 agent 连接/退出。启动参数只记开关与位置参数个数，不记链接。
+- agent 收 `tracing`：有效 `RUST_LOG` 优先，否则第一方 target（含嵌入式引擎）按启动级别输出，其他 target 至多收 Warn。桌面监管器将 daemon stderr 追加到 `fluxdownd.stderr.log`（超 1MB 截断），将进程拉起、非零退出和崩溃循环记入 `agent.log`；`--server` 自身使用 stderr tracing。
+- 移动端本机主机（`native/mobile/src/local.rs`）在启动进程内 daemon **之前**调 `fluxdown_agent::logging::init_embedded`。引擎沿用已安装的全局订阅者，agent / daemon / engine 的 tracing 均写入 `agent.log`。进程级只初始化一次。
 - Doctor 的日志目录检查、「打开日志目录」、日志导出都指向 `<agent 数据目录>/logs`（`log_export::agent_log_dir`）。嵌入宿主（`start_embedded`）的 Doctor 不产出 `app_listener` / `local_server` / `disk_sleep`（`DiagnosticsService::for_embedded_host`：无 TCP 网关 / NMH IPC / 兼容 API，也无机械盘），网关虽是 server 模式但放行 `agent.diagnostics.exportLogs`（`GatewayService::with_local_log_export`：只有同进程 App 能连，目标是 App 沙盒路径）。
 
 **导出脱敏的唯一规则源**：`native/logfile/src/sanitize.rs::SANITIZE_PATTERNS`，由 `fluxdown_logfile::SANITIZE_PATTERNS` 导出；引擎 `logger::{sanitize_log_str,sanitize_log_bytes}` 与 agent `log_export::sanitize_text` 各自编译同一规则并按表顺序套用，不再维护两份正则。覆盖 URL userinfo、Telegram bot 路径令牌、敏感 query、超长 query、Cookie / Authorization、代理凭据与 Linux / Windows 用户目录；非 UTF-8 按有损解码后脱敏。规则用于导出，不代表原始落盘日志已脱敏；agent 的配置快照导出另先按结构清掉秘密字段（`sanitize_json_export`）。

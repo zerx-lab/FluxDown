@@ -4,19 +4,24 @@
 //! 收集面按「出问题时能定位」取舍，不记常规操作：
 //! - `log` 门面：GPUI 平台层（显卡选择、D3D 特性级别、DirectComposition、设备丢失与重建、
 //!   draw/resize 失败）、gpui-component（经 `tracing` 的 `log` 兼容层）与本 crate 自身；
-//!   第一方与 `gpui*` 按 `FLUXDOWN_LOG_LEVEL`（缺省 info），其余第三方只收 warn 以上。
+//!   `RUST_LOG` 支持 tracing EnvFilter 指令。未覆盖时第一方与 `gpui*` 按
+//!   `FLUXDOWN_LOG_LEVEL`、主机启动配置、构建默认值依次取级别，其余第三方至多收 warn。
 //! - 会话头：版本、可执行文件、启动参数形态（不记链接内容）、平台、远程会话 / 显示协议、
 //!   影响渲染的环境变量。
 //! - 窗口：打开参数、GPU 规格（是否软件渲染）、首帧耗时；超时未出首帧告警。
 //! - UI 线程看门狗：主线程心跳停摆超过阈值时告警并在恢复时记录停摆时长。
 //! - panic（含回溯）与启动失败原因。
 
+use std::fmt::{self, Write as _};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use fluxdown_logfile::{Level, LogFile};
+use fluxdown_logfile::{Level, LogFile, startup};
 use gpui::{App, Window};
+use tracing::{Event, Subscriber, field};
+use tracing_log::{AsLog as _, LogTracer, NormalizeEvent as _};
+use tracing_subscriber::{EnvFilter, Layer, layer::Context, prelude::*};
 
 /// 按配置级别放行的 target 前缀：本仓库 crate 与 GPUI 全家（平台层诊断都在这里）。
 const VERBOSE_TARGET_PREFIXES: &[&str] = &["fluxdown", "gpui"];
@@ -49,14 +54,50 @@ pub(crate) fn init() {
             }
         };
     fluxdown_logfile::install_panic_hook();
-    let verbose = std::env::var("FLUXDOWN_LOG_LEVEL")
-        .ok()
-        .and_then(|value| Level::parse(&value))
-        .unwrap_or(Level::Info);
-    let filter = TargetFilter {
-        verbose: level_filter(verbose),
-        others: level_filter(verbose.min(Level::Warn)),
+    match std::env::var("RUST_LOG") {
+        Ok(value) if !value.trim().is_empty() => match EnvFilter::try_new(value.trim()) {
+            Ok(filter) => {
+                let subscriber = tracing_subscriber::registry()
+                    .with(DesktopTracingLayer(log))
+                    .with(filter);
+                match tracing::subscriber::set_global_default(subscriber) {
+                    Ok(()) => {
+                        if let Err(error) = LogTracer::init() {
+                            log.log_unthrottled(
+                                Level::Warn,
+                                &format!("could not bridge desktop log records: {error}"),
+                            );
+                        }
+                        return;
+                    }
+                    Err(error) => log.log_unthrottled(
+                        Level::Warn,
+                        &format!("could not install desktop RUST_LOG subscriber: {error}"),
+                    ),
+                }
+            }
+            Err(_) => log.log_unthrottled(
+                Level::Warn,
+                "invalid desktop RUST_LOG; using the startup log level",
+            ),
+        },
+        Err(std::env::VarError::NotUnicode(_)) => log.log_unthrottled(
+            Level::Warn,
+            "desktop RUST_LOG is not UTF-8; using the startup log level",
+        ),
+        _ => {}
+    }
+    let persisted = match startup::read_level(&crate::app::engine_data_dir()) {
+        Ok(level) => level,
+        Err(error) => {
+            log.log_unthrottled(
+                Level::Warn,
+                &format!("could not read desktop startup log level: {error}"),
+            );
+            None
+        }
     };
+    let filter = TargetFilter::startup(startup::resolve_level(persisted));
     let max = filter.verbose.max(filter.others);
     if log::set_boxed_logger(Box::new(DesktopLogger { log, filter })).is_ok() {
         log::set_max_level(max);
@@ -108,6 +149,13 @@ struct TargetFilter {
 }
 
 impl TargetFilter {
+    fn startup(level: Level) -> Self {
+        Self {
+            verbose: level_filter(level),
+            others: level_filter(level.min(Level::Warn)),
+        }
+    }
+
     fn allows(&self, level: log::Level, target: &str) -> bool {
         let filter = if VERBOSE_TARGET_PREFIXES
             .iter()
@@ -138,23 +186,118 @@ impl log::Log for DesktopLogger {
     fn flush(&self) {}
 }
 
-/// `target: message`；警告 / 错误附源码位置（`log_err` 的 target 为空，位置是唯一线索）。
-fn format_record(record: &log::Record<'_>) -> String {
-    let location = record.file().map(|file| {
-        let line = record.line().unwrap_or_default();
-        format!("{}:{line}", short_path(file))
-    });
-    let target = match (record.target(), &location) {
-        ("", Some(location)) => location.as_str(),
-        ("", None) => "?",
-        (target, _) => target,
-    };
-    match &location {
-        Some(location) if record.level() <= log::Level::Warn && !record.target().is_empty() => {
-            format!("{target}: {} ({location})", record.args())
-        }
-        _ => format!("{target}: {}", record.args()),
+/// `RUST_LOG` only: filtering happens in EnvFilter, including directives scoped to tracing spans.
+struct DesktopTracingLayer(&'static LogFile);
+
+impl<S: Subscriber> Layer<S> for DesktopTracingLayer {
+    fn on_event(&self, event: &Event<'_>, _: Context<'_, S>) {
+        self.0.log(
+            to_level(event.metadata().level().as_log()),
+            &format_event(event),
+        );
     }
+}
+
+fn format_event(event: &Event<'_>) -> String {
+    // LogTracer uses a generic tracing callsite; recover the actual log target/location.
+    let normalized = event.normalized_metadata();
+    let meta = normalized.as_ref().unwrap_or_else(|| event.metadata());
+    format_message(
+        meta.target(),
+        meta.file(),
+        meta.line(),
+        meta.level().as_log(),
+        |line| {
+            event.record(&mut EventText {
+                line,
+                first: true,
+                bridged: normalized.is_some(),
+            });
+        },
+    )
+}
+
+struct EventText<'a> {
+    line: &'a mut String,
+    first: bool,
+    bridged: bool,
+}
+
+impl EventText<'_> {
+    fn append(&mut self, name: &str, value: fmt::Arguments<'_>) {
+        if self.bridged && name != "message" {
+            return;
+        }
+        if !self.first {
+            self.line.push(' ');
+        }
+        self.first = false;
+        if name != "message" {
+            self.line.push_str(name);
+            self.line.push('=');
+        }
+        append_value(self.line, value);
+    }
+}
+
+impl field::Visit for EventText<'_> {
+    fn record_debug(&mut self, field: &field::Field, value: &dyn fmt::Debug) {
+        self.append(field.name(), format_args!("{value:?}"));
+    }
+
+    fn record_str(&mut self, field: &field::Field, value: &str) {
+        if field.name() == "message" {
+            self.append(field.name(), format_args!("{value}"));
+        } else {
+            self.record_debug(field, &value);
+        }
+    }
+}
+
+fn append_value(line: &mut String, value: fmt::Arguments<'_>) {
+    let start = line.len();
+    if line.write_fmt(value).is_err() {
+        line.truncate(start);
+        line.push_str("<formatting failed>");
+    }
+}
+
+fn format_record(record: &log::Record<'_>) -> String {
+    format_message(
+        record.target(),
+        record.file(),
+        record.line(),
+        record.level(),
+        |line| append_value(line, *record.args()),
+    )
+}
+
+/// `target: message`；警告 / 错误附源码位置（`log_err` 的 target 为空，位置是唯一线索）。
+fn format_message(
+    target: &str,
+    file: Option<&str>,
+    line: Option<u32>,
+    level: log::Level,
+    append: impl FnOnce(&mut String),
+) -> String {
+    let location = file
+        .filter(|_| target.is_empty() || level <= log::Level::Warn)
+        .map(|file| format!("{}:{}", short_path(file), line.unwrap_or_default()));
+    let mut text = if target.is_empty() {
+        location.as_deref().unwrap_or("?").to_owned()
+    } else {
+        target.to_owned()
+    };
+    text.push_str(": ");
+    append(&mut text);
+    if !target.is_empty()
+        && let Some(location) = location
+    {
+        text.push_str(" (");
+        text.push_str(&location);
+        text.push(')');
+    }
+    text
 }
 
 /// 源码路径只保留最后三段（`<crate-dir>/src/<file>.rs`），去掉构建机绝对路径。
@@ -221,7 +364,9 @@ fn session_header() -> String {
             lines.push(format!("  {name}: {value}"));
         }
     }
-    lines.extend(env_overrides(std::env::vars()));
+    lines.extend(env_overrides(std::env::vars_os().filter_map(
+        |(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)),
+    )));
     lines.join("\n")
 }
 
@@ -247,17 +392,14 @@ fn describe_args(args: impl Iterator<Item = String>) -> String {
     text
 }
 
-/// 影响渲染 / 日志的环境变量原样记录；其余 `FLUXDOWN_*` 只记名字（可能是访问密钥等机密）。
+/// 记录渲染开关；可能携带秘密的 `FLUXDOWN_*` 及 `RUST_LOG` 指令仅记是否设置。
 fn env_overrides(vars: impl Iterator<Item = (String, String)>) -> Vec<String> {
     let mut lines: Vec<String> = vars
         .filter_map(|(name, value)| {
-            if name.starts_with("GPUI_")
-                || name.starts_with("ZED_")
-                || name == "RUST_LOG"
-                || name == "FLUXDOWN_LOG_LEVEL"
+            if name.starts_with("GPUI_") || name.starts_with("ZED_") || name == "FLUXDOWN_LOG_LEVEL"
             {
                 Some(format!("  env {name}={value}"))
-            } else if name.starts_with("FLUXDOWN_") {
+            } else if name.starts_with("FLUXDOWN_") || name == "RUST_LOG" {
                 Some(format!("  env {name}=<set>"))
             } else {
                 None
@@ -424,6 +566,7 @@ mod tests {
             ("FLUXDOWN_ACCESS_KEY", "secret"),
             ("GPUI_DISABLE_DIRECT_COMPOSITION", "1"),
             ("FLUXDOWN_LOG_LEVEL", "debug"),
+            ("RUST_LOG", "[request{token=secret}]=debug"),
             ("PATH", "/bin"),
         ]
         .into_iter()
@@ -434,21 +577,68 @@ mod tests {
                 "  env FLUXDOWN_ACCESS_KEY=<set>",
                 "  env FLUXDOWN_LOG_LEVEL=debug",
                 "  env GPUI_DISABLE_DIRECT_COMPOSITION=1",
+                "  env RUST_LOG=<set>",
             ]
         );
     }
 
     #[test]
     fn third_party_targets_only_pass_warnings_by_default() {
-        let filter = TargetFilter {
-            verbose: log::LevelFilter::Info,
-            others: log::LevelFilter::Warn,
-        };
+        let filter = TargetFilter::startup(Level::Info);
         assert!(filter.allows(log::Level::Info, "gpui_windows::directx_devices"));
         assert!(filter.allows(log::Level::Info, "fluxdown_ui_app::agent_client"));
         assert!(!filter.allows(log::Level::Info, "naga::front"));
         assert!(filter.allows(log::Level::Error, ""));
         assert!(!filter.allows(log::Level::Debug, "gpui"));
+    }
+
+    #[test]
+    fn startup_warn_cap_does_not_widen_an_error_only_level() {
+        let filter = TargetFilter::startup(Level::Error);
+        assert!(!filter.allows(log::Level::Warn, "gpui"));
+        assert!(!filter.allows(log::Level::Warn, "naga::front"));
+        assert!(filter.allows(log::Level::Error, "naga::front"));
+    }
+
+    #[test]
+    fn rust_log_filters_bridged_targets_and_native_spans() {
+        #[derive(Clone, Default)]
+        struct Capture(Arc<std::sync::Mutex<Vec<String>>>);
+
+        impl<S: Subscriber> Layer<S> for Capture {
+            fn on_event(&self, event: &Event<'_>, _: Context<'_, S>) {
+                self.0.lock().unwrap().push(format_event(event));
+            }
+        }
+
+        let capture = Capture::default();
+        let filter = EnvFilter::try_new("off,gpui=debug,[request{verbose=true}]=trace").unwrap();
+        let subscriber = tracing_subscriber::registry()
+            .with(capture.clone())
+            .with(filter);
+        tracing::subscriber::with_default(subscriber, || {
+            let bridge = LogTracer::new();
+            let emit = |target| {
+                log::Log::log(
+                    &bridge,
+                    &log::Record::builder()
+                        .level(log::Level::Debug)
+                        .target(target)
+                        .args(format_args!("draw frame"))
+                        .build(),
+                );
+            };
+            emit("gpui::renderer");
+            emit("naga");
+            tracing::trace!(target: "naga", "outside request");
+            let request = tracing::info_span!("request", verbose = true);
+            let _entered = request.enter();
+            tracing::trace!(target: "naga", "inside request");
+        });
+        assert_eq!(
+            *capture.0.lock().unwrap(),
+            ["gpui::renderer: draw frame", "naga: inside request"],
+        );
     }
 
     #[test]

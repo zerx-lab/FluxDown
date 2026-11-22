@@ -1106,12 +1106,15 @@ impl PluginManager {
             Some(PluginError::Timeout)
                 if egress.is_some_and(|egress| egress.observer().network_caused_timeout()) =>
             {
-                log_info!("[plugin:{identity}] 超时由网络造成（断网 / 仍在等待网络），不计入熔断");
+                tracing::debug!(
+                    identity,
+                    "network timeout does not count toward plugin circuit breaker"
+                );
             }
-            Some(PluginError::Timeout | PluginError::MemoryLimitExceeded) => {
+            Some(error @ (PluginError::Timeout | PluginError::MemoryLimitExceeded)) => {
                 let n = streak.fetch_add(1, Ordering::SeqCst) + 1;
                 if n >= CIRCUIT_BREAKER_THRESHOLD {
-                    self.trip_circuit_breaker(identity).await;
+                    self.trip_circuit_breaker(identity, error).await;
                 }
             }
             _ => streak.store(0, Ordering::SeqCst),
@@ -1483,6 +1486,23 @@ impl PluginManager {
     /// 通知平面：遍历声明该事件且 match 命中的启用插件，逐个在插件 runtime 上 spawn
     /// invoke_hook。**全部 fire-and-forget，本函数立即返回**。
     pub async fn notify(self: &Arc<Self>, event: PluginEvent) {
+        self.dispatch_notification(event, None).await;
+    }
+
+    pub(crate) async fn track_failure_notification(
+        self: &Arc<Self>,
+        event: PluginEvent,
+    ) -> Vec<tokio::task::JoinHandle<()>> {
+        let mut pending = Vec::new();
+        self.dispatch_notification(event, Some(&mut pending)).await;
+        pending
+    }
+
+    async fn dispatch_notification(
+        self: &Arc<Self>,
+        event: PluginEvent,
+        mut pending: Option<&mut Vec<tokio::task::JoinHandle<()>>>,
+    ) {
         let snapshot = self.plugins.read().await.clone();
         let ev_name = event.declared_name();
         let url = event.url().to_string();
@@ -1497,7 +1517,10 @@ impl PluginManager {
                 .as_ref()
                 .is_some_and(|m| m.events.iter().any(|e| e == ev_name))
             {
-                self.deliver_host_event(&p.manifest.identity, event.clone());
+                let work = self.deliver_host_event(&p.manifest.identity, event.clone());
+                if let Some(pending) = &mut pending {
+                    pending.push(work);
+                }
             }
             let Some(hooks) = &p.manifest.hooks else {
                 continue;
@@ -1567,7 +1590,7 @@ impl PluginManager {
                 .as_ref()
                 .map(|_| crate::transfer_activity::LocalWorkGuard::new(sink.clone()));
 
-            handle.spawn(async move {
+            let work = handle.spawn(async move {
                 let _local_work = local_work;
                 if let Some(tid) = &activity_task_id {
                     sink.emit(EngineEvent::PluginHookActivity {
@@ -1603,6 +1626,9 @@ impl PluginManager {
                     });
                 }
             });
+            if let Some(pending) = &mut pending {
+                pending.push(work);
+            }
         }
     }
 
@@ -2471,7 +2497,7 @@ impl PluginManager {
     }
 
     /// 熔断：自动禁用 + emit 事件。
-    async fn trip_circuit_breaker(&self, identity: &str) {
+    async fn trip_circuit_breaker(&self, identity: &str, trigger: &PluginError) {
         if let Err(error) = self
             .write_enabled(identity, false, DisabledReason::CircuitBreaker)
             .await
@@ -2485,8 +2511,8 @@ impl PluginManager {
             identity: identity.to_string(),
             reason: DisabledReason::CircuitBreaker.as_str().to_string(),
         });
-        log_info!("[plugin] {identity} 连续超时，已自动熔断禁用");
-        self.audit_event(identity, "breaker", "", "consecutive timeouts");
+        tracing::warn!(identity, %trigger, "plugin disabled by circuit breaker");
+        self.audit_event(identity, "breaker", "", "consecutive execution limits");
     }
 
     /// 批量设置，all-or-nothing。
@@ -4584,7 +4610,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn circuit_breaker_trip_publishes_disabled_state_before_notice() {
         let (manager, sink, _root) = revoke_fixture().await;
-        manager.trip_circuit_breaker(REVOKE_ID).await;
+        manager
+            .trip_circuit_breaker(REVOKE_ID, &PluginError::Timeout)
+            .await;
 
         let events = sink.0.lock().unwrap();
         let changed_at = events
@@ -4705,7 +4733,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn failed_upgrade_restores_breaker_state() {
         let (manager, _sink, root) = revoke_fixture().await;
-        manager.trip_circuit_breaker(REVOKE_ID).await;
+        manager
+            .trip_circuit_breaker(REVOKE_ID, &PluginError::Timeout)
+            .await;
 
         // 新版本声明了不存在的 resolver 入口 → 加载失败 → 安装回滚。
         let src = root.join(".bad-src");
