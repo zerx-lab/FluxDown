@@ -4253,7 +4253,14 @@
       "rssImageProxyUnverifiable": "b6f4e479afad",
       "errReasonTaskFileClearPending": "0717c2341321",
       "mobileDlNotifTaskChannel": "4380e129a4ae",
-      "mobileDlNotifTaskChannelDesc": "24b6f5f07b64"
+      "mobileDlNotifTaskChannelDesc": "24b6f5f07b64",
+      "diagnosticsLogLevel": "9ab874acc0e2",
+      "diagnosticsLogLevelDesc": "bdf42ef479c0",
+      "diagnosticsLogLevelAuto": "d461a493a375",
+      "diagnosticsLogLevelDebug": "1a03bd2fd107",
+      "diagnosticsLogLevelInfo": "170322a32f3c",
+      "diagnosticsLogLevelWarn": "e981ddae45d8",
+      "diagnosticsLogLevelError": "54a0e8c17ebb"
     },
     "zh-TW": {
       "languageNativeName": "ba118bf7fc9c",
@@ -8505,7 +8512,14 @@
       "rssImageProxyUnverifiable": "b6f4e479afad",
       "mobileDlNotifTaskChannel": "4380e129a4ae",
       "mobileDlNotifTaskChannelDesc": "24b6f5f07b64",
-      "errReasonTaskFileClearPending": "0717c2341321"
+      "errReasonTaskFileClearPending": "0717c2341321",
+      "diagnosticsLogLevel": "9ab874acc0e2",
+      "diagnosticsLogLevelDesc": "bdf42ef479c0",
+      "diagnosticsLogLevelAuto": "d461a493a375",
+      "diagnosticsLogLevelDebug": "1a03bd2fd107",
+      "diagnosticsLogLevelInfo": "170322a32f3c",
+      "diagnosticsLogLevelWarn": "e981ddae45d8",
+      "diagnosticsLogLevelError": "54a0e8c17ebb"
     },
     "ru": {
       "languageNativeName": "ba118bf7fc9c",
@@ -12757,7 +12771,14 @@
       "rssImageProxyUnverifiable": "b6f4e479afad",
       "errReasonTaskFileClearPending": "0717c2341321",
       "mobileDlNotifTaskChannel": "4380e129a4ae",
-      "mobileDlNotifTaskChannelDesc": "24b6f5f07b64"
+      "mobileDlNotifTaskChannelDesc": "24b6f5f07b64",
+      "diagnosticsLogLevel": "9ab874acc0e2",
+      "diagnosticsLogLevelDesc": "bdf42ef479c0",
+      "diagnosticsLogLevelAuto": "d461a493a375",
+      "diagnosticsLogLevelDebug": "1a03bd2fd107",
+      "diagnosticsLogLevelInfo": "170322a32f3c",
+      "diagnosticsLogLevelWarn": "e981ddae45d8",
+      "diagnosticsLogLevelError": "54a0e8c17ebb"
     },
     "es": {
       "languageNativeName": "ba118bf7fc9c",
@@ -17009,7 +17030,14 @@
       "rssImageProxyUnverifiable": "b6f4e479afad",
       "errReasonTaskFileClearPending": "0717c2341321",
       "mobileDlNotifTaskChannel": "4380e129a4ae",
-      "mobileDlNotifTaskChannelDesc": "24b6f5f07b64"
+      "mobileDlNotifTaskChannelDesc": "24b6f5f07b64",
+      "diagnosticsLogLevel": "9ab874acc0e2",
+      "diagnosticsLogLevelDesc": "bdf42ef479c0",
+      "diagnosticsLogLevelAuto": "d461a493a375",
+      "diagnosticsLogLevelDebug": "1a03bd2fd107",
+      "diagnosticsLogLevelInfo": "170322a32f3c",
+      "diagnosticsLogLevelWarn": "e981ddae45d8",
+      "diagnosticsLogLevelError": "54a0e8c17ebb"
     }
   }
 }

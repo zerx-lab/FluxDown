@@ -4248,5 +4248,12 @@
   "rssImageLoading": "正在載入圖片…",
   "rssImageProxyUnverifiable": "已阻止圖片預覽：無法校驗代理出口存取的圖片目標。",
   "mobileDlNotifTaskChannel": "逐任務下載進度",
-  "mobileDlNotifTaskChannelDesc": "為本機每個正在下載的任務單獨顯示進度通知"
+  "mobileDlNotifTaskChannelDesc": "為本機每個正在下載的任務單獨顯示進度通知",
+  "diagnosticsLogLevel": "主機記錄等級",
+  "diagnosticsLogLevelDesc": "重新啟動主機後生效。內建主機需完全結束並重新開啟應用程式。環境變數可覆蓋此設定。",
+  "diagnosticsLogLevelAuto": "自動",
+  "diagnosticsLogLevelDebug": "除錯",
+  "diagnosticsLogLevelInfo": "資訊",
+  "diagnosticsLogLevelWarn": "警告",
+  "diagnosticsLogLevelError": "錯誤"
 }
