@@ -45,12 +45,8 @@ const DAEMON_BIN: &str = if cfg!(windows) {
 } else {
     "fluxdownd"
 };
-#[cfg(any(windows, target_os = "linux"))]
-const DESKTOP_BIN: &str = if cfg!(windows) {
-    "fluxdown-desktop.exe"
-} else {
-    "fluxdown-desktop"
-};
+#[cfg(target_os = "linux")]
+const DESKTOP_BIN: &str = "fluxdown-desktop";
 
 /// `/api/release` 的资产来自桌面包、服务器包还是移动端包（同时决定校验和哨兵名）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,6 +119,8 @@ pub(crate) enum InstallError {
         context: String,
         #[source]
         source: io::Error,
+        #[cfg(windows)]
+        rollback_incomplete: bool,
     },
     /// 当前安装形态没有应用内安装路径。
     #[error("in-app install is not supported for {0:?}")]
@@ -239,8 +237,12 @@ pub(crate) async fn apply(
         UpdateInstallKind::WindowsSetup => {
             blocking(move || windows::apply_setup(&package, &work_dir)).await
         }
-        #[cfg(any(windows, target_os = "linux"))]
-        UpdateInstallKind::WindowsPortable | UpdateInstallKind::LinuxPortable => {
+        #[cfg(windows)]
+        UpdateInstallKind::WindowsPortable => {
+            blocking(move || super::windows_portable::prepare(&package, &work_dir)).await
+        }
+        #[cfg(target_os = "linux")]
+        UpdateInstallKind::LinuxPortable => {
             blocking(move || apply_portable(&package, &work_dir)).await
         }
         #[cfg(target_os = "linux")]
@@ -256,6 +258,20 @@ pub(crate) async fn apply(
         }
         kind => Err(InstallError::Unsupported(kind)),
     }
+}
+
+#[cfg(windows)]
+pub(super) fn extract_portable(package: &Path, work_dir: &Path) -> Result<PathBuf, InstallError> {
+    archive::extract(package, &work_dir.join("extract"))
+}
+
+#[cfg(windows)]
+pub(super) fn replace_portable(
+    root: &Path,
+    dest: &Path,
+    required: &[&str],
+) -> Result<(), InstallError> {
+    replace::replace_files(root, dest, replace::Selection::All { required })
 }
 
 /// 清理上次替换留下的旧文件：安装目录里的 `*.fluxdown-old`、macOS bundle 旁的
@@ -394,7 +410,7 @@ where
 
 /// 便携形态（Windows 便携版 / Linux tarball）：解压并替换程序目录里包内存在的文件，
 /// 然后重启桌面。
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(target_os = "linux")]
 fn apply_portable(package: &Path, work_dir: &Path) -> Result<RestartPlan, InstallError> {
     let exe = current_exe_and_dir()?;
     replace::apply_archive(
@@ -409,7 +425,7 @@ fn apply_portable(package: &Path, work_dir: &Path) -> Result<RestartPlan, Instal
 }
 
 /// 桌面重启计划：同目录 `fluxdown-desktop[.exe] --after-update`。
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(target_os = "linux")]
 fn desktop_relaunch(agent_exe: &Path) -> RestartPlan {
     RestartPlan::desktop(
         agent_exe.with_file_name(DESKTOP_BIN),

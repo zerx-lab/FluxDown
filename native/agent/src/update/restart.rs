@@ -54,6 +54,11 @@ enum Action {
     /// 静默运行 Inno Setup 安装器（Windows 安装版）。
     #[cfg(windows)]
     Installer { installer: PathBuf, log: PathBuf },
+    #[cfg(windows)]
+    Portable {
+        commit: std::process::ChildStdin,
+        desktop: PathBuf,
+    },
 }
 
 impl RestartPlan {
@@ -87,6 +92,14 @@ impl RestartPlan {
         }
     }
 
+    #[cfg(windows)]
+    pub(super) fn portable(commit: std::process::ChildStdin, desktop: PathBuf) -> Self {
+        Self {
+            action: Action::Portable { commit, desktop },
+            server: false,
+        }
+    }
+
     fn run(self) -> std::io::Result<()> {
         match self.action {
             #[cfg(any(not(unix), target_os = "linux", target_os = "macos"))]
@@ -104,13 +117,33 @@ impl RestartPlan {
             }
             #[cfg(windows)]
             Action::Installer { installer, log } => run_installer(&installer, &log),
+            #[cfg(windows)]
+            Action::Portable {
+                mut commit,
+                desktop,
+            } => {
+                if let Err(error) = std::io::Write::write_all(&mut commit, &[1]) {
+                    tracing::error!(%error, "portable update worker exited before taking over");
+                    spawn_detached(&desktop, &[RELAUNCH_ARG.into()])?;
+                    return Err(error);
+                }
+                Ok(())
+            }
         }
     }
 }
 
-/// 登记重启计划；agent 运行期完全结束后由 [`run_pending`] 执行。后登记的覆盖先登记的。
+/// 登记重启计划；agent 运行期结束后执行。便携更新已接管时，不允许普通重启覆盖它。
 pub(crate) fn schedule(plan: RestartPlan) {
-    *PENDING.lock().unwrap_or_else(PoisonError::into_inner) = Some(plan);
+    let mut pending = PENDING.lock().unwrap_or_else(PoisonError::into_inner);
+    #[cfg(windows)]
+    if matches!(
+        pending.as_ref().map(|plan| &plan.action),
+        Some(Action::Portable { .. })
+    ) {
+        return;
+    }
+    *pending = Some(plan);
 }
 
 /// 已登记的计划是否是 headless 服务器自身重启。
@@ -242,7 +275,7 @@ fn detach(command: &mut std::process::Command) {
 }
 
 #[cfg(windows)]
-fn detach(command: &mut std::process::Command) {
+pub(super) fn detach(command: &mut std::process::Command) {
     use std::os::windows::process::CommandExt;
 
     command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);

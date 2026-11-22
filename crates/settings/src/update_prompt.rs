@@ -155,7 +155,33 @@ impl Render for UpdatePromptView {
             .px(tokens.spacing.md)
             .pb(tokens.spacing.md)
             .overflow_y_scrollbar()
-            .children(notes);
+            .children(notes)
+            .children(
+                (failed
+                    && status.install_kind
+                        == fluxdown_protocol::UpdateInstallKind::WindowsPortable
+                    && status.failure == Some(fluxdown_protocol::UpdateFailure::Install))
+                .then(|| {
+                    let hint = if status.manual_reason.is_some() {
+                        "updatePortableRecoveryHint"
+                    } else {
+                        "updatePortableInstallHint"
+                    };
+                    v_flex()
+                        .gap(tokens.spacing.xs)
+                        .min_w_0()
+                        .child(
+                            meta_text(cx)
+                                .child(SharedString::from(translator.text(hint).to_owned())),
+                        )
+                        .child(
+                            meta_text(cx)
+                                .min_w_0()
+                                .whitespace_normal()
+                                .child(SharedString::from(status.error_detail.clone())),
+                        )
+                }),
+            );
 
         let footer = h_flex()
             .flex_none()

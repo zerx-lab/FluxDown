@@ -31,6 +31,14 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+#[cfg(windows)]
+#[path = "../../portable_process.rs"]
+#[allow(
+    dead_code,
+    reason = "the browser relay gates cold starts but is not drained as an app process"
+)]
+mod portable_process;
+
 /// Product version: the release pipeline injects the tag version through `FLUXDOWN_APP_VERSION`;
 /// local builds fall back to this crate's version. Same rule as `fluxdown_protocol::APP_VERSION`
 /// (this relay deliberately has no dependency on the protocol crate).
@@ -485,14 +493,23 @@ fn launch_app(app_exe: &Path) -> bool {
             .spawn()
     };
     let base = CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW;
-    match spawn(base | CREATE_BREAKAWAY_FROM_JOB) {
-        Ok(_) => true,
-        // 所在 Job 不允许脱离（Chrome / 企业策略 / 沙箱）：退化为随浏览器生命周期。
-        Err(e) if e.raw_os_error() == Some(ERROR_ACCESS_DENIED) => {
+    let launch = || match spawn(base | CREATE_BREAKAWAY_FROM_JOB) {
+        Err(error) if error.raw_os_error() == Some(ERROR_ACCESS_DENIED) => {
             log("launch: job does not allow breakaway; app will follow the browser's job lifetime");
-            spawn(base).is_ok()
+            spawn(base)
         }
-        Err(_) => false,
+        result => result,
+    };
+    match portable_process::while_starting(app_exe, |_| launch()) {
+        Ok(Some(_)) => true,
+        Ok(None) => {
+            log("launch: portable update is in progress");
+            false
+        }
+        Err(error) => {
+            log(&format!("launch: {error}"));
+            false
+        }
     }
 }
 
