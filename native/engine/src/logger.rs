@@ -150,8 +150,8 @@ impl AppLogger {
     // ── 内部写入 ──
 
     /// 写入一行日志，自动按日期切换文件、按大小分割。`flush` 为 true 时立即刷盘。
-    fn write_impl(&self, message: &str, flush: bool) {
-        if let Err(error) = self.write_line(message, flush, None) {
+    fn write_impl(&self, message: &str, flush: bool, level: Option<fluxdown_logfile::Level>) {
+        if let Err(error) = self.write_line(message, flush, level) {
             self.record_failure("write", &error);
         }
     }
@@ -425,7 +425,7 @@ impl Drop for AppLogWriter {
     fn drop(&mut self) {
         let message = String::from_utf8_lossy(&self.bytes);
         for line in message.lines().filter(|line| !line.is_empty()) {
-            self.logger.write_impl(line, self.flush);
+            self.logger.write_impl(line, self.flush, None);
         }
     }
 }
@@ -623,7 +623,7 @@ fn build_env_filter(
 
 fn init_at(log_dir: PathBuf, fallback_dir: Option<PathBuf>) -> Result<(), LoggerInitError> {
     if let Some(existing) = LOGGER.get() {
-        existing.write_impl("[logger] init skipped (already initialized)", false);
+        existing.write_impl("[logger] init skipped (already initialized)", false, None);
         return Ok(());
     }
 
@@ -675,6 +675,7 @@ fn init_at(log_dir: PathBuf, fallback_dir: Option<PathBuf>) -> Result<(), Logger
             logger.write_impl(
                 "[logger] tracing subscriber already installed; reused existing",
                 false,
+                None,
             );
             return Ok(());
         }
@@ -684,6 +685,7 @@ fn init_at(log_dir: PathBuf, fallback_dir: Option<PathBuf>) -> Result<(), Logger
         logger.write_impl(
             &format!("[logger] failed to install tracing subscriber: {error}"),
             true,
+            None,
         );
         return Err(LoggerInitError::InstallSubscriber(error));
     }
@@ -733,7 +735,7 @@ pub fn health() -> LoggerHealth {
 /// 直接写入一条普通日志。新代码优先使用 [`log_info!`] 或 `tracing`。
 pub fn write(message: &str) {
     if let Some(logger) = LOGGER.get() {
-        logger.write_impl(message, false);
+        logger.write_impl(message, false, None);
     } else {
         eprintln!(
             "{} [logger-uninitialized] {message}",
@@ -750,9 +752,7 @@ pub fn write_embedded_event(level: fluxdown_logfile::Level, message: &str) -> bo
     };
     let flush = level == fluxdown_logfile::Level::Error;
     for line in message.lines().filter(|line| !line.is_empty()) {
-        if let Err(error) = logger.write_line(line, flush, Some(level)) {
-            logger.record_failure("write", &error);
-        }
+        logger.write_impl(line, flush, Some(level));
     }
     true
 }
@@ -1424,7 +1424,7 @@ mod tests {
     fn persistent_write_failure_sets_degraded_health() {
         let dir = temp_dir("degraded");
         let logger = AppLogger::new(dir.clone()).unwrap();
-        logger.write_impl("first", true);
+        logger.write_impl("first", true, None);
         {
             let mut state = logger.state.lock().unwrap();
             state.file = None;
@@ -1432,7 +1432,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
         std::fs::write(&dir, b"not a directory").unwrap();
 
-        logger.write_impl("second", true);
+        logger.write_impl("second", true, None);
 
         assert!(logger.degraded.load(std::sync::atomic::Ordering::Acquire));
         assert_eq!(

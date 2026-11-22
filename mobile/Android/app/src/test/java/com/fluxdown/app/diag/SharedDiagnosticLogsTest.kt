@@ -1,14 +1,43 @@
 package com.fluxdown.app.diag
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.IOException
+import java.io.File
 
 class SharedDiagnosticLogsTest {
     @get:Rule val folder = TemporaryFolder()
+
+    @Test
+    fun cleanupDeletesOnlyRecognizedLegacyLogFiles() {
+        val noBackup = folder.newFolder()
+        val files = folder.newFolder()
+        fun log(root: File, name: String) = File(root, name).apply {
+            parentFile?.mkdirs()
+            writeText("diagnostic data")
+        }
+
+        val legacy = listOf(
+            log(noBackup, "diagnostics/app-events.log.1"),
+            log(files, "fluxdown/logs/fluxdown_2025-01-02.1.log"),
+            log(files, "fluxdown/agent/logs/agent.log"),
+        )
+        val retained = listOf(
+            log(noBackup, "diagnostics/redacted/app-events.log"),
+            log(files, "fluxdown/diagnostic-logs/engine/fluxdown_2025-01-02.log"),
+            log(files, "fluxdown/logs/notes.txt"),
+            log(files, "fluxdown/agent/logs/other/agent.log"),
+        )
+        repeat(2) { removeLegacyDiagnosticLogs(noBackup, files) { throw it } }
+
+        legacy.forEach { assertFalse(it.path, it.exists()) }
+        retained.forEach { assertTrue(it.path, it.isFile) }
+    }
 
     @Test
     fun snapshotKeepsCompleteLinesAcrossRotations() {

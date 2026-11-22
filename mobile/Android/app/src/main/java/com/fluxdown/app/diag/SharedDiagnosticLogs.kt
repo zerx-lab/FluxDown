@@ -12,6 +12,8 @@ import com.fluxdown.bridge.FluxBridge
 import java.io.File
 import java.io.IOException
 import java.io.RandomAccessFile
+import java.nio.file.Files
+import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -87,6 +89,9 @@ internal class SharedDiagnosticLogs(
 
     fun watch() {
         handler.post {
+            removeLegacyDiagnosticLogs(context.noBackupFilesDir, context.filesDir) {
+                Log.w(TAG, "Cannot remove legacy diagnostic logs", it)
+            }
             for (root in nativeRoots) {
                 for (engine in listOf(false, true)) {
                     val dir = File(root, if (engine) "engine" else "agent")
@@ -277,8 +282,39 @@ internal class SharedDiagnosticLogs(
         private const val TAG = "FluxSharedLogs"
         private const val PUBLISH_INTERVAL_MS = 20_000L
         private const val FAILURE_BACKOFF_MS = 60_000L
-        private val ENGINE_NAME = Regex("fluxdown_\\d{4}-\\d{2}-\\d{2}(?:\\.\\d+)?\\.log")
     }
+}
+
+private val ENGINE_NAME = Regex("fluxdown_\\d{4}-\\d{2}-\\d{2}(?:\\.\\d+)?\\.log")
+
+/** Delete only the obsolete log files, never directories or current diagnostics. */
+internal fun removeLegacyDiagnosticLogs(noBackup: File, files: File, onFailure: (Exception) -> Unit) {
+    fun clean(root: File, relative: String, matches: (String) -> Boolean) {
+        try {
+            val dir = File(root.canonicalFile, relative)
+            if (dir.canonicalFile != dir || !Files.isDirectory(dir.toPath(), NOFOLLOW_LINKS)) return
+            Files.newDirectoryStream(dir.toPath()).use { entries ->
+                for (entry in entries) {
+                    if (!matches(entry.fileName.toString()) || !Files.isRegularFile(entry, NOFOLLOW_LINKS)) continue
+                    try {
+                        Files.deleteIfExists(entry)
+                    } catch (error: IOException) {
+                        onFailure(error)
+                    }
+                }
+            }
+        } catch (error: IOException) {
+            onFailure(error)
+        } catch (error: SecurityException) {
+            onFailure(error)
+        } catch (error: java.nio.file.DirectoryIteratorException) {
+            onFailure(error)
+        }
+    }
+
+    clean(noBackup, "diagnostics") { it == "app-events.log" || it == "app-events.log.1" }
+    clean(files, "fluxdown/agent/logs") { it == "agent.log" || it == "agent.log.1" }
+    clean(files, "fluxdown/logs", ENGINE_NAME::matches)
 }
 
 /** Preserve one complete copy even if promotion fails after moving the current copy aside. */
