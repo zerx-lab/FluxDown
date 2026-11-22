@@ -75,6 +75,8 @@ data class PluginDto(
     val homepage: String = "",
     val enabled: Boolean = true,
     val devMode: Boolean = false,
+    /** Empty for public or local packages; "private" for the private store. */
+    val source: String = "",
     /** `None` / `Manual` / `CircuitBreaker`。 */
     val disabledReason: String = "None",
     val settings: List<PluginSettingField> = emptyList(),
@@ -103,6 +105,7 @@ data class PluginDto(
                 homepage = v.str("homepage"),
                 enabled = v.bool("enabled"),
                 devMode = v.bool("devMode"),
+                source = v.str("source"),
                 disabledReason = v.str("disabledReason", "None"),
                 settings = v.list("settings").mapNotNull { PluginSettingField.fromJson(it) },
                 settingsValues = v.stringMap("settingsValues"),

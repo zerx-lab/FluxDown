@@ -94,6 +94,36 @@ final class ExtensionsModel {
 
     // MARK: 已安装插件
 
+    private struct FeedbackAuditParams: Encodable, Sendable {
+        let identity: String
+        let limit: Int
+    }
+
+    private struct FeedbackAuditPage: Decodable, Sendable {
+        struct Entry: Decodable, Sendable { let outcome: String }
+        let entries: [Entry]
+    }
+
+    func feedbackAuditCounts(identity: String) async -> (error: Int, denied: Int)? {
+        let limit = 20
+        do {
+            let page: FeedbackAuditPage = try await session.call(
+                HostMethod.daemonPluginAuditList, params: FeedbackAuditParams(identity: identity, limit: limit)
+            )
+            var counts = (error: 0, denied: 0)
+            for entry in page.entries.prefix(limit) {
+                switch entry.outcome {
+                case "error": counts.error += 1
+                case "denied": counts.denied += 1
+                default: break
+                }
+            }
+            return counts
+        } catch {
+            return nil
+        }
+    }
+
     private func withBusy(_ identity: String, _ action: () async -> Void) async {
         guard !busy.contains(identity) else { return }
         busy.insert(identity)

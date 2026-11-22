@@ -13,6 +13,7 @@ struct PluginDetailPage: View {
     @Environment(\.dismiss) private var dismiss
     @State private var plugins = SectionMemo<[PluginDto]>(empty: [])
     @State private var confirmUninstall = false
+    @State private var showFeedback = false
 
     var body: some View {
         let state = store.state
@@ -27,6 +28,15 @@ struct PluginDetailPage: View {
         }
         .navigationTitle(plugin?.name ?? "")
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showFeedback) {
+            if let plugin {
+                PluginFeedbackSheet(
+                    identity: plugin.identity, version: plugin.version,
+                    allowsPluginReport: !plugin.devMode && plugin.source != "private"
+                )
+                .id([plugin.identity, plugin.version, String(plugin.devMode), plugin.source])
+            }
+        }
         .onChange(of: plugin == nil) { _, gone in if gone { dismiss() } }
         .onChange(of: model.popRequest) { _, _ in dismiss() }
     }
@@ -83,6 +93,12 @@ struct PluginDetailPage: View {
             }
 
             PluginInfoSections(detail: PluginDetail(plugin: plugin))
+
+            Section {
+                Button { showFeedback = true } label: {
+                    Label(L("plugFeedbackTitle"), systemImage: "exclamationmark.bubble")
+                }
+            }
 
             Section {
                 Toggle(isOn: Binding(

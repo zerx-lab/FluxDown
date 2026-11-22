@@ -53,6 +53,12 @@ pub trait ExtensionsPort: Send + Sync {
         method: &'static str,
         params: serde_json::Value,
     ) -> PortFuture<serde_json::Value>;
+
+    fn feedback(
+        &self,
+        identity: String,
+        report: Option<serde_json::Value>,
+    ) -> PortFuture<serde_json::Value>;
 }
 
 /// 扩展分类的子页：插件、站点默认插件与受管组件。

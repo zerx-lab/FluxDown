@@ -11,6 +11,8 @@ import { BlockTitle, ExtLink, IconButton, ListCard, ListRow } from './common'
 import { detailFromPlugin } from './detail'
 import type { PluginDetail } from './detail'
 import { extensionErrorText } from './errors'
+import { PluginFeedbackDialog } from './PluginFeedbackDialog'
+import type { FeedbackPlugin } from './PluginFeedbackDialog'
 import { MarketSection } from './MarketSection'
 import { PrivateSection } from './PrivateSection'
 import { PluginAuditDialog } from './PluginAuditDialog'
@@ -57,6 +59,7 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
   const [missing, setMissing] = useState<string[] | null>(null)
   const [consentIdentity, setConsentIdentity] = useState<string | null>(null)
   const [audit, setAudit] = useState<{ identity: string | null } | null>(null)
+  const [feedback, setFeedback] = useState<FeedbackPlugin | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const pluginsRef = useRef(plugins)
   pluginsRef.current = plugins
@@ -353,12 +356,20 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
         detail={shownDetail}
         onClose={() => setDetail(null)}
         onAudit={shownDetail && plugins.some((item) => item.identity === shownDetail.identity) ? (identity) => setAudit({ identity }) : undefined}
+        onFeedback={archivePlugin ? () => setFeedback({
+          identity: archivePlugin.identity,
+          version: archivePlugin.version,
+          localOnly: archivePlugin.source === 'private' || archivePlugin.devMode,
+          enabled: archivePlugin.enabled,
+          loadStatus: archivePlugin.loadStatus === 'Loaded' || archivePlugin.loadStatus === 'Failed' ? archivePlugin.loadStatus : null,
+        }) : undefined}
         archiveRules={archivePlugin?.contributions.archiveRules ? archiveStatus : null}
         archiveDisabled={!archivePlugin?.enabled || archiveBusy || stale}
         archiveBusy={archiveBusy}
         archiveMessage={archiveMessage}
         onArchiveRefresh={() => void refreshArchiveRules()}
       />
+      {feedback ? <PluginFeedbackDialog plugin={feedback} onClose={() => setFeedback(null)} /> : null}
       <PluginSettingsDialog plugin={settingsPlugin} onClose={() => setSettingsIdentity(null)} />
       <PluginAuthDialog plugin={authPlugin} onClose={() => setAuthIdentity(null)} />
       <GrantConsentDialog plugin={consentPlugin} onClose={() => setConsentIdentity(null)} />

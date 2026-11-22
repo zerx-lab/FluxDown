@@ -42,6 +42,8 @@ pub struct PluginDetail {
     pub page_scripts: Vec<PluginPageScriptDeclDto>,
     pub archive_rules: bool,
     pub enabled: bool,
+    loaded: bool,
+    feedback_available: bool,
     pub stale: bool,
 }
 
@@ -55,6 +57,10 @@ impl PluginDetail {
             homepage: plugin.homepage.clone(),
             archive_rules: plugin.contributions.archive_rules,
             enabled: plugin.enabled,
+            loaded: plugin.load_status == "Loaded",
+            feedback_available: plugin.source != "private"
+                && !plugin.dev_mode
+                && !plugin.version.is_empty(),
             settings_count: plugin.settings.len(),
             permissions: plugin.permissions.clone(),
             risk: plugin.risk.clone(),
@@ -305,17 +311,46 @@ pub fn open_plugin_detail(
                     cx,
                 ))
             })
-            .when_some(open_audit, |dialog, open_audit| {
-                dialog.footer(
-                    DialogFooter::new().child(
-                        Button::new("plugin-detail-audit")
-                            .outline()
-                            .control(cx)
-                            .label(audit_label.clone())
-                            .on_click(move |_, window, cx| open_audit(window, cx)),
-                    ),
-                )
-            })
+            .footer(
+                DialogFooter::new()
+                    .when_some(body.read(cx).port.clone(), |footer, port| {
+                        let body = body.clone();
+                        let label = body
+                            .read(cx)
+                            .translator
+                            .text("plugFeedbackTitle")
+                            .to_owned();
+                        footer.child(
+                            Button::new("plugin-detail-feedback")
+                                .outline()
+                                .control(cx)
+                                .label(label)
+                                .on_click(move |_, window, cx| {
+                                    let form = body.read(cx);
+                                    super::plugin_feedback::open(
+                                        form.detail.identity.clone(),
+                                        form.detail.version.clone(),
+                                        form.detail
+                                            .feedback_available
+                                            .then_some(form.detail.loaded),
+                                        form.translator.clone(),
+                                        port.clone(),
+                                        window,
+                                        cx,
+                                    );
+                                }),
+                        )
+                    })
+                    .when_some(open_audit, |footer, open_audit| {
+                        footer.child(
+                            Button::new("plugin-detail-audit")
+                                .outline()
+                                .control(cx)
+                                .label(audit_label.clone())
+                                .on_click(move |_, window, cx| open_audit(window, cx)),
+                        )
+                    }),
+            )
     });
 }
 

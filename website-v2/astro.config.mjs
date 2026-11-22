@@ -152,6 +152,18 @@ export default defineConfig({
         default: "user/x_down",
       }),
 
+      // ── 可选：公开插件问题反馈的独立 GitHub App ──
+      PLUGIN_FEEDBACK_APP_ID: envField.string({
+        context: "server",
+        access: "secret",
+        optional: true,
+      }),
+      PLUGIN_FEEDBACK_PRIVATE_KEY_BASE64: envField.string({
+        context: "server",
+        access: "secret",
+        optional: true,
+      }),
+
       // ── 可选：GitHub Projects 专用 Token（需要 read:project scope）──
       // Classic token，在 https://github.com/settings/tokens 创建
       // 勾选 read:project scope 即可，用于读取 Projects v2 看板数据

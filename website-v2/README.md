@@ -13,6 +13,13 @@ node dist/server/entry.mjs
 
 环境变量见 `.env.example`（`GITHUB_TOKEN` 等仅 `/api/*` 路由在运行期使用）。
 
+## 插件作者反馈
+
+- 创建一个专供插件反馈的**公开 GitHub App**，关闭 Webhook，不订阅事件，不用 OAuth；仓库权限只开 **Issues: Read and write** 与默认的 **Metadata: Read-only**。把数字 App ID 和生成的私钥 PEM 的单行 Base64 写入运行期 `.env` 的 `PLUGIN_FEEDBACK_APP_ID`、`PLUGIN_FEEDBACK_PRIVATE_KEY_BASE64`，安全保管原始私钥和编码值（Base64 不是加密），不要放进镜像或前端。修改运行期变量后重新创建容器（仅重启不会更新注入的环境）。不配两项即关闭插件入口，不影响原网站反馈的 `GITHUB_TOKEN` / `GITHUB_REPO`。
+- 插件作者在 GitHub 安装该 App，**仅选择愿意接收反馈的仓库**，并开启 Issues。只有官方插件索引 [`registry.json`](https://github.com/zerx-lab/fluxdown-plugin-index/blob/main/registry.json) 当前登记的公开、未归档、启用了 Issues 的仓库可用，旧 identity 只通过登记的 `formerIds` 解析。移除该仓库的安装授权、关闭 Issues 或从登记移除即可取消。安装不需要配置站点密钥；允许到 `raw.githubusercontent.com` 与 `api.github.com` 的站点出站连接。
+- `GET /api/feedback?pluginIdentity=…` 确认可用后返回 `{ repository }`，不写 Issue；`POST` 带 `pluginIdentity` 和用户确认的 `repository`（可选 `pluginVersion`），成功返回 201 `{ issueNumber }`。POST 重新解析登记与安装授权，404 表示不可用，409 表示确认后的目的地已改变，不静默转发到通用入口。通用反馈仍提交到既有私有仓库。给自托管 Web SPA 的无凭据 CORS 只在带 `?pluginIdentity=…` 的插件入口开放，POST 的 query 与 JSON identity 必须一致；反代须转发该路由的 OPTIONS / GET / POST，不缓存其响应。
+- 公开 Issue 不包含联系方式字段、日志或访客 IP；用户提供的内容以纯文本展示，过滤常见邮箱、电话号码和 GitHub 通知引用。内容仍公开，勿在描述里填写秘密或其他个人信息。限流按进程计算：反馈 POST 同 IP 每分钟 3 次，插件探测及授权同 IP 每分钟 10 次、进程每分钟 60 次，插件写入同仓库每小时 6 次、进程每小时 40 次。多副本部署要在入口使用可信来源 IP 叠加共享限流；反代必须覆盖 `X-Client-IP`，不要直接暴露容器端口。
+
 ## 下载策略
 
 - 官网下载页与更新日志使用 `/api/download/<filename>?source=auto&tag=<release>`：先由 GitHub 发布元数据验证非草稿 release 与精确资产再 302。中国大陆访客由阿里云 ESA 按访客真实 IP 判定（IPv4 / IPv6 均可）：反代只采信带对鉴别头（`X-Fluxdown-Edge-Key`）的 ESA 回源请求里托管转换注入的 `Ali-Ip-Country`（旧域名经 Cloudflare 时为 `CF-IPCountry`），以 `X-Client-Country` 覆盖写给官网（`src/lib/client-ip.ts::getClientCountry`），`CN` 为大陆，港澳台是 HK / MO / TW。大陆访客先 HEAD 私有 OSS 确认资产存在且大小一致（结果缓存 1h），再 302 到下载镜像 `CN_CDN_BASE`（`dl-cn.fluxdown.com`，URL 鉴权 A，3 小时有效）；其余访客与 OSS 缺资产时 302 到 GitHub。镜像为阿里云 ESA（中国内地）边缘函数 `cdn/esa-dl-cn.js`（校验签名 + 私有 OSS 回源，边缘缓存 30 天；控制台粘贴代码发布，部署说明见文件头）。

@@ -40,6 +40,14 @@ impl fluxdown_ui_extensions::ExtensionsPort for AgentExtensionsPort {
     ) -> fluxdown_ui_extensions::PortFuture<serde_json::Value> {
         self.client.call(method, Some(params))
     }
+
+    fn feedback(
+        &self,
+        identity: String,
+        report: Option<serde_json::Value>,
+    ) -> fluxdown_ui_extensions::PortFuture<serde_json::Value> {
+        self.client.plugin_feedback(identity, report)
+    }
 }
 
 /// 插件界面脚本的 `fluxdown.call`：方法名来自脚本（运行期字符串），白名单在 capability 内校验。
