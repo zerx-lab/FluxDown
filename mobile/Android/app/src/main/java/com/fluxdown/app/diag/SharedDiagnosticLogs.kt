@@ -70,7 +70,8 @@ internal class SharedDiagnosticLogs(
                     // FileObserver may not have delivered the final native write yet.
                     agentDirty.set(true)
                     engineDirty.set(true)
-                    publishAll()
+                    // A scheduled retry cannot run after the crashing process exits.
+                    publishAll(ignoreBackoff = true)
                 } finally {
                     finished.countDown()
                 }
@@ -82,9 +83,9 @@ internal class SharedDiagnosticLogs(
         }
     }
 
-    private fun publishAll() {
-        publishHost()
-        publishNative()
+    private fun publishAll(ignoreBackoff: Boolean = false) {
+        publishHost(ignoreBackoff)
+        publishNative(ignoreBackoff = ignoreBackoff)
     }
 
     fun watch() {
@@ -127,14 +128,14 @@ internal class SharedDiagnosticLogs(
         }, PUBLISH_INTERVAL_MS)
     }
 
-    private fun publishNative() {
-        publishNative(engine = false)
-        publishNative(engine = true)
+    private fun publishNative(ignoreBackoff: Boolean = false) {
+        publishNative(engine = false, ignoreBackoff = ignoreBackoff)
+        publishNative(engine = true, ignoreBackoff = ignoreBackoff)
     }
 
-    private fun publishNative(engine: Boolean) {
+    private fun publishNative(engine: Boolean, ignoreBackoff: Boolean = false) {
         val dirty = if (engine) engineDirty else agentDirty
-        publish(if (engine) "engine.txt" else "agent.txt", dirty) {
+        publish(if (engine) "engine.txt" else "agent.txt", dirty, ignoreBackoff) {
             val path = FluxBridge.androidLogDirectory(engine) ?: return@publish null
             val dir = File(path)
             val files = if (engine) {
@@ -163,8 +164,8 @@ internal class SharedDiagnosticLogs(
         }, PUBLISH_INTERVAL_MS)
     }
 
-    private fun publishHost() {
-        publish("app-events.txt", hostDirty) {
+    private fun publishHost(ignoreBackoff: Boolean = false) {
+        publish("app-events.txt", hostDirty, ignoreBackoff) {
             val dir = hostDir ?: return@publish null
             snapshotDiagnosticLogs(listOf(File(dir, "app-events.log.1"), File(dir, "app-events.log")))
         }
@@ -176,9 +177,14 @@ internal class SharedDiagnosticLogs(
         failedDocuments.clear()
     }
 
-    private fun publish(name: String, dirty: AtomicBoolean, content: () -> ByteArray?) {
+    private fun publish(
+        name: String,
+        dirty: AtomicBoolean,
+        ignoreBackoff: Boolean = false,
+        content: () -> ByteArray?,
+    ) {
         val retry = retries[name]
-        if (retry != null && SystemClock.uptimeMillis() < retry.at) return
+        if (!ignoreBackoff && retry != null && SystemClock.uptimeMillis() < retry.at) return
         if (!dirty.getAndSet(false)) return
         if (retry != null) {
             handler.removeCallbacks(retry.task)
@@ -209,7 +215,7 @@ internal class SharedDiagnosticLogs(
         failedDocuments.add(name)
         mutableStatus.value = Status.Unavailable
         val retry = Retry(SystemClock.uptimeMillis() + FAILURE_BACKOFF_MS, Runnable {
-            publish(name, dirty, content)
+            publish(name, dirty, content = content)
         })
         retries[name] = retry
         handler.postAtTime(retry.task, retry.at)
