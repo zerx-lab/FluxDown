@@ -860,27 +860,28 @@ impl TorrentStorage for PartsSeedStorage {
         Ok(())
     }
 
-    fn ensure_file_length(&self, file_id: usize, len: u64) -> anyhow::Result<()> {
-        // 初检后仅对选中文件调用（结果只 warn）。已完成数据长度本就正确，
-        // set_len 等长为幂等操作；长度不符说明文件被外部改动，续种校验
-        // 会因哈希不匹配失败，这里不做破坏性截断。
+    fn file_length(&self, file_id: usize) -> anyhow::Result<Option<u64>> {
         match self.slots.get(file_id) {
             Some(Slot::Selected { file, path }) => {
                 let guard = file.read().map_err(|_| poisoned())?;
-                let f = guard
+                let file = guard
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("file '{}' not opened", path.display()))?;
-                let actual = f.metadata()?.len();
-                if actual != len {
-                    anyhow::bail!(
-                        "file '{}' length {actual} != expected {len}; refusing to resize",
-                        path.display()
-                    );
-                }
-                Ok(())
+                Ok(Some(file.metadata()?.len()))
             }
-            _ => Ok(()),
+            // Neither boundary fragments nor padding represent a complete file on disk.
+            Some(Slot::Parts { .. } | Slot::Padding) => Ok(None),
+            None => anyhow::bail!("no such file_id {file_id}"),
         }
+    }
+
+    fn ensure_file_length(&self, file_id: usize, len: u64) -> anyhow::Result<()> {
+        if let Some(actual) = self.file_length(file_id)?
+            && actual != len
+        {
+            anyhow::bail!("file {file_id} length {actual} != expected {len}; refusing to resize");
+        }
+        Ok(())
     }
 
     fn take(&self) -> anyhow::Result<Box<dyn TorrentStorage>> {
