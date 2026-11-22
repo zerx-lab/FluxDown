@@ -366,6 +366,7 @@ impl DownloadTableDelegate {
     /// 单击组行：普通单击选中整组并聚焦（停靠面板显示组概览）；Cmd/Ctrl 单击把整组并入 /
     /// 移出选区；Shift 单击从锚点选到该组最后一个成员。
     pub(crate) fn select_group(&mut self, group_id: &str, modifiers: SelectModifiers) {
+        self.finish_row_sweep();
         let Some(ix) = self.group_ix(group_id) else {
             return;
         };
@@ -398,6 +399,7 @@ impl DownloadTableDelegate {
 
     /// 组行复选框：未处于多选模式时以整组开启多选，已在多选模式时整组切换。
     pub(super) fn toggle_group_multi_select(&mut self, group_id: &str) {
+        self.finish_row_sweep();
         let Some(ix) = self.group_ix(group_id) else {
             return;
         };

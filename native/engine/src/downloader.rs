@@ -4167,7 +4167,11 @@ pub fn normalize_checksum_spec(spec: &str) -> Result<String, String> {
 /// strips a redundant `<algo>:` prefix pasted onto the hash value.
 /// Returns the normalized `algo=hex` spec (= the file's hash record) if the digest
 /// matches, or `Err(DownloadError::ChecksumMismatch)` if not.
-async fn verify_checksum(path: &Path, spec: &str) -> Result<String, DownloadError> {
+pub(crate) async fn verify_checksum(
+    path: &Path,
+    spec: &str,
+    cancel: &CancellationToken,
+) -> Result<String, DownloadError> {
     let normalized = normalize_checksum_spec(spec).map_err(DownloadError::Other)?;
     let (algo, expected_hex) = normalized.split_once('=').ok_or_else(|| {
         DownloadError::Other(format!(
@@ -4181,12 +4185,16 @@ async fn verify_checksum(path: &Path, spec: &str) -> Result<String, DownloadErro
         ))
     })?;
     let path_owned = path.to_path_buf();
+    let cancel = cancel.clone();
     let actual_hex = tokio::task::spawn_blocking(move || {
-        crate::file_hash::hash_file(&path_owned, algorithm, || false)
+        crate::file_hash::hash_file(&path_owned, algorithm, || cancel.is_cancelled())
     })
     .await
     .map_err(|e| DownloadError::Other(format!("checksum thread panicked: {}", e)))?
-    .map_err(|e| DownloadError::Other(format!("checksum: {e}")))?;
+    .map_err(|error| match error {
+        crate::file_hash::FileHashError::Cancelled => DownloadError::Cancelled,
+        error => DownloadError::Other(format!("checksum: {error}")),
+    })?;
 
     if actual_hex != expected_hex {
         return Err(DownloadError::ChecksumMismatch(format!(
@@ -5356,8 +5364,9 @@ async fn run_download_inner(
         // 传输错误），此时残留一个完整大小、内容错误的临时文件毫无意义——既
         // 占用磁盘，又会让后续 resume 基于 existing_len 做出错误判断。删除它，
         // 让下次重试从干净状态开始。删除失败仅记日志，不掩盖原始 checksum 错误。
-        let verified = match verify_checksum(temp_path, &p.checksum).await {
+        let verified = match verify_checksum(temp_path, &p.checksum, &p.cancel_token).await {
             Ok(verified) => verified,
+            Err(DownloadError::Cancelled) => return Err(DownloadError::Cancelled),
             Err(e) => {
                 if let Err(rm_err) = tokio::fs::remove_file(&temp_path).await {
                     log_info!(
@@ -6493,9 +6502,10 @@ async fn download_single_once(
     } else {
         downloaded = 0;
         file = tokio::io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, File::create(dest).await?);
-        // Reset DB progress so the UI doesn't show stale values
         if let Some(db) = checkpoint {
-            db.update_task_progress(task_id, 0).await?;
+            // A successfully opened temporary file belongs to this task even before the first byte.
+            db.record_http_partial(task_id, output::file_name(dest)?)
+                .await?;
         }
     }
 

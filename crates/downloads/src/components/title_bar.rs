@@ -29,7 +29,10 @@ use gpui_component::{
 };
 
 use crate::{
-    components::task_table::{DownloadTableDelegate, DraggedColumnMenuItem},
+    components::{
+        selection_bar::TaskCleanup,
+        task_table::{DownloadTableDelegate, DraggedColumnMenuItem},
+    },
     controller::DownloadsCommand,
     model::{
         new_task_button::{NEW_TASK_BUTTON_PREF, NewTaskButtonShape, NewTaskButtonStyle},
@@ -267,6 +270,47 @@ fn apply_new_task_button_style(
     };
 }
 
+impl DownloadTitleBar {
+    fn task_actions(&self, cx: &App) -> impl IntoElement + use<> {
+        let view = self.view.clone();
+        let actions = [
+            TaskCleanup::InvalidSelection,
+            TaskCleanup::UnfinishedSelection,
+            TaskCleanup::Finished,
+        ]
+        .map(|scope| (scope, self.text(scope.label(), cx)));
+        let label = self.text("moreActions", cx);
+        interactive(
+            Button::new("download-task-actions")
+                .ghost()
+                .control(cx)
+                .icon(FluxIcon::Ellipsis)
+                .tooltip(label)
+                .dropdown_menu_with_anchor(Anchor::TopLeft, move |mut menu, _, cx| {
+                    for (scope, label) in &actions {
+                        let scope = *scope;
+                        let disabled = view
+                            .upgrade()
+                            .is_none_or(|view| !view.read(cx).has_cleanup_targets(scope, cx));
+                        let view = view.clone();
+                        menu = menu.item(
+                            PopupMenuItem::new(label.clone())
+                                .disabled(disabled)
+                                .on_click(move |_, window, cx| {
+                                    if let Some(view) = view.upgrade() {
+                                        view.update(cx, |view, cx| {
+                                            view.confirm_task_cleanup(scope, window, cx);
+                                        });
+                                    }
+                                }),
+                        );
+                    }
+                    menu
+                }),
+        )
+    }
+}
+
 impl Render for DownloadTitleBar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = active_theme(cx);
@@ -326,6 +370,7 @@ impl Render for DownloadTitleBar {
             .flex_none()
             .items_center()
             .child(interactive(content))
+            .when(!self.editing, |row| row.child(self.task_actions(cx)))
     }
 }
 

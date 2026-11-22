@@ -281,10 +281,10 @@ async fn delete_files_keeps_file_named_by_another_task() {
     }
 }
 
-/// HLS 任务的独立音轨 sidecar（`<stem>.audio.m4a`）及其 `.fdownloading` 临时文件，
-/// 与断点 config 行一起在「删除任务并删除文件」时被清理。
+/// A legacy checkpoint alone gives no proof of a completed sidecar's ownership.
+/// Delete the task and its checkpoints, but preserve unregistered audio.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn delete_files_removes_hls_audio_sidecar_and_checkpoints() {
+async fn delete_files_keeps_unregistered_hls_audio_and_removes_checkpoints() {
     let work = std::env::temp_dir().join(format!("fluxdown-delguard-hls-{}", uniq()));
     tokio::fs::create_dir_all(&work).await.expect("mkdir");
     let save_dir = work.to_string_lossy().into_owned();
@@ -330,8 +330,16 @@ async fn delete_files_removes_hls_audio_sidecar_and_checkpoints() {
         .expect("delete task");
 
     assert!(!video.exists(), "video product must be removed");
-    assert!(!audio.exists(), "hls audio sidecar must be removed");
-    assert!(!audio_temp.exists(), "hls audio temp must be removed");
+    assert_eq!(
+        tokio::fs::read(audio).await.expect("unregistered audio"),
+        b"x"
+    );
+    assert_eq!(
+        tokio::fs::read(audio_temp)
+            .await
+            .expect("unregistered audio temp"),
+        b"x"
+    );
     for key in [format!("hls_resume_{id}"), format!("hls_audio_resume_{id}")] {
         assert!(
             engine.db.get_config(&key).await.expect("config").is_none(),

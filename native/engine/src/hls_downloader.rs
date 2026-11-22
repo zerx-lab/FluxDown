@@ -2003,6 +2003,15 @@ async fn run_hls_download_with_ffmpeg(
 
     // Ensure parent directory exists
     output::ensure_parent(&temp_path).await?;
+    let _audio_lease = if let Some(track) = &audio_track {
+        let legacy_checkpoint = p.is_resume && p.db.get_config(&track.resume_key).await?.is_some();
+        Some(
+            output::reserve_audio_partial(&p.db, &p.task_id, &track.temp_path, legacy_checkpoint)
+                .await?,
+        )
+    } else {
+        None
+    };
 
     // 直播:没有总长度可言,从当前播放列表起持续录制,停止后按点播同一套收尾定稿。
     if let Some(target_duration) = live {
@@ -2988,6 +2997,7 @@ async fn retain_separate_audio(
     )
     .await?;
     let audio = dir.join(audio);
+    output::register_audio_publication(&p.db, &p.task_id, audio_temp, &audio).await?;
     crate::dash_downloader::record_audio_output(p, &audio).await?;
     if let Err(error) = p.db.delete_config(&audio_resume_key(&p.task_id)).await {
         crate::logger::report_warning("hls-download", "remove_audio_checkpoint", &error);
@@ -4003,9 +4013,7 @@ async fn mux_video_audio(
     {
         crate::logger::report_warning("hls-download", "remove_temporary_file", &error);
     }
-    if let Err(error) = tokio::fs::remove_file(audio_temp).await
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
+    if let Err(error) = output::remove_muxed_audio(&p.db, &p.task_id, audio_temp, true).await {
         crate::logger::report_warning("hls-download", "remove_temporary_file", &error);
     }
     if let Err(error) = p.db.delete_config(video_resume_key).await {
@@ -4036,24 +4044,22 @@ fn live_poll_interval(target_duration: u64) -> Duration {
 /// 「丢弃」请求注册表(task_id → 令牌):用户**删除**任务时由 manager 置位。
 ///
 /// 任务令牌取消只表达"停止"——暂停、取消、删除对下载器不可区分,而直播在停止时要把
-/// 已录内容定稿。删除则不同:用户就是不要这些内容。manager 在取消任务令牌**之前**调用
-/// [`request_discard`],直播录制据此退出后清理 temp / 检查点而不定稿;定稿阶段(ffmpeg
-/// mux / remux)也以该令牌为取消源,因此删除能中断已经开始的定稿。
-static DISCARD_REQUESTS: std::sync::LazyLock<
-    std::sync::Mutex<HashMap<String, tokio_util::sync::CancellationToken>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+/// 已录内容定稿。manager 在取消任务令牌**之前**调用
+/// [`request_discard`]，让录制和定稿停止。下载器保留残片及检查点，清理由删除流程负责。
+type DiscardRequests = HashMap<String, tokio_util::sync::CancellationToken>;
+static DISCARD_REQUESTS: std::sync::LazyLock<std::sync::Mutex<DiscardRequests>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
-fn discard_requests()
--> std::sync::MutexGuard<'static, HashMap<String, tokio_util::sync::CancellationToken>> {
+fn discard_requests() -> std::sync::MutexGuard<'static, DiscardRequests> {
     // 持锁区间只做 HashMap 增删,不会在中途 panic;即便中毒,数据仍然一致。
     DISCARD_REQUESTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// 声明任务将被删除,其正在进行(或刚被取消、仍在定稿)的直播录制不得保存产物。
-/// 调用方须在删除流程结束后调用 [`clear_discard`] 释放登记。
-pub fn request_discard(task_id: &str) {
+/// 禁止待删除的直播任务定稿；保留已录数据，直到删除流程确认可以清理。
+/// 调用方须在下载器退出后调用 [`clear_discard`] 释放登记。
+pub(crate) fn request_discard(task_id: &str) {
     discard_requests()
         .entry(task_id.to_owned())
         .or_default()
@@ -4061,11 +4067,11 @@ pub fn request_discard(task_id: &str) {
 }
 
 /// 释放 [`request_discard`] 的登记(幂等)。已经取得令牌的下载器不受影响。
-pub fn clear_discard(task_id: &str) {
+pub(crate) fn clear_discard(task_id: &str) {
     discard_requests().remove(task_id);
 }
 
-fn discard_token(task_id: &str) -> tokio_util::sync::CancellationToken {
+fn live_discard(task_id: &str) -> tokio_util::sync::CancellationToken {
     discard_requests()
         .entry(task_id.to_owned())
         .or_default()
@@ -4078,31 +4084,6 @@ struct DiscardGuard(String);
 impl Drop for DiscardGuard {
     fn drop(&mut self) {
         clear_discard(&self.0);
-    }
-}
-
-/// 删除任务时丢弃直播录制:移除视频 / 音轨 temp 与两个续传检查点,不 remux / mux。
-async fn discard_live_recording(
-    p: &DownloadParams,
-    temp_path: &Path,
-    audio_temp_path: Option<&Path>,
-    video_resume_key: &str,
-) {
-    log_info!(
-        "[hls-download] task {} deleted during live recording, discarding recorded content",
-        p.task_id
-    );
-    for path in std::iter::once(temp_path).chain(audio_temp_path) {
-        if let Err(error) = tokio::fs::remove_file(path).await
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            crate::logger::report_warning("hls-download", "remove_discarded_temp", &error);
-        }
-    }
-    for key in [video_resume_key, audio_resume_key(&p.task_id).as_str()] {
-        if let Err(error) = p.db.delete_config(key).await {
-            crate::logger::report_warning("hls-download", "remove_discarded_checkpoint", &error);
-        }
     }
 }
 
@@ -4921,7 +4902,7 @@ async fn run_live_recording(p: &DownloadParams, rec: LiveRecording) -> Result<i6
         media_sequence,
         segments.len()
     );
-    let discard = discard_token(&p.task_id);
+    let discard = live_discard(&p.task_id);
     let _discard_guard = DiscardGuard(p.task_id.clone());
 
     let concurrency = cap_connections(
@@ -5093,9 +5074,8 @@ async fn run_live_recording(p: &DownloadParams, rec: LiveRecording) -> Result<i6
     {
         crate::logger::report_error("hls-download", "join_progress_sampler", &error);
     }
-    // 用户删除:录制循环已随任务令牌退出,这里不再定稿,直接清理。
+    // 批删此时还未读取清理计划：只停止，不定稿或清盘。
     if discard.is_cancelled() {
-        discard_live_recording(p, &temp_path, audio_temp_path.as_deref(), &resume_key).await;
         return Err(DownloadError::Cancelled);
     }
 
@@ -5168,8 +5148,8 @@ async fn run_live_recording(p: &DownloadParams, rec: LiveRecording) -> Result<i6
                     "未能录到任何音频分片，输出仅含视频，输出文件可能没有声音",
                 )
                 .await;
-                if let Err(error) = tokio::fs::remove_file(&audio_temp).await
-                    && error.kind() != std::io::ErrorKind::NotFound
+                if let Err(error) =
+                    output::remove_muxed_audio(&p.db, &p.task_id, &audio_temp, true).await
                 {
                     crate::logger::report_warning("hls-download", "remove_temporary_file", &error);
                 }
@@ -7173,7 +7153,7 @@ v360.m3u8\n\
     #[test]
     fn discard_registry_cancels_registered_and_late_tokens_and_clears() {
         let id = "discard-registry-unit";
-        let early = super::discard_token(id);
+        let early = super::live_discard(id);
         assert!(!early.is_cancelled());
         super::request_discard(id);
         assert!(
@@ -7181,11 +7161,11 @@ v360.m3u8\n\
             "request must reach an already held token"
         );
         assert!(
-            super::discard_token(id).is_cancelled(),
+            super::live_discard(id).is_cancelled(),
             "a downloader starting after the request must observe it"
         );
         super::clear_discard(id);
-        let fresh = super::discard_token(id);
+        let fresh = super::live_discard(id);
         assert!(!fresh.is_cancelled(), "clear must forget the request");
         super::clear_discard(id);
     }

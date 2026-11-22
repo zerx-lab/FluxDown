@@ -18,6 +18,7 @@ use crate::{
         TogglePauseSelected,
     },
     components::{
+        selection_bar::TaskCleanup,
         task_table::{
             DownloadTableDelegate, SelectModifiers, SelectionSummary, TableFilter, ToolbarCommand,
             piece_picking_order_targets, piece_picking_toggle_target, spawn_midnight_refresh,
@@ -2494,22 +2495,7 @@ impl DownloadView {
             PageCommand::PauseAll => self.execute_toolbar(ToolbarCommand::PauseAll, cx),
             PageCommand::ResumeAll => self.execute_toolbar(ToolbarCommand::ResumeAll, cx),
             PageCommand::ClearFinished => {
-                // 任务表分页载入期间「已完成」范围不完整，不能据占位表清理。
-                if self.controller.tables_loading() {
-                    return;
-                }
-                let commands: Vec<DownloadsCommand> = self
-                    .controller
-                    .store()
-                    .local()
-                    .iter()
-                    .filter(|row| row.state == TaskState::Completed)
-                    .map(|row| DownloadsCommand::Delete {
-                        task_id: row.key.task_id().to_owned(),
-                        delete_files: false,
-                    })
-                    .collect();
-                self.execute_commands(commands, cx);
+                self.confirm_task_cleanup(TaskCleanup::Finished, window, cx);
             }
             PageCommand::SelectAll => self.table_state.update(cx, |table, cx| {
                 table.delegate_mut().select_all_tasks();

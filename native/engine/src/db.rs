@@ -49,17 +49,90 @@ pub enum ConfigPatchError {
     InvalidStoredRevision(String),
 }
 
+// Keep deletion/restart and resume on the same task-ID-scoped checkpoint predicate.
+macro_rules! resume_checkpoint_sql {
+    ($id:literal) => {
+        concat!(
+            "CASE WHEN EXISTS (SELECT 1 FROM task_segments WHERE task_id = ",
+            $id,
+            ")
+               OR EXISTS (SELECT 1 FROM ed2k_blocks WHERE task_id = ",
+            $id,
+            ")
+               OR EXISTS (SELECT 1 FROM config WHERE key IN
+                   ('hls_resume_' || ",
+            $id,
+            ", 'hls_audio_resume_' || ",
+            $id,
+            "))
+             THEN 1 ELSE 0 END"
+        )
+    };
+}
+
+macro_rules! select_cleanup_tasks {
+    ($where_clause:literal) => {
+        concat!(
+            "SELECT id, save_dir, file_name, url, status, downloaded_bytes,
+                    exists_decision, file_missing, http_partial_name, audio_partial_name, audio_output_name, ",
+            resume_checkpoint_sql!("tasks.id"),
+            " AS has_checkpoint FROM tasks ",
+            $where_clause
+        )
+    };
+}
+
 /// [`Db::load_deletion_facts`] 的结果：批量删除决定逐任务删哪些文件所需的全部库内事实。
 #[derive(Debug, Default)]
-pub struct DeletionFacts {
-    /// 任务 → 「文件已存在」决定原值（'' / rename / overwrite / skip）；缺失 = 任务不存在。
-    pub exists_decisions: HashMap<String, String>,
-    /// 带独立音轨（`audio_url` 非空）的任务。
-    pub has_audio_url: HashSet<String>,
+pub(crate) struct DeletionFacts {
+    pub tasks: Vec<DeletionTask>,
     /// 任务 → 已登记的衍生产物文件名。
     pub artifacts: HashMap<String, Vec<String>>,
     /// `(save_dir, file_name)` → 把该名字登记为自己 `file_name` 的全部任务 id。
     pub file_owners: HashMap<(String, String), Vec<String>>,
+}
+
+/// 同一条数据库记录中的路径、运行状态与归属，不能分开读取。
+#[derive(Debug)]
+pub(crate) struct DeletionTask {
+    pub task_id: String,
+    pub save_dir: String,
+    pub file_name: String,
+    pub url: String,
+    pub status: i32,
+    pub downloaded_bytes: i64,
+    pub has_checkpoint: bool,
+    pub file_clear_state: FileClearState,
+    pub unowned_path: bool,
+    pub http_partial_name: String,
+    pub audio_partial_name: String,
+    pub audio_output_name: String,
+}
+
+impl DeletionTask {
+    fn from_row(row: AnyRow) -> Result<Self, sqlx::Error> {
+        let decision: String = row.try_get("exists_decision")?;
+        let http_partial_name = row.try_get("http_partial_name")?;
+        Ok(Self {
+            task_id: row.try_get("id")?,
+            save_dir: row.try_get("save_dir")?,
+            file_name: row.try_get("file_name")?,
+            url: row.try_get("url")?,
+            status: row.try_get("status")?,
+            downloaded_bytes: row.try_get("downloaded_bytes")?,
+            has_checkpoint: row.try_get::<i32, _>("has_checkpoint")? != 0,
+            file_clear_state: match row.try_get::<i32, _>("file_missing")? {
+                2 => FileClearState::Cleared,
+                3 => FileClearState::Pending,
+                4 => FileClearState::RestartPending,
+                _ => FileClearState::None,
+            },
+            unowned_path: crate::file_exists::ExistsDecision::from_db(&decision).has_unowned_path(),
+            http_partial_name,
+            audio_partial_name: row.try_get("audio_partial_name")?,
+            audio_output_name: row.try_get("audio_output_name")?,
+        })
+    }
 }
 
 /// 一条 `DELETE FROM config WHERE key IN (...)` 覆盖的任务数（每任务 5 个键，
@@ -127,6 +200,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     orig_etag TEXT NOT NULL DEFAULT '',
     orig_last_modified TEXT NOT NULL DEFAULT '',
     audio_url TEXT NOT NULL DEFAULT '',
+    http_partial_name TEXT NOT NULL DEFAULT '',
+    audio_partial_name TEXT NOT NULL DEFAULT '',
+    audio_output_name TEXT NOT NULL DEFAULT '',
     file_missing INTEGER NOT NULL DEFAULT 0,
     file_hash TEXT NOT NULL DEFAULT '',
     range_verified INTEGER NOT NULL DEFAULT 1,
@@ -428,6 +504,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     orig_etag TEXT NOT NULL DEFAULT '',
     orig_last_modified TEXT NOT NULL DEFAULT '',
     audio_url TEXT NOT NULL DEFAULT '',
+    http_partial_name TEXT NOT NULL DEFAULT '',
+    audio_partial_name TEXT NOT NULL DEFAULT '',
+    audio_output_name TEXT NOT NULL DEFAULT '',
     file_missing INTEGER NOT NULL DEFAULT 0,
     file_hash TEXT NOT NULL DEFAULT '',
     range_verified INTEGER NOT NULL DEFAULT 1,
@@ -1576,6 +1655,14 @@ impl Db {
             .await?;
         self.add_column_if_missing("tasks", "audio_url", "TEXT NOT NULL DEFAULT ''")
             .await?;
+        for column in [
+            "http_partial_name",
+            "audio_partial_name",
+            "audio_output_name",
+        ] {
+            self.add_column_if_missing("tasks", column, "TEXT NOT NULL DEFAULT ''")
+                .await?;
+        }
         // 任务请求上下文（cookies/referrer/extra_headers JSON）持久化：resume
         // 时恢复鉴权上下文。鉴权站点（cookie+token 双因子的 fnOS、带
         // Authorization 的私有服务）没有它们 resume 必然 4xx。
@@ -2449,7 +2536,8 @@ impl Db {
             "UPDATE tasks SET status = 0, file_missing = 4, downloaded_bytes = 0, total_bytes = 0,
                  src_cdn_bytes = 0, src_proxy_bytes = 0, src_nic_bytes = 0,
                  error_message = '', completed_at = '', file_hash = '', exists_decision = '',
-                 orig_etag = '', orig_last_modified = '', range_verified = 1
+                 orig_etag = '', orig_last_modified = '', range_verified = 1,
+                 http_partial_name = '', audio_partial_name = '', audio_output_name = ''
              WHERE id = $1 AND status = 3 AND file_missing IN (1, 2)",
         )
         .bind(id)
@@ -3049,28 +3137,6 @@ impl Db {
         Ok(())
     }
 
-    pub(crate) async fn rename_task_output(
-        &self,
-        task_id: &str,
-        file_name: &str,
-        companion: Option<(&Path, &Path)>,
-    ) -> Result<(), DbError> {
-        let Some((old, new)) = companion else {
-            return self
-                .set_task_file_name_with_source(task_id, file_name, false)
-                .await;
-        };
-        let mut tx = self.pool.begin().await?;
-        sqlx::query("UPDATE tasks SET file_name = $1, name_inferred = 0 WHERE id = $2")
-            .bind(file_name)
-            .bind(task_id)
-            .execute(&mut *tx)
-            .await?;
-        Self::rename_registered_artifact(&mut tx, task_id, old, new).await?;
-        tx.commit().await?;
-        Ok(())
-    }
-
     pub(crate) async fn rename_registered_artifact(
         tx: &mut sqlx::Transaction<'_, Any>,
         task_id: &str,
@@ -3091,6 +3157,42 @@ impl Db {
             .execute(&mut **tx)
             .await?;
         }
+        Ok(())
+    }
+
+    pub(crate) async fn rename_task_outputs(
+        &self,
+        task: &str,
+        name: &str,
+        partial: Option<(&str, &str)>,
+        audio: Option<(&str, &str)>,
+        audio_partial: Option<(&str, &str)>,
+    ) -> Result<(), DbError> {
+        let (old_partial, new_partial) = partial.unzip();
+        let (old_audio, new_audio) = audio.unzip();
+        let (old_audio_partial, new_audio_partial) = audio_partial.unzip();
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "UPDATE tasks SET file_name = $1, name_inferred = 0, exists_decision = '',
+                 http_partial_name = CASE WHEN http_partial_name = $2 THEN $3 ELSE http_partial_name END,
+                 audio_output_name = CASE WHEN audio_output_name = $4 THEN $5 ELSE audio_output_name END,
+                 audio_partial_name = CASE WHEN audio_partial_name = $6 THEN $7 ELSE audio_partial_name END
+             WHERE id = $8",
+        )
+        .bind(name)
+        .bind(old_partial)
+        .bind(new_partial)
+        .bind(old_audio)
+        .bind(new_audio)
+        .bind(old_audio_partial)
+        .bind(new_audio_partial)
+        .bind(task)
+        .execute(&mut *tx)
+        .await?;
+        if let Some((old, new)) = audio {
+            Self::rename_registered_artifact(&mut tx, task, Path::new(old), Path::new(new)).await?;
+        }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -3427,37 +3529,88 @@ impl Db {
         Ok(rows)
     }
 
+    pub(crate) async fn record_http_partial(&self, task: &str, name: &str) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE tasks SET http_partial_name = $1, downloaded_bytes = 0,
+                 src_cdn_bytes = 0, src_proxy_bytes = 0, src_nic_bytes = 0 WHERE id = $2",
+        )
+        .bind(name)
+        .bind(task)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn record_audio_partial(&self, task: &str, name: &str) -> Result<(), DbError> {
+        sqlx::query("UPDATE tasks SET audio_partial_name = $1 WHERE id = $2")
+            .bind(name)
+            .bind(task)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn record_audio_output(&self, task: &str, name: &str) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE tasks SET audio_partial_name = '', audio_output_name = $1 WHERE id = $2",
+        )
+        .bind(name)
+        .bind(task)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn audio_partial_name(&self, task: &str) -> Result<String, DbError> {
+        Ok(
+            sqlx::query_scalar("SELECT audio_partial_name FROM tasks WHERE id = $1")
+                .bind(task)
+                .fetch_one(&self.pool)
+                .await?,
+        )
+    }
+
+    pub(crate) async fn audio_output_name(&self, task: &str) -> Result<String, DbError> {
+        Ok(
+            sqlx::query_scalar("SELECT audio_output_name FROM tasks WHERE id = $1")
+                .bind(task)
+                .fetch_one(&self.pool)
+                .await?,
+        )
+    }
+
+    /// Read the path and evidence for named-file cleanup from one database snapshot.
+    pub(crate) async fn load_cleanup_task(
+        &self,
+        id: &str,
+    ) -> Result<Option<DeletionTask>, DbError> {
+        let row = sqlx::query(select_cleanup_tasks!("WHERE id = $1"))
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(DeletionTask::from_row).transpose()?)
+    }
+
     /// 批量删除前一次读出整批任务的删除上下文，替代逐任务查询
     /// （`get_exists_decision` / `load_audio_url` / `load_task_artifacts` /
     /// `list_task_ids_by_file`）。
     ///
-    /// `save_dirs` 是批内任务涉及的保存目录：`file_owners` 只覆盖这些目录下登记的产物名，
-    /// 足以回答「某目录下某名字还归不归批外任务」。
-    pub async fn load_deletion_facts(
+    /// 产物名归属索引只覆盖这些任务实际所在的保存目录。
+    pub(crate) async fn load_deletion_facts(
         &self,
         ids: &[String],
-        save_dirs: &[String],
     ) -> Result<DeletionFacts, DbError> {
         const CHUNK: usize = 500;
         let mut facts = DeletionFacts::default();
         for chunk in ids.chunks(CHUNK) {
             let placeholders = numbered_placeholders(chunk.len());
-            let sql = format!(
-                "SELECT id, exists_decision, audio_url FROM tasks WHERE id IN ({placeholders})"
-            );
+            let sql = format!(select_cleanup_tasks!("WHERE id IN ({})"), placeholders);
             let mut query = sqlx::query(AssertSqlSafe(sql));
             for id in chunk {
                 query = query.bind(id.as_str());
             }
             for row in query.fetch_all(&self.pool).await? {
-                let id: String = row.try_get("id")?;
-                let audio_url: String = row.try_get("audio_url")?;
-                if !audio_url.is_empty() {
-                    facts.has_audio_url.insert(id.clone());
-                }
-                facts
-                    .exists_decisions
-                    .insert(id, row.try_get("exists_decision")?);
+                facts.tasks.push(DeletionTask::from_row(row)?);
             }
 
             let sql = format!(
@@ -3475,27 +3628,41 @@ impl Db {
                     .push(row.try_get("file_name")?);
             }
         }
+        let mut save_dirs: Vec<_> = facts
+            .tasks
+            .iter()
+            .map(|task| task.save_dir.as_str())
+            .collect();
+        save_dirs.sort_unstable();
+        save_dirs.dedup();
         for chunk in save_dirs.chunks(CHUNK) {
             let placeholders = numbered_placeholders(chunk.len());
             // Cleared and restart-pending rows retain historical names, not file claims.
             let sql = format!(
-                "SELECT id, save_dir, file_name FROM tasks WHERE save_dir IN ({placeholders})
-                 AND file_missing NOT IN (2, 4)
+                "SELECT id, save_dir, file_name, audio_partial_name, audio_output_name
+                 FROM tasks WHERE save_dir IN ({placeholders}) AND file_missing NOT IN (2, 4)
                  UNION ALL
-                 SELECT tasks.id, tasks.save_dir, task_artifacts.file_name FROM task_artifacts
-                 JOIN tasks ON tasks.id = task_artifacts.task_id
+                 SELECT tasks.id, tasks.save_dir, task_artifacts.file_name, '', ''
+                 FROM task_artifacts JOIN tasks ON tasks.id = task_artifacts.task_id
                  WHERE tasks.save_dir IN ({placeholders}) AND tasks.file_missing NOT IN (2, 4)"
             );
             let mut query = sqlx::query(AssertSqlSafe(sql));
             for dir in chunk {
-                query = query.bind(dir.as_str());
+                query = query.bind(*dir);
             }
             for row in query.fetch_all(&self.pool).await? {
-                facts
-                    .file_owners
-                    .entry((row.try_get("save_dir")?, row.try_get("file_name")?))
-                    .or_default()
-                    .push(row.try_get("id")?);
+                let save_dir: String = row.try_get("save_dir")?;
+                let id: String = row.try_get("id")?;
+                for column in ["file_name", "audio_partial_name", "audio_output_name"] {
+                    let name: String = row.try_get(column)?;
+                    if !name.is_empty() {
+                        facts
+                            .file_owners
+                            .entry((save_dir.clone(), name))
+                            .or_default()
+                            .push(id.clone());
+                    }
+                }
             }
         }
         Ok(facts)
@@ -3651,6 +3818,15 @@ impl Db {
         }
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Check for checkpoints keyed by this task, without loading segment or block rows.
+    pub(crate) async fn has_resume_checkpoint(&self, task_id: &str) -> Result<bool, DbError> {
+        let found: i32 = sqlx::query_scalar(concat!("SELECT ", resume_checkpoint_sql!("$1")))
+            .bind(task_id)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(found != 0)
     }
 
     pub async fn load_segments(&self, task_id: &str) -> Result<Vec<SegmentInfo>, DbError> {
@@ -4039,8 +4215,12 @@ impl Db {
         file_name: &str,
     ) -> Result<Vec<String>, DbError> {
         let rows = sqlx::query(
-            "SELECT id FROM tasks WHERE save_dir = $1 AND file_name = $2
-             AND file_missing NOT IN (2, 4)",
+            "SELECT id FROM tasks WHERE save_dir = $1 AND file_missing NOT IN (2, 4)
+             AND (file_name = $2 OR audio_output_name = $2 OR audio_partial_name = $2)
+             UNION
+             SELECT tasks.id FROM task_artifacts JOIN tasks ON tasks.id = task_artifacts.task_id
+             WHERE tasks.save_dir = $1 AND tasks.file_missing NOT IN (2, 4)
+               AND task_artifacts.file_name = $2",
         )
         .bind(save_dir)
         .bind(file_name)
@@ -4404,6 +4584,38 @@ impl Db {
                  src_cdn_bytes = 0, src_proxy_bytes = 0, src_nic_bytes = 0
              WHERE id = $1",
         )
+        .bind(task_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// 将重新下载所需的进度、完成态和命名决定一起提交。任何一步失败都保留旧文件的归属。
+    pub(crate) async fn reset_task_for_restart(
+        &self,
+        task_id: &str,
+        decision: crate::file_exists::ExistsDecision,
+    ) -> Result<(), DbError> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM task_segments WHERE task_id = $1")
+            .bind(task_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM config WHERE key IN ($1, $2)")
+            .bind(format!("hls_resume_{task_id}"))
+            .bind(format!("hls_audio_resume_{task_id}"))
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "UPDATE tasks SET downloaded_bytes = 0, total_bytes = 0,
+                 src_cdn_bytes = 0, src_proxy_bytes = 0, src_nic_bytes = 0,
+                 status = 0, error_message = '', completed_at = '', file_hash = '',
+                 file_missing = 0, exists_decision = $1,
+                 http_partial_name = '', audio_partial_name = '', audio_output_name = ''
+             WHERE id = $2",
+        )
+        .bind(decision.as_db())
         .bind(task_id)
         .execute(&mut *tx)
         .await?;
@@ -5364,6 +5576,21 @@ impl Db {
     pub async fn set_exists_decision(&self, task_id: &str, decision: &str) -> Result<(), DbError> {
         sqlx::query("UPDATE tasks SET exists_decision = $1 WHERE id = $2")
             .bind(decision)
+            .bind(task_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// 新名字与重下保护标记一起切换，避免恢复时把旧路径的残片当成本任务的断点。
+    pub(crate) async fn claim_restart_file_name(
+        &self,
+        task_id: &str,
+        file_name: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query("UPDATE tasks SET file_name = $1, exists_decision = $2 WHERE id = $3")
+            .bind(file_name)
+            .bind(crate::file_exists::ExistsDecision::Rename.as_db())
             .bind(task_id)
             .execute(&self.pool)
             .await?;

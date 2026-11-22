@@ -1,6 +1,10 @@
 use std::io;
 use std::path::Path;
 
+use crate::db::Db;
+use crate::downloader::DownloadError;
+use crate::temp_file_guard::TempFileGuard;
+
 /// Ensure that an output directory exists, preserving the original IO kind
 /// while adding the directory and operation to the error message.
 pub(crate) async fn ensure_dir(dir: &Path) -> io::Result<()> {
@@ -18,6 +22,81 @@ pub(crate) async fn ensure_parent(path: &Path) -> io::Result<()> {
         return Ok(());
     };
     ensure_dir(parent).await
+}
+
+pub(crate) fn file_name(path: &Path) -> io::Result<&str> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid output file name"))
+}
+
+/// Track actual audio output, not the existence of a manifest or audio URL.
+pub(crate) async fn reserve_audio_partial(
+    db: &Db,
+    task: &str,
+    path: &Path,
+    legacy_checkpoint: bool,
+) -> Result<TempFileGuard, DownloadError> {
+    ensure_parent(path).await?;
+    let lease = TempFileGuard::acquire(path, task).await?;
+    let name = file_name(path)?;
+    if db.audio_partial_name(task).await? != name {
+        if !legacy_checkpoint && tokio::fs::try_exists(path).await? {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("unowned audio partial: {}", path.display()),
+            )
+            .into());
+        }
+        db.record_audio_partial(task, name).await?;
+    }
+    Ok(lease)
+}
+
+pub(crate) async fn publish_audio(
+    db: &Db,
+    task: &str,
+    temp: &Path,
+    dest: &Path,
+) -> Result<(), DownloadError> {
+    file_name(dest)?;
+    crate::downloader::claim_rename(temp, dest).await?;
+    register_audio_publication(db, task, temp, dest).await
+}
+
+pub(crate) async fn register_audio_publication(
+    db: &Db,
+    task: &str,
+    temp: &Path,
+    dest: &Path,
+) -> Result<(), DownloadError> {
+    let name = file_name(dest)?;
+    if let Err(error) = db.record_audio_output(task, name).await {
+        if let Err(rollback) = crate::downloader::claim_rename(dest, temp).await {
+            crate::logger::report_error("audio-output", "roll back audio publication", &rollback);
+        }
+        return Err(error.into());
+    }
+    Ok(())
+}
+
+pub(crate) async fn remove_muxed_audio(
+    db: &Db,
+    task: &str,
+    path: &Path,
+    temporary: bool,
+) -> Result<(), DownloadError> {
+    match tokio::fs::remove_file(path).await {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    if temporary {
+        db.record_audio_partial(task, "").await?;
+    } else {
+        db.record_audio_output(task, "").await?;
+    }
+    Ok(())
 }
 
 #[cfg(any(feature = "bt", test))]

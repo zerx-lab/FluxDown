@@ -204,16 +204,50 @@ pub(crate) fn save_task_info<T: 'static>(
     .detach();
 }
 
-fn retain_stale_tasks(store: &TaskStore, keys: &mut Vec<RowKey>) {
-    keys.retain(|key| {
-        store.get(key).is_some_and(|row| {
-            if key.is_local() {
+#[derive(Clone, Copy)]
+pub(crate) enum TaskCleanup {
+    Finished,
+    InvalidSelection,
+    UnfinishedSelection,
+}
+
+impl TaskCleanup {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Finished => "menuClearFinished",
+            Self::InvalidSelection => "cleanStaleTasks",
+            Self::UnfinishedSelection => "cleanUnfinishedSelection",
+        }
+    }
+
+    const fn description(self) -> &'static str {
+        match self {
+            Self::Finished => "cleanFinishedLocalDesc",
+            Self::InvalidSelection => "cleanStaleTasksDesc",
+            Self::UnfinishedSelection => "cleanUnfinishedSelectionDesc",
+        }
+    }
+
+    fn matches(self, row: &DownloadTaskView) -> bool {
+        match self {
+            Self::Finished => {
+                row.key.is_local() && row.state == TaskState::Completed && !row.is_seeding()
+            }
+            Self::InvalidSelection if row.key.is_local() => {
                 row.state == TaskState::Failed || row.is_file_missing()
-            } else {
+            }
+            Self::InvalidSelection => {
                 row.remote_status == Some(fluxdown_protocol::RemoteTaskStatus::Failed)
             }
-        })
-    });
+            Self::UnfinishedSelection => {
+                row.key.is_local() && matches!(row.state, TaskState::Paused | TaskState::Failed)
+            }
+        }
+    }
+
+    fn retain(self, store: &TaskStore, keys: &mut Vec<RowKey>) {
+        keys.retain(|key| store.get(key).is_some_and(|row| self.matches(&row)));
+    }
 }
 
 impl DownloadView {
@@ -246,22 +280,58 @@ impl DownloadView {
         }
     }
 
-    fn selected_stale_keys(&self, cx: &gpui::App) -> Vec<RowKey> {
-        let mut keys = self.table_state.read(cx).delegate().selected_keys();
-        retain_stale_tasks(self.controller.store(), &mut keys);
-        keys
+    fn can_clean_tasks(&self) -> bool {
+        !self.controller.is_stale() && !self.controller.tables_loading()
     }
 
-    fn confirm_clean_stale_tasks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let keys = self.selected_stale_keys(cx);
-        if keys.is_empty() || self.controller.is_stale() {
+    pub(crate) fn has_cleanup_targets(&self, scope: TaskCleanup, cx: &gpui::App) -> bool {
+        if !self.can_clean_tasks() {
+            return false;
+        }
+        let delegate = self.table_state.read(cx).delegate();
+        let store = self.controller.store();
+        match scope {
+            TaskCleanup::Finished => store
+                .local()
+                .iter()
+                .any(|row| scope.matches(row) && !delegate.is_pending_delete(&row.key)),
+            _ => delegate
+                .selected_key_refs()
+                .any(|key| store.get(key).is_some_and(|row| scope.matches(&row))),
+        }
+    }
+
+    pub(crate) fn confirm_task_cleanup(
+        &mut self,
+        scope: TaskCleanup,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.can_clean_tasks() {
             return;
         }
-        let title = self.strings.clean_stale_tasks.clone();
-        let description = self
-            .strings
-            .clean_stale_tasks_description
-            .replace("{count}", &keys.len().to_string());
+        let store = self.controller.store();
+        let delegate = self.table_state.read(cx).delegate();
+        let keys = match scope {
+            TaskCleanup::Finished => store
+                .local()
+                .iter()
+                .filter(|row| scope.matches(row) && !delegate.is_pending_delete(&row.key))
+                .map(|row| row.key.clone())
+                .collect(),
+            _ => {
+                let mut keys = delegate.selected_keys();
+                scope.retain(store, &mut keys);
+                keys
+            }
+        };
+        if keys.is_empty() {
+            return;
+        }
+        let translator = self.translator.read(cx);
+        let title = SharedString::from(translator.text(scope.label()).to_owned());
+        let description =
+            translator.text_with(scope.description(), &[("count", &keys.len().to_string())]);
         let ok_label = self.strings.confirm.clone();
         let cancel_label = self.strings.cancel.clone();
         let view = cx.weak_entity();
@@ -279,12 +349,14 @@ impl DownloadView {
                 ))
                 .on_ok(move |_, _, cx| {
                     view.update(cx, |this, cx| {
-                        if this.controller.is_stale() {
+                        if !this.can_clean_tasks() {
                             return false;
                         }
-                        // 固定确认时的候选集合，跳过期间已恢复下载或文件已找回的任务。
+                        // Recheck the previewed candidates; never add tasks to an open dialog.
                         let mut keys = keys.clone();
-                        retain_stale_tasks(this.controller.store(), &mut keys);
+                        scope.retain(this.controller.store(), &mut keys);
+                        let delegate = this.table_state.read(cx).delegate();
+                        keys.retain(|key| !delegate.is_pending_delete(key));
                         let commands = this.delete_commands(&keys, false);
                         this.execute_commands(commands, cx);
                         true
@@ -340,7 +412,12 @@ impl DownloadView {
         let icon_size = theme.extended().icon.md;
         let delete_task = self.strings.delete_task.clone();
         let delete_with_files = self.strings.delete_task_and_file.clone();
-        let clean_stale_tasks = self.strings.clean_stale_tasks.clone();
+        let clean_stale_tasks = SharedString::from(
+            self.translator
+                .read(cx)
+                .text(TaskCleanup::InvalidSelection.label())
+                .to_owned(),
+        );
         let view = cx.weak_entity();
         div()
             .flex_none()
@@ -358,7 +435,7 @@ impl DownloadView {
                     .dropdown_menu_with_anchor(Anchor::TopLeft, move |menu, _, cx| {
                         let cleanup_disabled = view.upgrade().is_none_or(|view| {
                             let this = view.read(cx);
-                            this.controller.is_stale() || this.selected_stale_keys(cx).is_empty()
+                            !this.has_cleanup_targets(TaskCleanup::InvalidSelection, cx)
                         });
                         menu.item(
                             PopupMenuItem::element({
@@ -405,7 +482,11 @@ impl DownloadView {
                                     let view = view.clone();
                                     move |_, window, cx| {
                                         let Ok(()) = view.update(cx, |this, cx| {
-                                            this.confirm_clean_stale_tasks(window, cx);
+                                            this.confirm_task_cleanup(
+                                                TaskCleanup::InvalidSelection,
+                                                window,
+                                                cx,
+                                            );
                                         }) else {
                                             // 视图已释放，不再发起清理。
                                             return;
@@ -567,7 +648,7 @@ impl DownloadView {
 
 #[cfg(test)]
 mod tests {
-    use super::{batch_link_info_text, retain_stale_tasks, task_info_text};
+    use super::{TaskCleanup, batch_link_info_text, task_info_text};
     use crate::model::{DownloadTaskView, RowKey, TaskStore};
 
     fn local(id: &str, status: i32, missing: bool) -> DownloadTaskView {
@@ -665,10 +746,10 @@ mod tests {
             "preparing",
             "removed",
         ]);
-        retain_stale_tasks(&store, &mut selected);
+        TaskCleanup::InvalidSelection.retain(&store, &mut selected);
         assert_eq!(selected, keys(&["failed", "missing"]));
         let mut empty = Vec::new();
-        retain_stale_tasks(&store, &mut empty);
+        TaskCleanup::InvalidSelection.retain(&store, &mut empty);
         assert!(empty.is_empty());
     }
 
@@ -689,14 +770,14 @@ mod tests {
             "later-failed",
             "removed",
         ]);
-        retain_stale_tasks(&store, &mut candidates);
+        TaskCleanup::InvalidSelection.retain(&store, &mut candidates);
         store.replace_local(vec![
             local("resumed", 1, false),
             local("restored", 3, false),
             local("still-failed", 4, false),
             local("later-failed", 4, false),
         ]);
-        retain_stale_tasks(&store, &mut candidates);
+        TaskCleanup::InvalidSelection.retain(&store, &mut candidates);
         assert_eq!(candidates, keys(&["still-failed"]));
     }
 
@@ -724,7 +805,31 @@ mod tests {
         .collect();
         let mut selected = rows.iter().map(|row| row.key.clone()).collect();
         store.replace_remote(rows);
-        retain_stale_tasks(&store, &mut selected);
+        TaskCleanup::InvalidSelection.retain(&store, &mut selected);
         assert_eq!(selected, [RowKey::Remote("failed".into())]);
+    }
+
+    #[test]
+    fn cleanup_keeps_seeding_and_active_tasks() {
+        let store = TaskStore::default();
+        let mut seeding = local("seeding", 3, false);
+        seeding.seeding_status = 1;
+        store.replace_local(vec![
+            local("finished", 3, false),
+            seeding,
+            local("paused", 2, false),
+            local("failed", 4, false),
+            local("waiting", 0, false),
+            local("active", 1, false),
+        ]);
+        let all = keys(&[
+            "finished", "seeding", "paused", "failed", "waiting", "active",
+        ]);
+        let mut finished = all.clone();
+        TaskCleanup::Finished.retain(&store, &mut finished);
+        assert_eq!(finished, keys(&["finished"]));
+        let mut unfinished = all;
+        TaskCleanup::UnfinishedSelection.retain(&store, &mut unfinished);
+        assert_eq!(unfinished, keys(&["paused", "failed"]));
     }
 }

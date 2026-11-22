@@ -1123,14 +1123,19 @@ fn task_owns_final_file(status: i32) -> bool {
     status == 3
 }
 
-/// 任务是否启动过（进入过启动序幕，`file_name` 已 dedup 落库）。
-///
-/// 用于 DASH 音轨 sidecar（`<stem>.audio.m4a`）的删除守卫：sidecar 可能
-/// 在任务完成前就已 rename 到位，启动过的任务其派生路径归本任务命名
-/// 空间，删除文件时应当清理；从未启动的任务连 sidecar 也不曾产生，
-/// 跳过以免撞上同名旧任务遗留的文件。
-fn task_has_started(status: i32, downloaded_bytes: i64) -> bool {
-    task_owns_final_file(status) || downloaded_bytes > 0
+/// A completed task's old basename may already be in use by another download.
+fn owns_main_partial(task: &crate::db::DeletionTask) -> bool {
+    !task_owns_final_file(task.status)
+        && (task.downloaded_bytes > 0
+            || task.has_checkpoint
+            || task.http_partial_name.strip_suffix(downloader::TEMP_EXT)
+                == Some(task.file_name.as_str()))
+}
+
+/// The base name is the spelling registered by ordinary downloads for both
+/// their final file and its temporary sibling.
+fn cleanup_base_name(name: &str) -> &str {
+    name.strip_suffix(downloader::TEMP_EXT).unwrap_or(name)
 }
 
 /// 「重新下载」的磁盘清理原语：删掉 `path`，`NotFound` 视为成功。
@@ -1164,97 +1169,15 @@ async fn remove_file_retrying(task_id: &str, path: &Path, contended: bool) {
     }
 }
 
-/// 延迟二次清理：删除任务时若等待 spawned 下载 handle 超时，下载任务可能
-/// 在首次清理之后才落盘临时/分段文件。本函数 sleep 一段时间后再次删除残留。
-///
-/// 单任务（`delete_task`）与批量（`delete_tasks_batch`）两条删除路径共用此
-/// 逻辑，确保批量删除活跃任务时不会泄漏孤立文件（F010）。
-///
-/// 行为与历史单任务 deferred 兜底保持一致：
-///   - BT：删除最终路径（文件或目录）+ task-scoped staging 目录；
-///   - 其它协议：删除 `.fdownloading` 临时文件 + 最终文件。
-///
-/// 所有删除均为 best-effort，缺失路径静默忽略。
-async fn deferred_file_cleanup(
-    save_dir: String,
-    file_name: String,
-    url: String,
-    delete_files: bool,
-    task_id: String,
-) {
-    // 给仍在退出的下载任务留出时间落盘后再清理；2s 与单任务路径一致，
-    // 配合下载器内新增的早期 cancel 检查已能覆盖绝大多数残留窗口。
+/// 延迟补扫只能按任务 ID 清理独占的 BT 暂存目录。
+/// 非 BT 残片使用可复用的文件名，不能在重新调度后再按路径清理。
+#[cfg(feature = "bt")]
+async fn deferred_bt_cleanup(stage_dir: PathBuf) {
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    let path = PathBuf::from(&save_dir).join(&file_name);
-    if !is_bt_url(&url) {
-        downloader::clean_http_restart_for_task(Path::new(&save_dir), &task_id).await;
-    }
-    if is_bt_url(&url) {
-        if delete_files && is_safe_file_name(&file_name) {
-            if path.is_dir() {
-                if let Err(error) = tokio::fs::remove_dir_all(&path).await
-                    && error.kind() != std::io::ErrorKind::NotFound
-                {
-                    crate::logger::report_warning("download-manager", "remove task files", &error);
-                }
-            } else {
-                if let Err(error) = tokio::fs::remove_file(&path).await
-                    && error.kind() != std::io::ErrorKind::NotFound
-                {
-                    crate::logger::report_warning("download-manager", "remove task files", &error);
-                }
-            }
-        }
-        #[cfg(feature = "bt")]
-        {
-            let stage_dir = bt_downloader::bt_stage_dir(&save_dir, &task_id);
-            if stage_dir.exists() {
-                log_info!(
-                    "[manager] delete {} deferred: removing staging dir {}",
-                    task_id,
-                    stage_dir.display()
-                );
-                if let Err(error) = tokio::fs::remove_dir_all(&stage_dir).await
-                    && error.kind() != std::io::ErrorKind::NotFound
-                {
-                    crate::logger::report_warning("download-manager", "remove task files", &error);
-                }
-            }
-        }
-    } else {
-        let temp_path = PathBuf::from(format!("{}{}", path.display(), downloader::TEMP_EXT));
-        if let Err(e) = tokio::fs::remove_file(&temp_path).await
-            && e.kind() != std::io::ErrorKind::NotFound
-        {
-            log_info!(
-                "[manager] delete {} deferred: remove temp {} failed: {}",
-                task_id,
-                temp_path.display(),
-                e
-            );
-        }
-        // DASH/轨对 audio sidecar（<stem>.audio.m4a）及其临时文件：无条件
-        // best-effort 清理——非轨对任务该路径不存在，remove 静默失败即可，
-        // 免去在此异步上下文里查 DB 判定任务类型。
-        let audio_path = dash_downloader::build_audio_path(&path);
-        let audio_temp = PathBuf::from(format!("{}{}", audio_path.display(), downloader::TEMP_EXT));
-        if let Err(error) = tokio::fs::remove_file(&audio_temp).await
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            crate::logger::report_warning("download-manager", "remove task files", &error);
-        }
-        if delete_files && is_safe_file_name(&file_name) {
-            if let Err(error) = tokio::fs::remove_file(&audio_path).await
-                && error.kind() != std::io::ErrorKind::NotFound
-            {
-                crate::logger::report_warning("download-manager", "remove task files", &error);
-            }
-            if let Err(error) = tokio::fs::remove_file(&path).await
-                && error.kind() != std::io::ErrorKind::NotFound
-            {
-                crate::logger::report_warning("download-manager", "remove task files", &error);
-            }
-        }
+    if let Err(error) = tokio::fs::remove_dir_all(&stage_dir).await
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        crate::logger::report_warning("download-manager", "remove late BT staging", &error);
     }
 }
 
@@ -1381,18 +1304,13 @@ fn is_file_in_use_error(error: &downloader::DownloadError) -> bool {
 struct DeleteFiles {
     save_dir: String,
     file_name: String,
-    url: String,
+    /// 任务确实使用过当前路径，且没有其他保留任务登记同名路径。
+    owns_partial: bool,
     is_bt: bool,
     delete_files: bool,
-    /// 非 BT 的临时路径仍归本任务；清理历史中的旧名字不再持有这些路径。
-    cleanup_named_temps: bool,
     /// 最终产物归本任务所有（已完成、未被批外任务登记、非「采纳」既有文件）。
     owns_final: bool,
-    /// 任务启动过（且非采纳）：独立音轨成品可随任务删除。
-    has_started: bool,
-    /// 同名产物同时登记在批外任务名下。
-    claimed_by_other: bool,
-    has_audio_sidecar: bool,
+    audio_paths: [Option<PathBuf>; 2],
     /// 随任务删除的衍生产物（已排除批外任务登记的同名文件）。
     artifacts: Vec<PathBuf>,
 }
@@ -1400,9 +1318,7 @@ struct DeleteFiles {
 /// 一个被删任务的清理作业。
 struct DeleteCleanup {
     task_id: String,
-    /// 被取消下载的 JoinHandle（不在下载中则为 `None`）。
-    handle: Option<JoinHandle<()>>,
-    /// `None` = 库里已无此任务，只等在途下载退出。
+    /// `None` = 库里已无此任务，不清盘。
     files: Option<DeleteFiles>,
     #[cfg(feature = "bt")]
     bt_session: Option<Arc<SharedBtSession>>,
@@ -1411,12 +1327,10 @@ struct DeleteCleanup {
     file_permits: Arc<Semaphore>,
 }
 
-/// 批量删除中单个任务的清理：等下载退出 → 移出 BT 会话 → 限时删除磁盘文件 →
-/// 下载未按时退出时安排延迟二次清理。
+/// 按停写后读取的清理计划移除文件。
 async fn run_delete_cleanup(job: DeleteCleanup) -> Result<(), downloader::DownloadError> {
     let DeleteCleanup {
         task_id,
-        handle,
         files,
         #[cfg(feature = "bt")]
         bt_session,
@@ -1424,24 +1338,7 @@ async fn run_delete_cleanup(job: DeleteCleanup) -> Result<(), downloader::Downlo
         app_data_dir,
         file_permits,
     } = job;
-    // 超时后 abort 外层 future，加速纯 async 任务释放连接/句柄（F011）。
-    let handle_timed_out = match handle {
-        Some(mut handle) => {
-            wait_for_download_exit(
-                &mut handle,
-                tokio::time::Instant::now() + DELETE_HANDLE_WAIT,
-                "wait for batch deleted download",
-            )
-            .await
-        }
-        None => false,
-    };
-    let Some(files) = files else {
-        if handle_timed_out {
-            tracing::debug!("orphan download aborted after deletion deadline");
-        }
-        return Ok(());
-    };
+    let Some(files) = files else { return Ok(()) };
     #[cfg(feature = "bt")]
     if files.is_bt {
         remove_from_bt_session(
@@ -1452,38 +1349,23 @@ async fn run_delete_cleanup(job: DeleteCleanup) -> Result<(), downloader::Downlo
         )
         .await?;
     }
-    let result = {
-        let _permit = file_permits.acquire().await.map_err(|error| {
-            downloader::DownloadError::Other(format!("file cleanup semaphore closed: {error}"))
-        })?;
-        match tokio::time::timeout(
-            DELETE_FILE_CLEANUP_TIMEOUT,
-            remove_deleted_task_files(&task_id, &files),
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(elapsed) => Err(downloader::DownloadError::Other(format!(
-                "removing files of deleted task {task_id}: {elapsed}"
-            ))),
-        }
-    };
-    // F010：下载未按时退出时可能仍在写盘，延迟二次清理兜底孤立文件，与单任务路径一致。
-    if handle_timed_out && (files.is_bt || files.cleanup_named_temps) {
-        let deferred_delete_files = if files.is_bt {
-            files.delete_files && files.owns_final
-        } else {
-            files.delete_files && !files.claimed_by_other
-        };
-        tokio::spawn(deferred_file_cleanup(
-            files.save_dir,
-            files.file_name,
-            files.url,
-            deferred_delete_files,
-            task_id,
-        ));
+    if !files.delete_files {
+        return Ok(());
     }
-    result
+    let _permit = file_permits.acquire().await.map_err(|error| {
+        downloader::DownloadError::Other(format!("file cleanup semaphore closed: {error}"))
+    })?;
+    match tokio::time::timeout(
+        DELETE_FILE_CLEANUP_TIMEOUT,
+        remove_deleted_task_files(&task_id, &files),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(elapsed) => Err(downloader::DownloadError::Other(format!(
+            "removing files of deleted task {task_id}: {elapsed}"
+        ))),
+    }
 }
 
 #[cfg(feature = "bt")]
@@ -1550,8 +1432,7 @@ async fn remove_deleted_task_files(
         downloader::clean_http_restart_for_task(Path::new(&files.save_dir), task_id).await;
     }
     let path = PathBuf::from(&files.save_dir).join(&files.file_name);
-    let removes_final =
-        files.delete_files && files.owns_final && is_safe_file_name(&files.file_name);
+    let removes_final = files.owns_final && is_safe_file_name(&files.file_name);
     if files.is_bt {
         // 跨会话（重启后句柄不在会话里）时 librqbit 删不到最终产物，这里按路径兜底。
         if removes_final {
@@ -1564,7 +1445,6 @@ async fn remove_deleted_task_files(
         }
         #[cfg(feature = "bt")]
         {
-            // 任务级 staging 目录无论是否删除文件都清理：未完成时里面是残缺数据。
             let stage_dir = bt_downloader::bt_stage_dir(&files.save_dir, task_id);
             if stage_dir.exists() {
                 log_info!(
@@ -1578,23 +1458,16 @@ async fn remove_deleted_task_files(
                 );
             }
         }
-    } else if files.cleanup_named_temps {
-        let temp_path = PathBuf::from(format!("{}{}", path.display(), downloader::TEMP_EXT));
-        keep_first_cleanup_error(&mut first_error, tokio::fs::remove_file(&temp_path).await);
-        if files.has_audio_sidecar {
-            let audio_path = dash_downloader::build_audio_path(&path);
-            let audio_temp =
-                PathBuf::from(format!("{}{}", audio_path.display(), downloader::TEMP_EXT));
-            keep_first_cleanup_error(&mut first_error, tokio::fs::remove_file(&audio_temp).await);
-            if files.delete_files && files.has_started {
-                keep_first_cleanup_error(
-                    &mut first_error,
-                    tokio::fs::remove_file(&audio_path).await,
-                );
-            }
+    } else {
+        if files.owns_partial && is_safe_file_name(&files.file_name) {
+            let temp_path = PathBuf::from(format!("{}{}", path.display(), downloader::TEMP_EXT));
+            keep_first_cleanup_error(&mut first_error, tokio::fs::remove_file(&temp_path).await);
         }
         if removes_final {
             keep_first_cleanup_error(&mut first_error, tokio::fs::remove_file(&path).await);
+        }
+        for audio in files.audio_paths.iter().flatten() {
+            keep_first_cleanup_error(&mut first_error, tokio::fs::remove_file(audio).await);
         }
     }
     for artifact in &files.artifacts {
@@ -1650,6 +1523,18 @@ fn dedup_filename_sync(
     }
 }
 
+/// 预订随下载 future（或还在执行的占名探测）释放，不按数据库路径猜测。
+struct ReservedTempPath {
+    set: Arc<Mutex<HashSet<PathBuf>>>,
+    path: PathBuf,
+}
+
+impl Drop for ReservedTempPath {
+    fn drop(&mut self) {
+        lock_reserved(&self.set).remove(&self.path);
+    }
+}
+
 /// 选出不冲突的名字并在 `reserved` 里预订其 `.fdownloading` 路径（同步，须在阻塞
 /// 线程上调用）。
 ///
@@ -1662,13 +1547,13 @@ fn dedup_filename_sync(
 ///
 /// 编号耗尽或磁盘探测出错时用 UUID 后缀名（不可能与任何条目冲突）兜底。
 fn reserve_deduped_name_blocking(
-    reserved: &Mutex<HashSet<std::path::PathBuf>>,
+    reserved: &Arc<Mutex<HashSet<PathBuf>>>,
     dir: &std::path::Path,
     name: &str,
     overwrite: &crate::file_exists::OverwritePolicy,
     companion_mp4: bool,
     companion_audio: bool,
-) -> (String, std::path::PathBuf) {
+) -> (String, ReservedTempPath) {
     let temp_of = |chosen: &str| dir.join(format!("{chosen}{}", downloader::TEMP_EXT));
     let allow_overwrite = overwrite.permits(name);
     let rules = downloader::DedupRules {
@@ -1696,12 +1581,14 @@ fn reserve_deduped_name_blocking(
         if !lock_reserved(reserved).insert(temp.clone()) {
             continue;
         }
+        let reservation = ReservedTempPath {
+            set: Arc::clone(reserved),
+            path: temp,
+        };
         let overwrite_final = allow_overwrite && chosen == name;
         match downloader::name_free_on_disk(dir, &chosen, &rules, overwrite_final) {
-            Ok(true) => return (chosen, temp),
-            Ok(false) => {
-                lock_reserved(reserved).remove(&temp);
-            }
+            Ok(true) => return (chosen, reservation),
+            Ok(false) => {}
             Err(error) => {
                 // 刚刚探测成功过，复核失败属瞬时故障：保守地改选 UUID 名。
                 crate::logger::report_warning(
@@ -1709,15 +1596,21 @@ fn reserve_deduped_name_blocking(
                     "recheck reserved filename",
                     &error,
                 );
-                lock_reserved(reserved).remove(&temp);
                 break;
             }
         }
     }
-    let unique = downloader::uuid_suffixed_name(name);
-    let temp = temp_of(&unique);
-    lock_reserved(reserved).insert(temp.clone());
-    (unique, temp)
+    loop {
+        let unique = downloader::uuid_suffixed_name(name);
+        let path = temp_of(&unique);
+        if lock_reserved(reserved).insert(path.clone()) {
+            let reservation = ReservedTempPath {
+                set: Arc::clone(reserved),
+                path,
+            };
+            return (unique, reservation);
+        }
+    }
 }
 
 /// [`reserve_deduped_name_blocking`] 的 async 包装：放进阻塞池执行，磁盘探测
@@ -1729,7 +1622,7 @@ async fn reserve_deduped_name(
     overwrite: &crate::file_exists::OverwritePolicy,
     companion_mp4: bool,
     companion_audio: bool,
-) -> Result<(String, std::path::PathBuf), tokio::task::JoinError> {
+) -> Result<(String, ReservedTempPath), tokio::task::JoinError> {
     let reserved = Arc::clone(reserved);
     let dir = dir.to_path_buf();
     let name = name.to_string();
@@ -1807,14 +1700,14 @@ async fn restore_non_hls_file_name(
 
 /// [`finalize_start_file_name`] 的结果：调用方据此决定是否继续启动下载器。
 enum StartPrelude {
+    /// The task was cancelled before claiming a download path.
+    Cancelled,
     /// 文件名持久化失败：不启动下载器，也不发布完成态。
     Failed { error: downloader::DownloadError },
-    /// 继续启动下载器；`Some(path)` 是已预订的 `.fdownloading` 临时路径。
-    Proceed(Option<std::path::PathBuf>),
-    /// 磁盘上已存在同名最终文件且策略/决定为跳过：序幕在 dedup 之前就地判定
-    /// 完成——不产生任何网络流量、不改名、不触碰已有文件。调用方应跳过下载器，
-    /// 把任务标记为已完成（采纳已有文件，任务不拥有它）。
-    SkipExisting { size: i64 },
+    /// 继续启动下载器；`Some` 持有 `.fdownloading` 路径的预订。
+    Proceed(Option<ReservedTempPath>),
+    /// Adopt a same-name final file without downloading the body or taking ownership.
+    SkipExisting { size: i64, checksum: Option<String> },
     /// 需要询问用户：未预订任何临时路径，调用方让出并发槽后等待答复。
     AwaitDecision(crate::selection::FileConflict),
 }
@@ -1826,6 +1719,7 @@ struct PreludeCtx {
     support: crate::file_exists::AskSupport,
     html_only: bool,
     restart_missing: bool,
+    restart_rename: bool,
 }
 
 /// 协议对「文件已存在」询问/跳过的支持程度。
@@ -1968,10 +1862,8 @@ async fn probe_start_meta(params: &mut DownloadParams) -> crate::meta_prober::Pr
 ///   6. dedup 改名时落库（预订已在锁内完成，兄弟任务经预订集合感知冲突，
 ///      不依赖 DB 中的名字）
 ///
-/// `Proceed` 携带预订的临时路径，经 `TaskDone.reserved_temp_path` 在
-/// `on_task_done` 释放；`Proceed(None)` = 名称最终仍未知（probe 失败），
-/// 下载器内部按响应头/URL 兜底命名，但不参与 dedup 协调（极端情况，正常
-/// 路径不会到此）。
+/// `Proceed` 携带临时路径的预订，随 worker 退出释放；`Proceed(None)` =
+/// 名称最终仍未知（probe 失败），下载器内部兜底命名，不参与 dedup 协调。
 async fn finalize_start_file_name(
     params: &mut DownloadParams,
     reserved: &Arc<Mutex<HashSet<std::path::PathBuf>>>,
@@ -2147,6 +2039,14 @@ async fn finalize_start_file_name(
         };
     }
 
+    if ctx.restart_rename && !is_safe_file_name(&params.file_name) {
+        return StartPrelude::Failed {
+            error: downloader::DownloadError::Other(
+                "cannot reserve a safe output name for restart".to_owned(),
+            ),
+        };
+    }
+
     // Step 3.5：文件已存在决策——磁盘上已有同名最终文件时，在 dedup 之前按
     // 契约优先级选择动作。必须在 Step 4 之前判断：dedup 一旦介入就会把
     // file_name 改成不冲突的新名字，届时就再也对不上磁盘上这份文件了。
@@ -2163,6 +2063,7 @@ async fn finalize_start_file_name(
     // A manifest can declare separate audio even when audio_url is absent.
     let companion_audio = !ctx.html_only && (params.audio_url.is_some() || is_hls || is_dash);
     if !ctx.html_only
+        && !ctx.restart_rename
         && let Some(candidate) = task_target_path(&params.save_dir, &params.file_name)
     {
         let existing = match tokio::fs::metadata(&candidate).await {
@@ -2192,12 +2093,89 @@ async fn finalize_start_file_name(
                     };
                 }
             };
+            if params.cancel_token.is_cancelled() {
+                return StartPrelude::Cancelled;
+            }
+            use crate::file_exists::{AskSupport, ExistsDecision};
+            let temp_conflict = reserved_hit || temp_on_disk;
+            let requires_checksum =
+                ctx.support == AskSupport::WithSkip && !params.checksum.is_empty();
+            let mut decision = decision;
+            if requires_checksum {
+                if !temp_conflict
+                    && (decision == ExistsDecision::Skip
+                        || (decision == ExistsDecision::None
+                            && ctx.global != FileExistsBehavior::Overwrite))
+                {
+                    match downloader::verify_checksum(
+                        &candidate,
+                        &params.checksum,
+                        &params.cancel_token,
+                    )
+                    .await
+                    {
+                        Ok(checksum) => {
+                            if params.cancel_token.is_cancelled() {
+                                return StartPrelude::Cancelled;
+                            }
+                            // If the candidate changed during hashing, don't adopt it.
+                            match tokio::fs::metadata(&candidate).await {
+                                Ok(current)
+                                    if current.is_file()
+                                        && current.len() == metadata.len()
+                                        && metadata.modified().is_ok_and(|original| {
+                                            current.modified().is_ok_and(|now| now == original)
+                                        }) =>
+                                {
+                                    return StartPrelude::SkipExisting {
+                                        size: i64::try_from(current.len()).unwrap_or(i64::MAX),
+                                        checksum: Some(checksum),
+                                    };
+                                }
+                                Ok(_) => {}
+                                Err(error) => crate::logger::report_warning(
+                                    "download-manager",
+                                    "recheck existing file after checksum",
+                                    &error,
+                                ),
+                            }
+                        }
+                        Err(downloader::DownloadError::Cancelled) => {
+                            return StartPrelude::Cancelled;
+                        }
+                        Err(downloader::DownloadError::ChecksumMismatch(_)) => {}
+                        Err(error) => crate::logger::report_warning(
+                            "download-manager",
+                            "verify existing file checksum",
+                            &error,
+                        ),
+                    }
+                }
+                if decision == ExistsDecision::Skip {
+                    // The old adoption no longer proves the checksum. Don't leave an ownership
+                    // exemption on a later download that writes its own output.
+                    decision = ExistsDecision::Rename;
+                    if let Err(error) = params
+                        .db
+                        .set_exists_decision(&params.task_id, decision.as_db())
+                        .await
+                    {
+                        return StartPrelude::Failed {
+                            error: error.into(),
+                        };
+                    }
+                }
+            }
             let mut facts = crate::file_exists::ExistsFacts {
                 final_file_exists: true,
-                temp_conflict: reserved_hit || temp_on_disk,
+                temp_conflict,
                 decision,
                 global: ctx.global,
-                support: ctx.support,
+                support: if requires_checksum {
+                    AskSupport::NoSkip
+                } else {
+                    ctx.support
+                },
                 unattended: params.unattended,
                 can_prompt: params.selector.can_prompt(),
             };
@@ -2215,6 +2193,7 @@ async fn finalize_start_file_name(
                 crate::file_exists::ExistsAction::Skip => {
                     return StartPrelude::SkipExisting {
                         size: i64::try_from(metadata.len()).unwrap_or(i64::MAX),
+                        checksum: None,
                     };
                 }
                 crate::file_exists::ExistsAction::Overwrite => {
@@ -2329,42 +2308,50 @@ async fn finalize_start_file_name(
             };
         }
     };
-    // Step 5: dedup 改名落库。
+    if params.cancel_token.is_cancelled() {
+        return StartPrelude::Cancelled;
+    }
     if ctx.restart_missing {
-        match params
+        return match params
             .db
             .bind_missing_task_restart(&params.task_id, &deduped)
             .await
         {
             Ok(true) => {
                 params.file_name = deduped;
-                return StartPrelude::Proceed(Some(temp));
+                StartPrelude::Proceed(Some(temp))
             }
-            result => {
-                lock_reserved(reserved).remove(&temp);
-                let error = match result {
-                    Err(error) => error.into(),
-                    Ok(_) => {
-                        downloader::DownloadError::Other("redownload is no longer pending".into())
-                    }
-                };
-                return StartPrelude::Failed { error };
-            }
-        }
-    }
-    if deduped != params.file_name {
-        params.file_name = deduped;
-        if let Err(error) = params
-            .db
-            .set_task_file_name(&params.task_id, &params.file_name)
-            .await
-        {
-            lock_reserved(reserved).remove(&temp);
-            return StartPrelude::Failed {
+            Ok(false) => StartPrelude::Failed {
+                error: downloader::DownloadError::Other("redownload is no longer pending".into()),
+            },
+            Err(error) => StartPrelude::Failed {
                 error: error.into(),
-            };
-        }
+            },
+        };
     }
+    // Step 5: dedup 改名落库。
+    let persisted = if ctx.restart_rename {
+        params
+            .db
+            .claim_restart_file_name(&params.task_id, &deduped)
+            .await
+    } else if deduped != params.file_name {
+        params
+            .db
+            .set_task_file_name(&params.task_id, &deduped)
+            .await
+    } else {
+        Ok(())
+    };
+    if let Err(error) = persisted {
+        return StartPrelude::Failed {
+            error: error.into(),
+        };
+    }
+    if params.cancel_token.is_cancelled() {
+        return StartPrelude::Cancelled;
+    }
+    params.file_name = deduped;
     StartPrelude::Proceed(Some(temp))
 }
 
@@ -2390,25 +2377,16 @@ pub struct TaskDone {
     /// Generation counter — must match `active_tokens` entry to allow cleanup.
     /// Prevents a stale TaskDone from an old spawn removing a newer token.
     pub generation: u64,
-    /// 本次任务在启动序幕（`finalize_start_file_name`）中预订的临时文件
-    /// 路径（`.fdownloading`）。`on_task_done` 收到后从 `reserved_temp_paths`
-    /// 中移除，释放预订。BT 任务与名称最终仍未知（probe 失败）的任务为 `None`。
-    pub reserved_temp_path: Option<std::path::PathBuf>,
     /// 通知阶段；宿主只有 `Finished` 才算任务结束。
     pub phase: TaskDonePhase,
 }
 
 impl TaskDone {
     /// spawned task 结束通知。
-    pub fn finished(
-        task_id: String,
-        generation: u64,
-        reserved_temp_path: Option<std::path::PathBuf>,
-    ) -> Self {
+    pub fn finished(task_id: String, generation: u64) -> Self {
         Self {
             task_id,
             generation,
-            reserved_temp_path,
             phase: TaskDonePhase::Finished,
         }
     }
@@ -2447,7 +2425,7 @@ async fn send_task_done(done_tx: &mpsc::Sender<TaskDone>, done: TaskDone) -> boo
 }
 
 /// 序幕判定跳过：记下逐任务「跳过」决定（任务采纳已有文件而不拥有它），再标记完成。
-async fn complete_skipped_task(params: &DownloadParams, size: i64) {
+async fn complete_skipped_task(params: &DownloadParams, size: i64, checksum: Option<String>) {
     log_info!(
         "[download] task {} skipped: file already exists ({})",
         params.task_id,
@@ -2461,6 +2439,12 @@ async fn complete_skipped_task(params: &DownloadParams, size: i64) {
                 crate::file_exists::ExistsDecision::Skip.as_db(),
             )
             .await?;
+        if let Some(checksum) = checksum {
+            params
+                .db
+                .set_task_file_hash(&params.task_id, &checksum)
+                .await?;
+        }
         params.db.update_task_status(&params.task_id, 3, "").await
     }
     .await;
@@ -2595,7 +2579,7 @@ async fn run_http_family_task(run: HttpFamilyRun) {
         && let Err(message) = prepare_request(&mut params, prelude.is_some(), resolver_patch).await
     {
         persist_task_failure(&task_id, message, &panic_db, &panic_progress_tx).await;
-        send_task_done(&done_tx, TaskDone::finished(task_id, spawn_gen, None)).await;
+        send_task_done(&done_tx, TaskDone::finished(task_id, spawn_gen)).await;
         return;
     }
     if html_only {
@@ -2605,7 +2589,7 @@ async fn run_http_family_task(run: HttpFamilyRun) {
         {
             let message = "saving a web page requires an HTTP(S) URL and an HTML file name";
             persist_task_failure(&task_id, message.into(), &panic_db, &panic_progress_tx).await;
-            send_task_done(&done_tx, TaskDone::finished(task_id, spawn_gen, None)).await;
+            send_task_done(&done_tx, TaskDone::finished(task_id, spawn_gen)).await;
             return;
         }
         // Fetch a fresh, full response. Old sizes and ranges do not describe this page.
@@ -2640,15 +2624,16 @@ async fn run_http_family_task(run: HttpFamilyRun) {
         Some(ctx) => finalize_start_file_name(&mut params, &reserved_set, ctx).await,
         None => StartPrelude::Proceed(None),
     };
-    let reserved_temp_path = match prelude {
+    match prelude {
+        StartPrelude::Cancelled => {}
         StartPrelude::Failed { error } => {
             crate::logger::report_error("download-manager", "finalize start file name", &error);
             persist_task_failure(&task_id, error.to_string(), &panic_db, &panic_progress_tx).await;
-            None
         }
-        StartPrelude::SkipExisting { size } => {
-            complete_skipped_task(&params, size).await;
-            None
+        StartPrelude::SkipExisting { size, checksum } => {
+            if !params.cancel_token.is_cancelled() {
+                complete_skipped_task(&params, size, checksum).await;
+            }
         }
         StartPrelude::AwaitDecision(conflict) => {
             // 挂起期间不占着单 GET 探测保留的响应连接；答复后任务重新启动、重新探测。
@@ -2659,7 +2644,6 @@ async fn run_http_family_task(run: HttpFamilyRun) {
                 TaskDone {
                     task_id: task_id.clone(),
                     generation: spawn_gen,
-                    reserved_temp_path: None,
                     phase: TaskDonePhase::AwaitingDecision,
                 },
             )
@@ -2690,14 +2674,13 @@ async fn run_http_family_task(run: HttpFamilyRun) {
                 TaskDone {
                     task_id,
                     generation: spawn_gen,
-                    reserved_temp_path: None,
                     phase,
                 },
             )
             .await;
             return;
         }
-        StartPrelude::Proceed(reserved_temp_path) => {
+        StartPrelude::Proceed(_reservation) => {
             let result = if use_ftp {
                 std::panic::AssertUnwindSafe(ftp_downloader::run_ftp_download(params))
                     .catch_unwind()
@@ -2757,14 +2740,9 @@ async fn run_http_family_task(run: HttpFamilyRun) {
             if let Some(used) = &pac_proxy {
                 crate::pac_route::report_outcome(&panic_db, &task_id, used).await;
             }
-            reserved_temp_path
         }
-    };
-    send_task_done(
-        &done_tx,
-        TaskDone::finished(task_id, spawn_gen, reserved_temp_path),
-    )
-    .await;
+    }
+    send_task_done(&done_tx, TaskDone::finished(task_id, spawn_gen)).await;
 }
 
 /// Per-task state tracked by the progress reporter for fixed-window speed
@@ -3708,6 +3686,7 @@ struct ActiveTaskEntry {
 /// temporary file until the cancelled generation has fully stopped.
 struct PendingPause {
     generation: u64,
+    handle: Option<JoinHandle<()>>,
     notify: bool,
     resume_requested: bool,
     /// 暂停前的队列归属与是否 BT：挂起恢复（`resume_requested`）的 HTTP / FTP 任务
@@ -4234,14 +4213,8 @@ pub struct DownloadManager {
     /// `dedup_filename` 时，都可能看到磁盘上同名文件不存在，进而选出相同
     /// 文件名并相互覆盖对方的 `.fdownloading` 临时文件，导致文件内容丢失。
     ///
-    /// 修复策略：任务启动序幕（`finalize_start_file_name`，spawned task 内）
-    /// 在互斥临界区里完成「dedup → 预订 insert」，并在 `on_task_done` /
-    /// 删除路径移除。`dedup_filename_sync` 在锁内消费此集合，检查文件名
-    /// 冲突时同时排除已被其他 in-flight 任务预订的路径，彻底消除批量
-    /// 下载中的文件名竞态。
-    ///
-    /// 共享互斥：actor（删除路径的主动释放）与各下载任务（启动序幕的
-    /// dedup+预订）都会触碰，锁内只做同步操作，绝无 `.await`。
+    /// 各下载 worker 在启动序幕占名，退出时由 `ReservedTempPath` 释放。
+    /// 锁内只更新预订集合，不做 I/O。
     reserved_temp_paths: Arc<Mutex<HashSet<std::path::PathBuf>>>,
     /// 引擎事件接收端(进度/队列变化/分段拆分等)——由宿主注入。
     sink: Arc<dyn EventSink>,
@@ -5744,7 +5717,6 @@ impl DownloadManager {
     async fn begin_resolve_start(&mut self, queued: QueuedTask) {
         let task_id = queued.task_id.clone();
         let identity = queued.resolver_plugin_id.clone();
-        let has_audio_track = queued.audio_url.is_some();
         // 占位插入 active_tasks（用原始 url 算 is_bt，真实 generation/cancel_token）：
         // resolve 期间任务可被 pause/cancel 触达、正确占并发计数；再入时被覆盖。
         self.generation += 1;
@@ -5777,6 +5749,7 @@ impl DownloadManager {
             extra_headers: queued.extra_headers.clone(),
             resolver_item: queued.resolver_item.clone(),
         };
+        let has_audio_track = queued.audio_url.is_some();
         let plan = self.resolve_egress_plan(&task_id, &req.url, &queued.proxy_url, has_audio_track);
         self.pending_resolve.insert(
             task_id.clone(),
@@ -5786,9 +5759,7 @@ impl DownloadManager {
             },
         );
         let unattended = self.db.is_task_unattended(&task_id).await.unwrap_or(false);
-        let reselect = self
-            .resolver_reselect(&task_id, &req.resolver_item, has_audio_track)
-            .await;
+        let reselect = self.resolver_reselect(&task_id, &req.resolver_item).await;
         self.mark_resolving(&task_id).await;
         self.spawn_resolve_worker(
             task_id,
@@ -5806,12 +5777,7 @@ impl DownloadManager {
     /// 起跑前是否要为任务重新选择 resolver 插件（见 [`ResolverReselect`]）。读库失败按
     /// 「不重选」处理：沿用已绑定插件，与该插件独占匹配时的行为一致。
     #[cfg(feature = "plugins")]
-    async fn resolver_reselect(
-        &self,
-        task_id: &str,
-        resolver_item: &str,
-        has_audio_track: bool,
-    ) -> ResolverReselect {
+    async fn resolver_reselect(&self, task_id: &str, resolver_item: &str) -> ResolverReselect {
         match self.db.is_task_resolver_choice_pending(task_id).await {
             Ok(true) => return ResolverReselect::Pending,
             Ok(false) => {}
@@ -5828,11 +5794,16 @@ impl DownloadManager {
         if !resolver_item.is_empty() {
             return ResolverReselect::No;
         }
-        match self.db.load_task_by_id(task_id).await {
-            Ok(Some(task)) if self.never_started(&task, has_audio_track).await => {
-                ResolverReselect::IfSuperseded
+        let fresh = async {
+            match self.db.load_task_by_id(task_id).await? {
+                Some(task) => self.never_started(&task).await,
+                None => Ok(false),
             }
-            Ok(_) => ResolverReselect::No,
+        }
+        .await;
+        match fresh {
+            Ok(true) => ResolverReselect::IfSuperseded,
+            Ok(false) => ResolverReselect::No,
             Err(error) => {
                 crate::logger::report_error(
                     "download-manager",
@@ -6006,9 +5977,7 @@ impl DownloadManager {
                 generation: spawn_gen,
             },
         );
-        let reselect = self
-            .resolver_reselect(task_id, &req.resolver_item, false)
-            .await;
+        let reselect = self.resolver_reselect(task_id, &req.resolver_item).await;
         self.mark_resolving(task_id).await;
         self.spawn_resolve_worker(
             task_id.to_string(),
@@ -7884,14 +7853,10 @@ impl DownloadManager {
         self.awaiting_decision.get(task_id) == Some(&generation)
     }
 
-    /// 任务是否「采纳」了已有文件（逐任务决定为跳过）：采纳的文件不归任务所有。
-    /// 读库失败时保守返回 true（宁可留下文件也不误删用户数据）。
-    async fn skip_adopted(&self, task_id: &str) -> bool {
+    /// 采纳或正在为重下重新占名时，库中旧路径不归任务所有。读库失败也按不拥有处理。
+    async fn has_unowned_existing_path(&self, task_id: &str) -> bool {
         match self.db.get_exists_decision(task_id).await {
-            Ok(value) => {
-                crate::file_exists::ExistsDecision::from_db(&value)
-                    == crate::file_exists::ExistsDecision::Skip
-            }
+            Ok(value) => crate::file_exists::ExistsDecision::from_db(&value).has_unowned_path(),
             Err(error) => {
                 crate::logger::report_error(
                     "download-manager",
@@ -7912,60 +7877,16 @@ impl DownloadManager {
         }
     }
 
-    /// 非 BT 任务是否从未有过任何落盘进度：无已下载字节、无分段行、无本协议的
-    /// 临时产物（`<name>.fdownloading`、DASH/HLS 音轨临时、ED2K 旧版临时名），
-    /// 且未完成。读库/探盘出错时保守视为已起跑，沿用续传语义。
-    async fn never_started(&self, task: &TaskInfo, has_audio_track: bool) -> bool {
+    /// A same-name partial on disk does not establish ownership. Only the task's
+    /// persisted progress or protocol checkpoints allow resuming without a new name.
+    async fn never_started(&self, task: &TaskInfo) -> Result<bool, crate::db::DbError> {
         if task.file_clear_state == FileClearState::RestartPending {
-            return true;
+            return Ok(true);
         }
         if task.status == 3 || task.downloaded_bytes != 0 {
-            return false;
+            return Ok(false);
         }
-        match self.db.load_segments(&task.task_id).await {
-            Ok(rows) if rows.is_empty() => {}
-            Ok(_) => return false,
-            Err(error) => {
-                crate::logger::report_error("download-manager", "load segments", &error);
-                return false;
-            }
-        }
-        if task.file_name.is_empty() {
-            return true;
-        }
-        let Some(target) = task_target_path(&task.save_dir, &task.file_name) else {
-            return false;
-        };
-        let temp_ext = downloader::TEMP_EXT;
-        let mut temps = vec![PathBuf::from(format!("{}{}", target.display(), temp_ext))];
-        if has_audio_track
-            || dash_downloader::is_dash_url(&task.url)
-            || hls_downloader::is_hls_url(&task.url)
-        {
-            let audio = dash_downloader::build_audio_path(&target);
-            temps.push(PathBuf::from(format!("{}{}", audio.display(), temp_ext)));
-        }
-        #[cfg(feature = "ed2k")]
-        if is_ed2k_url(&task.url)
-            && let Ok(link) = crate::ed2k::link::parse_ed2k_link(&task.url)
-        {
-            temps.push(Path::new(&task.save_dir).join(format!("{}{}", link.file_name, temp_ext)));
-        }
-        for temp in temps {
-            match tokio::fs::try_exists(&temp).await {
-                Ok(false) => {}
-                Ok(true) => return false,
-                Err(error) => {
-                    crate::logger::report_warning(
-                        "download-manager",
-                        "probe temp artifact",
-                        &error,
-                    );
-                    return false;
-                }
-            }
-        }
-        true
+        Ok(!self.db.has_resume_checkpoint(&task.task_id).await?)
     }
 
     /// Whether we have a free slot for a new HTTP/FTP download.
@@ -8416,13 +8337,6 @@ impl DownloadManager {
             .map(|e| e.generation == generation)
             .unwrap_or(false);
 
-        // Release the file-name reservation unconditionally (success, error,
-        // or cancel) so the slot is freed for the next task that picks the
-        // same filename.
-        if let Some(ref path) = done.reserved_temp_path {
-            lock_reserved(&self.reserved_temp_paths).remove(path);
-        }
-
         if generation_matched {
             self.active_tasks.remove(task_id);
             self.task_limiters.remove(task_id);
@@ -8687,7 +8601,7 @@ impl DownloadManager {
             }
             // 跳过采纳的已有文件不是本任务产物：不打来源标记、不触发插件 onDone
             // （webhook task.completed 照常）。
-            let adopted = task.status == 3 && self.skip_adopted(task_id).await;
+            let adopted = task.status == 3 && self.has_unowned_existing_path(task_id).await;
             if task.status == 3 {
                 // Completed transactions must not retain request bodies that may carry credentials.
                 self.replayable_requests.remove(task_id);
@@ -9340,8 +9254,7 @@ impl DownloadManager {
                 //      Leave it alone — the downloader needs it.
                 //
                 // C) staging dir has no matching task in the DB (orphan)
-                //    → Left over from a previous session that crashed or was
-                //      force-killed before cleanup ran.  Delete it.
+                //    → 可能由仅删记录留下；只清空壳，不能删除用户保留的数据。
                 // ---------------------------------------------------------------
 
                 // Build per-task lookups we need during the directory scan.
@@ -9513,7 +9426,25 @@ impl DownloadManager {
 
                         match task_map.get(task_id_str) {
                             None => {
-                                // Case C: orphan — no matching task in DB.
+                                // Record-only deletion intentionally leaves staging data behind.
+                                let scan = tokio::task::spawn_blocking(move || {
+                                    let has_data = bt_downloader::stage_dir_has_real_data(&path);
+                                    (path, has_data)
+                                });
+                                let (path, has_data) = match scan.await {
+                                    Ok(scanned) => scanned,
+                                    Err(error) => {
+                                        crate::logger::report_warning(
+                                            "download-manager",
+                                            "inspect orphan BT staging directory",
+                                            &error,
+                                        );
+                                        continue;
+                                    }
+                                };
+                                if has_data {
+                                    continue;
+                                }
                                 log_info!(
                                     "[manager] startup cleanup: removing orphan staging dir {}",
                                     path.display()
@@ -11853,7 +11784,6 @@ impl DownloadManager {
                             .send(TaskDone {
                                 task_id: panic_task_id,
                                 generation: spawn_gen,
-                                reserved_temp_path: None, // BT 任务不使用文件名预订机制
                                 phase: TaskDonePhase::Finished,
                             })
                             .await
@@ -11896,7 +11826,7 @@ impl DownloadManager {
                 Err(error) => {
                     persist_task_failure(&task_id, error.to_string(), &self.db, &self.progress_tx)
                         .await;
-                    send_task_done(&done_tx, TaskDone::finished(task_id, spawn_gen, None)).await;
+                    send_task_done(&done_tx, TaskDone::finished(task_id, spawn_gen)).await;
                     return;
                 }
             };
@@ -11916,7 +11846,7 @@ impl DownloadManager {
             // off-actor，本函数 spawn 后立即返回——创建任务后的 AllTasks
             // 快照不再被 probe 的网络往返压后，probe 期间其余信号照常处理。
             // dedup+预订经共享互斥锁串行化，原子性等价于旧 actor 同步段；
-            // 预订仍经 TaskDone.reserved_temp_path 在 on_task_done 释放。
+            // 预订归当前 worker 所有，异常退出时同样释放。
             // ---------------------------------------------------------------
 
             // 构造完整 HTTP 请求事务规格——method/body 来自浏览器扩展，
@@ -12026,6 +11956,7 @@ impl DownloadManager {
                         support,
                         html_only: false,
                         restart_missing: false,
+                        restart_rename: false,
                     }),
                     reserved_set,
                     done_tx,
@@ -12292,11 +12223,12 @@ impl DownloadManager {
             // A real downloader must finish flushing before its paused progress
             // becomes authoritative. Placeholder entries used by off-actor
             // resolve have no writer and can still report immediately.
-            if has_spawned_downloader {
+            if let Some(handle) = entry.handle {
                 self.pending_pauses.insert(
                     task_id.to_string(),
                     PendingPause {
                         generation,
+                        handle: Some(handle),
                         notify,
                         resume_requested: reconnect,
                         queue_id: entry.queue_id.clone(),
@@ -12565,14 +12497,16 @@ impl DownloadManager {
             self.resume_task(task_id).await;
             return;
         }
+        if task.file_clear_state != FileClearState::None {
+            if let Err(error) = self.restart_missing_task_file(task_id).await {
+                crate::logger::report_error("download-manager", "restart missing file", &error);
+            }
+            return;
+        }
         // 在途哈希读的是即将被删除的上一次产物：立即停止并作废其结果。
         self.file_hash_jobs.cancel(task_id);
 
-        // 1. 先停掉在途 spawn（含尚未起飞的排队项）。静默暂停路径已处理
-        //    token cancel / active_tasks 摘除 / pending_queue 摘除 / 落 paused。
-        //    注意它**不**等待 spawned task 退出：下面的磁盘清理因此要为
-        //    「写入方还没松手」留出重试窗口（Windows 上占用中的文件
-        //    `remove_file` 直接失败）。
+        // Stop the previous run before inspecting the paths it actually used.
         let was_active =
             self.active_tasks.contains_key(task_id) || matches!(task.status, 0 | 1 | 5);
         if was_active {
@@ -12582,100 +12516,72 @@ impl DownloadManager {
             );
             self.pause_task_keep_slot(task_id).await;
         }
-
-        // 2. 磁盘清理（best-effort，NotFound 静默）。暂停之后重新读库，拿到
-        //    spawned task 可能已 dedup 落库的最新 file_name。
-        // 暂停前的原始状态：重载后的 t.status 会被 pause_task_silent 改写。
-        let orig_status = task.status;
-        // 「跳过」采纳的已有文件不归本任务所有：重新下载不删它，并清除该决定使
-        // 新一轮重新走命名/询问流程。
-        let adopted_existing = self.skip_adopted(task_id).await;
-        if let Err(error) = self.db.set_exists_decision(task_id, "").await {
-            crate::logger::report_error("download-manager", "clear file-exists decision", &error);
-        }
-        let t = match self.db.load_task_by_id(task_id).await {
-            Ok(Some(t)) => t,
-            _ => task,
-        };
-        if is_safe_file_name(&t.file_name) {
-            let path = PathBuf::from(&t.save_dir).join(&t.file_name);
-            let temp_path = PathBuf::from(format!("{}{}", path.display(), downloader::TEMP_EXT));
-            // 最终产物认领判定（详见 task_owns_final_file）：从未启动的任务
-            // `file_name` 未经启动期 dedup，可能与早前同名任务留下的成品相
-            // 撞——重下靠启动期 dedup 另起新名即可，绝不能删别人的文件。
-            // 用暂停前的原始 status 判定（pause_task_silent 会把活跃任务改
-            // 成 2，而活跃任务不可能是 3，语义一致）。
-            if task_owns_final_file(orig_status) && !adopted_existing {
-                remove_file_retrying(task_id, &path, was_active).await;
-            }
-            remove_file_retrying(task_id, &temp_path, was_active).await;
-            // DASH 音轨 sidecar（轨对任务的视频轨 URL 非 .mpd，需查库确认）
-            // 与其临时文件一并清理，否则重下会复用上一轮的旧音轨。
-            let has_audio_sidecar = dash_downloader::is_dash_url(&t.url)
-                || hls_downloader::is_hls_url(&t.url)
-                || self
-                    .db
-                    .load_audio_url(task_id)
-                    .await
-                    .unwrap_or_default()
-                    .is_some();
-            if has_audio_sidecar {
-                let audio_path = dash_downloader::build_audio_path(&path);
-                let audio_temp =
-                    PathBuf::from(format!("{}{}", audio_path.display(), downloader::TEMP_EXT));
-                remove_file_retrying(task_id, &audio_temp, was_active).await;
-                if task_has_started(orig_status, t.downloaded_bytes) {
-                    remove_file_retrying(task_id, &audio_path, was_active).await;
+        if let Some(pending) = self.pending_pauses.get_mut(task_id)
+            && let Some(handle) = &mut pending.handle
+        {
+            match tokio::time::timeout(DELETE_HANDLE_WAIT, handle).await {
+                Ok(result) => {
+                    pending.handle = None;
+                    if let Err(error) = result {
+                        crate::logger::report_error("download-manager", "wait for restart", &error);
+                    }
+                }
+                Err(error) => {
+                    crate::logger::report_warning("download-manager", "wait for restart", &error);
+                    self.drain_queue().await;
+                    self.sync_queue_occupancy();
+                    return;
                 }
             }
-        } else {
-            log_info!(
-                "[manager] restart_task {}: unsafe file name, skipping disk cleanup",
-                task_id
-            );
         }
 
-        // 3. DB 复位。`update_task_file_missing` 只作用于 status=3 的行，
-        //    因此必须排在把状态改回 0 之前。`update_task_status(_, 0, "")`
-        //    同时清空 error_message 与 completed_at（见 Db::update_task_status）。
-        if let Err(e) = self.db.delete_segments(task_id).await {
-            log_info!(
-                "[manager] restart_task {}: delete_segments error: {}",
-                task_id,
-                e
-            );
+        // 2. 同时读取最新名字与路径归属。未起跑的任务只有一个候选名，
+        // 即便有同名残片也不能清盘；重新占名会避开既有成品与残片。
+        let t = match self.db.load_cleanup_task(task_id).await {
+            Ok(Some(t)) => t,
+            Ok(None) => {
+                self.drain_queue().await;
+                self.sync_queue_occupancy();
+                return;
+            }
+            Err(error) => {
+                crate::logger::report_error(
+                    "download-manager",
+                    "load restart file ownership",
+                    &error,
+                );
+                self.drain_queue().await;
+                self.sync_queue_occupancy();
+                return;
+            }
+        };
+        // Pause may already have changed a just-completed task's status.
+        let owns_final = task_owns_final_file(task.status) || task_owns_final_file(t.status);
+        let excluded = [task_id.to_owned()];
+        let claimed = !t.file_name.is_empty()
+            && (file_name_claimed_by_others(&self.db, &t.save_dir, &t.file_name, &excluded).await
+                || self.output_name_reserved(&t.save_dir, &t.file_name));
+        let owns_partial = !owns_final && owns_main_partial(&t);
+        let protected = t.unowned_path || claimed;
+        if !protected {
+            self.remove_restart_files(&t, owns_final, owns_partial, was_active, &excluded)
+                .await;
+        }
+        let decision = if protected || !owns_final && !owns_partial && !t.file_name.is_empty() {
+            crate::file_exists::ExistsDecision::RestartRename
+        } else {
+            crate::file_exists::ExistsDecision::None
+        };
+
+        // 3. 原子提交进度、完成态和命名决定。
+        if let Err(error) = self.db.reset_task_for_restart(task_id, decision).await {
+            crate::logger::report_error("download-manager", "reset task for restart", &error);
+            self.drain_queue().await;
+            self.sync_queue_occupancy();
+            return;
         }
         if let Err(error) = self.db.reset_task_speed_history(task_id).await {
             crate::logger::report_error("download-manager", "reset speed history", &error);
-        }
-        if let Err(e) = self.db.update_task_progress(task_id, 0).await {
-            log_info!(
-                "[manager] restart_task {}: reset progress error: {}",
-                task_id,
-                e
-            );
-            return;
-        }
-        if let Err(e) = self.db.update_task_total_bytes(task_id, 0).await {
-            log_info!(
-                "[manager] restart_task {}: reset total_bytes error: {}",
-                task_id,
-                e
-            );
-        }
-        if let Err(e) = self.db.update_task_file_missing(task_id, false).await {
-            log_info!(
-                "[manager] restart_task {}: clear file_missing error: {}",
-                task_id,
-                e
-            );
-        }
-        if let Err(e) = self.db.update_task_status(task_id, 0, "").await {
-            log_info!(
-                "[manager] restart_task {}: reset status error: {}",
-                task_id,
-                e
-            );
         }
 
         self.resume_restarted_task(task_id).await;
@@ -12796,6 +12702,65 @@ impl DownloadManager {
         self.send_tasks_snapshot().await;
     }
 
+    fn output_name_reserved(&self, save_dir: &str, name: &str) -> bool {
+        let path = Path::new(save_dir).join(format!("{name}{}", downloader::TEMP_EXT));
+        lock_reserved(&self.reserved_temp_paths).contains(&path)
+    }
+
+    async fn audio_cleanup_paths(
+        &self,
+        task: &crate::db::DeletionTask,
+        exclude: &[String],
+    ) -> [Option<PathBuf>; 2] {
+        let mut paths = [None, None];
+        for (slot, name) in paths
+            .iter_mut()
+            .zip([&task.audio_partial_name, &task.audio_output_name])
+        {
+            if !is_safe_file_name(name) {
+                continue;
+            }
+            let base = cleanup_base_name(name);
+            if !self.output_name_reserved(&task.save_dir, base)
+                && !file_name_claimed_by_others(&self.db, &task.save_dir, base, exclude).await
+                && (base == name
+                    || !file_name_claimed_by_others(&self.db, &task.save_dir, name, exclude).await)
+            {
+                *slot = Some(Path::new(&task.save_dir).join(name));
+            }
+        }
+        paths
+    }
+
+    async fn remove_restart_files(
+        &self,
+        task: &crate::db::DeletionTask,
+        owns_final: bool,
+        owns_partial: bool,
+        was_active: bool,
+        exclude: &[String],
+    ) {
+        let id = &task.task_id;
+        let Some(path) = task_target_path(&task.save_dir, &task.file_name) else {
+            log_info!("[manager] restart_task {id}: unsafe file name, skipping disk cleanup");
+            return;
+        };
+        if owns_final {
+            remove_file_retrying(id, &path, was_active).await;
+        }
+        if owns_partial {
+            let temp = PathBuf::from(format!("{}{}", path.display(), downloader::TEMP_EXT));
+            remove_file_retrying(id, &temp, was_active).await;
+        }
+        for audio in self
+            .audio_cleanup_paths(task, exclude)
+            .await
+            .into_iter()
+            .flatten()
+        {
+            remove_file_retrying(id, &audio, was_active).await;
+        }
+    }
     /// Remove the outputs of a completed non-BT task without resetting its history.
     pub async fn clear_task_file(
         &mut self,
@@ -12891,7 +12856,8 @@ impl DownloadManager {
         }
 
         let cleanup_artifacts = async {
-            for artifact in files.artifacts {
+            let [_, audio] = files.audio_paths;
+            for artifact in files.artifacts.into_iter().chain(audio) {
                 if let Err(error) = tokio::fs::remove_file(&artifact).await
                     && error.kind() != std::io::ErrorKind::NotFound
                 {
@@ -13339,6 +13305,46 @@ impl DownloadManager {
             return;
         }
         let use_ed2k = !html_only && is_ed2k_url(&task.url);
+        use crate::file_exists::ExistsDecision;
+        let decision = if use_bt || html_only {
+            ExistsDecision::None
+        } else {
+            match self.db.get_exists_decision(task_id).await {
+                Ok(value) => ExistsDecision::from_db(&value),
+                Err(error) => {
+                    persist_task_failure(
+                        task_id,
+                        format!("load file-exists decision: {error}"),
+                        &self.db,
+                        &self.progress_tx,
+                    )
+                    .await;
+                    return;
+                }
+            }
+        };
+        let restart_rename = decision == ExistsDecision::RestartRename;
+        let fresh = if use_bt {
+            false
+        } else if html_only {
+            task.downloaded_bytes == 0
+        } else if restart_rename {
+            true
+        } else {
+            match self.never_started(&task).await {
+                Ok(fresh) => fresh,
+                Err(error) => {
+                    persist_task_failure(
+                        task_id,
+                        format!("load resume checkpoint: {error}"),
+                        &self.db,
+                        &self.progress_tx,
+                    )
+                    .await;
+                    return;
+                }
+            }
+        };
 
         // Insert placeholder entry (handle filled in after tokio::spawn).
         self.active_tasks.insert(
@@ -13617,7 +13623,6 @@ impl DownloadManager {
                             .send(TaskDone {
                                 task_id: panic_task_id,
                                 generation: spawn_gen,
-                                reserved_temp_path: None, // BT 任务不使用文件名预订机制
                                 phase: TaskDonePhase::Finished,
                             })
                             .await
@@ -13669,7 +13674,7 @@ impl DownloadManager {
                 Err(error) => {
                     persist_task_failure(&tid, error.to_string(), &self.db, &self.progress_tx)
                         .await;
-                    send_task_done(&done_tx, TaskDone::finished(tid, spawn_gen, None)).await;
+                    send_task_done(&done_tx, TaskDone::finished(tid, spawn_gen)).await;
                     return;
                 }
             };
@@ -13759,30 +13764,7 @@ impl DownloadManager {
                 )
             };
             let task_unattended = self.db.is_task_unattended(&tid).await.unwrap_or(false);
-            // 从未有过任何落盘进度的任务（稍后下载 / 排队中暂停后恢复 / 重启自动
-            // 恢复 / 重新下载 / 答复后重入）等同全新起跑：经启动序幕统一处理命名、
-            // 跳过、dedup 与「文件已存在」询问。
-            let fresh = if html_only {
-                task.downloaded_bytes == 0
-            } else {
-                self.never_started(&task, audio_url.is_some()).await
-            };
-            let decision = if html_only {
-                crate::file_exists::ExistsDecision::None
-            } else {
-                match self.db.get_exists_decision(&tid).await {
-                    Ok(value) => crate::file_exists::ExistsDecision::from_db(&value),
-                    Err(error) => {
-                        crate::logger::report_error(
-                            "download-manager",
-                            "load file-exists decision",
-                            &error,
-                        );
-                        crate::file_exists::ExistsDecision::None
-                    }
-                }
-            };
-            let overwrite = if html_only {
+            let overwrite = if html_only || restart_rename || decision == ExistsDecision::Rename {
                 crate::file_exists::OverwritePolicy::Never
             } else if matches!(self.file_exists_behavior, FileExistsBehavior::Overwrite) {
                 crate::file_exists::OverwritePolicy::Any
@@ -13883,6 +13865,7 @@ impl DownloadManager {
                         support,
                         html_only,
                         restart_missing,
+                        restart_rename,
                     }),
                     reserved_set,
                     done_tx,
@@ -14049,6 +14032,7 @@ impl DownloadManager {
     }
 
     /// Delete task record and optionally its files on disk.
+    /// `delete_files = false` keeps both finished files and partial downloads.
     ///
     /// If the task is actively downloading, the cancellation token is triggered
     /// first and we **await** the spawned task's JoinHandle so that all
@@ -14096,15 +14080,16 @@ impl DownloadManager {
             entry.token.cancel();
             entry.handle
         } else {
-            None
+            self.pending_pauses
+                .get_mut(task_id)
+                .and_then(|pending| pending.handle.take())
         };
         let handle_timed_out = if let Some(mut handle) = maybe_handle {
             // Timeout guard: don't block forever if the task misbehaves.
             // 取 `&mut handle` 使超时后仍能 abort：纯 async 的 HTTP/coordinator
             // 任务会在下一个 await 点立即取消，比单纯 drop(detach) 更快释放
             // 连接/文件句柄，避免被删任务在我们清理文件后又写回孤立文件。
-            // 对 BT/FTP 的 spawn_blocking 内层阻塞线程，abort 外层 future 不影响
-            // 阻塞线程本身，仍依赖 cancel_token + 下方 deferred_cleanup 兜底。
+            // 阻塞线程仍依赖 cancel_token；只有任务独占的 BT 暂存目录可以延迟补扫。
             wait_for_download_exit(
                 &mut handle,
                 tokio::time::Instant::now() + std::time::Duration::from_secs(5),
@@ -14116,18 +14101,17 @@ impl DownloadManager {
         };
         hls_downloader::clear_discard(task_id);
         if handle_timed_out {
+            self.pending_pauses.remove(task_id);
+            self.task_limiters.remove(task_id);
             log_info!(
                 "[manager] delete_task {}: handle wait timed out, spawned task may still be running",
                 task_id
             );
         }
 
-        // 记录文件信息，供 handle 超时后延迟二次清理使用
-        let mut deferred_cleanup: Option<(String, String, String, bool)> = None;
-
         // 在 handle 等待之后加载 DB，确保获取到 spawned task 可能更新的最新 file_name。
         let mut cleanup_error: Option<downloader::DownloadError> = None;
-        let task = match self.db.load_task_by_id(task_id).await {
+        let task = match self.db.load_cleanup_task(task_id).await {
             Ok(task) => task,
             Err(error) => {
                 crate::logger::report_error(
@@ -14139,6 +14123,11 @@ impl DownloadManager {
                 return Err(DeleteTaskError::Record(error.into()));
             }
         };
+        #[cfg(feature = "bt")]
+        let late_bt_stage = task
+            .as_ref()
+            .filter(|t| handle_timed_out && delete_files && is_bt_url(&t.url))
+            .map(|t| bt_downloader::bt_stage_dir(&t.save_dir, task_id));
         if let Some(t) = task {
             // 清理或重新绑定前保留的旧名字不能用于删除临时文件或释放预订。
             let cleanup_named_temps = t.file_clear_state == FileClearState::None;
@@ -14147,50 +14136,19 @@ impl DownloadManager {
             // save_dir/file_name 可能是未 dedup 的原始名，指向早前同名任务
             // 留下的成品，删除文件时必须跳过。
             let claimed_by_other = delete_files
-                && file_name_claimed_by_others(
-                    &self.db,
-                    &t.save_dir,
-                    &t.file_name,
-                    &[task_id.to_string()],
-                )
-                .await;
-            let adopted = self.skip_adopted(task_id).await;
-            let owns_final = task_owns_final_file(t.status) && !claimed_by_other && !adopted;
-            let has_started = task_has_started(t.status, t.downloaded_bytes) && !adopted;
-            // 若 handle 超时且文件名已知，记录信息以便后续延迟清理
-            if handle_timed_out
                 && !t.file_name.is_empty()
-                && (is_bt_url(&t.url) || cleanup_named_temps)
-            {
-                // BT 的最终路径同样只归完成任务所有（dedup 在完成期），
-                // 延迟清理沿用同一守卫；非 BT 走到这里必然启动过（有
-                // handle），file_name 已 dedup，最终路径归本任务命名空间。
-                let deferred_delete_files = if is_bt_url(&t.url) {
-                    delete_files && owns_final
-                } else {
-                    delete_files && !claimed_by_other
-                };
-                deferred_cleanup = Some((
-                    t.save_dir.clone(),
-                    t.file_name.clone(),
-                    t.url.clone(),
-                    deferred_delete_files,
-                ));
-                // handle 被 abort 时 spawned task 的 TaskDone 不会发出,on_task_done
-                // 无法释放 reserved_temp_paths 预订。此处按 DB 中(已 dedup 落库的)
-                // file_name 重建预订路径并主动移除,避免残留到进程重启(否则后续同名
-                // 下载会被误判为占用而 dedup 改名)。HashSet::remove 幂等无副作用。
-                let reserved = PathBuf::from(&t.save_dir).join(format!(
-                    "{}{}",
-                    t.file_name,
-                    downloader::TEMP_EXT
-                ));
-                lock_reserved(&self.reserved_temp_paths).remove(&reserved);
-            }
+                && (self.output_name_reserved(&t.save_dir, &t.file_name)
+                    || file_name_claimed_by_others(
+                        &self.db,
+                        &t.save_dir,
+                        &t.file_name,
+                        &[task_id.to_owned()],
+                    )
+                    .await);
+            let can_remove_named_files = !claimed_by_other && !t.unowned_path;
+            let owns_final = task_owns_final_file(t.status) && can_remove_named_files;
+            let owns_partial = owns_main_partial(&t) && can_remove_named_files;
             let path = PathBuf::from(&t.save_dir).join(&t.file_name);
-            if !is_bt_url(&t.url) {
-                downloader::clean_http_restart_for_task(Path::new(&t.save_dir), task_id).await;
-            }
 
             if is_bt_url(&t.url) {
                 #[cfg(feature = "bt")]
@@ -14284,12 +14242,7 @@ impl DownloadManager {
                 }
 
                 #[cfg(feature = "bt")]
-                {
-                    // Always remove the task-scoped staging directory regardless
-                    // of delete_files: if the download never finished, the staging
-                    // dir contains partial data that should be cleaned up when the
-                    // task is deleted.  If it already finished and was moved to the
-                    // final path, the staging dir should be empty (or already gone).
+                if delete_files {
                     let stage_dir = bt_downloader::bt_stage_dir(&t.save_dir, task_id);
                     if stage_dir.exists() {
                         log_info!(
@@ -14311,81 +14264,24 @@ impl DownloadManager {
                         }
                     }
                 }
-            } else if cleanup_named_temps {
-                // HTTP / FTP / HLS / DASH: clean up the task's in-progress temp file.
-                let temp_path =
-                    PathBuf::from(format!("{}{}", path.display(), downloader::TEMP_EXT));
-                if let Err(e) = tokio::fs::remove_file(&temp_path).await
-                    && !path_is_absent(&e)
-                {
-                    log_info!(
-                        "[manager] delete_task {}: remove temp {} failed: {}",
-                        task_id,
-                        temp_path.display(),
-                        e
-                    );
-                    if cleanup_error.is_none() {
-                        cleanup_error = Some(e.into());
-                    }
-                }
-
-                // DASH audio sidecar: clean up .audio.m4a and its .part temp
-                // 轨对任务（视频轨 URL 非 .mpd）也持有 sidecar，需一并清理。
-                let has_audio_sidecar = dash_downloader::is_dash_url(&t.url)
-                    || hls_downloader::is_hls_url(&t.url)
-                    || self
-                        .db
-                        .load_audio_url(&t.task_id)
-                        .await
-                        .unwrap_or_default()
-                        .is_some();
-                if has_audio_sidecar {
-                    let audio_path = dash_downloader::build_audio_path(&path);
-                    let audio_temp =
-                        PathBuf::from(format!("{}{}", audio_path.display(), downloader::TEMP_EXT));
-                    if let Err(error) = tokio::fs::remove_file(&audio_temp).await
-                        && !path_is_absent(&error)
-                    {
-                        crate::logger::report_warning(
-                            "download-manager",
-                            "remove task files",
-                            &error,
-                        );
-                        if cleanup_error.is_none() {
-                            cleanup_error = Some(error.into());
-                        }
-                    }
-                    if delete_files
-                        && has_started
-                        && let Err(error) = tokio::fs::remove_file(&audio_path).await
-                        && !path_is_absent(&error)
-                    {
-                        crate::logger::report_warning(
-                            "download-manager",
-                            "remove task files",
-                            &error,
-                        );
-                        if cleanup_error.is_none() {
-                            cleanup_error = Some(error.into());
-                        }
-                    }
-                }
-
-                if delete_files
-                    && owns_final
-                    && is_safe_file_name(&t.file_name)
-                    && let Err(e) = tokio::fs::remove_file(&path).await
-                    && !path_is_absent(&e)
-                {
-                    log_info!(
-                        "[manager] delete_task {}: remove file {} failed: {}",
-                        task_id,
-                        path.display(),
-                        e
-                    );
-                    if cleanup_error.is_none() {
-                        cleanup_error = Some(e.into());
-                    }
+            } else if delete_files {
+                let audio_paths = if t.unowned_path {
+                    [None, None]
+                } else {
+                    self.audio_cleanup_paths(&t, &[task_id.to_owned()]).await
+                };
+                let files = DeleteFiles {
+                    owns_partial,
+                    owns_final,
+                    audio_paths,
+                    is_bt: false,
+                    delete_files,
+                    artifacts: Vec::new(),
+                    save_dir: t.save_dir,
+                    file_name: t.file_name,
+                };
+                if let Err(error) = remove_deleted_task_files(task_id, &files).await {
+                    cleanup_error = Some(error);
                 }
             }
         }
@@ -14403,16 +14299,6 @@ impl DownloadManager {
             if cleanup_error.is_none() {
                 cleanup_error = Some(error);
             }
-        }
-
-        // 竞争修复：若 handle 等待超时（spawned task 可能仍在运行），它可能在首次
-        // 清理之后才创建临时文件。延迟二次清理以捕获这类孤立文件。
-        // 下载器中新增的早期 cancel 检查已大幅缩小竞争窗口，此处为兜底保护。
-        if let Some((save_dir, file_name, url, del_files)) = deferred_cleanup {
-            let tid = task_id.to_string();
-            tokio::spawn(deferred_file_cleanup(
-                save_dir, file_name, url, del_files, tid,
-            ));
         }
 
         if let Some(error) = cleanup_error {
@@ -14439,6 +14325,10 @@ impl DownloadManager {
         #[cfg(feature = "bt")]
         if let Some(bt) = &self.bt_session {
             bt.clear_web_seeds(task_id).await;
+        }
+        #[cfg(feature = "bt")]
+        if let Some(stage) = late_bt_stage {
+            tokio::spawn(deferred_bt_cleanup(stage));
         }
         self.prune_group_dirs(group_dirs, &[task_id.to_string()])
             .await;
@@ -14497,11 +14387,10 @@ impl DownloadManager {
     /// 最后经 progress reporter 发一条 [`EngineEvent::TasksDeleted`]（排在这些任务已入队的
     /// 进度帧之后）。
     ///
-    /// - 删除所需的库内事实（「文件已存在」决定、独立音轨、衍生产物、同名产物归属）整批
-    ///   预读，不逐任务查询；
+    /// - 先取消任务并等写入方退出，再整批读取清理计划（不逐任务查询）；
     /// - 单个任务清理失败（文件删不掉、超时、清理任务 panic）只保留该任务，其余照常删除，
     ///   失败数见 [`BatchDeleteOutcome::failed`]；
-    /// - 预读失败时不动任何任务；提交失败时不删任何记录；两者都返回错误。
+    /// - 计划读取失败时不清理文件；提交失败时不删任何记录；两者都返回错误。
     pub async fn delete_tasks_batch(
         &mut self,
         task_ids: &[String],
@@ -14534,8 +14423,34 @@ impl DownloadManager {
             task_ids.len(),
             delete_files
         );
-        // 预读成功后才动运行态：读库失败不会留下「已取消却未删除」的任务。
-        let mut plans = self.plan_batch_deletion(task_ids, delete_files).await?;
+        let timed_out = self.stop_batch_downloads(task_ids).await;
+        let mut plans = match self.plan_batch_deletion(task_ids, delete_files).await {
+            Ok(plans) => plans,
+            Err(error) => {
+                for task_id in task_ids {
+                    hls_downloader::clear_discard(task_id);
+                }
+                for task_id in task_ids {
+                    if !self.active_tasks.contains_key(task_id) {
+                        continue;
+                    }
+                    match self.db.load_task_by_id(task_id).await {
+                        Ok(Some(task)) if matches!(task.status, 0 | 1 | 5) => {
+                            self.pause_task_inner(task_id, false, false, false).await;
+                            self.task_limiters.remove(task_id);
+                        }
+                        Ok(_) => {}
+                        Err(error) => crate::logger::report_error(
+                            "download-manager",
+                            "load stopped task after batch delete planning failed",
+                            &error,
+                        ),
+                    }
+                }
+                self.finish_batch_deletion().await;
+                return Err(error);
+            }
+        };
         // 任务行删除后就查不到组归属：先登记组成员目录，删除成功后清理留空的组目录。
         let group_dirs = if delete_files {
             self.group_dir_targets(task_ids).await
@@ -14554,35 +14469,18 @@ impl DownloadManager {
         let app_data_dir: Arc<str> = Arc::from(self.app_data_dir.as_str());
         let mut workers = Vec::with_capacity(task_ids.len());
         for task_id in task_ids {
-            hls_downloader::request_discard(task_id);
-            #[cfg(feature = "bt")]
-            self.integrity_checks.cancel(task_id);
-            self.file_hash_jobs.cancel(task_id);
-            let handle = self
-                .active_tasks
-                .remove(task_id.as_str())
-                .and_then(|entry| {
-                    entry.token.cancel();
-                    entry.handle
-                });
+            self.active_tasks.remove(task_id.as_str());
+            self.auto_retry_counts.remove(task_id.as_str());
             let files = plans.remove(task_id.as_str());
-            if let Some(files) = &files
-                && !files.is_bt
-            {
-                self.auto_retry_counts.remove(task_id.as_str());
-                if files.cleanup_named_temps {
-                    // abort 超时时 on_task_done 不会执行，在这里主动释放本任务的预订。
-                    let reserved = PathBuf::from(&files.save_dir).join(format!(
-                        "{}{}",
-                        files.file_name,
-                        downloader::TEMP_EXT
-                    ));
-                    lock_reserved(&self.reserved_temp_paths).remove(&reserved);
-                }
-            }
+            #[cfg(feature = "bt")]
+            let late_bt_stage = files
+                .as_ref()
+                .filter(|files| delete_files && files.is_bt && timed_out.contains(task_id.as_str()))
+                .map(|files| bt_downloader::bt_stage_dir(&files.save_dir, task_id));
+            #[cfg(not(feature = "bt"))]
+            let late_bt_stage: Option<PathBuf> = None;
             let job = DeleteCleanup {
                 task_id: task_id.clone(),
-                handle,
                 files,
                 #[cfg(feature = "bt")]
                 bt_session: self.bt_session.clone(),
@@ -14590,17 +14488,25 @@ impl DownloadManager {
                 app_data_dir: Arc::clone(&app_data_dir),
                 file_permits: Arc::clone(&file_permits),
             };
-            workers.push((task_id, tokio::spawn(run_delete_cleanup(job))));
+            workers.push((
+                task_id,
+                tokio::spawn(run_delete_cleanup(job)),
+                late_bt_stage,
+            ));
         }
 
         let mut deleted = Vec::with_capacity(workers.len());
+        let mut deferred_staging = Vec::new();
         let mut failed = moving;
         let mut files_in_use = false;
-        for (task_id, worker) in workers {
+        for (task_id, worker, late_bt_stage) in workers {
             let joined = worker.await;
             hls_downloader::clear_discard(task_id);
             match joined {
-                Ok(Ok(())) => deleted.push(task_id.clone()),
+                Ok(Ok(())) => {
+                    deleted.push(task_id.clone());
+                    deferred_staging.extend(late_bt_stage);
+                }
                 Ok(Err(error)) => {
                     crate::logger::report_error(
                         "download-manager",
@@ -14628,6 +14534,10 @@ impl DownloadManager {
         if !deleted.is_empty() {
             match self.db.delete_tasks_batch(&deleted).await {
                 Ok(sources) => {
+                    #[cfg(feature = "bt")]
+                    for stage in deferred_staging {
+                        tokio::spawn(deferred_bt_cleanup(stage));
+                    }
                     for task_id in &deleted {
                         self.replayable_requests.remove(task_id);
                         #[cfg(feature = "bt")]
@@ -14695,6 +14605,40 @@ impl DownloadManager {
         })
     }
 
+    /// 先取消整批，再以同一个截止时间等待退出；清理必须读取停写后的名字。
+    async fn stop_batch_downloads<'a>(&mut self, task_ids: &'a [String]) -> HashSet<&'a str> {
+        let mut handles = Vec::new();
+        for task_id in task_ids {
+            hls_downloader::request_discard(task_id);
+            #[cfg(feature = "bt")]
+            self.integrity_checks.cancel(task_id);
+            self.file_hash_jobs.cancel(task_id);
+            let handle = if let Some(entry) = self.active_tasks.get_mut(task_id) {
+                entry.token.cancel();
+                entry.handle.take()
+            } else {
+                self.pending_pauses
+                    .get_mut(task_id)
+                    .and_then(|pending| pending.handle.take())
+            };
+            if let Some(handle) = handle {
+                handles.push((task_id.as_str(), handle));
+            }
+        }
+        let deadline = tokio::time::Instant::now() + DELETE_HANDLE_WAIT;
+        let mut timed_out = HashSet::new();
+        for (task_id, mut handle) in handles {
+            if wait_for_download_exit(&mut handle, deadline, "wait for batch deleted download")
+                .await
+            {
+                timed_out.insert(task_id);
+                self.pending_pauses.remove(task_id);
+                self.task_limiters.remove(task_id);
+            }
+        }
+        timed_out
+    }
+
     /// 批量删除收尾：腾出的并发槽只在最后统一调度一次。
     async fn finish_batch_deletion(&mut self) {
         self.drain_queue().await;
@@ -14710,11 +14654,7 @@ impl DownloadManager {
         task_ids: &[String],
         delete_files: bool,
     ) -> Result<HashMap<String, DeleteFiles>, crate::db::DbError> {
-        let tasks = self.db.load_tasks_by_ids(task_ids).await?;
-        let mut save_dirs: Vec<String> = tasks.iter().map(|task| task.save_dir.clone()).collect();
-        save_dirs.sort_unstable();
-        save_dirs.dedup();
-        let facts = self.db.load_deletion_facts(task_ids, &save_dirs).await?;
+        let facts = self.db.load_deletion_facts(task_ids).await?;
         let batch: HashSet<&str> = task_ids.iter().map(String::as_str).collect();
         // 同 `file_name_claimed_by_others`：名字同时登记在批外任务名下时不得删除。
         let claimed_by_other = |save_dir: &str, file_name: &str| {
@@ -14724,21 +14664,16 @@ impl DownloadManager {
                     .get(&(save_dir.to_owned(), file_name.to_owned()))
                     .is_some_and(|owners| owners.iter().any(|id| !batch.contains(id.as_str())))
         };
-        let mut plans = HashMap::with_capacity(tasks.len());
-        for task in tasks {
-            let cleanup_named_temps = task.file_clear_state == FileClearState::None;
-            let delete_files = delete_files && cleanup_named_temps;
-            // 采纳了既有文件（逐任务决定为跳过）的任务不拥有该文件。
-            let adopted = facts
-                .exists_decisions
-                .get(&task.task_id)
-                .is_some_and(|decision| {
-                    crate::file_exists::ExistsDecision::from_db(decision)
-                        == crate::file_exists::ExistsDecision::Skip
-                });
+        let mut plans = HashMap::with_capacity(facts.tasks.len());
+        for task in facts.tasks {
+            let unowned_path = task.unowned_path;
+            let delete_files = delete_files && task.file_clear_state == FileClearState::None;
             // 最终产物认领判定（详见 task_owns_final_file）：未完成任务的 file_name
             // 可能是未 dedup 的原始名，指向早前同名任务留下的成品。
-            let claimed = delete_files && claimed_by_other(&task.save_dir, &task.file_name);
+            let claimed = delete_files
+                && !task.file_name.is_empty()
+                && (claimed_by_other(&task.save_dir, &task.file_name)
+                    || self.output_name_reserved(&task.save_dir, &task.file_name));
             let artifacts = if delete_files {
                 facts
                     .artifacts
@@ -14753,20 +14688,27 @@ impl DownloadManager {
             } else {
                 Vec::new()
             };
+            let audio_paths = if delete_files && !unowned_path {
+                [&task.audio_partial_name, &task.audio_output_name].map(|name| {
+                    let base = cleanup_base_name(name);
+                    (is_safe_file_name(name)
+                        && !claimed_by_other(&task.save_dir, base)
+                        && (base == name || !claimed_by_other(&task.save_dir, name))
+                        && !self.output_name_reserved(&task.save_dir, base))
+                    .then(|| Path::new(&task.save_dir).join(name))
+                })
+            } else {
+                [None, None]
+            };
             let files = DeleteFiles {
                 is_bt: is_bt_url(&task.url),
                 delete_files,
-                cleanup_named_temps,
-                owns_final: task_owns_final_file(task.status) && !claimed && !adopted,
-                has_started: task_has_started(task.status, task.downloaded_bytes) && !adopted,
-                claimed_by_other: claimed,
-                has_audio_sidecar: dash_downloader::is_dash_url(&task.url)
-                    || hls_downloader::is_hls_url(&task.url)
-                    || facts.has_audio_url.contains(&task.task_id),
+                owns_final: task_owns_final_file(task.status) && !claimed && !unowned_path,
+                owns_partial: owns_main_partial(&task) && !claimed && !unowned_path,
+                audio_paths,
                 artifacts,
                 save_dir: task.save_dir,
                 file_name: task.file_name,
-                url: task.url,
             };
             plans.insert(task.task_id, files);
         }
@@ -16715,7 +16657,7 @@ impl DownloadManager {
         }
         if t.file_clear_state.retains_path_only() {
             self.db
-                .rename_task_output(task_id, new_name, None)
+                .rename_task_outputs(task_id, new_name, None, None, None)
                 .await
                 .map_err(|error| format!("db: {error}"))?;
         } else {
@@ -16779,7 +16721,18 @@ impl DownloadManager {
             return Err("target-exists".to_string());
         }
         let has_audio_sidecar = dash_downloader::is_dash_url(&t.url)
-            || hls_downloader::is_hls_url(&t.url)
+            || !self
+                .db
+                .audio_output_name(task_id)
+                .await
+                .map_err(|error| format!("db: {error}"))?
+                .is_empty()
+            || !self
+                .db
+                .audio_partial_name(task_id)
+                .await
+                .map_err(|error| format!("db: {error}"))?
+                .is_empty()
             || self
                 .db
                 .load_audio_url(task_id)
@@ -16835,9 +16788,19 @@ impl DownloadManager {
                 }
             }
         }
+        let renamed = |index: usize| {
+            if !moved[index] {
+                return None;
+            }
+            let (old, new) = paths[index]?;
+            Some((
+                crate::output::file_name(old).ok()?,
+                crate::output::file_name(new).ok()?,
+            ))
+        };
         if let Err(error) = self
             .db
-            .rename_task_output(task_id, new_name, paths[2].filter(|_| moved[2]))
+            .rename_task_outputs(task_id, new_name, renamed(1), renamed(2), renamed(3))
             .await
         {
             return Err(rollback_rename(&paths, &moved, format!("db: {error}")).await);
@@ -19063,7 +19026,6 @@ mod tests {
         mgr.on_task_done(&TaskDone {
             task_id: "t-auto-failover".to_string(),
             generation: 7,
-            reserved_temp_path: None,
             phase: TaskDonePhase::Finished,
         })
         .await;
@@ -19211,7 +19173,6 @@ mod tests {
             mgr.on_task_done(&TaskDone {
                 task_id: id.to_string(),
                 generation,
-                reserved_temp_path: None,
                 phase: TaskDonePhase::Finished,
             })
             .await;
@@ -19294,7 +19255,6 @@ mod tests {
             mgr.on_task_done(&TaskDone {
                 task_id: id.to_string(),
                 generation,
-                reserved_temp_path: None,
                 phase: TaskDonePhase::Finished,
             })
             .await;
@@ -19588,7 +19548,6 @@ mod tests {
         mgr.on_task_done(&TaskDone {
             task_id: ID.into(),
             generation: 1,
-            reserved_temp_path: None,
             phase: TaskDonePhase::Finished,
         })
         .await;
@@ -21745,7 +21704,6 @@ mod tests {
         mgr.on_task_done(&TaskDone {
             task_id: "pause-flush".to_string(),
             generation: 41,
-            reserved_temp_path: None,
             phase: TaskDonePhase::Finished,
         })
         .await;
@@ -21839,7 +21797,6 @@ mod tests {
         mgr.on_task_done(&TaskDone {
             task_id: "pause-race".to_string(),
             generation: 51,
-            reserved_temp_path: None,
             phase: TaskDonePhase::Finished,
         })
         .await;
@@ -21944,7 +21901,6 @@ mod tests {
             .on_task_done(&TaskDone {
                 task_id: "pause-db".to_string(),
                 generation: 16,
-                reserved_temp_path: None,
                 phase: TaskDonePhase::Finished,
             })
             .await;
@@ -22311,7 +22267,6 @@ mod tests {
             mgr.on_task_done(&TaskDone {
                 task_id: task_id.to_string(),
                 generation: 3,
-                reserved_temp_path: None,
                 phase: TaskDonePhase::Finished,
             })
             .await;
@@ -22759,7 +22714,7 @@ mod tests {
             );
         }
 
-        // 临时路径被非空目录占住：两条删除都是真实清理失败，任务与目录内容都保留。
+        // 只删记录不触碰磁盘；连文件删除遇到真实清理错误时保留记录。
         let blocked = "blocked.bin";
         let temp_path = std::path::PathBuf::from(format!(
             "{}{}",
@@ -22769,20 +22724,19 @@ mod tests {
         std::fs::create_dir_all(&temp_path).expect("create undeletable temp");
         std::fs::write(temp_path.join("payload"), b"keep").expect("write payload");
         insert_task_at_status(&db, "blocked", &save_dir, blocked, 4).await;
-        for delete_files in [false, true] {
-            let error = manager
-                .delete_task("blocked", delete_files)
-                .await
-                .expect_err("directory occupying the temp path must keep the task");
-            assert!(
-                matches!(error, DeleteTaskError::Cleanup(_)),
-                "delete_files={delete_files}: {error}"
-            );
-            assert!(
-                db.load_task_by_id("blocked").await.expect("load").is_some(),
-                "delete_files={delete_files} must retain the task"
-            );
-        }
+        db.update_task_progress("blocked", 4)
+            .await
+            .expect("own partial");
+        let error = manager
+            .delete_task("blocked", true)
+            .await
+            .expect_err("directory occupying the owned temp path must keep the task");
+        assert!(matches!(error, DeleteTaskError::Cleanup(_)), "{error}");
+        assert!(db.load_task_by_id("blocked").await.expect("load").is_some());
+        manager
+            .delete_task("blocked", false)
+            .await
+            .expect("delete record only");
         assert_eq!(
             std::fs::read(temp_path.join("payload")).expect("payload preserved"),
             b"keep"
@@ -22799,6 +22753,82 @@ mod tests {
                 &error,
             );
         }
+    }
+
+    #[tokio::test]
+    async fn record_only_delete_keeps_disk_data_for_single_and_batch() {
+        let dir = unique_filetrack_test_dir("record_only_delete");
+        std::fs::create_dir_all(&dir).expect("create fixture");
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect database");
+        let mut manager = sched_manager(&db, 1);
+        let save_dir = dir.to_string_lossy();
+        manager.default_save_dir = save_dir.to_string();
+        for (id, status) in [("paused", 2), ("failed", 4), ("completed", 3)] {
+            insert_task_at_status(&db, id, &save_dir, id, status).await;
+        }
+        let paused = dir.join(format!("paused{}", downloader::TEMP_EXT));
+        let failed = dir.join(format!("failed{}", downloader::TEMP_EXT));
+        let completed = dir.join("completed");
+        for path in [&paused, &failed, &completed] {
+            std::fs::write(path, b"keep").expect("write fixture data");
+        }
+        #[cfg(feature = "bt")]
+        let bt_data = {
+            let stage = bt_downloader::bt_stage_dir(&save_dir, "bt-paused").join("torrent");
+            std::fs::create_dir_all(&stage).expect("create BT staging directory");
+            let path = stage.join("partial.bin");
+            std::fs::write(&path, b"keep").expect("write BT partial");
+            db.insert_task(
+                "bt-paused",
+                "magnet:?xt=urn:btih:0000000000000000000000000000000000000001",
+                "partial.bin",
+                &save_dir,
+                1,
+                0,
+                "",
+                "",
+                "",
+                0,
+            )
+            .await
+            .expect("insert BT task");
+            db.update_task_status("bt-paused", 2, "")
+                .await
+                .expect("pause BT task");
+            manager
+                .delete_task("bt-paused", false)
+                .await
+                .expect("delete BT record");
+            path
+        };
+        manager
+            .delete_task("paused", false)
+            .await
+            .expect("delete paused record");
+        let outcome = manager
+            .delete_tasks_batch(&["failed".into(), "completed".into()], false)
+            .await
+            .expect("batch delete records");
+        assert_eq!(outcome.deleted, 2);
+        assert_eq!(outcome.failed, 0);
+        manager.load_and_send_all_tasks().await;
+        for path in [paused, failed, completed] {
+            assert_eq!(std::fs::read(path).expect("retained data"), b"keep");
+        }
+        #[cfg(feature = "bt")]
+        assert_eq!(
+            std::fs::read(bt_data).expect("retained BT data after startup scan"),
+            b"keep"
+        );
+        assert!(
+            db.load_task_by_id("paused")
+                .await
+                .expect("load task")
+                .is_none()
+        );
+        std::fs::remove_dir_all(dir).expect("clean fixture");
     }
 
     #[test]
@@ -22851,7 +22881,6 @@ mod tests {
             .expect("failed prelude must terminate")
             .expect("done frame");
         assert_eq!(finished.task_id, id);
-        assert!(finished.reserved_temp_path.is_none());
         assert!(
             lock_reserved(&manager.reserved_temp_paths).is_empty(),
             "failed name persistence must release its reservation"
@@ -23185,7 +23214,6 @@ mod tests {
         mgr.on_task_done(&TaskDone {
             task_id: "boosted".into(),
             generation: 3,
-            reserved_temp_path: None,
             phase: TaskDonePhase::DecisionReady(crate::selection::FileExistsChoice::Cancel),
         })
         .await;
@@ -23745,7 +23773,6 @@ mod tests {
         mgr.on_task_done(&TaskDone {
             task_id: "a".to_string(),
             generation: 7,
-            reserved_temp_path: None,
             phase: TaskDonePhase::Finished,
         })
         .await;
@@ -23836,6 +23863,7 @@ mod tests {
             "boosted".into(),
             PendingPause {
                 generation: 1,
+                handle: None,
                 notify: false,
                 resume_requested: true,
                 queue_id: String::new(),

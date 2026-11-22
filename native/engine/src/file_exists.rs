@@ -36,6 +36,8 @@ pub enum ExistsDecision {
     Rename,
     Overwrite,
     Skip,
+    /// 重新下载时旧路径不归任务所有，必须先重新占名。
+    RestartRename,
 }
 
 impl ExistsDecision {
@@ -44,6 +46,7 @@ impl ExistsDecision {
             "rename" => Self::Rename,
             "overwrite" => Self::Overwrite,
             "skip" => Self::Skip,
+            "restart_rename" => Self::RestartRename,
             _ => Self::None,
         }
     }
@@ -54,7 +57,12 @@ impl ExistsDecision {
             Self::Rename => "rename",
             Self::Overwrite => "overwrite",
             Self::Skip => "skip",
+            Self::RestartRename => "restart_rename",
         }
+    }
+
+    pub(crate) fn has_unowned_path(self) -> bool {
+        matches!(self, Self::Skip | Self::RestartRename)
     }
 
     /// 询问答复对应的持久化决定；`Cancel` 不持久化。
@@ -119,7 +127,7 @@ pub fn decide(facts: &ExistsFacts) -> ExistsAction {
     let wants_skip = match facts.decision {
         ExistsDecision::Skip => true,
         ExistsDecision::None => facts.global == FileExistsBehavior::Skip && skip_ok,
-        ExistsDecision::Rename | ExistsDecision::Overwrite => false,
+        ExistsDecision::Rename | ExistsDecision::Overwrite | ExistsDecision::RestartRename => false,
     };
     if wants_skip {
         return ExistsAction::Skip;
@@ -128,7 +136,7 @@ pub fn decide(facts: &ExistsFacts) -> ExistsAction {
         return ExistsAction::Dedup;
     }
     match facts.decision {
-        ExistsDecision::Rename => return ExistsAction::Dedup,
+        ExistsDecision::Rename | ExistsDecision::RestartRename => return ExistsAction::Dedup,
         ExistsDecision::Overwrite => return ExistsAction::Overwrite,
         ExistsDecision::Skip | ExistsDecision::None => {}
     }

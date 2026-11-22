@@ -905,9 +905,8 @@ async fn run_dash_download_inner(p: &DownloadParams) -> Result<i64, DownloadErro
                     "[dash] task {} audio+video muxed successfully, cleaning up audio track",
                     p.task_id
                 );
-                // Remove the separate audio file after successful mux
-                if let Err(error) = tokio::fs::remove_file(&audio_path).await
-                    && error.kind() != std::io::ErrorKind::NotFound
+                if let Err(error) =
+                    output::remove_muxed_audio(&p.db, &p.task_id, &audio_path, false).await
                 {
                     crate::logger::report_warning("dash-download", "remove_temporary_file", &error);
                 }
@@ -1130,6 +1129,11 @@ async fn download_track_coordinated(
     pair_total: i64,
 ) -> Result<(i64, PathBuf), DownloadError> {
     let temp_path = PathBuf::from(format!("{}{}", dest_path.display(), TEMP_EXT));
+    let _audio_lease = if role == DashTrack::Audio {
+        Some(output::reserve_audio_partial(&p.db, &p.task_id, &temp_path, false).await?)
+    } else {
+        None
+    };
 
     let seg_count = if p.segment_count > 0 {
         p.segment_count
@@ -1219,32 +1223,24 @@ async fn download_track_coordinated(
 ///   `create_new` 占名不覆盖同名旧文件；原名被占时 dedup 换名并把新文件名写回 DB
 ///   （完成信号随后上报）。覆盖授权（`p.overwrite`）或 `is_resume`（原名上的
 ///   文件是本任务续传遗留）时对原名删除旧文件后重试一次。
-/// - 音频轨使用视频的伴生名；全新下载排他占名，续传可替换本任务遗留文件。
+/// - 音频轨使用视频的伴生名并登记实际产物；续传只可替换已登记的本任务音频。
+///   其他文件仍用排他占名，不得覆盖。
 async fn finalize_track_rename(
     p: &DownloadParams,
     temp: &Path,
     dest: &Path,
     role: DashTrack,
 ) -> Result<PathBuf, DownloadError> {
-    let rename_failed = |e: std::io::Error| {
-        DownloadError::Other(format!(
-            "failed to rename {} -> {}: {}",
-            temp.display(),
-            dest.display(),
-            e
-        ))
-    };
-    if role == DashTrack::Audio && p.is_resume {
-        match tokio::fs::remove_file(dest).await {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(rename_failed(e)),
-        }
-    }
     if role == DashTrack::Audio {
-        crate::downloader::claim_rename(temp, dest)
-            .await
-            .map_err(rename_failed)?;
+        let name = output::file_name(dest)?;
+        if p.is_resume && p.db.audio_output_name(&p.task_id).await? == name {
+            match tokio::fs::remove_file(dest).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        output::publish_audio(&p.db, &p.task_id, temp, dest).await?;
         return Ok(dest.to_path_buf());
     }
 
@@ -1482,11 +1478,11 @@ async fn run_track_pair_inner(
     }
 
     let audio_path = build_audio_path(&dest_path);
-    // 音频轨 FS 真值跳过（与视频轨对称）：mux 阶段取消的任务 resume 时，
-    // 音频轨已 rename 就位（段行已清），缺此判定会整轨重下（C4/D3）。
+    // mux 阶段取消后，已登记的音轨可以复用；不能仅凭同名和大小认领音频。
     let audio_temp = PathBuf::from(format!("{}{}", audio_path.display(), TEMP_EXT));
-    let audio_done = match (p.is_resume, audio_len) {
-        (true, Some(a)) => {
+    let owns_audio = p.db.audio_output_name(&p.task_id).await? == output::file_name(&audio_path)?;
+    let audio_done = match audio_len {
+        Some(a) if owns_audio => {
             !tokio::fs::try_exists(&audio_temp).await.unwrap_or(false)
                 && tokio::fs::metadata(&audio_path)
                     .await
@@ -1592,8 +1588,8 @@ async fn run_track_pair_inner(
                     "[dash] task {} track-pair muxed successfully, cleaning up audio track",
                     p.task_id
                 );
-                if let Err(error) = tokio::fs::remove_file(&audio_path).await
-                    && error.kind() != std::io::ErrorKind::NotFound
+                if let Err(error) =
+                    output::remove_muxed_audio(&p.db, &p.task_id, &audio_path, false).await
                 {
                     crate::logger::report_warning("dash-download", "remove_temporary_file", &error);
                 }
@@ -2761,6 +2757,23 @@ async fn download_track(
     // 避免泄漏。带检查点的轨道保留它:检查点只记录已完整落盘的段,续传时
     // 会截断到该偏移,丢弃半截数据。
     let temp_path = PathBuf::from(format!("{}{}", dest_path.display(), TEMP_EXT));
+    let _audio_lease = if role == DashTrack::Audio {
+        Some(
+            output::reserve_audio_partial(
+                &p.db,
+                &p.task_id,
+                &temp_path,
+                resume_track.is_some_and(|track| track == DashTrack::Audio)
+                    && matches!(
+                        load_dash_checkpoint(p).await?.get(DashTrack::Audio),
+                        Some(TrackProgress::Partial { .. })
+                    ),
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
     let result = download_track_inner(
         p,
         spec,
@@ -2820,6 +2833,10 @@ async fn download_track_inner(
                     .ok()
                     .and_then(|m| i64::try_from(m.len()).ok());
                 if on_disk == Some(*bytes) {
+                    if role == DashTrack::Audio {
+                        p.db.record_audio_output(&p.task_id, output::file_name(dest_path)?)
+                            .await?;
+                    }
                     progress_state.downloaded_bytes += *bytes;
                     return Ok((*bytes, dest_path.to_path_buf()));
                 }
