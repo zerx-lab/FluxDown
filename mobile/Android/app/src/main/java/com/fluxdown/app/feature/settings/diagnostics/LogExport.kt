@@ -322,7 +322,8 @@ internal fun LogsSection(ctx: SettingsCtx, model: LogExportModel, scope: Corouti
     val live by remember { derivedStateOf { state.value.connection == Connection.Live } }
     val exportedText = str(R.string.logExportSuccessNotice)
     val context = LocalContext.current
-    var needsLogPermission by remember { mutableStateOf(SharedDiagnosticLogs.authorizedTree(context) == null) }
+    val sharedLogStatus by AppDiagnostics.sharedLogStatus.collectAsStateWithLifecycle()
+    val localHost = hostRef is HostRef.Local
     val folderError = str(R.string.androidSharedLogsFolderError)
     val requestLogPermission = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
@@ -331,8 +332,7 @@ internal fun LogsSection(ctx: SettingsCtx, model: LogExportModel, scope: Corouti
                 context.contentResolver.takePersistableUriPermission(
                     uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
                 )
-                needsLogPermission = false
-                scope.launch(Dispatchers.IO) { AppDiagnostics.publishSharedLogs() }
+                AppDiagnostics.publishSharedLogs(reauthorized = true)
             } catch (_: SecurityException) {
                 overlays.toast(folderError, FluxToastKind.Error)
             }
@@ -341,8 +341,17 @@ internal fun LogsSection(ctx: SettingsCtx, model: LogExportModel, scope: Corouti
 
     LaunchedEffect(hostRef, live) { model.refreshSize() }
 
-    val sharedLogHint = str(R.string.androidSharedLogsHint, "path" to SharedDiagnosticLogs.FOLDER)
-    val exportDesc = "${str(R.string.logExportDesc)}\n$sharedLogHint"
+    val exportDesc = buildString {
+        append(str(R.string.logExportDesc))
+        if (localHost) {
+            append('\n')
+            append(str(R.string.androidSharedLogsHint, "path" to SharedDiagnosticLogs.FOLDER))
+            if (sharedLogStatus == SharedDiagnosticLogs.Status.Unavailable) {
+                append('\n')
+                append(str(R.string.androidSharedLogsUnavailable))
+            }
+        }
+    }
     val sizeUnitHint = str(R.string.mobileLogSizeUnitLabel, "unit" to units.byteLabel(2))
     val footer = if (ctx.form.has("log_max_size_mb") && ctx.synced("log_max_size_mb")) {
         exportDesc + "\n" + str(R.string.settingsSyncLegend)
@@ -366,7 +375,7 @@ internal fun LogsSection(ctx: SettingsCtx, model: LogExportModel, scope: Corouti
                 }
             }
         }
-        if (needsLogPermission) {
+        if (localHost && sharedLogStatus != SharedDiagnosticLogs.Status.Available) {
             row {
                 FluxActionRow(
                     title = str(R.string.androidSharedLogsAllowStorage),

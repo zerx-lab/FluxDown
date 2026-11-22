@@ -44,4 +44,5 @@ pub const SANITIZE_PATTERNS: &[(&str, &str)] = &[
 ];
 
 /// URLs may carry credentials in arbitrary path segments or query parameters.
-pub const ANDROID_DISK_URL_PATTERN: &str = r#"(?i)(?:https?|ftps?)://[^\s<>"\\]+"#;
+pub const ANDROID_DISK_URL_PATTERN: &str =
+    r#"(?i)(?:(?:https?|ftps?|wss?)://|magnet:\?)[^\s<>"\\]+"#;

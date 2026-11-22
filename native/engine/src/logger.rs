@@ -900,19 +900,6 @@ fn sanitize_android_log(text: &str) -> String {
     sanitize_log_str(&URL.replace_all(text, "[URL_REDACTED]"))
 }
 
-#[test]
-fn android_disk_log_drops_signed_urls() {
-    for url in [
-        "https://example.invalid/o'brien/media.m3u8?md5=AAAAAAAAAAAAAAAAAAAAAA&expires=1800000000",
-        "ftp://example.invalid/o'brien/private-ticket",
-    ] {
-        assert_eq!(
-            sanitize_android_log(&format!("start {url}")),
-            "start [URL_REDACTED]"
-        );
-    }
-}
-
 /// [`sanitize_log_str`] 的字节版本（非 UTF-8 按 lossy 处理），供导出日志复用。
 pub fn sanitize_log_bytes(data: &[u8]) -> Vec<u8> {
     sanitize_log_str(&String::from_utf8_lossy(data)).into_bytes()
@@ -1023,7 +1010,32 @@ mod tests {
 
     use thiserror::Error;
 
-    use super::sanitize_log_str;
+    use super::{sanitize_android_log, sanitize_log_str};
+
+    #[test]
+    fn android_disk_log_drops_sensitive_urls() {
+        for url in [
+            "https://example.invalid/o'brien/media.m3u8?md5=AAAAAAAAAAAAAAAAAAAAAA&expires=1800000000",
+            "ftp://example.invalid/o'brien/private-ticket",
+            "wss://example.invalid:8080/private-room",
+            "magnet:?xt=urn:btih:private-hash&dn=private-name",
+        ] {
+            assert_eq!(
+                sanitize_android_log(&format!("start {url}")),
+                "start [URL_REDACTED]"
+            );
+        }
+    }
+
+    #[test]
+    fn android_disk_log_drops_all_set_cookie_attributes() {
+        assert_eq!(
+            sanitize_android_log(
+                "Set-Cookie: session=secret; Path=/private; HttpOnly; Secure\nnext"
+            ),
+            "Set-Cookie: [REDACTED]\nnext"
+        );
+    }
 
     #[test]
     fn sanitize_redacts_bot_token_and_secret_query_params() {

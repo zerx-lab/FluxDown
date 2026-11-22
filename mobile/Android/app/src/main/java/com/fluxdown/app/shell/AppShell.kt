@@ -53,6 +53,7 @@ import androidx.compose.ui.res.stringResource
 import com.fluxdown.app.R
 import com.fluxdown.app.actions.LocalTaskActions
 import com.fluxdown.app.actions.TaskActions
+import com.fluxdown.app.diag.AppDiagnostics
 import com.fluxdown.app.feature.devices.DevicesScreen
 import com.fluxdown.app.feature.devices.AddHostSheet
 import com.fluxdown.app.feature.devices.AddDeviceSheet
@@ -171,6 +172,8 @@ fun AppShell() {
         // 仍在等待的 fileExists 询问：回到前台重新弹出（含点通知进入）
         nav.reopenFileConflicts()
     }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { AppDiagnostics.refreshSharedLogStatus() }
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) { AppDiagnostics.publishSharedLogs() }
     // 本机有活跃 / 排队任务 → 前台服务（dataSync）；首次下载时请求通知权限
     DownloadServiceEffect()
     val portal = remember { FluxPortalState() }

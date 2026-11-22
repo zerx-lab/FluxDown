@@ -46,6 +46,9 @@ object AppDiagnostics {
     @Volatile
     private var dir: File? = null
     private var sharedLogs: SharedDiagnosticLogs? = null
+    internal val sharedLogStatus get() = checkNotNull(sharedLogs).status
+
+    internal fun refreshSharedLogStatus() { sharedLogs?.refresh() }
 
     /** 进程启动时调用一次：定位目录、记录启动、安装未捕获异常记录（之后交回原处理器，崩溃语义不变）。 */
     fun install(context: Context) {
@@ -66,7 +69,7 @@ object AppDiagnostics {
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
             try {
                 event(crashSummary(error))
-                publishSharedLogs()
+                shared.publishCrash()
             } finally {
                 previous?.uncaughtException(thread, error)
             }
@@ -75,12 +78,8 @@ object AppDiagnostics {
         shared.watch()
     }
 
-    /** Called after directory authorization on an IO thread, and synchronously on crash. */
-    internal fun publishSharedLogs() {
-        val shared = sharedLogs ?: return
-        dir?.let(shared::publishHost)
-        shared.publishNative()
-    }
+    /** Queue publication after directory authorization or when the UI goes to the background. */
+    internal fun publishSharedLogs(reauthorized: Boolean = false) { sharedLogs?.publishNow(reauthorized) }
 
     /** 仅传入受控状态和计量，不传请求、用户数据或异常消息。 */
     fun event(message: String) {

@@ -6,12 +6,17 @@ import android.os.FileObserver
 import android.os.Handler
 import android.os.HandlerThread
 import android.provider.DocumentsContract
+import android.os.SystemClock
 import android.util.Log
 import com.fluxdown.bridge.FluxBridge
 import java.io.File
 import java.io.IOException
 import java.io.RandomAccessFile
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /** Publishes bounded copies of the already-redacted local logs; never reads legacy raw logs. */
 internal class SharedDiagnosticLogs(
@@ -26,7 +31,60 @@ internal class SharedDiagnosticLogs(
     private val handler = Handler(worker.looper)
     private val agentScheduled = AtomicBoolean()
     private val engineScheduled = AtomicBoolean()
+    private val hostDirty = AtomicBoolean()
+    private val agentDirty = AtomicBoolean(true)
+    private val engineDirty = AtomicBoolean(true)
+    private var retryAt = 0L
     private val observers = mutableListOf<FileObserver>()
+    private val failedDocuments = mutableSetOf<String>()
+    private val retryPublish = Runnable { publishAll() }
+    private val mutableStatus = MutableStateFlow(Status.NeedsPermission)
+    val status = mutableStatus.asStateFlow()
+
+    enum class Status { NeedsPermission, Available, Unavailable }
+
+    fun refresh() {
+        handler.post { updateStatus() }
+    }
+
+    fun publishNow(reauthorized: Boolean) {
+        handler.post {
+            if (reauthorized) {
+                retryAt = 0L
+                handler.removeCallbacks(retryPublish)
+                failedDocuments.clear()
+                hostDirty.set(true)
+                agentDirty.set(true)
+                engineDirty.set(true)
+            }
+            publishAll()
+        }
+    }
+
+    fun publishCrash() {
+        if (Thread.currentThread() === worker) return
+        val finished = CountDownLatch(1)
+        if (!handler.postAtFrontOfQueue {
+                try {
+                    // FileObserver may not have delivered the final native write yet.
+                    agentDirty.set(true)
+                    engineDirty.set(true)
+                    publishAll()
+                } finally {
+                    finished.countDown()
+                }
+            }) return
+        try {
+            finished.await(1, TimeUnit.SECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+    }
+
+    private fun publishAll() {
+        publishHost()
+        publishNative()
+    }
 
     fun watch() {
         handler.post {
@@ -49,7 +107,10 @@ internal class SharedDiagnosticLogs(
     private fun watchDirectory(dir: File, engine: Boolean): FileObserver =
         object : FileObserver(dir.path, CREATE or MODIFY or CLOSE_WRITE or MOVED_TO) {
             override fun onEvent(event: Int, path: String?) {
-                if (path?.endsWith(".log") == true) scheduleNativePublish(engine)
+                if (path?.endsWith(".log") == true) {
+                    (if (engine) engineDirty else agentDirty).set(true)
+                    scheduleNativePublish(engine)
+                }
             }
         }.apply { startWatching() }
 
@@ -59,17 +120,17 @@ internal class SharedDiagnosticLogs(
         handler.postDelayed({
             scheduled.set(false)
             publishNative(engine)
-        }, 750)
+        }, PUBLISH_INTERVAL_MS)
     }
 
-    fun publishNative() {
+    private fun publishNative() {
         publishNative(engine = false)
         publishNative(engine = true)
     }
 
-    @Synchronized
     private fun publishNative(engine: Boolean) {
-        publish(if (engine) "engine.txt" else "agent.txt") {
+        val dirty = if (engine) engineDirty else agentDirty
+        publish(if (engine) "engine.txt" else "agent.txt", dirty) {
             val path = FluxBridge.androidLogDirectory(engine) ?: return@publish null
             val dir = File(path)
             val files = if (engine) {
@@ -80,33 +141,77 @@ internal class SharedDiagnosticLogs(
             } else {
                 listOf(File(dir, "agent.log.1"), File(dir, "agent.log"))
             }
-            snapshot(files)
+            snapshotDiagnosticLogs(files)
         }
     }
 
     fun publishHostLater(dir: File) {
         hostDir = dir
+        hostDirty.set(true)
+        scheduleHostPublish()
+    }
+
+    private fun scheduleHostPublish() {
         if (!hostScheduled.compareAndSet(false, true)) return
         handler.postDelayed({
             hostScheduled.set(false)
-            hostDir?.let(::publishHost)
-        }, 750)
+            publishHost()
+        }, PUBLISH_INTERVAL_MS)
     }
 
-    @Synchronized
-    fun publishHost(dir: File) = publish("app-events.txt") {
-        snapshot(listOf(File(dir, "app-events.log.1"), File(dir, "app-events.log")))
+    private fun publishHost() {
+        publish("app-events.txt", hostDirty) {
+            val dir = hostDir ?: return@publish null
+            snapshotDiagnosticLogs(listOf(File(dir, "app-events.log.1"), File(dir, "app-events.log")))
+        }
     }
 
-    private fun publish(name: String, content: () -> ByteArray?) {
+    private fun retryDelay() = retryAt - SystemClock.elapsedRealtime()
+
+    private fun publish(name: String, dirty: AtomicBoolean, content: () -> ByteArray?) {
+        if (retryDelay() > 0L || !dirty.getAndSet(false)) return
         try {
-            val tree = authorizedTree(context) ?: return
-            writeDocument(tree, name, content() ?: return)
+            val tree = authorizedTree(context)
+            if (tree == null) {
+                failedDocuments.clear()
+                mutableStatus.value = Status.NeedsPermission
+                return
+            }
+            val bytes = content() ?: return
+            writeDocument(tree, name, bytes)
+            failedDocuments.remove(name)
+            mutableStatus.value = if (failedDocuments.isEmpty()) Status.Available else Status.Unavailable
         } catch (error: IOException) {
+            deferRetry(name, dirty)
             Log.w(TAG, "Cannot publish $name to the shared log folder", error)
         } catch (error: RuntimeException) {
+            deferRetry(name, dirty)
             // A stopped/unmounted provider must not prevent startup or replace the original crash.
             Log.w(TAG, "Shared log folder unavailable for $name", error)
+        }
+    }
+
+    private fun deferRetry(name: String, dirty: AtomicBoolean) {
+        dirty.set(true)
+        retryAt = SystemClock.elapsedRealtime() + FAILURE_BACKOFF_MS
+        failedDocuments.add(name)
+        mutableStatus.value = Status.Unavailable
+        handler.removeCallbacks(retryPublish)
+        handler.postDelayed(retryPublish, FAILURE_BACKOFF_MS)
+    }
+
+    private fun updateStatus() {
+        mutableStatus.value = try {
+            if (authorizedTree(context) == null) {
+                failedDocuments.clear()
+                Status.NeedsPermission
+            } else if (failedDocuments.isEmpty()) {
+                Status.Available
+            } else {
+                Status.Unavailable
+            }
+        } catch (_: RuntimeException) {
+            Status.Unavailable
         }
     }
 
@@ -146,35 +251,7 @@ internal class SharedDiagnosticLogs(
         val stream = resolver.openOutputStream(staged, "w") ?: throw IOException("cannot open staged shared log")
         stream.use { it.write(bytes) }
 
-        // Keep the last complete copy even if the process dies between the two renames.
-        documents[name]?.let { current ->
-            documents[previousName]?.let(::delete)
-            rename(current, previousName)
-        }
-        rename(staged, name)
-    }
-
-    private fun snapshot(files: List<File>): ByteArray? {
-        val out = java.io.ByteArrayOutputStream()
-        for (file in files) {
-            if (!file.isFile) continue
-            try {
-                RandomAccessFile(file, "r").use { input ->
-                    val length = input.length()
-                    val start = (length - MAX_TAIL_BYTES).coerceAtLeast(0)
-                    input.seek(start)
-                    val bytes = ByteArray((length - start).toInt())
-                    input.readFully(bytes)
-                    // If truncated, discard the first partial UTF-8 line.
-                    val first = if (start == 0L) 0 else
-                        bytes.indexOf('\n'.code.toByte()).let { if (it >= 0) it + 1 else bytes.size }
-                    out.write(bytes, first, bytes.size - first)
-                }
-            } catch (error: IOException) {
-                Log.w(TAG, "Diagnostic source changed while reading", error)
-            }
-        }
-        return if (out.size() == 0) null else out.toByteArray()
+        promoteDiagnosticLog(staged, documents[name], documents[previousName], name, previousName, ::delete, ::rename)
     }
 
     companion object {
@@ -188,7 +265,49 @@ internal class SharedDiagnosticLogs(
         fun authorizedTree(context: Context): Uri? = context.contentResolver.persistedUriPermissions
             .firstOrNull { it.isReadPermission && it.isWritePermission && isLogTree(it.uri) }?.uri
         private const val TAG = "FluxSharedLogs"
-        private const val MAX_TAIL_BYTES = 256 * 1024L
+        private const val PUBLISH_INTERVAL_MS = 20_000L
+        private const val FAILURE_BACKOFF_MS = 60_000L
         private val ENGINE_NAME = Regex("fluxdown_\\d{4}-\\d{2}-\\d{2}(?:\\.\\d+)?\\.log")
     }
+}
+
+/** Preserve one complete copy even if promotion fails after moving the current copy aside. */
+internal fun <Document> promoteDiagnosticLog(
+    staged: Document,
+    current: Document?,
+    previous: Document?,
+    name: String,
+    previousName: String,
+    delete: (Document) -> Unit,
+    rename: (Document, String) -> Unit,
+) {
+    if (current != null) {
+        previous?.let(delete)
+        rename(current, previousName)
+    }
+    rename(staged, name)
+}
+
+internal fun snapshotDiagnosticLogs(files: List<File>, maxTailBytes: Int = 256 * 1024): ByteArray? {
+    val out = java.io.ByteArrayOutputStream()
+    val newline = '\n'.code.toByte()
+    for (file in files) {
+        try {
+            RandomAccessFile(file, "r").use { input ->
+                val length = input.length()
+                val start = (length - maxTailBytes).coerceAtLeast(0)
+                input.seek((start - 1).coerceAtLeast(0))
+                val startsOnLine = start == 0L || input.readByte() == newline
+                val bytes = ByteArray((length - start).toInt())
+                input.readFully(bytes)
+                val first = if (startsOnLine) 0 else bytes.indexOf(newline)
+                    .let { if (it >= 0) it + 1 else bytes.size }
+                val end = bytes.lastIndexOf(newline) + 1
+                if (end > first) out.write(bytes, first, end - first)
+            }
+        } catch (_: IOException) {
+            // Missing rotations and files truncated during the read are skipped.
+        }
+    }
+    return if (out.size() == 0) null else out.toByteArray()
 }
