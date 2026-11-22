@@ -445,7 +445,7 @@ pub struct EngineBridge {
     /// 守卫 client 缓存：键 =（出口指纹, 认证同源跳转, 开发模式）。
     clients: std::sync::Mutex<HashMap<GuardedClientKey, reqwest::Client>>,
     db: Db,
-    plugin_retry_tx: mpsc::UnboundedSender<(String, u64)>,
+    plugin_retry_tx: mpsc::UnboundedSender<crate::download_manager::PluginRetryEvent>,
     fetch_sema: Arc<Semaphore>,
     /// 数据目录：供 `flux.ffmpeg` 解析生效 ffmpeg 路径（manual→managed→system）。
     data_dir: PathBuf,
@@ -460,7 +460,7 @@ impl EngineBridge {
     pub fn new(
         db: Db,
         proxy: &ProxyConfig,
-        plugin_retry_tx: mpsc::UnboundedSender<(String, u64)>,
+        plugin_retry_tx: mpsc::UnboundedSender<crate::download_manager::PluginRetryEvent>,
         data_dir: PathBuf,
     ) -> Result<Self, PluginError> {
         let bridge = Self {
@@ -1340,7 +1340,8 @@ impl PluginBridge for EngineBridge {
         };
         match level {
             PluginLogLevel::Error => log_error!("[plugin:{}] {}", plugin_id, truncated),
-            _ => log_info!("[plugin:{}] {}", plugin_id, truncated),
+            PluginLogLevel::Warn => log_warn!("[plugin:{}] {}", plugin_id, truncated),
+            PluginLogLevel::Info => log_info!("[plugin:{}] {}", plugin_id, truncated),
         }
     }
 
@@ -1348,7 +1349,10 @@ impl PluginBridge for EngineBridge {
         // fire-and-forget；限流在 actor 侧（max_auto_retries）。
         if self
             .plugin_retry_tx
-            .send((task_id.to_string(), delay_ms))
+            .send(crate::download_manager::PluginRetryEvent::Retry {
+                task_id: task_id.to_string(),
+                delay_ms,
+            })
             .is_err()
         {
             // actor 关闭后不再处理重试，属于引擎退出的正常生命周期。

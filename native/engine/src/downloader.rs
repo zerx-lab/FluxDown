@@ -4043,7 +4043,11 @@ pub(crate) async fn run_download_mode(mut params: DownloadParams, html_only: boo
             let full_msg = download_terminal_error_message(&e);
             // checksum 失败时所有字节均已下载完毕（只是校验未通过），需特殊处理进度。
             let is_checksum_fail = matches!(e, DownloadError::ChecksumMismatch(_));
-            crate::log_error!("[download] task {} error: {}", task_id_log, full_msg);
+            tracing::debug!(
+                task_id = %task_id_log,
+                transport_failure = ?crate::net_failure::classify_download_error(&e),
+                "HTTP transfer attempt failed"
+            );
             if let Err(db_error) = params
                 .db
                 .update_task_status(&params.task_id, 4, &full_msg)
@@ -5087,12 +5091,6 @@ async fn run_download_inner(
                 //   • RangeMisaligned：服务器回 206 却发【从 0 的全量流】（Content-Range
                 //     起点不符，如 123 盘失效签名 URL）；已写入段数据是错位垃圾，必须清空。
                 // 深进度且 Range 持续收到 200 时走上面的独立临时文件，不清理有效断点。
-                log_info!(
-                    "[download] task {} multi-segment aborted ({}) — \
-                     clearing stale data, redownloading single-stream",
-                    p.task_id,
-                    error
-                );
                 actual_use_segments = false;
                 if let Err(e) = crate::task_activity::record(
                     &p.db,
@@ -5110,6 +5108,7 @@ async fn run_download_inner(
                 //   • 真·无 Range：预分配文件全零、无有效数据；
                 //   • 版本变化：已完成段是【旧版本】字节，整体作废，必须删以重下新版本。
                 discard_segment_data(&p.db, &p.task_id, &temp_path).await?;
+                tracing::warn!(task_id = %p.task_id, "HTTP multi-segment transfer cleared stale progress and switched to one stream");
                 let result = download_single(
                     &p.task_id,
                     &p.url,

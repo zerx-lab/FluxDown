@@ -10,6 +10,7 @@
 //! 零第三方依赖：`log` / `tracing` 适配器由各宿主自己实现，本 crate 只负责落盘策略。
 
 mod sanitize;
+pub mod startup;
 mod throttle;
 mod time;
 

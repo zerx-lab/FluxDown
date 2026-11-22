@@ -3887,7 +3887,6 @@
       "btGuardClientRules": "d6894254be77",
       "btGuardClientRulesDesc": "ea5218b6b4d9",
       "clearTaskFile": "723ec384b28a",
-      "clearTaskFileConfirmation": "9df3c5656cbe",
       "infoWrittenBytes": "4c6031d1d40c",
       "btFileSortOriginal": "9875877524a5",
       "btFileSortType": "df03ee78b5ca",
@@ -4246,7 +4245,15 @@
       "aria2AdvancedInvalid": "43996c531619",
       "aria2AdvancedExported": "70aeb15de840",
       "aria2AdvancedOpenHint": "4549ca5f0c29",
-      "aria2AdvancedBusy": "ec6350eac8ab"
+      "aria2AdvancedBusy": "ec6350eac8ab",
+      "clearTaskFileConfirmWithBrowserNotice": "74d397865731",
+      "rssViewImages": "d0432573425a",
+      "rssImageLoadFailed": "791cb120f3d5",
+      "rssImageLoading": "1a0c3289c8bd",
+      "rssImageProxyUnverifiable": "b6f4e479afad",
+      "errReasonTaskFileClearPending": "0717c2341321",
+      "mobileDlNotifTaskChannel": "4380e129a4ae",
+      "mobileDlNotifTaskChannelDesc": "24b6f5f07b64"
     },
     "zh-TW": {
       "languageNativeName": "ba118bf7fc9c",
@@ -8388,7 +8395,6 @@
       "aria2AdvancedOpenHint": "4549ca5f0c29",
       "aria2AdvancedBusy": "ec6350eac8ab",
       "clearTaskFile": "723ec384b28a",
-      "clearTaskFileConfirmation": "9df3c5656cbe",
       "infoWrittenBytes": "4c6031d1d40c",
       "btFileSortOriginal": "9875877524a5",
       "btFileSortType": "df03ee78b5ca",
@@ -8491,7 +8497,15 @@
       "btAddWebSeedTitle": "bfd4e82adf72",
       "btAddWebSeedHint": "10878e601ff1",
       "btWebSeedStatePending": "08033b653b63",
-      "btWebSeedStateRejected": "a8f00f5731f8"
+      "btWebSeedStateRejected": "a8f00f5731f8",
+      "clearTaskFileConfirmWithBrowserNotice": "74d397865731",
+      "rssViewImages": "d0432573425a",
+      "rssImageLoadFailed": "791cb120f3d5",
+      "rssImageLoading": "1a0c3289c8bd",
+      "rssImageProxyUnverifiable": "b6f4e479afad",
+      "mobileDlNotifTaskChannel": "4380e129a4ae",
+      "mobileDlNotifTaskChannelDesc": "24b6f5f07b64",
+      "errReasonTaskFileClearPending": "0717c2341321"
     },
     "ru": {
       "languageNativeName": "ba118bf7fc9c",
@@ -12633,7 +12647,6 @@
       "aria2AdvancedOpenHint": "4549ca5f0c29",
       "aria2AdvancedBusy": "ec6350eac8ab",
       "clearTaskFile": "723ec384b28a",
-      "clearTaskFileConfirmation": "9df3c5656cbe",
       "infoWrittenBytes": "4c6031d1d40c",
       "btFileSortOriginal": "9875877524a5",
       "btFileSortType": "df03ee78b5ca",
@@ -12736,7 +12749,15 @@
       "btAddWebSeedTitle": "bfd4e82adf72",
       "btAddWebSeedHint": "10878e601ff1",
       "btWebSeedStatePending": "08033b653b63",
-      "btWebSeedStateRejected": "a8f00f5731f8"
+      "btWebSeedStateRejected": "a8f00f5731f8",
+      "clearTaskFileConfirmWithBrowserNotice": "74d397865731",
+      "rssViewImages": "d0432573425a",
+      "rssImageLoadFailed": "791cb120f3d5",
+      "rssImageLoading": "1a0c3289c8bd",
+      "rssImageProxyUnverifiable": "b6f4e479afad",
+      "errReasonTaskFileClearPending": "0717c2341321",
+      "mobileDlNotifTaskChannel": "4380e129a4ae",
+      "mobileDlNotifTaskChannelDesc": "24b6f5f07b64"
     },
     "es": {
       "languageNativeName": "ba118bf7fc9c",
@@ -16878,7 +16899,6 @@
       "aria2AdvancedOpenHint": "4549ca5f0c29",
       "aria2AdvancedBusy": "ec6350eac8ab",
       "clearTaskFile": "723ec384b28a",
-      "clearTaskFileConfirmation": "9df3c5656cbe",
       "infoWrittenBytes": "4c6031d1d40c",
       "btFileSortOriginal": "9875877524a5",
       "btFileSortType": "df03ee78b5ca",
@@ -16981,7 +17001,15 @@
       "btAddWebSeedTitle": "bfd4e82adf72",
       "btAddWebSeedHint": "10878e601ff1",
       "btWebSeedStatePending": "08033b653b63",
-      "btWebSeedStateRejected": "a8f00f5731f8"
+      "btWebSeedStateRejected": "a8f00f5731f8",
+      "clearTaskFileConfirmWithBrowserNotice": "74d397865731",
+      "rssViewImages": "d0432573425a",
+      "rssImageLoadFailed": "791cb120f3d5",
+      "rssImageLoading": "1a0c3289c8bd",
+      "rssImageProxyUnverifiable": "b6f4e479afad",
+      "errReasonTaskFileClearPending": "0717c2341321",
+      "mobileDlNotifTaskChannel": "4380e129a4ae",
+      "mobileDlNotifTaskChannelDesc": "24b6f5f07b64"
     }
   }
 }

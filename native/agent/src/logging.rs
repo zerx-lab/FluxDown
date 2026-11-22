@@ -16,10 +16,11 @@ use tracing_subscriber::layer::SubscriberExt as _;
 use crate::runtime::AgentResult;
 
 /// 一等公民 crate：默认按用户级别输出；第三方（hyper / reqwest / tungstenite / axum）只保留 warn+。
-/// 嵌入模式下，移动端会话驱动（`fluxdown_mobile`）也写入诊断日志。
-const FIRST_PARTY_TARGETS: [&str; 6] = [
+/// 嵌入模式也按用户级别收集引擎和移动端会话事件；写入端独立选择。
+const FIRST_PARTY_TARGETS: [&str; 7] = [
     "fluxdown_agent",
     "fluxdown_daemon",
+    "fluxdown_engine",
     "fluxdown_link",
     "fluxdown_api",
     "fluxdown_protocol",
@@ -36,7 +37,7 @@ pub fn init_desktop() {
             return;
         }
     };
-    init_at(&agent_data_dir, &crate::runtime::engine_data_dir());
+    init_at(&agent_data_dir, &crate::runtime::resolve_engine_data_dir());
 }
 
 /// Returns true if the engine sink is initialized and accepted the formatted event.
@@ -106,7 +107,7 @@ fn init_android(
             Some(&private_dir),
         ) {
             Ok(log) => {
-                install_subscriber(log, engine_sink);
+                install_subscriber(log, engine_data_dir, engine_sink);
                 return;
             }
             Err(error) => eprintln!("could not initialize external agent log: {error}"),
@@ -119,11 +120,31 @@ fn init_android(
         redact,
         None,
     ) {
-        Ok(log) => install_subscriber(log, engine_sink),
+        Ok(log) => install_subscriber(log, engine_data_dir, engine_sink),
         Err(error) => eprintln!(
             "could not initialize private agent log at {}: {error}",
             private_dir.display()
         ),
+    }
+}
+
+pub(crate) const LEVEL_PREF: &str = "diagnostics.log_level";
+
+pub(crate) fn seed_level_preference(state: &mut crate::state::AgentState, engine_data_dir: &Path) {
+    let value = fluxdown_logfile::startup::setting_name(configured_level(engine_data_dir));
+    state
+        .preferences
+        .values
+        .insert(LEVEL_PREF.to_owned(), value.into());
+}
+
+fn configured_level(data_dir: &Path) -> Option<Level> {
+    match fluxdown_logfile::startup::read_level(data_dir) {
+        Ok(level) => level,
+        Err(error) => {
+            eprintln!("could not read FluxDown log level configuration: {error}");
+            None
+        }
     }
 }
 
@@ -165,18 +186,23 @@ fn init_at(agent_data_dir: &Path, engine_data_dir: &Path) {
             log
         }
     };
-    install_subscriber(log, None);
+    install_subscriber(log, engine_data_dir, None);
 }
 
-fn install_subscriber(log: &fluxdown_logfile::LogFile, engine_sink: Option<EngineLogSink>) {
+fn install_subscriber(
+    log: &fluxdown_logfile::LogFile,
+    engine_data_dir: &Path,
+    engine_sink: Option<EngineLogSink>,
+) {
     fluxdown_logfile::install_panic_hook();
+    let (filter, source, level) = resolve_filter(engine_data_dir);
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_ansi(false)
         .without_time()
         .with_level(false)
         .with_target(true)
         .with_writer(LogFileWriter { engine_sink })
-        .with_filter(build_filter(engine_sink.is_some()));
+        .with_filter(filter);
     let subscriber = tracing_subscriber::registry().with(fmt_layer);
     if let Err(error) = tracing::subscriber::set_global_default(subscriber) {
         log.log_unthrottled(
@@ -186,6 +212,11 @@ fn install_subscriber(log: &fluxdown_logfile::LogFile, engine_sink: Option<Engin
             ),
         );
         tracing::warn!(error = %error, "keeping existing tracing subscriber");
+    } else {
+        log.log_unthrottled(
+            Level::Info,
+            &format!("diagnostic filter source: {source}; base level: {level:?}"),
+        );
     }
 }
 
@@ -225,20 +256,37 @@ pub(crate) fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
     text
 }
 
-fn build_filter(split_engine: bool) -> EnvFilter {
-    if let Ok(raw) = std::env::var("RUST_LOG")
-        && !raw.trim().is_empty()
-    {
-        return EnvFilter::new(raw);
-    }
-    let level = std::env::var("FLUXDOWN_LOG_LEVEL")
-        .ok()
-        .and_then(|value| Level::parse(&value))
-        .unwrap_or(Level::Info);
-    EnvFilter::new(default_directives(level, split_engine))
+pub(crate) fn build_filter(engine_data_dir: &Path) -> EnvFilter {
+    resolve_filter(engine_data_dir).0
 }
 
-fn default_directives(level: Level, split_engine: bool) -> String {
+fn resolve_filter(engine_data_dir: &Path) -> (EnvFilter, &'static str, Option<Level>) {
+    if let Ok(raw) = std::env::var("RUST_LOG").map(|value| value.trim().to_owned())
+        && !raw.is_empty()
+    {
+        match EnvFilter::try_new(raw) {
+            Ok(filter) => return (filter, "RUST_LOG directives", None),
+            Err(_) => eprintln!("invalid RUST_LOG; using FluxDown log level"),
+        }
+    }
+    let env = std::env::var("FLUXDOWN_LOG_LEVEL").ok();
+    let persisted = configured_level(engine_data_dir);
+    let source = if env.as_deref().and_then(Level::parse).is_some() {
+        "FLUXDOWN_LOG_LEVEL"
+    } else if persisted.is_some() {
+        "logging.conf"
+    } else {
+        "build default"
+    };
+    let level = fluxdown_logfile::startup::resolve_level_from(env.as_deref(), persisted);
+    (
+        EnvFilter::new(default_directives(level)),
+        source,
+        Some(level),
+    )
+}
+
+fn default_directives(level: Level) -> String {
     let name = match level {
         Level::Error => return "error".to_owned(),
         Level::Warn => "warn",
@@ -247,8 +295,7 @@ fn default_directives(level: Level, split_engine: bool) -> String {
         Level::Trace => "trace",
     };
     let mut directives = String::from("warn");
-    let engine_target = split_engine.then_some("fluxdown_engine");
-    for target in FIRST_PARTY_TARGETS.into_iter().chain(engine_target) {
+    for target in FIRST_PARTY_TARGETS {
         directives.push(',');
         directives.push_str(target);
         directives.push('=');
@@ -299,10 +346,15 @@ fn build_header(agent_data_dir: &Path, engine_data_dir: &Path) -> String {
             std::env::var("SESSIONNAME").unwrap_or_else(|_| "<unset>".to_owned()),
         );
     }
-    for key in ["RUST_LOG", "FLUXDOWN_LOG_LEVEL"] {
+    if std::env::var_os("RUST_LOG").is_some() {
+        line("env RUST_LOG", "<set>".to_owned());
+    }
+    if let Ok(value) = std::env::var("FLUXDOWN_LOG_LEVEL")
+        && let Some(level) = Level::parse(&value)
+    {
         line(
-            &format!("env {key}"),
-            std::env::var(key).unwrap_or_else(|_| "<unset>".to_owned()),
+            "env FLUXDOWN_LOG_LEVEL",
+            level.as_padded_str().trim().to_owned(),
         );
     }
     // 其余 FLUXDOWN_* 只记名字：值可能是访问密钥等机密。
@@ -399,17 +451,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn log_level_preference_seed_projects_disk_setting_or_auto() {
+        struct TestDirectory(std::path::PathBuf);
+
+        impl Drop for TestDirectory {
+            fn drop(&mut self) {
+                if let Err(error) = std::fs::remove_dir_all(&self.0) {
+                    eprintln!("logging startup test cleanup failed: {error}");
+                }
+            }
+        }
+
+        let dir =
+            std::env::temp_dir().join(format!("fluxdown_agent_log_seed_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).expect("create logging startup test directory");
+        let dir = TestDirectory(dir);
+        let config = dir.0.join(fluxdown_logfile::startup::FILE_NAME);
+        for (contents, expected) in [
+            (None, "auto"),
+            (Some("log_level=warn\n"), "warn"),
+            (Some("log_level=invalid\n"), "auto"),
+        ] {
+            if let Some(contents) = contents {
+                std::fs::write(&config, contents).expect("write startup log level fixture");
+            }
+            let mut state = crate::state::AgentState::default();
+            let _ = state
+                .preferences
+                .values
+                .insert(LEVEL_PREF.to_owned(), "debug".into());
+            seed_level_preference(&mut state, &dir.0);
+            assert_eq!(state.preferences.values[LEVEL_PREF], expected);
+        }
+    }
+
+    #[test]
     fn default_filter_keeps_third_party_quiet() {
         assert_eq!(
-            default_directives(Level::Info, false),
-            "warn,fluxdown_agent=info,fluxdown_daemon=info,fluxdown_link=info,fluxdown_api=info,fluxdown_protocol=info,fluxdown_mobile=info"
+            default_directives(Level::Info),
+            "warn,fluxdown_agent=info,fluxdown_daemon=info,fluxdown_engine=info,fluxdown_link=info,fluxdown_api=info,fluxdown_protocol=info,fluxdown_mobile=info"
         );
-        assert_eq!(default_directives(Level::Error, true), "error");
-        assert!(
-            default_directives(Level::Info, true)
-                .split(',')
-                .any(|directive| directive == "fluxdown_engine=info")
-        );
+        assert_eq!(default_directives(Level::Error), "error");
     }
 
     #[test]

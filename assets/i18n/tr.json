@@ -3882,7 +3882,6 @@
   "btGuardClientRules": "İstemci kuralları",
   "btGuardClientRulesDesc": "İstemci adına veya peer ID’ye göre eşleri engelleyin veya izin verin. Kurallar yukarıdan aşağı denetlenir; ilk eşleşme geçerlidir. Sizin kurallarınız bulut kurallarından önce denetlenir.",
   "clearTaskFile": "Yalnızca dosyayı sil",
-  "clearTaskFileConfirmation": "“{fileName}” indirmesinin dosyası diskten silinsin mi? Tamamlanan görev kalır ve yeniden indirilebilir. Bu işlem geri alınamaz.",
   "infoWrittenBytes": "Yazılan",
   "btFileSortOriginal": "Orijinal sıra",
   "btFileSortType": "Türe göre",
@@ -4241,5 +4240,13 @@
   "aria2AdvancedInvalid": "Geçersiz seçenek",
   "aria2AdvancedExported": "Geçerli taslak panoya aktarıldı.",
   "aria2AdvancedOpenHint": "Desteklenen tüm seçenekler gösterilir. Taslağı düzenleyip kaydetmek için Uygula’ya basın veya geçerli taslağı dışa aktarın.",
-  "aria2AdvancedBusy": "Gelişmiş seçenek isteği zaten sürüyor."
+  "aria2AdvancedBusy": "Gelişmiş seçenek isteği zaten sürüyor.",
+  "clearTaskFileConfirmWithBrowserNotice": "“{fileName}” indirmesinin dosyaları diskten silinsin mi? Bu işlem geri alınamaz. Tamamlanan görev kalır. Genellikle bu görevden yeniden indirebilirsiniz; ancak tarayıcıda POST veya başka bir GET dışı istekle başladıysa, tarayıcıda yeniden başlatmanız gerekir.",
+  "rssViewImages": "Resimleri göster",
+  "rssImageLoadFailed": "Resim yüklenemedi",
+  "rssImageLoading": "Resim yükleniyor…",
+  "rssImageProxyUnverifiable": "Resim önizlemesi engellendi: hedef proxy üzerinden doğrulanamıyor.",
+  "errReasonTaskFileClearPending": "Dosya temizliği hâlâ bekliyor. Dosya adını veya kayıt konumunu değiştirmeden önce orijinal kayıt konumunu geri yükleyip «Yalnızca dosyayı sil» işlemini yeniden deneyin.",
+  "mobileDlNotifTaskChannel": "Tekil indirme ilerlemesi",
+  "mobileDlNotifTaskChannelDesc": "Bu cihazdaki her indirme için ayrı bir ilerleme bildirimi gösterir"
 }

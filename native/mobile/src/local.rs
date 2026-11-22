@@ -68,7 +68,7 @@ impl LocalHost {
         }
         let data_dir = PathBuf::from(data_dir);
         let agent_data_dir = data_dir.join("agent");
-        // Android routes daemon and engine events through the embedded agent subscriber.
+        // Install before starting the daemon and read logging.conf from the engine data root.
         let external_logs = config.external_log_dir.as_deref().map(std::path::Path::new);
         #[cfg(target_os = "android")]
         let engine_sink: Option<fluxdown_agent::logging::EngineLogSink> =

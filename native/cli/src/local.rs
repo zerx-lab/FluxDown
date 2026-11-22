@@ -8,12 +8,12 @@
 //! BT 下全部文件）；进度经 [`progress_reporter`] 排空并落 DB（不排空会因通道背压卡死）。
 
 use std::collections::HashSet;
+use std::path::Path;
 use std::sync::Arc;
 
 use fluxdown_cli::client::ClientError;
 use fluxdown_cli::exit::ExitCode;
 use fluxdown_engine::bt_config::BtConfig;
-use fluxdown_engine::data_dir::resolve_data_dir;
 use fluxdown_engine::db::{Db, DbError};
 use fluxdown_engine::download_manager::{NewTaskSpec, progress_reporter};
 use fluxdown_engine::events::EventSink;
@@ -25,7 +25,7 @@ use crate::AddArgs;
 /// 在本进程内嵌引擎完成 `add --local` 下载：收集 URL → 解析数据目录/落盘目录 →
 /// 构造 [`Engine`] → 排空进度通道 → 逐 URL `create_task` → 等待全部终态或 Ctrl-C →
 /// 按终态 DB 状态映射 aria2 退出码。返回的 [`ClientError`] 携带退出码，由 `run()` 打印。
-pub async fn run_add_local(args: AddArgs, json: bool) -> Result<(), ClientError> {
+pub async fn run_add_local(args: AddArgs, json: bool, data_dir: &Path) -> Result<(), ClientError> {
     // `--pause` 建的是暂停任务，永远到不了终态；与「阻塞至完成」的
     // B 模式语义矛盾，显式拒绝而非静默挂死。
     if args.pause {
@@ -52,9 +52,7 @@ pub async fn run_add_local(args: AddArgs, json: bool) -> Result<(), ClientError>
 
     // 2) 数据目录 + 写入者租约 + 落盘目录（优先级：-d > 共享库 default_save_dir 配置 > 当前工作目录）。
     //    必须先取得租约再打开库：Db::open 会在运行中的 App/daemon 的库上执行 schema 初始化。
-    let data_dir =
-        resolve_data_dir(None).map_err(|e| ClientError::new(e.to_string(), ExitCode::Unknown))?;
-    let (db, write_guard) = Db::open_exclusive(&data_dir).await.map_err(|e| match e {
+    let (db, write_guard) = Db::open_exclusive(data_dir).await.map_err(|e| match e {
         DbError::WriterLeaseHeld(lock_path) => ClientError::new(
             format!(
                 "data dir is in use by another FluxDown engine (lock: {lock_path}). \
@@ -77,12 +75,15 @@ pub async fn run_add_local(args: AddArgs, json: bool) -> Result<(), ClientError>
         bt_config: BtConfig::default(),
         proxy_config: ProxyConfig::default(),
         user_agent: args.user_agent.clone().unwrap_or_default(),
-        data_dir_override: None,
+        data_dir_override: Some(data_dir.to_path_buf()),
         database_url: None,
     };
     let mut engine = Engine::from_db(cfg, db, write_guard, sink.clone(), Arc::new(NoopSelection))
         .await
         .map_err(|e| ClientError::new(e.to_string(), ExitCode::Unknown))?;
+    // This one-shot host exits after the first finished attempt and has no
+    // task retry consumer. Do not schedule recovery that cannot run.
+    engine.manager.set_max_auto_retries(0);
 
     // 排空进度通道：段协调器每 ~200ms 阻塞 send，通道满（容量 8192）会卡死下载。
     // 接入 progress_reporter，并把 downloaded_bytes 落 DB。

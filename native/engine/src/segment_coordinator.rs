@@ -5676,7 +5676,7 @@ async fn do_segment_with_retry(
                 }
                 // 瞬时失败必须留痕：截断/停滞/网络错误此前静默进退避，日志里
                 // 只见"最后一击"（如重连撞 400），无法还原首因（断流 vs 停滞）。
-                log_info!(
+                tracing::debug!(
                     "[segment-retry] task {} seg {} 瞬时失败（第 {}/{} 次重试前）：{}",
                     task_id,
                     seg_idx,
@@ -6094,7 +6094,7 @@ async fn do_segment(
             )));
         }
         generation_evidence.note_lm_drift_tolerated();
-        log_warn!(
+        tracing::debug!(
             "[coordinator] task {} seg {} Last-Modified 跨 CDN edge 不同（probe=\"{}\" 本段=\"{}\"）\
              但 Content-Range 总大小（{:?}，已知 {}）与请求起点（{:?}，请求 {}）均一致，\
              判定为时钟/格式差异，继续该段下载",

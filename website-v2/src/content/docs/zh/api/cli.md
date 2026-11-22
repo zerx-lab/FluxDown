@@ -169,7 +169,7 @@ fluxdown watch --interval 2    # 每 2 秒刷新（默认 1）
 
 ### config
 
-`config` 读写一个本地配置文件，让你不必每次都导出环境变量（类似 `go env -w`）。它从不连接服务器。合法的键为 `url`、`token`、`timeout`。
+`config` 读写本地配置，让你不必每次都导出环境变量（类似 `go env -w`）。它从不连接服务器。合法的键为 `url`、`token`、`timeout`、`log_level`。
 
 ```bash
 fluxdown config set token fxd_your_token_here   # 持久化 token
@@ -184,6 +184,8 @@ fluxdown config path             # 打印配置文件路径
 ```
 
 配置文件是平台配置目录下的 `cli.toml`（Windows `%APPDATA%\zerx\fluxdown\config\`、Linux `$XDG_CONFIG_HOME/fluxdown/`、macOS `~/Library/Application Support/dev.zerx.fluxdown/`）。存储的 `token` 为明文；在 Unix 上文件以 `0600` 权限创建（仅属主可读写）。这里设置的值，在具体某次调用时会被显式 `--flag` 或对应环境变量覆盖。
+
+`log_level` 单独保存在引擎数据目录的 `logging.conf`。文件格式错误时，`config list` 和不带键的 `config get` 在文本及 JSON 输出中将 `log_level` 显示为 `(invalid)`，其他键仍正常列出。`config get log_level` 会报告错误；运行 `config set log_level auto` 可修复文件并恢复默认值。
 
 ## 退出码
 
