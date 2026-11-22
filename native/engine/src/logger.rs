@@ -734,6 +734,18 @@ pub fn write(message: &str) {
     }
 }
 
+/// Accept a formatted tracing event from the embedded Android subscriber.
+#[cfg(target_os = "android")]
+pub fn write_embedded_event(message: &str, flush: bool) -> bool {
+    let Some(logger) = LOGGER.get() else {
+        return false;
+    };
+    for line in message.lines().filter(|line| !line.is_empty()) {
+        logger.write_impl(line, flush);
+    }
+    true
+}
+
 #[doc(hidden)]
 pub fn trace_info(arguments: fmt::Arguments<'_>) {
     tracing::info!("{arguments}");

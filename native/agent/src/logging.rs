@@ -16,8 +16,7 @@ use tracing_subscriber::layer::SubscriberExt as _;
 use crate::runtime::AgentResult;
 
 /// 一等公民 crate：默认按用户级别输出；第三方（hyper / reqwest / tungstenite / axum）只保留 warn+。
-/// 嵌入模式下 daemon 与 agent 同进程，daemon 事件也写进这份日志；移动端 UniFFI 会话驱动
-/// （`fluxdown_mobile`，只在重连时记一行原因）同样写进来，否则界面卡在加载 / 断连时无从定位。
+/// 嵌入模式下，移动端会话驱动（`fluxdown_mobile`）也写入诊断日志。
 const FIRST_PARTY_TARGETS: [&str; 6] = [
     "fluxdown_agent",
     "fluxdown_daemon",
@@ -40,32 +39,26 @@ pub fn init_desktop() {
     init_at(&agent_data_dir, &crate::runtime::engine_data_dir());
 }
 
-/// 初始化移动端嵌入模式日志（进程内 daemon + agent）。必须在启动 daemon 之前调用：daemon
-/// 只在没有全局订阅者时才装自己的 stderr 订阅者。进程内只生效一次，重复调用沿用首次的目录。
-pub fn init_embedded(agent_data_dir: &Path, engine_data_dir: &Path, external_dir: Option<&Path>) {
+/// Returns true if the engine sink is initialized and accepted the formatted event.
+pub type EngineLogSink = fn(&str, bool) -> bool;
+
+/// Install the embedded process subscriber before starting the daemon.
+pub fn init_embedded(
+    agent_data_dir: &Path,
+    engine_data_dir: &Path,
+    external_dir: Option<&Path>,
+    engine_sink: Option<EngineLogSink>,
+) {
     #[cfg(target_os = "android")]
     {
-        if let Some(dir) = external_dir {
-            let header = android_header();
-            let private_dir = engine_data_dir.join("diagnostic-logs/agent");
-            match fluxdown_logfile::init_global_redacted(
-                dir,
-                "agent",
-                header,
-                redact,
-                Some(&private_dir),
-            ) {
-                Ok(log) => {
-                    install_subscriber(log);
-                    return;
-                }
-                Err(error) => eprintln!("could not initialize external agent log: {error}"),
-            }
-        }
+        let _ = agent_data_dir;
+        init_android(engine_data_dir, external_dir, engine_sink);
     }
     #[cfg(not(target_os = "android"))]
-    let _external_dir = external_dir;
-    init_at(agent_data_dir, engine_data_dir);
+    {
+        let _ = (external_dir, engine_sink);
+        init_at(agent_data_dir, engine_data_dir);
+    }
 }
 
 /// Active in-process Android agent log directory, including runtime fallback.
@@ -94,12 +87,42 @@ fn android_header() -> String {
 
 #[cfg(target_os = "android")]
 fn init_at(_agent_data_dir: &Path, engine_data_dir: &Path) {
-    let dir = engine_data_dir.join("diagnostic-logs/agent");
-    match fluxdown_logfile::init_global_redacted(&dir, "agent", android_header(), redact, None) {
-        Ok(log) => install_subscriber(log),
+    init_android(engine_data_dir, None, None);
+}
+
+#[cfg(target_os = "android")]
+fn init_android(
+    engine_data_dir: &Path,
+    external_dir: Option<&Path>,
+    engine_sink: Option<EngineLogSink>,
+) {
+    let private_dir = engine_data_dir.join("diagnostic-logs/agent");
+    if let Some(dir) = external_dir {
+        match fluxdown_logfile::init_global_redacted(
+            dir,
+            "agent",
+            android_header(),
+            redact,
+            Some(&private_dir),
+        ) {
+            Ok(log) => {
+                install_subscriber(log, engine_sink);
+                return;
+            }
+            Err(error) => eprintln!("could not initialize external agent log: {error}"),
+        }
+    }
+    match fluxdown_logfile::init_global_redacted(
+        &private_dir,
+        "agent",
+        android_header(),
+        redact,
+        None,
+    ) {
+        Ok(log) => install_subscriber(log, engine_sink),
         Err(error) => eprintln!(
             "could not initialize private agent log at {}: {error}",
-            dir.display()
+            private_dir.display()
         ),
     }
 }
@@ -142,18 +165,18 @@ fn init_at(agent_data_dir: &Path, engine_data_dir: &Path) {
             log
         }
     };
-    install_subscriber(log);
+    install_subscriber(log, None);
 }
 
-fn install_subscriber(log: &fluxdown_logfile::LogFile) {
+fn install_subscriber(log: &fluxdown_logfile::LogFile, engine_sink: Option<EngineLogSink>) {
     fluxdown_logfile::install_panic_hook();
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_ansi(false)
         .without_time()
-        .with_level(false)
+        .with_level(engine_sink.is_some())
         .with_target(true)
-        .with_writer(LogFileWriter)
-        .with_filter(build_filter());
+        .with_writer(LogFileWriter { engine_sink })
+        .with_filter(build_filter(engine_sink.is_some()));
     let subscriber = tracing_subscriber::registry().with(fmt_layer);
     if let Err(error) = tracing::subscriber::set_global_default(subscriber) {
         log.log_unthrottled(
@@ -202,7 +225,7 @@ pub(crate) fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
     text
 }
 
-fn build_filter() -> EnvFilter {
+fn build_filter(split_engine: bool) -> EnvFilter {
     if let Ok(raw) = std::env::var("RUST_LOG")
         && !raw.trim().is_empty()
     {
@@ -212,10 +235,10 @@ fn build_filter() -> EnvFilter {
         .ok()
         .and_then(|value| Level::parse(&value))
         .unwrap_or(Level::Info);
-    EnvFilter::new(default_directives(level))
+    EnvFilter::new(default_directives(level, split_engine))
 }
 
-fn default_directives(level: Level) -> String {
+fn default_directives(level: Level, split_engine: bool) -> String {
     let name = match level {
         Level::Error => return "error".to_owned(),
         Level::Warn => "warn",
@@ -224,7 +247,8 @@ fn default_directives(level: Level) -> String {
         Level::Trace => "trace",
     };
     let mut directives = String::from("warn");
-    for target in FIRST_PARTY_TARGETS {
+    let engine_target = split_engine.then_some("fluxdown_engine");
+    for target in FIRST_PARTY_TARGETS.into_iter().chain(engine_target) {
         directives.push(',');
         directives.push_str(target);
         directives.push('=');
@@ -295,10 +319,13 @@ fn build_header(agent_data_dir: &Path, engine_data_dir: &Path) -> String {
 
 /// `tracing` → `LogFile` 适配：每个事件一个 writer，Drop 时整条转发。
 #[derive(Clone, Copy)]
-struct LogFileWriter;
+struct LogFileWriter {
+    engine_sink: Option<EngineLogSink>,
+}
 
 struct EventWriter {
     level: Level,
+    engine_sink: Option<EngineLogSink>,
     buf: Vec<u8>,
 }
 
@@ -308,6 +335,7 @@ impl<'a> MakeWriter<'a> for LogFileWriter {
     fn make_writer(&'a self) -> Self::Writer {
         EventWriter {
             level: Level::Info,
+            engine_sink: None,
             buf: Vec::new(),
         }
     }
@@ -322,9 +350,19 @@ impl<'a> MakeWriter<'a> for LogFileWriter {
         };
         EventWriter {
             level,
+            engine_sink: self
+                .engine_sink
+                .filter(|_| is_engine_target(meta.module_path().unwrap_or_else(|| meta.target()))),
             buf: Vec::new(),
         }
     }
+}
+
+fn is_engine_target(target: &str) -> bool {
+    matches!(
+        target.split("::").next(),
+        Some("fluxdown_daemon" | "fluxdown_engine")
+    )
 }
 
 impl io::Write for EventWriter {
@@ -345,6 +383,11 @@ impl Drop for EventWriter {
         if text.is_empty() {
             return;
         }
+        if let Some(sink) = self.engine_sink
+            && sink(text, self.level == Level::Error)
+        {
+            return;
+        }
         if let Some(log) = fluxdown_logfile::global() {
             log.log(self.level, text);
         }
@@ -358,10 +401,23 @@ mod tests {
     #[test]
     fn default_filter_keeps_third_party_quiet() {
         assert_eq!(
-            default_directives(Level::Info),
+            default_directives(Level::Info, false),
             "warn,fluxdown_agent=info,fluxdown_daemon=info,fluxdown_link=info,fluxdown_api=info,fluxdown_protocol=info,fluxdown_mobile=info"
         );
-        assert_eq!(default_directives(Level::Error), "error");
+        assert_eq!(default_directives(Level::Error, true), "error");
+        assert!(
+            default_directives(Level::Info, true)
+                .split(',')
+                .any(|directive| directive == "fluxdown_engine=info")
+        );
+    }
+
+    #[test]
+    fn separates_engine_and_daemon_from_agent_targets() {
+        assert!(is_engine_target("fluxdown_engine::logger"));
+        assert!(is_engine_target("fluxdown_daemon"));
+        assert!(!is_engine_target("fluxdown_agent::logging"));
+        assert!(!is_engine_target("fluxdown_engine_helper"));
     }
 
     #[test]

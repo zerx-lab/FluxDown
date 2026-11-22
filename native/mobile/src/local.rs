@@ -68,12 +68,18 @@ impl LocalHost {
         }
         let data_dir = PathBuf::from(data_dir);
         let agent_data_dir = data_dir.join("agent");
-        // 先于 daemon 装订阅者：同进程的 daemon / agent 事件共享 agent 日志。
+        // Android routes daemon and engine events through the embedded agent subscriber.
         let external_logs = config.external_log_dir.as_deref().map(std::path::Path::new);
+        #[cfg(target_os = "android")]
+        let engine_sink: Option<fluxdown_agent::logging::EngineLogSink> =
+            Some(fluxdown_daemon::write_android_engine_event);
+        #[cfg(not(target_os = "android"))]
+        let engine_sink = None;
         fluxdown_agent::logging::init_embedded(
             &agent_data_dir,
             &data_dir,
             external_logs.map(|dir| dir.join("agent")).as_deref(),
+            engine_sink,
         );
         let host_cancel = CancellationToken::new();
 
