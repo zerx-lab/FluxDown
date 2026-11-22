@@ -8,8 +8,8 @@
 use std::{collections::HashSet, rc::Rc, sync::Arc};
 
 use fluxdown_protocol::{
-    AgentEvent, AgentSnapshot, CaptureResolveParams, CloudDevice, LinkDeviceInfo,
-    PendingCaptureDto, ServiceEvent,
+    AgentEvent, AgentSnapshot, CaptureResolveParams, CloudDevice, DaemonEvent, LinkDeviceInfo,
+    PendingCaptureDto, ServiceEvent, TaskDto,
 };
 use fluxdown_ui_components::toast;
 use fluxdown_ui_downloads::{
@@ -206,16 +206,20 @@ pub fn install_captures(cx: &mut App) {
                 sync_targets(cx);
                 sync_categories(cx, body);
                 refresh_provisional_context(cx, body);
+                sync_duplicate_hint(cx, None);
                 sync_captures(cx, &body.pending_captures);
             }
         }
         SessionSignal::Event(frame) => match &frame.event {
             // agent 先替换 daemon 快照再发布已连接，此时会话快照已带 daemon 数据。
-            ServiceEvent::Agent(AgentEvent::DaemonConnectionChanged(true)) => {
-                let latest = Desktop::global(cx).session.read(cx).latest().cloned();
-                if let Some(body) = latest.as_deref().and_then(agent_body) {
-                    refresh_provisional_context(cx, body);
+            ServiceEvent::Agent(AgentEvent::DaemonConnectionChanged(connected)) => {
+                if *connected {
+                    let latest = Desktop::global(cx).session.read(cx).latest().cloned();
+                    if let Some(body) = latest.as_deref().and_then(agent_body) {
+                        refresh_provisional_context(cx, body);
+                    }
                 }
+                sync_duplicate_hint(cx, None);
             }
             ServiceEvent::Agent(AgentEvent::CloudConnectionChanged(connection)) => {
                 cx.global_mut::<CaptureDispatch>().set_cloud_connected(
@@ -249,6 +253,12 @@ pub fn install_captures(cx: &mut App) {
                 );
                 sync_targets(cx);
             }
+            ServiceEvent::Agent(AgentEvent::DaemonSnapshotReplaced(_)) => {
+                sync_duplicate_hint(cx, None);
+            }
+            ServiceEvent::Agent(AgentEvent::Daemon(event)) => {
+                sync_duplicate_hint(cx, Some(event));
+            }
             _ => {}
         },
         SessionSignal::Stale
@@ -257,6 +267,7 @@ pub fn install_captures(cx: &mut App) {
         | SessionSignal::ServiceFailed(_) => {
             cx.global_mut::<CaptureDispatch>().agent_current = false;
             sync_targets(cx);
+            sync_duplicate_hint(cx, None);
         }
     })
     .detach();
@@ -296,6 +307,58 @@ fn sync_categories(cx: &mut App, snapshot: &AgentSnapshot) {
     if let Err(error) = handle.update(cx, |_, window, cx| {
         form.update(cx, |form, cx| {
             form.set_custom_categories(categories, window, cx)
+        });
+    }) {
+        log::debug!("view or window released before lifecycle update: {error:#}");
+    }
+}
+
+fn duplicate_scope(cx: &App) -> Option<(&[TaskDto], &str)> {
+    duplicate_scope_from_snapshot(
+        Desktop::global(cx)
+            .session
+            .read(cx)
+            .current_agent_snapshot()?,
+    )
+}
+
+fn duplicate_scope_from_snapshot(snapshot: &AgentSnapshot) -> Option<(&[TaskDto], &str)> {
+    let daemon = &snapshot.daemon;
+    if !snapshot.daemon_connected || daemon.task_total.is_some() {
+        return None;
+    }
+    let default_dir = daemon
+        .config
+        .values
+        .get("default_save_dir")
+        .map(String::as_str)
+        .filter(|path| !path.trim().is_empty())
+        .unwrap_or_default();
+    Some((&daemon.tasks, default_dir))
+}
+
+fn sync_duplicate_hint(cx: &mut App, event: Option<&DaemonEvent>) {
+    let form = cx
+        .global::<CaptureDispatch>()
+        .form
+        .as_ref()
+        .and_then(WeakEntity::upgrade);
+    let (Some(form), Some(handle)) = (form, WindowRegistry::handle(cx, &WindowKey::NewDownload))
+    else {
+        return;
+    };
+    if event.is_some_and(|event| !form.read(cx).duplicate_hint_needs_refresh(event)) {
+        return;
+    }
+    if let Err(error) = handle.update(cx, |_, window, cx| {
+        form.update(cx, |form, cx| match event {
+            None
+            | Some(
+                DaemonEvent::SnapshotReplaced(_)
+                | DaemonEvent::TablesReloading { tasks: Some(_), .. }
+                | DaemonEvent::Engine(fluxdown_protocol::WsServerMsg::TasksSnapshot { .. }),
+            ) => form.reset_duplicate_hint(window, cx),
+            Some(_) => form.refresh_duplicate_hint(window, cx),
         });
     }) {
         log::debug!("view or window released before lifecycle update: {error:#}");
@@ -441,6 +504,7 @@ fn open_with(cx: &mut App, context: NewDownloadContext, captures: Vec<PendingCap
                     context,
                     form_port,
                     on_submit,
+                    duplicate_scope,
                     window,
                     cx,
                 )
@@ -608,7 +672,38 @@ fn submit(submission: NewDownloadSubmission, port: &Arc<AgentDownloadsPort>, cx:
 
 #[cfg(test)]
 mod presence_tests {
-    use super::CaptureDispatch;
+    use fluxdown_protocol::AgentSnapshot;
+
+    use super::{CaptureDispatch, duplicate_scope_from_snapshot};
+
+    #[test]
+    fn duplicate_scope_requires_a_connected_host_and_complete_task_table() {
+        let mut snapshot = AgentSnapshot::default();
+        assert!(duplicate_scope_from_snapshot(&snapshot).is_none());
+        snapshot.daemon_connected = true;
+        snapshot.daemon.task_total = Some(33);
+        assert!(duplicate_scope_from_snapshot(&snapshot).is_none());
+        snapshot.daemon.task_total = None;
+        snapshot.daemon.queue_total = Some(7);
+        assert!(duplicate_scope_from_snapshot(&snapshot).is_some());
+    }
+
+    #[test]
+    fn duplicate_scope_preserves_the_daemon_default_directory_setting() {
+        let mut snapshot = AgentSnapshot {
+            daemon_connected: true,
+            ..AgentSnapshot::default()
+        };
+        snapshot.daemon.runtime_stats.save_dir = "old runtime sample".to_owned();
+        snapshot.daemon.config.values.insert(
+            "default_save_dir".to_owned(),
+            r"D:\下载  2026\📦".to_owned(),
+        );
+        assert_eq!(
+            duplicate_scope_from_snapshot(&snapshot).map(|(_, dir)| dir),
+            Some(r"D:\下载  2026\📦")
+        );
+    }
 
     #[test]
     fn logout_and_account_switch_invalidate_presence_before_next_roster() {

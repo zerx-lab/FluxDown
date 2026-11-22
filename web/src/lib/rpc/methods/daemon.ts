@@ -36,6 +36,7 @@ import type {
   DaemonDiagnosticsDescribe,
   DaemonRuntimeStatsDto,
   Ed2kServerSubRefreshResponse,
+  FsDefaultFileExistsParams,
   FsListParams,
   FsListResponse,
   GroupDeleteParams,
@@ -311,6 +312,7 @@ const runtime = {
 const fs = {
   /** 列举服务端目录（仅子目录）；`params` 省略 = 默认保存目录。 */
   list: (params?: FsListParams) => call<FsListResponse>(METHOD.DAEMON_FS_LIST, params),
+  defaultFileExists: (params: FsDefaultFileExistsParams) => call<boolean>(METHOD.DAEMON_FS_DEFAULT_FILE_EXISTS, params),
 };
 
 const rss = {

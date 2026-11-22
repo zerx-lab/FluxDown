@@ -103,6 +103,7 @@ export const METHOD = {
   DAEMON_SITE_AUTH_MATCH: 'daemon.siteAuth.match',
   DAEMON_RUNTIME_STATS: 'daemon.runtime.stats',
   DAEMON_FS_LIST: 'daemon.fs.list',
+  DAEMON_FS_DEFAULT_FILE_EXISTS: 'daemon.fs.defaultFileExists',
 
   DAEMON_RSS_LIST_SOURCES: 'daemon.rss.listSources',
   DAEMON_RSS_GET_ITEMS: 'daemon.rss.getItems',

@@ -3435,6 +3435,8 @@
   "mobileTaskId": "任务 ID",
   "mobileUploadChip": "上传",
   "mobileNewDownloadDuplicateUrl": "下载列表中已有相同链接「{name}」，仍可继续添加",
+  "newDownloadDuplicateLink": "下载列表中已有相同链接：「{name}」。",
+  "newDownloadDefaultFileExists": "默认下载目录中已有同名文件：「{name}」。",
   "mobileNewDownloadPreviewMore": "另有 {n} 个链接",
   "mobileAdjustedTo": "已调整为 {n}",
   "mobileColorHex": "十六进制色值",

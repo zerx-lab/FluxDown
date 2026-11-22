@@ -134,7 +134,7 @@ impl LinkProbe {
     }
 
     /// 链接自带的 `out=`（含浏览器捕获名）优先于探测名；不为批量链接预填名称。
-    fn file_name<'a>(&'a self, entries: &'a [UrlEntry]) -> &'a str {
+    pub(super) fn file_name<'a>(&'a self, entries: &'a [UrlEntry]) -> &'a str {
         let [entry] = entries else {
             return "";
         };
@@ -290,6 +290,7 @@ impl NewDownloadView {
         self.download_name.set_auto(auto, &self.rename, window, cx);
         self.sync_category(window, cx);
         cx.notify();
+        self.sync_duplicate_hint(window, cx);
     }
 
     /// 探测结果变化后同步「文件名」输入框：占位提示 + 预填可编辑的探测名。
@@ -306,6 +307,7 @@ impl NewDownloadView {
         }
         // 预填 / 清空探测名会改变自动分类的预测输入。
         self.sync_category(window, cx);
+        self.sync_duplicate_hint(window, cx);
     }
 
     /// 链接输入区下方的一行状态：探测中 / 已识别（文件名 + 大小，0 = 未知）/ 无法获取。
@@ -413,6 +415,7 @@ mod tests {
                 Default::default(),
                 Arc::new(Offline),
                 Rc::new(|_, _, _| {}),
+                |_| None,
                 window,
                 cx,
             )

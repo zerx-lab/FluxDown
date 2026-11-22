@@ -99,6 +99,7 @@ object HostMethod {
     const val daemonSiteAuthMatch = "daemon.siteAuth.match"
     const val daemonRuntimeStats = "daemon.runtime.stats"
     const val daemonFsList = "daemon.fs.list"
+    const val daemonFsDefaultFileExists = "daemon.fs.defaultFileExists"
     const val daemonRssListSources = "daemon.rss.listSources"
     const val daemonRssGetItems = "daemon.rss.getItems"
     const val daemonRssGetImage = "daemon.rss.getImage"

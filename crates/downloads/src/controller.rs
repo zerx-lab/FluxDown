@@ -317,6 +317,10 @@ pub enum DownloadsCommand {
     ProbeLink {
         url: String,
     },
+    /// Check for a file by name in the daemon's default download directory.
+    DefaultFileExists {
+        file_name: String,
+    },
     /// 经 FluxCloud 把链接下发到账号内另一台设备（`agent.remote.dispatch`）。
     RemoteDispatch(RemoteDispatchParams),
     /// 下发到局域网已配对设备（`agent.link.dispatch`）。

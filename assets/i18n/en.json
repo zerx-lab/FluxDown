@@ -3435,6 +3435,8 @@
   "mobileTaskId": "Task ID",
   "mobileUploadChip": "Upload",
   "mobileNewDownloadDuplicateUrl": "The download list already has this link: “{name}”. You can still add it.",
+  "newDownloadDuplicateLink": "The download list already has this link: “{name}”.",
+  "newDownloadDefaultFileExists": "A file named “{name}” already exists in the default download folder.",
   "mobileNewDownloadPreviewMore": "{n} more links",
   "mobileAdjustedTo": "Adjusted to {n}",
   "mobileColorHex": "Hex color",

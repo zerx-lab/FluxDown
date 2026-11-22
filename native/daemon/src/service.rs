@@ -1191,6 +1191,34 @@ impl DaemonService {
                 let params = parse_optional_params::<FsListParams>(params)?;
                 self.list_directories(params.path).await.and_then(to_value)
             }
+            method::DAEMON_FS_DEFAULT_FILE_EXISTS => {
+                let params = parse_params::<DefaultFileExistsParams>(params)?;
+                let name = params.file_name.as_str();
+                if name.contains(['/', '\\', ':', '\0'])
+                    || !matches!(
+                        std::path::Path::new(name).components().next(),
+                        Some(std::path::Component::Normal(_))
+                    )
+                {
+                    return to_value(false);
+                }
+                let dir = self.events.inspect(|snapshot| {
+                    crate::disk_free::stats_save_dir(
+                        snapshot
+                            .config
+                            .values
+                            .get("default_save_dir")
+                            .map(String::as_str),
+                    )
+                });
+                match tokio::fs::symlink_metadata(std::path::Path::new(&dir).join(name)).await {
+                    Ok(metadata) => to_value(metadata.is_file()),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => to_value(false),
+                    Err(error) => Err(internal_error(format!(
+                        "check default download file: {error:#}"
+                    ))),
+                }
+            }
             #[cfg(feature = "plugins")]
             method::DAEMON_PLUGIN_LIST => to_value(self.list_plugins().await?),
             #[cfg(feature = "plugins")]
@@ -2705,6 +2733,12 @@ struct FsListParams {
     #[serde(default)]
     path: String,
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DefaultFileExistsParams {
+    file_name: String,
+}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RssSourceIdParams {
@@ -3634,6 +3668,23 @@ mod tests {
             None,
         );
 
+        tokio::fs::write(dir.join("retained.zip"), b"")
+            .await
+            .expect("create retained file without a task record");
+        let mut existence_results = Vec::new();
+        for name in ["retained.zip", "missing.zip", "blobs", "./retained.zip"] {
+            existence_results.push(
+                service
+                    .call_inner(
+                        "dispatch-test",
+                        true,
+                        fluxdown_protocol::method::DAEMON_FS_DEFAULT_FILE_EXISTS,
+                        Some(json!({ "fileName": name })),
+                    )
+                    .await,
+            );
+        }
+
         for method_name in fluxdown_protocol::method::ALL_METHODS
             .iter()
             .copied()
@@ -3664,6 +3715,14 @@ mod tests {
         if let Err(error) = tokio::fs::remove_dir_all(dir).await {
             eprintln!("daemon dispatch test directory removal failed: {error}");
         }
+        let existence_results = existence_results
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("default file existence checks");
+        assert_eq!(
+            existence_results,
+            [json!(true), json!(false), json!(false), json!(false)]
+        );
     }
 
     fn optional_feature_method(method_name: &str) -> bool {

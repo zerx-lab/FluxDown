@@ -239,6 +239,11 @@ export interface FsListParams {
   path?: string;
 }
 
+/** `daemon.fs.defaultFileExists`: checks one filename in the daemon's default download directory. */
+export interface FsDefaultFileExistsParams {
+  fileName: string;
+}
+
 // ── daemon.rss ──
 
 export interface RssSourceIdParams {
