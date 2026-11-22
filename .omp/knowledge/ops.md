@@ -22,7 +22,7 @@
 - Android 取证入口是共享 `Documents/FluxDown/Logs/`：首次通过系统目录选择器持久授权。运行中后台发布有界文本；Java 未捕获异常时最多等待后台发布 1 秒。写完暂存文件后才轮换，强制终止时可读取最近完整的 `*.txt` 或 `*.previous.txt`。启动时清理旧私有目录中符合宿主、agent 和引擎日志命名规则的未脱敏文件，不清理当前日志目录或更新旧 Download 副本。
 - Doctor、日志路径查询和 ZIP 导出读取实际 agent 日志目录（默认 `<agent 数据目录>/logs`），引擎路径来自 daemon。嵌入宿主的 Doctor 省略 `app_listener` / `local_server` / `disk_sleep`；网关允许同进程 App 在沙盒内导出 ZIP。
 
-**文本脱敏规则源**：`native/logfile/src/sanitize.rs`。引擎和 agent 用共享规则脱敏导出文本；Android 写盘还移除完整 HTTP(S)/FTP(S) URL，因为签名可位于任意路径或查询参数中。下载启动只记协议和任务 ID。Android 宿主事件不记录异常消息。配置快照另用 `sanitize_json_export` 按结构清除秘密字段。
+**文本脱敏规则源**：`native/logfile/src/sanitize.rs`。引擎和 agent 用共享规则脱敏导出文本；Android 写盘还移除完整 HTTP(S)、FTP(S)、WebSocket（WS/WSS）、磁力和 eD2K 链接，避免保留链接携带的签名、文件名或哈希。下载启动只记协议和任务 ID。Android 宿主事件不记录异常消息。配置快照另用 `sanitize_json_export` 按结构清除秘密字段。
 
 ---
 
