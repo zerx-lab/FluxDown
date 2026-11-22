@@ -9140,9 +9140,9 @@ mod tests {
         }
     }
 
-    /// PostgreSQL 冒烟（需要本地 pg 实例）：
+    /// PostgreSQL 冒烟（使用独立测试库；两个用例串行初始化同一 schema）：
     /// `PG_TEST_URL=postgres://postgres:pw@localhost/postgres \
-    ///  cargo test -p fluxdown_engine -- --ignored pg_smoke`
+    ///  cargo test -p fluxdown_engine --lib pg_smoke -- --ignored --test-threads=1`
     #[tokio::test]
     #[ignore = "requires a running PostgreSQL instance (set PG_TEST_URL)"]
     async fn pg_smoke_roundtrip() {
