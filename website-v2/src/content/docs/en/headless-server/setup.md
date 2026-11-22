@@ -49,7 +49,7 @@ Rebuild the agent after every front-end change — the running binary keeps serv
 
 ## Environment variables
 
-All configuration is read once at startup from environment variables. There is no config file.
+Deployment options are read from environment variables at startup. The host's saved log level is an exception.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -68,7 +68,9 @@ All configuration is read once at startup from environment variables. There is n
 | `FLUXDOWN_LINK_NAME` | `FluxDown Server` | Device name shown to other FluxDown clients when link discovery is on. |
 | `FLUXDOWN_LINK_ADVERTISE_ADDR` | unset (auto-detect) | Overrides the reachable address(es) this server reports to other FluxDown devices when pairing and exchanging device info. Comma-separated `host[:port]` or `http(s)://` URLs (a missing port defaults to the actual listen port). Set it when running in Docker / behind NAT / on a multi-NIC host, where the auto-detected address is an internal one other devices cannot reach — for example `192.168.1.5:8080`. |
 | `FLUXDOWN_ANALYTICS` | on | Anonymous usage statistics switch (only active in builds that carry an app key; official builds do). Set to a falsy value to disable. |
-| `FLUXDOWN_LOG_LEVEL` | unset — `info` | Default `tracing` log level (`error`/`warn`/`info`/`debug`/`trace`, case-insensitive) applied when `RUST_LOG` is not set. `RUST_LOG` always wins when present — use `FLUXDOWN_LOG_LEVEL` for a simple one-value override, `RUST_LOG` for per-module directives. Read once at startup; changing it requires a restart. |
+| `FLUXDOWN_LOG_LEVEL` | unset | Startup override (`error` / `warn` / `info` / `debug` / `trace`, case-insensitive). A valid `RUST_LOG` directive takes precedence. |
+
+To set a host-wide level, use **Settings → About → Logs** or edit `logging.conf` in the engine data directory (for example, `/data/logging.conf` in Docker). Set `log_level=auto`, `debug`, `info`, `warn`, or `error`. `auto` selects Debug in development builds and Info in release builds. Restart the agent and daemon; refreshing the browser does not apply the change.
 
 When `FLUXDOWN_DATA_DIR` is not set, the data directory is auto-detected the same way the desktop app does:
 

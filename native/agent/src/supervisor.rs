@@ -145,10 +145,15 @@ impl DaemonSupervisor {
                 Err(error) => tracing::warn!(error = %error, "failed to reap fluxdownd"),
             }
             let previous = streak.load(Ordering::Acquire);
-            streak.store(
-                next_crash_streak(previous, success, spawned_at.elapsed()),
-                Ordering::Release,
-            );
+            let current = next_crash_streak(previous, success, spawned_at.elapsed());
+            streak.store(current, Ordering::Release);
+            if previous < CRASH_LOOP_THRESHOLD && current >= CRASH_LOOP_THRESHOLD {
+                tracing::error!(
+                    generation,
+                    consecutive_exits = current,
+                    "fluxdownd entered a crash loop"
+                );
+            }
             let mut state = supervisor_state.lock().await;
             if state.generation == generation {
                 state.running = false;

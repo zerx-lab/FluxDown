@@ -230,6 +230,8 @@ object SettingsCatalog {
         pref("download.silent_auto_category", bool, "true"),
         pref("download.silent_skip_selection", bool, "false"),
         pref("download.keep_awake", bool, "false"),
+        // 主机诊断（本机，不同步）
+        pref("diagnostics.log_level", choice(listOf("auto", "debug", "info", "warn", "error")), "auto"),
     )
 
     private val index: Map<String, SettingField> = (daemonFields + preferenceFields).associateBy { it.key }

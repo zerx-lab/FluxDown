@@ -131,6 +131,68 @@ async fn handle_task_panic(
     persist_task_failure(task_id, msg, db, progress_tx).await;
 }
 
+const MAX_DOWNLOAD_FAILURE_REASON_BYTES: usize = 512;
+
+fn download_failure_reason(message: &str) -> String {
+    static LINKS: std::sync::LazyLock<Result<regex::Regex, regex::Error>> =
+        std::sync::LazyLock::new(|| {
+            regex::Regex::new(r#"(?i)(?:[a-z][a-z0-9+.-]*://|magnet:\?)[^\s<>"']+"#)
+        });
+    let links = match &*LINKS {
+        Ok(links) => links,
+        // Never log the original reason when link redaction is unavailable.
+        Err(_) => return "failure reason withheld: link redaction unavailable".to_owned(),
+    };
+    // Redact before truncation. Download errors may embed signed links with
+    // arbitrary parameter names, so do not keep any part of a matched link.
+    let mut reason = crate::logger::sanitize_log_str(message);
+    if let std::borrow::Cow::Owned(redacted) = links.replace_all(&reason, "[LINK REDACTED]") {
+        reason = redacted;
+    }
+    let unsafe_char = |ch: char| {
+        ch.is_control()
+            || matches!(
+                ch,
+                '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+            )
+    };
+    if reason.contains(unsafe_char) {
+        reason = reason.replace(unsafe_char, " ");
+    }
+    if reason.len() > MAX_DOWNLOAD_FAILURE_REASON_BYTES {
+        let mut end = MAX_DOWNLOAD_FAILURE_REASON_BYTES - '…'.len_utf8();
+        while !reason.is_char_boundary(end) {
+            end -= 1;
+        }
+        reason.truncate(end);
+        reason.push('…');
+    }
+    reason
+}
+
+fn log_terminal_task_failure(task: &crate::model::TaskInfo, generation: u64, auto_retries: u32) {
+    let transport_failure = crate::net_failure::tag_of(&task.error_message);
+    let http_status = extract_http_status(&task.error_message);
+    let protocol = if is_bt_url(&task.url) {
+        "bt"
+    } else if is_ed2k_url(&task.url) {
+        "ed2k"
+    } else {
+        crate::intercept::protocol_kind(&task.url, false).as_str()
+    };
+    tracing::error!(
+        task_id = %task.task_id,
+        protocol,
+        auto_retries,
+        downloaded_bytes = task.downloaded_bytes,
+        generation,
+        ?transport_failure,
+        ?http_status,
+        reason = %download_failure_reason(&task.error_message),
+        "download failed"
+    );
+}
+
 async fn persist_task_failure(
     task_id: &str,
     msg: String,
@@ -1794,6 +1856,7 @@ async fn probe_start_meta(params: &mut DownloadParams) -> crate::meta_prober::Pr
             ) => r,
         };
     }
+    let probe_started = std::time::Instant::now();
     let resolved = if crate::auto_probe::applies(params) {
         // Auto 多路径：起飞路径不及时应答 / 断在传输层时并行放出备选路径，
         // 胜出路径就地接管 params（client、代理配置、路由上下文与标签）。
@@ -1823,6 +1886,12 @@ async fn probe_start_meta(params: &mut DownloadParams) -> crate::meta_prober::Pr
     };
     match resolved {
         Ok((info, adapted, held)) => {
+            tracing::info!(
+                task_id = %params.task_id,
+                elapsed_ms = probe_started.elapsed().as_millis(),
+                outcome = "ready",
+                "HTTP probe completed"
+            );
             if let Some(adapted_spec) = &adapted {
                 downloader::persist_adapted_spec(&params.db, &params.task_id, adapted_spec).await;
             }
@@ -1835,10 +1904,12 @@ async fn probe_start_meta(params: &mut DownloadParams) -> crate::meta_prober::Pr
             meta
         }
         Err(error) => {
-            log_info!(
-                "[download] task {} prelude probe failed: {}",
-                params.task_id,
-                error
+            tracing::info!(
+                task_id = %params.task_id,
+                elapsed_ms = probe_started.elapsed().as_millis(),
+                transport_failure = ?crate::net_failure::classify_download_error(&error),
+                outcome = "failed",
+                "HTTP probe completed"
             );
             params.preprobed = Some(Err(error));
             crate::meta_prober::ProbedMeta::default()
@@ -3992,6 +4063,46 @@ fn apply_resolve_to_queued(queued: &mut QueuedTask, res: crate::plugin::ResolveR
     };
     queued.range_supported = res.range_supported;
 }
+#[cfg(feature = "plugins")]
+#[derive(Debug)]
+pub enum PluginRetryEvent {
+    Retry { task_id: String, delay_ms: u64 },
+    FailurePending { task_id: String, generation: u64 },
+    FailureSettled { task_id: String, generation: u64 },
+}
+
+// Normal hooks have a 5s budget. Several callbacks (or a long-running
+// authorized hook) can exceed this deadline; it is diagnostic only.
+#[cfg(feature = "plugins")]
+const PLUGIN_FAILURE_DIAGNOSTIC_DELAY: std::time::Duration = std::time::Duration::from_secs(10);
+
+#[cfg(feature = "plugins")]
+struct PendingFailureDiagnostic {
+    generation: u64,
+    warned: bool,
+    observer: JoinHandle<()>,
+}
+
+#[cfg(feature = "plugins")]
+impl Drop for PendingFailureDiagnostic {
+    fn drop(&mut self) {
+        // The observer owns join handles, not the callbacks: aborting it
+        // detaches those tasks, leaving their ability to request retries intact.
+        self.observer.abort();
+    }
+}
+
+#[cfg(feature = "plugins")]
+fn log_pending_task_failure(task: &TaskInfo, generation: u64, trigger: &'static str) {
+    tracing::warn!(
+        task_id = %task.task_id,
+        generation,
+        trigger,
+        reason = %download_failure_reason(&task.error_message),
+        "download attempt failed; plugin retry decision pending"
+    );
+}
+
 pub struct DownloadManager {
     db: Db,
     client: Client,
@@ -4260,9 +4371,11 @@ pub struct DownloadManager {
     resolve_rx: Option<mpsc::UnboundedReceiver<ResolveOutcome>>,
     /// 插件 onError 命令式重试意图通道（bridge → actor `plugin_request_retry`）。
     #[cfg(feature = "plugins")]
-    plugin_retry_tx: mpsc::UnboundedSender<(String, u64)>,
+    plugin_retry_tx: mpsc::UnboundedSender<PluginRetryEvent>,
     #[cfg(feature = "plugins")]
-    plugin_retry_rx: Option<mpsc::UnboundedReceiver<(String, u64)>>,
+    plugin_retry_rx: Option<mpsc::UnboundedReceiver<PluginRetryEvent>>,
+    #[cfg(feature = "plugins")]
+    pending_failure_diagnostics: HashMap<String, PendingFailureDiagnostic>,
     /// resolve 等待中的任务（start 携 QueuedTask，resume 为标记）。
     #[cfg(feature = "plugins")]
     pending_resolve: HashMap<String, PendingResolve>,
@@ -4462,6 +4575,8 @@ impl DownloadManager {
             #[cfg(feature = "plugins")]
             plugin_retry_rx: Some(plugin_retry_rx),
             #[cfg(feature = "plugins")]
+            pending_failure_diagnostics: HashMap::new(),
+            #[cfg(feature = "plugins")]
             pending_resolve: HashMap::new(),
             #[cfg(feature = "plugins")]
             resume_applied: HashMap::new(),
@@ -4543,7 +4658,7 @@ impl DownloadManager {
 
     /// 暴露 plugin_retry_tx 供 bridge 构造（onError 命令式重试意图通道）。
     #[cfg(feature = "plugins")]
-    pub fn plugin_retry_sender(&self) -> mpsc::UnboundedSender<(String, u64)> {
+    pub fn plugin_retry_sender(&self) -> mpsc::UnboundedSender<PluginRetryEvent> {
         self.plugin_retry_tx.clone()
     }
 
@@ -4555,7 +4670,7 @@ impl DownloadManager {
 
     /// 交出 plugin_retry 接收端给 actor loop。
     #[cfg(feature = "plugins")]
-    pub fn take_plugin_retry_rx(&mut self) -> Option<mpsc::UnboundedReceiver<(String, u64)>> {
+    pub fn take_plugin_retry_rx(&mut self) -> Option<mpsc::UnboundedReceiver<PluginRetryEvent>> {
         self.plugin_retry_rx.take()
     }
 
@@ -5652,6 +5767,121 @@ impl DownloadManager {
         if count != self.retry_pending_reported {
             self.retry_pending_reported = count;
             self.sink.emit(EngineEvent::RetryPendingChanged { count });
+        }
+    }
+
+    #[cfg(feature = "plugins")]
+    fn defer_failure_diagnostic(
+        &mut self,
+        task_id: &str,
+        generation: u64,
+        work: Vec<JoinHandle<()>>,
+        deadline: tokio::time::Instant,
+    ) {
+        let tx = self.plugin_retry_tx.clone();
+        let worker_task_id = task_id.to_owned();
+        // Observe from the engine runtime, even if the plugin runtime stalls.
+        let observer = tokio::spawn(async move {
+            let callbacks = async {
+                for job in work {
+                    if let Err(error) = job.await
+                        && error.is_panic()
+                    {
+                        tracing::warn!("plugin failure callback panicked");
+                    }
+                }
+            };
+            tokio::pin!(callbacks);
+            if tokio::time::timeout_at(deadline, &mut callbacks)
+                .await
+                .is_err()
+            {
+                if tx
+                    .send(PluginRetryEvent::FailurePending {
+                        task_id: worker_task_id.clone(),
+                        generation,
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+                callbacks.await;
+            }
+            // A callback's retry send precedes its completion. Keep settlement
+            // after all such sends, even if the diagnostic deadline expired.
+            if tx
+                .send(PluginRetryEvent::FailureSettled {
+                    task_id: worker_task_id,
+                    generation,
+                })
+                .is_err()
+            {
+                tracing::debug!("plugin retry receiver closed");
+            }
+        });
+        self.pending_failure_diagnostics.insert(
+            task_id.to_owned(),
+            PendingFailureDiagnostic {
+                generation,
+                warned: false,
+                observer,
+            },
+        );
+    }
+
+    #[cfg(feature = "plugins")]
+    async fn current_failure_for_diagnostic(&self, task_id: &str) -> Option<TaskInfo> {
+        if self.active_tasks.contains_key(task_id) || self.retry_scheduled.contains_key(task_id) {
+            return None;
+        }
+        match self.db.load_task_by_id(task_id).await {
+            Ok(task) => task
+                .filter(|task| task.status == 4 && task.error_message != CANCELLED_ERROR_MESSAGE),
+            Err(error) => {
+                crate::logger::report_error(
+                    "download",
+                    "load task failure for diagnostics",
+                    &error,
+                );
+                None
+            }
+        }
+    }
+
+    #[cfg(feature = "plugins")]
+    pub async fn handle_plugin_retry_event(&mut self, event: PluginRetryEvent) {
+        let (task_id, generation, settled) = match event {
+            PluginRetryEvent::Retry { task_id, delay_ms } => {
+                self.plugin_request_retry(&task_id, delay_ms).await;
+                return;
+            }
+            PluginRetryEvent::FailurePending {
+                task_id,
+                generation,
+            } => (task_id, generation, false),
+            PluginRetryEvent::FailureSettled {
+                task_id,
+                generation,
+            } => (task_id, generation, true),
+        };
+        if !self
+            .pending_failure_diagnostics
+            .get(&task_id)
+            .is_some_and(|pending| pending.generation == generation && (settled || !pending.warned))
+        {
+            return;
+        }
+        if settled {
+            self.pending_failure_diagnostics.remove(&task_id);
+        }
+        if let Some(task) = self.current_failure_for_diagnostic(&task_id).await {
+            if settled {
+                let retries = self.auto_retry_counts.get(&task_id).copied().unwrap_or(0);
+                log_terminal_task_failure(&task, generation, retries);
+            } else if let Some(pending) = self.pending_failure_diagnostics.get_mut(&task_id) {
+                log_pending_task_failure(&task, generation, "callback_deadline");
+                pending.warned = true;
+            }
         }
     }
 
@@ -8386,6 +8616,8 @@ impl DownloadManager {
         // 仅在 generation 匹配（确实是这一轮 spawn 失败）时触发，防止 stale 信号误触发。
         let max_retries = self.max_auto_retries;
         if generation_matched && let Ok(Some(task)) = self.db.load_task_by_id(task_id).await {
+            #[cfg(feature = "plugins")]
+            self.pending_failure_diagnostics.remove(task_id);
             // 重复种子占位任务：引擎在 add 前 / AlreadyManaged 兜底时打了
             // DB 标记（见 bt_downloader::mark_duplicate_torrent）。不算失败
             // ——删除占位行（不进自动重试 / 插件 onError / task.failed
@@ -8440,6 +8672,10 @@ impl DownloadManager {
             }
             // 本轮是否已排程恢复——决定 `task.failed` 是否应立即发出。
             let mut retry_pending = false;
+            let terminal_failure =
+                task.status == 4 && task.error_message != CANCELLED_ERROR_MESSAGE;
+            #[cfg(feature = "plugins")]
+            let mut terminal_failure = terminal_failure;
             let manual_resume = requires_manual_resume(&task.error_message);
             if task.status == 4
                 && !manual_resume
@@ -8535,11 +8771,11 @@ impl DownloadManager {
                         }
                         AutoFailoverTarget::Direct => "直连",
                     };
-                    log_info!(
-                        "[manager] auto-proxy: task {} host {} 传输失败，立即换{}重试（每链路一次，不占通用重试配额）",
+                    tracing::debug!(
                         task_id,
                         host,
-                        label
+                        route = label,
+                        "transport failed; retrying on alternate route"
                     );
                     self.auto_failover_pending
                         .insert(task_id.to_string(), target);
@@ -8578,17 +8814,12 @@ impl DownloadManager {
                     let delay_secs = base
                         .saturating_mul(attempt as u64)
                         .min(MAX_AUTO_RETRY_DELAY_SECS);
-                    log_info!(
-                        "[manager] auto-retry {}/{} for task {} in {}s (error: {})",
-                        attempt,
-                        if max_retries == -1 {
-                            "∞".to_string()
-                        } else {
-                            max_retries.to_string()
-                        },
+                    tracing::debug!(
                         task_id,
+                        attempt,
+                        max_retries,
                         delay_secs,
-                        task.error_message
+                        "task retry scheduled"
                     );
                     let tx = self.retry_tx.clone();
                     let tid = task_id.to_string();
@@ -8601,12 +8832,6 @@ impl DownloadManager {
                     });
                     retry_pending = true;
                     self.retry_schedule(task_id, task.queue_id.clone());
-                } else {
-                    log_info!(
-                        "[manager] auto-retry exhausted for task {} ({} attempts), staying in error",
-                        task_id,
-                        max_retries
-                    );
                 }
             }
             // 跳过采纳的已有文件不是本任务产物：不打来源标记、不触发插件 onDone
@@ -8685,12 +8910,13 @@ impl DownloadManager {
                     })
                     .await;
                 } else if task.status == 4 {
-                    pm.notify(crate::plugin::PluginEvent::Error {
-                        task_id: task_id.to_string(),
-                        url: task.url.clone(),
-                        message: task.error_message.clone(),
-                    })
-                    .await;
+                    let mut work = pm
+                        .track_failure_notification(crate::plugin::PluginEvent::Error {
+                            task_id: task_id.to_string(),
+                            url: task.url.clone(),
+                            message: task.error_message.clone(),
+                        })
+                        .await;
                     if !manual_resume && !is_bt_url(&task.url) && !is_ed2k_url(&task.url) {
                         let ic = self.task_interceptor(task_id, &task.url, &task.url).await;
                         if crate::intercept::wants(
@@ -8714,7 +8940,7 @@ impl DownloadManager {
                                 task_id.to_string(),
                             );
                             let retry_task_id = task_id.to_string();
-                            pm.runtime_handle().spawn(async move {
+                            work.push(pm.runtime_handle().spawn(async move {
                                 let delay = crate::intercept::drive::run_failed(
                                     ic.as_ref(),
                                     &notes,
@@ -8729,7 +8955,13 @@ impl DownloadManager {
                                         .lock()
                                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                                         .insert(retry_task_id.clone());
-                                    if retry_tx.send((retry_task_id.clone(), delay)).is_err() {
+                                    if retry_tx
+                                        .send(PluginRetryEvent::Retry {
+                                            task_id: retry_task_id.clone(),
+                                            delay_ms: delay,
+                                        })
+                                        .is_err()
+                                    {
                                         retry_marks
                                             .lock()
                                             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -8737,10 +8969,23 @@ impl DownloadManager {
                                         tracing::debug!("plugin retry receiver closed");
                                     }
                                 }
-                            });
+                            }));
                         }
                     }
+                    if terminal_failure && !retry_pending && !work.is_empty() {
+                        terminal_failure = false;
+                        self.defer_failure_diagnostic(
+                            task_id,
+                            generation,
+                            work,
+                            tokio::time::Instant::now() + PLUGIN_FAILURE_DIAGNOSTIC_DELAY,
+                        );
+                    }
                 }
+            }
+            if terminal_failure && !retry_pending {
+                let retries = self.auto_retry_counts.get(task_id).copied().unwrap_or(0);
+                log_terminal_task_failure(&task, generation, retries);
             }
 
             // 文件哈希：校验和校验通过时下载器已把哈希写进库，但完成只经进度帧发布（不含
@@ -9220,6 +9465,8 @@ impl DownloadManager {
                         );
                         match self.db.delete_task(tid).await {
                             Ok(sources) => {
+                                #[cfg(feature = "plugins")]
+                                self.pending_failure_diagnostics.remove(tid);
                                 self.broadcast_deleted_rss_sources(sources).await;
                                 orphans.swap(removed, index);
                                 removed += 1;
@@ -11601,12 +11848,16 @@ impl DownloadManager {
             self.resolved_egress.remove(&task_id);
             // Lazily initialise the shared BT session.
             if let Err(e) = self.ensure_bt_session().await {
-                crate::log_error!("[manager] failed to init BT session: {}", e);
-                if let Err(db_error) = self
-                    .db
-                    .update_task_status(&task_id, 4, &e.to_string())
-                    .await
-                {
+                let message = e.to_string();
+                tracing::error!(
+                    task_id,
+                    generation = spawn_gen,
+                    protocol = "bt",
+                    stage = "session_start",
+                    reason = %download_failure_reason(&message),
+                    "download failed"
+                );
+                if let Err(db_error) = self.db.update_task_status(&task_id, 4, &message).await {
                     crate::logger::report_error(
                         "download-manager",
                         "persist BT session initialization error",
@@ -11620,7 +11871,7 @@ impl DownloadManager {
                         downloaded_bytes: 0,
                         total_bytes: 0,
                         status: 4,
-                        error_message: e.to_string(),
+                        error_message: message,
                         file_name: String::new(),
                         segment_details: None,
                         ..Default::default()
@@ -13054,6 +13305,8 @@ impl DownloadManager {
                     crate::logger::report_error("download-manager", "persist task state", &error);
                     return;
                 }
+                #[cfg(feature = "plugins")]
+                self.pending_failure_diagnostics.remove(task_id);
                 // Notify the host: task is now queued (pending), not actively resuming.
                 // Without this signal, the UI keeps all tasks stuck in "resuming" status
                 // even though only max_concurrent are actually downloading.
@@ -13109,6 +13362,8 @@ impl DownloadManager {
 
     /// Internal: actually spawn the resume (no concurrency check).
     async fn do_resume_task(&mut self, task_id: &str) {
+        #[cfg(feature = "plugins")]
+        self.pending_failure_diagnostics.remove(task_id);
         // 插件惰性解析守卫（体首，协议判定前）：命中 resolver 且非再入 → off-actor
         // resolve 后经 resume_applied 再入；对称占位防 resumeAll 并发双 resolve。
         // `resume_applied` 条目无条件在此取走：resolve 窗口内插件被卸载会清空 DB 绑定，
@@ -13429,9 +13684,16 @@ impl DownloadManager {
             self.resolved_egress.remove(task_id);
             // Lazily initialise the shared BT session.
             if let Err(e) = self.ensure_bt_session().await {
-                crate::log_error!("[manager] failed to init BT session for resume: {}", e);
-                if let Err(db_error) = self.db.update_task_status(task_id, 4, &e.to_string()).await
-                {
+                let message = e.to_string();
+                tracing::error!(
+                    task_id,
+                    generation = spawn_gen,
+                    protocol = "bt",
+                    stage = "session_resume",
+                    reason = %download_failure_reason(&message),
+                    "download failed"
+                );
+                if let Err(db_error) = self.db.update_task_status(task_id, 4, &message).await {
                     crate::logger::report_error(
                         "download-manager",
                         "persist resumed BT session initialization error",
@@ -13445,7 +13707,7 @@ impl DownloadManager {
                         downloaded_bytes: 0,
                         total_bytes: 0,
                         status: 4,
-                        error_message: e.to_string(),
+                        error_message: message,
                         file_name: String::new(),
                         segment_details: None,
                         ..Default::default()
@@ -14374,6 +14636,8 @@ impl DownloadManager {
                 return Err(DeleteTaskError::Record(error.into()));
             }
         }
+        #[cfg(feature = "plugins")]
+        self.pending_failure_diagnostics.remove(task_id);
         #[cfg(feature = "bt")]
         if let Some(bt) = &self.bt_session {
             bt.clear_web_seeds(task_id).await;
@@ -14633,6 +14897,8 @@ impl DownloadManager {
                     }
                     for task_id in &deleted {
                         self.replayable_requests.remove(task_id);
+                        #[cfg(feature = "plugins")]
+                        self.pending_failure_diagnostics.remove(task_id);
                         #[cfg(feature = "bt")]
                         if let Some(bt) = &self.bt_session {
                             bt.clear_web_seeds(task_id).await;
@@ -16275,6 +16541,17 @@ impl DownloadManager {
 
     /// 取消所有在途任务并等待下载 task 与 BT/DHT 持久化退出。
     pub async fn shutdown(&mut self) {
+        // The actor stops consuming plugin retry events when shutdown begins.
+        // Diagnose unresolved failures without waiting for, or classifying
+        // as terminal, a retry decision the actor has not processed.
+        #[cfg(feature = "plugins")]
+        for (task_id, pending) in std::mem::take(&mut self.pending_failure_diagnostics) {
+            if !pending.warned
+                && let Some(task) = self.current_failure_for_diagnostic(&task_id).await
+            {
+                log_pending_task_failure(&task, pending.generation, "shutdown");
+            }
+        }
         // 做种时长平时只在状态迁移/顺带写/30 分钟兜底时落库，正常关机在此结算。
         #[cfg(feature = "bt")]
         self.flush_seed_times().await;
@@ -19305,6 +19582,271 @@ mod tests {
             );
         }
         (mgr, retry_rx)
+    }
+
+    #[cfg(feature = "plugins")]
+    #[derive(Clone, Default)]
+    struct FailureDiagnosticLog(Arc<Mutex<Vec<u8>>>);
+
+    #[cfg(feature = "plugins")]
+    impl std::io::Write for FailureDiagnosticLog {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("log buffer").extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "plugins")]
+    impl FailureDiagnosticLog {
+        fn capture(&self) -> tracing::subscriber::DefaultGuard {
+            let log = self.clone();
+            tracing::subscriber::set_default(
+                tracing_subscriber::fmt()
+                    .with_writer(move || log.clone())
+                    .with_max_level(tracing::Level::WARN)
+                    .with_ansi(false)
+                    .with_target(false)
+                    .without_time()
+                    .finish(),
+            )
+        }
+
+        fn text(&self) -> String {
+            std::str::from_utf8(&self.0.lock().expect("log buffer"))
+                .expect("UTF-8 log")
+                .to_owned()
+        }
+    }
+
+    #[cfg(feature = "plugins")]
+    async fn diagnostic_manager(
+        tasks: &[(&str, &str)],
+    ) -> (DownloadManager, mpsc::Receiver<String>) {
+        let (mgr, retry_rx) = manager_with_retry_pending(&[]).await;
+        for &(id, reason) in tasks {
+            mgr.db
+                .insert_task(
+                    id,
+                    "https://example.com/file",
+                    "file",
+                    "",
+                    4,
+                    1,
+                    "",
+                    "",
+                    "",
+                    0,
+                )
+                .await
+                .expect("insert task");
+            mgr.db
+                .update_task_status(id, 4, reason)
+                .await
+                .expect("persist failure reason");
+        }
+        (mgr, retry_rx)
+    }
+
+    #[cfg(feature = "plugins")]
+    async fn next_diagnostic_event(
+        rx: &mut mpsc::UnboundedReceiver<PluginRetryEvent>,
+    ) -> PluginRetryEvent {
+        tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("failure observer responded")
+            .expect("plugin event")
+    }
+
+    #[cfg(feature = "plugins")]
+    #[tokio::test]
+    async fn download_failure_diagnostics_warn_then_log_terminal_result_after_callback_timeout() {
+        let reason = format!(
+            "could not allocate output: no space left on device\r\n\
+             Authorization: Bearer fixture-auth\n\
+             https://example.com/file?unusual=fixture-link\u{1b}\u{2028} {} private-tail",
+            "界".repeat(200)
+        );
+        let (mut mgr, _retry_rx) = diagnostic_manager(&[("failed-task", &reason)]).await;
+        let mut events = mgr.take_plugin_retry_rx().expect("plugin events");
+        let log = FailureDiagnosticLog::default();
+        let _subscriber = log.capture();
+
+        let (release, held) = oneshot::channel::<()>();
+        mgr.defer_failure_diagnostic(
+            "failed-task",
+            7,
+            vec![
+                tokio::spawn(async {}),
+                tokio::spawn(async move {
+                    held.await.expect("release callback");
+                    // Like an ordinarily timed-out plugin hook, this completes
+                    // without a retry after its own timeout is handled.
+                    assert!(
+                        tokio::time::timeout_at(
+                            tokio::time::Instant::now(),
+                            std::future::pending::<()>(),
+                        )
+                        .await
+                        .is_err()
+                    );
+                }),
+            ],
+            tokio::time::Instant::now(),
+        );
+        assert!(!log.text().contains("download failed"));
+        mgr.handle_plugin_retry_event(next_diagnostic_event(&mut events).await)
+            .await;
+        let pending = log.text();
+        assert!(pending.contains("WARN"), "{pending}");
+        assert!(
+            pending.contains("plugin retry decision pending"),
+            "{pending}"
+        );
+        assert!(pending.contains("callback_deadline"), "{pending}");
+        assert!(!pending.contains("download failed"), "{pending}");
+
+        release.send(()).expect("callback is still alive");
+        mgr.handle_plugin_retry_event(next_diagnostic_event(&mut events).await)
+            .await;
+        mgr.handle_plugin_retry_event(PluginRetryEvent::FailureSettled {
+            task_id: "failed-task".to_owned(),
+            generation: 7,
+        })
+        .await;
+        let logs = log.text();
+        let terminal: Vec<_> = logs
+            .lines()
+            .filter(|line| line.contains("download failed"))
+            .collect();
+        assert_eq!(terminal.len(), 1, "{logs}");
+        assert!(terminal[0].contains("ERROR"), "{logs}");
+        assert!(terminal[0].contains("no space left on device"), "{logs}");
+        assert!(terminal[0].contains("Authorization: [REDACTED]"), "{logs}");
+        assert!(terminal[0].contains("[LINK REDACTED]"), "{logs}");
+        assert!(terminal[0].contains('…'), "{logs}");
+        for private in [
+            "fixture-auth",
+            "fixture-link",
+            "private-tail",
+            "\u{1b}",
+            "\u{2028}",
+        ] {
+            assert!(!logs.contains(private), "{logs}");
+        }
+        assert_eq!(logs.lines().count(), 2, "{logs}");
+        assert!(download_failure_reason(&reason).len() <= MAX_DOWNLOAD_FAILURE_REASON_BYTES);
+    }
+
+    #[cfg(feature = "plugins")]
+    #[tokio::test]
+    async fn download_failure_diagnostics_keep_late_plugin_retry_and_suppress_terminal_error() {
+        let (mut mgr, mut retries) =
+            diagnostic_manager(&[("retry-task", "server rejected probe")]).await;
+        let mut events = mgr.take_plugin_retry_rx().expect("plugin events");
+        let sender = mgr.plugin_retry_sender();
+        let log = FailureDiagnosticLog::default();
+        let _subscriber = log.capture();
+
+        let (release, held) = oneshot::channel::<()>();
+        mgr.defer_failure_diagnostic(
+            "retry-task",
+            9,
+            vec![tokio::spawn(async move {
+                held.await.expect("release callback");
+                sender
+                    .send(PluginRetryEvent::Retry {
+                        task_id: "retry-task".to_owned(),
+                        delay_ms: 0,
+                    })
+                    .expect("deliver onError retry");
+            })],
+            tokio::time::Instant::now(),
+        );
+        mgr.handle_plugin_retry_event(next_diagnostic_event(&mut events).await)
+            .await;
+        assert!(log.text().contains("plugin retry decision pending"));
+        release.send(()).expect("callback is still alive");
+
+        for _ in 0..2 {
+            mgr.handle_plugin_retry_event(next_diagnostic_event(&mut events).await)
+                .await;
+        }
+        let task_id = tokio::time::timeout(Duration::from_secs(5), retries.recv())
+            .await
+            .expect("scheduled retry");
+        assert_eq!(task_id.as_deref(), Some("retry-task"));
+        let logs = log.text();
+        assert_eq!(
+            logs.matches("plugin retry decision pending").count(),
+            1,
+            "{logs}"
+        );
+        assert!(!logs.contains("download failed"), "{logs}");
+    }
+
+    #[cfg(feature = "plugins")]
+    #[tokio::test]
+    async fn download_failure_diagnostics_flush_unreported_failures_and_forget_deleted_tasks() {
+        let (mut mgr, _retries) = diagnostic_manager(&[
+            ("already-warned", "first failure"),
+            ("at-shutdown", "second failure"),
+            ("deleted-one", "deleted failure"),
+            ("deleted-batch", "deleted batch failure"),
+        ])
+        .await;
+        let mut events = mgr.take_plugin_retry_rx().expect("plugin events");
+        let log = FailureDiagnosticLog::default();
+        let _subscriber = log.capture();
+
+        let now = tokio::time::Instant::now();
+        for (task_id, deadline) in [
+            ("already-warned", now),
+            ("at-shutdown", now + Duration::from_secs(3600)),
+            ("deleted-one", now + Duration::from_secs(3600)),
+            ("deleted-batch", now + Duration::from_secs(3600)),
+        ] {
+            mgr.defer_failure_diagnostic(
+                task_id,
+                1,
+                vec![tokio::spawn(std::future::pending::<()>())],
+                deadline,
+            );
+        }
+        mgr.handle_plugin_retry_event(next_diagnostic_event(&mut events).await)
+            .await;
+        mgr.delete_task("deleted-one", false)
+            .await
+            .expect("delete one");
+        let batch = mgr
+            .delete_tasks_batch(&["deleted-batch".to_owned()], false)
+            .await
+            .expect("delete batch");
+        assert_eq!((batch.deleted, batch.failed), (1, 0));
+        assert_eq!(mgr.pending_failure_diagnostics.len(), 2);
+
+        mgr.shutdown().await;
+        assert!(mgr.pending_failure_diagnostics.is_empty());
+        let logs = log.text();
+        assert_eq!(
+            logs.matches("plugin retry decision pending").count(),
+            2,
+            "{logs}"
+        );
+        for expected in [
+            "already-warned",
+            "at-shutdown",
+            "second failure",
+            "shutdown",
+        ] {
+            assert!(logs.contains(expected), "{logs}");
+        }
+        for unexpected in ["deleted-one", "deleted-batch", "download failed"] {
+            assert!(!logs.contains(unexpected), "{logs}");
+        }
     }
 
     /// 「下载完成后计算哈希」：完成的单文件任务算出哈希并经回流写回、发布任务行；

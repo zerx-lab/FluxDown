@@ -1076,7 +1076,7 @@ impl SharedBtSession {
             let mut last_listener_error = None;
             for port in port_start..=port_end {
                 if let Err(error) = probe_listener_port(port) {
-                    log_info!("[BT] listener port {port} unavailable: {error}");
+                    tracing::debug!("[BT] listener port {port} unavailable: {error}");
                     last_listener_error = Some(error.into());
                     continue;
                 }
@@ -1088,7 +1088,7 @@ impl SharedBtSession {
                         Ok(session) => return Ok(session),
                         Err(error) if !ipv4_only || is_retryable_listener_error(&error) => {
                             let family = if ipv4_only { "IPv4" } else { "dual-stack" };
-                            log_info!(
+                            tracing::debug!(
                                 "[BT] session candidate {family} port {port} unavailable: {error:#}"
                             );
                             last_listener_error = Some(error);
@@ -1122,9 +1122,8 @@ impl SharedBtSession {
         let session = match start_session(enable_dht) {
             Ok(s) => s,
             Err(first) if enable_dht => {
-                log_error!(
-                    "[BT] session init failed with persisted DHT: {first:#} — dropping {} and retrying",
-                    dht_config_path.display()
+                tracing::debug!(
+                    "[BT] session init failed with persisted DHT; resetting cache: {first:#}"
                 );
                 if let Err(error) = std::fs::remove_file(&dht_config_path)
                     && error.kind() != std::io::ErrorKind::NotFound
@@ -1141,12 +1140,13 @@ impl SharedBtSession {
                         s
                     }
                     Err(second) => {
-                        log_error!(
-                            "[BT] session init still failing with a fresh DHT: {second:#} — falling back to DHT-off (trackers + PEX only)"
-                        );
-                        start_session(false).map_err(|e| {
+                        let session = start_session(false).map_err(|e| {
                             DownloadError::Other(format!("BT session init failed: {e:#}"))
-                        })?
+                        })?;
+                        log_warn!(
+                            "[BT] session started without DHT after initialization failed: {second:#}"
+                        );
+                        session
                     }
                 }
             }
@@ -6456,6 +6456,10 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<BtInnerExit, DownloadErro
     // periodic summary at PROGRESS_LOG_INTERVAL.
     let mut last_progress_log: Option<Instant> = None;
     let mut last_logged_status: i32 = -1;
+    let mut previous_connections = None;
+    let pex_allowed = handle
+        .with_metadata(|metadata| !metadata.info.info().private)
+        .ok();
     let mut initialization_work = None;
 
     loop {
@@ -6542,7 +6546,7 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<BtInnerExit, DownloadErro
                 return Err(DownloadError::Cancelled);
             }
             let msg = format!("BT error: {err}");
-            crate::log_error!("[BT] task={} error: {}", short_id(&task_id), &msg);
+            tracing::debug!(task_id = short_id(&task_id), "BT transfer attempt failed");
             if let Err(db_error) = db.update_task_status(&task_id, STATUS_ERROR, &msg).await {
                 crate::logger::report_error(
                     "bt-download",
@@ -7429,6 +7433,65 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<BtInnerExit, DownloadErro
                     peers_seen,
                     peers_dead
                 );
+                if tracing::enabled!(tracing::Level::INFO) {
+                    let mut working = 0;
+                    let mut peers_reported = None;
+                    for tracker in handle.trackers() {
+                        if matches!(tracker.state, librqbit::TrackerState::Working) {
+                            working += 1;
+                            if let Some(peers) = tracker.peers_received {
+                                peers_reported =
+                                    Some(peers_reported.unwrap_or(0_u64) + u64::from(peers));
+                            }
+                        }
+                    }
+                    let dht_nodes = session.get_dht().map(|dht| {
+                        let stats = dht.stats();
+                        (stats.routing_table_size, stats.routing_table_size_v6)
+                    });
+                    let connections = session.stats_snapshot().connections;
+                    let counters = [
+                        connections.tcp.v4,
+                        connections.tcp.v6,
+                        connections.utp.v4,
+                        connections.utp.v6,
+                        connections.socks.v4,
+                        connections.socks.v6,
+                        connections.http_proxy.v4,
+                        connections.http_proxy.v6,
+                        connections.i2p,
+                    ]
+                    .into_iter()
+                    .fold((0_u64, 0_u64), |(success, failure), count| {
+                        (
+                            success.saturating_add(count.successes),
+                            failure.saturating_add(count.errors),
+                        )
+                    });
+                    let session_transport_window = previous_connections.replace(counters).map(
+                        |(success, failure): (u64, u64)| {
+                            (
+                                counters.0.saturating_sub(success),
+                                counters.1.saturating_sub(failure),
+                            )
+                        },
+                    );
+                    let session_transport_fail_rate =
+                        session_transport_window.and_then(|(success, failure)| {
+                            let completed = success.saturating_add(failure);
+                            (completed > 0).then(|| failure as f64 / completed as f64)
+                        });
+                    tracing::info!(
+                        task_id = short_id(&task_id),
+                        working_trackers = working,
+                        ?dht_nodes,
+                        ?pex_allowed,
+                        ?session_transport_window,
+                        ?session_transport_fail_rate,
+                        latest_peer_sum = ?peers_reported,
+                        "BT tracker discovery summary"
+                    );
+                }
                 last_progress_log = Some(Instant::now());
                 last_logged_status = status_code;
             }

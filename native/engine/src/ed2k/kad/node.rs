@@ -24,7 +24,6 @@ use super::proto::{self, Contact, KadId};
 use crate::downloader::DownloadError;
 use crate::ed2k::server::PeerAddr;
 use crate::ed2k::status::{KadLive, KadNodeOrigin, KadNodeRow, KadNodeState, KadPhase, KadView};
-use crate::logger::log_info;
 
 /// 每轮 FindNode 并发查询的节点数。
 const BRANCH: usize = 5;
@@ -198,16 +197,14 @@ async fn handshake_round(
             Ok(_) => send_ok += 1,
             Err(_) => send_err += 1,
         }
-        if let Err(error) = socket.send_to(&hello_req, SocketAddr::V4(*addr)).await {
-            tracing::debug!(%addr, %error, "Kad hello send failed; continuing with other nodes");
+        if socket
+            .send_to(&hello_req, SocketAddr::V4(*addr))
+            .await
+            .is_err()
+        {
+            tracing::debug!("Kad hello send failed; continuing with other nodes");
         }
     }
-    log_info!(
-        "[ed2k-kad] bootstrap sent to {} targets ({} ok, {} send-err)",
-        boot_targets.len(),
-        send_ok,
-        send_err
-    );
 
     let mut boot_responses = 0u32;
     while let Some((packet, from)) = recv_within(socket, &mut buf, window_end).await {
@@ -233,10 +230,13 @@ async fn handshake_round(
             _ => {}
         }
     }
-    log_info!(
-        "[ed2k-kad] bootstrap: {} responses, {} candidates after merge",
-        boot_responses,
-        candidates.len()
+    tracing::info!(
+        targets = boot_targets.len(),
+        send_ok,
+        send_err,
+        responses = boot_responses,
+        candidates = candidates.len(),
+        "Kad bootstrap finished"
     );
     u32::try_from(boot_targets.len()).unwrap_or(u32::MAX)
 }
@@ -415,7 +415,8 @@ pub async fn find_sources_kad(
         discovered: 0,
     };
 
-    let overall_deadline = Instant::now() + timeout;
+    let started = Instant::now();
+    let overall_deadline = started + timeout;
     let mut buf = vec![0u8; RECV_BUF + crate::ed2k::proxy::MAX_UDP_HEADER];
 
     // ---------------- Phase 0: Bootstrap + Hello 握手 ----------------
@@ -460,8 +461,8 @@ pub async fn find_sources_kad(
 
         for (addr, id) in &batch {
             let pkt = proto::build_find_node_req(&target, id);
-            if let Err(error) = socket.send_to(&pkt, SocketAddr::V4(*addr)).await {
-                tracing::debug!(%addr, %error, "Kad find-node send failed; continuing with other nodes");
+            if socket.send_to(&pkt, SocketAddr::V4(*addr)).await.is_err() {
+                tracing::debug!("Kad find-node send failed; continuing with other nodes");
             }
         }
 
@@ -499,10 +500,10 @@ pub async fn find_sources_kad(
             }
         }
     }
-    log_info!(
-        "[ed2k-kad] findnode: {} responses, {} candidates",
-        fn_responses,
-        candidates.len()
+    tracing::info!(
+        responses = fn_responses,
+        candidates = candidates.len(),
+        "Kad node discovery finished"
     );
 
     // ---------------- Phase 2: SearchSources ----------------
@@ -520,8 +521,8 @@ pub async fn find_sources_kad(
         if cancel.is_cancelled() {
             return Err(DownloadError::Cancelled);
         }
-        if let Err(error) = socket.send_to(&req, SocketAddr::V4(*addr)).await {
-            tracing::debug!(%addr, %error, "Kad source-search send failed; continuing with other nodes");
+        if socket.send_to(&req, SocketAddr::V4(*addr)).await.is_err() {
+            tracing::debug!("Kad source-search send failed; continuing with other nodes");
         }
     }
 
@@ -566,12 +567,14 @@ pub async fn find_sources_kad(
         }
     }
 
-    log_info!(
-        "[ed2k-kad] done: {} sources ({} search-res) from {} bootstrap contacts, {} search targets",
-        sources.len(),
-        search_responses,
-        bootstrap.len(),
-        search_targets.len()
+    tracing::info!(
+        sources = sources.len(),
+        responses = search_responses,
+        bootstrap_contacts = bootstrap.len(),
+        targets = search_targets.len(),
+        cancelled = cancel.is_cancelled(),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "Kad source search finished"
     );
     progress.publish(KadPhase::Done, &candidates, sources.len());
     Ok(sources)
