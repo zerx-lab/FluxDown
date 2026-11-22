@@ -134,14 +134,19 @@ async fn handle_task_panic(
 const MAX_DOWNLOAD_FAILURE_REASON_BYTES: usize = 512;
 
 fn download_failure_reason(message: &str) -> String {
-    static LINKS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r#"(?i)(?:[a-z][a-z0-9+.-]*://|magnet:\?)[^\s<>"']+"#)
-            .unwrap_or_else(|error| panic!("invalid download diagnostic link regex: {error}"))
-    });
+    static LINKS: std::sync::LazyLock<Result<regex::Regex, regex::Error>> =
+        std::sync::LazyLock::new(|| {
+            regex::Regex::new(r#"(?i)(?:[a-z][a-z0-9+.-]*://|magnet:\?)[^\s<>"']+"#)
+        });
+    let links = match &*LINKS {
+        Ok(links) => links,
+        // Never log the original reason when link redaction is unavailable.
+        Err(_) => return "failure reason withheld: link redaction unavailable".to_owned(),
+    };
     // Redact before truncation. Download errors may embed signed links with
     // arbitrary parameter names, so do not keep any part of a matched link.
     let mut reason = crate::logger::sanitize_log_str(message);
-    if let std::borrow::Cow::Owned(redacted) = LINKS.replace_all(&reason, "[LINK REDACTED]") {
+    if let std::borrow::Cow::Owned(redacted) = links.replace_all(&reason, "[LINK REDACTED]") {
         reason = redacted;
     }
     let unsafe_char = |ch: char| {
