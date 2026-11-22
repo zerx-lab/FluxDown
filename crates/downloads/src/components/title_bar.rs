@@ -1,4 +1,4 @@
-//! 下载页的顶栏内容：页面插槽 [`DownloadTitleBar`]（「新建任务」主按钮，外观可在布局编辑模式下切换），
+//! 下载页的顶栏内容：页面插槽 [`DownloadTitleBar`]（新建任务与清除已完成任务），
 //! 以及作为 chrome 布局条目摆放的搜索框 [`DownloadSearchBox`] 与「视图」选项菜单
 //! [`DownloadViewMenu`]（可在顶栏内移动、可隐藏，见 [`DownloadPageWidget`]）。
 //!
@@ -37,7 +37,7 @@ use crate::{
             DetailPlacement, HeaderAlign, SortDir, ViewDensity, ViewGroupBy, ViewPrefs, ViewSortKey,
         },
     },
-    pages::downloads::DownloadView,
+    pages::downloads::{DownloadView, PageCommand},
     strings::SEARCH_SHORTCUT_HINT,
 };
 
@@ -321,11 +321,45 @@ impl Render for DownloadTitleBar {
                 })
                 .into_any_element()
         };
+        let clear_finished = (!self.editing).then(|| {
+            let view = self.view.clone();
+            let disabled = view.upgrade().is_none_or(|view| {
+                let controller = &view.read(cx).controller;
+                controller.tables_loading() || controller.is_stale()
+            });
+            let label = self.text("menuClearFinished", cx);
+            interactive(
+                fluxdown_ui_components::toolbar_action_button(
+                    "download-clear-finished",
+                    label.clone(),
+                    Icon::new(FluxIcon::Trash2).size(theme.extended().icon.sm),
+                    false,
+                    disabled,
+                    cx,
+                )
+                .size(theme.density().status_control)
+                .on_click(move |_, window, cx| {
+                    if let Some(view) = view.upgrade() {
+                        view.update(cx, |view, cx| {
+                            if !view.controller.is_stale() {
+                                view.run_page_command(PageCommand::ClearFinished, window, cx);
+                            }
+                        });
+                    }
+                }),
+            )
+            .id("download-clear-finished-tooltip")
+            .tooltip(move |window, cx| {
+                fluxdown_ui_components::tooltip_view(label.clone(), window, cx)
+            })
+        });
         h_flex()
             .h_full()
             .flex_none()
             .items_center()
+            .gap(tokens.spacing.sm)
             .child(interactive(content))
+            .children(clear_finished)
     }
 }
 
