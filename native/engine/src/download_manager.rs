@@ -12526,31 +12526,11 @@ impl DownloadManager {
             );
             self.pause_task_keep_slot(task_id).await;
         }
-        if let Some(pending) = self.pending_pauses.get_mut(task_id)
-            && let Some(handle) = &mut pending.handle
-        {
-            match tokio::time::timeout(DELETE_HANDLE_WAIT, handle).await {
-                Ok(result) => {
-                    pending.handle = None;
-                    if let Err(error) = result {
-                        crate::logger::report_error("download-manager", "wait for restart", &error);
-                    }
-                }
-                Err(error) => {
-                    crate::logger::report_warning("download-manager", "wait for restart", &error);
-                    persist_task_failure(
-                        task_id,
-                        "Could not restart the download: the previous download did not stop in time."
-                            .into(),
-                        &self.db,
-                        &self.progress_tx,
-                    )
-                    .await;
-                    self.drain_queue().await;
-                    self.sync_queue_occupancy();
-                    return;
-                }
-            }
+        if let Err(error) = self.wait_for_redownload_worker(task_id).await {
+            persist_task_failure(task_id, error.to_string(), &self.db, &self.progress_tx).await;
+            self.drain_queue().await;
+            self.sync_queue_occupancy();
+            return;
         }
 
         // 2. 同时读取最新名字与路径归属。未起跑的任务只有一个候选名，
@@ -12605,6 +12585,51 @@ impl DownloadManager {
         self.resume_restarted_task(task_id).await;
     }
 
+    /// Wait without aborting or detaching: a timed-out worker must stay tracked,
+    /// and the caller must not reset the task or touch its files.
+    async fn wait_for_redownload_worker(
+        &mut self,
+        task_id: &str,
+    ) -> Result<bool, downloader::DownloadError> {
+        let mut deadline = None;
+        for slot in [
+            self.active_tasks
+                .get_mut(task_id)
+                .map(|entry| &mut entry.handle),
+            self.pending_pauses
+                .get_mut(task_id)
+                .map(|entry| &mut entry.handle),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let Some(handle) = slot else { continue };
+            let deadline =
+                *deadline.get_or_insert_with(|| tokio::time::Instant::now() + DELETE_HANDLE_WAIT);
+            match tokio::time::timeout_at(deadline, handle).await {
+                Ok(result) => {
+                    *slot = None;
+                    if let Err(error) = result {
+                        crate::logger::report_error(
+                            "download-manager",
+                            "wait for redownload",
+                            &error,
+                        );
+                    }
+                }
+                Err(error) => {
+                    crate::logger::report_warning(
+                        "download-manager",
+                        "wait for redownload",
+                        &error,
+                    );
+                    return Err(downloader::DownloadError::TaskRestartTimeout);
+                }
+            }
+        }
+        Ok(deadline.is_some())
+    }
+
     /// Restart a completed non-BT task with missing output, using its stored request.
     /// A rejected restart leaves the completed record unchanged.
     pub async fn restart_missing_task_file(
@@ -12628,13 +12653,24 @@ impl DownloadManager {
     ) -> Result<bool, downloader::DownloadError> {
         let unavailable =
             || downloader::DownloadError::Other("Task cannot be redownloaded now".into());
-        let task = self
+        let mut task = self
             .db
             .load_task_by_id(task_id)
             .await?
             .ok_or_else(unavailable)?;
         if !matches!(task.status, 3 | 4) {
             return Err(unavailable());
+        }
+        if self.wait_for_redownload_worker(task_id).await? {
+            // The old worker may have published its final state while we waited.
+            task = self
+                .db
+                .load_task_by_id(task_id)
+                .await?
+                .ok_or_else(unavailable)?;
+            if !matches!(task.status, 3 | 4) {
+                return Err(unavailable());
+            }
         }
         let pending = task.file_clear_state == FileClearState::Pending;
         if task.file_clear_state == FileClearState::RestartPending {

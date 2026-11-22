@@ -422,6 +422,8 @@ pub enum ActorError {
     TaskFilesKept { in_use: bool, message: String },
     #[error("{}", fluxdown_engine::downloader::POST_ONLY_RESUME_MESSAGE)]
     BrowserRequestRequired,
+    #[error("{}", fluxdown_engine::downloader::DownloadError::TaskRestartTimeout)]
+    TaskRestartTimeout,
 }
 
 /// daemon actor 命令。
@@ -3631,6 +3633,9 @@ fn restart_file_error(error: fluxdown_engine::downloader::DownloadError) -> Acto
         fluxdown_engine::downloader::DownloadError::BrowserRequestRequired => {
             ActorError::BrowserRequestRequired
         }
+        fluxdown_engine::downloader::DownloadError::TaskRestartTimeout => {
+            ActorError::TaskRestartTimeout
+        }
         _ => ActorError::Operation(format!("{error:#}")),
     }
 }
@@ -4633,6 +4638,142 @@ mod tests {
         if let Err(error) = tokio::fs::remove_dir_all(dir).await {
             eprintln!("actor ed2k status test directory removal failed: {error}");
         }
+    }
+
+    #[tokio::test]
+    async fn desktop_redownload_timeout_retains_task_and_files() {
+        use std::{sync::Arc, time::Duration};
+
+        use fluxdown_engine::{Engine, EngineConfig, NoopSelection, NoopSink};
+        use fluxdown_protocol::{
+            ApplicationErrorCode, ErrorReason, RequestId, RpcRequest, RpcResponse,
+        };
+        use tokio::{io::AsyncReadExt as _, net::TcpListener};
+
+        let dir =
+            std::env::temp_dir().join(format!("fluxdown_redownload_{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .expect("create test dir");
+        let save_dir = dir.to_string_lossy().into_owned();
+        let mut engine = Engine::new(
+            EngineConfig {
+                max_concurrent: 1,
+                speed_limit_bps: 0,
+                upload_limit_bps: 0,
+                default_save_dir: save_dir.clone(),
+                app_data_dir: save_dir.clone(),
+                bt_config: Default::default(),
+                proxy_config: Default::default(),
+                user_agent: String::new(),
+                data_dir_override: Some(dir.clone()),
+                database_url: None,
+            },
+            Arc::new(NoopSink),
+            Arc::new(NoopSelection),
+        )
+        .await
+        .expect("engine");
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("test server");
+        let address = listener.local_addr().expect("test address");
+        let id = engine
+            .manager
+            .create_task(fluxdown_engine::download_manager::NewTaskSpec {
+                url: format!("http://{address}/sample.bin"),
+                file_name: "sample.bin".into(),
+                save_dir,
+                hint_file_size: -1,
+                segments: 1,
+                ..Default::default()
+            })
+            .await
+            .expect("start task");
+        let socket = tokio::time::timeout(Duration::from_secs(5), async {
+            let (mut socket, _) = listener.accept().await.expect("accept download");
+            assert!(socket.read_u8().await.is_ok(), "download sent a request");
+            socket
+        })
+        .await
+        .expect("worker reached the test server");
+        // Model a terminal state published while that generation still owns its
+        // worker. Keep the HTTP connection open without sending response headers.
+        let partial = dir.join("sample.bin.fdownloading");
+        tokio::fs::write(&partial, b"saved")
+            .await
+            .expect("write partial");
+        let db = &engine.db;
+        db.update_task_progress(&id, 5).await.expect("progress");
+        db.insert_segments(&id, &[(0, 0, 9)])
+            .await
+            .expect("checkpoint");
+        db.update_task_status(&id, 4, "original error")
+            .await
+            .expect("terminal state");
+
+        let events = crate::event_hub::DaemonEventHub::new(Default::default(), 32);
+        let selections = crate::selection::DaemonSelection::new(events.clone());
+        let blobs = Arc::new(
+            crate::blob_store::BlobStore::open(dir.join("blobs"))
+                .await
+                .expect("blobs"),
+        );
+        let (actor, mut commands) = super::DaemonActorHandle::test_channel();
+        let service = crate::service::DaemonService::new(
+            crate::service_hello("redownload-test", Vec::new()),
+            events.clone(),
+            selections,
+            blobs,
+            actor,
+            db.clone(),
+            dir.clone(),
+            #[cfg(feature = "plugins")]
+            None,
+        );
+        let request = RpcRequest::new(
+            RequestId::Integer(1),
+            fluxdown_protocol::method::DAEMON_TASK_RESTART_FILE,
+            Some(serde_json::json!({ "taskId": &id, "recreateIfPresent": true })),
+        );
+        let (response, ()) = tokio::join!(service.call("redownload-test", true, request), async {
+            let Some(super::DaemonCommand::Execute { operation, ack }) =
+                tokio::time::timeout(Duration::from_secs(2), commands.recv())
+                    .await
+                    .expect("RPC dispatched to actor")
+            else {
+                panic!("expected daemon actor command");
+            };
+            let result = execute_operation(operation, &mut engine, &events).await;
+            assert!(ack.send(result).is_ok(), "RPC is waiting");
+        });
+
+        let db = &engine.db;
+        let kept = db.load_task_by_id(&id).await.expect("load original task");
+        let segments = db
+            .load_segments(&id)
+            .await
+            .expect("load original checkpoint");
+        let saved = tokio::fs::read(&partial).await;
+        engine.manager.shutdown().await;
+        drop(socket);
+        drop(listener);
+        drop(service);
+        drop(engine);
+        tokio::fs::remove_dir_all(dir)
+            .await
+            .expect("remove test dir");
+
+        let RpcResponse::Failure(response) = response else {
+            panic!("redownload must not authorize recreation");
+        };
+        let data = response.error.data.expect("typed RPC error");
+        assert_eq!(data.code, ApplicationErrorCode::Conflict);
+        assert_eq!(data.reason, Some(ErrorReason::TaskRestartTimeout));
+        assert!(!data.retryable);
+        let task = kept.expect("keep original task");
+        assert_eq!((task.status, task.downloaded_bytes), (4, 5));
+        assert_eq!(task.error_message, "original error");
+        assert_eq!(saved.expect("keep original partial"), b"saved");
+        assert_eq!(segments.len(), 1, "keep original checkpoint");
     }
 
     /// `daemon.task.delete`：文件删不掉时回报「任务已保留」而不是成功，任务记录与文件都在

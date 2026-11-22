@@ -52,6 +52,8 @@ pub enum DownloadError {
     Cancelled,
     #[error("{}", POST_ONLY_RESUME_MESSAGE)]
     BrowserRequestRequired,
+    #[error("Could not restart the download: the previous download did not stop in time.")]
+    TaskRestartTimeout,
     #[error("checksum mismatch: {0}")]
     ChecksumMismatch(String),
     /// Server does not honour `Range` requests — returned the enclosed HTTP

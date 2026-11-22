@@ -116,6 +116,8 @@ pub enum ErrorReason {
     TaskFileClearPending,
     /// 重新下载：浏览器接管的请求必须由浏览器重新发起。
     BrowserRequestRequired,
+    /// Redownload was refused because the previous worker has not stopped.
+    TaskRestartTimeout,
     /// RSS 图片：代理出口无法校验图片目标。
     RssImageProxyUnverifiable,
     /// 局域网配对：配对码错误或已过期。

@@ -1133,6 +1133,7 @@ pub(crate) fn error_text(
         ErrorReason::TaskFilesNotDeleted => Some("errReasonTaskFilesNotDeleted"),
         ErrorReason::TaskFileClearPending => Some("errReasonTaskFileClearPending"),
         ErrorReason::BrowserRequestRequired => Some("taskErrorPostOnlyResume"),
+        ErrorReason::TaskRestartTimeout => Some("errReasonTaskRestartTimeout"),
         ErrorReason::CloudUnreachable => Some("accountErrorNetwork"),
         ErrorReason::SessionExpired => Some("errReasonSessionExpired"),
         ErrorReason::DeviceUntrusted => Some("accountSessionRevokedUntrusted"),

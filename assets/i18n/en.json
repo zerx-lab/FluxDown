@@ -3256,6 +3256,7 @@
   "errReasonTaskFilesInUse": "Couldn't delete the file because another program is using it. The task was kept; close that program and try again.",
   "errReasonTaskFilesNotDeleted": "Couldn't delete the task's files (check permissions and that the disk is available). The task was kept; try again later.",
   "errReasonTaskFileClearPending": "File cleanup is still pending. Restore the original save location and retry Delete File Only before changing the file name or save location.",
+  "errReasonTaskRestartTimeout": "Couldn't redownload because the previous download didn't stop in time. The task and its files were kept. Try again later.",
   "errReasonPairingCodeInvalid": "The pairing code is wrong or has expired.",
   "errReasonPairingTimeout": "The other device didn't confirm in time. Start again and approve the request on that device.",
   "errReasonPeerClockSkew": "The two devices' clocks differ too much. Turn on automatic date & time on both devices and try again.",
