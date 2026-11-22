@@ -3,7 +3,8 @@
 import { FolderOpen, Info, Package, RotateCw, ScrollText, Settings, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useT } from '../../../../i18n'
-import { METHOD, call, rpc, uploadBlob, useDaemon } from '../../../../lib/rpc'
+import { copyText } from '../../../../lib/copy'
+import { METHOD, RpcError, call, rpc, uploadBlob, useDaemon } from '../../../../lib/rpc'
 import type { DaemonSnapshot, InstalledPlugin, PluginArchiveRulesDto, PluginDto } from '../../../../lib/rpc'
 import { Badge, Button, Card, ConfirmFooter, Dialog, EmptyState, FormField, Input, InputWithAction, Switch, confirmDialog, toast } from '../../../../ui'
 import { hasPluginSettings } from '../../../plugins/contributions'
@@ -48,6 +49,8 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
   /** 「插件市场」刷新按钮点击计数；递增即让专属插件目录强制重拉。 */
   const [privateRefresh, setPrivateRefresh] = useState(0)
   const [devDir, setDevDir] = useState('')
+  const [installError, setInstallError] = useState<string>()
+  const [reloadErrors, setReloadErrors] = useState<Partial<Record<string, string>>>({})
   const [installingDir, setInstallingDir] = useState(false)
   const [zipPhase, setZipPhase] = useState<ZipPhase>(null)
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set())
@@ -149,6 +152,9 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
     }
   }
   const onInstallFailed = (error: unknown) => {
+    const detail = error instanceof RpcError ? error.data?.pluginDetail : undefined
+    const fallback = error instanceof RpcError ? extensionErrorText(t, error) : t('localServiceActionFailed')
+    setInstallError(t('pluginOpInstallFailed', { message: detail ?? fallback }))
     toast.error(t('pluginOpInstallFailed', { message: extensionErrorText(t, error) }))
   }
 
@@ -195,11 +201,18 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
 
   const reload = (plugin: PluginDto) =>
     withBusy(plugin.identity, async () => {
+      setReloadErrors((current) => ({ ...current, [plugin.identity]: undefined }))
       try {
         const result = await rpc.daemon.plugin.reloadDev({ identity: plugin.identity })
         toast.success(t('pluginOpReloadSuccess'))
         if (result.missingComponents?.length) setMissing(result.missingComponents)
       } catch (error) {
+        const detail = error instanceof RpcError ? error.data?.pluginDetail : undefined
+        const fallback = error instanceof RpcError ? extensionErrorText(t, error) : t('localServiceActionFailed')
+        setReloadErrors((current) => ({
+          ...current,
+          [plugin.identity]: t('pluginOpReloadFailed', { message: detail ?? fallback }),
+        }))
         toast.error(t('pluginOpReloadFailed', { message: extensionErrorText(t, error) }))
       }
     })
@@ -207,6 +220,7 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
   /** 浏览器选 zip → 上传 blob → `daemon.plugin.install {blobId}`。 */
   const installZip = async (file: File) => {
     if (zipPhase) return
+    setInstallError(undefined)
     setZipPhase({ kind: 'uploading', fraction: 0 })
     const installedBefore = installedIdentities()
     try {
@@ -226,6 +240,7 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
   const installDir = async () => {
     const dirPath = devDir.trim()
     if (dirPath === '' || installingDir) return
+    setInstallError(undefined)
     setInstallingDir(true)
     const installedBefore = installedIdentities()
     try {
@@ -307,6 +322,7 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
           </FormField>
         </Card>
       ) : null}
+      {installError && <PluginFailure message={installError} onClose={() => setInstallError(undefined)} />}
 
       {plugins.length === 0 ? (
         <EmptyState icon={Package} title={t('pluginsEmpty')} />
@@ -316,6 +332,8 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
             <PluginRow
               key={plugin.identity}
               plugin={plugin}
+              reloadError={reloadErrors[plugin.identity]}
+              onCloseReloadError={() => setReloadErrors((current) => ({ ...current, [plugin.identity]: undefined }))}
               disabled={stale || busy.has(plugin.identity)}
               onDetail={() => setDetail({ kind: 'installed', identity: plugin.identity })}
               onSettings={() => setSettingsIdentity(plugin.identity)}
@@ -391,6 +409,19 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
   )
 }
 
+function PluginFailure({ message, onClose }: { message: string; onClose: () => void }) {
+  const t = useT()
+  return (
+    <div role="alert" className="flex min-w-0 flex-col items-start gap-2">
+      <p className="whitespace-pre-wrap break-words text-sm text-destructive">{message}</p>
+      <div className="flex gap-2">
+        <Button variant="outline" onClick={() => copyText(message)}>{t('pluginLoadErrorCopy')}</Button>
+        <Button variant="ghost" onClick={onClose}>{t('close')}</Button>
+      </div>
+    </div>
+  )
+}
+
 function PluginRow({
   plugin,
   disabled,
@@ -399,10 +430,14 @@ function PluginRow({
   onAuth,
   onConsent,
   onUninstall,
+  reloadError,
+  onCloseReloadError,
   onReload,
   onToggle,
 }: {
   plugin: PluginDto
+  reloadError?: string
+  onCloseReloadError: () => void
   disabled: boolean
   onDetail: () => void
   onSettings: () => void
@@ -433,6 +468,7 @@ function PluginRow({
           {plugin.homepage ? <ExtLink href={plugin.homepage} /> : null}
           {plugin.description ? <div className="line-clamp-2 break-words text-xs text-muted-foreground">{plugin.description}</div> : null}
           {loadFailed && plugin.loadError ? <div className="break-words text-xs text-destructive">{plugin.loadError}</div> : null}
+          {reloadError && <PluginFailure message={reloadError} onClose={onCloseReloadError} />}
         </>
       }
       actions={

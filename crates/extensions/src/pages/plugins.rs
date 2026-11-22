@@ -78,6 +78,8 @@ pub(crate) type ConfirmedSets = (Vec<String>, Vec<String>);
 pub(crate) struct PluginsUi {
     /// 「开发模式」开关（会话内本地状态，默认关）：控制手动安装区（zip / 目录）是否渲染。
     pub dev_mode: bool,
+    install_error: Option<String>,
+    reload_errors: HashMap<String, String>,
     pub dev_dir: String,
     pub installing_file: bool,
     pub installing_dir: bool,
@@ -251,6 +253,9 @@ impl ExtensionsView {
                             ),
                     ),
             )
+            .when_some(self.plugins.install_error.as_ref(), |this, error| {
+                this.child(Self::plugin_failure(error, None, frame, cx))
+            })
             .children(self.render_install_area(frame, cx))
             .child(if installed.is_empty() {
                 ui::empty_state(
@@ -515,9 +520,56 @@ impl ExtensionsView {
                                 tooltip_view(load_error_tooltip.clone(), window, cx)
                             }),
                     )
-                }),
+                })
+                .when_some(
+                    self.plugins.reload_errors.get(&plugin.identity),
+                    |this, error| {
+                        this.child(Self::plugin_failure(
+                            error,
+                            Some(plugin.identity.clone()),
+                            frame,
+                            cx,
+                        ))
+                    },
+                ),
             )
             .child(self.render_plugin_actions(index, plugin, update, frame, cx))
+    }
+
+    fn plugin_failure(
+        error: &str,
+        identity: Option<String>,
+        frame: Frame<'_>,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let error = error.to_owned();
+        let id = identity.clone().unwrap_or_default();
+        v_flex().child(ui::meta_text(error.clone(), frame)).child(
+            h_flex()
+                .child(
+                    Button::new(SharedString::from(format!("copy-plugin-failure-{id}")))
+                        .outline()
+                        .control(cx)
+                        .label(frame.translator.text("pluginLoadErrorCopy").to_owned())
+                        .on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(error.clone()));
+                        }),
+                )
+                .child(
+                    Button::new(SharedString::from(format!("close-plugin-failure-{id}")))
+                        .ghost()
+                        .control(cx)
+                        .label(frame.translator.text("close").to_owned())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(identity) = &identity {
+                                this.plugins.reload_errors.remove(identity);
+                            } else {
+                                this.plugins.install_error = None;
+                            }
+                            cx.notify();
+                        })),
+                ),
+        )
     }
 
     /// 已安装行的操作区：文字按钮与按插件出现的图标在左，「详情 / 卸载 / 启用开关」
@@ -1013,6 +1065,7 @@ impl ExtensionsView {
 
             let Ok(()) = this.update_in(cx, |this, window, cx| {
                 this.plugins.installing_file = true;
+                this.plugins.install_error = None;
                 let future = this
                     .controller
                     .install_plugin_file(path.display().to_string());
@@ -1067,6 +1120,7 @@ impl ExtensionsView {
             return;
         }
         self.plugins.installing_dir = true;
+        self.plugins.install_error = None;
         let future = self
             .controller
             .install_plugin_dev(self.plugins.dev_dir.clone());
@@ -1371,6 +1425,18 @@ impl ExtensionsView {
             let result = future.await;
 
             let Ok(()) = this.update_in(cx, |this, window, cx| {
+                if op == PluginOp::Reload
+                    && let Err(error) = &result
+                {
+                    let translator = this.translator.read(cx);
+                    let detail = error
+                        .plugin_detail
+                        .clone()
+                        .unwrap_or_else(|| error_text(translator, error));
+                    let message =
+                        translator.text_with("pluginOpReloadFailed", &[("message", &detail)]);
+                    this.plugins.reload_errors.insert(identity.clone(), message);
+                }
                 this.plugins.busy.remove(&identity);
                 this.plugins.reloading.remove(&identity);
                 this.plugins.uninstalling.remove(&identity);
@@ -1388,6 +1454,7 @@ impl ExtensionsView {
         if self.plugins.busy.contains(&identity) {
             return;
         }
+        self.plugins.reload_errors.remove(&identity);
         self.plugins.reloading.insert(identity.clone());
         self.plugins
             .reload_holds
@@ -1458,6 +1525,11 @@ impl ExtensionsView {
                     PluginOp::Reload => "pluginOpReloadFailed",
                 };
                 let message = translator.text_with(key, &[("message", &detail)]);
+                if op == PluginOp::Install {
+                    let detail = error.plugin_detail.as_deref().unwrap_or(&detail);
+                    self.plugins.install_error =
+                        Some(translator.text_with(key, &[("message", detail)]));
+                }
                 self.toast_error(message, window, cx);
             }
         }

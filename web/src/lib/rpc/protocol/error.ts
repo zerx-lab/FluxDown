@@ -111,6 +111,7 @@ export interface RpcErrorData {
   /** 乐观并发冲突时服务端当前版本（如 daemon.config.patch）。 */
   revision?: number;
   reason?: ErrorReason;
+  pluginDetail?: string;
 }
 
 /** JSON-RPC 2.0 错误对象。`data` 仅应用错误（code = -32000）携带。 */

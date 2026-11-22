@@ -1633,6 +1633,7 @@ fn invalid_field(field: &str) -> RpcErrorData {
         retryable: false,
         field: Some(field.to_owned()),
         revision: None,
+        plugin_detail: None,
         reason: None,
     }
 }

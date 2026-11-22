@@ -2879,6 +2879,7 @@ fn actor_error(error: ActorCallError) -> RpcErrorObject {
                     retryable: false,
                     field: None,
                     revision: Some(current),
+                    plugin_detail: None,
                     reason: None,
                 },
             )
@@ -2928,6 +2929,7 @@ fn invalid_argument(field: &str, message: &str) -> RpcErrorObject {
             retryable: false,
             field: Some(field.to_owned()),
             revision: None,
+            plugin_detail: None,
             reason: None,
         },
     )
@@ -2965,7 +2967,53 @@ fn plugin_package_error(
     let mut data = RpcErrorData::new(ApplicationErrorCode::InvalidArgument, false)
         .with_reason(fluxdown_protocol::ErrorReason::PluginPackageInvalid);
     data.field = Some(field.to_owned());
-    RpcErrorObject::application(message, data)
+    let detail = plugin_failure_detail(error);
+    data.plugin_detail = Some(detail.clone());
+    RpcErrorObject::application(detail, data)
+}
+
+#[cfg(feature = "plugins")]
+fn plugin_failure_detail(error: &fluxdown_engine::plugin::PluginError) -> String {
+    use fluxdown_engine::plugin::{PluginError, manifest::is_safe_relative_path};
+
+    // Do not forward exception text: validation evaluates plugin top-level JS,
+    // which can throw arbitrary strings. Only emit host-owned labels and fields.
+    match error {
+        PluginError::CompileFailed(message) => {
+            let position = message.lines().find_map(|line| {
+                let (row, column) = line
+                    .trim()
+                    .strip_prefix("at eval_script:")?
+                    .split_once(':')?;
+                Some((row.parse::<u32>().ok()?, column.parse::<u32>().ok()?))
+            });
+            match position {
+                Some((row, column)) => format!("脚本编译失败（eval_script:{row}:{column}）"),
+                None => "脚本编译失败".to_owned(),
+            }
+        }
+        PluginError::LoadFailed(message) => {
+            if let Some(entry) = message
+                .strip_prefix("包内缺少文件 '")
+                .and_then(|suffix| suffix.strip_suffix('\''))
+                .filter(|entry| {
+                    entry.len() <= 256
+                        && !entry.contains(['\'', ':', '?', '#'])
+                        && is_safe_relative_path(entry)
+                })
+            {
+                format!("插件加载失败: 包内缺少文件 '{entry}'")
+            } else {
+                "插件加载失败，详情见诊断日志".to_owned()
+            }
+        }
+        PluginError::ManifestInvalid(message) if message.starts_with("读取 manifest") => {
+            "无法读取 manifest.json，请检查插件目录或安装包".to_owned()
+        }
+        PluginError::ManifestInvalid(_) => "插件清单或安装包校验失败，详情见诊断日志".to_owned(),
+        PluginError::NotDevPlugin(_) => "只有开发模式插件支持重新加载".to_owned(),
+        _ => "插件校验失败，详情见诊断日志".to_owned(),
+    }
 }
 
 /// 市场索引 / 插件下载失败：按失败性质给出错误码与细分原因，并记录完整原因。
@@ -3086,6 +3134,39 @@ mod tests {
         DaemonService, QueueScheduleParams, match_site_auth, validate_create_tasks,
         validate_queue_schedule, validate_queue_stop,
     };
+
+    #[cfg(feature = "plugins")]
+    #[test]
+    fn plugin_failure_details_keep_diagnosis_without_paths_or_credentials() {
+        use fluxdown_engine::plugin::PluginError;
+
+        let missing = PluginError::LoadFailed("包内缺少文件 'dist/入口.js'".to_owned());
+        let response = super::plugin_package_error("identity", &missing);
+        assert_eq!(
+            response.data.and_then(|data| data.plugin_detail).as_deref(),
+            Some("插件加载失败: 包内缺少文件 'dist/入口.js'")
+        );
+
+        let thrown = PluginError::CompileFailed(
+            "unlabeled-secret\n    at eval_script:1:23\n/private/user folder/test.js".to_owned(),
+        );
+        let response = super::plugin_package_error("identity", &thrown);
+        assert_eq!(response.message, "脚本编译失败（eval_script:1:23）");
+        assert_eq!(
+            response.data.and_then(|data| data.plugin_detail).as_deref(),
+            Some("脚本编译失败（eval_script:1:23）")
+        );
+
+        for path in [
+            "/private/user folder/test.js",
+            r"C:\Users\test.js",
+            r"\\nas\share\test.js",
+        ] {
+            let failed = PluginError::LoadFailed(format!("包内缺少文件 '{path}'"));
+            let response = super::plugin_package_error("identity", &failed);
+            assert_eq!(response.message, "插件加载失败，详情见诊断日志");
+        }
+    }
 
     fn schedule(queue_id: &str, enabled: bool, start: &str, stop: &str) -> QueueScheduleParams {
         QueueScheduleParams {

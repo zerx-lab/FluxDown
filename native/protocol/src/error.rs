@@ -201,6 +201,9 @@ pub struct RpcErrorData {
     pub revision: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<ErrorReason>,
+    /// Bounded, redacted plugin operation details for display and copying.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin_detail: Option<String>,
 }
 
 impl RpcErrorData {
@@ -213,6 +216,7 @@ impl RpcErrorData {
             field: None,
             revision: None,
             reason: None,
+            plugin_detail: None,
         }
     }
 

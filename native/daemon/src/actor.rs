@@ -3240,6 +3240,7 @@ fn create_task_outcome(outcome: BatchItemOutcome) -> CreateTaskOutcome {
                     retryable: false,
                     field: Some(field.to_owned()),
                     revision: None,
+                    plugin_detail: None,
                     reason: None,
                 }),
             }

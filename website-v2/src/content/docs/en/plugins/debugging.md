@@ -110,7 +110,7 @@ Three **consecutive** timeouts or out-of-memory errors in a resolver, an interce
 
 ## Install and validation errors
 
-These appear when you install, reload or run `npm run validate`. The install dialog shows `Install failed: …` / `Plugin installation failed: …` followed by the message; the same text goes to the log.
+These errors can occur during install, reload or `npm run validate`. On desktop and Web, install failures appear near the install controls and reload failures on the affected plugin row. Use **Copy error** to copy the redacted details. Some information, such as absolute paths, is omitted; see the daemon log for the original reason.
 
 ### Messages from the engine (and `npm run validate`)
 
