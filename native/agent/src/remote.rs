@@ -4496,12 +4496,26 @@ mod tests {
             }
             axum::Json(json!({"devices": [{"id": "d1", "deviceId": "device-1", "isCurrent": true, "isOnline": true}]})).into_response()
         }
-        let mut harness = Harness::new("roster_retry", |router| {
+        let release_retry = Arc::new(tokio::sync::Notify::new());
+        let retry_gate = release_retry.clone();
+        let mut harness = Harness::new("roster_retry", move |router| {
             router
                 .route("/api/v1/tasks/events", get(live_events))
                 .route("/api/v1/tasks/presence", post(mock_presence))
                 .route("/api/v1/tasks/remote", get(mock_remote_snapshot))
-                .route("/api/v1/devices", get(flaky_roster))
+                .route(
+                    "/api/v1/devices",
+                    get(move |state| {
+                        let retry_gate = retry_gate.clone();
+                        async move {
+                            let response = flaky_roster(state).await;
+                            if response.status().is_success() {
+                                retry_gate.notified().await;
+                            }
+                            response
+                        }
+                    }),
+                )
         })
         .await;
         Arc::get_mut(&mut harness.service)
@@ -4514,6 +4528,7 @@ mod tests {
             connection_state(&harness.service).state,
             fluxdown_protocol::CloudConnectionState::Connected
         );
+        release_retry.notify_one();
         wait_until(|| {
             connection_state(&harness.service).state
                 == fluxdown_protocol::CloudConnectionState::Connected
