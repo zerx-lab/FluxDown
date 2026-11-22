@@ -5,6 +5,7 @@ import { useRef } from 'react'
 import type { CSSProperties } from 'react'
 import type { JsonValue, ViewNode } from '../../../../lib/rpc'
 import { Button, ProgressBar } from '../../../../ui'
+import { useFileSizeUnits } from '../../../../lib/fileSizeUnits'
 import { formatCell } from '../cells'
 import { toneColor } from '../tones'
 import { ToneBadge } from './content'
@@ -26,6 +27,7 @@ function columnTemplate(columns: readonly { width?: number }[], extra: boolean):
 }
 
 export function TableNode({ node }: { node: ViewNode }) {
+  const units = useFileSizeUnits()
   const { send } = useViewRender()
   const scrollRef = useRef<HTMLDivElement>(null)
   const columns = records(node.p, 'columns').map((column) => ({
@@ -69,7 +71,7 @@ export function TableNode({ node }: { node: ViewNode }) {
                   onClick={() => send(node.id, { type: 'select', key })}
                 >
                   {columns.map((column) => {
-                    const cell = formatCell(column.kind, row[column.key])
+                    const cell = formatCell(column.kind, row[column.key], units)
                     return (
                       <div key={column.key} className="min-w-0 truncate tabular">
                         {column.kind === 'progress' && cell.fraction !== undefined ? (

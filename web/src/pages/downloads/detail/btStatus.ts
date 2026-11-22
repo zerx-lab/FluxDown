@@ -181,6 +181,10 @@ export function webSeedStateKey(state: string): string | null {
       return 'btWebSeedStateBackingOff'
     case 'disabled':
       return 'btWebSeedStateDisabled'
+    case 'pending':
+      return 'btWebSeedStatePending'
+    case 'rejected':
+      return 'btWebSeedStateRejected'
     default:
       return null
   }

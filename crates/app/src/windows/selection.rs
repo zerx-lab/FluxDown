@@ -5,7 +5,8 @@
 use std::sync::Arc;
 
 use fluxdown_protocol::{
-    AgentEvent, DaemonEvent, SelectionKind, SelectionRequestDto, ServiceEvent,
+    AgentEvent, CUSTOM_CATEGORIES_PREF_KEY, CustomCategoryDto, DaemonEvent, SelectionKind,
+    SelectionRequestDto, ServiceEvent,
 };
 use fluxdown_ui_downloads::{SelectionPlan, SelectionView};
 use fluxdown_ui_shell::{AuxiliaryWindowView, auxiliary_window_options};
@@ -80,10 +81,6 @@ fn pending_selections(
 
 /// 已开则跳过（去重）；否则按 `kind` 定尺寸、居中主窗口所在显示器打开。
 fn open(cx: &mut App, request: SelectionRequestDto) {
-    let Some(plan) = SelectionPlan::for_request(&request) else {
-        // 「文件已存在」走聚合窗口。
-        return;
-    };
     let key = WindowKey::Selection(request.request_id.clone());
     if WindowRegistry::is_open(cx, &key) {
         return;
@@ -106,6 +103,19 @@ fn open(cx: &mut App, request: SelectionRequestDto) {
         HLS_VARIANT_SIZE
     };
     let is_bt = matches!(request.kind, SelectionKind::Bt { .. });
+    let categories =
+        if matches!(&request.kind, SelectionKind::Bt { files, .. } if files.len() > 1) {
+            CustomCategoryDto::from_preference(
+                session.read(cx).agent_snapshot().and_then(|snapshot| {
+                    snapshot.preferences.values.get(CUSTOM_CATEGORIES_PREF_KEY)
+                }),
+            )
+        } else {
+            Vec::new()
+        };
+    let Some(plan) = SelectionPlan::for_request(&request, categories) else {
+        return;
+    };
     let display_id = WindowRegistry::handle(cx, &WindowKey::Main)
         .and_then(|handle| {
             handle
@@ -156,9 +166,27 @@ fn open(cx: &mut App, request: SelectionRequestDto) {
                 cx,
             )
         });
+        let close_content = content.downgrade();
         let window_view = cx.new(|cx| {
-            AuxiliaryWindowView::new(translator.clone(), title_key, content.into(), cx)
-                .resizable(is_bt)
+            let view = AuxiliaryWindowView::new(translator.clone(), title_key, content.into(), cx)
+                .resizable(is_bt);
+            if is_bt {
+                view.on_close_requested(
+                    move |window, cx| {
+                        if let Err(error) =
+                            close_content.update(cx, |view, cx| view.cancel(window, cx))
+                        {
+                            log::debug!(
+                                "BT selection view released before cancellation: {error:#}"
+                            );
+                        }
+                    },
+                    window,
+                    cx,
+                )
+            } else {
+                view
+            }
         });
         let root = cx.new(|cx| Root::new(window_view, window, cx));
         if is_bt {

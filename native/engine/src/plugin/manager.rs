@@ -882,32 +882,17 @@ impl PluginManager {
             )
         };
 
-        let identity = manifest.identity.clone();
-        let enabled_str = self
-            .db
-            .get_config(&format!("plugin.{identity}.enabled"))
-            .await
-            .ok()
-            .flatten();
-        let reason_str = self
-            .db
-            .get_config(&format!("plugin.{identity}.disabled_reason"))
-            .await
-            .ok()
-            .flatten();
-        let disabled_reason = reason_str
-            .as_deref()
-            .map(DisabledReason::parse)
-            .unwrap_or(DisabledReason::None);
-        // 无 enabled 键 = 新装默认启用。
-        let mut enabled = enabled_str.as_deref().map(|v| v == "true").unwrap_or(true);
-        let mut disabled_reason = disabled_reason;
-        // 授权判定：任一待授权项非空 → 视为禁用（不写 enabled 键，授权后直接生效）。
-        let consent = self.read_consent(&identity).await;
-        let (pending_perms, pending_hosts) = super::consent::pending(&manifest, consent.as_ref());
-        if !pending_perms.is_empty() || !pending_hosts.is_empty() {
-            enabled = false;
-            disabled_reason = DisabledReason::ConsentRequired;
+        let (mut enabled, mut disabled_reason) = self.plugin_state(&manifest.identity).await;
+        // Consent blocks a plugin that would otherwise be enabled. Keep an
+        // existing disable reason; the pending grants are listed separately.
+        if enabled {
+            let consent = self.read_consent(&manifest.identity).await;
+            let (pending_perms, pending_hosts) =
+                super::consent::pending(&manifest, consent.as_ref());
+            if !pending_perms.is_empty() || !pending_hosts.is_empty() {
+                enabled = false;
+                disabled_reason = DisabledReason::ConsentRequired;
+            }
         }
 
         let main_entry = manifest.main.as_ref().map(|m| dir.join(&m.entry));
@@ -1578,8 +1563,12 @@ impl PluginManager {
             let dev = p.dev;
             let hooks_entry = p.hooks_entry.clone();
             let hooks_cache = p.hooks_cache.clone();
+            let local_work = activity_task_id
+                .as_ref()
+                .map(|_| crate::transfer_activity::LocalWorkGuard::new(sink.clone()));
 
             handle.spawn(async move {
+                let _local_work = local_work;
                 if let Some(tid) = &activity_task_id {
                     sink.emit(EngineEvent::PluginHookActivity {
                         task_id: tid.clone(),
@@ -3044,6 +3033,7 @@ fn validate_subscription_item(item: SubscriptionOutputItem) -> Result<ParsedItem
         resolver_item: item.resolver_item,
         enclosure_length: item.enclosure_length,
         pub_date: item.pub_date,
+        image_urls: Vec::new(),
     })
 }
 

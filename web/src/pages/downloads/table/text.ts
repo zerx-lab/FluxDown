@@ -1,5 +1,6 @@
 // 任务表 / 卡片共用的文案与映射（状态文案、并发详情、类别名）。
 
+import type { FileSizeUnits } from '../../../lib/fileSizeUnits'
 import type { FileKind } from '../../../lib/icon-pack'
 import { activeTransfers, formatBytes, isSeeding, MAX_ETA_SECS, sourceSite } from '../model/task'
 import { localizeTaskError } from '../model/taskError'
@@ -35,9 +36,9 @@ export const taskStatusClass = (view: Pick<DownloadTaskView, 'source' | 'state' 
   isSeeding(view) ? 'text-success' : STATUS_TEXT[view.state]
 
 /** 速度列的上传速率：做种中且有采样（> 0）时返回「↑ 速率/s」，否则 null。 */
-export function seedingUploadLabel(view: Pick<DownloadTaskView, 'source' | 'state' | 'seedingStatus' | 'uploadSpeed'>): string | null {
+export function seedingUploadLabel(view: Pick<DownloadTaskView, 'source' | 'state' | 'seedingStatus' | 'uploadSpeed'>, units?: FileSizeUnits): string | null {
   if (view.seedingStatus !== 1 || !isSeeding(view)) return null
-  return view.uploadSpeed !== null && view.uploadSpeed > 0 ? `↑ ${formatBytes(view.uploadSpeed)}/s` : null
+  return view.uploadSpeed !== null && view.uploadSpeed > 0 ? `↑ ${formatBytes(view.uploadSpeed, units)}/s` : null
 }
 
 export function formatEta(t: Translate, seconds: number): string {
@@ -79,18 +80,18 @@ export function statusCodeLabel(t: Translate, status: number): string {
 }
 
 /** 状态列主文案：下载中显示「速度 · 剩余时间」（只显示已知部分），其余为状态名。 */
-export function statusLabel(t: Translate, view: DownloadTaskView): string {
+export function statusLabel(t: Translate, view: DownloadTaskView, units?: FileSizeUnits): string {
   if (view.state !== 'downloading') return taskStateLabel(t, view)
-  const speed = view.speed !== null && view.speed > 0 ? `${formatBytes(view.speed)}/s` : null
+  const speed = view.speed !== null && view.speed > 0 ? `${formatBytes(view.speed, units)}/s` : null
   const eta = view.etaSeconds !== null && view.etaSeconds <= MAX_ETA_SECS ? formatEta(t, view.etaSeconds) : null
   if (speed && eta) return `${speed} · ${eta}`
   return speed ?? eta ?? t('statusDownloading')
 }
 
-function bytesProgress(view: DownloadTaskView): string {
+function bytesProgress(view: DownloadTaskView, units?: FileSizeUnits): string {
   return view.sizeBytes > 0
-    ? `${formatBytes(view.downloadedBytes)} / ${formatBytes(view.sizeBytes)}`
-    : formatBytes(view.downloadedBytes)
+    ? `${formatBytes(view.downloadedBytes, units)} / ${formatBytes(view.sizeBytes, units)}`
+    : formatBytes(view.downloadedBytes, units)
 }
 
 /** 实时并发：本地分段连接数与 BT 已连节点数。 */
@@ -106,15 +107,15 @@ function transferDetail(t: Translate, view: DownloadTaskView): string | null {
 }
 
 /** 状态列第二行 / 紧凑密度悬停提示：已下 / 总量、并发连接、失败原因首行。 */
-export function statusDetail(t: Translate, view: DownloadTaskView): string | null {
+export function statusDetail(t: Translate, view: DownloadTaskView, units?: FileSizeUnits): string | null {
   switch (view.state) {
     case 'downloading': {
-      const bytes = bytesProgress(view)
+      const bytes = bytesProgress(view, units)
       const transfers = transferDetail(t, view)
       return transfers ? `${bytes} · ${transfers}` : bytes
     }
     case 'paused':
-      return bytesProgress(view)
+      return bytesProgress(view, units)
     case 'failed': {
       const line = view.errorMessage.split('\n', 1)[0]?.trim() ?? ''
       return line === '' ? null : localizeTaskError(t, line)
@@ -130,14 +131,14 @@ export function statusDetail(t: Translate, view: DownloadTaskView): string | nul
  * 未知字段直接省略；百分比与剩余时间在独立列里，不在这里重复。`hideSource`（设置「隐藏任务来源」）
  * 为真时去掉站点，其余字段保留。
  */
-export function relaxedMeta(t: Translate, view: DownloadTaskView, hideSource = false): string {
+export function relaxedMeta(t: Translate, view: DownloadTaskView, hideSource = false, units?: FileSizeUnits): string {
   const parts: string[] = []
   if (view.state === 'completed') {
-    if (view.sizeBytes > 0) parts.push(formatBytes(view.sizeBytes))
+    if (view.sizeBytes > 0) parts.push(formatBytes(view.sizeBytes, units))
     parts.push(kindLabel(t, view.kind))
   } else {
-    parts.push(bytesProgress(view))
-    if (view.state === 'downloading' && view.speed !== null && view.speed > 0) parts.push(`${formatBytes(view.speed)}/s`)
+    parts.push(bytesProgress(view, units))
+    if (view.state === 'downloading' && view.speed !== null && view.speed > 0) parts.push(`${formatBytes(view.speed, units)}/s`)
   }
   const site = shownSourceSite(view, hideSource)
   if (site !== '') parts.push(site)
@@ -157,8 +158,8 @@ export function fileCellMeta(t: Translate, view: DownloadTaskView, hideSource: b
 }
 
 /** 移动端卡片副标题：类别 · 站点 · 大小，空字段省略；隐藏来源时去掉站点。 */
-export function cardMeta(t: Translate, view: DownloadTaskView, hideSource: boolean): string {
-  return [kindLabel(t, view.kind), shownSourceSite(view, hideSource), view.sizeBytes > 0 ? formatBytes(view.sizeBytes) : '']
+export function cardMeta(t: Translate, view: DownloadTaskView, hideSource: boolean, units?: FileSizeUnits): string {
+  return [kindLabel(t, view.kind), shownSourceSite(view, hideSource), view.sizeBytes > 0 ? formatBytes(view.sizeBytes, units) : '']
     .filter((part) => part !== '')
     .join(' · ')
 }

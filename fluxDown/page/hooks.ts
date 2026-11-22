@@ -45,7 +45,7 @@ import {
   type SourceBufferBinding,
 } from "./bridge";
 import { wrapFetch } from "./fetch-hook";
-import { RecentResponses, hasAnyTag, propagate, tag, tagsOf } from "./provenance";
+import { RecentResponses, hasAnyTag, mediaMagicMime, propagate, tag, tagsOf } from "./provenance";
 
 /** 被包装的原函数（this 由调用点决定）。 */
 type Orig = (this: unknown, ...args: unknown[]) => unknown;
@@ -85,6 +85,8 @@ const MAX_WATCH_BODY = 1024 * 1024; // body watcher 读体上限（超出则放�
 
 const MEDIA_EXT_RE = /\.(?:m4s|ts|mp4|m4a|webm|aac)(?:[?#]|$)/i;
 const NON_MEDIA_CT_RE = /^(?:text\/|application\/(?:json|javascript|x-javascript|xml)|image\/|font\/)|json/i;
+/** 图片 CT：分片可能以此伪装，需按魔数复核。 */
+const IMAGE_CT_RE = /^\s*image\//i;
 /** 页面自己用 octet-stream 一类通用二进制 CT 传输的下载物（与 media 无关的兜底）。 */
 const GENERIC_BINARY_CT = new Set([
   "application/octet-stream",
@@ -420,9 +422,9 @@ export function start(): void {
   const msRegistry = new Set<MsInfo>();
   const hookedElements = new WeakSet<object>();
   const sbInfo = new WeakMap<object, SbInfo>();
-  /** fetch 流 → 来源；reader → 来源（含是否已记入 recent）。 */
-  const streamSource = new WeakMap<object, { url: string; media: boolean }>();
-  const readerSource = new WeakMap<object, { url: string; media: boolean; pushed: boolean }>();
+  /** fetch 流 → 来源；reader → 来源（含是否已记入 recent）。probe：图片 CT 的流，首块按魔数判定是否伪装的分片。 */
+  const streamSource = new WeakMap<object, { url: string; media: boolean; probe: boolean }>();
+  const readerSource = new WeakMap<object, { url: string; media: boolean; probe: boolean; pushed: boolean }>();
 
   function isMediaResponse(url: string, ct: string): boolean {
     const lower = ct.toLowerCase();
@@ -434,10 +436,21 @@ export function start(): void {
     return !ct || !NON_MEDIA_CT_RE.test(ct);
   }
 
-  function tagResult(result: unknown, url: string, ct: string, byteLength: number): void {
-    if (!url || !isTagWorthy(ct)) return;
+  function tagResult(result: unknown, url: string, ct: string, byteLength: number, via: "fetch" | "xhr"): void {
+    if (!url) return;
+    if (isTagWorthy(ct)) {
+      tag(result, url);
+      if (isMediaResponse(url, ct)) recent.push(url, byteLength, Date.now());
+      return;
+    }
+    // 伪装成图片的分片（如 `video0.jpeg` + image/jpeg）：按魔数认出后照常打标，并作为分片上报，
+    // 否则后台既看不到分片也拿不到归因证据，浮钮只能靠「唯一播放元素」推断（页内有广告视频就失败）。
+    if (!IMAGE_CT_RE.test(ct) || !(result instanceof ArrayBuffer || ArrayBuffer.isView(result))) return;
+    const mime = mediaMagicMime(result);
+    if (!mime) return;
     tag(result, url);
-    if (isMediaResponse(url, ct)) recent.push(url, byteLength, Date.now());
+    recent.push(url, byteLength, Date.now());
+    notify(via, url, mime);
   }
 
   function getMsInfo(ms: object): MsInfo {
@@ -704,8 +717,12 @@ export function start(): void {
     }
 
     // 来源打标：流与后续 arrayBuffer/blob 的结果用响应 URL 归因
-    if (response.body && finalUrl && isTagWorthy(ct)) {
-      streamSource.set(response.body, { url: finalUrl, media: isMediaResponse(finalUrl, ct) });
+    if (response.body && finalUrl) {
+      if (isTagWorthy(ct)) {
+        streamSource.set(response.body, { url: finalUrl, media: isMediaResponse(finalUrl, ct), probe: false });
+      } else if (IMAGE_CT_RE.test(ct)) {
+        streamSource.set(response.body, { url: finalUrl, media: false, probe: true });
+      }
     }
 
     if (sniffClone) readBodyAndSniff(sniffClone, finalUrl, ct).catch(() => {});
@@ -722,6 +739,8 @@ export function start(): void {
   // ===== XMLHttpRequest =====
 
   const xhrUrls = new WeakMap<object, string>();
+  /** 本次请求的二进制响应已打标（open 时清除，同一对象可复用发起新请求）。 */
+  const xhrTagged = new WeakSet<object>();
 
   wrapMethod(XMLHttpRequest.prototype, "open", (orig) =>
     function (this: XMLHttpRequest, ...args: unknown[]) {
@@ -731,6 +750,7 @@ export function start(): void {
         if (typeof url === "string") abs = new URL(url, location.href).href;
         else if (url && typeof (url as URL).href === "string") abs = (url as URL).href;
         xhrUrls.set(this, abs);
+        xhrTagged.delete(this);
         if (abs && isStreamingUrl(abs)) notify("xhr", abs, streamMime(abs));
       } catch {
         /* 嗅探异常绝不打断页面请求 */
@@ -748,6 +768,47 @@ export function start(): void {
       return orig.apply(this, args);
     });
 
+  /**
+   * XHR 二进制响应在页面首次读取 `response` 时打标：hls.js 等在 readystatechange 里就把 ArrayBuffer
+   * 转移给解封装 Worker，到 load 事件时缓冲区已 detached（byteLength 0），魔数与来源标记都会落空，
+   * 元素拿不到任何归因证据。load 里的同一调用兜底页面从不读取 response 的情况。
+   */
+  function tagXhrResponse(xhr: XMLHttpRequest, response: unknown): void {
+    if (xhr.readyState !== XMLHttpRequest.DONE || xhrTagged.has(xhr)) return;
+    const url = xhrUrls.get(xhr);
+    if (!url) return;
+    const ct = xhr.getResponseHeader("content-type") || "";
+    const responseUrl = xhr.responseURL || url;
+    if (response instanceof ArrayBuffer) {
+      xhrTagged.add(xhr);
+      tagResult(response, responseUrl, ct, response.byteLength, "xhr");
+    } else if (response instanceof Blob) {
+      xhrTagged.add(xhr);
+      tagResult(response, responseUrl, ct, response.size, "xhr");
+    }
+  }
+
+  try {
+    const d = Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype, "response");
+    if (d?.get && d.configurable) {
+      const origGet = d.get;
+      Object.defineProperty(XMLHttpRequest.prototype, "response", {
+        ...d,
+        get(this: XMLHttpRequest) {
+          const value: unknown = origGet.call(this);
+          try {
+            tagXhrResponse(this, value);
+          } catch {
+            /* 归因失败不影响页面读取 */
+          }
+          return value;
+        },
+      });
+    }
+  } catch {
+    /* 原型不可改：只靠 load 兜底 */
+  }
+
   function onXhrLoad(this: XMLHttpRequest): void {
     try {
       const url = xhrUrls.get(this);
@@ -757,12 +818,8 @@ export function start(): void {
       const responseUrl = this.responseURL || url;
       const rt = this.responseType;
 
-      // 来源打标
-      if (rt === "arraybuffer" && this.response instanceof ArrayBuffer) {
-        tagResult(this.response, responseUrl, ct, this.response.byteLength);
-      } else if (rt === "blob" && this.response instanceof Blob) {
-        tagResult(this.response, responseUrl, ct, this.response.size);
-      }
+      // 来源打标（通常页面读取 response 时已完成）
+      if (rt === "arraybuffer" || rt === "blob") tagXhrResponse(this, this.response);
 
       if (!sniffOn()) return;
       if (ct && isReportableCt(ct, responseUrl)) {
@@ -818,7 +875,7 @@ export function start(): void {
           const ct = this.headers.get("content-type") || "";
           return p.then((buf) => {
             try {
-              tagResult(buf, url, ct, buf.byteLength);
+              tagResult(buf, url, ct, buf.byteLength, "fetch");
             } catch {
               /* ignore */
             }
@@ -839,7 +896,7 @@ export function start(): void {
         const ct = this.headers.get("content-type") || "";
         return p.then((blob) => {
           try {
-            tagResult(blob, url, ct, blob.size);
+            tagResult(blob, url, ct, blob.size, "fetch");
           } catch {
             /* ignore */
           }
@@ -902,6 +959,16 @@ export function start(): void {
         return p.then((res) => {
           try {
             if (res && res.value && res.value.buffer) {
+              if (src.probe) {
+                src.probe = false;
+                const mime = mediaMagicMime(res.value);
+                if (!mime) {
+                  readerSource.delete(this);
+                  return res;
+                }
+                src.media = true;
+                notify("fetch", src.url, mime);
+              }
               tag(res.value, src.url);
               if (!src.pushed && src.media) {
                 src.pushed = true;

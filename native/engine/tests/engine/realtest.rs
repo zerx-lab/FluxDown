@@ -11,7 +11,8 @@
 //! 用法：
 //!   cargo test -p fluxdown_engine --test engine realtest -- --ignored --nocapture --test-threads=1
 //!
-//! 默认 `#[ignore]`（绑定端口 + 略慢），需显式 `--ignored` 运行。
+//! 多数场景默认 `#[ignore]`。Range 回退回归由默认 CI 执行，以守住深断点
+//! 不被清盘的约束；持续返回 200 的场景须走完真实分段重试退避（约 30 秒）。
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -57,6 +58,8 @@ struct ServerState {
     advertise_accept_ranges: bool,
     /// 200 全量响应里上报的 Content-Length（None = 诚实上报真实长度）。
     fake_full_content_length: Option<i64>,
+    /// Override the total returned by HEAD and the bytes=0-0 probe only.
+    probe_total: Option<i64>,
 
     // --- 故障注入钩子 ---
     /// 在累计第 N 个 *range* GET 完成后，把 body/etag 切换为 (新 body, 新 etag)。
@@ -76,21 +79,28 @@ struct ServerState {
     /// 覆盖全量 GET 的 Content-Encoding 头值（如 "gzip, gzip" 多层 / "compress" 未知）。
     /// 设置时优先于 gzip_body 自动添加的 "gzip"。仅影响头部，不改 body。
     content_encoding_override: Option<String>,
+    compress_plain_get: bool,
     /// 全量 GET 不发 Content-Length（靠连接关闭定界），模拟 chunked/无 CL 服务器。
     omit_content_length_full: bool,
     /// 全量 GET 只发前 K 字节然后关闭（模拟传输中途断流/截断）。
     close_full_after: Option<usize>,
     /// 运行时关闭 close_full_after（续传第二程需要服务器恢复完整传输）。
     disable_close_full: std::sync::atomic::AtomicBool,
+    /// 普通 GET 发出指定字节后保持连接打开，直到客户端取消。
+    hold_plain_get_after: Option<usize>,
     /// 206 响应是否携带 ETag/Last-Modified。false=剥离（模拟 CDN 边缘节点行为）。
     emit_validators_on_range: bool,
     /// 钩子 A（永久型）：对所有「分段」range GET（区间长度 end-start+1 > 1）强制
     /// 返回 200 全量，保留 probe 的 `bytes=0-0`（长度 1）走 206——复现“服务器支持
     /// Range，但对分段请求持续返回 200”（alist 代理迅雷/光鸭云盘真实行为）。
     force_full_on_segment_range: bool,
+    /// Ignore segment Range requests for the new tail after a 206 announced file growth.
+    ignore_range_from: Option<i64>,
     /// 钩子 B（一次性）：置为 true 后，下一次「分段」range GET 强制返回一次 200
     /// 全量（消费后自动复位为 false，其余请求照常 206）——复现“瞬时 200”。
     force_full_range_get_once: std::sync::atomic::AtomicBool,
+    html_error_on_segment_range: bool,
+    mislabel_segment_range: bool,
     /// 206 `Content-Range` 分母（服务器自报总大小）注入序列：每个 206 依次弹出
     /// 一个值作为分母（body 照常按真实区间发送）；序列耗尽后回落为诚实的 body
     /// 长度。模拟【渐进上传中文件不断增长】/病态分母膨胀（BUG-HTTP-HINT-UNDERSIZED
@@ -105,10 +115,8 @@ struct ServerState {
     /// fnOS multiple-download 式配额端点：任何带 Range 的请求（含 HEAD）一律
     /// 400 拒绝，仅裸 GET（无 Range 头）可用。
     reject_range_with_400: bool,
-    /// 只拒「分段」Range 请求（区间长度 > 1，含开放式 bytes=X-），probe 的
-    /// `bytes=0-0` 照常 206——用于复现"probe 判定支持 Range,分段连接却全被
-    /// 400 拒"的端点(守护 coordinator 全员被拒→RangeNotSupported 转换出口)。
-    reject_segment_range_with_400: bool,
+    /// 只拒分段 Range（区间长度 > 1），小范围探测照常返回 206。
+    segment_range_rejection: Option<u16>,
     /// 一次性签名 CDN：任何携带 If-Range 的请求返回 403，并永久作废该 URL；
     /// 此后纯 Range 也返回 403。用于证明“403 后再降级”已经太晚。
     reject_if_range_with_403: bool,
@@ -125,6 +133,10 @@ struct ServerState {
     /// 该值后，新的分段请求直接 429。
     max_concurrent_segment_gets: Option<usize>,
     segment_in_flight: AtomicUsize,
+    segment_peak_in_flight: AtomicUsize,
+    /// 指定偏移的分段先等其它连接收尾，再仅拒绝一次。
+    isolated_429_offset: Option<i64>,
+    isolated_429_sent: std::sync::atomic::AtomicBool,
     /// 拒绝小范围探测以外的 GET：先放行 N 次，再限流指定毫秒数并返回指定状态码。
     segment_rejection_window: Option<(usize, u64, u16)>,
     segment_accepted: AtomicUsize,
@@ -156,24 +168,30 @@ impl ServerState {
             support_range: true,
             advertise_accept_ranges: true,
             fake_full_content_length: None,
+            probe_total: None,
             swap_after_range_gets: None,
             swap_last_modified: None,
             drop_range_get_nth: None,
             corrupt_range_get_nth: None,
             gzip_body: None,
             content_encoding_override: None,
+            compress_plain_get: false,
             omit_content_length_full: false,
             close_full_after: None,
             disable_close_full: std::sync::atomic::AtomicBool::new(false),
+            hold_plain_get_after: None,
             emit_validators_on_range: true,
             force_full_on_segment_range: false,
+            ignore_range_from: None,
             force_full_range_get_once: std::sync::atomic::AtomicBool::new(false),
+            html_error_on_segment_range: false,
+            mislabel_segment_range: false,
             range_total_sequence: std::sync::Mutex::new(Vec::new()),
             throttle_range_ms: 0,
             slow_range_get: None,
             per_conn_bps: 0,
             reject_range_with_400: false,
-            reject_segment_range_with_400: false,
+            segment_range_rejection: None,
             reject_if_range_with_403: false,
             signature_invalid: std::sync::atomic::AtomicBool::new(false),
             throttle_full_ms: 0,
@@ -181,6 +199,9 @@ impl ServerState {
             range_start_alignment: None,
             max_concurrent_segment_gets: None,
             segment_in_flight: AtomicUsize::new(0),
+            segment_peak_in_flight: AtomicUsize::new(0),
+            isolated_429_offset: None,
+            isolated_429_sent: std::sync::atomic::AtomicBool::new(false),
             segment_rejection_window: None,
             segment_accepted: AtomicUsize::new(0),
             segment_rejection_until: Mutex::new(None),
@@ -424,7 +445,10 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
             (Some(g), None) => g.len() as i64,
             (None, None) => total,
         };
-        h.push_str(&format!("Content-Length: {}\r\n", cl));
+        h.push_str(&format!(
+            "Content-Length: {}\r\n",
+            st.probe_total.unwrap_or(cl)
+        ));
         if let Some(ce) = &st.content_encoding_override {
             h.push_str(&format!("Content-Encoding: {}\r\n", ce));
         } else if st.gzip_body.is_some() {
@@ -536,15 +560,33 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
             return Ok(());
         }
     }
+    if is_segment_range_get
+        && let Some(offset) = st.isolated_429_offset
+        && req.range.is_some_and(|(start, _)| start == offset)
+        && !st.isolated_429_sent.swap(true, Ordering::SeqCst)
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        assert_eq!(st.segment_in_flight.load(Ordering::SeqCst), 0);
+        st.rejected_range_count.fetch_add(1, Ordering::SeqCst);
+        write_all(
+            &mut stream,
+            b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        )
+        .await?;
+        return Ok(());
+    }
     let _segment_slot = match st.max_concurrent_segment_gets {
         Some(limit) if is_segment_range_get => {
-            if st.segment_in_flight.fetch_add(1, Ordering::SeqCst) >= limit {
+            let previous = st.segment_in_flight.fetch_add(1, Ordering::SeqCst);
+            if previous >= limit {
                 st.segment_in_flight.fetch_sub(1, Ordering::SeqCst);
                 st.rejected_range_count.fetch_add(1, Ordering::SeqCst);
                 let resp = "HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
                 write_all(&mut stream, resp.as_bytes()).await?;
                 return Ok(());
             }
+            st.segment_peak_in_flight
+                .fetch_max(previous + 1, Ordering::SeqCst);
             Some(InFlightSlot(&st.segment_in_flight))
         }
         _ => None,
@@ -598,9 +640,12 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
         return Ok(());
     }
     // 只拒「分段」Range(probe 0-0 放行):全员被拒→单流回退的转换出口守护。
-    if st.reject_segment_range_with_400 && is_segment_range_get {
+    if let Some(status) = st.segment_range_rejection
+        && is_segment_range_get
+    {
         st.rejected_range_count.fetch_add(1, Ordering::SeqCst);
-        let resp = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let resp =
+            format!("HTTP/1.1 {status} Limited\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         write_all(&mut stream, resp.as_bytes()).await?;
 
         if let Err(error) = stream.shutdown().await
@@ -616,12 +661,25 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
         }
         return Ok(());
     }
+    if is_segment_range_get && st.html_error_on_segment_range {
+        st.rejected_range_count.fetch_add(1, Ordering::SeqCst);
+        return write_all(
+            &mut stream,
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 13\r\n\
+              Connection: close\r\n\r\n<html></html>",
+        )
+        .await;
+    }
     // 钩子 A（永久型）：所有分段 range GET 强制走 200 全量分支（保留 probe 走 206），
     // 复现“服务器支持 Range，但对分段请求偶发/持续返回 200”（alist 代理云盘行为）。
     // 钩子 B（一次性）：消费一次「武装」标志，让下一次分段 range GET 强制返回一次
     // 200（随后自动复位、恢复 206），模拟“瞬时 200”。
     let force_full = is_segment_range_get
         && (st.force_full_on_segment_range
+            || req
+                .range
+                .zip(st.ignore_range_from)
+                .is_some_and(|((start, _), from)| start >= from)
             || st.force_full_range_get_once.swap(false, Ordering::SeqCst));
     let wants_range = wants_range && !force_full;
 
@@ -629,9 +687,18 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
         // 200 全量
         st.full_get_count.fetch_add(1, Ordering::SeqCst);
         // gzip 模式：发压缩体，Content-Length=压缩长度，附 Content-Encoding: gzip。
-        let send_body: Vec<u8> = match &st.gzip_body {
-            Some(g) => g.as_ref().clone(),
-            None => body.as_ref().clone(),
+        let compressed = st.compress_plain_get && req.range.is_none();
+        let send_body: Vec<u8> = if compressed {
+            use std::io::Write;
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            encoder.write_all(body.as_slice()).unwrap();
+            encoder.finish().unwrap()
+        } else {
+            match &st.gzip_body {
+                Some(g) => g.as_ref().clone(),
+                None => body.as_ref().clone(),
+            }
         };
         let cl = st
             .fake_full_content_length
@@ -643,7 +710,7 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
         }
         if let Some(ce) = &st.content_encoding_override {
             h.push_str(&format!("Content-Encoding: {}\r\n", ce));
-        } else if st.gzip_body.is_some() {
+        } else if compressed || st.gzip_body.is_some() {
             h.push_str("Content-Encoding: gzip\r\n");
         }
         if st.support_range && st.advertise_accept_ranges {
@@ -654,6 +721,13 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
         h.push_str(&format!("Content-Type: {}\r\n", st.content_type));
         h.push_str("Connection: close\r\n\r\n");
         write_all(&mut stream, h.as_bytes()).await?;
+        if let Some(k) = st.hold_plain_get_after
+            && req.range.is_none()
+        {
+            write_all(&mut stream, &send_body[..k]).await?;
+            let _ = stream.read(&mut [0; 1]).await?;
+            return Ok(());
+        }
         if let Some(k) = st.close_full_after
             && !st.disable_close_full.load(Ordering::SeqCst)
         {
@@ -738,7 +812,11 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
     h.push_str("HTTP/1.1 206 Partial Content\r\n");
     h.push_str(&format!("Content-Length: {}\r\n", len));
     // 分母注入：序列非空时弹出首个值伪造服务器自报总大小（模拟文件仍在增长）。
-    let reported_total = {
+    let reported_total = if req.range == Some((0, Some(0)))
+        && let Some(probe_total) = st.probe_total
+    {
+        probe_total
+    } else {
         let mut seq = st
             .range_total_sequence
             .lock()
@@ -754,7 +832,13 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
         h.push_str(&format!("ETag: \"{}\"\r\n", etag));
         h.push_str(&format!("Last-Modified: {}\r\n", last_modified));
     }
-    h.push_str(&format!("Content-Type: {}\r\n", st.content_type));
+    if is_segment_range_get && st.mislabel_segment_range {
+        h.push_str(
+            "Content-Type: text/html\r\nContent-Disposition: attachment; filename=out.bin\r\n",
+        );
+    } else {
+        h.push_str(&format!("Content-Type: {}\r\n", st.content_type));
+    }
     h.push_str("Connection: close\r\n\r\n");
     write_all(&mut stream, h.as_bytes()).await?;
 
@@ -906,7 +990,11 @@ fn test_client() -> reqwest::Client {
 }
 
 fn unique_dir(tag: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("fluxdown_realtest_{}_{}", tag, std::process::id()));
+    let d = std::env::temp_dir().join(format!(
+        "fluxdown_realtest_{}_{}",
+        tag,
+        uuid::Uuid::new_v4().simple()
+    ));
     std::fs::create_dir_all(&d).expect("create work dir");
     d
 }
@@ -1572,20 +1660,41 @@ async fn all_connections_429_with_progress_revives_single_connection() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn automatic_connection_recovery_resumes_after_parallel_403() {
-    assert_connection_recovery(403, 2, 1).await;
+    assert_connection_recovery(403, 2, 1, false).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn automatic_connection_recovery_retries_first_segment_429_without_learning() {
-    assert_connection_recovery(429, 0, 0).await;
+    assert_connection_recovery(429, 0, 0, false).await;
 }
 
-async fn assert_connection_recovery(status: u16, after: usize, expected_cap: i32) {
+#[tokio::test(flavor = "current_thread")]
+async fn automatic_connection_recovery_keeps_learned_cap_after_isolated_429() {
+    assert_connection_recovery(429, 3, 2, true).await;
+}
+
+async fn assert_connection_recovery(
+    status: u16,
+    after: usize,
+    expected_cap: i32,
+    isolated_tail: bool,
+) {
     let work_dir = unique_dir(&format!("conn-recovery-{status}"));
-    let body = Arc::new(gen_body(16 * 1024 * 1024, 31));
+    // 让最后一段小于尾部拆分门槛；等待它的 429 时不会再产生新分段。
+    let size = if isolated_tail {
+        512 * 1024
+    } else {
+        16 * 1024 * 1024
+    };
+    let body = Arc::new(gen_body(size, 31));
     let mut st = ServerState::new(body.clone(), "etag-conn-recovery");
-    st.segment_rejection_window = Some((after, 2500, status));
-    st.throttle_range_ms = if after > 0 { 300 } else { 0 };
+    let window_ms = if isolated_tail { 0 } else { 2500 };
+    st.segment_rejection_window = Some((after, window_ms, status));
+    st.throttle_range_ms = 300;
+    st.max_concurrent_segment_gets = Some(usize::MAX);
+    if isolated_tail {
+        st.isolated_429_offset = Some((body.len() * 15 / 16) as i64);
+    }
     // 拒绝第三个请求时，第二个请求的响应仍活着；它在限流窗口结束前完成，
     // 最后只剩被拒绝的段，必须等退避后续传。
     if status == 403 {
@@ -1610,6 +1719,14 @@ async fn assert_connection_recovery(status: u16, after: usize, expected_cap: i32
     result.expect("recover without discarding the segment layout");
     assert_eq!(tokio::fs::read(dest).await.unwrap(), *body);
     assert!(st.rejected_range_count.load(Ordering::SeqCst) > 0);
+    if isolated_tail {
+        assert_eq!(st.rejected_range_count.load(Ordering::SeqCst), 2);
+    } else if after == 0 {
+        assert!(
+            st.segment_peak_in_flight.load(Ordering::SeqCst) > 1,
+            "an isolated 429 must not disable ramp-up"
+        );
+    }
     assert_eq!(st.full_get_count.load(Ordering::SeqCst), 0);
 
     let db = Db::open(&work_dir).await.unwrap();
@@ -2361,19 +2478,54 @@ async fn run_full(
     checksum: &str,
     cancel: &CancellationToken,
 ) -> (i32, std::path::PathBuf) {
+    let (status, dest, _) = run_full_with_spec(
+        work_dir,
+        db,
+        task_id,
+        url,
+        file_name,
+        segment_count,
+        hint_file_size,
+        is_resume,
+        checksum,
+        cancel,
+        RequestSpec::empty_get(),
+    )
+    .await;
+    (status, dest)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_full_with_spec(
+    work_dir: &Path,
+    db: &Db,
+    task_id: &str,
+    url: &str,
+    file_name: &str,
+    segment_count: i32,
+    hint_file_size: i64,
+    is_resume: bool,
+    checksum: &str,
+    cancel: &CancellationToken,
+    spec: RequestSpec,
+) -> (i32, std::path::PathBuf, Option<i64>) {
     use fluxdown_engine::downloader::{DownloadParams, run_download};
 
     let client = test_client();
     let speed_limiter = SpeedLimiter::new(0);
     let (tx, mut rx) = mpsc::channel::<ProgressUpdate>(256);
-    let last_status = Arc::new(std::sync::atomic::AtomicI32::new(0));
-    let ls = last_status.clone();
     let collector = tokio::spawn(async move {
+        let mut status = 0;
+        let mut staged_received = None;
         while let Some(u) = rx.recv().await {
-            if u.status >= 3 {
-                ls.store(u.status, std::sync::atomic::Ordering::SeqCst);
+            if matches!(u.status, 2..=4) {
+                status = u.status;
+            }
+            if u.staged_download {
+                staged_received = u.transfer_bytes;
             }
         }
+        (status, staged_received)
     });
 
     let params = DownloadParams {
@@ -2409,7 +2561,7 @@ async fn run_full(
         selector: std::sync::Arc::new(fluxdown_engine::NoopSelection),
         checksum: checksum.to_string(),
         extra_headers: std::collections::HashMap::new(),
-        spec: RequestSpec::empty_get(),
+        spec,
         audio_url: None,
         use_server_time: false,
         overwrite: fluxdown_engine::file_exists::OverwritePolicy::Never,
@@ -2419,11 +2571,10 @@ async fn run_full(
 
     run_download(params).await;
 
-    collector
+    let (status, staged_received) = collector
         .await
         .expect("test background task must not panic");
-    let status = last_status.load(std::sync::atomic::Ordering::SeqCst);
-    (status, work_dir.join(file_name))
+    (status, work_dir.join(file_name), staged_received)
 }
 
 async fn insert_simple_task(
@@ -3532,7 +3683,21 @@ async fn multiseg_etag_stripped_must_not_silently_splice() {
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "binds a local port; run with --ignored"]
 async fn range_advertised_but_all_segments_get_200_falls_back_single_stream() {
-    let work_dir = unique_dir("force200");
+    assert_non_partial_range_falls_back(false).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "binds a local port; run with --ignored"]
+async fn range_html_falls_back_to_plain_get_byte_exact() {
+    assert_non_partial_range_falls_back(true).await;
+}
+
+async fn assert_non_partial_range_falls_back(html_error: bool) {
+    let work_dir = unique_dir(if html_error {
+        "range-html-fallback"
+    } else {
+        "force200"
+    });
 
     if let Err(error) = tokio::fs::remove_dir_all(&work_dir).await {
         assert_eq!(
@@ -3549,64 +3714,177 @@ async fn range_advertised_but_all_segments_get_200_falls_back_single_stream() {
 
     let mut s = ServerState::new(body.clone(), "etag-force200");
     // support_range 保持默认 true：probe（0-0）与 HEAD 都表现为“服务器支持 Range”。
-    s.force_full_on_segment_range = true; // 但所有真实分段请求强制返回 200。
+    s.force_full_on_segment_range = !html_error;
+    s.html_error_on_segment_range = html_error;
     let st = Arc::new(s);
-    let server = start_server(st).await;
+    let server = start_server(st.clone()).await;
     let url = server.url("/file");
 
     let db = Db::open(&work_dir).await.expect("db");
     insert_simple_task(&db, &work_dir, "f200", &url, "out.bin", 8, size as i64).await;
 
-    // hint_file_size=0：走真实 probe 路径（不是浏览器扩展 hint 旁路）——
-    // 这正是复现“probe 判定支持 Range → 选多段 → 每段却拿到 200”的关键。
+    // Resume before any bytes are written: verify Range through a metadata probe
+    // without giving the coordinator a held full GET that could win the race.
     let cancel = CancellationToken::new();
     let (status, dest) = run_full(
-        &work_dir, &db, "f200", &url, "out.bin", 8, 0, false, "", &cancel,
+        &work_dir, &db, "f200", &url, "out.bin", 8, 0, true, "", &cancel,
     )
     .await;
 
+    assert_eq!(status, 3, "download must complete");
     assert_eq!(
-        status, 3,
-        "❌ 分段全部返回 200 时应回退单流并成功（status=3），实得 {status}——\
-         很可能是 BUG 1 复现：主令牌被 Path B 误 cancel，单流回退瞬间 cancelled()"
+        sha256_file(&dest).await,
+        expected,
+        "output differs from source"
     );
-    assert!(dest.exists(), "❌ 下载“成功”却没有产物文件");
-    let got = sha256_file(&dest).await;
-    assert_eq!(
-        got, expected,
-        "❌ 单流回退产出的文件不是字节完整的原文件（可能是 BUG 2：回退前误删已下载数据，\
-         download_single 只写出了空/截断文件）"
-    );
+    assert!(st.full_get_count.load(Ordering::SeqCst) > 0);
+    if html_error {
+        assert!(st.rejected_range_count.load(Ordering::SeqCst) > 0);
+    }
     drop(server);
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "binds a local port; run with --ignored"]
 async fn ignored_range_at_99_percent_finishes_with_plain_get() {
-    assert_ignored_range_restart(false).await;
+    assert_ignored_range_restart(RangeRestartCase::Success).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "binds a local port; run with --ignored"]
-async fn ignored_range_at_99_percent_keeps_checkpoint_if_plain_get_is_truncated() {
-    assert_ignored_range_restart(true).await;
+async fn ignored_range_after_expansion_uses_the_new_total_for_plain_get() {
+    assert_ignored_range_restart(RangeRestartCase::Expanded).await;
 }
 
-async fn assert_ignored_range_restart(truncated: bool) {
+#[tokio::test(flavor = "current_thread")]
+async fn ignored_range_at_99_percent_keeps_checkpoint_if_plain_get_is_truncated() {
+    assert_ignored_range_restart(RangeRestartCase::Truncated).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ignored_range_at_99_percent_keeps_checkpoint_if_checksum_fails() {
+    assert_ignored_range_restart(RangeRestartCase::ChecksumMismatch).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ignored_range_at_99_percent_cancellation_removes_only_staging() {
+    assert_ignored_range_restart(RangeRestartCase::Cancelled).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ignored_range_at_99_percent_with_window_cap_never_sends_plain_get() {
+    assert_ignored_range_restart(RangeRestartCase::WindowCapped).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ignored_range_at_99_percent_rejects_compressed_plain_get() {
+    assert_ignored_range_restart(RangeRestartCase::Compressed).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ignored_range_below_8_mib_restarts_without_staging() {
+    assert_ignored_range_restart(RangeRestartCase::Shallow).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ignored_range_at_8_mib_restarts_with_staging() {
+    assert_ignored_range_restart(RangeRestartCase::Threshold).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn deep_checkpoint_does_not_stage_on_http_403() {
+    assert_ignored_range_restart(RangeRestartCase::Rejected(403)).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn deep_checkpoint_does_not_stage_on_http_429() {
+    assert_ignored_range_restart(RangeRestartCase::Rejected(429)).await;
+}
+
+#[derive(Clone, Copy)]
+enum RangeRestartCase {
+    Success,
+    Expanded,
+    Truncated,
+    ChecksumMismatch,
+    Cancelled,
+    WindowCapped,
+    Compressed,
+    Shallow,
+    Threshold,
+    Rejected(u16),
+}
+
+async fn assert_ignored_range_restart(case: RangeRestartCase) {
+    use std::time::Duration;
+
     use fluxdown_engine::downloader::TEMP_EXT;
 
-    let tag = if truncated {
-        "range-restart-truncated"
-    } else {
-        "range-restart"
+    let tag = match case {
+        RangeRestartCase::Success => "range-restart",
+        RangeRestartCase::Expanded => "range-restart-expanded",
+        RangeRestartCase::Truncated => "range-restart-truncated",
+        RangeRestartCase::ChecksumMismatch => "range-restart-bad-checksum",
+        RangeRestartCase::Cancelled => "range-restart-cancelled",
+        RangeRestartCase::WindowCapped => "range-restart-window-capped",
+        RangeRestartCase::Compressed => "range-restart-compressed",
+        RangeRestartCase::Shallow => "range-restart-shallow",
+        RangeRestartCase::Threshold => "range-restart-threshold",
+        RangeRestartCase::Rejected(403) => "range-restart-403",
+        RangeRestartCase::Rejected(_) => "range-restart-429",
     };
     let work_dir = unique_dir(tag);
+    struct WorkDirCleanup<'a>(&'a std::path::Path);
+    impl Drop for WorkDirCleanup<'_> {
+        fn drop(&mut self) {
+            if let Err(error) = std::fs::remove_dir_all(self.0) {
+                eprintln!("remove HTTP fallback test directory: {error}");
+            }
+        }
+    }
+    let _work_dir_cleanup = WorkDirCleanup(&work_dir);
+    if matches!(case, RangeRestartCase::Success) {
+        use sha2::{Digest, Sha256};
+        let key = hex::encode(Sha256::digest(tag.as_bytes()));
+        let stale = work_dir.join(format!(".fluxdown-restart-{key}"));
+        tokio::fs::create_dir(&stale).await.unwrap();
+        tokio::fs::write(stale.join("download"), b"interrupted replacement")
+            .await
+            .unwrap();
+    }
+    let occupied = matches!(case, RangeRestartCase::Rejected(403)).then(|| {
+        use sha2::{Digest, Sha256};
+        let key = hex::encode(Sha256::digest(tag.as_bytes()));
+        work_dir.join(format!(".fluxdown-restart-{key}"))
+    });
+    if let Some(path) = &occupied {
+        tokio::fs::write(path, b"unrelated file").await.unwrap();
+    }
     let size = 16 * 1024 * 1024;
-    let prefix = size * 99 / 100;
-    let body = Arc::new(gen_body(size, 458));
+    let prefix = match case {
+        RangeRestartCase::Shallow => 8 * 1024 * 1024 - 1,
+        RangeRestartCase::Threshold => 8 * 1024 * 1024,
+        _ => size * 99 / 100,
+    };
+    let expanded = matches!(case, RangeRestartCase::Expanded);
+    let full_size = if expanded { size + 1024 * 1024 } else { size };
+    let body = Arc::new(gen_body(full_size, 458));
     let mut server_state = ServerState::new(body.clone(), "range-restart");
-    server_state.force_full_on_segment_range = true;
-    server_state.close_full_after = truncated.then_some(1024 * 1024);
+    if expanded {
+        // The first resumed segment's 206 reports more bytes than the
+        // probe. Requests for the newly appended tail then ignore Range.
+        server_state.probe_total = Some(size as i64);
+        server_state.ignore_range_from = Some(size as i64);
+    } else {
+        server_state.force_full_on_segment_range = true;
+    }
+    if let RangeRestartCase::Rejected(status) = case {
+        server_state.force_full_on_segment_range = false;
+        server_state.segment_range_rejection = Some(status);
+    }
+    server_state.close_full_after =
+        matches!(case, RangeRestartCase::Truncated).then_some(1024 * 1024);
+    server_state.hold_plain_get_after =
+        matches!(case, RangeRestartCase::Cancelled).then_some(1024 * 1024);
+    server_state.compress_plain_get = matches!(case, RangeRestartCase::Compressed);
     let server_state = Arc::new(server_state);
     let server = start_server(server_state.clone()).await;
     let url = server.url("/file");
@@ -3626,29 +3904,115 @@ async fn assert_ignored_range_restart(truncated: bool) {
     db.update_segment_progress(tag, 0, prefix as i64)
         .await
         .unwrap();
+    db.update_task_progress(tag, prefix as i64).await.unwrap();
     let mut original = body[..prefix].to_vec();
     original.resize(size, 0);
     tokio::fs::write(&checkpoint, &original).await.unwrap();
+    let checksum = if matches!(case, RangeRestartCase::ChecksumMismatch) {
+        format!("sha256={}", sha256_bytes(&original))
+    } else {
+        String::new()
+    };
 
-    let (status, dest) = run_full(
-        &work_dir,
-        &db,
-        tag,
-        &url,
-        name,
-        1,
-        0,
-        true,
-        "",
-        &CancellationToken::new(),
-    )
-    .await;
+    let cancel = CancellationToken::new();
+    let capped = matches!(case, RangeRestartCase::WindowCapped);
+    let spec = RequestSpec {
+        max_range_bytes: capped.then_some(1024 * 1024),
+        ..RequestSpec::empty_get()
+    };
+    let download = run_full_with_spec(
+        &work_dir, &db, tag, &url, name, 1, 0, true, &checksum, &cancel, spec,
+    );
+    tokio::pin!(download);
+    if matches!(case, RangeRestartCase::Cancelled) {
+        // Wait for bytes to reach the staging file, not just for the GET to arrive.
+        let staged = async {
+            loop {
+                if range_restart_dirs(&work_dir).any(|entry| {
+                    entry
+                        .path()
+                        .join("download")
+                        .metadata()
+                        .is_ok_and(|meta| meta.len() > 0)
+                }) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        };
+        tokio::select! {
+            outcome = &mut download => panic!("download ended before cancellation: {outcome:?}"),
+            result = tokio::time::timeout(Duration::from_secs(60), staged) => {
+                result.expect("plain GET did not write any staging bytes");
+            }
+        }
+        cancel.cancel();
+    }
+    let (status, dest, staged_received) = if matches!(case, RangeRestartCase::Cancelled) {
+        tokio::time::timeout(Duration::from_secs(5), &mut download)
+            .await
+            .expect("cancellation did not stop the staged GET")
+    } else {
+        download.await
+    };
 
-    assert_eq!(server_state.plain_get_count.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        server_state.plain_get_count.load(Ordering::SeqCst),
+        if capped || matches!(case, RangeRestartCase::Rejected(_)) {
+            0
+        } else {
+            1
+        }
+    );
+    match case {
+        RangeRestartCase::Truncated => assert_eq!(staged_received, Some(1024 * 1024)),
+        RangeRestartCase::Cancelled => {
+            assert!((1..=1024 * 1024).contains(&staged_received.unwrap()));
+        }
+        RangeRestartCase::WindowCapped
+        | RangeRestartCase::Compressed
+        | RangeRestartCase::Shallow
+        | RangeRestartCase::Rejected(_) => {
+            assert_eq!(staged_received, None);
+        }
+        _ => assert_eq!(staged_received, Some(full_size as i64)),
+    }
+    if capped {
+        // Only the rejected segment responses can contribute full responses here.
+        assert!(server_state.full_get_count.load(Ordering::SeqCst) > 0);
+    }
     let saved_segments = db.load_segments(tag).await.unwrap();
-    if truncated {
-        assert_eq!(status, 4);
+    if !matches!(
+        case,
+        RangeRestartCase::Success
+            | RangeRestartCase::Expanded
+            | RangeRestartCase::Shallow
+            | RangeRestartCase::Threshold
+    ) {
+        assert_eq!(
+            status,
+            if matches!(case, RangeRestartCase::Cancelled) {
+                0 // No terminal success or failure update on cancellation.
+            } else {
+                4
+            }
+        );
         assert!(!dest.exists());
+        let row = db.load_task_by_id(tag).await.unwrap().unwrap();
+        assert_eq!(row.downloaded_bytes, prefix as i64);
+        if matches!(case, RangeRestartCase::Rejected(_)) {
+            assert!(server_state.rejected_range_count.load(Ordering::SeqCst) > 0);
+        }
+        if matches!(case, RangeRestartCase::ChecksumMismatch) {
+            assert!(
+                row.error_message.contains("checksum mismatch"),
+                "{}",
+                row.error_message
+            );
+        }
+        if matches!(case, RangeRestartCase::Compressed) {
+            assert!(row.error_message.contains("requesting identity encoding"));
+        }
         assert_eq!(sha256_file(&checkpoint).await, sha256_bytes(&original));
         assert_eq!(
             saved_segments
@@ -3659,17 +4023,29 @@ async fn assert_ignored_range_restart(truncated: bool) {
         );
     } else {
         assert_eq!(status, 3);
+        let row = db.load_task_by_id(tag).await.unwrap().unwrap();
+        assert_eq!(row.total_bytes, full_size as i64);
         assert_eq!(sha256_file(&dest).await, sha256_bytes(&body));
         assert!(!checkpoint.exists());
         assert!(saved_segments.is_empty());
     }
-    assert!(!std::fs::read_dir(&work_dir).unwrap().any(|entry| {
-        entry
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .starts_with(".fluxdown-restart-")
-    }));
+    if let Some(path) = occupied {
+        assert_eq!(tokio::fs::read(&path).await.unwrap(), b"unrelated file");
+        tokio::fs::remove_file(path).await.unwrap();
+    }
+    assert!(range_restart_dirs(&work_dir).next().is_none());
+}
+
+fn range_restart_dirs(work_dir: &Path) -> impl Iterator<Item = std::fs::DirEntry> {
+    std::fs::read_dir(work_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".fluxdown-restart-")
+        })
 }
 
 /// fnOS multiple-download 式「Range 敌对」配额端点：任何带 Range 的请求一律
@@ -3967,7 +4343,7 @@ async fn probed_all_segments_rejected_falls_back_to_plain_get() {
     let expected = sha256_bytes(&body);
 
     let mut s = ServerState::new(body.clone(), "etag-segreject");
-    s.reject_segment_range_with_400 = true; // probe 0-0 放行，分段全拒
+    s.segment_range_rejection = Some(400); // probe 0-0 放行，分段全拒
     let st = Arc::new(s);
     let server = start_server(st.clone()).await;
     let url = server.url("/file");
@@ -3999,6 +4375,55 @@ async fn probed_all_segments_rejected_falls_back_to_plain_get() {
         "❌ 单流回退的裸 GET 应恰好发生一次"
     );
     drop(server);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn automatic_connection_recovery_falls_back_when_only_ranges_are_rate_limited()
+-> anyhow::Result<()> {
+    let work_dir = unique_dir("range-only-429");
+    let body = Arc::new(gen_body(4 * 1024 * 1024, 422));
+    let mut st = ServerState::new(body.clone(), "etag-range-429");
+    st.segment_range_rejection = Some(429);
+    let st = Arc::new(st);
+    let server = start_server(st.clone()).await;
+    let url = server.url("/file");
+    let db = Db::open(&work_dir).await?;
+    insert_simple_task(
+        &db,
+        &work_dir,
+        "range-429",
+        &url,
+        "out.bin",
+        8,
+        body.len() as i64,
+    )
+    .await;
+    let (status, dest) = tokio::time::timeout(
+        std::time::Duration::from_secs(50),
+        run_full(
+            &work_dir,
+            &db,
+            "range-429",
+            &url,
+            "out.bin",
+            8,
+            0,
+            true,
+            "",
+            &CancellationToken::new(),
+        ),
+    )
+    .await?;
+    assert_eq!(status, 3);
+    assert_eq!(tokio::fs::read(dest).await?, *body);
+    assert_eq!(st.rejected_range_count.load(Ordering::SeqCst), 4);
+    assert_eq!(st.full_get_count.load(Ordering::SeqCst), 1);
+    drop(db);
+    drop(server);
+    if let Err(error) = tokio::fs::remove_dir_all(work_dir).await {
+        eprintln!("best-effort test directory cleanup: {error}");
+    }
+    Ok(())
 }
 
 /// hint 任务在【正常支持 Range 的服务器】上的保守启动不牺牲多段吞吐：
@@ -4215,7 +4640,17 @@ async fn manual_real_url_hint_download() {
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "binds a local port; run with --ignored"]
 async fn transient_200_on_resume_is_absorbed_byte_exact() {
-    let work_dir = unique_dir("transient200");
+    assert_coordinated_resume_byte_exact("transient200", false).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "binds a local port; run with --ignored"]
+async fn mislabelled_partial_content_downloads_byte_exact() {
+    assert_coordinated_resume_byte_exact("range-mislabelled-206", true).await;
+}
+
+async fn assert_coordinated_resume_byte_exact(tag: &str, mislabelled: bool) {
+    let work_dir = unique_dir(tag);
 
     if let Err(error) = tokio::fs::remove_dir_all(&work_dir).await {
         assert_eq!(
@@ -4230,7 +4665,9 @@ async fn transient_200_on_resume_is_absorbed_byte_exact() {
     let size = 8_000_003i64; // ~8MB 素数
     let body = Arc::new(gen_body(size as usize, 909));
     let expected = sha256_bytes(&body);
-    let st = Arc::new(ServerState::new(body.clone(), "etag-transient"));
+    let mut state = ServerState::new(body.clone(), "etag-transient");
+    state.mislabel_segment_range = mislabelled;
+    let st = Arc::new(state);
     let server = start_server(st.clone()).await;
     let url = server.url("/file");
 
@@ -4285,9 +4722,10 @@ async fn transient_200_on_resume_is_absorbed_byte_exact() {
         f.set_len(size as u64).await.unwrap();
     }
 
-    // ---- 武装钩子 B：唯一一程 run_coordinated_download（即"续传"）里，
-    // 对某个分段的 range GET 注入一次瞬时 200 ----
-    st.force_full_range_get_once.store(true, Ordering::SeqCst);
+    if !mislabelled {
+        // Inject one non-206 into an otherwise healthy resumed download.
+        st.force_full_range_get_once.store(true, Ordering::SeqCst);
+    }
 
     let speed_limiter = SpeedLimiter::new(0);
     let (tx, rx) = mpsc::channel::<ProgressUpdate>(256);
@@ -4324,12 +4762,13 @@ async fn transient_200_on_resume_is_absorbed_byte_exact() {
 
     dh.await.expect("test background task must not panic");
 
-    result.expect("瞬时 200 应被 do_segment_with_retry 退避重试吸收，续传应成功");
+    result.expect("coordinated resume should succeed");
+    if mislabelled {
+        assert!(st.range_get_count.load(Ordering::SeqCst) > 0);
+        assert_eq!(st.full_get_count.load(Ordering::SeqCst), 0);
+    }
 
     let got_sha = sha256_file(&dest).await;
-    assert_eq!(
-        got_sha, expected,
-        "❌ 瞬时 200 吸收后文件 SHA 不完整——数据丢失/损坏"
-    );
+    assert_eq!(got_sha, expected, "resumed output differs from source");
     drop(server);
 }

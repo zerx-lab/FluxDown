@@ -2,6 +2,7 @@ import { Users } from 'lucide-react'
 import { useT } from '../../../i18n'
 import { cn } from '../../../lib/cn'
 import { ContextMenuArea, EmptyState } from '../../../ui'
+import { useFileSizeUnits, type FileSizeUnits } from '../../../lib/fileSizeUnits'
 import { formatBytes } from '../model/task'
 import type { Translate } from '../table/text'
 import { copyEntry, PollError, RowCopyButton, SkeletonRows, useMeasuredRoot, useNowSecs } from './btParts'
@@ -78,9 +79,10 @@ function ClientText({ row }: { row: Ed2kPeerRow }) {
   )
 }
 
-const rate = (bps: number): string => (bps > 0 ? `${formatBytes(bps)}/s` : DASH)
+const rate = (bps: number, units: FileSizeUnits): string => (bps > 0 ? `${formatBytes(bps, units)}/s` : DASH)
 
 function Cell({ column, row, t, now, partsTotal }: { column: Ed2kPeerColumn; row: Ed2kPeerRow; t: Translate; now: number; partsTotal: number }) {
+  const units = useFileSizeUnits()
   switch (column) {
     case 'addr':
       return null
@@ -93,13 +95,14 @@ function Cell({ column, row, t, now, partsTotal }: { column: Ed2kPeerColumn; row
     case 'parts':
       return <span className="tabular truncate text-right text-xs text-muted-foreground">{partsText(row.parts, partsTotal) ?? DASH}</span>
     case 'downloaded':
-      return <span className="tabular truncate text-right text-xs text-muted-foreground">{row.downloaded > 0 ? formatBytes(row.downloaded) : DASH}</span>
+      return <span className="tabular truncate text-right text-xs text-muted-foreground">{row.downloaded > 0 ? formatBytes(row.downloaded, units) : DASH}</span>
     case 'speed':
-      return <span className={cn('tabular truncate text-right text-xs', row.downBps > 0 ? 'text-foreground' : 'text-text-tertiary')}>{rate(row.downBps)}</span>
+      return <span className={cn('tabular truncate text-right text-xs', row.downBps > 0 ? 'text-foreground' : 'text-text-tertiary')}>{rate(row.downBps, units)}</span>
   }
 }
 
 function Row({ row, layout, columns, t, now, partsTotal }: { row: Ed2kPeerRow; layout: Ed2kLayout; columns: readonly Ed2kPeerColumn[]; t: Translate; now: number; partsTotal: number }) {
+  const units = useFileSizeUnits()
   const menu = row.addr === '' ? [] : [copyEntry(t('btCopyPeerAddr'), row.addr, null, t)]
   const copy = row.addr === '' ? null : <RowCopyButton label={t('btCopyPeerAddr')} value={row.addr} doneKey={null} />
 
@@ -116,7 +119,7 @@ function Row({ row, layout, columns, t, now, partsTotal }: { row: Ed2kPeerRow; l
           <div className="min-w-0 flex-1">
             <StateCell row={row} t={t} now={now} />
           </div>
-          <span className={cn('tabular shrink-0 text-xs', row.downBps > 0 ? 'text-foreground' : 'text-text-tertiary')}>{rate(row.downBps)}</span>
+          <span className={cn('tabular shrink-0 text-xs', row.downBps > 0 ? 'text-foreground' : 'text-text-tertiary')}>{rate(row.downBps, units)}</span>
         </div>
         <div className="tabular mt-0.5 flex flex-wrap gap-x-3 text-xs text-text-tertiary">
           <span>{t(peerOriginKey(row.origin))}</span>

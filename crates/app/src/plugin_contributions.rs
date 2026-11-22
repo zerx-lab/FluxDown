@@ -12,6 +12,7 @@ use std::{collections::HashMap, rc::Rc, sync::Arc};
 use fluxdown_protocol::{AgentEvent, DaemonEvent, RpcErrorData, ServiceEvent, method};
 use fluxdown_ui_command_palette::{PaletteItem, PaletteItemKind};
 use fluxdown_ui_components::FluxIcon;
+use fluxdown_ui_components::toast::{self, ToastTone};
 use fluxdown_ui_downloads::{
     DownloadView, PluginCommandRunner, PluginTabViewFactory, PluginTaskCommand, PluginTaskTab,
     TaskDetailView,
@@ -117,20 +118,12 @@ fn task_commands(contributions: &Contributions) -> Vec<PluginTaskCommand> {
         .collect()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ToastKind {
-    Info,
-    Success,
-    Warning,
-    Error,
-}
-
-fn toast_kind(level: &str) -> ToastKind {
+fn toast_tone(level: &str) -> ToastTone {
     match level {
-        "success" => ToastKind::Success,
-        "warning" => ToastKind::Warning,
-        "error" => ToastKind::Error,
-        _ => ToastKind::Info,
+        "success" => ToastTone::Success,
+        "warning" => ToastTone::Warning,
+        "error" => ToastTone::Error,
+        _ => ToastTone::Info,
     }
 }
 
@@ -484,18 +477,11 @@ fn command_failed(error: &RpcErrorData, cx: &mut App) {
         .translator
         .read(cx)
         .text_with("pluginCommandFailed", &[("message", &message)]);
-    push_notification(Notification::error(text), cx);
+    push_notification(toast::error(text), cx);
 }
 
 fn show_toast(level: &str, text: &str, cx: &mut App) {
-    let text = text.to_owned();
-    let note = match toast_kind(level) {
-        ToastKind::Info => Notification::info(text),
-        ToastKind::Success => Notification::success(text),
-        ToastKind::Warning => Notification::warning(text),
-        ToastKind::Error => Notification::error(text),
-    };
-    push_notification(note, cx);
+    push_notification(toast::toast(toast_tone(level), text.to_owned()), cx);
 }
 
 fn push_notification(note: Notification, cx: &mut App) {
@@ -662,10 +648,10 @@ mod tests {
 
     #[test]
     fn maps_toast_levels() {
-        assert_eq!(toast_kind("success"), ToastKind::Success);
-        assert_eq!(toast_kind("warning"), ToastKind::Warning);
-        assert_eq!(toast_kind("error"), ToastKind::Error);
-        assert_eq!(toast_kind("info"), ToastKind::Info);
-        assert_eq!(toast_kind("weird"), ToastKind::Info);
+        assert_eq!(toast_tone("success"), ToastTone::Success);
+        assert_eq!(toast_tone("warning"), ToastTone::Warning);
+        assert_eq!(toast_tone("error"), ToastTone::Error);
+        assert_eq!(toast_tone("info"), ToastTone::Info);
+        assert_eq!(toast_tone("weird"), ToastTone::Info);
     }
 }

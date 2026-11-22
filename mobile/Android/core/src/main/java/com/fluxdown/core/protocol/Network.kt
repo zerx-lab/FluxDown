@@ -74,6 +74,12 @@ enum class NetworkRow(val rowId: String, val group: Group, val configKey: String
     BtProxyEnabled("network.btProxyEnabled", Group.BtProxy, "bt_proxy_enabled"),
     BtProxySource("network.btProxySource", Group.BtProxy, "bt_proxy_source"),
     BtProxyPeers("network.btProxyPeers", Group.BtProxy, "bt_proxy_peers"),
+    ProtocolHttp("network.protocolHttp", Group.Protocol, "proxy_protocol_http"),
+    ProtocolFtp("network.protocolFtp", Group.Protocol, "proxy_protocol_ftp"),
+    ProtocolHls("network.protocolHls", Group.Protocol, "proxy_protocol_hls"),
+    ProtocolDash("network.protocolDash", Group.Protocol, "proxy_protocol_dash"),
+    ProtocolBt("network.protocolBt", Group.Protocol, "proxy_protocol_bt"),
+    ProtocolEd2k("network.protocolEd2k", Group.Protocol, "proxy_protocol_ed2k"),
     Rules("network.rules", Group.Rules, "proxy_rules"),
     RulesAdd("network.rulesAdd", Group.Rules, null),
     RulesTest("network.rulesTest", Group.Rules, null),
@@ -81,8 +87,8 @@ enum class NetworkRow(val rowId: String, val group: Group, val configKey: String
     SiteAuthAdd("network.siteAuthAdd", Group.SiteAuth, null),
     SiteAuthClear("network.siteAuthClear", Group.SiteAuth, null);
 
-    /** 分组顺序即页面顺序（GPUI `sections/proxy.rs`）：BitTorrent 在手动代理之后、站点规则之前。 */
-    enum class Group { Mode, Manual, BtProxy, Rules, SiteAuth }
+    /** 分组顺序即页面顺序（BT block, protocol-specific proxy, then site rules). */
+    enum class Group { Mode, Manual, BtProxy, Protocol, Rules, SiteAuth }
 
     /**
      * 站点规则、手动配置与代理模式行只需配置已加载。手动字段在所有模式下都显示
@@ -94,6 +100,7 @@ enum class NetworkRow(val rowId: String, val group: Group, val configKey: String
         Group.Mode -> form.isLoaded
         Group.Manual -> form.isLoaded
         Group.BtProxy -> form.isLoaded && (this == BtProxyEnabled || form.bool(BtProxyEnabled.configKey!!))
+        Group.Protocol -> form.isLoaded
         Group.Rules -> form.isLoaded
         Group.SiteAuth -> true
     }

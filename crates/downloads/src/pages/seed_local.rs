@@ -9,6 +9,7 @@
 use std::sync::Arc;
 
 use fluxdown_protocol::{DaemonSeedLocalParams, SeedLocalResultDto};
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     BusyExt as _, ControlExt as _, FluxIcon, dialog_scroll_body, dialog_title, field_error,
     field_hint, form, form_field, input_with_action, option_group, option_row,
@@ -51,15 +52,15 @@ enum SeedOutcome {
 impl SeedOutcome {
     fn notification(&self, strings: &DownloadStrings, translator: &Translator) -> Notification {
         match self {
-            Self::Started => Notification::success(strings.seed_local_started.clone()),
+            Self::Started => toast::success(strings.seed_local_started.clone()),
             Self::Duplicate(name) if name.is_empty() => {
-                Notification::warning(translator.text("duplicateTorrentToastUnnamed").to_owned())
+                toast::warning(translator.text("duplicateTorrentToastUnnamed").to_owned())
             }
-            Self::Duplicate(name) => Notification::warning(
-                translator.text_with("duplicateTorrentToast", &[("name", name)]),
-            ),
+            Self::Duplicate(name) => {
+                toast::warning(translator.text_with("duplicateTorrentToast", &[("name", name)]))
+            }
             Self::Saved(path) => {
-                Notification::success(translator.text_with("btCreateSaved", &[("path", path)]))
+                toast::success(translator.text_with("btCreateSaved", &[("path", path)]))
             }
         }
     }

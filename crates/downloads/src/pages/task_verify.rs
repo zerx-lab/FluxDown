@@ -6,6 +6,7 @@
 //! 发起时的窗口。损坏文件列表规则与 Web `model/actions.ts::verifyTaskIntegrity` 一致。
 
 use fluxdown_protocol::{ApplicationErrorCode, RpcErrorData, TaskVerifyResult, TaskVerifyStatus};
+use fluxdown_ui_components::toast;
 use fluxdown_ui_i18n::Translator;
 use gpui::{Context, Window};
 use gpui_component::{WindowExt as _, notification::Notification};
@@ -44,7 +45,7 @@ impl DownloadView {
         let started = translator
             .read(cx)
             .text_with("verifyTaskStarted", &[("name", &name)]);
-        window.push_notification(Notification::info(started), cx);
+        window.push_notification(toast::info(started), cx);
 
         let verify = self.port.execute(DownloadsCommand::VerifyTask {
             task_id: key.task_id().to_owned(),
@@ -75,14 +76,14 @@ impl DownloadView {
 
 fn report_notice(translator: &Translator, name: &str, report: &TaskVerifyResult) -> Notification {
     match report.status {
-        TaskVerifyStatus::Intact => Notification::success(translator.text_with(
+        TaskVerifyStatus::Intact => toast::success(translator.text_with(
             "verifyTaskIntact",
             &[
                 ("name", name),
                 ("count", &report.verified_pieces.to_string()),
             ],
         )),
-        TaskVerifyStatus::Damaged => Notification::warning(translator.text_with(
+        TaskVerifyStatus::Damaged => toast::warning(translator.text_with(
             "verifyTaskDamaged",
             &[
                 ("name", name),
@@ -95,16 +96,16 @@ fn report_notice(translator: &Translator, name: &str, report: &TaskVerifyResult)
             ],
         )),
         TaskVerifyStatus::Unverifiable => {
-            Notification::warning(translator.text_with("verifyTaskUnverifiable", &[("name", name)]))
+            toast::warning(translator.text_with("verifyTaskUnverifiable", &[("name", name)]))
         }
     }
 }
 
 fn failure_notice(translator: &Translator, name: &str, error: &RpcErrorData) -> Notification {
     if error.code == ApplicationErrorCode::Conflict {
-        return Notification::warning(translator.text_with("verifyTaskBusy", &[("name", name)]));
+        return toast::warning(translator.text_with("verifyTaskBusy", &[("name", name)]));
     }
-    Notification::error(translator.text_with(
+    toast::error(translator.text_with(
         "verifyTaskFailed",
         &[("name", name), ("error", &error_text(translator, error))],
     ))

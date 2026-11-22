@@ -10,6 +10,7 @@ use fluxdown_protocol::{
     CloudOrder, CloudPlan, CloudProfile, CloudReferralValidateResult, CloudSubscription,
     RpcErrorData, method,
 };
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     ButtonVariant, ControlExt as _, FluxIcon, QrPalette, button, caption_number, card,
     dialog_scroll_body, dialog_title, icon_button, loading_button, qr_image, tabular_numbers,
@@ -25,7 +26,6 @@ use gpui::{
 use gpui_component::{
     Icon, Sizable as _, WindowExt as _, h_flex,
     input::{Input, InputEvent, InputState},
-    notification::Notification,
     skeleton::Skeleton,
     spinner::Spinner,
     v_flex,
@@ -597,7 +597,7 @@ impl PlanPurchaseDialog {
             return;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(paying.order.order_no.clone()));
-        window.push_notification(Notification::success(self.text("apiServiceCopied", cx)), cx);
+        window.push_notification(toast::success(self.text("apiServiceCopied", cx)), cx);
     }
 }
 

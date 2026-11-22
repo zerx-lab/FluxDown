@@ -71,6 +71,7 @@ impl Drop for EndpointGuard {
 async fn publish_endpoint_file(path: &Path, bound: SocketAddr) -> std::io::Result<()> {
     let endpoint = fluxdown_protocol::local_service::LocalEndpoint {
         rpc_url: format!("ws://{bound}/rpc"),
+        pipe: None,
     };
     let mut bytes = serde_json::to_vec(&endpoint).map_err(std::io::Error::other)?;
     bytes.push(b'\n');

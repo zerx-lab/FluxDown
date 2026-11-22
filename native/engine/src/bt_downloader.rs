@@ -520,17 +520,22 @@ fn torrent_is_private(torrent_bytes: &[u8]) -> bool {
     librqbit::torrent_from_bytes(torrent_bytes).is_ok_and(|torrent| torrent.info.data.private)
 }
 
-/// 把追加 tracker 以 `tr=` 参数并入磁力链接，已在链接里的 tracker 不重复追加。
-/// （种子文件的追加 tracker 走 `AddTorrentOptions::trackers`，见 [`SharedBtSession::add_input`]。）
-pub fn magnet_with_trackers(magnet: &str, trackers: &[String]) -> String {
-    let existing: HashSet<String> = url::Url::parse(magnet)
+/// 磁力链接自带的 tracker（`tr=` 参数，已解码），保持链接内顺序。
+fn magnet_trackers(magnet: &str) -> Vec<String> {
+    url::Url::parse(magnet)
         .map(|url| {
             url.query_pairs()
                 .filter(|(key, _)| key == "tr")
                 .map(|(_, value)| value.into_owned())
                 .collect()
         })
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+/// 把追加 tracker 以 `tr=` 参数并入磁力链接，已在链接里的 tracker 不重复追加。
+/// （种子文件的追加 tracker 走 `AddTorrentOptions::trackers`，见 [`SharedBtSession::add_input`]。）
+pub fn magnet_with_trackers(magnet: &str, trackers: &[String]) -> String {
+    let existing: HashSet<String> = magnet_trackers(magnet).into_iter().collect();
     let mut out = magnet.to_owned();
     for tracker in trackers {
         if existing.contains(tracker) {
@@ -755,6 +760,7 @@ pub struct SharedBtSession {
     /// 晚于做种登记，会话重建据此与做种表合并，不漏掉校验中的任务。
     reseeding: Arc<std::sync::Mutex<HashSet<String>>>,
     session: Arc<Session>,
+    web_seeds_enabled: bool,
     /// Maps our `task_id` → librqbit `BtHandle`.
     /// Protected by an async Mutex because it's accessed from both the
     /// main actor (pause/delete) and spawned download tasks (add/finish).
@@ -825,6 +831,10 @@ pub struct SharedBtSession {
     /// 宿主在启动 / 续种前登记，每次向会话加入该任务都经 [`Self::apply_task_options`] 带上，
     /// librqbit 按新路径读写；会话里的任务改名走 [`Self::rename_file`]，同时更新这里。
     file_renames: Mutex<HashMap<String, BTreeMap<usize, PathBuf>>>,
+    /// User-added BEP 19 sources loaded from the task DB, not from the session cache.
+    /// Serializes additions with handle publication; internal detaches keep the registration.
+    /// Only permanent task deletion clears it.
+    web_seeds: Mutex<HashMap<String, Vec<String>>>,
     /// 下一次加入会话跳过初检的任务（本机做种时用户声明数据可信，或种子刚由这份数据
     /// 生成）：librqbit 只核对文件长度。由 [`Self::apply_task_options`] 取走，只生效一次。
     skip_check_once: Mutex<HashSet<String>>,
@@ -1225,6 +1235,7 @@ impl SharedBtSession {
             closing: CancellationToken::new(),
             reseeding: Arc::new(std::sync::Mutex::new(HashSet::new())),
             session,
+            web_seeds_enabled: bt_config.enable_webseed,
             handles: Mutex::new(HashMap::new()),
             pending_deletes: Mutex::new(HashMap::new()),
             inflight_adds: AtomicUsize::new(0),
@@ -1238,6 +1249,7 @@ impl SharedBtSession {
             peer_limit: AtomicUsize::new(peer_limit),
             file_levels: Mutex::new(HashMap::new()),
             file_renames: Mutex::new(HashMap::new()),
+            web_seeds: Mutex::new(HashMap::new()),
             skip_check_once: Mutex::new(HashSet::new()),
             file_ops_lock: Mutex::new(()),
             finishing: Arc::new(std::sync::Mutex::new(HashSet::new())),
@@ -1317,6 +1329,11 @@ impl SharedBtSession {
             "[BT] shared session upload speed limit updated to {} B/s",
             bps
         );
+    }
+
+    /// The setting captured when constructing this session.
+    pub(crate) fn web_seeds_enabled(&self) -> bool {
+        self.web_seeds_enabled
     }
 
     /// Get an `Arc<Session>` handle for adding torrents.
@@ -1411,10 +1428,16 @@ impl SharedBtSession {
 
     /// Store a torrent handle for a task so it can be paused/resumed later.
     pub async fn store_handle(&self, task_id: &str, handle: BtHandle) {
-        self.handles
-            .lock()
-            .await
-            .insert(task_id.to_string(), handle.clone());
+        {
+            let seeds = self.web_seeds.lock().await;
+            if let Some(seeds) = seeds.get(task_id) {
+                self.apply_web_seeds(task_id, &handle, seeds).await;
+            }
+            self.handles
+                .lock()
+                .await
+                .insert(task_id.to_string(), handle.clone());
+        }
         // 入册之后再取登记的选项：与 `set_task_piece_picking` / `set_task_limits`（先登记、
         // 再找句柄）交错时，两边总有一边看到对方，且都在本锁内设定句柄。
         let options = self.task_options.lock().await;
@@ -1526,6 +1549,9 @@ impl SharedBtSession {
         if let Some(renames) = self.file_renames.lock().await.get(task_id) {
             opts.renamed_files = renames.clone();
         }
+        if let Some(seeds) = self.web_seeds.lock().await.get(task_id) {
+            opts.web_seeds = Some(seeds.clone());
+        }
         if self.skip_check_once.lock().await.remove(task_id) {
             opts.skip_initial_check = true;
         }
@@ -1543,6 +1569,87 @@ impl SharedBtSession {
             map.remove(task_id);
         } else {
             map.insert(task_id.to_owned(), renames);
+        }
+    }
+
+    pub(crate) async fn register_web_seeds(&self, task_id: &str, seeds: Vec<String>) {
+        let mut registered = self.web_seeds.lock().await;
+        if seeds.is_empty() {
+            registered.remove(task_id);
+            return;
+        }
+        if let Some(handle) = self.cached_handle(task_id).await {
+            self.apply_web_seeds(task_id, &handle, &seeds).await;
+        }
+        registered.insert(task_id.to_owned(), seeds);
+    }
+
+    pub(crate) async fn save_web_seed(
+        &self,
+        db: &Db,
+        task_id: &str,
+        url: &str,
+        mut seeds: Vec<String>,
+    ) -> Result<(), crate::bt_task_files::BtTaskOpError> {
+        use crate::bt_task_files::BtTaskOpError;
+
+        let mut registered = self.web_seeds.lock().await;
+        let handle = self.cached_handle(task_id).await;
+        let mut added = false;
+        if let Some(handle) = &handle
+            && !handle.web_seeds().iter().any(|seed| seed.url == url)
+        {
+            self.session
+                .add_web_seed(handle, url)
+                .await
+                .map_err(|error| {
+                    // The pinned rqbit API returns an untyped anyhow error for capacity.
+                    let message = format!("{error:#}");
+                    if message
+                        == format!(
+                            "a torrent can have at most {} web seeds",
+                            crate::bt_local_seed::MAX_WEB_SEEDS
+                        )
+                    {
+                        BtTaskOpError::InvalidArgument(message)
+                    } else {
+                        BtTaskOpError::Operation(message)
+                    }
+                })?;
+            added = true;
+        }
+        if seeds.iter().any(|seed| seed == url) {
+            registered.insert(task_id.to_owned(), seeds);
+            return Ok(());
+        }
+        seeds.push(url.to_owned());
+        if let Err(error) = db.set_task_web_seeds(task_id, &seeds).await {
+            if added
+                && let Some(handle) = &handle
+                && let Err(rollback) = self.session.remove_web_seed(handle, url).await
+            {
+                return Err(BtTaskOpError::Operation(format!(
+                    "could not save web seed: {error:#}; could not undo live addition: {rollback:#}"
+                )));
+            }
+            return Err(error.into());
+        }
+        registered.insert(task_id.to_owned(), seeds);
+        Ok(())
+    }
+
+    pub(crate) async fn clear_web_seeds(&self, task_id: &str) {
+        self.web_seeds.lock().await.remove(task_id);
+    }
+
+    async fn apply_web_seeds(&self, task_id: &str, handle: &BtHandle, seeds: &[String]) {
+        for seed in seeds {
+            if let Err(error) = self.session.add_web_seed(handle, seed).await {
+                log_warn!(
+                    "[BT] task={} could not apply a stored web seed: {error:#}",
+                    short_id(task_id)
+                );
+            }
         }
     }
 
@@ -1853,7 +1960,7 @@ impl SharedBtSession {
     pub fn port_status(&self) -> crate::bt_status::BtPortStatusView {
         crate::bt_status::BtPortStatusView {
             running: true,
-            listen_port: self.session.announce_port().unwrap_or(0),
+            listen_port: self.session.listen_addr().map_or(0, |addr| addr.port()),
             mappings: self
                 .session
                 .port_mappings()
@@ -2082,6 +2189,35 @@ impl SharedBtSession {
             .join(format!("{info_hash_hex}.torrent"))
     }
 
+    /// 磁力任务在会话目录里缓存的种子元数据（`{info_hash}.torrent`，须与磁力链接的
+    /// info hash 一致），连同磁力链接原文返回；非磁力来源、无缓存或不一致时为 `None`。
+    ///
+    /// 重启后续种用它挂载，不必先联网向节点要元数据：启动时网络尚未就绪（路由器
+    /// 重启、断网）也能完成本地校验并开始做种，网络恢复后再由 DHT / tracker 找到节点。
+    async fn cached_magnet_metadata(&self, source: &TorrentSource) -> Option<(Vec<u8>, String)> {
+        let TorrentSource::Magnet(magnet) = source else {
+            return None;
+        };
+        let expected = source.info_hash_hex()?;
+        let path = self.torrent_path(&expected);
+        let bytes = match tokio::fs::read(&path).await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    log_warn!(
+                        "[BT] cached torrent {} unreadable, resolving the magnet instead: {}",
+                        path.display(),
+                        error
+                    );
+                }
+                return None;
+            }
+        };
+        librqbit::torrent_from_bytes(&bytes)
+            .is_ok_and(|parsed| parsed.info_hash.as_string().eq_ignore_ascii_case(&expected))
+            .then(|| (bytes, magnet.clone()))
+    }
+
     /// 任务是否正从磁盘重新挂载做种（本地数据校验中）。
     pub fn is_reseeding(&self, task_id: &str) -> bool {
         self.reseeding
@@ -2171,7 +2307,32 @@ impl SharedBtSession {
             ..Default::default()
         };
         self.apply_task_options(task_id, &mut opts).await;
-        let add_input = self.add_input(&source, &mut opts);
+        let add_input = match self.cached_magnet_metadata(&source).await {
+            Some((bytes, magnet)) => {
+                // 磁力链接自带的 tracker 仍要带上（缓存文件不保证带 announce）；
+                // 私有种子不追加会话 tracker，与 `add_input` 对种子文件的处理一致。
+                let mut trackers = magnet_trackers(&normalize_magnet(&magnet));
+                if !torrent_is_private(&bytes) {
+                    let extra = self
+                        .extra_trackers
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .clone();
+                    for tracker in extra {
+                        if !trackers.contains(&tracker) {
+                            trackers.push(tracker);
+                        }
+                    }
+                }
+                opts.trackers = Some(trackers);
+                log_info!(
+                    "[BT] task={} reseeding from cached torrent metadata",
+                    short_id(task_id)
+                );
+                AddTorrent::from_bytes(Bytes::from(bytes))
+            }
+            None => self.add_input(&source, &mut opts),
+        };
         let response = self
             .session
             .add_torrent(add_input, Some(opts))
@@ -3147,6 +3308,7 @@ fn dedup_name_in_dir(
             avoid: Some(avoid),
             allow_overwrite,
             companion_mp4: false,
+            companion_audio: false,
         },
     )
 }
@@ -3804,6 +3966,7 @@ fn bt_runtime(
         total_bytes,
         segments: Vec::new(),
         source_bytes: None,
+        hls_fragments: None,
     }
 }
 
@@ -6089,6 +6252,7 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<BtInnerExit, DownloadErro
             }
             // Dialog selection known only post-add: wait out Initializing, then apply (#90).
             BtSelectionStrategy::All | BtSelectionStrategy::PostAdd => {
+                let _local_work = crate::transfer_activity::LocalWorkGuard::new(sink.clone());
                 let only: HashSet<usize> = selected_indices
                     .iter()
                     .copied()
@@ -6292,6 +6456,7 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<BtInnerExit, DownloadErro
     // periodic summary at PROGRESS_LOG_INTERVAL.
     let mut last_progress_log: Option<Instant> = None;
     let mut last_logged_status: i32 = -1;
+    let mut initialization_work = None;
 
     loop {
         // Check cancellation — the manager layer (pause_task / cancel_task)
@@ -6307,6 +6472,15 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<BtInnerExit, DownloadErro
         }
 
         let stats = handle.stats();
+        if matches!(
+            stats.state,
+            librqbit::TorrentStatsState::Initializing { .. }
+        ) {
+            initialization_work
+                .get_or_insert_with(|| crate::transfer_activity::LocalWorkGuard::new(sink.clone()));
+        } else {
+            initialization_work = None;
+        }
         // Guard: if this is the very first iteration of the loop (i.e. the
         // torrent just came back from add_torrent / AlreadyManaged + unpause)
         // and librqbit hasn't transitioned to Live yet, spin-wait up to 1s
@@ -6402,6 +6576,7 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<BtInnerExit, DownloadErro
             let Some(_finishing) = shared_bt.begin_finishing(&task_id, &handle).await else {
                 continue;
             };
+            let _local_work = crate::transfer_activity::LocalWorkGuard::new(sink.clone());
             let stats = handle.stats();
             let total = if stats.total_bytes > 0 {
                 stats.total_bytes as i64
@@ -7122,7 +7297,7 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<BtInnerExit, DownloadErro
                     seeding_status,
                     seeding_message: seeding_message.to_string(),
                     seeding_time_secs: seed_time_base,
-                    deleted_tasks: Vec::new(),
+                    ..Default::default()
                 })
                 .await
                 .is_err()
@@ -7529,6 +7704,10 @@ mod tests {
             .expect("a configured BT listener must expose its bound address");
 
         assert_eq!(listen_addr.port(), port_end);
+        let status = session.port_status();
+        assert!(status.running);
+        assert_eq!(status.listen_port, port_end);
+        assert!(status.mappings.is_empty());
         drop(session);
         drop(occupied);
         std::fs::remove_dir_all(work).expect("the BT session test directory must be removable");
@@ -7752,12 +7931,13 @@ mod tests {
 
     mod selection_save_lifecycle {
         use super::super::{
-            AddTorrent, AddTorrentResponse, Arc, AtomicBool, AtomicUsize, BtFileEntry, BtHandle,
-            BtInnerExit, BtInnerParams, BtSelectionStrategy, Bytes, Db, DownloadError, Duration,
-            HashMap, HashSet, HostSelection, ListenerMode, ListenerOptions, Mutex, Ordering, Path,
-            ProgressUpdate, STATUS_DOWNLOADING, SeedingManager, SelectionOutcome, Session,
-            SessionOptions, SessionPersistenceConfig, SharedBtSession, SocketAddr, TorrentSource,
-            bt_download_inner, bt_stage_dir, build_add_torrent_options, mpsc, probe_torrent_meta,
+            AddTorrent, AddTorrentOptions, AddTorrentResponse, Arc, AtomicBool, AtomicUsize,
+            BtFileEntry, BtHandle, BtInnerExit, BtInnerParams, BtSelectionStrategy, Bytes, Db,
+            DownloadError, Duration, HashMap, HashSet, HostSelection, ListenerMode,
+            ListenerOptions, Mutex, Ordering, Path, ProgressUpdate, STATUS_DOWNLOADING,
+            SeedingManager, SelectionOutcome, Session, SessionOptions, SessionPersistenceConfig,
+            SharedBtSession, SocketAddr, TorrentSource, bt_download_inner, bt_stage_dir,
+            build_add_torrent_options, mpsc, probe_torrent_meta, relocate_restart,
             stage_dir_has_real_data,
         };
         use crate::events::{EngineEvent, EventSink};
@@ -7784,6 +7964,7 @@ mod tests {
             observed_handle: Mutex<Option<BtHandle>>,
             /// 模拟用户浏览文件列表的时长：给对话框的后台暂停留出尝试窗口。
             answer_delay: Duration,
+            web_seed_db: Option<Db>,
         }
 
         #[async_trait::async_trait]
@@ -7813,6 +7994,12 @@ mod tests {
                 // pauses initial checking; waiting for initialization here
                 // would make the selector wait for its own answer to resume it.
                 *self.observed_handle.lock().await = Some(handle);
+                if let Some(db) = &self.web_seed_db {
+                    self.shared_bt
+                        .save_web_seed(db, task_id, RELOCATE_WEB_SEED, Vec::new())
+                        .await
+                        .expect("add HTTP source while choosing files");
+                }
                 *self.seen_save_dir.lock().await = save_dir.to_owned();
                 tokio::time::sleep(self.answer_delay).await;
                 if self.pause_on_choice {
@@ -7887,6 +8074,7 @@ mod tests {
                 closing: tokio_util::sync::CancellationToken::new(),
                 reseeding: Arc::new(std::sync::Mutex::new(HashSet::new())),
                 session,
+                web_seeds_enabled: true,
                 handles: Mutex::new(HashMap::new()),
                 pending_deletes: Mutex::new(HashMap::new()),
                 inflight_adds: AtomicUsize::new(0),
@@ -7900,6 +8088,7 @@ mod tests {
                 peer_limit: AtomicUsize::new(crate::bt_config::DEFAULT_BT_PEER_LIMIT as usize),
                 file_levels: Mutex::new(HashMap::new()),
                 file_renames: Mutex::new(HashMap::new()),
+                web_seeds: Mutex::new(HashMap::new()),
                 skip_check_once: Mutex::new(HashSet::new()),
                 file_ops_lock: Mutex::new(()),
                 finishing: Arc::new(std::sync::Mutex::new(HashSet::new())),
@@ -8073,6 +8262,7 @@ mod tests {
                     custom_name: None,
                     seen_save_dir: Mutex::new(String::new()),
                     answer_delay: Duration::ZERO,
+                    web_seed_db: None,
                     observed_handle: Mutex::new(None),
                 });
                 let (params, _progress_rx) = inner_params(
@@ -8224,6 +8414,7 @@ mod tests {
                     seen_save_dir: Mutex::new(String::new()),
                     observed_handle: Mutex::new(None),
                     answer_delay: Duration::ZERO,
+                    web_seed_db: None,
                 });
                 let (mut params, _progress_rx) = inner_params(
                     &shared_bt,
@@ -8308,6 +8499,7 @@ mod tests {
                     seen_save_dir: Mutex::new(String::new()),
                     observed_handle: Mutex::new(None),
                     answer_delay: Duration::from_millis(300),
+                    web_seed_db: None,
                 });
                 let (params, mut progress_rx) = inner_params(
                     &shared_bt,
@@ -8397,6 +8589,8 @@ mod tests {
             exercise_dialog_relocate(true);
         }
 
+        const RELOCATE_WEB_SEED: &str = "http://127.0.0.1:1/mirror/";
+
         fn exercise_dialog_relocate(paused: bool) {
             let root = super::unique_test_dir(if paused {
                 "dialog_relocate_paused"
@@ -8442,6 +8636,7 @@ mod tests {
                     seen_save_dir: Mutex::new(String::new()),
                     observed_handle: Mutex::new(None),
                     answer_delay: Duration::ZERO,
+                    web_seed_db: Some(db.clone()),
                 });
                 let (mut params, _progress_rx) = inner_params(
                     &shared_bt,
@@ -8456,16 +8651,19 @@ mod tests {
                     tokio::time::timeout(Duration::from_secs(10), bt_download_inner(params))
                         .await
                         .expect("relocate path timed out");
-                match result {
-                    Err(DownloadError::Cancelled) if paused => {}
+                let restart = match result {
+                    Err(DownloadError::Cancelled) if paused => None,
                     Ok(BtInnerExit::Relocate {
-                        save_dir, indices, ..
+                        save_dir,
+                        indices,
+                        torrent_source,
                     }) if !paused => {
                         assert_eq!(save_dir, expected);
                         assert_eq!(indices, vec![0]);
+                        Some((relocate_restart(save_dir, indices), torrent_source))
                     }
                     other => panic!("unexpected relocate result (paused={paused}): {other:?}"),
-                }
+                };
                 assert_eq!(selector.seen_save_dir.lock().await.as_str(), current);
                 let task = db
                     .load_task_by_id("selection-task")
@@ -8500,6 +8698,35 @@ mod tests {
                     .clone()
                     .expect("observed handle");
                 assert!(shared_bt.session.get(handle.id().into()).is_none());
+                if let Some((restart, source)) = restart {
+                    // Reattach with the same add-option path as the next inner run,
+                    // without a manager, DB reload, or restarted session.
+                    let stage = bt_stage_dir(&restart.save_dir, "selection-task");
+                    std::fs::create_dir_all(&stage).expect("relocated staging directory");
+                    let mut opts = AddTorrentOptions {
+                        output_folder: Some(stage.to_string_lossy().into_owned()),
+                        paused: true,
+                        ..Default::default()
+                    };
+                    shared_bt
+                        .apply_task_options("selection-task", &mut opts)
+                        .await;
+                    let input = shared_bt.add_input(&source, &mut opts);
+                    let response = shared_bt
+                        .session
+                        .add_torrent(input, Some(opts))
+                        .await
+                        .expect("reattach after relocation");
+                    let AddTorrentResponse::Added(_, new_handle) = response else {
+                        panic!("expected a new handle after relocation");
+                    };
+                    assert!(
+                        new_handle
+                            .web_seeds()
+                            .iter()
+                            .any(|seed| seed.url == RELOCATE_WEB_SEED)
+                    );
+                }
                 assert_eq!(
                     published.0.lock().expect("sink").last().map(String::as_str),
                     Some(expected.as_str())
@@ -8545,6 +8772,7 @@ mod tests {
                     seen_save_dir: Mutex::new(String::new()),
                     observed_handle: Mutex::new(None),
                     answer_delay: Duration::ZERO,
+                    web_seed_db: None,
                 });
                 let (params, mut progress_rx) = inner_params(
                     &shared_bt,

@@ -23,12 +23,31 @@ const VERBOSE_TARGET_PREFIXES: &[&str] = &["fluxdown", "gpui"];
 /// 新窗口在这段时间内仍未完成首帧即告警（透明 / 空白窗口的直接证据）。
 const FIRST_FRAME_DEADLINE: Duration = Duration::from_secs(10);
 
-/// 安装日志：会话头、panic hook、`log` 门面。失败时静默（GUI 子系统没有 stderr 可报）。
+/// 安装日志：会话头、panic hook、`log` 门面。agent 数据目录写不进去时（Windows 上目录 ACL 只授权给
+/// 旧账户 SID 等）改写 `local_service::local_fallback_dir` 下的 `logs/`，启动失败仍有迹可查；都
+/// 失败时静默（GUI 子系统没有 stderr 可报）。
 pub(crate) fn init() {
-    let dir = crate::app::agent_data_dir().join("logs");
-    let Ok(log) = fluxdown_logfile::init_global(&dir, "desktop", session_header()) else {
-        return;
-    };
+    let agent_dir = crate::app::agent_data_dir();
+    let primary_dir = agent_dir.join("logs");
+    let (log, primary_error) =
+        match fluxdown_logfile::init_global(&primary_dir, "desktop", session_header()) {
+            Ok(log) => (log, None),
+            Err(error) => {
+                let Some(fallback) =
+                    fluxdown_protocol::local_service::local_fallback_dir(&agent_dir)
+                else {
+                    return;
+                };
+                let Ok(log) = fluxdown_logfile::init_global(
+                    &fallback.join("logs"),
+                    "desktop",
+                    session_header(),
+                ) else {
+                    return;
+                };
+                (log, Some(error))
+            }
+        };
     fluxdown_logfile::install_panic_hook();
     let verbose = std::env::var("FLUXDOWN_LOG_LEVEL")
         .ok()
@@ -41,6 +60,12 @@ pub(crate) fn init() {
     let max = filter.verbose.max(filter.others);
     if log::set_boxed_logger(Box::new(DesktopLogger { log, filter })).is_ok() {
         log::set_max_level(max);
+    }
+    if let Some(error) = primary_error {
+        log::warn!(
+            "desktop log directory {} is not writable ({error}); logging to the fallback directory instead",
+            primary_dir.display()
+        );
     }
 }
 

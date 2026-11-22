@@ -31,6 +31,7 @@
 pub mod filter;
 pub mod model;
 pub mod parser;
+pub mod preview;
 
 pub use model::RSS_PROVIDER_ID;
 
@@ -49,7 +50,7 @@ use crate::logger::{log_error, log_info};
 use crate::proxy_config::{ProxyConfig, ProxyMode};
 use crate::rss::filter::{CompiledRule, FilterRule, Verdict};
 use crate::rss::model::{RssItemInfo, RssItemStatus, RssSourceInfo};
-use crate::rss::parser::{MAX_FEED_BYTES, ParsedFeed, parse_feed};
+use crate::rss::parser::{MAX_FEED_BYTES, ParsedFeed, parse_feed_at};
 use crate::rule_route::EgressRouter;
 use crate::subscription::{SubscriptionFetchRequest, SubscriptionProvider};
 
@@ -59,6 +60,7 @@ pub const MAX_ITEMS_PER_SOURCE: i32 = 500;
 pub const MAX_BACKOFF_SECS: i64 = 6 * 3600;
 /// 单次 feed 抓取的超时。
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+static FEED_PARSERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 /// 单个 `.torrent` 文件的大小上限（4 MiB）。真实种子几 KB 到几百 KB；
 /// 超过这个量级的响应基本可以断定不是种子（登录页 / 误配的直链）。
 const MAX_TORRENT_BYTES: usize = 4 * 1024 * 1024;
@@ -946,6 +948,25 @@ impl RssManager {
             }
         }
 
+        let image_backfill: Vec<_> = outcome
+            .feed
+            .items
+            .iter()
+            .filter(|item| !item.image_urls.is_empty() && known.contains(&item.guid))
+            .map(|item| (item.guid.as_str(), item.image_urls.as_slice()))
+            .collect();
+        let images_backfilled = match self
+            .db
+            .backfill_rss_images(&source.source_id, &image_backfill)
+            .await
+        {
+            Ok(changed) => changed,
+            Err(error) => {
+                log_error!("[rss] backfill image URLs failed: {error:#}");
+                false
+            }
+        };
+
         let fresh = rows.len();
         if let Err(e) = self.db.insert_rss_items(&rows).await {
             log_error!("[rss] persist items failed: {}", e);
@@ -1005,7 +1026,12 @@ impl RssManager {
                 ""
             }
         );
-        if fresh > 0 || backfilled > 0 || resolver_backfilled > 0 || !plans.is_empty() {
+        if fresh > 0
+            || backfilled > 0
+            || resolver_backfilled > 0
+            || images_backfilled
+            || !plans.is_empty()
+        {
             self.broadcast_items(&source.source_id, Vec::new()).await;
         }
         if persisted || fresh > 0 || backfilled > 0 || resolver_backfilled > 0 || !plans.is_empty()
@@ -1255,6 +1281,7 @@ fn item_from_parsed(source_id: &str, parsed: &parser::ParsedItem, fetched_at: i6
         guid: parsed.guid.clone(),
         title: parsed.title.clone(),
         link: parsed.link.clone(),
+        image_urls: Some(parsed.image_urls.clone()),
         enclosure_url: parsed.enclosure_url.clone(),
         enclosure_type: parsed.enclosure_type.clone(),
         resolver_item: parsed.resolver_item.clone(),
@@ -1431,7 +1458,7 @@ async fn fetch_feed(req: &FetchRequest) -> Result<ParsedFeed, String> {
         egress: req.egress.clone(),
         ..downloader::RequestSpec::empty_get()
     };
-    let resp = downloader::build_request(&client, &req.url, reqwest::Method::GET, &spec)
+    let mut resp = downloader::build_request(&client, &req.url, reqwest::Method::GET, &spec)
         .timeout(FETCH_TIMEOUT)
         .send()
         .await
@@ -1440,16 +1467,28 @@ async fn fetch_feed(req: &FetchRequest) -> Result<ParsedFeed, String> {
     if !status.is_success() {
         return Err(format!("HTTP {status}"));
     }
-    // 先看 Content-Length 早退，再按实际字节兜底——`parse_feed` 内部同样有
-    // 上限检查，此处是为了不把超大响应先读满内存。
+    // Enforce the limit while reading, including chunked and decoded responses.
     if resp
         .content_length()
         .is_some_and(|n| n > MAX_FEED_BYTES as u64)
     {
         return Err("feed too large".to_string());
     }
-    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-    parse_feed(&bytes)
+    let base = resp.url().clone();
+    let mut bytes = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        if chunk.len() > MAX_FEED_BYTES - bytes.len() {
+            return Err("feed too large".to_string());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let permit = FEED_PARSERS.acquire().await.map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        parse_feed_at(&bytes, Some(&base))
+    })
+    .await
+    .map_err(|e| format!("feed parser worker failed: {e}"))?
 }
 
 /// 抓取一个 `.torrent` 文件的原始字节。**只在 off-actor 任务里调用。**
@@ -1504,6 +1543,46 @@ mod tests {
     };
     use crate::proxy_config::{ProxyConfig, ProxyMode};
     use crate::rss::model::{RssItemInfo, RssItemStatus, RssSourceInfo};
+
+    #[tokio::test]
+    async fn fetch_rejects_oversized_chunked_feed_before_the_body_finishes() -> anyhow::Result<()> {
+        use super::{FetchRequest, MAX_FEED_BYTES, fetch_feed};
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let req = FetchRequest {
+            url: format!("http://{}/feed", listener.local_addr()?),
+            provider_id: super::RSS_PROVIDER_ID.into(),
+            source_id: String::new(),
+            provider_config: String::new(),
+            cookies: String::new(),
+            user_agent: String::new(),
+            proxy_url: String::new(),
+            proxy: ProxyConfig::default(),
+            egress: None,
+        };
+        let (closed, keep_open) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await?;
+            stream.read_exact(&mut [0; 4]).await?;
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+                .await?;
+            stream
+                .write_all(format!("{:x}\r\n", MAX_FEED_BYTES + 1).as_bytes())
+                .await?;
+            stream.write_all(&vec![b'x'; MAX_FEED_BYTES + 1]).await?;
+            keep_open.await.map_err(std::io::Error::other)?;
+            Ok::<(), std::io::Error>(())
+        });
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(5), fetch_feed(&req)).await;
+        let sent = closed.send(());
+        server.await??;
+        assert_eq!(sent, Ok(()));
+        assert_eq!(result?.err().as_deref(), Some("feed too large"));
+        Ok(())
+    }
 
     fn mem_source(fail_count: i32, last_error: &str) -> RssSourceInfo {
         RssSourceInfo {
@@ -1783,6 +1862,7 @@ mod tests {
             resolver_item: String::new(),
             enclosure_length: size,
             pub_date,
+            image_urls: Vec::new(),
         }
     }
 

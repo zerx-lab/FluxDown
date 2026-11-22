@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     ControlExt as _, FluxIcon, nav_icon_color, segmented_tabs, sidebar_navigation_button,
 };
@@ -18,7 +19,6 @@ use gpui::{
 use gpui_component::{
     Icon, WindowExt as _,
     input::{Input, InputState},
-    notification::Notification,
     scroll::ScrollableElement as _,
     v_flex,
 };
@@ -139,12 +139,12 @@ impl SettingsView {
                             | SettingsErrorKind::GatewayRestartFailed
                     ) =>
                 {
-                    Some(Notification::error(
+                    Some(toast::error(
                         translator.text(error.kind.i18n_key()).to_owned(),
                     ))
                 }
                 None if snapshot.last_notice() == Some("apiServiceRestarted") => {
-                    Some(Notification::success(translator.text_with(
+                    Some(toast::success(translator.text_with(
                         "apiServiceRestarted",
                         &[("port", &snapshot.gateway().port.to_string())],
                     )))
@@ -252,7 +252,7 @@ impl SettingsView {
         cx.notify();
     }
 
-    /// 端口映射状态行可见时每 [`PORT_STATUS_POLL_INTERVAL`] 拉一次，不可见即停。
+    /// BT「连接」页签可见时每 [`PORT_STATUS_POLL_INTERVAL`] 拉一次，不可见即停。
     /// 重叠请求由 store 的在途标记挡掉。
     fn sync_port_status_poll(&mut self, visible: bool, cx: &mut Context<Self>) {
         if !visible {
@@ -539,11 +539,8 @@ impl Render for SettingsView {
             .iter()
             .find(|page| self.selected == page.key)
             .or_else(|| pages.first());
-        let port_status_visible = active.is_some_and(|page| {
-            page.key == "bt"
-                && self.active_tab_id(page) == "connection"
-                && self.store.read(cx).daemon_bool("bt_enable_upnp")
-        });
+        let port_status_visible =
+            active.is_some_and(|page| page.key == "bt" && self.active_tab_id(page) == "connection");
         self.sync_port_status_poll(port_status_visible, cx);
 
         v_flex()

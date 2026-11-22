@@ -32,9 +32,10 @@ object TorrentImport {
         saveDir: String,
         queueId: String,
         startPaused: Boolean,
+        beforeCreate: (suspend () -> Boolean)? = null,
     ): Int {
         if (uris.isEmpty()) return 0
-        if (container.store.state.value.isReadOnly) {
+        if (beforeCreate == null && container.store.state.value.isReadOnly) {
             overlays.toast(context.str(R.string.localServiceDisconnected), FluxToastKind.Error)
             return 0
         }
@@ -57,8 +58,10 @@ object TorrentImport {
                 overlays.toast(message, FluxToastKind.Warn)
                 continue
             }
+            val params = TorrentFile.createParams(data, dir, queueId, startPaused)
+            if (beforeCreate != null && !beforeCreate()) break
             try {
-                container.session.callUnit(HostMethod.daemonTaskCreate, TorrentFile.createParams(data, dir, queueId, startPaused))
+                container.session.callUnit(HostMethod.daemonTaskCreate, params)
                 created++
             } catch (e: HostException) {
                 overlays.toast(

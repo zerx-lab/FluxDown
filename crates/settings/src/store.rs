@@ -250,6 +250,21 @@ impl SettingsStore {
         cx.notify();
     }
 
+    /// Ingest the authoritative result of a direct revision-checked config patch.
+    pub(crate) fn absorb_daemon_snapshot(
+        &mut self,
+        snapshot: DaemonConfigSnapshot,
+        cx: &mut Context<Self>,
+    ) {
+        if snapshot.revision < self.daemon.revision {
+            return;
+        }
+        self.daemon = snapshot;
+        self.refresh_daemon_baselines();
+        self.overlay_local_edits();
+        cx.notify();
+    }
+
     /// 连上 / 重连拿到全量快照：退出断线只读，并重新放行渲染期按需加载（系统集成状态、
     /// 网关 token 等）。首次连接失败、断线期间失败过的读取都靠这里在恢复后重发。
     fn reopen_load_gates(&mut self) {
@@ -333,6 +348,8 @@ impl SettingsStore {
                 self.daemon_connected = *connected;
                 if *connected {
                     self.load_attempts.clear();
+                } else {
+                    self.bt_port_status = None;
                 }
             }
             _ => return,
@@ -342,6 +359,7 @@ impl SettingsStore {
 
     pub fn mark_stale(&mut self, cx: &mut Context<Self>) {
         self.stale = true;
+        self.bt_port_status = None;
         self.pending_daemon.clear();
         self.inflight_daemon.clear();
         self.pending_prefs.clear();
@@ -1194,10 +1212,10 @@ impl SettingsStore {
         }
     }
 
-    /// 端口映射状态轮询：不走 `call_with`——每 5 秒一次的后台刷新不能清掉 / 改写页面上的
-    /// 错误与提示横幅。上一轮仍在途则跳过；失败（含旧 daemon 无此方法）保留旧快照。
+    /// 监听与映射状态轮询：不走 `call_with`，避免后台刷新改写页面横幅。
+    /// 上一轮仍在途则跳过；瞬态错误保留最后一次成功的快照。
     pub fn load_bt_port_status(&mut self, cx: &mut Context<Self>) {
-        if self.stale || self.in_flight(BT_PORT_STATUS_ACTION) {
+        if !self.daemon_connected() || self.in_flight(BT_PORT_STATUS_ACTION) {
             return;
         }
         self.busy.insert(BT_PORT_STATUS_ACTION);
@@ -1219,11 +1237,19 @@ impl SettingsStore {
         result: Result<Value, RpcErrorData>,
         cx: &mut Context<Self>,
     ) {
-        if let Ok(value) = result
-            && let Ok(dto) = serde_json::from_value::<BtPortStatusDto>(value)
-            && self.bt_port_status.as_ref() != Some(&dto)
-        {
-            self.bt_port_status = Some(dto);
+        if !self.daemon_connected() {
+            return;
+        }
+        let status = match result {
+            Ok(value) => match serde_json::from_value::<BtPortStatusDto>(value) {
+                Ok(status) => Some(status),
+                Err(_) => return,
+            },
+            Err(error) if error.code == ApplicationErrorCode::Unsupported => None,
+            Err(_) => return,
+        };
+        if self.bt_port_status != status {
+            self.bt_port_status = status;
             cx.notify();
         }
     }
@@ -1677,6 +1703,9 @@ mod tests {
             assert!(!preference_is_synced(key), "{key}");
         }
         assert!(!preference_is_synced(fluxdown_ui_theme::FONT_FAMILY_KEY));
+        assert!(!preference_is_synced(
+            fluxdown_ui_components::size_units::PREF_KEY
+        ));
         assert!(!preference_is_synced("unknown.key"));
         // 同步目录内的键（含自定义分类与带每机属性的 BT / ED2K 开关）走同步链路，
         // 由「在此设备同步的范围」按需设为本机专属。

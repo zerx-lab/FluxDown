@@ -10,6 +10,14 @@ describe('routeLabel', () => {
     expect(routeLabel(t, 'rule:manual')).toBe('<taskRouteRuleManual>')
     expect(routeLabel(t, 'rule:custom')).toBe('<taskRouteRuleCustom>')
   })
+  test('global, task and BT labels match exactly before suffix split', () => {
+    expect(routeLabel(t, 'global:manual')).toBe('<taskRouteGlobalManual>')
+    expect(routeLabel(t, 'global:system')).toBe('<taskRouteGlobalSystem>')
+    expect(routeLabel(t, 'global:bypass')).toBe('<taskRouteGlobalBypass>')
+    expect(routeLabel(t, 'task:proxy')).toBe('<taskRouteTaskProxy>')
+    expect(routeLabel(t, 'bt:trackers:manual')).toBe('<taskRouteBtTrackersManual>')
+    expect(routeLabel(t, 'bt:all:system')).toBe('<taskRouteBtAllSystem>')
+  })
   test('auto labels with via suffix', () => {
     expect(routeLabel(t, 'proxy:cached:system')).toBe('<taskRouteProxyCached> · <taskRouteViaSystem>')
     expect(routeLabel(t, 'direct:manual')).toBe('<taskRouteDirect> · <taskRouteViaManual>')

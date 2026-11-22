@@ -13,9 +13,9 @@ mod shortcut_record;
 mod store;
 mod theme_library;
 mod ui;
-pub mod update_button;
 pub mod update_prompt;
 pub mod update_view;
+pub mod version_button;
 mod view;
 
 pub use port::{PortFuture, SettingsPort};
@@ -24,9 +24,11 @@ pub use search::{SettingsSearchEntry, SettingsTarget, search_index};
 pub use shortcut_display::{shortcut_label, shortcut_recording};
 pub use store::{SettingsError, SettingsErrorKind, SettingsStore};
 pub use theme_library::sync_theme_library;
-pub use update_button::{OpenUpdatePrompt, UpdateButton};
 pub use update_prompt::{
     UPDATE_PROMPT_WINDOW_HEIGHT, UPDATE_PROMPT_WINDOW_WIDTH, UpdatePromptEvent, UpdatePromptView,
+};
+pub use version_button::{
+    VERSION_WIDGET_ID, VERSION_WIDGET_LABEL_KEY, VersionButton, VersionHost, VersionHostAction,
 };
 pub use view::{
     ActivityBarToggle, SettingsContentSlots, SettingsView, SlotVisibility, VisibleSlot,

@@ -4,8 +4,6 @@ export type RateUnit = 'kb' | 'mb' | 'gb'
 
 export const RATE_UNITS: readonly RateUnit[] = ['kb', 'mb', 'gb']
 
-export const RATE_UNIT_LABEL: Record<RateUnit, string> = { kb: 'KB/s', mb: 'MB/s', gb: 'GB/s' }
-
 export const RATE_UNIT_FACTOR: Record<RateUnit, number> = { kb: 1024, mb: 1024 ** 2, gb: 1024 ** 3 }
 
 export const RATE_UNIT_STEP: Record<RateUnit, number> = { kb: 64, mb: 1, gb: 1 }

@@ -5,8 +5,8 @@ import SwiftUI
 
 /// S6 · BitTorrent 设置（常规 · 连接 · Tracker · 做种 · 防吸血）。
 /// 行与 GPUI `sections/bt.rs` 同序同键同范围；全部写入走 `ConfigEditor`（云同步键 由目录决定）。
-/// 做种关闭时其余做种行整体隐藏；订阅关闭时订阅地址置灰。断线（只读）时各分组整体置灰。
-/// 「连接 › 监听」的端口映射状态行在页签可见且端口映射开启时每 5 秒查询 `daemon.bt.portStatus`。
+/// 做种关闭时其余做种行整体隐藏；订阅关闭时订阅地址置灰。断线时禁止编辑。
+/// 「连接 › 监听」在页签可见时每 5 秒查询 `daemon.bt.portStatus`，监听和映射共用快照。
 struct BtPage: View {
     @Environment(AppContainer.self) private var container
     @Environment(HostStore.self) private var store
@@ -60,17 +60,19 @@ struct BtPage: View {
             await guardModel.poll(container.session)
         }
         .modifier(BtGuardChangeObserver { guardReload += 1 })
-        // 端口映射状态：仅在前台、「连接」页签可见且端口映射开启时轮询；换主机先清掉上一台的读数。
+        // 仅在前台且「连接」页签可见时轮询；换主机先清掉上一台的读数。
         .task(id: PortPollKey(
             active: scenePhase == .active,
-            visible: btOn && shownTab == .connection && BtSettingsRow.showsPortMappingStatus(in: form),
+            visible: btOn && shownTab == .connection && !readOnly,
             hostID: container.host.id
         )) {
-            guard scenePhase == .active, btOn, shownTab == .connection,
-                  BtSettingsRow.showsPortMappingStatus(in: editor.form) else { return }
+            guard scenePhase == .active, btOn, shownTab == .connection, !readOnly else { return }
             await portModel.poll(container.session)
         }
         .onChange(of: container.host.id) { portModel.reset() }
+        .onChange(of: readOnly) { _, disconnected in
+            if disconnected { portModel.reset() }
+        }
         // 搜索命中：先切到目标行所在页签（reveal 在 350ms 后才滚动，页签内容此时已渲染）。
         .onChange(of: focus.target, initial: true) { _, target in
             if let target, let owner = BtSettingsRow.tab(forRowID: target) { tab = owner }
@@ -125,6 +127,7 @@ struct BtPage: View {
             Section {
                 if BtSettingsRow.portStart.isVisible(in: form) {
                     ConfigNumberRow(item: BtSettingsRow.portStart.item, range: BtPortRange.bounds, fallback: 6881)
+                        .disabled(readOnly)
                 }
                 if BtSettingsRow.portEnd.isVisible(in: form) {
                     ConfigNumberRow(
@@ -132,12 +135,19 @@ struct BtPage: View {
                         range: min(max(start, BtPortRange.bounds.lowerBound), BtPortRange.bounds.upperBound) ... BtPortRange.bounds.upperBound,
                         fallback: 6891
                     )
+                    .disabled(readOnly)
                     if !BtPortRange.isValid(start: start, end: end) {
                         SettingsStatusLine(text: L("btPortRangeInvalid"), tone: .warning)
                             .transition(.opacity)
                     }
                 }
-                if BtSettingsRow.upnp.isVisible(in: form) { ConfigToggleRow(item: BtSettingsRow.upnp.item) }
+                if BtSettingsRow.listenerStatus.isVisible(in: form) {
+                    BtListenerStatusRow(status: portModel.status)
+                }
+                if BtSettingsRow.upnp.isVisible(in: form) {
+                    ConfigToggleRow(item: BtSettingsRow.upnp.item)
+                        .disabled(readOnly)
+                }
                 if BtSettingsRow.showsPortMappingStatus(in: form) {
                     BtPortMappingStatusRow(status: portModel.status)
                         .transition(.opacity.combined(with: .move(edge: .top)))
@@ -147,7 +157,6 @@ struct BtPage: View {
             } footer: {
                 Text(L("btSettingsRestartHint"))
             }
-            .disabled(readOnly)
         }
         if !BtSettingsRow.visible(inSection: .transport, form).isEmpty {
             Section(L("btSectionTransport")) {
@@ -313,7 +322,33 @@ struct BtPage: View {
     }
 }
 
-// MARK: - 端口映射状态
+// MARK: - 监听与端口映射状态
+
+private struct BtListenerStatusRow: View {
+    let status: BtPortStatus?
+
+    private var listener: String {
+        guard let status else { return L("btListenerUnavailable") }
+        guard status.running else { return L("btListenerIdle") }
+        guard status.listenPort != 0 else { return L("btListenerNoPort") }
+        return L("btListenerActive", ["port": String(status.listenPort)])
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(L("btListenerStatus"))
+            Text(listener)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+            Text(L("btReachabilityUnverified"))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .settingsRow(BtSettingsRow.listenerStatus.id)
+    }
+}
 
 /// 「连接 › 监听」末行：`daemon.bt.portStatus` 的分段读数（同 GPUI `listen_section`）。
 /// 尚无快照（首轮在途 / 旧 daemon 无此方法）时只显示标题。每段一行；失败原因压成单行，长按展开全文。

@@ -32,6 +32,14 @@ class DeviceSettings private constructor(private val prefs: SharedPreferences) {
         notifyActions = on
     }
 
+    var downloadFolderGuideDone by mutableStateOf(prefs.getBoolean("mobile.android.downloadFolderGuideDone", false))
+        private set
+
+    fun finishDownloadFolderGuide() {
+        downloadFolderGuideDone = true
+        prefs.edit().putBoolean("mobile.android.downloadFolderGuideDone", true).apply()
+    }
+
     // ── 应用自更新（设备本地，不进主机偏好）──
 
     /** 自动检查更新（默认开）。 */

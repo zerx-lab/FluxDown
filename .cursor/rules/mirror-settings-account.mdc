@@ -1,6 +1,6 @@
 ---
 description: 访问密钥策略、开机自启、应用更新/更新说明、云端推送、套餐购买判定须与 Web / Android / LuCI 镜像一致
-globs: **/native/agent/src/server_mode.rs,**/web/src/lib/token-policy.ts,**/packaging/openwrt/luci/**/fluxdown.js,**/native/agent/src/platform/autostart.rs,**/crates/settings/src/update_view.rs,**/web/src/lib/update.ts,**/web/src/lib/releaseNotes.ts,**/mobile/Android/core/src/main/java/com/fluxdown/core/update/**,**/crates/settings/src/sections/about.rs,**/crates/settings/src/model/cloud_notify.rs,**/web/src/pages/webhooks/cloudLogic.ts,**/crates/account/src/billing.rs,**/web/src/pages/settings/sections/account/billing.ts
+globs: **/native/agent/src/server_mode.rs,**/web/src/lib/token-policy.ts,**/packaging/openwrt/luci/**/fluxdown.js,**/native/agent/src/platform/autostart.rs,**/crates/settings/src/update_view.rs,**/crates/settings/src/version_button.rs,**/web/src/lib/update.ts,**/web/src/lib/releaseNotes.ts,**/web/src/lib/diagnosticInfo.ts,**/mobile/Android/core/src/main/java/com/fluxdown/core/update/**,**/crates/settings/src/sections/about.rs,**/crates/settings/src/model/cloud_notify.rs,**/web/src/pages/webhooks/cloudLogic.ts,**/crates/account/src/billing.rs,**/web/src/pages/settings/sections/account/billing.ts
 alwaysApply: false
 ---
 

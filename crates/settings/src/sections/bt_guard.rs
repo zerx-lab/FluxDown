@@ -263,7 +263,7 @@ fn thresholds_section(ctx: &SectionContext, enabled: bool) -> SettingsSection {
                 "btGuardMinTorrent",
                 Some("btGuardMinTorrentDesc"),
                 ctx.daemon_number("bt_guard_min_torrent_mib")
-                    .unit(ctx.t("btGuardUnitMib")),
+                    .unit(fluxdown_ui_components::size_units::labels()[2]),
             )
             .disabled(!enabled),
         )
@@ -294,7 +294,7 @@ fn actions_section(ctx: &SectionContext, enabled: bool) -> SettingsSection {
                 "btGuardThrottleKib",
                 Some("btGuardThrottleKibDesc"),
                 ctx.daemon_number("bt_guard_throttle_kib")
-                    .unit(ctx.t("btGuardUnitKibps")),
+                    .unit(fluxdown_ui_components::size_units::rate_labels()[1]),
             )
             .disabled(!enabled),
         )

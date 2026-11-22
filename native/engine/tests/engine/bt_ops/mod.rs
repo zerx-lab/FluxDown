@@ -9,3 +9,4 @@ mod proxy;
 mod storage_ops;
 mod swarm;
 mod versions;
+mod web_seeds;

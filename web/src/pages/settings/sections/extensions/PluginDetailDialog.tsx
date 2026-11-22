@@ -2,11 +2,12 @@
 
 import type { ReactNode } from 'react'
 import type { PluginArchiveRulesDto } from '../../../../lib/rpc'
-import { Badge, Button, ConfirmFooter, Dialog, toast } from '../../../../ui'
+import { Badge, Button, Card, ConfirmFooter, Dialog, toast } from '../../../../ui'
 import { useT } from '../../../../i18n'
 import { ExtLink } from './common'
 import type { PluginDetail } from './detail'
 import { permissionKeys, safeHttpUrl, yankedLabelKey } from './logic'
+import type { ResolverUrlConflict } from './logic'
 
 function InfoRow({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -21,8 +22,31 @@ function SectionTitle({ children }: { children: ReactNode }) {
   return <div className="pt-2 text-caption font-medium text-text-tertiary">{children}</div>
 }
 
+export function ResolverUrlConflictCard({ conflicts }: { conflicts: readonly ResolverUrlConflict[] }) {
+  const t = useT()
+  if (conflicts.length === 0) return null
+  return (
+    <Card className="flex flex-col gap-2 p-3">
+      <div><Badge tone="warning">{t('pluginResolverUrlConflictsTitle')}</Badge></div>
+      {conflicts.some(({ hint }) => hint === 'pluginResolverUrlConflictsHint') ? (
+        <p className="text-sm" role="status">{t('pluginResolverUrlConflictsHint')}</p>
+      ) : null}
+      <ul className="flex flex-col gap-2 text-sm whitespace-pre-wrap [overflow-wrap:anywhere]">
+        {conflicts.map(({ identity, pattern, otherIdentity, otherPattern, hint }) => (
+          <li key={JSON.stringify([identity, pattern, otherIdentity, otherPattern])}>
+            {hint !== 'pluginResolverUrlConflictsHint' ? <div>{t(hint)}</div> : null}
+            <div>{identity}: <code>{pattern}</code></div>
+            <div>{otherIdentity}: <code>{otherPattern}</code></div>
+          </li>
+        ))}
+      </ul>
+    </Card>
+  )
+}
+
 export function PluginDetailDialog({
   detail,
+  conflicts,
   onClose,
   onAudit,
   archiveRules,
@@ -32,6 +56,7 @@ export function PluginDetailDialog({
   onArchiveRefresh,
 }: {
   detail: PluginDetail | null
+  conflicts: readonly ResolverUrlConflict[]
   onClose: () => void
   /** 已安装插件才提供：打开该插件的审计记录。 */
   onAudit?: (identity: string) => void
@@ -75,6 +100,7 @@ export function PluginDetailDialog({
             ))}
           </div>
           <InfoRow label={t('pluginDetailIdentity')}>{shown.identity}</InfoRow>
+          <ResolverUrlConflictCard conflicts={conflicts} />
           {shown.author ? <InfoRow label={t('pluginDetailAuthor')}>{shown.author}</InfoRow> : null}
           {shown.homepage ? (
             <InfoRow label={t('pluginDetailHomepage')}>

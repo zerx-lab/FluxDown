@@ -597,6 +597,7 @@ object AccountRules {
         "linkUnavailable" -> "errReasonLinkUnavailable"
         "targetDeviceOffline" -> "errReasonTargetDeviceOffline"
         "taskStateConflict" -> "errReasonTaskStateConflict"
+        "remoteTaskGone" -> "errReasonRemoteTaskGone"
         "taskDeviceMismatch" -> "errReasonTaskDeviceMismatch"
         "saveDirUnavailable" -> "errReasonSaveDirUnavailable"
         else -> null

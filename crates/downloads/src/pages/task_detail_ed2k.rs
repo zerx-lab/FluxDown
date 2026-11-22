@@ -16,6 +16,7 @@ use fluxdown_protocol::{
     Ed2kKadPhase, Ed2kNetworkDto, Ed2kPeerDto, Ed2kPeerOrigin, Ed2kPeerState, Ed2kServerDto,
     Ed2kServerSource, Ed2kServerStatus, Ed2kStatusDto, Ed2kTaskPhase, Ed2kUpnpStatus, RpcErrorData,
 };
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{ControlExt as _, FluxIcon, tabular_numbers, tooltip_view};
 use fluxdown_ui_i18n::Translator;
 use gpui::{
@@ -28,7 +29,6 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::{DropdownMenu as _, PopupMenuItem},
-    notification::Notification,
     switch::Switch,
     v_flex,
 };
@@ -1010,7 +1010,7 @@ impl TaskDetailView {
     /// 写入失败提示：`操作失败: 原因`。
     fn ed2k_push_error(&self, text: String, window: &mut Window, cx: &mut Context<Self>) {
         window.push_notification(
-            Notification::error(format!("{}: {text}", self.strings.action_failed)),
+            toast::error(format!("{}: {text}", self.strings.action_failed)),
             cx,
         );
     }

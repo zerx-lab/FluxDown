@@ -23,6 +23,7 @@ export const METHOD = {
   DAEMON_TASK_CREATE: 'daemon.task.create',
   /** 批量建任务（`DaemonCreateTasksParams`）：整块一个事务、一次 `tasksChanged` 事件，按 `batchId` 幂等。 */
   DAEMON_TASK_CREATE_MANY: 'daemon.task.createMany',
+  DAEMON_TASK_SAVE_HTML: 'daemon.task.saveHtml',
   DAEMON_TASK_PAUSE: 'daemon.task.pause',
   DAEMON_TASK_RESUME: 'daemon.task.resume',
   DAEMON_TASK_RENAME: 'daemon.task.rename',
@@ -47,9 +48,12 @@ export const METHOD = {
   DAEMON_TASK_SET_BT_LIMITS: 'daemon.task.setBtLimits',
   /** 超级做种开关（`SetTaskSuperSeedingParams`）。 */
   DAEMON_TASK_SET_SUPER_SEEDING: 'daemon.task.setSuperSeeding',
+  DAEMON_TASK_ADD_WEB_SEED: 'daemon.task.addWebSeed',
   /** 立即向 tracker 重新汇报（`TaskIdParams`）；任务未运行 → `taskStateConflict`。 */
   DAEMON_TASK_REANNOUNCE: 'daemon.task.reannounce',
   DAEMON_TASK_DELETE: 'daemon.task.delete',
+  DAEMON_TASK_CLEAR_FILE: 'daemon.task.clearFile',
+  DAEMON_TASK_RESTART_FILE: 'daemon.task.restartFile',
   DAEMON_TASK_PAUSE_ALL: 'daemon.task.pauseAll',
   DAEMON_TASK_RESUME_ALL: 'daemon.task.resumeAll',
   DAEMON_TASK_RESCAN: 'daemon.task.rescan',
@@ -83,6 +87,7 @@ export const METHOD = {
 
   DAEMON_CONFIG_GET: 'daemon.config.get',
   DAEMON_CONFIG_PATCH: 'daemon.config.patch',
+  DAEMON_CONFIG_ARIA2_OPTIONS: 'daemon.config.aria2Options',
   DAEMON_CONFIG_PROXY_TEST: 'daemon.config.proxyTest',
   DAEMON_CONFIG_PROXY_ROUTE: 'daemon.config.proxyRoute',
   DAEMON_CONFIG_CONN_POLICY: 'daemon.config.connPolicy',
@@ -101,6 +106,7 @@ export const METHOD = {
 
   DAEMON_RSS_LIST_SOURCES: 'daemon.rss.listSources',
   DAEMON_RSS_GET_ITEMS: 'daemon.rss.getItems',
+  DAEMON_RSS_GET_IMAGE: 'daemon.rss.getImage',
   DAEMON_RSS_CREATE_SOURCE: 'daemon.rss.createSource',
   DAEMON_RSS_UPDATE_SOURCE: 'daemon.rss.updateSource',
   DAEMON_RSS_DELETE_SOURCE: 'daemon.rss.deleteSource',
@@ -247,6 +253,7 @@ export const METHOD = {
   AGENT_REMOTE_LIST: 'agent.remote.list',
   AGENT_REMOTE_DISPATCH: 'agent.remote.dispatch',
   AGENT_REMOTE_COMMAND: 'agent.remote.command',
+  AGENT_REMOTE_COMMAND_MANY: 'agent.remote.commandMany',
 
   AGENT_PLAN_LIST: 'agent.plan.list',
   AGENT_ORDER_CREATE: 'agent.order.create',
@@ -331,6 +338,8 @@ export const CAPABILITY_AGENT_GATEWAY = 'agent.gateway';
 export const CAPABILITY_AGENT_AUTH = 'agent.auth';
 export const CAPABILITY_AGENT_SYNC = 'agent.sync';
 export const CAPABILITY_AGENT_REMOTE_TASKS = 'agent.remoteTasks';
+/** 宿主支持 `agent.remote.commandMany`（批量远程指令）与 `remoteTaskGone` 原因；旧宿主逐条回退 `agent.remote.command`。 */
+export const CAPABILITY_AGENT_REMOTE_BATCH = 'agent.remoteBatch';
 export const CAPABILITY_AGENT_BILLING = 'agent.billing';
 export const CAPABILITY_AGENT_REFERRALS = 'agent.referrals';
 export const CAPABILITY_AGENT_DEVICE_LINK = 'agent.deviceLink';

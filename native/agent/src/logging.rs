@@ -49,15 +49,38 @@ pub fn init_embedded(agent_data_dir: &Path, engine_data_dir: &Path) {
 fn init_at(agent_data_dir: &Path, engine_data_dir: &Path) {
     let dir = crate::log_export::agent_log_dir(agent_data_dir);
     let header = build_header(agent_data_dir, engine_data_dir);
-    let log = match fluxdown_logfile::init_global(&dir, "agent", header) {
+    let log = match fluxdown_logfile::init_global(&dir, "agent", header.clone()) {
         Ok(log) => log,
         Err(error) => {
-            tracing::error!(path = %dir.display(), error = %error, "could not initialize agent log file");
-            eprintln!(
-                "could not initialize agent log file at {}: {error}",
-                dir.display()
+            // 数据目录本身读写不了（Windows 上目录 ACL 属于旧账户 SID 等）：改写确定性的回退目录，
+            // 启动失败仍有迹可查（桌面同样回退，见 `local_service::local_fallback_dir`）。
+            let fallback = fluxdown_protocol::local_service::local_fallback_dir(agent_data_dir)
+                .map(|fallback| fallback.join("logs"));
+            let fallback_result = fallback
+                .as_deref()
+                .map(|fallback| fluxdown_logfile::init_global(fallback, "agent", header));
+            let Some(Ok(log)) = fallback_result else {
+                let fallback_error = match fallback_result {
+                    Some(Err(fallback_error)) => {
+                        format!("; fallback also failed: {fallback_error}")
+                    }
+                    _ => String::new(),
+                };
+                tracing::error!(path = %dir.display(), error = %error, fallback = %fallback_error, "could not initialize agent log file");
+                eprintln!(
+                    "could not initialize agent log file at {}: {error}{fallback_error}",
+                    dir.display()
+                );
+                return;
+            };
+            log.log_unthrottled(
+                Level::Warn,
+                &format!(
+                    "agent log directory {} is not writable ({error}); logging to the fallback directory instead",
+                    dir.display()
+                ),
             );
-            return;
+            log
         }
     };
     fluxdown_logfile::install_panic_hook();

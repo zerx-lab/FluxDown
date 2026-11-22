@@ -38,6 +38,7 @@ import { createFloatButton, type FloatButtonController } from "@/ui/features/Flo
 import { createDownloadNotice } from "@/ui/features/DownloadNotice";
 import { normalizeDashManifest, parseDashManifestText } from "@/utils/dash-manifest";
 import { isHttpUrl } from "@/utils/media-sniff";
+import { isMediaFragment } from "@/utils/media-candidates";
 import { installErrorCapture } from "@/utils/error-log";
 import { sendAction } from "@/utils/messaging";
 import { isPageChange } from "@/utils/page-nav";
@@ -438,10 +439,17 @@ export default defineContentScript({
       switch (detail.t) {
         case "resource": {
           if (!isHttpUrl(detail.url)) return;
+          // 规则按扩展名把 `video0.jpeg` 判成图片；钩子已按魔数确认是音视频分片时按视频入库，
+          // 后台才会把它归入所属 HLS 播放列表并用作 MSE 归因的候选键。
+          const classified = classify(detail.url, detail.mime);
+          const type =
+            (classified === "image" || classified === "other") && isMediaFragment(detail.url, detail.mime)
+              ? "video"
+              : classified;
           reportResources([
             {
               url: detail.url,
-              type: classify(detail.url, detail.mime),
+              type,
               mimeType: detail.mime,
               size: detail.size,
               detectedBy: detail.via === "xhr" ? "xhr-intercept" : detail.via === "json" ? "api-scan" : "fetch-intercept",

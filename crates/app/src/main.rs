@@ -8,6 +8,7 @@ mod actions;
 mod activity;
 mod agent_client;
 mod agent_endpoint;
+mod agent_ipc;
 mod app;
 mod app_icon;
 mod assets;

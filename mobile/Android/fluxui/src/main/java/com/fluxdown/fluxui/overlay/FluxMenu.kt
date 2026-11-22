@@ -22,8 +22,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -38,6 +40,7 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.toggleableState
@@ -88,6 +91,7 @@ sealed interface FluxMenuItem {
         val hintIsPath: Boolean = false,
         val showTrailingCheck: Boolean = true,
         val radio: Boolean = false,
+        val visible: Boolean = true,
     ) : FluxMenuItem
 
     @Immutable
@@ -103,10 +107,13 @@ enum class FluxMenuAlign { Start, End }
 internal class MenuEntry(
     val id: Long,
     val anchor: Rect,
-    val items: List<FluxMenuItem>,
+    private val initialItems: List<FluxMenuItem>,
     val header: String?,
     val align: FluxMenuAlign?,
-)
+    private val liveItems: State<List<FluxMenuItem>>? = null,
+) {
+    val items: List<FluxMenuItem> get() = liveItems?.value ?: initialItems
+}
 
 /**
  * z80。烟晶菜单（Real / Thick / menuBg）：自锚点最近角缩放 .82→1 + 模糊 6→0（fluid）；
@@ -119,6 +126,8 @@ internal fun MenuLayer(state: FluxOverlayState) {
     val prog = rememberOverlayProgress()
     val last = remember { Last<MenuEntry>() }
     if (entry != null) last.value = entry
+    val lastItems = remember { Last<List<FluxMenuItem>>() }
+    if (entry != null) lastItems.value = entry.items
 
     LaunchedEffect(entry) {
         if (entry != null) prog.enter(motion.of(motion.fluid), restartAt = 0f) else prog.exit(motion.of(motion.snap))
@@ -127,6 +136,7 @@ internal fun MenuLayer(state: FluxOverlayState) {
 
     val shown = last.value
     if (shown == null || !prog.present) return
+    val items = lastItems.value ?: return
 
     val colors = FluxTheme.colors
     val status = WindowInsets.statusBars
@@ -198,17 +208,20 @@ internal fun MenuLayer(state: FluxOverlayState) {
                 .padding(6.dp),
         ) {
             shown.header?.let { MenuHeader(it) }
-            shown.items.forEach { item ->
-                when (item) {
-                    is FluxMenuItem.Header -> MenuHeader(item.label)
-                    FluxMenuItem.Divider -> Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 8.dp, vertical = 6.dp)
-                            .height(0.5.dp)
-                            .background(colors.hairline),
-                    )
-                    is FluxMenuItem.Action -> MenuRow(item, state)
+            // Live item updates keep their slots; a replacement menu resets all gestures.
+            key(shown.id) {
+                items.forEach { item ->
+                    when (item) {
+                        is FluxMenuItem.Header -> MenuHeader(item.label)
+                        FluxMenuItem.Divider -> Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp, vertical = 6.dp)
+                                .height(0.5.dp)
+                                .background(colors.hairline),
+                        )
+                        is FluxMenuItem.Action -> MenuRow(item, state)
+                    }
                 }
             }
 
@@ -241,14 +254,15 @@ private fun MenuRow(item: FluxMenuItem.Action, state: FluxOverlayState) {
         Modifier
             .fillMaxWidth()
             .heightIn(min = 48.dp)
-            .alpha(if (item.enabled) 1f else 0.38f)
+            .alpha(if (!item.visible) 0f else if (item.enabled) 1f else 0.38f)
+            .then(if (item.visible) Modifier else Modifier.clearAndSetSemantics { })
             .fluxPressable(
                 onClick = {
                     haptics.tick()
                     if (!item.keepOpen) state.dismissMenu()
                     item.onClick()
                 },
-                enabled = item.enabled,
+                enabled = item.visible && item.enabled,
                 role = when {
                     item.radio -> Role.RadioButton
                     item.showTrailingCheck -> Role.Button

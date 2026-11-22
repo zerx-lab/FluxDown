@@ -9,6 +9,9 @@ import { defineMessages } from "../define";
 const GH = "https://github.com/zerx-lab/FluxDown";
 const ext = (url: string, label: string) =>
   `<a href="${url}" rel="noopener noreferrer" target="_blank">${label}</a>`;
+/** 账单 / 退款联系邮箱:服务条款「退款」与「联系我们」两处共用。 */
+const BILLING_EMAIL = "1603852@qq.com";
+const BILLING_MAIL = `<a href="mailto:${BILLING_EMAIL}">${BILLING_EMAIL}</a>`;
 
 export const legal = defineMessages({
   en: {
@@ -153,13 +156,13 @@ export const legal = defineMessages({
       meta: {
         title: "Terms of Service - FluxDown",
         description:
-          "FluxDown terms of service: license, acceptable use, warranties and liability for the FluxDown desktop app, browser extension and website.",
+          "FluxDown terms of service: license, acceptable use, paid cloud plans, pricing, refunds, warranties and liability for the FluxDown apps, browser extension, FluxCloud and website.",
       },
       eyebrow: "Legal · Terms",
       title: "Terms of <em>Service</em>",
-      updated: "October 2026",
+      updated: "November 2026",
       intro:
-        'Please read these Terms of Service ("Terms") carefully before using FluxDown software, browser extension, and website (collectively, the "Service"). By using the Service, you agree to be bound by these Terms.',
+        'Please read these Terms of Service ("Terms") carefully before using FluxDown software, browser extension, FluxCloud cloud services, and website (collectively, the "Service"). By using the Service, you agree to be bound by these Terms.',
       sections: [
         {
           id: "acceptance",
@@ -220,24 +223,44 @@ export const legal = defineMessages({
         },
         {
           id: "plans",
-          title: "Plans & Membership Cards",
-          body: "These rules apply to the plans that come with FluxCloud.",
+          title: "Paid Plans, Pricing & Billing",
+          body: 'The FluxDown apps, browser extension and every local download feature are free. Only FluxCloud cloud services are sold, in the two forms below. Current plans, prices and term lengths are listed on the <a href="{pricing}">Pricing page</a>; the amount shown at checkout before you pay is the final amount charged.',
           items: [
-            "Membership cards are bought for a period and renewed manually; they never auto-renew and are never charged automatically. Renewing the same card extends it from its current end date. When a card expires you automatically return to your permanent plan's entitlements. Time that has already taken effect is non-refundable.",
+            "<strong>Permanent plans (one-time purchase).</strong> Paid once, in a single payment. There is no recurring fee, no billing period and nothing to renew; the plan's entitlements stay on your account for as long as the FluxCloud service operates.",
+            "<strong>Membership cards (fixed term).</strong> Paid once per term; each card's term length in days is shown on the Pricing page. Cards are renewed manually: they never auto-renew and are never charged automatically. Renewing the same card extends it from its current end date. When a card expires you automatically return to your permanent plan's entitlements, or to the free plan if you have none.",
+            "<strong>No automatic charges.</strong> We do not sell subscriptions and have no auto-renewal. You are only ever charged for a purchase you start yourself.",
+            "<strong>Payment methods and currency.</strong> WeChat Pay is settled in CNY. International cards, Apple Pay and Google Pay are processed by our payment provider Waffo and charged in USD. USDT is paid on the networks listed at checkout. Card details are handled by the payment provider and are never stored by FluxDown.",
+            "<strong>Upgrades and promotions.</strong> When upgrading, the amount already paid for your current plan may be credited, as shown at checkout. Promotional prices and referral discounts apply only where checkout shows them.",
+            "<strong>Price changes.</strong> We may change prices for future purchases. Completed orders are never repriced or charged again.",
             "For plans marked as entitlement-locked, published entitlements can only be increased, never reduced; the plan page states whether a plan is locked.",
             "Plans are for your own use. Reselling, sharing accounts or abuse (including bulk automated downloading) may result in restricted or revoked entitlements.",
           ],
         },
         {
+          id: "refunds",
+          title: "Refunds & Cancellation",
+          body: "Plans and cards are digital services activated as soon as payment is confirmed. The following rules apply equally to permanent plans and membership cards (including renewals):",
+          items: [
+            "<strong>7-day refund.</strong> You may request a full refund of any order within 7 days of payment, for any reason. The refund is the amount actually paid for that order, and the plan or card granted by that order is revoked once the refund is issued.",
+            "<strong>After 7 days.</strong> Orders are non-refundable after 7 days from payment, including membership card time that has not been used yet.",
+            "<strong>Always refunded.</strong> Duplicate charges, and payments whose plan we cannot activate, are refunded in full at any time.",
+            "<strong>Statutory rights.</strong> Nothing in these Terms limits any refund or withdrawal right you have under applicable law.",
+            "<strong>Not eligible.</strong> Orders on accounts restricted for violating these Terms are not eligible for the 7-day refund.",
+            "<strong>Cancellation.</strong> Nothing renews automatically, so there is no subscription to cancel: a membership card simply ends on its expiry date, and you are never charged again unless you buy again. To cancel an order within 7 days, request a refund as described below.",
+            `<strong>How to request.</strong> Email ${BILLING_MAIL} from your account email with your order number and the reason. We usually reply within 3 business days. Approved refunds go back to the original payment method (for USDT, to an address on the same network that you provide) and typically arrive within 5–10 business days, depending on the payment channel.`,
+            "<strong>Billing disputes.</strong> If you think a charge is wrong, please contact us before disputing it with your bank or card issuer. A refunded or charged-back order has its plan revoked.",
+          ],
+        },
+        {
           id: "changes",
           title: "Changes to These Terms",
-          body: "We reserve the right to modify these Terms at any time. Updated Terms will be posted on this page with a revised date. Your continued use of the Service after any changes indicates your acceptance of the new Terms.",
+          body: "We reserve the right to modify these Terms at any time. Updated Terms will be posted on this page with a revised date. Your continued use of the Service after any changes indicates your acceptance of the new Terms. Changes never apply retroactively to orders already completed.",
           items: [],
         },
         {
           id: "contact",
           title: "Contact Us",
-          body: 'If you have any questions about these Terms of Service, please reach out to us through the <a href="{feedback}">Feedback page</a> on our website.',
+          body: `For billing and refunds, email ${BILLING_MAIL}. For any other questions about these Terms of Service, reach out to us through the <a href="{feedback}">Feedback page</a> on our website.`,
           items: [],
         },
       ],
@@ -450,13 +473,14 @@ export const legal = defineMessages({
     terms: {
       meta: {
         title: "服务条款 - FluxDown",
-        description: "FluxDown 服务条款：FluxDown 桌面应用、浏览器扩展与网站的许可、合理使用、担保与责任限制。",
+        description:
+          "FluxDown 服务条款：FluxDown 应用、浏览器扩展、FluxCloud 与网站的许可、合理使用、付费套餐、收费方式、退款、担保与责任限制。",
       },
       eyebrow: "法律 · 条款",
       title: "服务<em>条款</em>",
-      updated: "2026 年 10 月",
+      updated: "2026 年 11 月",
       intro:
-        "请在使用 FluxDown 软件、浏览器扩展和网站（统称「服务」）前仔细阅读本服务条款（以下简称「条款」）。使用本服务即表示您同意受本条款约束。",
+        "请在使用 FluxDown 软件、浏览器扩展、FluxCloud 云端服务和网站（统称「服务」）前仔细阅读本服务条款（以下简称「条款」）。使用本服务即表示您同意受本条款约束。",
       sections: [
         {
           id: "acceptance",
@@ -517,24 +541,44 @@ export const legal = defineMessages({
         },
         {
           id: "plans",
-          title: "套餐与会员卡",
-          body: "以下规则适用于 FluxCloud 的套餐。",
+          title: "付费套餐、价格与计费",
+          body: 'FluxDown 应用、浏览器扩展及全部本地下载功能免费。收费的只有 FluxCloud 云端服务，分为以下两种形式。当前在售套餐、价格与期限见<a href="{pricing}">定价页</a>；以付款前结账页显示的金额为最终扣款金额。',
           items: [
-            "会员卡按周期购买、手动续费，不会自动续费或自动扣款；续费同一张卡时从当前到期时间顺延。到期后自动回到永久套餐的权益。已生效的时长不退款。",
+            "<strong>永久套餐（一次性买断）。</strong>一次付清，单笔扣款。无周期费用、无计费周期、无需续费；在 FluxCloud 服务运营期间，套餐权益持续保留在您的账户上。",
+            "<strong>会员卡（期限卡）。</strong>按期一次性购买，每张卡的期限天数在定价页标注。会员卡手动续费，不会自动续费或自动扣款；续费同一张卡时从当前到期时间顺延。到期后自动回到永久套餐的权益；没有永久套餐则回到免费版。",
+            "<strong>无自动扣费。</strong>我们不提供订阅制，也没有自动续费；只有您自己发起的购买才会扣款。",
+            "<strong>支付方式与币种。</strong>微信支付以人民币结算；国际银行卡、Apple Pay、Google Pay 由支付服务商 Waffo 处理，以美元扣款；USDT 按结账页列出的网络支付。银行卡信息由支付服务商处理，FluxDown 不存储。",
+            "<strong>升级与优惠。</strong>升级时，当前套餐已付金额可按结账页所示抵扣。活动价与推荐码优惠仅在结账页显示时适用。",
+            "<strong>价格调整。</strong>我们可能调整今后购买的价格；已完成的订单不会被重新定价或再次扣款。",
             "开启「权益锁定」的套餐，已公示权益只增不减；是否锁定以套餐页标注为准。",
             "套餐限本人使用，转售、共享账号或滥用（含批量自动化下载）可限制或回收权益。",
           ],
         },
         {
+          id: "refunds",
+          title: "退款与取消",
+          body: "套餐与会员卡属于付款确认后即时开通的数字服务。以下规则同样适用于永久套餐与会员卡（含续费订单）：",
+          items: [
+            "<strong>7 天退款。</strong>任一订单在付款后 7 天内，可无理由申请全额退款。退款金额为该订单实际支付金额；退款完成后，撤销该订单开通的套餐或会员卡。",
+            "<strong>超过 7 天。</strong>付款满 7 天后订单不予退款，包括会员卡尚未使用的时长。",
+            "<strong>始终全额退款。</strong>重复扣款，以及付款后我们无法为您开通套餐的订单，任何时候都全额退款。",
+            "<strong>法定权利。</strong>本条款不限制您依适用法律享有的任何退款或撤销权利。",
+            "<strong>不适用情形。</strong>因违反本条款被限制的账户，其订单不适用 7 天退款。",
+            "<strong>取消。</strong>没有任何自动续费，因此无需取消订阅：会员卡到期即自然结束，除非您再次购买，否则不会再扣款。如需在 7 天内取消订单，请按下文申请退款。",
+            `<strong>申请方式。</strong>请使用账户邮箱发送邮件至 ${BILLING_MAIL}，注明订单号与退款原因。我们通常在 3 个工作日内回复。退款原路退回（USDT 订单退回您提供的同网络地址），视支付渠道一般 5–10 个工作日到账。`,
+            "<strong>账单争议。</strong>如认为扣款有误，请先联系我们，再向银行或发卡机构提出争议。已退款或被拒付的订单将撤销对应套餐。",
+          ],
+        },
+        {
           id: "changes",
           title: "条款变更",
-          body: "我们保留随时修改本条款的权利。更新后的条款将发布在本页面，并注明修订日期。在任何更改之后继续使用本服务即表示您接受新条款。",
+          body: "我们保留随时修改本条款的权利。更新后的条款将发布在本页面，并注明修订日期。在任何更改之后继续使用本服务即表示您接受新条款。条款变更不追溯适用于已完成的订单。",
           items: [],
         },
         {
           id: "contact",
           title: "联系我们",
-          body: '如果您对本服务条款有任何疑问，请通过我们网站的<a href="{feedback}">反馈页面</a>与我们联系。',
+          body: `账单与退款请发送邮件至 ${BILLING_MAIL}。对本服务条款的其他疑问，请通过我们网站的<a href="{feedback}">反馈页面</a>与我们联系。`,
           items: [],
         },
       ],

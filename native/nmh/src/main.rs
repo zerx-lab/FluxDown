@@ -92,24 +92,85 @@ fn socket_path_under(home: &Path) -> PathBuf {
     data_dir.join("ipc").join("fluxdown.sock")
 }
 
-/// Windows Named Pipe for the current account: `\\.\pipe\fluxdown-<account>`. Every byte of
-/// the lower-cased account name outside `[a-z0-9]` is encoded as `_xx` (the underscore is
-/// itself encoded), so distinct accounts never share a pipe. The agent
-/// (`native/agent/src/nmh.rs`) derives the same name; keep both in lockstep.
+/// Windows endpoint discovery file name, inside `<engine data dir>\nmh\` (next to the browser
+/// manifests). The agent creates its pipe under a fresh random name on every start and publishes
+/// it here as `{"pipe":"\\\\.\\pipe\\fluxdown-nmh-<32 lowercase hex>"}`: `\\.\pipe\` is one
+/// machine-wide namespace, so a name derived from the account would collide between same-named
+/// domain / local accounts and could be squatted by another account. The agent
+/// (`native/agent/src/nmh/endpoint_file.rs`) owns the contract; both sides pin the same literals.
 #[cfg(any(windows, test))]
-fn pipe_name_for(user: &str) -> Option<String> {
-    if user.is_empty() {
-        return None;
+const ENDPOINT_FILE: &str = "endpoint.json";
+
+/// Prefix of every published NMH pipe name; the rest is 32 lowercase hex digits.
+#[cfg(any(windows, test))]
+const NMH_PIPE_PREFIX: &str = r"\\.\pipe\fluxdown-nmh-";
+
+/// Engine data directory, mirroring the agent's `runtime::engine_data_dir` on Windows: the
+/// portable marker next to the exe selects `<exe dir>\portable_data`, otherwise
+/// `%LOCALAPPDATA%\FluxDown`, then `%APPDATA%\FluxDown`, then the exe directory.
+#[cfg(any(windows, test))]
+fn engine_data_dir_for(
+    exe_dir: &Path,
+    portable: bool,
+    local_app_data: Option<&std::ffi::OsStr>,
+    app_data: Option<&std::ffi::OsStr>,
+) -> PathBuf {
+    if portable {
+        return exe_dir.join("portable_data");
     }
-    let mut name = String::from(r"\\.\pipe\fluxdown-");
-    for byte in user.to_lowercase().bytes() {
-        if byte.is_ascii_lowercase() || byte.is_ascii_digit() {
-            name.push(char::from(byte));
-        } else {
-            name.push_str(&format!("_{byte:02x}"));
-        }
+    match local_app_data.or(app_data) {
+        Some(base) => Path::new(base).join("FluxDown"),
+        None => exe_dir.to_path_buf(),
     }
-    Some(name)
+}
+
+/// Discovery file under an engine data directory.
+#[cfg(any(windows, test))]
+fn endpoint_file_in(data_dir: &Path) -> PathBuf {
+    data_dir.join("nmh").join(ENDPOINT_FILE)
+}
+
+/// Whether `name` is a pipe name produced by the agent's contract (never a remote pipe or a file).
+#[cfg(any(windows, test))]
+fn is_nmh_pipe_name(name: &str) -> bool {
+    name.strip_prefix(NMH_PIPE_PREFIX).is_some_and(|suffix| {
+        suffix.len() == 32
+            && suffix
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
+}
+
+#[cfg(any(windows, test))]
+#[derive(Deserialize)]
+struct EndpointRecord {
+    pipe: String,
+}
+
+/// Parse the discovery file; `None` when it is malformed or names something else.
+#[cfg(any(windows, test))]
+fn parse_endpoint(bytes: &[u8]) -> Option<String> {
+    serde_json::from_slice::<EndpointRecord>(bytes)
+        .ok()
+        .map(|record| record.pipe)
+        .filter(|pipe| is_nmh_pipe_name(pipe))
+}
+
+/// The discovery file this relay reads: derived from the relay's own directory, the same way the
+/// agent installed next to it derives it.
+#[cfg(windows)]
+fn endpoint_file() -> io::Result<PathBuf> {
+    let exe = std::env::current_exe()?;
+    let exe_dir = exe
+        .parent()
+        .ok_or_else(|| io::Error::other("relay executable has no parent directory"))?;
+    let data_dir = engine_data_dir_for(
+        exe_dir,
+        exe_dir.join("portable").exists(),
+        std::env::var_os("LOCALAPPDATA").as_deref(),
+        std::env::var_os("APPDATA").as_deref(),
+    );
+    Ok(endpoint_file_in(&data_dir))
 }
 
 /// Cold-launch candidates, in priority order, searched next to the NMH
@@ -345,17 +406,48 @@ fn write_message_frame(writer: &mut impl Write, data: &[u8]) -> io::Result<()> {
 mod pipe {
     use std::fs::OpenOptions;
     use std::io::{self, Read, Write};
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::time::{Duration, Instant};
+
+    /// `ERROR_PIPE_BUSY`: every instance of the pipe is serving another relay right now.
+    const ERROR_PIPE_BUSY: i32 = 231;
+    /// How long to wait for a free instance before giving up on this attempt.
+    const PIPE_BUSY_WAIT: Duration = Duration::from_secs(2);
+    const PIPE_BUSY_POLL: Duration = Duration::from_millis(20);
+    /// `SECURITY_IDENTIFICATION` (std adds `SECURITY_SQOS_PRESENT`): the pipe server may identify
+    /// this relay but never impersonate it.
+    const SECURITY_IDENTIFICATION: u32 = 0x0001_0000;
 
     pub struct PipeHandle {
         file: std::fs::File,
     }
 
+    /// Whether `error` means the endpoint is alive but had no free instance within the wait.
+    pub fn is_busy(error: &io::Error) -> bool {
+        error.raw_os_error() == Some(ERROR_PIPE_BUSY)
+    }
+
     impl PipeHandle {
         /// Open the App's Named Pipe. `NotFound` means the App is not running; any other error
-        /// (notably `PermissionDenied` for a pipe created by an elevated App) is worth logging.
+        /// (`PermissionDenied`, a busy pipe after [`PIPE_BUSY_WAIT`]) is worth logging.
         pub fn connect(pipe_name: &str) -> io::Result<Self> {
-            let file = OpenOptions::new().read(true).write(true).open(pipe_name)?;
-            Ok(PipeHandle { file })
+            let deadline = Instant::now() + PIPE_BUSY_WAIT;
+            loop {
+                match OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .security_qos_flags(SECURITY_IDENTIFICATION)
+                    .open(pipe_name)
+                {
+                    Ok(file) => return Ok(PipeHandle { file }),
+                    // The agent keeps one instance listening, but concurrent relays (one per
+                    // dedicated plugin port) can briefly take them all; wait like WaitNamedPipe.
+                    Err(error) if is_busy(&error) && Instant::now() < deadline => {
+                        std::thread::sleep(PIPE_BUSY_POLL);
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
         }
 
         pub fn write_message(&mut self, data: &[u8]) -> io::Result<()> {
@@ -711,21 +803,42 @@ fn is_healable_install(bundle: &Path) -> bool {
 }
 
 /// Returns the IPC address string for `pipe::PipeHandle::connect()`.
-/// On Windows this is the per-user Named Pipe path (empty when the account name is
-/// unavailable, which makes every connect fail); on non-Windows the argument is ignored
-/// and the Unix socket path is resolved inside the `pipe` module.
-fn ipc_address() -> String {
+/// On Windows this is the pipe name the agent published in its discovery file (read again on
+/// every attempt: a restarted agent listens under a new name); a missing file is `NotFound`
+/// ("App not running"), an unreadable or malformed one is an error worth logging. On non-Windows
+/// the address is ignored and the Unix socket path is resolved inside the `pipe` module.
+fn ipc_address() -> io::Result<String> {
     #[cfg(windows)]
     {
-        std::env::var("USERNAME")
-            .ok()
-            .and_then(|user| pipe_name_for(&user))
-            .unwrap_or_default()
+        let path = endpoint_file()?;
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Err(error),
+            // Reported as `Other`: unlike a refusing pipe, an unreadable file says nothing
+            // about whether the App runs, so the launch path stays available.
+            Err(error) => {
+                return Err(io::Error::other(format!(
+                    "cannot read the endpoint file {}: {error}",
+                    path.display()
+                )));
+            }
+        };
+        parse_endpoint(&bytes).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("endpoint file {} is invalid", path.display()),
+            )
+        })
     }
     #[cfg(not(windows))]
     {
-        String::new()
+        Ok(String::new())
     }
+}
+
+/// Resolve the endpoint and open it once.
+fn open_endpoint() -> io::Result<pipe::PipeHandle> {
+    pipe::PipeHandle::connect(&ipc_address()?)
 }
 
 /// Connect errors that only mean "the App is not running" (no endpoint, or a stale Unix socket).
@@ -736,12 +849,21 @@ fn app_not_running(error: &io::Error) -> bool {
     )
 }
 
+/// Windows: the endpoint exists and its server is alive, so launching another App instance cannot
+/// help (it finds the running one and exits). `PermissionDenied` comes from a pipe this account may
+/// not open (an older, elevated FluxDown, or another account's pipe); a busy pipe stayed busy for
+/// the whole wait.
+#[cfg(windows)]
+fn app_running_but_unreachable(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::PermissionDenied || pipe::is_busy(error)
+}
+
 /// Log text for a failed connect. `PermissionDenied` means the endpoint exists but this relay may
-/// not open it: on Windows the App was started elevated (its pipe then belongs to Administrators).
+/// not open it: on Windows an older App started elevated (its pipe then belongs to Administrators).
 fn describe_connect_error(error: &io::Error) -> String {
     if error.kind() == io::ErrorKind::PermissionDenied {
         format!(
-            "{error}; the App is probably running as administrator, quit it from the tray and start it normally"
+            "{error}; the pipe belongs to an elevated FluxDown or another account, quit FluxDown from the tray and start it normally"
         )
     } else {
         error.to_string()
@@ -765,8 +887,8 @@ fn log_connect_error(error: &io::Error) {
 }
 
 /// One direct connect attempt (never launches the App). Unexpected failures are logged once.
-fn connect_direct(addr: &str) -> Result<pipe::PipeHandle, io::Error> {
-    let result = pipe::PipeHandle::connect(addr);
+fn connect_direct() -> Result<pipe::PipeHandle, io::Error> {
+    let result = open_endpoint();
     match &result {
         Ok(_) => LOGGED_CONNECT_ERROR.with(|logged| *logged.borrow_mut() = None),
         Err(error) if !app_not_running(error) => log_connect_error(error),
@@ -779,22 +901,20 @@ fn connect_direct(addr: &str) -> Result<pipe::PipeHandle, io::Error> {
 /// (subject to cooldown) and poll at a fixed 50ms interval until the
 /// endpoint appears or the timeout is reached.
 ///
-/// On Windows an endpoint that exists but refuses this relay (`PermissionDenied`) is
-/// not "App not running": a named pipe vanishes with its server, so the refusing
-/// server is alive (elevated) and launching another App instance cannot help (it
-/// finds the running one and exits); fail fast instead of waiting out the launch
-/// timeout. On Unix the same error can be a stale root-owned socket that a freshly
-/// launched agent replaces, so the launch path stays.
+/// On Windows an endpoint that exists but refuses this relay (`PermissionDenied`) or stays busy is
+/// not "App not running": a named pipe vanishes with its server, so the server is alive and
+/// launching another App instance cannot help (it finds the running one and exits); fail fast
+/// instead of waiting out the launch timeout. On Unix the same error can be a stale root-owned
+/// socket that a freshly launched agent replaces, so the launch path stays.
 fn connect_with_auto_launch(last_launch: &mut Option<Instant>) -> Option<pipe::PipeHandle> {
-    let addr = ipc_address();
-
     // Fast path: App is already running.
-    match connect_direct(&addr) {
+    match connect_direct() {
         Ok(p) => {
             log("ipc connected (fast path)");
             return Some(p);
         }
-        Err(error) if cfg!(windows) && error.kind() == io::ErrorKind::PermissionDenied => {
+        #[cfg(windows)]
+        Err(error) if app_running_but_unreachable(&error) => {
             return None;
         }
         Err(_) => {}
@@ -830,7 +950,7 @@ fn connect_with_auto_launch(last_launch: &mut Option<Instant>) -> Option<pipe::P
     let deadline = Instant::now() + std::time::Duration::from_millis(APP_LAUNCH_TIMEOUT_MS);
 
     let last_error = loop {
-        match pipe::PipeHandle::connect(&addr) {
+        match open_endpoint() {
             Ok(p) => {
                 let elapsed = last_launch.map_or(0, |t| t.elapsed().as_millis() as u64);
                 log(&format!("ipc connected after {}ms", elapsed));
@@ -867,7 +987,7 @@ fn reconnect_and_resend(
     last_launch: &mut Option<Instant>,
 ) -> Option<pipe::PipeHandle> {
     let mut p = if is_no_launch {
-        connect_direct(&ipc_address()).ok()?
+        connect_direct().ok()?
     } else {
         connect_with_auto_launch(last_launch)?
     };
@@ -963,7 +1083,7 @@ fn relay() -> io::Result<()> {
         // status/query checks).
         if pipe.is_none() {
             pipe = if is_no_launch {
-                connect_direct(&ipc_address()).ok()
+                connect_direct().ok()
             } else {
                 connect_with_auto_launch(&mut last_launch)
             };
@@ -1078,29 +1198,62 @@ mod tests {
         );
     }
 
-    /// Same literals as `native/agent/src/nmh.rs` (`pipe_name_for`).
+    /// Same literals as `native/agent/src/nmh/endpoint_file.rs` (`windows_endpoint_contract`).
     #[test]
-    fn pipe_name_is_per_user_and_injective() {
+    fn windows_endpoint_contract() {
+        assert_eq!(ENDPOINT_FILE, "endpoint.json");
         assert_eq!(
-            pipe_name_for("Alice Smith").as_deref(),
-            Some(r"\\.\pipe\fluxdown-alice_20smith")
+            endpoint_file_in(Path::new("root")),
+            Path::new("root").join("nmh").join("endpoint.json")
+        );
+        let valid = r"\\.\pipe\fluxdown-nmh-0123456789abcdef0123456789abcdef";
+        assert!(is_nmh_pipe_name(valid));
+        assert_eq!(
+            parse_endpoint(
+                br#"{"pipe":"\\\\.\\pipe\\fluxdown-nmh-0123456789abcdef0123456789abcdef"}"#
+            )
+            .as_deref(),
+            Some(valid)
+        );
+        for invalid in [
+            r"\\.\pipe\fluxdown-nmh-0123456789ABCDEF0123456789abcdef",
+            r"\\.\pipe\fluxdown-nmh-0123456789abcdef",
+            r"\\server\pipe\fluxdown-nmh-0123456789abcdef0123456789abcdef",
+            r"\\.\pipe\fluxdown-alice",
+            r"C:\Users\alice\file",
+        ] {
+            assert!(!is_nmh_pipe_name(invalid), "{invalid}");
+        }
+        assert_eq!(parse_endpoint(b"{broken"), None);
+        assert_eq!(
+            parse_endpoint(br#"{"pipe":"\\\\.\\pipe\\fluxdown-alice"}"#),
+            None
+        );
+    }
+
+    /// Mirrors the agent's `runtime::engine_data_dir` (Windows branch) and the engine's
+    /// `data_dir::resolve_data_dir`: portable marker first, then `LOCALAPPDATA`, `APPDATA`, exe dir.
+    #[test]
+    fn windows_engine_data_dir_matches_the_agent() {
+        let exe_dir = Path::new("app");
+        let local = std::ffi::OsStr::new("local");
+        let roaming = std::ffi::OsStr::new("roaming");
+        assert_eq!(
+            engine_data_dir_for(exe_dir, true, Some(local), Some(roaming)),
+            exe_dir.join("portable_data")
         );
         assert_eq!(
-            pipe_name_for("a_b"),
-            Some(r"\\.\pipe\fluxdown-a_5fb".to_owned())
+            engine_data_dir_for(exe_dir, false, Some(local), Some(roaming)),
+            Path::new("local").join("FluxDown")
         );
         assert_eq!(
-            pipe_name_for("a b"),
-            Some(r"\\.\pipe\fluxdown-a_20b".to_owned())
+            engine_data_dir_for(exe_dir, false, None, Some(roaming)),
+            Path::new("roaming").join("FluxDown")
         );
         assert_eq!(
-            pipe_name_for("张三").as_deref(),
-            Some(r"\\.\pipe\fluxdown-_e5_bc_a0_e4_b8_89")
+            engine_data_dir_for(exe_dir, false, None, None),
+            exe_dir.to_path_buf()
         );
-        assert_eq!(pipe_name_for(""), None);
-        assert_ne!(pipe_name_for("alice"), pipe_name_for("bob"));
-        // Windows account names are case-insensitive.
-        assert_eq!(pipe_name_for("ALICE"), pipe_name_for("alice"));
     }
 
     #[test]

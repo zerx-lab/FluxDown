@@ -46,6 +46,7 @@ import com.fluxdown.core.model.HostRef
 import com.fluxdown.core.protocol.HostCapability
 import com.fluxdown.core.protocol.MarketEntry
 import com.fluxdown.core.protocol.PluginDto
+import com.fluxdown.core.protocol.PluginResolverUrlConflict
 import com.fluxdown.core.protocol.has
 import com.fluxdown.fluxui.controls.ButtonVariant
 import com.fluxdown.fluxui.controls.ButtonSize
@@ -81,6 +82,57 @@ import com.fluxdown.fluxui.theme.fluxPressable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+
+internal data class ResolverUrlOverlap(
+    val identity: String,
+    val patterns: PluginResolverUrlConflict,
+    val pending: Boolean,
+)
+
+@Composable
+internal fun rememberResolverUrlConflicts(plugins: List<PluginDto>, identities: Set<String>? = null) =
+    remember(plugins, identities) { resolverUrlConflicts(plugins, identities) }
+
+internal fun resolverUrlConflicts(plugins: List<PluginDto>, identities: Set<String>?): List<ResolverUrlOverlap> {
+    val enabled = plugins.filter { it.enabled }.mapTo(HashSet()) { it.identity }
+    return plugins.flatMap { plugin ->
+        plugin.resolverUrlConflicts.mapNotNull { conflict ->
+            if (identities == null || plugin.identity in identities || conflict.otherIdentity in identities) {
+                ResolverUrlOverlap(plugin.identity, conflict, !plugin.enabled || conflict.otherIdentity !in enabled)
+            } else {
+                null
+            }
+        }
+    }
+}
+
+@Composable
+internal fun ResolverUrlConflictSection(
+    conflicts: List<ResolverUrlOverlap>,
+    showTitle: Boolean = true,
+) {
+    if (conflicts.isEmpty()) return
+    GlassSection(title = if (showTitle) str(R.string.pluginResolverUrlConflictsTitle) else null) {
+        if (conflicts.any { (identity, patterns, pending) -> identity != patterns.otherIdentity && !pending }) {
+            row {
+                FluxBanner(str(R.string.pluginResolverUrlConflictsHint), kind = FluxBannerKind.Warn)
+            }
+        }
+        for ((identity, conflict, pending) in conflicts) {
+            row {
+                Column {
+                    if (identity == conflict.otherIdentity) {
+                        FluxText(str(R.string.pluginResolverUrlDuplicateHint))
+                    } else if (pending) {
+                        FluxText(str(R.string.pluginResolverUrlPendingHint))
+                    }
+                    FluxText("$identity: ${conflict.pattern}")
+                    FluxText("${conflict.otherIdentity}: ${conflict.otherPattern}")
+                }
+            }
+        }
+    }
+}
 
 /**
  * S11 · 扩展：插件（已安装 / 市场 / 文件安装）与组件，**仅远端 `--server` 主机**。
@@ -119,6 +171,7 @@ private fun ExtensionsContent() {
     val hasPlugins by remember { derivedStateOf { hostState.value.has(HostCapability.daemonPlugins) } }
     val hasComponents by remember { derivedStateOf { hostState.value.has(HostCapability.daemonComponents) } }
     val plugins by rememberPlugins()
+    val conflicts = rememberResolverUrlConflicts(plugins)
     var picker by remember { mutableStateOf<PickerSpec?>(null) }
     val ctx = rememberSettingsCtx { picker = it }
     val gate = rememberFlowInGate()
@@ -176,6 +229,9 @@ private fun ExtensionsContent() {
                         onSelect = { model.tab = it },
                     )
                 }
+            }
+            if (tab == ExtensionsModel.Tab.Plugins && hasPlugins && conflicts.isNotEmpty()) {
+                flowItem(index++, gate, "resolverUrlConflicts") { ResolverUrlConflictSection(conflicts) }
             }
             if (tab == ExtensionsModel.Tab.Plugins && hasPlugins) {
                 flowItem(index++, gate, "plugins") {
@@ -463,7 +519,7 @@ internal fun confirmUninstall(
 // ───────────────────────────── 共用浮层：权限确认 / 缺组件提醒 ─────────────────────────────
 
 /**
- * 市场安装的权限确认 Sheet 与「缺少基础组件」提醒：扩展页 / 市场页 / 详情页共用
+ * 市场权限、操作后的 URL 冲突与缺少基础组件提醒：扩展页 / 市场页 / 详情页共用
  * （同一时刻只有栈顶页面在组合中，由它呈现）。
  */
 @Composable
@@ -471,7 +527,8 @@ internal fun ExtensionsOverlays(model: ExtensionsModel, env: ExtensionsEnv) {
     val nav = LocalNavigator.current
     val overlays = LocalFluxOverlays.current
     PermissionConfirmSheet(model, env)
-    val missing = model.missingComponents
+    ResolverUrlConflictNotice(model)
+    val missing = model.missingComponents.takeIf { model.conflictNotice == null }
     LaunchedEffect(missing) {
         if (missing == null) return@LaunchedEffect
         model.missingComponents = null
@@ -489,6 +546,26 @@ internal fun ExtensionsOverlays(model: ExtensionsModel, env: ExtensionsEnv) {
                 ),
             ),
         )
+    }
+}
+
+@Composable
+private fun ResolverUrlConflictNotice(model: ExtensionsModel) {
+    val notice = model.conflictNotice.takeIf { model.permissionRequest == null }
+    val shown = rememberLastNonNull(notice)
+    val dismiss = model::dismissConflictNotice
+    FluxPortal {
+        FluxSheet(
+            visible = notice != null,
+            onDismissRequest = dismiss,
+            detent = FluxSheetDetent.Full,
+            title = str(R.string.pluginResolverUrlConflictsTitle),
+            header = {
+                FluxSheetHeader(title = str(R.string.pluginResolverUrlConflictsTitle), onClose = dismiss)
+            },
+        ) {
+            if (shown != null) ResolverUrlConflictSection(shown, showTitle = false)
+        }
     }
 }
 

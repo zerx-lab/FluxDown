@@ -39,6 +39,7 @@ fn dash_runtime(task_id: &str, state: &ProgressState) -> TaskRuntime {
             })
             .collect(),
         source_bytes: None,
+        hls_fragments: None,
     }
 }
 
@@ -858,6 +859,7 @@ async fn run_dash_download_inner(p: &DownloadParams) -> Result<i64, DownloadErro
     } else {
         0
     };
+    let _local_work = crate::transfer_activity::LocalWorkGuard::new(p.sink.clone());
 
     // --- Audio+Video muxing ---
     // DASH streams typically have separate audio and video tracks.
@@ -888,6 +890,7 @@ async fn run_dash_download_inner(p: &DownloadParams) -> Result<i64, DownloadErro
         {
             tracing::debug!("download progress receiver closed");
         }
+
         match mux_audio_video(
             &dest_path,
             &audio_path,
@@ -926,6 +929,7 @@ async fn run_dash_download_inner(p: &DownloadParams) -> Result<i64, DownloadErro
                 );
                 // Don't fail the download — both files are valid, just not merged
                 mux_succeeded = false;
+                record_audio_output(p, &audio_path).await?;
             }
         }
     }
@@ -1039,14 +1043,16 @@ async fn download_track_best_effort(
             // 与 HTTP 路径相同的三类"多段不可行"错误 → 清理多段残留（段行 +
             // 预分配临时文件）后回退单流；其余错误（取消/IO/磁盘满等）原样上抛
             // ——取消时段行与临时文件由 coordinated 路径【保留】以支持真续传。
-            Err(DownloadError::RangeNotSupported(status))
-            | Err(DownloadError::VersionChanged(status))
-            | Err(DownloadError::RangeMisaligned(status)) => {
+            Err(
+                error @ (DownloadError::RangeNotSupported(_)
+                | DownloadError::VersionChanged(_)
+                | DownloadError::RangeMisaligned(_)),
+            ) => {
                 log_info!(
                     "[dash-download] task {} track multi-segment aborted ({}) — \
                      falling back to single-stream",
                     p.task_id,
-                    status
+                    error
                 );
                 p.db.delete_segments(&p.task_id).await?;
                 let temp = PathBuf::from(format!("{}{}", dest_path.display(), TEMP_EXT));
@@ -1213,7 +1219,7 @@ async fn download_track_coordinated(
 ///   `create_new` 占名不覆盖同名旧文件；原名被占时 dedup 换名并把新文件名写回 DB
 ///   （完成信号随后上报）。覆盖授权（`p.overwrite`）或 `is_resume`（原名上的
 ///   文件是本任务续传遗留）时对原名删除旧文件后重试一次。
-/// - 音频轨是内部 sidecar（`build_audio_path`），归属本任务：替换遗留同名文件。
+/// - 音频轨使用视频的伴生名；全新下载排他占名，续传可替换本任务遗留文件。
 async fn finalize_track_rename(
     p: &DownloadParams,
     temp: &Path,
@@ -1228,12 +1234,14 @@ async fn finalize_track_rename(
             e
         ))
     };
-    if role == DashTrack::Audio {
+    if role == DashTrack::Audio && p.is_resume {
         match tokio::fs::remove_file(dest).await {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(rename_failed(e)),
         }
+    }
+    if role == DashTrack::Audio {
         crate::downloader::claim_rename(temp, dest)
             .await
             .map_err(rename_failed)?;
@@ -1252,7 +1260,7 @@ async fn finalize_track_rename(
             .await
             .map(|names| names.into_iter().map(|n| n.to_lowercase()).collect())
             .unwrap_or_default();
-    let chosen = crate::downloader::claim_final_name(
+    let chosen = crate::downloader::claim_output_name(
         temp,
         save_dir,
         name,
@@ -1262,6 +1270,7 @@ async fn finalize_track_rename(
             p.overwrite.clone()
         },
         &avoid,
+        !p.is_resume,
     )
     .await?;
     if chosen == name {
@@ -1402,15 +1411,15 @@ async fn run_track_pair_inner(
     // 视频轨）。探测失败（video_len 未知）绝不跳过——无法与 mux 产物/旧画质
     // 残留区分，宁可重下不可错拼。
     let video_temp = PathBuf::from(format!("{}{}", dest_path.display(), TEMP_EXT));
-    let video_done = match video_len {
-        Some(v) => {
+    let video_done = match (p.is_resume, video_len) {
+        (true, Some(v)) => {
             !tokio::fs::try_exists(&video_temp).await.unwrap_or(false)
                 && tokio::fs::metadata(&dest_path)
                     .await
                     .map(|m| m.len() as i64 == v)
                     .unwrap_or(false)
         }
-        None => false,
+        _ => false,
     };
 
     let (video_bytes, dest_path) = if video_done {
@@ -1476,15 +1485,15 @@ async fn run_track_pair_inner(
     // 音频轨 FS 真值跳过（与视频轨对称）：mux 阶段取消的任务 resume 时，
     // 音频轨已 rename 就位（段行已清），缺此判定会整轨重下（C4/D3）。
     let audio_temp = PathBuf::from(format!("{}{}", audio_path.display(), TEMP_EXT));
-    let audio_done = match audio_len {
-        Some(a) => {
+    let audio_done = match (p.is_resume, audio_len) {
+        (true, Some(a)) => {
             !tokio::fs::try_exists(&audio_temp).await.unwrap_or(false)
                 && tokio::fs::metadata(&audio_path)
                     .await
                     .map(|m| m.len() as i64 == a)
                     .unwrap_or(false)
         }
-        None => false,
+        _ => false,
     };
     let audio_bytes = if audio_done {
         let a = audio_len.unwrap_or(0);
@@ -1542,6 +1551,7 @@ async fn run_track_pair_inner(
     {
         tracing::debug!("download progress receiver closed");
     }
+    let _local_work = crate::transfer_activity::LocalWorkGuard::new(p.sink.clone());
 
     // 合并两轨；ffmpeg 缺失/失败时保留双文件（与 manifest 路径一致的优雅降级）。
     let mut mux_succeeded = true;
@@ -1567,6 +1577,7 @@ async fn run_track_pair_inner(
         {
             tracing::debug!("download progress receiver closed");
         }
+
         match mux_audio_video(
             &dest_path,
             &audio_path,
@@ -1598,6 +1609,7 @@ async fn run_track_pair_inner(
                     dest_path.display(),
                 );
                 mux_succeeded = false;
+                record_audio_output(p, &audio_path).await?;
             }
         }
     }
@@ -1664,6 +1676,20 @@ pub(crate) fn build_audio_path(video_path: &Path) -> PathBuf {
         Some(parent) => parent.join(file_name),
         None => PathBuf::from(file_name),
     }
+}
+
+pub(crate) async fn record_audio_output(
+    p: &DownloadParams,
+    audio: &Path,
+) -> Result<(), DownloadError> {
+    let name = audio
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            DownloadError::Other(format!("invalid audio output: {}", audio.display()))
+        })?;
+    p.db.add_task_artifact(&p.task_id, name).await?;
+    Ok(())
 }
 
 /// `selectPeriod` 阶段：多 Period 且有插件声明时让插件选择要下载的 Period，

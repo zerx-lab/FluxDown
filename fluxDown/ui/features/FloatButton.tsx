@@ -21,6 +21,7 @@ import { useT } from "@/ui/i18n";
 import { useThemeAttr } from "@/ui/theme";
 import { initI18n } from "@/utils/i18n";
 import { clamp, placePopover, type PopRect } from "@/utils/popover-position";
+import { floatInsetFor, insetFloatTop } from "@/utils/float-inset";
 import { sendAction } from "@/utils/messaging";
 import { QualityPicker } from "./QualityPicker";
 import { variantLabel } from "./labels";
@@ -128,6 +129,8 @@ function FloatRoot(props: FloatRootProps): JSX.Element {
   const rowsRef = useRef<CandidateRow[]>([]);
   rowsRef.current = rows;
   const popRef = useRef<HTMLDivElement>(null);
+  const insetsRef = useRef<PageConfig["floatInsets"]>([]);
+  insetsRef.current = config.floatInsets ?? [];
   const [coarse, setCoarse] = useState(() => typeof matchMedia === "function" && matchMedia(COARSE_QUERY).matches);
   useEffect(() => {
     if (typeof matchMedia !== "function") return;
@@ -319,16 +322,20 @@ function FloatRoot(props: FloatRootProps): JSX.Element {
           const atRight = position === "top-right" || position === "bottom-right";
           const atTop = position === "top-right" || position === "top-left";
           const x0 = atRight ? r.right - bw - BTN_MARGIN : r.left + BTN_MARGIN;
+          // page 规则 player inset：贴顶部时避开播放器自带的顶部控件条（如迷你播放器的展开 / 关闭按钮）
+          const inset = atTop && target?.tag === "video" ? floatInsetFor(el, insetsRef.current) : 0;
+          const insetTop = inset > 0 ? insetFloatTop(r.top, r.bottom, bh, inset, BTN_MARGIN) : undefined;
           // 音频控件条很矮：按钮放到控件条上方，不遮挡播放控件
-          const y0 = target?.tag === "audio"
+          const y0 = insetTop ?? (target?.tag === "audio"
             ? r.top - bh - 4
-            : atTop ? r.top + BTN_MARGIN : r.bottom - bh - BTN_MARGIN;
+            : atTop ? r.top + BTN_MARGIN : r.bottom - bh - BTN_MARGIN);
           const left = clamp(x0, 4, vw - bw - 4);
           const top = clamp(y0, 4, vh - bh - 4);
           wrap.style.transform = `translate(${Math.round(left)}px, ${Math.round(top)}px)`;
-          wrap.style.visibility = "visible";
+          // inset 避让后元素剩余高度放不下浮钮：隐藏，不遮挡原生控件
+          wrap.style.visibility = insetTop === null ? "hidden" : "visible";
           // 弹层：与按钮对齐，空间不够时翻转 / 夹进视口（打开瞬间由 layout effect 同步一次）
-          if (popRef.current) {
+          if (insetTop !== null && popRef.current) {
             positionPop(popRef.current, { left: Math.round(left), top: Math.round(top), width: bw, height: bh }, atRight ? "end" : "start", coarse);
           }
         }
