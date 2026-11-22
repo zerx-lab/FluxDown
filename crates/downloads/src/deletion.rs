@@ -30,11 +30,18 @@ pub(crate) const DELETE_CHUNK_SIZE: usize = 256;
 /// 至少这么多个本地任务一起删除才走分块路径；单个任务沿用 `daemon.task.delete`。
 pub(crate) const MIN_BATCH_DELETE: usize = 2;
 
-/// 删除请求：同一 `delete_files` 的一组本地任务。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DeletionMode {
+    Records,
+    Files,
+    Unfinished,
+}
+
+/// Local tasks sharing one deletion policy.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct DeletionRequest {
     pub(crate) task_ids: Vec<String>,
-    pub(crate) delete_files: bool,
+    pub(crate) mode: DeletionMode,
 }
 
 /// 从命令列表里拆出本地多任务删除：按 `delete_files` 把单任务 `Delete` 聚成请求
@@ -60,14 +67,16 @@ pub(crate) fn split_local_deletes(
         if !seen.insert((task_id.clone(), delete_files)) {
             continue;
         }
-        match requests
-            .iter_mut()
-            .find(|request| request.delete_files == delete_files)
-        {
+        let mode = if delete_files {
+            DeletionMode::Files
+        } else {
+            DeletionMode::Records
+        };
+        match requests.iter_mut().find(|request| request.mode == mode) {
             Some(request) => request.task_ids.push(task_id),
             None => requests.push(DeletionRequest {
                 task_ids: vec![task_id],
-                delete_files,
+                mode,
             }),
         }
     }
@@ -82,7 +91,7 @@ pub(crate) fn split_local_deletes(
                     .into_iter()
                     .map(|task_id| DownloadsCommand::Delete {
                         task_id,
-                        delete_files: request.delete_files,
+                        delete_files: request.mode == DeletionMode::Files,
                     }),
             );
         }
@@ -209,7 +218,7 @@ fn acknowledged(result: Result<DownloadsResult, RpcErrorData>) -> Result<(), Rpc
 /// 删除一块；`Unavailable` 时按 [`retry_delay`] 退避后重发同一块（幂等）。
 async fn delete_chunk<E, S, SF>(
     task_ids: &[String],
-    delete_files: bool,
+    mode: DeletionMode,
     execute: &E,
     sleep: &S,
     cancel: &CancelToken,
@@ -221,9 +230,13 @@ where
 {
     let mut retries = 0_u32;
     loop {
-        let mut future = execute(DownloadsCommand::DeleteMany {
-            task_ids: task_ids.to_vec(),
-            delete_files,
+        let task_ids = task_ids.to_vec();
+        let mut future = execute(match mode {
+            DeletionMode::Records | DeletionMode::Files => DownloadsCommand::DeleteMany {
+                task_ids,
+                delete_files: mode == DeletionMode::Files,
+            },
+            DeletionMode::Unfinished => DownloadsCommand::CleanUnfinished { task_ids },
         });
         let result = match settle(&mut future, cancel, sleep).await {
             Settled::Finished(result) => acknowledged(result),
@@ -247,7 +260,7 @@ where
 /// 按块删除全部任务，策略见模块文档。
 pub(crate) async fn run_deletion<E, S, SF, P>(
     task_ids: &[String],
-    delete_files: bool,
+    mode: DeletionMode,
     execute: &E,
     sleep: &S,
     cancel: &CancelToken,
@@ -272,7 +285,7 @@ where
             break;
         }
         sent += chunk.len();
-        let stop = match delete_chunk(chunk, delete_files, execute, sleep, cancel).await {
+        let stop = match delete_chunk(chunk, mode, execute, sleep, cancel).await {
             ChunkEnd::Replied(Ok(())) => {
                 report.acknowledged += chunk.len();
                 replied += chunk.len();
@@ -403,7 +416,7 @@ mod tests {
         };
         let report = block_on(run_deletion(
             &task_ids,
-            true,
+            DeletionMode::Files,
             &execute,
             &sleep,
             cancel,
@@ -637,7 +650,7 @@ mod tests {
             batches,
             [DeletionRequest {
                 task_ids: vec!["a".into(), "b".into(), "d".into()],
-                delete_files: false
+                mode: DeletionMode::Records,
             }]
         );
         // 只剩一个的请求原样还原为单任务命令，其余命令不动。

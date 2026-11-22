@@ -752,10 +752,7 @@ impl DownloadView {
             cx.notify();
             return;
         }
-        let DeletionRequest {
-            task_ids,
-            delete_files,
-        } = request;
+        let DeletionRequest { task_ids, mode } = request;
         // 已在另一批删除中的任务不重复提交。
         let task_ids = self.table_state.update(cx, |table, cx| {
             let fresh = table.delegate_mut().begin_delete(task_ids);
@@ -788,7 +785,7 @@ impl DownloadView {
             let mut progress_cx = cx.clone();
             let report = run_deletion(
                 &task_ids,
-                delete_files,
+                mode,
                 &move |command| port.execute(command),
                 &move |delay| timer.timer(delay),
                 &cancel,

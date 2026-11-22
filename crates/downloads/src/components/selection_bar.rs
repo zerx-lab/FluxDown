@@ -18,6 +18,7 @@ use gpui_component::{
 
 use crate::{
     components::task_table::{ToolbarCommand, table_header_height},
+    deletion::{DeletionMode, DeletionRequest},
     model::{DownloadTaskView, RowKey, TaskState, TaskStore},
     pages::downloads::DownloadView,
 };
@@ -357,8 +358,24 @@ impl DownloadView {
                         scope.retain(this.controller.store(), &mut keys);
                         let delegate = this.table_state.read(cx).delegate();
                         keys.retain(|key| !delegate.is_pending_delete(key));
-                        let commands = this.delete_commands(&keys, false);
-                        this.execute_commands(commands, cx);
+                        if keys.is_empty() {
+                            return true;
+                        }
+                        if matches!(scope, TaskCleanup::UnfinishedSelection) {
+                            this.start_deletion(
+                                DeletionRequest {
+                                    task_ids: keys
+                                        .into_iter()
+                                        .map(|key| key.task_id().to_owned())
+                                        .collect(),
+                                    mode: DeletionMode::Unfinished,
+                                },
+                                cx,
+                            );
+                        } else {
+                            let commands = this.delete_commands(&keys, false);
+                            this.execute_commands(commands, cx);
+                        }
                         true
                     })
                     .unwrap_or(false)
@@ -660,6 +677,88 @@ mod tests {
         }))
         .expect("task");
         DownloadTaskView::local(&dto, None, false)
+    }
+
+    #[test]
+    fn pr1241_remaining_cleanup_dialog_rechecks_task_status_at_confirmation() {
+        use std::sync::{Arc, Mutex};
+
+        use fluxdown_protocol::{AgentSnapshot, DaemonSnapshot, TaskDto};
+        use fluxdown_ui_i18n::I18nCatalog;
+        use gpui::{AppContext as _, TestApp};
+        use gpui_component::{Root, WindowExt as _};
+
+        use crate::{
+            controller::{DownloadsCommand, DownloadsPort, DownloadsResult, PortFuture},
+            pages::downloads::DownloadView,
+        };
+
+        #[derive(Default)]
+        struct CleanupPort(Mutex<Vec<Vec<String>>>);
+
+        impl DownloadsPort for CleanupPort {
+            fn execute(&self, command: DownloadsCommand) -> PortFuture<DownloadsResult> {
+                if let DownloadsCommand::CleanUnfinished { task_ids } = command {
+                    self.0.lock().unwrap().push(task_ids);
+                }
+                Box::pin(async { Ok(DownloadsResult::Unit) })
+            }
+        }
+
+        let port = Arc::new(CleanupPort::default());
+        let mut app = TestApp::new();
+        let translator = app.update(|cx| {
+            gpui_component::init(cx);
+            fluxdown_ui_theme::init(cx);
+            let catalog = I18nCatalog::load_embedded().unwrap();
+            cx.new(|_| catalog.translator("en"))
+        });
+        let mut downloads = None;
+        let mut win = app.open_window(|window, cx| {
+            let view = cx.new(|cx| DownloadView::new(translator, port.clone(), window, cx));
+            downloads = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let downloads = downloads.unwrap();
+        let task = |id, status| {
+            serde_json::from_value::<TaskDto>(serde_json::json!({
+                "taskId": id, "url": "https://example.com/file", "fileName": "file.bin",
+                "saveDir": "/tmp", "status": status, "downloadedBytes": 0, "totalBytes": 1,
+                "errorMessage": "", "createdAt": "1", "proxyUrl": "", "queueId": "main",
+                "checksum": ""
+            }))
+            .unwrap()
+        };
+        let mut snapshot = AgentSnapshot {
+            daemon_connected: true,
+            daemon: DaemonSnapshot {
+                tasks: vec![task("still-paused", 2), task("now-complete", 4)],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        app.update(|cx| {
+            cx.update_window(win.handle().into(), |_, window, cx| {
+                downloads.update(cx, |view, cx| {
+                    view.controller.replace_snapshot(&snapshot);
+                    view.refresh_tasks(cx);
+                    view.table_state.update(cx, |table, _| {
+                        table.delegate_mut().select_all_tasks();
+                    });
+                    view.confirm_task_cleanup(TaskCleanup::UnfinishedSelection, window, cx);
+                });
+                assert!(window.has_active_dialog(cx));
+            })
+            .unwrap();
+        });
+        assert!(port.0.lock().unwrap().is_empty());
+        snapshot.daemon.tasks[1].status = 3;
+        app.update(|cx| {
+            downloads.update(cx, |view, _| view.controller.replace_snapshot(&snapshot));
+        });
+        win.draw();
+        win.simulate_keystroke("enter");
+        assert_eq!(*port.0.lock().unwrap(), [vec!["still-paused".to_owned()]]);
     }
 
     fn keys(ids: &[&str]) -> Vec<RowKey> {

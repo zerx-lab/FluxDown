@@ -88,8 +88,8 @@ pub(crate) struct DeletionFacts {
     pub tasks: Vec<DeletionTask>,
     /// 任务 → 已登记的衍生产物文件名。
     pub artifacts: HashMap<String, Vec<String>>,
-    /// `(save_dir, file_name)` → 把该名字登记为自己 `file_name` 的全部任务 id。
-    pub file_owners: HashMap<(String, String), Vec<String>>,
+    /// Directory → registered filename → all task IDs that claim it.
+    pub file_owners: HashMap<String, HashMap<String, Vec<String>>>,
 }
 
 /// 同一条数据库记录中的路径、运行状态与归属，不能分开读取。
@@ -3331,6 +3331,25 @@ impl Db {
         Ok(results)
     }
 
+    /// Only paused/failed tasks may be stopped by partial-only cleanup.
+    pub(crate) async fn unfinished_cleanup_ids(
+        &self,
+        ids: &[String],
+    ) -> Result<Vec<String>, DbError> {
+        let mut eligible = Vec::with_capacity(ids.len());
+        for chunk in ids.chunks(500) {
+            let placeholders = numbered_placeholders(chunk.len());
+            let sql =
+                format!("SELECT id FROM tasks WHERE status IN (2, 4) AND id IN ({placeholders})");
+            let mut query = sqlx::query_scalar::<Any, String>(AssertSqlSafe(sql));
+            for id in chunk {
+                query = query.bind(id.as_str());
+            }
+            eligible.extend(query.fetch_all(&self.pool).await?);
+        }
+        Ok(eligible)
+    }
+
     /// Recheck detached scan results before the actor removes task records.
     pub async fn unexpectedly_missing_task_ids(
         &self,
@@ -3653,14 +3672,11 @@ impl Db {
             for row in query.fetch_all(&self.pool).await? {
                 let save_dir: String = row.try_get("save_dir")?;
                 let id: String = row.try_get("id")?;
+                let owners = facts.file_owners.entry(save_dir).or_default();
                 for column in ["file_name", "audio_partial_name", "audio_output_name"] {
                     let name: String = row.try_get(column)?;
                     if !name.is_empty() {
-                        facts
-                            .file_owners
-                            .entry((save_dir.clone(), name))
-                            .or_default()
-                            .push(id.clone());
+                        owners.entry(name).or_default().push(id.clone());
                     }
                 }
             }
@@ -9212,6 +9228,7 @@ mod tests {
             .expect("present");
         assert_eq!(task.total_bytes, 5_000_000_000);
         assert_eq!(task.downloaded_bytes, 3_000_000_000, "GREATEST 钳制生效");
+        assert!(!db.has_resume_checkpoint(&id).await.expect("no checkpoint"));
 
         // 分段 + 配置 upsert。
         db.insert_segments(
@@ -9223,6 +9240,36 @@ mod tests {
         let segs = db.load_segments(&id).await.expect("load segs");
         assert_eq!(segs.len(), 2);
         assert_eq!(segs[1].end_byte, 4_999_999_999);
+        assert!(
+            db.has_resume_checkpoint(&id)
+                .await
+                .expect("resume checkpoint")
+        );
+        assert!(
+            db.has_segment_checkpoint(&id)
+                .await
+                .expect("segment checkpoint")
+        );
+        db.record_audio_partial(&id, "big.audio.m4a.fdownloading")
+            .await
+            .expect("register audio partial");
+        let facts = db
+            .load_deletion_facts(std::slice::from_ref(&id))
+            .await
+            .expect("deletion facts");
+        let [task] = facts.tasks.as_slice() else {
+            panic!("expected one task in deletion facts");
+        };
+        assert!(task.has_checkpoint);
+        assert_eq!(task.audio_partial_name, "big.audio.m4a.fdownloading");
+        assert!(facts.file_owners["/tmp"][&task.audio_partial_name].contains(&id));
+        db.update_task_status(&id, 2, "").await.expect("pause task");
+        assert_eq!(
+            db.unfinished_cleanup_ids(std::slice::from_ref(&id))
+                .await
+                .expect("cleanup eligibility"),
+            [id.clone()]
+        );
         db.set_config("pg_smoke_key", "v1").await.expect("set");
         db.set_config("pg_smoke_key", "v2").await.expect("upsert");
         assert_eq!(

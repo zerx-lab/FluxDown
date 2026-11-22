@@ -95,6 +95,8 @@ pub const DAEMON_TASK_PAUSE_MANY: &str = "daemon.task.pauseMany";
 pub const DAEMON_TASK_RESUME_MANY: &str = "daemon.task.resumeMany";
 /// 批量删除（`{taskIds, deleteFiles}`）：语义同批量暂停。
 pub const DAEMON_TASK_DELETE_MANY: &str = "daemon.task.deleteMany";
+/// Delete paused or failed task records and owned partial data (`{taskIds}`).
+pub const DAEMON_TASK_CLEAN_UNFINISHED: &str = "daemon.task.cleanUnfinished";
 /// 批量建任务（`DaemonCreateTasksParams`）：整块一个事务、一次 `TasksChanged` 事件，
 /// 按 `batchId` 幂等；结果逐条对应（`DaemonCreateTasksResult`）。
 pub const DAEMON_TASK_CREATE_MANY: &str = "daemon.task.createMany";
@@ -533,6 +535,7 @@ pub const ALL_METHODS: &[&str] = &[
     DAEMON_TASK_PAUSE_MANY,
     DAEMON_TASK_RESUME_MANY,
     DAEMON_TASK_DELETE_MANY,
+    DAEMON_TASK_CLEAN_UNFINISHED,
     DAEMON_QUEUE_LIST,
     DAEMON_QUEUE_CREATE,
     DAEMON_QUEUE_UPDATE,

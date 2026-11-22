@@ -235,6 +235,9 @@ pub enum DownloadsCommand {
         task_ids: Vec<String>,
         delete_files: bool,
     },
+    CleanUnfinished {
+        task_ids: Vec<String>,
+    },
     PauseAll,
     ResumeAll,
     /// 插件重试挂起 → 忽略并按普通任务继续。

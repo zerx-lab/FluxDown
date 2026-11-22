@@ -391,6 +391,24 @@ fn checksum_fixture_server() -> (String, tokio::task::JoinHandle<()>) {
 const CHECKSUM: &str = "sha256=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 
 #[tokio::test]
+async fn pr1241_remaining_matching_checksum_does_not_override_rename() {
+    let (selector, _) = FakeSelector::new(true);
+    let mut fx = fixture("checksum_rename", 1, selector, FileExistsBehavior::Rename).await;
+    let (url, server) = checksum_fixture_server();
+    fx.base_url = url;
+    fx.write_existing("match.bin", b"abc");
+    let mut spec = fx.spec("match.bin");
+    spec.checksum = CHECKSUM.into();
+    let id = fx.mgr.create_task(spec).await.expect("create task");
+    fx.pump_until_status(&id, 3).await;
+    server.abort();
+    assert_eq!(fx.name(&id).await, "match (1).bin");
+    assert_eq!(std::fs::read(fx.dir.join("match (1).bin")).unwrap(), b"abc");
+    assert_eq!(std::fs::read(fx.dir.join("match.bin")).unwrap(), b"abc");
+    assert!(!fx.mgr.has_unowned_existing_path(&id).await);
+}
+
+#[tokio::test]
 async fn checksum_match_adopts_without_prompt_and_mismatch_cannot_skip() {
     let (selector, answers) = FakeSelector::new(true);
     let mut fx = fixture("checksum", 1, selector.clone(), FileExistsBehavior::Ask).await;

@@ -1299,6 +1299,13 @@ fn is_file_in_use_error(error: &downloader::DownloadError) -> bool {
     cfg!(windows) && matches!(error.raw_os_error(), Some(32 | 33))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BatchDeleteMode {
+    Records,
+    Files,
+    Unfinished,
+}
+
 /// 批量删除中单个任务要清理的磁盘文件；在 actor 上按整批预读的库内事实算好，
 /// spawn 之后无需再访问 manager 或数据库。
 struct DeleteFiles {
@@ -1307,7 +1314,7 @@ struct DeleteFiles {
     /// 任务确实使用过当前路径，且没有其他保留任务登记同名路径。
     owns_partial: bool,
     is_bt: bool,
-    delete_files: bool,
+    mode: BatchDeleteMode,
     /// 最终产物归本任务所有（已完成、未被批外任务登记、非「采纳」既有文件）。
     owns_final: bool,
     audio_paths: [Option<PathBuf>; 2],
@@ -1345,11 +1352,11 @@ async fn run_delete_cleanup(job: DeleteCleanup) -> Result<(), downloader::Downlo
             &task_id,
             bt_session.as_deref(),
             &app_data_dir,
-            files.delete_files,
+            files.mode == BatchDeleteMode::Files,
         )
         .await?;
     }
-    if !files.delete_files {
+    if files.mode == BatchDeleteMode::Records {
         return Ok(());
     }
     let _permit = file_permits.acquire().await.map_err(|error| {
@@ -2105,7 +2112,10 @@ async fn finalize_start_file_name(
                 if !temp_conflict
                     && (decision == ExistsDecision::Skip
                         || (decision == ExistsDecision::None
-                            && ctx.global != FileExistsBehavior::Overwrite))
+                            && matches!(
+                                ctx.global,
+                                FileExistsBehavior::Skip | FileExistsBehavior::Ask
+                            )))
                 {
                     match downloader::verify_checksum(
                         &candidate,
@@ -12809,7 +12819,9 @@ impl DownloadManager {
         }
 
         let ids = [task.task_id];
-        let mut plans = self.plan_batch_deletion(&ids, true).await?;
+        let mut plans = self
+            .plan_batch_deletion(&ids, BatchDeleteMode::Files)
+            .await?;
         let mut files = plans.remove(task_id).ok_or_else(unavailable)?;
         if !files.owns_final {
             return Err(unavailable());
@@ -14283,7 +14295,7 @@ impl DownloadManager {
                     owns_final,
                     audio_paths,
                     is_bt: false,
-                    delete_files,
+                    mode: BatchDeleteMode::Files,
                     artifacts: Vec::new(),
                     save_dir: t.save_dir,
                     file_name: t.file_name,
@@ -14404,6 +14416,35 @@ impl DownloadManager {
         task_ids: &[String],
         delete_files: bool,
     ) -> Result<BatchDeleteOutcome, crate::db::DbError> {
+        self.delete_batch(
+            task_ids,
+            if delete_files {
+                BatchDeleteMode::Files
+            } else {
+                BatchDeleteMode::Records
+            },
+        )
+        .await
+    }
+
+    /// Remove paused or failed task records and their partial data, not published files.
+    pub async fn delete_unfinished_tasks(
+        &mut self,
+        task_ids: &[String],
+    ) -> Result<BatchDeleteOutcome, crate::db::DbError> {
+        let eligible = self.db.unfinished_cleanup_ids(task_ids).await?;
+        let mut outcome = self
+            .delete_batch(&eligible, BatchDeleteMode::Unfinished)
+            .await?;
+        outcome.failed += task_ids.len() - eligible.len();
+        Ok(outcome)
+    }
+
+    async fn delete_batch(
+        &mut self,
+        task_ids: &[String],
+        mode: BatchDeleteMode,
+    ) -> Result<BatchDeleteOutcome, crate::db::DbError> {
         // 数据搬移中的任务不删（文件正分散在新旧两处），按删除失败计。
         let moving = task_ids
             .iter()
@@ -14427,12 +14468,12 @@ impl DownloadManager {
             });
         }
         log_info!(
-            "[manager] delete_tasks_batch: {} tasks, delete_files={}",
+            "[manager] delete_batch: {} tasks, mode={:?}",
             task_ids.len(),
-            delete_files
+            mode
         );
         let timed_out = self.stop_batch_downloads(task_ids).await;
-        let mut plans = match self.plan_batch_deletion(task_ids, delete_files).await {
+        let mut plans = match self.plan_batch_deletion(task_ids, mode).await {
             Ok(plans) => plans,
             Err(error) => {
                 for task_id in task_ids {
@@ -14460,7 +14501,7 @@ impl DownloadManager {
             }
         };
         // 任务行删除后就查不到组归属：先登记组成员目录，删除成功后清理留空的组目录。
-        let group_dirs = if delete_files {
+        let group_dirs = if mode == BatchDeleteMode::Files {
             self.group_dir_targets(task_ids).await
         } else {
             Vec::new()
@@ -14476,14 +14517,27 @@ impl DownloadManager {
         #[cfg(feature = "bt")]
         let app_data_dir: Arc<str> = Arc::from(self.app_data_dir.as_str());
         let mut workers = Vec::with_capacity(task_ids.len());
+        let mut failed = moving;
         for task_id in task_ids {
+            // Recheck after stopping: a task may have completed while its worker wound down.
+            if mode == BatchDeleteMode::Unfinished
+                && (!plans.contains_key(task_id) || timed_out.contains(task_id.as_str()))
+            {
+                hls_downloader::clear_discard(task_id);
+                failed += 1;
+                continue;
+            }
             self.active_tasks.remove(task_id.as_str());
             self.auto_retry_counts.remove(task_id.as_str());
             let files = plans.remove(task_id.as_str());
             #[cfg(feature = "bt")]
             let late_bt_stage = files
                 .as_ref()
-                .filter(|files| delete_files && files.is_bt && timed_out.contains(task_id.as_str()))
+                .filter(|files| {
+                    mode == BatchDeleteMode::Files
+                        && files.is_bt
+                        && timed_out.contains(task_id.as_str())
+                })
                 .map(|files| bt_downloader::bt_stage_dir(&files.save_dir, task_id));
             #[cfg(not(feature = "bt"))]
             let late_bt_stage: Option<PathBuf> = None;
@@ -14505,7 +14559,6 @@ impl DownloadManager {
 
         let mut deleted = Vec::with_capacity(workers.len());
         let mut deferred_staging = Vec::new();
-        let mut failed = moving;
         let mut files_in_use = false;
         for (task_id, worker, late_bt_stage) in workers {
             let joined = worker.await;
@@ -14660,48 +14713,67 @@ impl DownloadManager {
     async fn plan_batch_deletion(
         &self,
         task_ids: &[String],
-        delete_files: bool,
+        mode: BatchDeleteMode,
     ) -> Result<HashMap<String, DeleteFiles>, crate::db::DbError> {
         let facts = self.db.load_deletion_facts(task_ids).await?;
         let batch: HashSet<&str> = task_ids.iter().map(String::as_str).collect();
-        // 同 `file_name_claimed_by_others`：名字同时登记在批外任务名下时不得删除。
-        let claimed_by_other = |save_dir: &str, file_name: &str| {
+        // For partial-only cleanup, even another selected task can protect a path.
+        let claimed_by_other = |task: &crate::db::DeletionTask, file_name: &str| {
             !file_name.is_empty()
                 && facts
                     .file_owners
-                    .get(&(save_dir.to_owned(), file_name.to_owned()))
-                    .is_some_and(|owners| owners.iter().any(|id| !batch.contains(id.as_str())))
+                    .get(&task.save_dir)
+                    .and_then(|names| names.get(file_name))
+                    .is_some_and(|owners| {
+                        owners.iter().any(|id| match mode {
+                            BatchDeleteMode::Unfinished => id != &task.task_id,
+                            _ => !batch.contains(id.as_str()),
+                        })
+                    })
         };
         let mut plans = HashMap::with_capacity(facts.tasks.len());
         for task in facts.tasks {
+            if mode == BatchDeleteMode::Unfinished && !matches!(task.status, 2 | 4) {
+                continue;
+            }
             let unowned_path = task.unowned_path;
-            let delete_files = delete_files && task.file_clear_state == FileClearState::None;
+            let mode = if task.file_clear_state == FileClearState::None {
+                mode
+            } else {
+                BatchDeleteMode::Records
+            };
+            let delete_partials = mode != BatchDeleteMode::Records;
+            let delete_outputs = mode == BatchDeleteMode::Files;
             // 最终产物认领判定（详见 task_owns_final_file）：未完成任务的 file_name
             // 可能是未 dedup 的原始名，指向早前同名任务留下的成品。
-            let claimed = delete_files
+            let claimed = delete_partials
                 && !task.file_name.is_empty()
-                && (claimed_by_other(&task.save_dir, &task.file_name)
+                && (claimed_by_other(&task, &task.file_name)
                     || self.output_name_reserved(&task.save_dir, &task.file_name));
-            let artifacts = if delete_files {
+            let artifacts = if delete_outputs {
                 facts
                     .artifacts
                     .get(&task.task_id)
                     .into_iter()
                     .flatten()
-                    .filter(|name| {
-                        is_safe_file_name(name) && !claimed_by_other(&task.save_dir, name)
-                    })
+                    .filter(|name| is_safe_file_name(name) && !claimed_by_other(&task, name))
                     .map(|name| PathBuf::from(&task.save_dir).join(name))
                     .collect()
             } else {
                 Vec::new()
             };
-            let audio_paths = if delete_files && !unowned_path {
-                [&task.audio_partial_name, &task.audio_output_name].map(|name| {
+            let audio_paths = if delete_partials && !unowned_path {
+                let output_name = if delete_outputs {
+                    task.audio_output_name.as_str()
+                } else {
+                    ""
+                };
+                [task.audio_partial_name.as_str(), output_name].map(|name| {
                     let base = cleanup_base_name(name);
                     (is_safe_file_name(name)
-                        && !claimed_by_other(&task.save_dir, base)
-                        && (base == name || !claimed_by_other(&task.save_dir, name))
+                        && (delete_outputs || base != name)
+                        && !claimed_by_other(&task, base)
+                        && (base == name || !claimed_by_other(&task, name))
                         && !self.output_name_reserved(&task.save_dir, base))
                     .then(|| Path::new(&task.save_dir).join(name))
                 })
@@ -14710,9 +14782,20 @@ impl DownloadManager {
             };
             let files = DeleteFiles {
                 is_bt: is_bt_url(&task.url),
-                delete_files,
-                owns_final: task_owns_final_file(task.status) && !claimed && !unowned_path,
-                owns_partial: owns_main_partial(&task) && !claimed && !unowned_path,
+                mode,
+                owns_final: delete_outputs
+                    && task_owns_final_file(task.status)
+                    && !claimed
+                    && !unowned_path,
+                owns_partial: delete_partials
+                    && owns_main_partial(&task)
+                    && !claimed
+                    && !unowned_path
+                    && (mode != BatchDeleteMode::Unfinished
+                        || !claimed_by_other(
+                            &task,
+                            &format!("{}{}", task.file_name, downloader::TEMP_EXT),
+                        )),
                 audio_paths,
                 artifacts,
                 save_dir: task.save_dir,
@@ -19825,6 +19908,100 @@ mod tests {
                 .await
                 .expect("advance task status");
         }
+    }
+
+    #[tokio::test]
+    async fn pr1241_remaining_cleanup_removes_only_owned_partial_files() {
+        let dir = unique_filetrack_test_dir("unfinished_cleanup");
+        std::fs::create_dir_all(&dir).unwrap();
+        let save_dir = dir.to_string_lossy();
+        let db = Db::connect("sqlite::memory:").await.unwrap();
+        insert_task_at_status(&db, "paused", &save_dir, "movie.mp4", 2).await;
+        insert_task_at_status(&db, "failed", &save_dir, "unstarted.bin", 4).await;
+        insert_task_at_status(&db, "completed", &save_dir, "completed.bin", 3).await;
+        insert_task_at_status(&db, "active", &save_dir, "active.bin", 1).await;
+        db.record_http_partial("paused", "movie.mp4.fdownloading")
+            .await
+            .unwrap();
+        db.record_audio_output("paused", "movie.audio.m4a")
+            .await
+            .unwrap();
+        db.record_audio_partial("paused", "movie.audio.m4a.fdownloading")
+            .await
+            .unwrap();
+        db.add_task_artifact("paused", "published.txt")
+            .await
+            .unwrap();
+        let removes = ["movie.mp4.fdownloading", "movie.audio.m4a.fdownloading"];
+        let preserves = [
+            "movie.mp4",
+            "movie.audio.m4a",
+            "published.txt",
+            "unstarted.bin.fdownloading",
+            "completed.bin",
+            "active.bin.fdownloading",
+        ];
+        for name in removes.into_iter().chain(preserves) {
+            std::fs::write(dir.join(name), name).unwrap();
+        }
+        let mut manager = sched_manager(&db, 1);
+        let ids = ["paused", "failed", "completed", "active"].map(str::to_owned);
+        let outcome = manager.delete_unfinished_tasks(&ids).await.unwrap();
+        assert_eq!((outcome.deleted, outcome.failed), (2, 2));
+        for id in ["paused", "failed"] {
+            assert!(db.load_task_by_id(id).await.unwrap().is_none(), "{id}");
+        }
+        for (id, status) in [("completed", 3), ("active", 1)] {
+            assert_eq!(
+                db.load_task_by_id(id).await.unwrap().unwrap().status,
+                status
+            );
+        }
+        for name in removes {
+            assert!(!dir.join(name).exists(), "{name}");
+        }
+        for name in preserves {
+            assert_eq!(std::fs::read(dir.join(name)).unwrap(), name.as_bytes());
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(feature = "bt")]
+    #[tokio::test]
+    async fn pr1241_remaining_cleanup_removes_bt_staging_not_published_payload() {
+        let dir = unique_filetrack_test_dir("unfinished_bt_cleanup");
+        std::fs::create_dir_all(&dir).unwrap();
+        let save_dir = dir.to_string_lossy();
+        let db = Db::connect("sqlite::memory:").await.unwrap();
+        let id = "paused-bt";
+        db.insert_task(
+            id,
+            "magnet:?xt=urn:btih:0123456789012345678901234567890123456789",
+            "payload.bin",
+            &save_dir,
+            1,
+            0,
+            "",
+            "",
+            "",
+            0,
+        )
+        .await
+        .unwrap();
+        db.update_task_status(id, 2, "").await.unwrap();
+        let stage = bt_downloader::bt_stage_dir(&save_dir, id);
+        std::fs::create_dir_all(&stage).unwrap();
+        std::fs::write(stage.join("payload.bin"), b"partial").unwrap();
+        let published = dir.join("payload.bin");
+        std::fs::write(&published, b"published").unwrap();
+        let outcome = sched_manager(&db, 1)
+            .delete_unfinished_tasks(&[id.into()])
+            .await
+            .unwrap();
+        assert_eq!((outcome.deleted, outcome.failed), (1, 0));
+        assert!(!stage.exists());
+        assert_eq!(std::fs::read(published).unwrap(), b"published");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// 已完成记录保留期契约：保留期 0 什么都不做；开启后只删超期的已完成记录，
