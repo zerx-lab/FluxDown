@@ -1,3 +1,4 @@
+import { useByteFormatter } from '../../../lib/fileSizeUnits'
 // 任务组详情：概览 + 成员表（暂停 / 继续 / 重试失败 / 删除）。对应 GPUI `pages/group_detail.rs`。
 
 import { Copy, Download, MoreHorizontal, Pause, Play, RotateCw, Trash2 } from 'lucide-react'
@@ -231,11 +232,12 @@ function MemberTable({ members }: { members: readonly TaskDto[] }) {
 }
 
 function MemberRow({ task }: { task: TaskDto }) {
+  const fmtBytes = useByteFormatter(formatBytes)
   const t = useT()
   const done = task.status === TASK_STATUS.completed
   const progress = done ? 1 : task.totalBytes > 0 ? Math.min(1, task.downloadedBytes / task.totalBytes) : null
   const percent = progress === null ? '' : `${Math.round(progress * 100)}%`
-  const size = task.totalBytes > 0 ? formatBytes(task.totalBytes) : '—'
+  const size = task.totalBytes > 0 ? fmtBytes(task.totalBytes) : '—'
 
   const act = async (action: () => Promise<unknown>) => {
     try {

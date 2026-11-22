@@ -16,6 +16,9 @@ use crate::transfer_activity::TaskRuntime;
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum EngineEvent {
+    /// Host-local, balanced RAII notifications for CPU/disk work after network transfers.
+    /// Not forwarded as a wire event; the daemon exposes the current count in runtime stats.
+    LocalWorkChanged { active: bool },
     /// Latest observation of active body transfers and file ranges.
     TaskRuntimeChanged(TaskRuntime),
 

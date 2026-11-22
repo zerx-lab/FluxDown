@@ -4,13 +4,14 @@
 //! 视图（含未回执的本地编辑），经 `fluxdown_ui_theme::apply_appearance_preferences` 与语言切换
 //! 统一投影。直接改内存状态会在存储只读（未连接）时与偏好脱节，并被下一次快照回弹。
 
+use fluxdown_ui_components::toast;
 use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_theme::{
     AccentScheme, AppearancePreferences, BuiltinThemeId, COLOR_SCHEME_KEY, CUSTOM_COLOR_KEY,
     ColorTokens, DARK_THEME_KEY, ExportMode, ExtendedTokens, FONT_SIZE_KEY, FONT_SIZE_RANGE,
-    FONT_SIZES, LIGHT_THEME_KEY, THEME_MODE_KEY, ThemeMode, ThemePreference, ThemeSelection,
-    UI_SCALE_KEY, UI_SCALE_PERCENTS, active_theme, argb_color, color_argb, foreground_for,
-    normalize_ui_scale_percent,
+    FONT_SIZES, FONT_WEIGHT_KEY, LIGHT_THEME_KEY, THEME_MODE_KEY, ThemeMode, ThemePreference,
+    ThemeSelection, UI_SCALE_KEY, UI_SCALE_PERCENTS, active_theme, argb_color, color_argb,
+    foreground_for, normalize_ui_scale_percent,
 };
 use gpui::{
     Anchor, App, AppContext as _, Entity, Hsla, InteractiveElement as _, IntoElement as _,
@@ -78,12 +79,25 @@ pub(crate) fn page(ctx: &SectionContext, _cx: &mut App) -> SettingsPage {
             .row(super::icon_pack::item(ctx)),
         SettingsSection::new()
             .title(ctx.t("settingsGroupInterface"))
+            .row(ctx.item(
+                "fileSizeUnits",
+                Some("fileSizeUnitsDesc"),
+                ctx.pref_dropdown(
+                    fluxdown_ui_components::size_units::PREF_KEY,
+                    "legacy",
+                    vec![
+                        ("legacy".into(), ctx.t("fileSizeUnitsLegacy")),
+                        ("iec".into(), ctx.t("fileSizeUnitsIec")),
+                    ],
+                ),
+            ))
             .row(ctx.item("uiScale", Some("uiScaleDesc"), ui_scale_field(ctx)))
             .row(ctx.item(
                 "fontFamily",
                 Some("fontFamilyDesktopHint"),
                 super::font_family::field(ctx),
             ))
+            .row(ctx.item("fontWeight", Some("fontWeightDesc"), font_weight_field(ctx)))
             .row(ctx.item("fontSize", Some("fontSizeDesc"), font_size_field(ctx)))
             .row(super::app_icon::item(ctx)),
     ])
@@ -279,7 +293,7 @@ fn delete_custom_theme(
 ) {
     if !store.update(cx, |store, cx| delete_theme(id, store, cx)) {
         window.push_notification(
-            Notification::error(translator.text("themeDeleteError").to_owned()),
+            toast::error(translator.text("themeDeleteError").to_owned()),
             cx,
         );
         return;
@@ -607,21 +621,21 @@ fn import_report(
 
     let mut notifications = Vec::new();
     if imported > 0 {
-        notifications.push(Notification::success(format!(
+        notifications.push(toast::success(format!(
             "{} ({imported})",
             translator.text("themeImportSuccess")
         )));
     }
     if !adjusted.is_empty() {
         notifications.push(
-            Notification::warning(adjusted.join("\n"))
+            toast::warning(adjusted.join("\n"))
                 .title(translator.text("themeImportDiagnosticsTitle").to_owned())
                 .autohide(false),
         );
     }
     if !failed.is_empty() {
         notifications.push(
-            Notification::error(failed.join("\n"))
+            toast::error(failed.join("\n"))
                 .title(translator.text("themeImportError").to_owned())
                 .autohide(false),
         );
@@ -648,9 +662,9 @@ fn export_theme(mode: ExportMode, translator: Translator, window: &mut Window, c
 
         let Ok(()) = window_handle.update(cx, move |_, window, cx| {
             let notification = match result {
-                Ok(()) => Notification::success(translator.text("themeExportSuccess").to_owned()),
+                Ok(()) => toast::success(translator.text("themeExportSuccess").to_owned()),
                 Err(error) => {
-                    Notification::error(format!("{}: {error}", translator.text("themeExportError")))
+                    toast::error(format!("{}: {error}", translator.text("themeExportError")))
                 }
             };
             window.push_notification(notification, cx);
@@ -892,6 +906,47 @@ fn font_size_field(ctx: &SectionContext) -> Control {
                 Err(_) => serde_json::Value::Null,
             };
             store.update(cx, |store, cx| store.set_pref(FONT_SIZE_KEY, pref, cx));
+        },
+    )
+}
+
+fn font_weight_field(ctx: &SectionContext) -> Control {
+    const THEME_DEFAULT: &str = "theme";
+    let options = [
+        (THEME_DEFAULT, "fontSizeFollowTheme"),
+        ("100", "fontWeightThin"),
+        ("200", "fontWeightExtraLight"),
+        ("300", "fontWeightLight"),
+        ("400", "fontWeightRegular"),
+        ("500", "fontWeightMedium"),
+        ("600", "fontWeightSemibold"),
+        ("700", "fontWeightBold"),
+        ("800", "fontWeightExtraBold"),
+        ("900", "fontWeightHeavy"),
+    ]
+    .into_iter()
+    .map(|(value, label)| (SharedString::from(value), ctx.t(label)))
+    .collect();
+    let store = ctx.store();
+    Control::dropdown(
+        options,
+        |cx: &App| {
+            active_theme(cx)
+                .appearance()
+                .font_weight
+                .map_or(SharedString::from(THEME_DEFAULT), |weight| {
+                    SharedString::from(weight.to_string())
+                })
+        },
+        move |value: SharedString, cx: &mut App| {
+            let pref = if value.as_ref() == THEME_DEFAULT {
+                serde_json::Value::Null
+            } else if let Ok(weight) = value.parse::<u16>() {
+                serde_json::Value::from(weight)
+            } else {
+                return;
+            };
+            store.update(cx, |store, cx| store.set_pref(FONT_WEIGHT_KEY, pref, cx));
         },
     )
 }

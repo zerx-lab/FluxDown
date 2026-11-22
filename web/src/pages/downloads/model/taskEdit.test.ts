@@ -214,14 +214,16 @@ describe('BT 运维菜单项', () => {
     expect(canForceRecheck([row('paused', { url: magnet, source: 'remote' })])).toBe(false)
   })
 
-  test('移动到 / 任务限速：恰好一个本地 BT 任务，任意状态', () => {
+  test('移动到：恰好一个本地任务，任意协议与状态；任务限速：恰好一个本地 BT 任务', () => {
     for (const state of ['pending', 'downloading', 'paused', 'completed', 'failed'] as const) {
       expect(canMoveStorage([row(state, { url: magnet })])).toBe(true)
+      expect(canMoveStorage([row(state)])).toBe(true)
+      expect(canMoveStorage([row(state, { url: 'ed2k://|file|a.iso|1|h|/' })])).toBe(true)
       expect(canSetTaskLimits([row(state, { url: torrent })])).toBe(true)
     }
     expect(canMoveStorage([])).toBe(false)
     expect(canMoveStorage([row('paused', { url: magnet }), row('paused', { url: magnet })])).toBe(false)
-    expect(canMoveStorage([row('paused')])).toBe(false)
+    expect(canMoveStorage([row('completed', { source: 'remote' })])).toBe(false)
     expect(canSetTaskLimits([row('paused', { url: magnet, source: 'remote' })])).toBe(false)
     expect(canSetTaskLimits([row('paused', { url: 'ed2k://|file|a|1|h|/' })])).toBe(false)
   })

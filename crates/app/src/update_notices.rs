@@ -1,12 +1,13 @@
 //! 应用内更新提示：菜单「检查更新…」的结果与「已更新」的一次性通知。
 //!
-//! 新版本由 agent 在后台下载，只经主窗口顶栏的更新按钮（`fluxdown_ui_settings::UpdateTitleButton`）
+//! 新版本由 agent 在后台下载，只经主窗口状态栏的版本条目（`fluxdown_ui_settings::VersionButton`）
 //! 呈现，界面从不为新版本自动弹窗或抢焦点；更新窗口只在用户主动时打开。
 
 use fluxdown_protocol::{UpdatePhase, UpdateStatusDto, method};
+use fluxdown_ui_components::toast;
 use fluxdown_ui_settings::update_view;
 use gpui::{App, Global};
-use gpui_component::{WindowExt as _, notification::Notification};
+use gpui_component::WindowExt as _;
 
 use crate::{app::Desktop, windows::WindowRegistry};
 
@@ -92,9 +93,9 @@ fn show(notice: Notice, cx: &mut App) {
     let shown = handle
         .update(cx, |_, window, cx| {
             let note = if built.error {
-                Notification::error(built.message)
+                toast::error(built.message)
             } else {
-                Notification::info(built.message)
+                toast::info(built.message)
             };
             window.push_notification(note, cx);
         })

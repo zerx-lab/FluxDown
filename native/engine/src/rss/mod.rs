@@ -31,6 +31,7 @@
 pub mod filter;
 pub mod model;
 pub mod parser;
+pub mod preview;
 
 pub use model::RSS_PROVIDER_ID;
 
@@ -45,11 +46,11 @@ use crate::auto_proxy::{self, CandidateSource};
 use crate::db::Db;
 use crate::downloader;
 use crate::events::{EngineEvent, EventSink};
-use crate::logger::{log_error, log_info};
+use crate::logger::log_error;
 use crate::proxy_config::{ProxyConfig, ProxyMode};
 use crate::rss::filter::{CompiledRule, FilterRule, Verdict};
 use crate::rss::model::{RssItemInfo, RssItemStatus, RssSourceInfo};
-use crate::rss::parser::{MAX_FEED_BYTES, ParsedFeed, parse_feed};
+use crate::rss::parser::{MAX_FEED_BYTES, ParsedFeed, parse_feed_at};
 use crate::rule_route::EgressRouter;
 use crate::subscription::{SubscriptionFetchRequest, SubscriptionProvider};
 
@@ -59,6 +60,7 @@ pub const MAX_ITEMS_PER_SOURCE: i32 = 500;
 pub const MAX_BACKOFF_SECS: i64 = 6 * 3600;
 /// 单次 feed 抓取的超时。
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+static FEED_PARSERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 /// 单个 `.torrent` 文件的大小上限（4 MiB）。真实种子几 KB 到几百 KB；
 /// 超过这个量级的响应基本可以断定不是种子（登录页 / 误配的直链）。
 const MAX_TORRENT_BYTES: usize = 4 * 1024 * 1024;
@@ -374,7 +376,7 @@ impl RssManager {
             return None;
         }
         let id = source.source_id.clone();
-        log_info!("[rss] subscribed: {} ({})", source.display_name(), id);
+        tracing::info!(source_id = %id, "RSS subscription created");
         self.broadcast_sources().await;
         Some(id)
     }
@@ -537,7 +539,6 @@ impl RssManager {
             && !route.rule_hit
             && provider_id == RSS_PROVIDER_ID;
         let global_proxy = proxy.clone();
-        let fetch_url = source.url.clone();
         let provider = self
             .providers
             .get(&provider_id)
@@ -556,10 +557,12 @@ impl RssManager {
         let tx = self.tx.clone();
         tokio::spawn(async move {
             let source_id = base_request.source_id.clone();
+            let builtin = provider_id == RSS_PROVIDER_ID;
+            let provider_available = provider.is_some();
+            let started = std::time::Instant::now();
             let outcome = match provider {
                 Some(provider) => {
                     let result = fetch_with_auto_failover(
-                        &fetch_url,
                         direct_proxy,
                         eligible,
                         &global_proxy,
@@ -590,6 +593,15 @@ impl RssManager {
                     error: format!("subscription provider not installed: {provider_id}"),
                 },
             };
+            tracing::debug!(
+                source_id = %outcome.source_id,
+                builtin,
+                provider_available,
+                success = outcome.error.is_empty(),
+                items = outcome.feed.items.len(),
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "RSS provider poll finished"
+            );
             if tx.send(RssEvent::Fetched(Box::new(outcome))).is_err() {
                 tracing::debug!("RSS fetch owner stopped before result delivery");
             }
@@ -655,26 +667,31 @@ impl RssManager {
             .cloned()
             .or_else(|| self.fallback_provider.clone());
         async move {
+            let builtin = provider_id == RSS_PROVIDER_ID;
+            let provider_available = provider.is_some();
+            let started = std::time::Instant::now();
             let result = match provider {
                 Some(provider) => {
-                    fetch_with_auto_failover(
-                        &url,
-                        direct_proxy,
-                        eligible,
-                        &global_proxy,
-                        |proxy_cfg| {
-                            let mut req = base_request.clone();
-                            req.proxy = proxy_cfg;
-                            req.egress = route_egress.clone();
-                            provider.fetch(req)
-                        },
-                    )
+                    fetch_with_auto_failover(direct_proxy, eligible, &global_proxy, |proxy_cfg| {
+                        let mut req = base_request.clone();
+                        req.proxy = proxy_cfg;
+                        req.egress = route_egress.clone();
+                        provider.fetch(req)
+                    })
                     .await
                 }
                 None => Err(format!(
                     "subscription provider not installed: {provider_id}"
                 )),
             };
+            tracing::debug!(
+                builtin,
+                provider_available,
+                success = result.is_ok(),
+                items = result.as_ref().map_or(0, |feed| feed.items.len()),
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "RSS provider validation finished"
+            );
             match result {
                 Ok(feed) => RssValidateOutcome {
                     request_id,
@@ -771,20 +788,15 @@ impl RssManager {
         let global_proxy = proxy.clone();
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            let result = fetch_with_auto_failover(
-                &request.url,
-                direct_proxy,
-                eligible,
-                &global_proxy,
-                |proxy_cfg| {
+            let result =
+                fetch_with_auto_failover(direct_proxy, eligible, &global_proxy, |proxy_cfg| {
                     let mut req = request.clone();
                     req.proxy = proxy_cfg;
                     req.egress = route_egress.clone();
                     let referrer = referrer.clone();
                     async move { fetch_torrent(&req, &referrer).await }
-                },
-            )
-            .await;
+                })
+                .await;
             let (bytes, error) = match result {
                 Ok(bytes) => (bytes, String::new()),
                 Err(e) => (Vec::new(), e),
@@ -831,12 +843,11 @@ impl RssManager {
 
         if !outcome.error.is_empty() {
             let fail_count = source.fail_count.saturating_add(1);
-            log_error!(
-                "[rss] fetch failed ({} consecutive): {}: {}",
-                fail_count,
-                source.display_name(),
-                outcome.error
-            );
+            if fail_count == 2 {
+                tracing::warn!(source_id = %source.source_id, fail_count, "RSS polling degraded after consecutive failures");
+            } else {
+                tracing::debug!(source_id = %source.source_id, fail_count, "RSS poll failed; background polling will retry");
+            }
             let persisted = self
                 .record_runtime(
                     &source.source_id,
@@ -946,6 +957,25 @@ impl RssManager {
             }
         }
 
+        let image_backfill: Vec<_> = outcome
+            .feed
+            .items
+            .iter()
+            .filter(|item| !item.image_urls.is_empty() && known.contains(&item.guid))
+            .map(|item| (item.guid.as_str(), item.image_urls.as_slice()))
+            .collect();
+        let images_backfilled = match self
+            .db
+            .backfill_rss_images(&source.source_id, &image_backfill)
+            .await
+        {
+            Ok(changed) => changed,
+            Err(error) => {
+                log_error!("[rss] backfill image URLs failed: {error:#}");
+                false
+            }
+        };
+
         let fresh = rows.len();
         if let Err(e) = self.db.insert_rss_items(&rows).await {
             log_error!("[rss] persist items failed: {}", e);
@@ -979,6 +1009,9 @@ impl RssManager {
                 },
             )
             .await;
+        if persisted && source.fail_count >= 2 {
+            tracing::info!(source_id = %source.source_id, "RSS polling recovered");
+        }
 
         // 派发：`New` 状态的条目按发布时间从旧到新取，单轮不超过上限。
         // 首轮不派发（本轮全部是 SeedSkipped，但历史遗留的 New 也不该在
@@ -994,18 +1027,17 @@ impl RssManager {
         } else {
             Vec::new()
         };
-        log_info!(
-            "[rss] {} fetched: {} new item(s), {} to download{}",
-            source.display_name(),
-            fresh,
-            plans.len(),
-            if first_round {
-                " (first round: history marked read)"
-            } else {
-                ""
-            }
-        );
-        if fresh > 0 || backfilled > 0 || resolver_backfilled > 0 || !plans.is_empty() {
+        if first_round || fresh > 0 || !plans.is_empty() {
+            tracing::info!(source_id = %source.source_id, first_round, fresh, planned = plans.len(), "RSS poll changed feed state");
+        } else {
+            tracing::debug!(source_id = %source.source_id, backfilled, resolver_backfilled, "RSS poll had no new or dispatchable items");
+        }
+        if fresh > 0
+            || backfilled > 0
+            || resolver_backfilled > 0
+            || images_backfilled
+            || !plans.is_empty()
+        {
             self.broadcast_items(&source.source_id, Vec::new()).await;
         }
         if persisted || fresh > 0 || backfilled > 0 || resolver_backfilled > 0 || !plans.is_empty()
@@ -1045,12 +1077,11 @@ impl RssManager {
             )
             .await
         {
-            Ok(failures) => log_info!(
-                "[rss] torrent fetch failure #{} for {}/{}, next auto attempt in {}s",
+            Ok(failures) => tracing::debug!(
+                %source_id,
                 failures,
-                source_id,
-                guid,
-                torrent_retry_delay_secs(failures)
+                retry_secs = torrent_retry_delay_secs(failures),
+                "RSS torrent fetch retry scheduled"
             ),
             Err(e) => log_error!("[rss] record torrent failure failed: {}", e),
         }
@@ -1255,6 +1286,7 @@ fn item_from_parsed(source_id: &str, parsed: &parser::ParsedItem, fetched_at: i6
         guid: parsed.guid.clone(),
         title: parsed.title.clone(),
         link: parsed.link.clone(),
+        image_urls: Some(parsed.image_urls.clone()),
         enclosure_url: parsed.enclosure_url.clone(),
         enclosure_type: parsed.enclosure_type.clone(),
         resolver_item: parsed.resolver_item.clone(),
@@ -1353,7 +1385,6 @@ fn resolve_route(proxy_url: &str, global: &ProxyConfig, url: &str, user_agent: &
 /// 各重试一次，命中即返回；全部候选也失败则返回最后一次错误。
 /// `eligible = false` 时只跑一次给定配置，行为与不做失败转移一致。
 async fn fetch_with_auto_failover<T, F, Fut>(
-    url: &str,
     direct_config: ProxyConfig,
     eligible: bool,
     global: &ProxyConfig,
@@ -1374,9 +1405,9 @@ where
     let candidates = auto_proxy::resolve_candidates(global);
     let attempted = !candidates.is_empty();
     for candidate in candidates {
-        log_info!(
-            "[rss] auto 模式直连抓取失败（{last_error}），改试{}代理重试: {url}",
-            candidate_label(candidate.source)
+        tracing::debug!(
+            proxy = candidate_label(candidate.source),
+            "RSS Auto fetch retry"
         );
         match attempt(candidate.config).await {
             Ok(feed) => return Ok(feed),
@@ -1431,7 +1462,7 @@ async fn fetch_feed(req: &FetchRequest) -> Result<ParsedFeed, String> {
         egress: req.egress.clone(),
         ..downloader::RequestSpec::empty_get()
     };
-    let resp = downloader::build_request(&client, &req.url, reqwest::Method::GET, &spec)
+    let mut resp = downloader::build_request(&client, &req.url, reqwest::Method::GET, &spec)
         .timeout(FETCH_TIMEOUT)
         .send()
         .await
@@ -1440,16 +1471,28 @@ async fn fetch_feed(req: &FetchRequest) -> Result<ParsedFeed, String> {
     if !status.is_success() {
         return Err(format!("HTTP {status}"));
     }
-    // 先看 Content-Length 早退，再按实际字节兜底——`parse_feed` 内部同样有
-    // 上限检查，此处是为了不把超大响应先读满内存。
+    // Enforce the limit while reading, including chunked and decoded responses.
     if resp
         .content_length()
         .is_some_and(|n| n > MAX_FEED_BYTES as u64)
     {
         return Err("feed too large".to_string());
     }
-    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-    parse_feed(&bytes)
+    let base = resp.url().clone();
+    let mut bytes = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        if chunk.len() > MAX_FEED_BYTES - bytes.len() {
+            return Err("feed too large".to_string());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let permit = FEED_PARSERS.acquire().await.map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        parse_feed_at(&bytes, Some(&base))
+    })
+    .await
+    .map_err(|e| format!("feed parser worker failed: {e}"))?
 }
 
 /// 抓取一个 `.torrent` 文件的原始字节。**只在 off-actor 任务里调用。**
@@ -1504,6 +1547,46 @@ mod tests {
     };
     use crate::proxy_config::{ProxyConfig, ProxyMode};
     use crate::rss::model::{RssItemInfo, RssItemStatus, RssSourceInfo};
+
+    #[tokio::test]
+    async fn fetch_rejects_oversized_chunked_feed_before_the_body_finishes() -> anyhow::Result<()> {
+        use super::{FetchRequest, MAX_FEED_BYTES, fetch_feed};
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let req = FetchRequest {
+            url: format!("http://{}/feed", listener.local_addr()?),
+            provider_id: super::RSS_PROVIDER_ID.into(),
+            source_id: String::new(),
+            provider_config: String::new(),
+            cookies: String::new(),
+            user_agent: String::new(),
+            proxy_url: String::new(),
+            proxy: ProxyConfig::default(),
+            egress: None,
+        };
+        let (closed, keep_open) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await?;
+            stream.read_exact(&mut [0; 4]).await?;
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+                .await?;
+            stream
+                .write_all(format!("{:x}\r\n", MAX_FEED_BYTES + 1).as_bytes())
+                .await?;
+            stream.write_all(&vec![b'x'; MAX_FEED_BYTES + 1]).await?;
+            keep_open.await.map_err(std::io::Error::other)?;
+            Ok::<(), std::io::Error>(())
+        });
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(5), fetch_feed(&req)).await;
+        let sent = closed.send(());
+        server.await??;
+        assert_eq!(sent, Ok(()));
+        assert_eq!(result?.err().as_deref(), Some("feed too large"));
+        Ok(())
+    }
 
     fn mem_source(fail_count: i32, last_error: &str) -> RssSourceInfo {
         RssSourceInfo {
@@ -1783,6 +1866,7 @@ mod tests {
             resolver_item: String::new(),
             enclosure_length: size,
             pub_date,
+            image_urls: Vec::new(),
         }
     }
 
@@ -2161,7 +2245,6 @@ mod tests {
         let attempts = std::sync::Arc::new(std::sync::Mutex::new(0u32));
         let attempts_clone = attempts.clone();
         let result = fetch_with_auto_failover::<ParsedFeed, _, _>(
-            "http://feed.test/rss",
             ProxyConfig::default(),
             false, // 订阅有专属代理，或全局非 Auto：不重试
             &global,
@@ -2187,23 +2270,17 @@ mod tests {
         let global = auto_proxy_global();
         let modes_tried = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let modes_clone = modes_tried.clone();
-        let result = fetch_with_auto_failover(
-            "http://feed.test/rss",
-            ProxyConfig::default(),
-            true,
-            &global,
-            move |cfg| {
-                let modes = modes_clone.clone();
-                async move {
-                    modes.lock().expect("lock").push(cfg.mode.clone());
-                    if cfg.mode == ProxyMode::Manual {
-                        Ok(ParsedFeed::default())
-                    } else {
-                        Err("direct failed".to_string())
-                    }
+        let result = fetch_with_auto_failover(ProxyConfig::default(), true, &global, move |cfg| {
+            let modes = modes_clone.clone();
+            async move {
+                modes.lock().expect("lock").push(cfg.mode.clone());
+                if cfg.mode == ProxyMode::Manual {
+                    Ok(ParsedFeed::default())
+                } else {
+                    Err("direct failed".to_string())
                 }
-            },
-        )
+            }
+        })
         .await;
         assert!(
             result.is_ok(),
@@ -2222,7 +2299,6 @@ mod tests {
         let attempts = std::sync::Arc::new(std::sync::Mutex::new(0u32));
         let attempts_clone = attempts.clone();
         let result = fetch_with_auto_failover::<ParsedFeed, _, _>(
-            "http://feed.test/rss",
             ProxyConfig::default(),
             true,
             &global,

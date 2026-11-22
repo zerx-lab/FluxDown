@@ -26,7 +26,9 @@ fun DownloadServiceEffect() {
     val container = LocalAppContainer.current
     val context = LocalContext.current.applicationContext
     val lifecycleOwner = LocalLifecycleOwner.current
-    val requestNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    val requestNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        DownloadServiceController.onNotificationPermissionResult(context)
+    }
 
     LaunchedEffect(container, lifecycleOwner) {
         lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {

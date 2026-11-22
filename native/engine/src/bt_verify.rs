@@ -100,12 +100,16 @@ pub(crate) struct LandedCheck {
 pub(crate) async fn run(
     check: LandedCheck,
     guard: TaskJobGuard,
+    local_work: crate::transfer_activity::LocalWorkGuard,
 ) -> Result<BtIntegrityReport, BtIntegrityError> {
     let token = guard.token();
     let task_id = check.task_id.clone();
     log_info!("[BT] integrity check started: task={}", task_id);
-    let joined =
-        tokio::task::spawn_blocking(move || check_landed(&check, || token.is_cancelled())).await;
+    let joined = tokio::task::spawn_blocking(move || {
+        let _local_work = local_work;
+        check_landed(&check, || token.is_cancelled())
+    })
+    .await;
     drop(guard);
     let result = joined.map_err(|error| {
         BtIntegrityError::Internal(format!("verification worker failed: {error}"))

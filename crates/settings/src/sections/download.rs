@@ -9,7 +9,9 @@ use fluxdown_ui_theme::active_theme;
 use gpui::{App, ParentElement, SharedString, Styled, Window};
 use gpui_component::h_flex;
 
-use super::{SectionContext, auto_quantity, categories, rate_limit, retention, user_agent};
+use super::{
+    SectionContext, aria2_options, auto_quantity, categories, rate_limit, retention, user_agent,
+};
 use crate::ui::{Control, Explain, SettingsPage, SettingsSection, body_text, meta_text};
 
 pub(crate) fn page(ctx: &SectionContext, cx: &mut App) -> SettingsPage {
@@ -455,4 +457,5 @@ fn advanced_section(ctx: &SectionContext) -> SettingsSection {
             )
             .help(ctx.t("revealFileCmdDesc")),
         )
+        .row(aria2_options::row(ctx))
 }

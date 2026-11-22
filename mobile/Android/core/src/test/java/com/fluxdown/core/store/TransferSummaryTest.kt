@@ -1,6 +1,8 @@
 package com.fluxdown.core.store
 
+import com.fluxdown.core.model.HlsFragmentProgress
 import com.fluxdown.core.model.Task
+import com.fluxdown.core.model.TaskRuntime
 import com.fluxdown.core.model.TaskStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -8,7 +10,8 @@ import org.junit.Test
 
 /** 进度通知的聚合规则：未知大小不拖垮进度、剩余时间需全部已知、越界夹紧、只投影活跃任务。 */
 class TransferSummaryTest {
-    private fun transfer(id: String, down: Long, total: Long, speed: Long) = Transfer(id, "$id.bin", down, total, speed)
+    private fun transfer(id: String, down: Long, total: Long, speed: Long) =
+        Transfer(id, "$id.bin", down, total, speed, TaskStatus.Downloading)
 
     @Test fun aggregatesKnownSizesAndSpeed() {
         val s = TransferSummary.of(listOf(transfer("a", 25, 100, 5), transfer("b", 75, 100, 5)))
@@ -41,6 +44,37 @@ class TransferSummaryTest {
         assertEquals(0.5f, s.fraction!!, 1e-6f)
     }
 
+    @Test fun projectsFragmentProgressWithOrWithoutEstimatedSize() {
+        val task = Task(
+            taskId = "vod", url = "https://example.com/vod.m3u8", originUrl = "",
+            fileName = "vod.mp4", saveDir = "/dl", status = TaskStatus.Downloading,
+            downloadedBytes = 8, totalBytes = 80,
+        )
+        val runtime = TaskRuntime(
+            taskId = task.taskId, sampleSequence = 1, activeTransfers = null, connectedPeers = null,
+            totalBytes = 80, segments = emptyList(), hlsFragments = HlsFragmentProgress(50, 100),
+        )
+        val state = HostState(connection = Connection.Live, tasks = listOf(task), runtime = mapOf(task.taskId to runtime))
+        assertEquals(0.5f, state.transfers().single().fraction!!, 1e-6f)
+        assertEquals(0.5f, state.copy(tasks = listOf(task.copy(totalBytes = 0))).transfers().single().fraction!!, 1e-6f)
+        assertEquals(0.1f, state.copy(runtime = emptyMap()).transfers().single().fraction!!, 1e-6f)
+        assertNull(state.copy(tasks = listOf(task.copy(totalBytes = 0)), runtime = emptyMap()).transfers().single().fraction)
+    }
+
+    @Test fun aggregatesFragmentCountsButDoesNotMixThemWithBytes() {
+        val a = transfer("a", 8, 80, 8).copy(hlsFragments = HlsFragmentProgress(50, 100))
+        val b = transfer("b", 2, 40, 2).copy(hlsFragments = HlsFragmentProgress(10, 20))
+        val c = transfer("c", 1, 0, 1).copy(hlsFragments = HlsFragmentProgress(0, 80))
+        val fragmentSummary = TransferSummary.of(listOf(a, b, c))
+        assertEquals(0.3f, fragmentSummary.fraction!!, 1e-6f)
+        assertNull(fragmentSummary.etaSeconds)
+
+        val mixed = TransferSummary.of(listOf(a, b.copy(hlsFragments = null)))
+        assertNull(mixed.fraction)
+        assertNull(mixed.etaSeconds)
+        assertEquals(10L, mixed.speedBps)
+    }
+
     @Test fun projectsOnlyActiveTasksWhileLive() {
         fun task(id: String, status: TaskStatus) = Task(
             taskId = id, url = "https://example.com/$id", originUrl = "", fileName = "$id.bin", saveDir = "/dl",
@@ -52,7 +86,7 @@ class TransferSummaryTest {
             speeds = mapOf("a" to LiveSpeed(down = 7, up = 0)),
         )
         assertEquals(
-            listOf(Transfer("a", "a.bin", 10, 100, 7), Transfer("c", "c.bin", 10, 100, 0)),
+            listOf(transfer("a", 10, 100, 7), transfer("c", 10, 100, 0).copy(status = TaskStatus.Preparing)),
             state.transfers(),
         )
         assertEquals(emptyList<Transfer>(), state.copy(connection = Connection.Stale).transfers())

@@ -128,6 +128,12 @@ export class CategoryIndex {
     return this.firstIndexById.get(id) ?? -1
   }
 
+  private static nameMatches(rule: CategoryRule, name: string, ext: string | null): boolean {
+    const matcher = rule.matcher
+    if (matcher.type === 'extensions') return ext !== null && matcher.set.has(ext)
+    return matcher.type === 'regex' && matcher.regex !== null && matcher.regex.test(name)
+  }
+
   /** `ext` 为任务扩展名；扫描多条规则时由调用方算一次传入，省略则现算。 */
   private static ruleMatches(rule: CategoryRule, view: DownloadTaskView, ext: string | null = extensionOf(view.name)): boolean {
     const matcher = rule.matcher
@@ -137,9 +143,8 @@ export class CategoryIndex {
       case 'other':
         return false
       case 'extensions':
-        return ext !== null && matcher.set.has(ext)
       case 'regex':
-        return matcher.regex !== null && matcher.regex.test(view.name)
+        return CategoryIndex.nameMatches(rule, view.name, ext)
       case 'url':
         return matcher.regex !== null && matcher.regex.test(shareUrl(view))
     }
@@ -164,6 +169,15 @@ export class CategoryIndex {
       this.specific.find((rule) => isUrl(rule) && CategoryIndex.ruleMatches(rule, view)) ??
       this.specific.find((rule) => !isUrl(rule) && CategoryIndex.ruleMatches(rule, view))
     return hit ? hit.dto.id : BUILTIN_OTHER_ID
+  }
+
+  /** 种子成员没有独立来源地址，只按文件名匹配。 */
+  categoryOfFileName(name: string): string | undefined {
+    if (name === '') return undefined
+    const ext = name.lastIndexOf('.') > 0 ? extensionOf(name) : null
+    return this.rules.find((rule, index) =>
+      this.firstIndexById.get(rule.dto.id) === index && CategoryIndex.nameMatches(rule, name, ext),
+    )?.dto.id
   }
 
   /**

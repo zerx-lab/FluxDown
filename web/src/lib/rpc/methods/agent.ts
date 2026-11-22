@@ -93,6 +93,8 @@ import type {
   LinkPairFinishResponse,
   LinkRenameParams,
   LinkPairingCodeDto,
+  RemoteCommandManyParams,
+  RemoteCommandManyResult,
   RemoteCommandParams,
   RemoteDispatchParams,
   RemoteDispatchResult,
@@ -224,6 +226,8 @@ const remote = {
   dispatch: (params: RemoteDispatchParams) =>
     call<RemoteDispatchResult>(METHOD.AGENT_REMOTE_DISPATCH, params),
   command: (params: RemoteCommandParams) => call<OkResult>(METHOD.AGENT_REMOTE_COMMAND, params),
+  commandMany: (params: RemoteCommandManyParams) =>
+    call<RemoteCommandManyResult>(METHOD.AGENT_REMOTE_COMMAND_MANY, params),
 };
 
 const plan = {
@@ -304,7 +308,7 @@ const update = {
 };
 
 const power = {
-  /** 定时关机 / 睡眠：没有任务时立即倒计时；`delaySecs = 0` 无任务时不受理（`armed: false`）。 */
+  /** One-shot completion or low-speed power action; lowSpeed requires download work and allows 30 seconds to cancel. */
   arm: (params: PowerArmParams) => call<PowerArmResult>(METHOD.AGENT_POWER_ARM, params),
   disarm: () => call<OkResult>(METHOD.AGENT_POWER_DISARM),
 };

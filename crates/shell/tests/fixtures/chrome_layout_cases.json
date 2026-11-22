@@ -366,5 +366,34 @@
         "statusTrailing": ["limit", "disk"]
       }
     }
-  ]
+  ],
+  "defaultHidden": {
+    "catalog": [
+      { "id": "home", "defaultZone": "railTop", "families": ["rail", "title", "status"], "fixed": true },
+      { "id": "disk", "defaultZone": "statusTrailing", "families": ["title", "status"], "defaultHidden": true },
+      { "id": "ver", "defaultZone": "statusTrailing", "families": ["title", "status"] }
+    ],
+    "cases": [
+      {
+        "name": "missing preference hides default-hidden items",
+        "stored": null,
+        "expected": { "titleLeading": [], "titleTrailing": [], "railTop": ["home"], "railBottom": [], "statusLeading": [], "statusTrailing": ["disk", "ver"], "hidden": ["disk"] }
+      },
+      {
+        "name": "a default-hidden item missing from a stored layout starts hidden",
+        "stored": { "statusTrailing": ["ver"] },
+        "expected": { "titleLeading": [], "titleTrailing": [], "railTop": ["home"], "railBottom": [], "statusLeading": [], "statusTrailing": ["disk", "ver"], "hidden": ["disk"] }
+      },
+      {
+        "name": "a placed default-hidden item follows the stored hidden list (shown when absent)",
+        "stored": { "statusTrailing": ["ver", "disk"] },
+        "expected": { "titleLeading": [], "titleTrailing": [], "railTop": ["home"], "railBottom": [], "statusLeading": [], "statusTrailing": ["ver", "disk"] }
+      },
+      {
+        "name": "a placed default-hidden item stays hidden when stored hidden",
+        "stored": { "statusTrailing": ["disk", "ver"], "hidden": ["disk"] },
+        "expected": { "titleLeading": [], "titleTrailing": [], "railTop": ["home"], "railBottom": [], "statusLeading": [], "statusTrailing": ["disk", "ver"], "hidden": ["disk"] }
+      }
+    ]
+  }
 }

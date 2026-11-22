@@ -1,3 +1,4 @@
+import { useByteFormatter } from '../../../lib/fileSizeUnits'
 // 停靠面板「组概览」（规格 §5）：聚焦任务组且选区恰好等于其通过成员时显示。聚合取全组成员（不受侧栏筛选 / 搜索影响）。
 
 import { AppWindow, FolderOpen, Layers, Pause, Play, RotateCw } from 'lucide-react'
@@ -15,6 +16,7 @@ import { formatEta, STATUS_TEXT } from '../table/text'
 import { DetailRow, Note } from './DetailRow'
 
 export function GroupOverview({ groupId }: { groupId: string }) {
+  const fmtBytes = useByteFormatter(formatBytes)
   const t = useT()
   const { groups, groupTotals, allViews, queueName, tasksLoading, contentVersion } = useDownloads()
   const group = groups.find((item) => item.groupId === groupId)
@@ -40,11 +42,11 @@ export function GroupOverview({ groupId }: { groupId: string }) {
   const name = displayName(group.name, group.saveDir, groupId)
   const status = stateLabel(t, totals.state)
   const created = Number(group.createdAt)
-  const sizeText = totals.sizeBytes > 0 ? `${formatBytes(totals.downloadedBytes)} / ${formatBytes(totals.sizeBytes)}` : formatBytes(totals.downloadedBytes)
+  const sizeText = totals.sizeBytes > 0 ? `${fmtBytes(totals.downloadedBytes)} / ${fmtBytes(totals.sizeBytes)}` : fmtBytes(totals.downloadedBytes)
   const speedLine =
     totals.speed > 0
       ? [
-          `${formatBytes(totals.speed)}/s`,
+          `${fmtBytes(totals.speed)}/s`,
           totals.etaSeconds !== null && totals.etaSeconds <= MAX_ETA_SECS
             ? t('groupEtaRemaining', { eta: formatEta(t, totals.etaSeconds) })
             : null,

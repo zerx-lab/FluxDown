@@ -133,6 +133,36 @@ private nonisolated func decode(_ s: String) -> String {
     s.replacingOccurrences(of: "+", with: "%2B").removingPercentEncoding ?? s
 }
 
+nonisolated func batchExportSize(_ url: String) -> Int64? {
+    guard url.range(of: "ed2k://|file|", options: [.anchored, .caseInsensitive]) != nil else { return nil }
+    let fields = url.split(separator: "|", maxSplits: 5, omittingEmptySubsequences: false)
+    guard fields.count >= 5, !fields[2].isEmpty else { return nil }
+    let hash = fields[4].utf8
+    let size = fields[3]
+    let digits = size.first == "+" ? size.dropFirst() : size
+    guard hash.count == 32,
+          hash.allSatisfy({ (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }),
+          digits.utf8.allSatisfy({ (48...57).contains($0) }),
+          let bytes = Int64(digits), bytes <= 0x40_0000_0000,
+          bytes != 0 || fields[4].lowercased() == "31d6cfe0d16ae931b73c59d7e0c089c0" else { return nil }
+    return bytes
+}
+
+nonisolated func batchExportName(_ entry: UrlEntry) -> String {
+    if !entry.fileName.isEmpty { return entry.fileName }
+    if entry.url.range(of: "magnet:?", options: [.anchored, .caseInsensitive]) != nil {
+        return magnetName(entry.url) ?? ""
+    }
+    if entry.url.range(of: "ed2k://", options: [.anchored, .caseInsensitive]) != nil {
+        return ed2kName(entry.url) ?? ""
+    }
+    guard let scheme = entry.url.range(of: "://"),
+          ["http", "https", "ftp"].contains(entry.url[..<scheme.lowerBound].lowercased()) else { return "" }
+    let path = splitUrl(entry.url).path
+    guard !path.hasSuffix("/"), let segment = path.split(separator: "/").last else { return "" }
+    return decode(String(segment))
+}
+
 /// 预览用的推断文件名：`out=` 优先；磁力取 `dn=`，eD2K 取 `|file|名称|`，其余取路径末段（取不到用主机名）。
 nonisolated func inferName(_ entry: UrlEntry) -> String {
     if !entry.fileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return entry.fileName }
@@ -141,9 +171,7 @@ nonisolated func inferName(_ entry: UrlEntry) -> String {
     case .bt:
         return magnetName(url) ?? btihOf(url).map { "magnet:" + $0 } ?? String(url.prefix(40))
     case .ed2k:
-        let parts = url.split(separator: "|", omittingEmptySubsequences: false)
-        if parts.count > 2, !parts[2].trimmingCharacters(in: .whitespaces).isEmpty { return decode(String(parts[2])) }
-        return String(url.prefix(40))
+        return ed2kName(url) ?? String(url.prefix(40))
     default:
         let parts = splitUrl(url)
         let segment = parts.path.split(separator: "/", omittingEmptySubsequences: true).last.map(String.init)
@@ -174,12 +202,19 @@ private nonisolated func splitUrl(_ url: String) -> (host: String?, path: String
 
 private nonisolated func magnetName(_ url: String) -> String? {
     guard let q = url.firstIndex(of: "?") else { return nil }
-    for part in url[url.index(after: q)...].split(separator: "&") where part.hasPrefix("dn=") {
+    let query = url[url.index(after: q)...].prefix { $0 != "#" }
+    for part in query.split(separator: "&") where part.hasPrefix("dn=") {
         let value = decode(String(part.dropFirst(3)))
         if !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return value }
         return nil
     }
     return nil
+}
+
+private nonisolated func ed2kName(_ url: String) -> String? {
+    guard let prefix = url.range(of: "ed2k://|file|", options: [.anchored, .caseInsensitive]) else { return nil }
+    let name = decode(String(url[prefix.upperBound...].prefix { $0 != "|" }))
+    return name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : name
 }
 
 private nonisolated func btihOf(_ url: String) -> String? {

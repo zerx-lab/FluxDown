@@ -41,10 +41,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
 use chrono::Local;
+use fluxdown_logfile::Level;
 use thiserror::Error;
 use tracing::{Instrument, Metadata};
 use tracing_subscriber::fmt::MakeWriter;
 use uuid::Uuid;
+
+pub use fluxdown_logfile::startup;
 
 static LOGGER: OnceLock<Arc<AppLogger>> = OnceLock::new();
 static PANIC_HOOK_INSTALLED: OnceLock<()> = OnceLock::new();
@@ -475,7 +478,7 @@ pub(crate) fn panic_hook_installed() -> bool {
 pub fn init() -> Result<(), LoggerInitError> {
     let data_dir =
         crate::data_dir::resolve_data_dir(None).map_err(LoggerInitError::ResolveDataDirectory)?;
-    init_at(data_dir.join("logs"))
+    init_with_dir(&data_dir)
 }
 
 /// 用显式数据目录初始化全局日志：日志写入 `<data_dir>/logs`。
@@ -484,43 +487,54 @@ pub fn init() -> Result<(), LoggerInitError> {
 /// 随之落到同一（可能是挂载卷的）目录，而非平台默认的 HOME 路径。Docker
 /// 部署（`FLUXDOWN_DATA_DIR=/data`）下日志因此持久化到 `/data/logs`。
 pub fn init_with_dir(data_dir: &Path) -> Result<(), LoggerInitError> {
-    init_at(data_dir.join("logs"))
+    init_at(data_dir)
 }
 
-/// 默认日志级别决定优先级（474#1）：
-/// 1. `RUST_LOG` 环境变量——由 [`build_env_filter`] 处理，
-///    非空时始终优先于本函数返回的默认指令；
-/// 2. `FLUXDOWN_LOG_LEVEL` 环境变量（`error`/`warn`/`info`/`debug`/`trace`，
-///    大小写不敏感）——未设置 `RUST_LOG` 时的默认级别，供 headless
-///    server/CLI 无需改代码即可临时调高日志粒度排查问题；
-/// 3. 以上均未设置 → `INFO`（桌面端 UI 侧的等级选择留待后续迭代，当前只做
-///    环境变量这一层，见 474 讨论）。
-fn resolve_default_level_filter() -> tracing_subscriber::filter::LevelFilter {
-    parse_level_filter(std::env::var("FLUXDOWN_LOG_LEVEL").ok().as_deref())
-}
-
-/// [`resolve_default_level_filter`] 的纯实现，值显式传入以便测试
-/// （不依赖/不修改进程级 `std::env` 状态）。
-fn parse_level_filter(value: Option<&str>) -> tracing_subscriber::filter::LevelFilter {
+fn startup_filter(data_dir: &Path) -> (tracing_subscriber::EnvFilter, &'static str) {
     use tracing_subscriber::filter::LevelFilter;
-    let Some(raw) = value else {
-        return LevelFilter::INFO;
-    };
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "error" => LevelFilter::ERROR,
-        "warn" => LevelFilter::WARN,
-        "info" => LevelFilter::INFO,
-        "debug" => LevelFilter::DEBUG,
-        "trace" => LevelFilter::TRACE,
-        other => {
-            if !other.is_empty() {
-                eprintln!(
-                    "[logger] 忽略未知 FLUXDOWN_LOG_LEVEL='{other}'（合法值：error/warn/info/debug/trace），回退 info"
-                );
-            }
-            LevelFilter::INFO
+
+    if let Ok(rust_log) = std::env::var("RUST_LOG")
+        && !rust_log.trim().is_empty()
+    {
+        match tracing_subscriber::EnvFilter::builder()
+            .with_default_directive(LevelFilter::INFO.into())
+            .parse(rust_log.trim())
+        {
+            Ok(filter) => return (filter, "RUST_LOG directives"),
+            Err(_) => eprintln!("invalid RUST_LOG; using FluxDown log level"),
         }
     }
+
+    let persisted = startup::read_level(data_dir).unwrap_or_else(|error| {
+        eprintln!(
+            "[logger] failed to read {}: {error}",
+            data_dir.join(startup::FILE_NAME).display()
+        );
+        None
+    });
+    let env_level = std::env::var("FLUXDOWN_LOG_LEVEL").ok();
+    let automatic = env_level.as_deref().and_then(Level::parse).is_none() && persisted.is_none();
+    let level = match startup::resolve_level_from(env_level.as_deref(), persisted) {
+        Level::Error => LevelFilter::ERROR,
+        Level::Warn => LevelFilter::WARN,
+        Level::Info => LevelFilter::INFO,
+        Level::Debug => LevelFilter::DEBUG,
+        Level::Trace => LevelFilter::TRACE,
+    };
+    let filter = build_env_filter(None, level);
+    let filter = if automatic && level == LevelFilter::DEBUG {
+        add_noisy_target_suppression(filter)
+    } else {
+        filter
+    };
+    let source = if automatic {
+        "build default"
+    } else if env_level.as_deref().and_then(Level::parse).is_some() {
+        "FLUXDOWN_LOG_LEVEL"
+    } else {
+        "logging.conf"
+    };
+    (filter, source)
 }
 
 /// librqbit 按单个 peer / 单次 announce 打 INFO/WARN（MSE 握手成败、tracker
@@ -550,22 +564,31 @@ fn build_env_filter(
     if let Some(directives) = rust_log.filter(|value| !value.trim().is_empty()) {
         return builder.parse_lossy(directives);
     }
-    let mut filter = builder.parse_lossy("");
+    let filter = builder.parse_lossy("");
     if level == LevelFilter::INFO || level == LevelFilter::WARN {
-        for directive in NOISY_TARGET_DIRECTIVES {
-            if let Ok(directive) = directive.parse() {
-                filter = filter.add_directive(directive);
-            }
+        add_noisy_target_suppression(filter)
+    } else {
+        filter
+    }
+}
+
+fn add_noisy_target_suppression(
+    mut filter: tracing_subscriber::EnvFilter,
+) -> tracing_subscriber::EnvFilter {
+    for directive in NOISY_TARGET_DIRECTIVES {
+        if let Ok(directive) = directive.parse() {
+            filter = filter.add_directive(directive);
         }
     }
     filter
 }
 
-fn init_at(log_dir: PathBuf) -> Result<(), LoggerInitError> {
+fn init_at(data_dir: &Path) -> Result<(), LoggerInitError> {
     if let Some(existing) = LOGGER.get() {
         existing.write_impl("[logger] init skipped (already initialized)", false);
         return Ok(());
     }
+    let log_dir = data_dir.join("logs");
 
     let logger = Arc::new(AppLogger::new(log_dir.clone())?);
     logger
@@ -587,9 +610,10 @@ fn init_at(log_dir: PathBuf) -> Result<(), LoggerInitError> {
         }
     }
 
-    let filter = build_env_filter(
-        std::env::var("RUST_LOG").ok().as_deref(),
-        resolve_default_level_filter(),
+    let (filter, source) = startup_filter(data_dir);
+    logger.write_impl(
+        &format!("[logger] diagnostic filter source: {source}"),
+        false,
     );
     use tracing_subscriber::Layer as _;
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -957,8 +981,7 @@ mod tests {
     #[cfg_attr(not(feature = "bt"), allow(unused_imports))]
     use super::{
         AppLogWriterFactory, AppLogger, LoggerInitError, build_env_filter, format_error_chain,
-        install_panic_hook, list_log_files_in, parse_level_filter, parse_log_name, report_error,
-        spawn_logged,
+        install_panic_hook, list_log_files_in, parse_log_name, report_error, spawn_logged,
     };
 
     fn temp_dir(tag: &str) -> std::path::PathBuf {
@@ -971,23 +994,21 @@ mod tests {
         dir
     }
 
-    // 474#1：FLUXDOWN_LOG_LEVEL 决定未设置 RUST_LOG 时的默认级别。
     #[test]
-    fn parse_level_filter_recognizes_all_levels() {
+    fn explicit_filter_retains_target_directives() {
+        use tracing::Level;
         use tracing_subscriber::filter::LevelFilter;
-        assert_eq!(parse_level_filter(Some("error")), LevelFilter::ERROR);
-        assert_eq!(parse_level_filter(Some("WARN")), LevelFilter::WARN);
-        assert_eq!(parse_level_filter(Some(" info ")), LevelFilter::INFO);
-        assert_eq!(parse_level_filter(Some("Debug")), LevelFilter::DEBUG);
-        assert_eq!(parse_level_filter(Some("trace")), LevelFilter::TRACE);
-    }
+        use tracing_subscriber::layer::SubscriberExt;
 
-    #[test]
-    fn parse_level_filter_falls_back_to_info_when_unset_or_invalid() {
-        use tracing_subscriber::filter::LevelFilter;
-        assert_eq!(parse_level_filter(None), LevelFilter::INFO);
-        assert_eq!(parse_level_filter(Some("")), LevelFilter::INFO);
-        assert_eq!(parse_level_filter(Some("verbose")), LevelFilter::INFO);
+        let filter = build_env_filter(
+            Some("error,fluxdown_engine::logger=debug"),
+            LevelFilter::WARN,
+        );
+        let subscriber = tracing_subscriber::registry().with(filter);
+        tracing::subscriber::with_default(subscriber, || {
+            assert!(tracing::event_enabled!(target: "fluxdown_engine::logger", Level::DEBUG));
+            assert!(!tracing::event_enabled!(target: "other", Level::WARN));
+        });
     }
 
     #[cfg(feature = "bt")]

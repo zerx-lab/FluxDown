@@ -1,5 +1,6 @@
 export { DownloadDialogsHost } from './DownloadDialogsHost'
 export {
+  openAddWebSeed,
   openChangeSegments,
   openChangeUrl,
   openGroupDetail,

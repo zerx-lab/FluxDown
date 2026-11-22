@@ -11,6 +11,7 @@ use fluxdown_protocol::{
     AgentEvent, AgentSnapshot, CaptureResolveParams, CloudDevice, LinkDeviceInfo,
     PendingCaptureDto, ServiceEvent,
 };
+use fluxdown_ui_components::toast;
 use fluxdown_ui_downloads::{
     DownloadsCommand, DownloadsPort, NewDownloadContext, NewDownloadSubmission, NewDownloadView,
     SubmissionHooks, SubmitNotice, new_download_context_from_snapshot, new_download_targets,
@@ -19,7 +20,7 @@ use fluxdown_ui_downloads::{
 use fluxdown_ui_i18n::keys;
 use fluxdown_ui_shell::{AuxiliaryWindowView, auxiliary_window_options};
 use gpui::{App, AppContext as _, Global, WeakEntity, px, size};
-use gpui_component::{Root, WindowExt as _, notification::Notification};
+use gpui_component::{Root, WindowExt as _};
 
 use crate::{
     app::Desktop,
@@ -116,7 +117,7 @@ fn install_capture_failure_notices(cx: &mut App) {
                         .text("localServiceActionFailed")
                         .to_owned();
                     if let Err(error) = main.update(cx, |_, window, cx| {
-                        window.push_notification(Notification::error(message), cx);
+                        window.push_notification(toast::error(message), cx);
                     }) {
                         log::error!("could not display capture failure: {error:#}");
                     }
@@ -158,7 +159,7 @@ pub fn install_captures(cx: &mut App) {
                 let translator = Desktop::global(cx).translator.read(cx);
                 let message = format!("{}\n{source}", translator.text("downloadImportInterrupted"));
                 let copy_label = translator.text("copyUrl").to_owned();
-                let notification = Notification::error(message).action(move |_, _, _| {
+                let notification = toast::error(message).action(move |_, _, _| {
                     let source = source.clone();
                     gpui_component::button::Button::new("copy-interrupted-download")
                         .label(copy_label.clone())
@@ -591,9 +592,9 @@ fn submit(submission: NewDownloadSubmission, port: &Arc<AgentDownloadsPort>, cx:
                 message
             };
             let notification = if ok {
-                Notification::from(message)
+                toast::plain(message)
             } else {
-                Notification::error(message)
+                toast::error(message)
             };
             if let Err(error) = main.update(cx, |_, window, cx| {
                 window.push_notification(notification, cx)

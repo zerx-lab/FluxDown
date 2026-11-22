@@ -1,5 +1,12 @@
 package com.fluxdown.core.protocol
 
+import com.fluxdown.core.host.HostErrorCode
+import com.fluxdown.core.host.HostException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import java.time.OffsetDateTime
 import java.time.format.DateTimeParseException
 
@@ -170,10 +177,180 @@ object RemoteTaskRules {
         return !(RemoteTaskStatus.needsTargetOnline(action) && targetOnline == false)
     }
 
+    /**
+     * 远程命令失败的文案键：`remoteTaskGone`（新主机，已移除该行）与旧主机的裸 `notFound` 都说明云端记录已不存在；
+     * 其余走账户错误映射（`targetDeviceOffline` / `taskStateConflict` 等）。
+     */
+    fun errorKey(e: HostException): String =
+        if (e.reason == null && e.code == HostErrorCode.NotFound) "errReasonRemoteTaskGone" else AccountRules.errorKey(e)
+
     /** 行尾单一主按钮：进行中 → 暂停，已暂停 → 继续，其余无。 */
     fun primaryAction(task: RemoteTaskDto): RemoteCommandAction? = when {
         task.status.allows(RemoteCommandAction.Pause) -> RemoteCommandAction.Pause
         task.status.allows(RemoteCommandAction.Resume) -> RemoteCommandAction.Resume
         else -> null
+    }
+}
+
+// ───────────────────────────── 批量命令（`agent.remote.commandMany`）─────────────────────────────
+
+/** `agent.remote.commandMany` 单次最多任务数（`REMOTE_COMMAND_MANY_MAX`）；更大的选择由客户端分块。 */
+const val REMOTE_COMMAND_MANY_MAX = 1000
+
+/** 逐个 `agent.remote.command` 回退（旧主机）的并发上限。 */
+const val REMOTE_FALLBACK_CONCURRENCY = 4
+
+/** `agent.remote.commandMany` 参数。 */
+data class RemoteCommandManyParams(
+    val taskIds: List<String>,
+    val action: RemoteCommandAction,
+    /** 仅 [RemoteCommandAction.Delete]：目标设备同时删除已下载文件。 */
+    val deleteFiles: Boolean = false,
+) {
+    fun toJson(): JsonValue = jsonObject(
+        "taskIds" to taskIds,
+        "action" to action.wire,
+        "deleteFiles" to deleteFiles,
+    )
+}
+
+/** 批量命令中单个任务的失败（`failed[]`；[error] 为标准 `RpcErrorData`）。 */
+data class RemoteCommandFailure(
+    val taskId: String,
+    val code: HostErrorCode,
+    val reason: String? = null,
+    val retryable: Boolean = false,
+) {
+    /** 转为与单任务命令失败同形的 [HostException]（文案走 `AccountRules.errorKey`）。 */
+    fun toException(): HostException = HostException(code, reason, retryable)
+
+    /** 旧主机的「记录不存在」：`notFound` 且没有 reason（新主机会带 `remoteTaskGone`，且已移除该行）。 */
+    val isLegacyNotFound: Boolean get() = code == HostErrorCode.NotFound && reason == null
+
+    companion object {
+        fun of(taskId: String, e: HostException) = RemoteCommandFailure(taskId, e.code, e.reason, e.retryable)
+
+        /** `{"taskId": "...", "error": {"code", "retryable", "reason"?}}`；缺 `taskId` 为非法（null），未知 code 落入 Internal。 */
+        fun fromJson(v: JsonValue?): RemoteCommandFailure? {
+            val id = v.strOrNull("taskId") ?: return null
+            val error = v["error"]
+            return RemoteCommandFailure(
+                taskId = id,
+                code = errorCodeFromWire(error.strOrNull("code")),
+                reason = error.strOrNull("reason"),
+                retryable = error.bool("retryable"),
+            )
+        }
+
+        private fun errorCodeFromWire(wire: String?): HostErrorCode = when (wire) {
+            "protocolIncompatible" -> HostErrorCode.ProtocolIncompatible
+            "unauthorized" -> HostErrorCode.Unauthorized
+            "invalidArgument" -> HostErrorCode.InvalidArgument
+            "notFound" -> HostErrorCode.NotFound
+            "conflict" -> HostErrorCode.Conflict
+            "unavailable" -> HostErrorCode.Unavailable
+            "timeout" -> HostErrorCode.Timeout
+            "cancelled" -> HostErrorCode.Cancelled
+            "unsupported" -> HostErrorCode.Unsupported
+            else -> HostErrorCode.Internal
+        }
+    }
+}
+
+/** `agent.remote.commandMany` 结果：成功 ∪ 失败 = 去重后的输入 id。缺失数组按空处理（同 serde `default`）。 */
+data class RemoteCommandManyResult(
+    val succeeded: List<String> = emptyList(),
+    val failed: List<RemoteCommandFailure> = emptyList(),
+) {
+    operator fun plus(other: RemoteCommandManyResult) = RemoteCommandManyResult(succeeded + other.succeeded, failed + other.failed)
+
+    companion object {
+        fun fromJson(v: JsonValue?): RemoteCommandManyResult = RemoteCommandManyResult(
+            succeeded = v.strings("succeeded"),
+            failed = v.list("failed").mapNotNull(RemoteCommandFailure::fromJson),
+        )
+    }
+}
+
+/**
+ * 批量结果。[legacyNotFound] = 回退路径遇到旧主机的裸 `notFound`（记录已不在云端，但旧主机不会移除该行）：
+ * 调用方应再请求一次 `agent.remote.list` 重新同步。
+ */
+data class RemoteBatchOutcome(
+    val succeeded: List<String>,
+    val failed: List<RemoteCommandFailure>,
+    val legacyNotFound: Boolean = false,
+)
+
+/** 批量远程命令的拆分 / 分块 / 回退（纯逻辑；网络调用由调用方以 lambda 注入）。 */
+object RemoteBatch {
+    /** 去重（保持顺序）后按 [REMOTE_COMMAND_MANY_MAX] 分块。 */
+    fun chunks(ids: List<String>, max: Int = REMOTE_COMMAND_MANY_MAX): List<List<String>> =
+        ids.distinct().chunked(max.coerceAtLeast(1))
+
+    /** 控制矩阵（状态 + 目标在线）过滤：只保留 [action] 对其适用的任务（按 id 去重，保持顺序）。 */
+    fun eligible(
+        tasks: List<RemoteTaskDto>,
+        action: RemoteCommandAction,
+        targetOnline: (RemoteTaskDto) -> Boolean?,
+    ): List<RemoteTaskDto> = tasks.filter { RemoteTaskRules.canIssue(action, it, targetOnline(it)) }.distinctBy { it.id }
+
+    /**
+     * 执行批量命令。[batchSupported]（主机声明 `agent.remoteBatch`）时每块一次 [many]；块整体失败（抛 [HostException]）
+     * 把该块全部记为失败。否则回退为逐个 [single]（最多 [concurrency] 并发）：取消 / 删除遇到旧主机的裸 `notFound`
+     * 视为成功（记录本就不在云端，意图已达成）并置 [RemoteBatchOutcome.legacyNotFound]。
+     */
+    suspend fun run(
+        ids: List<String>,
+        action: RemoteCommandAction,
+        deleteFiles: Boolean,
+        batchSupported: Boolean,
+        many: suspend (RemoteCommandManyParams) -> RemoteCommandManyResult,
+        single: suspend (RemoteCommandParams) -> Unit,
+        concurrency: Int = REMOTE_FALLBACK_CONCURRENCY,
+    ): RemoteBatchOutcome {
+        val unique = ids.distinct()
+        if (unique.isEmpty()) return RemoteBatchOutcome(emptyList(), emptyList())
+        if (batchSupported) {
+            var acc = RemoteCommandManyResult()
+            for (chunk in chunks(unique)) {
+                acc += try {
+                    many(RemoteCommandManyParams(chunk, action, deleteFiles))
+                } catch (e: HostException) {
+                    RemoteCommandManyResult(failed = chunk.map { RemoteCommandFailure.of(it, e) })
+                }
+            }
+            return RemoteBatchOutcome(acc.succeeded, acc.failed)
+        }
+        val gate = Semaphore(concurrency.coerceAtLeast(1))
+        val results: List<RemoteCommandFailure?> = coroutineScope {
+            unique.map { id ->
+                async {
+                    gate.withPermit {
+                        try {
+                            single(RemoteCommandParams(id, action, deleteFiles = deleteFiles))
+                            null
+                        } catch (e: HostException) {
+                            RemoteCommandFailure.of(id, e)
+                        }
+                    }
+                }
+            }.awaitAll()
+        }
+        val succeeded = ArrayList<String>(unique.size)
+        val failed = ArrayList<RemoteCommandFailure>()
+        var legacy = false
+        unique.forEachIndexed { i, id ->
+            val f = results[i]
+            when {
+                f == null -> succeeded += id
+                f.isLegacyNotFound -> {
+                    legacy = true
+                    if (action == RemoteCommandAction.Cancel || action == RemoteCommandAction.Delete) succeeded += id else failed += f
+                }
+                else -> failed += f
+            }
+        }
+        return RemoteBatchOutcome(succeeded, failed, legacy)
     }
 }

@@ -4,7 +4,7 @@ import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
-import android.text.format.Formatter
+import com.fluxdown.core.format.Format
 import android.util.Log
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -30,24 +30,29 @@ import com.fluxdown.app.feature.settings.SettingRowBox
 import com.fluxdown.app.feature.settings.SettingsCtx
 import com.fluxdown.app.feature.settings.SettingsEntry
 import com.fluxdown.app.feature.settings.SettingsSearchContext
+import com.fluxdown.app.feature.settings.settingChoice
 import com.fluxdown.app.feature.settings.settingNumber
 import com.fluxdown.app.i18n.str
 import com.fluxdown.app.nav.SettingsPage
+import com.fluxdown.app.shell.LocalAppearance
 import com.fluxdown.app.shell.LocalAppContainer
 import com.fluxdown.app.shell.hostState
 import com.fluxdown.core.host.HostErrorCode
 import com.fluxdown.core.host.HostException
 import com.fluxdown.core.model.HostRef
 import com.fluxdown.core.protocol.HostMethod
+import com.fluxdown.core.protocol.JsonValue
 import com.fluxdown.core.protocol.LogExportHttp
 import com.fluxdown.core.protocol.LogExportParams
 import com.fluxdown.core.protocol.LogExportResult
 import com.fluxdown.core.protocol.LogPathsDto
+import com.fluxdown.core.protocol.SettingsForm
 import com.fluxdown.core.protocol.callJson
 import com.fluxdown.core.store.Connection
 import com.fluxdown.fluxui.controls.FluxActionRow
 import com.fluxdown.fluxui.controls.FluxKeyValue
 import com.fluxdown.fluxui.controls.GlassSection
+import com.fluxdown.fluxui.controls.SelectOption
 import com.fluxdown.fluxui.icons.FluxIcons
 import com.fluxdown.fluxui.overlay.FluxToastKind
 import com.fluxdown.fluxui.overlay.LocalFluxOverlays
@@ -136,21 +141,20 @@ internal class LogExportModel(private val context: Context, private val containe
     var failure by mutableStateOf<String?>(null)
         private set
 
-    /** 本机日志总大小；远端主机 / 目录不在本机 → null（不显示该行）。 */
-    var sizeText by mutableStateOf<String?>(null)
+    /** 本机日志总大小（字节）；远端主机 / 目录不在本机 → null。 */
+    var sizeBytes by mutableStateOf<Long?>(null)
         private set
 
     /** 刷新当前日志大小：只在本机主机上统计（日志目录路径来自 `agent.diagnostics.logPaths`）。 */
     suspend fun refreshSize() {
         val live = container.store.state.value.connection == Connection.Live
         if (container.host.value !is HostRef.Local || !live) {
-            sizeText = null
+            sizeBytes = null
             return
         }
-        sizeText = try {
+        sizeBytes = try {
             val paths = LogPathsDto.fromJson(container.session.callJson(HostMethod.agentDiagnosticsLogPaths))
-            val total = withContext(Dispatchers.IO) { totalSize(listOf(paths.agentLogDir, paths.daemonLogDir)) }
-            total?.let { Formatter.formatShortFileSize(context, it) }
+            withContext(Dispatchers.IO) { totalSize(listOf(paths.agentLogDir, paths.daemonLogDir)) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: HostException) {
@@ -302,6 +306,22 @@ internal fun rememberLogExportModel(): LogExportModel {
     return remember(context, container) { LogExportModel(context, container) }
 }
 
+private const val LOG_LEVEL_KEY = "diagnostics.log_level"
+private const val LOG_LEVEL_ID = "logs.level"
+private val logLevelOptions = listOf(
+    "auto" to R.string.diagnosticsLogLevelAuto,
+    "debug" to R.string.diagnosticsLogLevelDebug,
+    "info" to R.string.diagnosticsLogLevelInfo,
+    "warn" to R.string.diagnosticsLogLevelWarn,
+    "error" to R.string.diagnosticsLogLevelError,
+)
+
+private fun supportsLogLevel(form: SettingsForm): Boolean {
+    // Do not treat the catalog default or an optimistic value as host support.
+    val level = (form.prefs[LOG_LEVEL_KEY] as? JsonValue.Str)?.value ?: return false
+    return logLevelOptions.any { (value, _) -> value == level }
+}
+
 /**
  * 日志分组：占用上限（`log_max_size_mb`，MB）、当前日志大小（仅本机）、导出日志（分享面板）。
  * 诊断页与关于页共用（同 iOS `LogsSection`）。[scope] 为页面级作用域：导出可能持续数分钟，
@@ -312,7 +332,7 @@ internal fun LogsSection(ctx: SettingsCtx, model: LogExportModel, scope: Corouti
     val container = LocalAppContainer.current
     val overlays = LocalFluxOverlays.current
     val actions = LocalTaskActions.current
-    val c = FluxTheme.colors
+    val units = LocalAppearance.current.fileSizeUnits
     val hostRef by container.host.collectAsStateWithLifecycle()
     val state = hostState()
     val live by remember { derivedStateOf { state.value.connection == Connection.Live } }
@@ -321,20 +341,31 @@ internal fun LogsSection(ctx: SettingsCtx, model: LogExportModel, scope: Corouti
     LaunchedEffect(hostRef, live) { model.refreshSize() }
 
     val exportDesc = str(R.string.logExportDesc)
+    val sizeUnitHint = str(R.string.mobileLogSizeUnitLabel, "unit" to units.byteLabel(2))
     val footer = if (ctx.form.has("log_max_size_mb") && ctx.synced("log_max_size_mb")) {
         exportDesc + "\n" + str(R.string.settingsSyncLegend)
     } else {
         exportDesc
     }
     GlassSection(title = str(R.string.mobileLogsTitle), footer = footer) {
+        if (supportsLogLevel(ctx.form)) {
+            settingChoice(ctx, LOG_LEVEL_KEY, R.string.diagnosticsLogLevel, R.string.diagnosticsLogLevelDesc, id = LOG_LEVEL_ID) {
+                logLevelOptions.map { (value, label) -> SelectOption(value, str(label)) }
+            }
+        }
         settingNumber(
             ctx, "log_max_size_mb", R.string.logMaxSize, R.string.logMaxSizeDesc,
-            range = 1L..1024L, default = 10L, unit = R.string.mobileLogSizeUnit, id = "logs.maxSize",
+            range = 1L..1024L, default = 10L,
+            unitLabel = sizeUnitHint,
+            id = "logs.maxSize",
         )
-        model.sizeText?.let { size ->
+        model.sizeBytes?.let { bytes ->
             row {
                 SettingRowBox(ctx, "logs.currentSize", null) {
-                    FluxKeyValue(key = str(R.string.mobileLogCurrentSize), value = size)
+                    FluxKeyValue(
+                        key = str(R.string.mobileLogCurrentSize),
+                        value = Format.bytes(bytes, units).toString(),
+                    )
                 }
             }
         }
@@ -359,7 +390,7 @@ internal fun LogsSection(ctx: SettingsCtx, model: LogExportModel, scope: Corouti
                         FluxText(
                             text,
                             style = FluxTheme.type.sm,
-                            color = c.coralText,
+                            color = FluxTheme.colors.coralText,
                             modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 10.dp),
                         )
                     }
@@ -369,8 +400,11 @@ internal fun LogsSection(ctx: SettingsCtx, model: LogExportModel, scope: Corouti
     }
 }
 
-/** 搜索索引（日志行）：诊断页并入；与 [LogsSection] 共用可见性判定（`log_max_size_mb` 配置未加载时无该行）。 */
+/** 搜索索引（日志行）：与 [LogsSection] 共用可见性判定。 */
 internal fun logSearchEntries(ctx: SettingsSearchContext, page: SettingsPage, breadcrumb: String): List<SettingsEntry> = buildList {
+    if (supportsLogLevel(ctx.form)) {
+        add(ctx.entry(LOG_LEVEL_ID, page, LOGS_ITEM_KEY, R.string.diagnosticsLogLevel, R.string.diagnosticsLogLevelDesc, breadcrumb, FluxIcons.FileText))
+    }
     if (ctx.form.has("log_max_size_mb")) {
         add(ctx.entry("logs.maxSize", page, LOGS_ITEM_KEY, R.string.logMaxSize, R.string.logMaxSizeDesc, breadcrumb, FluxIcons.FileText))
     }

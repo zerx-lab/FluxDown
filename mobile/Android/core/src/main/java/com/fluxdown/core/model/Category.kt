@@ -72,16 +72,18 @@ class CategoryIndex(categories: List<Category>) {
     val ordered: List<Category> = categories.sortedBy { it.position }
     private val other: Category? = ordered.firstOrNull { it.isOther }
 
-    private class Rule(val category: Category, val isUrl: Boolean, val test: (name: String, url: String) -> Boolean)
+    private class Rule(val category: Category, val isUrl: Boolean, val firstWithId: Boolean, val test: (name: String, url: String) -> Boolean)
 
     private val urlRules: List<Rule>
     private val nameRules: List<Rule>
     private val ruleById: Map<String, Rule>
 
     init {
-        val all = ordered
-            .filter { !it.isAll && !it.isOther }
-            .map { c -> Rule(c, c.urlPattern.isNotEmpty(), compile(c)) }
+        val seen = HashSet<String>()
+        val all = ordered.mapNotNull { c ->
+            val first = seen.add(c.id)
+            if (c.isAll || c.isOther) null else Rule(c, c.urlPattern.isNotEmpty(), first, compile(c))
+        }
         urlRules = all.filter { it.isUrl }
         nameRules = all.filter { !it.isUrl }
         ruleById = HashMap<String, Rule>(all.size * 2).also { map -> all.forEach { map.putIfAbsent(it.category.id, it) } }
@@ -103,8 +105,17 @@ class CategoryIndex(categories: List<Category>) {
     /** 任务命中的首个具体分类：网址规则优先，其后扩展名 / 正则；都不命中 → other（无 other 时 null）。 */
     fun categoryOf(fileName: String, url: String = ""): Category? =
         urlRules.firstOrNull { it.test(fileName, url) }?.category
-            ?: nameRules.firstOrNull { it.test(fileName, url) }?.category
+            ?: nameRules.firstOrNull { it.test(fileName, "") }?.category
             ?: other
+
+    /** 仅按文件名匹配扩展名 / 正则，用于没有独立来源地址的文件（例如种子成员）。 */
+    fun categoryOfFileName(fileName: String): Category? {
+        val dot = fileName.lastIndexOf('.')
+        val hasExtension = dot > 0 && dot < fileName.lastIndex
+        return nameRules.firstOrNull {
+            it.firstWithId && (hasExtension || it.category.regexPattern.isNotEmpty()) && it.test(fileName, "")
+        }?.category ?: other
+    }
 
     /** 任务是否属于分类（all 恒真；other = 未命中任何具体分类）。 */
     fun matches(category: Category, fileName: String, url: String = ""): Boolean = when {

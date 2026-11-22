@@ -11,11 +11,12 @@
 use std::{rc::Rc, sync::Arc};
 
 use fluxdown_protocol::{NAV_BUILTIN_TARGETS, plugin_route_id};
+use fluxdown_ui_components::toast;
 use gpui::{
     AnyView, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
     Styled as _, Window, div,
 };
-use gpui_component::{WindowExt as _, alert::Alert, notification::Notification};
+use gpui_component::{WindowExt as _, alert::Alert};
 use gpui_shell::{
     HostError, HostModule, HostValue, ScriptView, ShellRuntime, policy::Policy, with_current_app,
 };
@@ -362,10 +363,10 @@ pub(crate) fn fluxdown_module(
             let level = arguments.string(0)?.to_owned();
             let text = arguments.string(1)?.to_owned();
             let note = match level.as_str() {
-                "info" => Notification::info(text),
-                "success" => Notification::success(text),
-                "warning" => Notification::warning(text),
-                "error" => Notification::error(text),
+                "info" => toast::info(text),
+                "success" => toast::success(text),
+                "warning" => toast::warning(text),
+                "error" => toast::error(text),
                 other => {
                     return Err(HostError::new(format!(
                         "fluxdown.toast: unknown level `{other}`; expected info, success, warning or error"

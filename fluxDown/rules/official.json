@@ -1,9 +1,9 @@
 {
   "format": "fluxdown-sniff-pack",
   "packId": "official",
-  "sequence": 1792374964,
+  "sequence": 1794788723,
   "engine": 1,
-  "issuedAt": "2026-10-19T01:56:04.962Z",
+  "issuedAt": "2026-11-16T00:25:23.178Z",
   "rules": [
     {
       "id": "official.bilibili.track",
@@ -158,6 +158,24 @@
           },
           "filename": "${name}"
         }
+      }
+    },
+    {
+      "id": "official.youtube.miniplayer-float",
+      "version": 1,
+      "tier": "official",
+      "title": "YouTube：迷你播放器里浮钮避开顶部的展开 / 关闭按钮",
+      "stage": "page",
+      "match": {
+        "pageHost": [
+          "youtube.com"
+        ]
+      },
+      "action": {
+        "kind": "player",
+        "selector": ".html5-video-player.ytp-player-minimized, .html5-video-player.ytp-miniplayer-active, ytd-miniplayer[active]",
+        "float": "inset",
+        "top": 52
       }
     }
   ]

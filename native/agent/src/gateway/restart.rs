@@ -122,6 +122,7 @@ impl GatewayControl {
     pub(super) async fn run(
         &self,
         listener: TcpListener,
+        ipc: Option<super::ipc::IpcListener>,
         app: Router,
         bearer: String,
         cancel: CancellationToken,
@@ -135,6 +136,21 @@ impl GatewayControl {
             .ok_or_else(|| io::Error::other("gateway listener owner was already started"))?;
         let mut tasks = JoinSet::new();
         let mut active = start_listener(listener, &app, &mut tasks)?;
+        // 本机 IPC 与 TCP 并行服务同一 router；它不参与端口切换，停止也不算网关故障。
+        let ipc_task = ipc.map(|ipc| {
+            let app = app.clone();
+            let shutdown = cancel.clone();
+            tasks
+                .spawn(async move {
+                    axum::serve(
+                        ipc.tap_io(|_| {}),
+                        app.into_make_service_with_connect_info::<SocketAddr>(),
+                    )
+                    .with_graceful_shutdown(shutdown.cancelled_owned())
+                    .await
+                })
+                .id()
+        });
         self.running.store(true, Ordering::Release);
         let mut candidate: Option<RunningListener> = None;
         let outcome = loop {
@@ -154,7 +170,12 @@ impl GatewayControl {
                     {
                         prepared.stop().await;
                     }
-                    if let Some(error) = failure {
+                    if ipc_task == Some(id) {
+                        match failure {
+                            Some(error) => tracing::warn!(error = %error, "gateway IPC listener failed; loopback TCP keeps serving"),
+                            None => tracing::warn!("gateway IPC listener stopped; loopback TCP keeps serving"),
+                        }
+                    } else if let Some(error) = failure {
                         tracing::error!(error = %error, "replacement or retired gateway server task failed");
                     }
                 }

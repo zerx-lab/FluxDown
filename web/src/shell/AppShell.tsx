@@ -79,7 +79,7 @@ export function AppShell() {
         {mobile ? titleBar : <ChromeMenuArea>{titleBar}</ChromeMenuArea>}
         {mobile ? null : <ChromeEditBanner />}
         <ConnectionBanner />
-        <UpdateBanner />
+        {mobile ? <UpdateBanner /> : null}
         <div className="flex min-h-0 flex-1">
           {mobile ? null : <ActivityRail />}
           <div className="flex min-w-0 flex-1 flex-col">

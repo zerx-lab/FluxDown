@@ -26,6 +26,8 @@ fun Context.str(@StringRes id: Int, vararg args: Pair<String, Any?>): String = g
 private fun TaskErrorMessage.stringRes(): Int = when (this) {
     TaskErrorMessage.PostOnlyEndpoint -> R.string.taskErrorPostOnlyEndpoint
     TaskErrorMessage.PostOnlyResume -> R.string.taskErrorPostOnlyResume
+    TaskErrorMessage.UnexpectedHtml -> R.string.taskErrorUnexpectedHtml
+    TaskErrorMessage.HtmlChanged -> R.string.taskErrorHtmlChanged
 }
 
 /** 引擎稳定错误文案 → 本地化文本；其余原样返回。 */

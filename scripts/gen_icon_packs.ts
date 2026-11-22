@@ -3,7 +3,7 @@
  * gen_icon_packs.ts — 生成内置文件图标包（`assets/icon-packs/*.json`）。
  *
  * 用法：
- *     bun scripts/gen_icon_packs.ts
+ *     bun scripts/gen_icon_packs.ts [lucide|material|catppuccin|thunder ...]   # 不带参数 = 全部
  *
  * 内置包与用户图标包同一份格式（`fluxdown.icon-pack` v1，解析见 `crates/icon_pack` 与
  * `website-v2/src/lib/icon-pack`），只是编译期嵌入：
@@ -11,6 +11,7 @@
  *   lucide.json      简约线性：`crates/components/assets/icons` 的 Lucide 子集，单色 mask，跟随主题文字色
  *   material.json    Material Icon Theme（VS Code 安装量第一，MIT）：npm `material-icon-theme@MATERIAL_VERSION`
  *   catppuccin.json  Catppuccin Icons（MIT）：GitHub `catppuccin/vscode-icons@CATPPUCCIN_TAG`，暗色 mocha / 亮色 latte
+ *   thunder.json     迅雷文件图标：`assets/icon-packs/thunder/*.png`（72×72），每个 PNG 内嵌为彩色 SVG
  *
  * 上游图标集有上千个图标，下载管理器只挑下载场景常见的文件类型（`*_ICONS` 列表），并从上游
  * 自带的关联表里取指向这些图标的全部扩展名 / 文件名。升级上游：改版本号后重跑，检查 diff。
@@ -24,6 +25,7 @@ import { $ } from "bun";
 const ROOT = resolve(import.meta.dir, "..");
 const OUT_DIR = join(ROOT, "assets/icon-packs");
 const LUCIDE_DIR = join(ROOT, "crates/components/assets/icons");
+const THUNDER_DIR = join(OUT_DIR, "thunder");
 
 const MATERIAL_VERSION = "5.39.0";
 const CATPPUCCIN_TAG = "v1.26.0";
@@ -70,8 +72,8 @@ function assertSafe(name: string, svg: string): void {
   const lower = svg.toLowerCase();
   const bad =
     !lower.startsWith("<svg") ||
-    /<script|<foreignobject|<image|<iframe|<object|<embed|@import|javascript:/.test(lower) ||
-    /(?:xlink:)?href\s*=\s*["'](?!#)/.test(lower) ||
+    /<script|<foreignobject|<iframe|<object|<embed|@import|javascript:/.test(lower) ||
+    /(?:xlink:)?href\s*=\s*["'](?!#|data:image\/png;base64,)/.test(lower) ||
     /url\(\s*["']?(?!#)/.test(lower) ||
     /\son[a-z]+\s*=/.test(lower);
   if (bad) throw new Error(`unsafe svg rejected: ${name}`);
@@ -279,14 +281,97 @@ async function catppuccinPack(work: string): Promise<Pack> {
   };
 }
 
+// ─────────────────────────── 迅雷 ───────────────────────────
+
+const THUNDER_KINDS: Record<Kind, string> = {
+  application: "exe",
+  diskImage: "iso",
+  mobile: "apk",
+  video: "video",
+  audio: "music",
+  document: "document",
+  image: "image",
+  archive: "zip",
+  other: "unknown",
+};
+
+/** 图标 → 扩展名（大类图标之外的具体类型）。 */
+const THUNDER_EXTENSIONS: Record<string, string[]> = {
+  apk: ["apk", "apks", "xapk"],
+  ipa: ["ipa"],
+  ipsw: ["ipsw"],
+  bt: ["torrent"],
+  bookchm: ["chm"],
+  bookepub: ["epub"],
+  bookmobi: ["mobi", "azw", "azw3"],
+  captions: ["srt", "ass", "ssa", "vtt", "sub", "lrc"],
+  dll: ["dll", "sys", "so", "dylib"],
+  dmg: ["dmg"],
+  document: ["rtf", "odt"],
+  excel: ["xls", "xlsx", "xlsm", "csv", "ods"],
+  exe: ["exe", "msi", "appimage", "bat", "cmd"],
+  gif: ["gif"],
+  html: ["html", "htm", "xhtml", "mht", "mhtml"],
+  iso: ["iso", "img"],
+  key: ["key"],
+  numbers: ["numbers"],
+  pages: ["pages"],
+  pdf: ["pdf"],
+  pkg: ["pkg", "mpkg", "deb", "rpm"],
+  ppt: ["ppt", "pptx", "pps", "ppsx", "odp"],
+  text: ["txt", "md", "log", "ini", "nfo", "cfg"],
+  url: ["url", "webloc"],
+  videom3u: ["m3u"],
+  videom3u8: ["m3u8"],
+  word: ["doc", "docx", "dot", "dotx", "wps"],
+};
+
+async function thunderPack(): Promise<Pack> {
+  const names = (await readdir(THUNDER_DIR)).filter((file) => file.endsWith(".png")).map((file) => file.slice(0, -4)).sort();
+  const icons: Record<string, IconEntry> = {};
+  for (const name of names) {
+    const base64 = (await readFile(join(THUNDER_DIR, `${name}.png`))).toString("base64");
+    icons[name] = {
+      mode: "color",
+      svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72"><image width="72" height="72" href="data:image/png;base64,${base64}"/></svg>`,
+    };
+  }
+  const fileExtensions: Record<string, string> = {};
+  for (const [icon, extensions] of Object.entries(THUNDER_EXTENSIONS)) {
+    for (const extension of extensions) {
+      if (extension in fileExtensions) throw new Error(`thunder: duplicate extension ${extension}`);
+      fileExtensions[extension] = icon;
+    }
+  }
+  return {
+    format: FORMAT,
+    schemaVersion: SCHEMA_VERSION,
+    meta: {
+      id: "thunder",
+      name: "Thunder",
+      author: "Xunlei",
+      license: "Proprietary",
+      version: "1",
+      homepage: "https://www.xunlei.com",
+    },
+    icons,
+    fileExtensions: sortRecord(fileExtensions),
+    kinds: THUNDER_KINDS,
+    default: "unknown",
+  };
+}
+
 // ─────────────────────────── main ───────────────────────────
 
 await mkdir(OUT_DIR, { recursive: true });
 const work = await mkdtemp(join(tmpdir(), "fluxdown-icon-packs-"));
+const only = new Set(process.argv.slice(2));
+const wanted = (id: string) => only.size === 0 || only.has(id);
 try {
-  await writePack("lucide.json", await lucidePack());
-  await writePack("material.json", await materialPack(work));
-  await writePack("catppuccin.json", await catppuccinPack(work));
+  if (wanted("lucide")) await writePack("lucide.json", await lucidePack());
+  if (wanted("material")) await writePack("material.json", await materialPack(work));
+  if (wanted("catppuccin")) await writePack("catppuccin.json", await catppuccinPack(work));
+  if (wanted("thunder")) await writePack("thunder.json", await thunderPack());
 } finally {
   await rm(work, { recursive: true, force: true });
 }

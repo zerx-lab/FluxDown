@@ -27,7 +27,8 @@ describe('dynamic chrome catalog', () => {
     const spec = { id: 'plugin:a@x:dash', defaultZone: 'railTop' as const, families: ['rail', 'title'] as const }
     setPluginChromeSpecs([spec])
     const layout = normalizeLayout({ hidden: ['plugin:a@x:dash', 'downloads', 'settings', 'rss'] }, getChromeCatalog())
-    expect(layout.hidden).toEqual(['rss', 'plugin:a@x:dash'])
+    // 存储值没摆放 diskFree：默认隐藏条目按目录顺序加入。
+    expect(layout.hidden).toEqual(['rss', 'diskFree', 'plugin:a@x:dash'])
     setPluginChromeSpecs([])
   })
 })

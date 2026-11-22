@@ -27,6 +27,7 @@ export const REASON_KEYS: Partial<Record<ErrorReason, string>> = {
   sessionExpired: 'errReasonSessionExpired',
   cloudUnreachable: 'accountErrorNetwork',
   targetDeviceOffline: 'errReasonTargetDeviceOffline',
+  remoteTaskGone: 'errReasonRemoteTaskGone',
   taskStateConflict: 'errReasonTaskStateConflict',
   taskDeviceMismatch: 'errReasonTaskDeviceMismatch',
   saveDirUnavailable: 'errReasonSaveDirUnavailable',

@@ -311,17 +311,17 @@ async fn moving_a_download_and_a_seed_keeps_them_going() {
             downloaded(files, a) >= PIECE
         })
         .await;
+    // 搬移只接受已开始的任务：等「下载中」落库，否则校验目标前先被状态检查拒掉。
+    leech.wait_for_status(&id, 1).await;
     let old_dir = leech.work.clone();
     let old_stage = leech.stage_dir(&id).await;
 
     // 拒绝：相对路径、搬进自己的数据里。目标与当前相同什么都不做。
     for bad in ["relative/dir".into(), old_stage.join("inside")] {
+        let result = leech.move_storage(&id, &bad).await;
         assert!(
-            matches!(
-                leech.move_storage(&id, &bad).await,
-                Err(BtTaskOpError::InvalidArgument(_))
-            ),
-            "{bad:?}"
+            matches!(result, Err(BtTaskOpError::InvalidArgument(_))),
+            "{bad:?}: {result:?}"
         );
     }
     leech

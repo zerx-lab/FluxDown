@@ -1,4 +1,4 @@
-//! 定时关机 / 睡眠的界面侧：状态机与执行归 agent（托盘驻留、界面全部关闭后仍要按时执行）。
+//! 定时完成动作的界面侧：状态机与执行归 agent（关闭界面后仍可在托盘驻留时执行）。
 //!
 //! 这里只做三件事：把 agent 快照中的 `power` 投影成状态栏读取的 [`SharedShutdownStatus`]；
 //! 把状态栏请求转成 `agent.power.arm/disarm`；倒计时期间在主窗口挂常驻通知（无主窗口时由
@@ -10,10 +10,10 @@ use std::time::Duration;
 use fluxdown_protocol::{
     AgentEvent, PowerAction, PowerArmParams, PowerStatusDto, ServiceEvent, method,
 };
+use fluxdown_ui_components::toast;
 use fluxdown_ui_downloads::{SharedShutdownStatus, ShutdownPort, ShutdownRequest, ShutdownStatus};
 use gpui::{App, Global};
 use gpui_component::WindowExt as _;
-use gpui_component::notification::Notification;
 use serde_json::Value;
 
 use crate::app::Desktop;
@@ -27,7 +27,7 @@ struct ShutdownGlobal {
 
 impl Global for ShutdownGlobal {}
 
-/// 安装完成后关机投影：跟随会话快照 / `PowerChanged` 更新状态并刷新主窗口。
+/// 安装完成动作投影：跟随会话快照 / `PowerChanged` 更新状态并刷新主窗口。
 pub fn install(cx: &mut App) {
     if cx.has_global::<ShutdownGlobal>() {
         return;
@@ -44,28 +44,45 @@ pub fn install(cx: &mut App) {
                 Some(PowerArmParams {
                     delay_secs: delay.as_secs(),
                     action,
+                    low_speed: None,
                 }),
             ),
+            ShutdownRequest::ArmLowSpeed { condition, action } => client
+                .call::<PowerArmParams, Value>(
+                    method::AGENT_POWER_ARM,
+                    Some(PowerArmParams {
+                        delay_secs: fluxdown_protocol::POWER_LOW_SPEED_WARNING_SECS,
+                        action,
+                        low_speed: Some(condition),
+                    }),
+                ),
         };
         cx.spawn(async move |cx| {
-            if let Err(error) = call.await {
-                log::warn!("scheduled power action request failed: {:?}", error.code);
-                cx.update(|cx| {
-                    let Some(handle) = WindowRegistry::handle(cx, &WindowKey::Main) else {
-                        return;
-                    };
-                    let message = Desktop::global(cx)
-                        .translator
-                        .read(cx)
-                        .text("localServiceActionFailed")
-                        .to_owned();
-                    if let Err(error) = handle.update(cx, |_, window, cx| {
-                        window.push_notification(Notification::error(message), cx);
-                    }) {
-                        log::debug!("power failure notification window released: {error:#}");
-                    }
-                });
-            }
+            let message_key = match call.await {
+                Ok(value) if value.get("armed").and_then(Value::as_bool) == Some(false) => {
+                    "powerArmRejected"
+                }
+                Ok(_) => return,
+                Err(error) => {
+                    log::warn!("scheduled power action request failed: {:?}", error.code);
+                    "localServiceActionFailed"
+                }
+            };
+            cx.update(|cx| {
+                let Some(handle) = WindowRegistry::handle(cx, &WindowKey::Main) else {
+                    return;
+                };
+                let message = Desktop::global(cx)
+                    .translator
+                    .read(cx)
+                    .text(message_key)
+                    .to_owned();
+                if let Err(error) = handle.update(cx, |_, window, cx| {
+                    window.push_notification(toast::error(message), cx);
+                }) {
+                    log::debug!("power failure notification window released: {error:#}");
+                }
+            });
         })
         .detach();
     });
@@ -73,7 +90,6 @@ pub fn install(cx: &mut App) {
         status: status.clone(),
         port,
     });
-
     let session = Desktop::global(cx).session.clone();
     if let Some(power) = session.read(cx).agent_snapshot().map(|body| body.power) {
         apply(&status, power, cx);
@@ -110,8 +126,9 @@ pub fn shutdown_port(cx: &App) -> Option<ShutdownPort> {
 }
 
 fn apply(status: &SharedShutdownStatus, power: PowerStatusDto, cx: &mut App) {
+    let previous = status.get();
     let next = shutdown_status(power);
-    if status.get() == next {
+    if previous == next {
         return;
     }
     status.set(next);
@@ -122,8 +139,12 @@ fn apply(status: &SharedShutdownStatus, power: PowerStatusDto, cx: &mut App) {
     {
         downloads.update(cx, |_, cx| cx.notify());
     }
+    // 倒计时每秒推送一次剩余时间：实时数字只在状态栏刷新，通知只在倒计时开始（或动作变化）时
+    // 弹一次——重复 push 同 id 通知会每秒重放入场动画。
+    let started = previous.countdown_remaining.is_none() || previous.action != next.action;
     match next.countdown_remaining {
-        Some(remaining) => show_countdown(cx, remaining, next.action),
+        Some(_) if started => show_countdown(cx, next.action),
+        Some(_) => {}
         None => clear_countdown(cx),
     }
 }
@@ -132,25 +153,28 @@ fn shutdown_status(power: PowerStatusDto) -> ShutdownStatus {
     ShutdownStatus {
         armed_delay: power.armed_delay_secs.map(Duration::from_secs),
         countdown_remaining: power.countdown_remaining_secs.map(Duration::from_secs),
+        low_speed: power.low_speed,
+        low_speed_elapsed_secs: power.low_speed_elapsed_secs,
         action: power.action,
     }
 }
 
 struct ShutdownNote;
 
-fn show_countdown(cx: &mut App, remaining: Duration, action: PowerAction) {
+fn show_countdown(cx: &mut App, action: PowerAction) {
     let Some(handle) = WindowRegistry::handle(cx, &WindowKey::Main) else {
         return;
     };
-    let (countdown_key, cancel_key) = match action {
-        PowerAction::Shutdown => ("shutdownCountdown", "shutdownCancelButton"),
-        PowerAction::Sleep => ("sleepCountdown", "sleepCancelButton"),
+    let (notice_key, cancel_key) = match action {
+        PowerAction::Shutdown => ("shutdownCountdownNotice", "shutdownCancelButton"),
+        PowerAction::Sleep => ("sleepCountdownNotice", "sleepCancelButton"),
+        PowerAction::Quit => ("quitCountdownNotice", "quitCancelButton"),
     };
     let translator = Desktop::global(cx).translator.read(cx).clone();
-    let message = translator.text_with(countdown_key, &[("time", &format_remaining(remaining))]);
+    let message = translator.text(notice_key).to_owned();
     let cancel_label = translator.text(cancel_key).to_owned();
     if let Err(error) = handle.update(cx, |_, window, cx| {
-        let note = Notification::warning(message)
+        let note = toast::warning(message)
             .id::<ShutdownNote>()
             .autohide(false)
             .action(move |_, _, _| {
@@ -176,23 +200,5 @@ fn clear_countdown(cx: &mut App) {
         })
     {
         log::debug!("view or window released before lifecycle update: {error:#}");
-    }
-}
-
-/// `mm:ss`，与 agent 托盘 tooltip 一致。
-fn format_remaining(remaining: Duration) -> String {
-    let total = remaining.as_secs();
-    format!("{:02}:{:02}", total / 60, total % 60)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn format_remaining_pads_minutes_and_seconds() {
-        assert_eq!(format_remaining(Duration::from_secs(65)), "01:05");
-        assert_eq!(format_remaining(Duration::from_secs(5)), "00:05");
-        assert_eq!(format_remaining(Duration::from_secs(600)), "10:00");
     }
 }

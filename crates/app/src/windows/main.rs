@@ -6,7 +6,7 @@ use fluxdown_ui_account::AccountRailButton;
 use fluxdown_ui_components::FluxIcon;
 use fluxdown_ui_downloads::{DownloadHostActions, DownloadView};
 use fluxdown_ui_rss::RssView;
-use fluxdown_ui_settings::{PushHost, PushView, UpdateButton};
+use fluxdown_ui_settings::{PushHost, PushView, VersionButton, VersionHost};
 use fluxdown_ui_shell::{
     ChromeEditingChanged, ShellAction, ShellChrome, ShellRoute, ShellView, main_window_options,
 };
@@ -143,8 +143,21 @@ fn open_with(cx: &mut App, focus: bool) -> Option<WindowHandle<Root>> {
                 ),
             }
         }
+        let version_button = cx.new(|cx| {
+            VersionButton::new(
+                translator.clone(),
+                settings_store.clone(),
+                VersionHost {
+                    open_update_prompt: Rc::new(crate::windows::update_prompt::open),
+                    check_update: Rc::new(crate::update_notices::check_now),
+                    open_logs_folder: Rc::new(crate::menus::open_logs_folder),
+                    open_about: Rc::new(crate::menus::open_about),
+                },
+                cx,
+            )
+        });
         let chrome = ShellChrome {
-            widgets: crate::chrome_layout::widgets(&downloads, cx),
+            widgets: crate::chrome_layout::widgets(&downloads, &version_button, cx),
             catalog: crate::chrome_layout::catalog(),
             on_layout_change: Rc::new(|value, cx| {
                 Desktop::set_pref(cx, crate::chrome_layout::CHROME_LAYOUT_PREF, value);
@@ -163,17 +176,10 @@ fn open_with(cx: &mut App, focus: bool) -> Option<WindowHandle<Root>> {
             };
         })
         .detach();
-        let update_button = cx.new(|cx| {
-            UpdateButton::new(
-                translator.clone(),
-                settings_store.clone(),
-                Rc::new(crate::windows::update_prompt::open),
-                cx,
-            )
-        });
         shell.update(cx, |shell, cx| {
             shell.observe_widget_source(&downloads, cx);
-            shell.set_status_accessory(Some(update_button.into()), cx);
+            // 版本条目被隐藏时，更新状态变化决定是否临时显示它。
+            shell.observe_widget_source(&version_button, cx);
             let preferences = Desktop::preferences(cx).clone();
             activity::apply_visibility(shell, &preferences, cx);
             crate::chrome_layout::apply(shell, &preferences, cx);

@@ -37,6 +37,7 @@ import { AutoCountRow } from './AutoCountRow'
 import { RetentionRow } from './RetentionRow'
 import { CategoriesGroup } from './CategoriesGroup'
 
+import { Aria2OptionsEditor } from './Aria2OptionsEditor'
 const NO_QUEUES: readonly QueueDto[] = []
 const selectQueues = (daemon: { queues: readonly QueueDto[] }) => daemon.queues
 /** Radix Select 不允许空值项：用哨兵表示「默认队列」（`default_queue_id` = ''）。 */
@@ -53,6 +54,7 @@ export function DownloadSettings() {
       <RetrySection />
       <SettingsSection title={t('settingsGroupAdvanced')}>
         <UserAgentRow />
+        <Aria2OptionsEditor />
       </SettingsSection>
       <CategoriesGroup disabled={readOnly} />
     </SettingsPage>

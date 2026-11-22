@@ -35,11 +35,13 @@ use crate::proxy_config::{ProxyConfig, ProxyMode};
 // api TaskDto.autoRoute 与 Web WS 逐字一致）
 // ---------------------------------------------------------------------------
 
-/// `tasks.auto_route` 的 wire 标签。空串 = 非 Auto 且未命中站点规则（或任务尚未启动过）。
+/// `tasks.auto_route` 的 wire 标签（任务详情「链路」行的事实源）。空串 = 任务尚未
+/// 启动过，或出口 client 构建失败退回全局直连（不对路由做声明）。
 ///
 /// 代理类标签带候选来源后缀 `:system`（系统代理检测）/ `:manual`（手动
 /// 字段回退），UI 通用解析后缀展示「最终用的是谁」；无后缀的裸标签是
-/// 旧库存量值，语义不变。
+/// 旧库存量值，语义不变。非 Auto 的 `global:*` / `task:*` / `bt:*` 标签只做展示与
+/// 日志，不参与 Auto 换路（[`route_of_label`](super::route_of_label) 对它们返回 `None`）。
 pub mod route {
     use super::CandidateSource;
 
@@ -73,6 +75,33 @@ pub mod route {
     pub const RULE_MANUAL: &str = "rule:manual";
     /// 站点规则决定任务出口，经规则自带的自定义代理。
     pub const RULE_CUSTOM: &str = "rule:custom";
+    /// 全局「不使用代理」，或手动 / 系统模式下没有可用代理（手动字段不全、系统未
+    /// 检测到代理、系统 PAC 结论 DIRECT）。
+    pub const GLOBAL_DIRECT: &str = "global:direct";
+    /// 全局代理生效，但本链接命中直连名单（用户例外列表 / 系统例外 / 环回）。
+    pub const GLOBAL_BYPASS: &str = "global:bypass";
+    /// 全局手动代理。
+    pub const GLOBAL_MANUAL: &str = "global:manual";
+    /// 全局系统代理（静态代理）。
+    pub const GLOBAL_SYSTEM: &str = "global:system";
+    /// 全局系统代理模式下按系统 PAC 脚本选中的代理。
+    pub const GLOBAL_PAC: &str = "global:pac";
+    /// 任务级专属代理（任务属性里填写的代理地址）。
+    pub const TASK_PROXY: &str = "task:proxy";
+    /// 任务级代理实际直连（`direct://`，或 `system://` 但未检测到系统代理）。
+    pub const TASK_DIRECT: &str = "task:direct";
+    /// BT 会话直连（未开启 BT 代理，或开启了但没有可用的代理服务器）。
+    pub const BT_DIRECT: &str = "bt:direct";
+    /// BT 仅 tracker 与 HTTP 源走代理（对端 / DHT 直连），带来源后缀。
+    pub const BT_TRACKERS_MANUAL: &str = "bt:trackers:manual";
+    pub const BT_TRACKERS_SYSTEM: &str = "bt:trackers:system";
+    /// BT 全部流量走代理（含对端连接与 DHT），带来源后缀。
+    pub const BT_ALL_MANUAL: &str = "bt:all:manual";
+    pub const BT_ALL_SYSTEM: &str = "bt:all:system";
+    /// 协议代理覆盖（设置页「代理 · 按下载协议」）决定出口，实际直连（`direct://`）。
+    pub const PROTOCOL_DIRECT: &str = "protocol:direct";
+    /// 协议代理覆盖决定出口，经覆盖里配置的代理（HTTP 家族任务，或 BT 会话）。
+    pub const PROTOCOL_PROXY: &str = "protocol:proxy";
 
     /// 是否为站点规则标签（Auto 故障转移等 Auto 专属逻辑必须跳过这类任务）。
     pub fn is_rule_label(label: &str) -> bool {
@@ -286,7 +315,7 @@ pub fn is_route_transport_error(msg: &str) -> bool {
 }
 
 /// 路由标签 → 路径。裸 `proxy:*`（旧库存量，无来源后缀）无法确定是哪条
-/// 代理 → `None`；空标签（非 Auto）→ `None`。
+/// 代理 → `None`；空标签与非 Auto 标签（`global:*` / `task:*` / `bt:*` / `rule:*`）→ `None`。
 #[must_use]
 pub fn route_of_label(label: &str) -> Option<RoutePath> {
     if label.starts_with("direct") {
@@ -300,6 +329,46 @@ pub fn route_of_label(label: &str) -> Option<RoutePath> {
     } else {
         None
     }
+}
+
+/// 非 Auto、未命中站点规则的 HTTP 族任务的出口标签。
+///
+/// `global_mode` 是全局代理模式，`task_proxy_url` 是任务级代理（非空即优先），
+/// `resolved` 是实际用来构建任务 client 的出口配置（已 [`ProxyConfig::resolve`]），
+/// `url` 是任务链接（判定直连名单）。Auto 模式由多路径决策给标签，这里返回空串。
+#[must_use]
+pub(crate) fn static_route_label(
+    global_mode: &ProxyMode,
+    task_proxy_url: &str,
+    resolved: &ProxyConfig,
+    url: &str,
+) -> &'static str {
+    let proxied = resolved.mode != ProxyMode::None && resolved.to_proxy_url().is_some();
+    if !task_proxy_url.is_empty() {
+        return if proxied {
+            route::TASK_PROXY
+        } else {
+            route::TASK_DIRECT
+        };
+    }
+    let via = match global_mode {
+        ProxyMode::Auto => return "",
+        ProxyMode::None => return route::GLOBAL_DIRECT,
+        ProxyMode::Manual => route::GLOBAL_MANUAL,
+        ProxyMode::System => route::GLOBAL_SYSTEM,
+    };
+    if !proxied {
+        return route::GLOBAL_DIRECT;
+    }
+    let bypassed = url::Url::parse(url.trim()).is_ok_and(|parsed| {
+        parsed.host_str().is_some_and(|host| {
+            crate::proxy_config::host_matches_no_proxy(
+                host,
+                &crate::proxy_config::proxy_bypass_list(&resolved.no_proxy_list),
+            )
+        })
+    });
+    if bypassed { route::GLOBAL_BYPASS } else { via }
 }
 
 #[cfg(test)]
@@ -318,6 +387,69 @@ mod tests {
             password: String::new(),
             no_proxy_list: String::new(),
             rules: None,
+        }
+    }
+
+    #[test]
+    fn static_route_label_reports_actual_egress() {
+        let url = "http://tlu.dl.delivery.mp.microsoft.com/files/a.cab";
+        let mut manual = auto_config("10.0.0.2", 7897);
+        manual.mode = ProxyMode::Manual;
+        let direct = ProxyConfig::default();
+
+        assert_eq!(
+            static_route_label(&ProxyMode::None, "", &direct, url),
+            route::GLOBAL_DIRECT
+        );
+        assert_eq!(
+            static_route_label(&ProxyMode::Manual, "", &manual, url),
+            route::GLOBAL_MANUAL
+        );
+        // 系统代理解析后是 Manual 配置；标签按全局模式区分来源。
+        assert_eq!(
+            static_route_label(&ProxyMode::System, "", &manual, url),
+            route::GLOBAL_SYSTEM
+        );
+        // 系统模式未检测到代理 / 手动字段不全：实际直连。
+        assert_eq!(
+            static_route_label(&ProxyMode::System, "", &direct, url),
+            route::GLOBAL_DIRECT
+        );
+        let incomplete = ProxyConfig {
+            host: String::new(),
+            ..manual.clone()
+        };
+        assert_eq!(
+            static_route_label(&ProxyMode::Manual, "", &incomplete, url),
+            route::GLOBAL_DIRECT
+        );
+        // 直连名单命中。
+        let bypass = ProxyConfig {
+            no_proxy_list: ".microsoft.com".into(),
+            ..manual.clone()
+        };
+        assert_eq!(
+            static_route_label(&ProxyMode::Manual, "", &bypass, url),
+            route::GLOBAL_BYPASS
+        );
+        // 任务级代理优先于全局模式。
+        assert_eq!(
+            static_route_label(&ProxyMode::None, "socks5://10.0.0.3:1080", &manual, url),
+            route::TASK_PROXY
+        );
+        assert_eq!(
+            static_route_label(&ProxyMode::Manual, "system://", &direct, url),
+            route::TASK_DIRECT
+        );
+        // Auto 由多路径决策给标签。
+        assert_eq!(static_route_label(&ProxyMode::Auto, "", &direct, url), "");
+        // 非 Auto 标签不参与 Auto 换路。
+        for label in [
+            route::GLOBAL_MANUAL,
+            route::GLOBAL_SYSTEM,
+            route::BT_ALL_SYSTEM,
+        ] {
+            assert_eq!(route_of_label(label), None, "{label}");
         }
     }
 

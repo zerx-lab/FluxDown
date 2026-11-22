@@ -7,6 +7,7 @@ use fluxdown_protocol::{
     LinkDiscoveryParams, LinkPairBeginParams, LinkPairBeginResponse, LinkPairFinishParams,
     LinkPairFinishResponse, LinkPairingCodeDto, method,
 };
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     BusyExt as _, ControlExt as _, dialog_scroll_body, field_error, field_hint, field_label,
     form_field, input_with_action, segmented_tabs, tabular_numbers,
@@ -22,7 +23,6 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
-    notification::Notification,
     spinner::Spinner,
     v_flex,
 };
@@ -566,7 +566,7 @@ impl AddDeviceDialog {
                                 "localPairingPaired",
                                 &[("device", device_name)],
                             );
-                            window.push_notification(Notification::success(message), cx);
+                            window.push_notification(toast::success(message), cx);
                         } else {
                             this.error = Some(this.t("errReasonPairingRejected", cx));
                         }
@@ -609,7 +609,7 @@ impl AddDeviceDialog {
     fn copy(&self, text: String, message_key: &str, window: &mut Window, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(text));
         let message = self.t(message_key, cx);
-        window.push_notification(Notification::success(message), cx);
+        window.push_notification(toast::success(message), cx);
     }
 
     // ───────────────────────── 渲染 ─────────────────────────
