@@ -661,9 +661,9 @@ async fn run_actor(
                     DaemonCommand::Execute { operation, ack } => {
                         if let ActorOperation::RestartMissingFile { task_id, recreate_if_present } = &operation {
                             if redownloads.contains_key(task_id) {
-                                let _ = ack.send(Err(ActorError::TaskStateConflict(
+                                drop(ack.send(Err(ActorError::TaskStateConflict(
                                     "a redownload already waits for this task".into(),
-                                )));
+                                ))));
                                 continue;
                             }
                             if let Some(generation) = engine.manager.redownload_worker_generation(task_id)
@@ -718,7 +718,7 @@ async fn run_actor(
                 if let Some(request) = request {
                     request.timer.abort();
                     if !stopped_in_time {
-                        let _ = request.ack.send(Err(ActorError::TaskRestartTimeout));
+                        drop(request.ack.send(Err(ActorError::TaskRestartTimeout)));
                     } else if !request.ack.is_closed() {
                         dispatch_operation(
                             ActorOperation::RestartMissingFile {
@@ -735,7 +735,7 @@ async fn run_actor(
                     && redownloads.get(&task_id).is_some_and(|request| request.generation == generation)
                     && let Some(request) = redownloads.remove(&task_id)
                 {
-                    let _ = request.ack.send(Err(ActorError::TaskRestartTimeout));
+                    drop(request.ack.send(Err(ActorError::TaskRestartTimeout)));
                 }
             }
             Some(task_id) = receivers.retry.recv() => {
