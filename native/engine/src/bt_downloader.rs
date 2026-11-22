@@ -2286,8 +2286,7 @@ impl SharedBtSession {
     /// 注入为该 torrent 的自定义 storage：选中文件按边车映射的最终路径
     /// 打开（绝不创建新文件），未选文件路由到边车 blob——磁盘上不会
     /// 出现未选文件的 0 字节占位，边界 piece 校验/上传均为真实字节，
-    /// 扁平化/重命名后的布局也能通过校验。为 `None` 时回退 librqbit
-    /// 默认 FilesystemStorage（老任务/边车损坏）。
+    /// 扁平化/重命名后的布局也能通过校验。为 `None` 时按种子原路径只读打开（老任务/边车损坏）。
     pub async fn readd_for_seeding(
         &self,
         task_id: &str,
@@ -2300,10 +2299,13 @@ impl SharedBtSession {
         let mut opts = AddTorrentOptions {
             overwrite: true,
             output_folder: Some(output_folder),
+            storage_factory: Some(match parts_factory {
+                Some(factory) => factory.into_boxed(),
+                None => crate::bt_partfile::original_paths_seed_factory(only_files.clone()),
+            }),
             only_files,
             paused: true,
             ratelimits: task_ratelimits(upload_limit_bps),
-            storage_factory: parts_factory.map(|f| f.into_boxed()),
             ..Default::default()
         };
         self.apply_task_options(task_id, &mut opts).await;
@@ -6674,6 +6676,18 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<BtInnerExit, DownloadErro
                 // moved in a previous session, or existing_handle path where
                 // output_folder == save_dir.  The DB file_name is already
                 // correct; just return resolved_name for the signal.
+                #[cfg(windows)]
+                {
+                    let seed_handle = handle.clone();
+                    tokio::task::spawn_blocking(move || {
+                        crate::bt_sparse::switch_to_seed_files(&seed_handle, &HashMap::new())
+                    })
+                    .await
+                    .map_err(|e| DownloadError::Other(e.to_string()))?
+                    .map_err(|e| {
+                        DownloadError::Other(format!("open completed files for seeding: {e:#}"))
+                    })?;
+                }
                 (resolved_name.clone(), true)
             } else {
                 let sentinel_key = format!("bt_completion_top_{}", task_id);
@@ -7011,6 +7025,8 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<BtInnerExit, DownloadErro
                                 .collect()
                         };
                         let tid_for_move = task_id.clone();
+                        #[cfg(windows)]
+                        let seed_handle = handle.clone();
                         let move_result = tokio::task::spawn_blocking(move || {
                             let mut succeeded = 0usize;
                             // overwrite 模式:先删规划时点快照到的旧最终文件(仍是
@@ -7079,14 +7095,24 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<BtInnerExit, DownloadErro
                                     }
                                 }
                             }
-                            succeeded
+                            #[cfg(windows)]
+                            if succeeded == moves.len() {
+                                let moved = moves.into_iter().map(|m| (m.src, m.dst)).collect();
+                                crate::bt_sparse::switch_to_seed_files(&seed_handle, &moved)?;
+                            }
+                            Ok::<_, anyhow::Error>(succeeded)
                         })
                         .await;
                         // spawn_blocking 内部 panic → JoinError。保守按全部失败处理
                         // (succeeded=0 → all_ok=false → 走 STATUS_ERROR 分支),
                         // 决不会把未落盘任务标成已完成。
                         let succeeded = match move_result {
-                            Ok(n) => n,
+                            Ok(Ok(n)) => n,
+                            Ok(Err(error)) => {
+                                return Err(DownloadError::Other(format!(
+                                    "open completed files for seeding: {error:#}"
+                                )));
+                            }
                             Err(join_err) => {
                                 log_info!(
                                     "[BT] task={} completion move task panicked: {}",

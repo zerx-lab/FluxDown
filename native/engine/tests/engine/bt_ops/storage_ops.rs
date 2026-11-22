@@ -24,6 +24,103 @@ fn pack() -> Vec<(&'static str, Vec<u8>)> {
     ]
 }
 
+#[cfg(all(windows, any(feature = "plugins", feature = "components")))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn completed_files_allow_shared_read_during_upload_and_after_restart() {
+    use std::io::Read;
+    use std::net::Ipv4Addr;
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let tracker = Tracker::start().await;
+    let payload = patterned(128 * 1024, 42);
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    zip.start_file("payload.bin", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    zip.write_all(&payload).unwrap();
+    let files = vec![
+        ("sample.zip", zip.finish().unwrap().into_inner()),
+        ("other.bin", patterned(24_490, 9)),
+    ];
+    let origin = Seeder::start(&files, &tracker, None).await;
+    let mut host = Downloader::start(&tracker).await;
+    let id = host.add(&origin, &[], false).await;
+    let task = host.wait_done(&id).await;
+    assert_eq!(task.status, 3, "{}", task.error_message);
+    origin.session.stop().await;
+    for phase in ["fresh", "restart", "legacy"] {
+        if phase != "fresh" {
+            if phase == "legacy" {
+                let parts =
+                    fluxdown_engine::bt_partfile::sidecar_path(&host.work.to_string_lossy(), &id);
+                std::fs::remove_file(parts).expect("simulate an older download without a sidecar");
+            }
+            host = host.restart(&tracker).await;
+            host.engine.manager.load_and_send_all_tasks().await;
+        }
+        wait_until("active seeder", || async {
+            host.task(&id).await.seeding_status == SEEDING_STATUS_ACTIVE
+        })
+        .await;
+        let path = Path::new(&task.save_dir)
+            .join(&task.file_name)
+            .join("sample.zip");
+        let reader = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(path)
+            .expect("open with FILE_SHARE_READ while seeding");
+        let mut archive = zip::ZipArchive::new(reader).expect("open ZIP while seeding");
+        let mut bytes = Vec::new();
+        archive
+            .by_name("payload.bin")
+            .unwrap()
+            .read_to_end(&mut bytes)
+            .expect("extract member and verify CRC");
+        assert_eq!(bytes, payload);
+
+        let target = host.work.join(format!("receiver-{phase}"));
+        let peer = librqbit::Session::new_with_opts(
+            target.clone(),
+            librqbit::SessionOptions {
+                dht: None,
+                disable_trackers: true,
+                disable_local_service_discovery: true,
+                mse_mode: librqbit::MseMode::Disabled,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("isolated receiving peer");
+        let port = host.engine.manager.bt_port_status().listen_port;
+        let received = peer
+            .add_torrent(
+                librqbit::AddTorrent::from_bytes(origin.torrent_bytes.clone()),
+                Some(librqbit::AddTorrentOptions {
+                    initial_peers: Some(vec![(Ipv4Addr::LOCALHOST, port).into()]),
+                    output_folder: Some(target.to_string_lossy().into_owned()),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .expect("add to receiver")
+            .into_handle()
+            .expect("receiving torrent");
+        tokio::time::timeout(Duration::from_secs(60), received.wait_until_completed())
+            .await
+            .expect("seed did not deliver all pieces")
+            .expect("receiver verification failed");
+        for (rel, expected) in &files {
+            assert_eq!(
+                &std::fs::read(target.join(rel)).expect("received file"),
+                expected
+            );
+        }
+        peer.stop().await;
+        drop(archive);
+    }
+    host.shutdown().await;
+}
+
 fn path_of(files: &BtTaskFiles, index: u32) -> &str {
     files
         .files
