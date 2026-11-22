@@ -5,8 +5,8 @@ import android.net.Uri
 import android.os.FileObserver
 import android.os.Handler
 import android.os.HandlerThread
-import android.provider.DocumentsContract
 import android.os.SystemClock
+import android.provider.DocumentsContract
 import android.util.Log
 import com.fluxdown.bridge.FluxBridge
 import java.io.File
@@ -34,14 +34,15 @@ internal class SharedDiagnosticLogs(
     private val hostDirty = AtomicBoolean()
     private val agentDirty = AtomicBoolean(true)
     private val engineDirty = AtomicBoolean(true)
-    private var retryAt = 0L
     private val observers = mutableListOf<FileObserver>()
     private val failedDocuments = mutableSetOf<String>()
-    private val retryPublish = Runnable { publishAll() }
+    private val retries = mutableMapOf<String, Retry>()
     private val mutableStatus = MutableStateFlow(Status.NeedsPermission)
     val status = mutableStatus.asStateFlow()
 
     enum class Status { NeedsPermission, Available, Unavailable }
+
+    private data class Retry(val at: Long, val task: Runnable)
 
     fun refresh() {
         handler.post { updateStatus() }
@@ -50,9 +51,7 @@ internal class SharedDiagnosticLogs(
     fun publishNow(reauthorized: Boolean) {
         handler.post {
             if (reauthorized) {
-                retryAt = 0L
-                handler.removeCallbacks(retryPublish)
-                failedDocuments.clear()
+                clearFailures()
                 hostDirty.set(true)
                 agentDirty.set(true)
                 engineDirty.set(true)
@@ -166,14 +165,24 @@ internal class SharedDiagnosticLogs(
         }
     }
 
-    private fun retryDelay() = retryAt - SystemClock.elapsedRealtime()
+    private fun clearFailures() {
+        for (retry in retries.values) handler.removeCallbacks(retry.task)
+        retries.clear()
+        failedDocuments.clear()
+    }
 
     private fun publish(name: String, dirty: AtomicBoolean, content: () -> ByteArray?) {
-        if (retryDelay() > 0L || !dirty.getAndSet(false)) return
+        val retry = retries[name]
+        if (retry != null && SystemClock.uptimeMillis() < retry.at) return
+        if (!dirty.getAndSet(false)) return
+        if (retry != null) {
+            handler.removeCallbacks(retry.task)
+            retries.remove(name)
+        }
         try {
             val tree = authorizedTree(context)
             if (tree == null) {
-                failedDocuments.clear()
+                clearFailures()
                 mutableStatus.value = Status.NeedsPermission
                 return
             }
@@ -182,28 +191,30 @@ internal class SharedDiagnosticLogs(
             failedDocuments.remove(name)
             mutableStatus.value = if (failedDocuments.isEmpty()) Status.Available else Status.Unavailable
         } catch (error: IOException) {
-            deferRetry(name, dirty)
+            deferRetry(name, dirty, content)
             Log.w(TAG, "Cannot publish $name to the shared log folder", error)
         } catch (error: RuntimeException) {
-            deferRetry(name, dirty)
+            deferRetry(name, dirty, content)
             // A stopped/unmounted provider must not prevent startup or replace the original crash.
             Log.w(TAG, "Shared log folder unavailable for $name", error)
         }
     }
 
-    private fun deferRetry(name: String, dirty: AtomicBoolean) {
+    private fun deferRetry(name: String, dirty: AtomicBoolean, content: () -> ByteArray?) {
         dirty.set(true)
-        retryAt = SystemClock.elapsedRealtime() + FAILURE_BACKOFF_MS
         failedDocuments.add(name)
         mutableStatus.value = Status.Unavailable
-        handler.removeCallbacks(retryPublish)
-        handler.postDelayed(retryPublish, FAILURE_BACKOFF_MS)
+        val retry = Retry(SystemClock.uptimeMillis() + FAILURE_BACKOFF_MS, Runnable {
+            publish(name, dirty, content)
+        })
+        retries[name] = retry
+        handler.postAtTime(retry.task, retry.at)
     }
 
     private fun updateStatus() {
         mutableStatus.value = try {
             if (authorizedTree(context) == null) {
-                failedDocuments.clear()
+                clearFailures()
                 Status.NeedsPermission
             } else if (failedDocuments.isEmpty()) {
                 Status.Available
