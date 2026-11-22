@@ -9268,7 +9268,7 @@ mod tests {
             db.unfinished_cleanup_ids(std::slice::from_ref(&id))
                 .await
                 .expect("cleanup eligibility"),
-            [id.clone()]
+            std::slice::from_ref(&id)
         );
         db.set_config("pg_smoke_key", "v1").await.expect("set");
         db.set_config("pg_smoke_key", "v2").await.expect("upsert");

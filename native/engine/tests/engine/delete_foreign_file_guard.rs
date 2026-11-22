@@ -202,7 +202,11 @@ async fn restart_never_started_task_keeps_foreign_file() {
 
     // 「重新下载」的磁盘复位同步完成于函数返回前；随后的下载会因端口拒绝
     // 而失败，但启动期 dedup 会另起新名，绝不触碰既有同名文件。
-    engine.manager.restart_task(&id).await;
+    engine
+        .manager
+        .restart_task(&id)
+        .await
+        .expect("restart task");
 
     let content = tokio::fs::read(&existing)
         .await

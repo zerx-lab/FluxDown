@@ -12482,36 +12482,28 @@ impl DownloadManager {
     /// 进度/总大小/完成时间/错误信息，因此新一轮下载必定从 0 字节开始。
     /// 复位全部同步完成于 resume 之前，UI 收到的全量快照即复位后状态。
     ///
-    /// BT 任务不走这条路（librqbit 有自己的重校验语义），直接返回；
-    /// 任务不存在同样直接返回。
-    pub async fn restart_task(&mut self, task_id: &str) {
+    /// BT tasks use their own restart semantics. A worker timeout is returned
+    /// to the caller without changing the status the old worker is flushing.
+    pub async fn restart_task(&mut self, task_id: &str) -> Result<(), downloader::DownloadError> {
+        let unavailable =
+            || downloader::DownloadError::Other("Task cannot be redownloaded now".into());
         if self.bt_move_running(task_id) {
-            log_info!(
-                "[manager] restart_task {}: its data is being moved",
-                task_id
-            );
-            return;
+            return Err(unavailable());
         }
-        let Ok(Some(task)) = self.db.load_task_by_id(task_id).await else {
-            log_info!("[manager] restart_task {}: task not found", task_id);
-            return;
-        };
+        let task = self
+            .db
+            .load_task_by_id(task_id)
+            .await?
+            .ok_or_else(unavailable)?;
         if is_bt_url(&task.url) {
-            log_info!(
-                "[manager] restart_task {}: BT task — restart not supported",
-                task_id
-            );
-            return;
+            return Err(unavailable());
         }
         if task.file_clear_state == FileClearState::RestartPending {
             self.resume_task(task_id).await;
-            return;
+            return Ok(());
         }
         if task.file_clear_state != FileClearState::None {
-            if let Err(error) = self.restart_missing_task_file(task_id).await {
-                crate::logger::report_error("download-manager", "restart missing file", &error);
-            }
-            return;
+            return self.restart_missing_task_file(task_id).await;
         }
         // 在途哈希读的是即将被删除的上一次产物：立即停止并作废其结果。
         self.file_hash_jobs.cancel(task_id);
@@ -12527,10 +12519,10 @@ impl DownloadManager {
             self.pause_task_keep_slot(task_id).await;
         }
         if let Err(error) = self.wait_for_redownload_worker(task_id).await {
-            persist_task_failure(task_id, error.to_string(), &self.db, &self.progress_tx).await;
+            // The old worker still owns its final progress and status.
             self.drain_queue().await;
             self.sync_queue_occupancy();
-            return;
+            return Err(error);
         }
 
         // 2. 同时读取最新名字与路径归属。未起跑的任务只有一个候选名，
@@ -12540,7 +12532,7 @@ impl DownloadManager {
             Ok(None) => {
                 self.drain_queue().await;
                 self.sync_queue_occupancy();
-                return;
+                return Err(unavailable());
             }
             Err(error) => {
                 crate::logger::report_error(
@@ -12550,7 +12542,7 @@ impl DownloadManager {
                 );
                 self.drain_queue().await;
                 self.sync_queue_occupancy();
-                return;
+                return Err(error.into());
             }
         };
         // Pause may already have changed a just-completed task's status.
@@ -12576,13 +12568,14 @@ impl DownloadManager {
             crate::logger::report_error("download-manager", "reset task for restart", &error);
             self.drain_queue().await;
             self.sync_queue_occupancy();
-            return;
+            return Err(error.into());
         }
         if let Err(error) = self.db.reset_task_speed_history(task_id).await {
             crate::logger::report_error("download-manager", "reset speed history", &error);
         }
 
         self.resume_restarted_task(task_id).await;
+        Ok(())
     }
 
     /// Wait without aborting or detaching: a timed-out worker must stay tracked,
@@ -12590,7 +12583,7 @@ impl DownloadManager {
     async fn wait_for_redownload_worker(
         &mut self,
         task_id: &str,
-    ) -> Result<bool, downloader::DownloadError> {
+    ) -> Result<(), downloader::DownloadError> {
         let mut deadline = None;
         for slot in [
             self.active_tasks
@@ -12627,7 +12620,19 @@ impl DownloadManager {
                 }
             }
         }
-        Ok(deadline.is_some())
+        Ok(())
+    }
+
+    /// Generation the daemon must see finish before committing a redownload.
+    pub fn redownload_worker_generation(&self, task_id: &str) -> Option<u64> {
+        self.active_tasks
+            .get(task_id)
+            .map(|entry| entry.generation)
+            .or_else(|| {
+                self.pending_pauses
+                    .get(task_id)
+                    .map(|entry| entry.generation)
+            })
     }
 
     /// Restart a completed non-BT task with missing output, using its stored request.
@@ -12653,7 +12658,7 @@ impl DownloadManager {
     ) -> Result<bool, downloader::DownloadError> {
         let unavailable =
             || downloader::DownloadError::Other("Task cannot be redownloaded now".into());
-        let mut task = self
+        let task = self
             .db
             .load_task_by_id(task_id)
             .await?
@@ -12661,16 +12666,10 @@ impl DownloadManager {
         if !matches!(task.status, 3 | 4) {
             return Err(unavailable());
         }
-        if self.wait_for_redownload_worker(task_id).await? {
-            // The old worker may have published its final state while we waited.
-            task = self
-                .db
-                .load_task_by_id(task_id)
-                .await?
-                .ok_or_else(unavailable)?;
-            if !matches!(task.status, 3 | 4) {
-                return Err(unavailable());
-            }
+        if self.redownload_worker_generation(task_id).is_some()
+            || self.edit_jobs.is_running(task_id)
+        {
+            return Err(unavailable());
         }
         let pending = task.file_clear_state == FileClearState::Pending;
         if task.file_clear_state == FileClearState::RestartPending {
@@ -12679,9 +12678,6 @@ impl DownloadManager {
         }
         if !pending && (task.status != 3 || !task.file_missing || is_bt_url(&task.url)) {
             return Ok(false);
-        }
-        if self.active_tasks.contains_key(task_id) || self.edit_jobs.is_running(task_id) {
-            return Err(unavailable());
         }
         if pending {
             if self.file_unlink_in_progress(task_id) {
@@ -25257,7 +25253,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pr1241_restart_timeout_reports_failure_without_resetting_checkpoint() {
+    async fn pr1241_restart_timeout_leaves_final_status_to_old_worker() {
         let db = Db::connect("sqlite::memory:").await.unwrap();
         let id = "restart-timeout";
         db.insert_task(
@@ -25278,9 +25274,12 @@ mod tests {
         db.update_task_progress(id, 5).await.unwrap();
         db.insert_segments(id, &[(0, 0, 11)]).await.unwrap();
         let mut manager = sched_manager(&db, 1);
-        let mut progress = manager.take_progress_rx().unwrap();
-        let worker = tokio::spawn(std::future::pending());
-        let abort = worker.abort_handle();
+        let (finish, stopped) = tokio::sync::oneshot::channel();
+        let worker_db = db.clone();
+        let worker = tokio::spawn(async move {
+            stopped.await.unwrap();
+            worker_db.update_task_progress(id, 7).await.unwrap();
+        });
         manager.pending_pauses.insert(
             id.into(),
             PendingPause {
@@ -25292,17 +25291,29 @@ mod tests {
                 is_bt: false,
             },
         );
-        manager.restart_task(id).await;
-        abort.abort();
-        let update = progress
-            .try_recv()
-            .expect("restart failure visible to host");
-        assert_eq!(update.task_id, id);
-        assert_eq!(update.status, 4);
-        assert!(update.error_message.contains("did not stop in time"));
-        let task = db.load_task_by_id(id).await.unwrap().unwrap();
-        assert_eq!(task.error_message, update.error_message);
-        assert_eq!(task.downloaded_bytes, 5);
+        let result = manager.restart_task(id).await;
+        let before = db.load_task_by_id(id).await.unwrap().unwrap();
+        finish.send(()).unwrap();
+        manager
+            .pending_pauses
+            .get_mut(id)
+            .unwrap()
+            .handle
+            .take()
+            .unwrap()
+            .await
+            .unwrap();
+        manager
+            .on_task_done(&TaskDone::finished(id.into(), 1))
+            .await;
+        let after = db.load_task_by_id(id).await.unwrap().unwrap();
+        assert!(matches!(
+            result,
+            Err(downloader::DownloadError::TaskRestartTimeout)
+        ));
+        assert_eq!((before.status, before.downloaded_bytes), (2, 5));
+        assert_eq!((after.status, after.downloaded_bytes), (2, 7));
+        assert!(after.error_message.is_empty());
         assert!(db.has_segment_checkpoint(id).await.unwrap());
     }
 
@@ -25366,7 +25377,7 @@ mod tests {
         )
         .expect("construct manager");
 
-        mgr.restart_task("t-restart").await;
+        mgr.restart_task("t-restart").await.expect("restart task");
 
         assert!(
             !file_path.exists(),

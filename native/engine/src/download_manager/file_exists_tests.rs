@@ -325,7 +325,10 @@ async fn skip_answer_adopts_existing_file_and_survives_restart_and_delete() {
     assert!(fx.mgr.has_unowned_existing_path(&id).await);
 
     // 重新下载重新占名，不删被采纳的用户文件。
-    fx.mgr.restart_task(&id).await;
+    fx.mgr
+        .restart_task(&id)
+        .await
+        .expect("restart adopted task");
     assert_eq!(std::fs::read(fx.dir.join("a.bin")).expect("kept"), b"mine");
     let renamed_partial = fx.dir.join(format!("a (1).bin{}", downloader::TEMP_EXT));
     fx.pump_until("new output name reserved", |mgr| {
@@ -446,7 +449,10 @@ async fn checksum_match_adopts_without_prompt_and_mismatch_cannot_skip() {
     fx.write_existing(&sibling_partial, b"another task's partial");
     fx.mgr
         .set_file_exists_behavior(FileExistsBehavior::Overwrite);
-    fx.mgr.restart_task(&matched).await;
+    fx.mgr
+        .restart_task(&matched)
+        .await
+        .expect("restart checksum match");
     fx.pump_until_status(&matched, 3).await;
     let new_name = fx.name(&matched).await;
     assert_ne!(new_name, "match.bin");
@@ -485,7 +491,10 @@ async fn failed_restart_reset_leaves_adoption_protected() {
     .execute(fx.db.pool())
     .await
     .expect("inject restart failure");
-    fx.mgr.restart_task(&id).await;
+    fx.mgr
+        .restart_task(&id)
+        .await
+        .expect_err("trigger rejects reset");
     assert_eq!(fx.status(&id).await, 3);
     fx.mgr
         .delete_task(&id, true)
@@ -887,7 +896,10 @@ async fn assert_restart_preserves_a_running_download(completed: bool) {
     wait_for_partial(&partial, 1).await;
     assert_eq!(fx.status(&first).await, 1);
 
-    fx.mgr.restart_task(&second).await;
+    fx.mgr
+        .restart_task(&second)
+        .await
+        .expect("restart second task");
     fx.pump_until_status(&second, 3).await;
     let output = fx.dir.join(fx.name(&second).await);
     assert_ne!(output, fx.dir.join("same.bin"));
