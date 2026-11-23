@@ -24,6 +24,8 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::ops::Range;
+#[cfg(unix)]
+use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
@@ -357,8 +359,8 @@ pub struct PartsSeedStorageFactory {
 
 /// 读取边车并构建 storage 工厂。
 ///
-/// - 文件不存在 → `Ok(None)`（老任务/全选任务，按种子原路径只读打开）；
-/// - 存在但损坏/不安全 → `Err`（调用方记日志后按种子原路径只读打开）。
+/// - 文件不存在 → `Ok(None)`（老任务/全选任务，按平台默认的续种方式打开原路径）；
+/// - 存在但损坏/不安全 → `Err`（调用方记日志后按平台默认的续种方式打开原路径）。
 pub fn load_seed_factory(
     sidecar_path: &Path,
     save_dir: &Path,
@@ -523,6 +525,7 @@ fn load_seed_layout(sidecar_path: &Path, save_dir: &Path) -> Result<Option<SeedL
 #[derive(Clone)]
 enum FsMasqueradeFactory {
     Sidecar(PartsSeedStorageFactory),
+    #[cfg(windows)]
     OriginalPaths(Option<Vec<usize>>),
 }
 
@@ -536,10 +539,10 @@ impl StorageFactory for FsMasqueradeFactory {
     ) -> anyhow::Result<Self::Storage> {
         match self {
             Self::Sidecar(factory) => Ok(Box::new(factory.create(shared, metadata)?)),
+            #[cfg(windows)]
             Self::OriginalPaths(selected) => Ok(Box::new(PartsSeedStorage::from_paths(
                 shared,
                 metadata,
-                &HashMap::new(),
                 selected.as_deref(),
             )?)),
         }
@@ -555,6 +558,7 @@ impl StorageFactory for FsMasqueradeFactory {
     }
 }
 
+#[cfg(windows)]
 pub(crate) fn original_paths_seed_factory(selected: Option<Vec<usize>>) -> BoxStorageFactory {
     Box::new(FsMasqueradeFactory::OriginalPaths(selected))
 }
@@ -649,7 +653,6 @@ fn poisoned() -> anyhow::Error {
 fn pread_file(f: &File, offset: u64, buf: &mut [u8]) -> anyhow::Result<()> {
     #[cfg(target_family = "unix")]
     {
-        use std::os::unix::fs::FileExt;
         f.read_exact_at(buf, offset)?;
         Ok(())
     }
@@ -724,11 +727,37 @@ fn read_parts_ranges(
     Ok(had_gap)
 }
 
+#[cfg(unix)]
+fn write_parts_ranges(
+    blob: &File,
+    segments: &[SegSpec],
+    offset: u64,
+    buf: &[u8],
+) -> anyhow::Result<bool> {
+    let end = offset + buf.len() as u64;
+    let mut covered: u64 = 0;
+    for seg in segments {
+        let seg_end = seg.offset + seg.len;
+        let start = seg.offset.max(offset);
+        let stop = seg_end.min(end);
+        if start >= stop {
+            continue;
+        }
+        let (a, b) = (
+            usize::try_from(start - offset)?,
+            usize::try_from(stop - offset)?,
+        );
+        blob.write_all_at(&buf[a..b], seg.blob_pos + (start - seg.offset))?;
+        covered += stop - start;
+    }
+    Ok(covered < buf.len() as u64)
+}
+
 impl PartsSeedStorage {
+    #[cfg(windows)]
     pub(crate) fn from_paths(
         shared: &ManagedTorrentShared,
         metadata: &TorrentMetadata,
-        moved: &HashMap<PathBuf, PathBuf>,
         selected: Option<&[usize]>,
     ) -> anyhow::Result<Self> {
         let folder = shared.output_folder();
@@ -747,15 +776,14 @@ impl PartsSeedStorage {
                 "unsafe torrent path: {}",
                 rel.display()
             );
-            let original = folder.join(rel);
-            let path = moved.get(&original).unwrap_or(&original);
+            let path = folder.join(rel);
             if selected.as_ref().is_some_and(|ids| !ids.contains(&id)) && !path.try_exists()? {
                 slots.push(Slot::Parts {
                     segments: Arc::new(Vec::new()),
                 });
             } else {
                 slots.push(Slot::Selected {
-                    path: path.clone(),
+                    path,
                     file: RwLock::new(None),
                 });
             }
@@ -768,10 +796,10 @@ impl PartsSeedStorage {
         })
     }
 
-    fn warn_uncovered_once(&self, file_id: usize, offset: u64, len: usize) {
+    fn warn_uncovered_once(&self, file_id: usize, offset: u64, len: usize, op: &str) {
         if !self.warned_uncovered.swap(true, Ordering::Relaxed) {
             log_info!(
-                "[BT] parts storage: read outside extracted ranges (file_id={file_id} offset={offset} len={len}) — zero-filled (expected for non-needed pieces during full recheck)"
+                "[BT] parts storage: {op} outside extracted ranges (file_id={file_id} offset={offset} len={len}) — zero-filled (expected for non-needed pieces during full recheck)"
             );
         }
     }
@@ -795,7 +823,10 @@ impl TorrentStorage for PartsSeedStorage {
         // 「本地数据不完整」的既有失败路径，不落任何新文件。
         for slot in &self.slots {
             if let Slot::Selected { path, file } = slot {
-                let f = File::open(path)
+                let f = File::options()
+                    .read(true)
+                    .write(cfg!(not(windows)))
+                    .open(path)
                     .map_err(|e| anyhow::anyhow!("open final file '{}': {e}", path.display()))?;
                 *file.write().map_err(|_| poisoned())? = Some(f);
             }
@@ -805,9 +836,13 @@ impl TorrentStorage for PartsSeedStorage {
             .iter()
             .any(|s| matches!(s, Slot::Parts { segments } if !segments.is_empty()));
         if needs_blob {
-            let f = File::open(&self.blob_path).map_err(|e| {
-                anyhow::anyhow!("open parts sidecar '{}': {e}", self.blob_path.display())
-            })?;
+            let f = File::options()
+                .read(true)
+                .write(cfg!(not(windows)))
+                .open(&self.blob_path)
+                .map_err(|e| {
+                    anyhow::anyhow!("open parts sidecar '{}': {e}", self.blob_path.display())
+                })?;
             *self.blob.write().map_err(|_| poisoned())? = Some(f);
         }
         Ok(())
@@ -826,7 +861,7 @@ impl TorrentStorage for PartsSeedStorage {
                 let had_gap =
                     self.blob_read(|blob| read_parts_ranges(blob, segments, offset, buf))?;
                 if had_gap {
-                    self.warn_uncovered_once(file_id, offset, buf.len());
+                    self.warn_uncovered_once(file_id, offset, buf.len(), "read");
                 }
                 Ok(())
             }
@@ -838,6 +873,31 @@ impl TorrentStorage for PartsSeedStorage {
         }
     }
 
+    #[cfg(unix)]
+    fn pwrite_all(&self, file_id: usize, offset: u64, buf: &[u8]) -> anyhow::Result<()> {
+        match self.slots.get(file_id) {
+            Some(Slot::Selected { file, path }) => {
+                let guard = file.read().map_err(|_| poisoned())?;
+                let f = guard
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("file '{}' not opened", path.display()))?;
+                f.write_all_at(buf, offset)?;
+                Ok(())
+            }
+            Some(Slot::Parts { segments }) => {
+                let dropped =
+                    self.blob_read(|blob| write_parts_ranges(blob, segments, offset, buf))?;
+                if dropped {
+                    self.warn_uncovered_once(file_id, offset, buf.len(), "write");
+                }
+                Ok(())
+            }
+            Some(Slot::Padding) => Ok(()),
+            None => anyhow::bail!("no such file_id {file_id}"),
+        }
+    }
+
+    #[cfg(not(unix))]
     fn pwrite_all(&self, _file_id: usize, _offset: u64, _buf: &[u8]) -> anyhow::Result<()> {
         anyhow::bail!("completed torrent storage is read-only")
     }
@@ -1068,6 +1128,23 @@ mod tests {
         assert!(had_gap);
         assert_eq!(&buf, &[0, 0, b'8', b'9']);
 
+        #[cfg(unix)]
+        {
+            use super::write_parts_ranges;
+            // 覆盖内写入生效，区间外丢弃。
+            let fw = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&sidecar)
+                .unwrap();
+            let dropped = write_parts_ranges(&fw, segs, 8, b"XY").unwrap();
+            assert!(!dropped);
+            let dropped = write_parts_ranges(&fw, segs, 0, b"zz").unwrap();
+            assert!(dropped);
+            let mut buf = [0u8; 2];
+            read_parts_ranges(&fw, segs, 8, &mut buf).unwrap();
+            assert_eq!(&buf, b"XY");
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

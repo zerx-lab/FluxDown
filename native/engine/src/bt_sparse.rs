@@ -27,7 +27,6 @@ use std::path::Path;
 #[cfg(feature = "bt")]
 use std::{
     collections::HashMap,
-    path::PathBuf,
     sync::{Arc, LazyLock, Mutex, RwLock, Weak},
 };
 
@@ -137,17 +136,19 @@ impl Drop for SparseFsStorage {
 #[cfg(feature = "bt")]
 pub(crate) fn switch_to_seed_files(
     handle: &crate::bt_downloader::BtHandle,
-    moved: &HashMap<PathBuf, PathBuf>,
+    sidecar: Option<crate::bt_partfile::PartsSeedStorageFactory>,
 ) -> anyhow::Result<()> {
     let shared = handle.shared();
     let selected = handle.only_files();
     let storage = handle.with_metadata(|metadata| {
-        let mut files = crate::bt_partfile::PartsSeedStorage::from_paths(
-            shared,
-            metadata,
-            moved,
-            selected.as_deref(),
-        )?;
+        let mut files = match &sidecar {
+            Some(factory) => factory.create(shared, metadata)?,
+            None => crate::bt_partfile::PartsSeedStorage::from_paths(
+                shared,
+                metadata,
+                selected.as_deref(),
+            )?,
+        };
         files.init(shared, metadata)?;
         Ok::<_, anyhow::Error>(files)
     })??;
