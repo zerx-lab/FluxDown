@@ -264,48 +264,70 @@ fn watch_tray_downloads(
     cx: &mut App,
 ) {
     let pending = Rc::new(std::cell::Cell::new(false));
-    let last_sent = Rc::new(std::cell::RefCell::new(None::<(String, u64)>));
+    let last_attempt = Rc::new(std::cell::RefCell::new(None::<(String, u64)>));
     let check = {
         let shell = shell.clone();
         let session = session.clone();
         move |window: &Window, cx: &App| {
             if !tray_downloads_visible(window, &shell, &session, cx)
                 || pending.get()
-                || session.read(cx).latest().is_none_or(|snapshot| {
-                    last_sent
-                        .borrow()
-                        .as_ref()
-                        .is_some_and(|(epoch, sequence)| {
-                            epoch == &snapshot.epoch && *sequence == snapshot.sequence
-                        })
-                })
+                || uncovered_tray_cursor(session.read(cx), &last_attempt.borrow()).is_none()
             {
                 return;
             }
             pending.set(true);
             let pending = pending.clone();
-            let last_sent = last_sent.clone();
+            let last_attempt = last_attempt.clone();
             let shell = shell.clone();
             let session = session.clone();
             let handle = window.window_handle();
+            let client = Desktop::global(cx).client.clone();
             cx.spawn(async move |cx| {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_secs(1))
-                    .await;
-                pending.set(false);
-                cx.update(|cx| {
-                    if let Err(error) = handle.update(cx, |_, window, cx| {
-                        if tray_downloads_visible(window, &shell, &session, cx)
-                            && let Some(snapshot) = session.read(cx).latest()
-                        {
-                            let cursor = (snapshot.epoch.clone(), snapshot.sequence);
-                            last_sent.replace(Some(cursor.clone()));
-                            acknowledge_tray_downloads(cursor, last_sent, cx);
+                loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(1))
+                        .await;
+                    let cursor = cx.update(|cx| {
+                        match handle.update(cx, |_, window, cx| {
+                            if !tray_downloads_visible(window, &shell, &session, cx) {
+                                return None;
+                            }
+                            let (snapshot, relevant) =
+                                uncovered_tray_cursor(session.read(cx), &last_attempt.borrow())?;
+                            Some((snapshot.epoch.clone(), snapshot.sequence, relevant))
+                        }) {
+                            Ok(cursor) => cursor,
+                            Err(error) => {
+                                log::debug!("tray acknowledgement window released: {error:#}");
+                                None
+                            }
                         }
-                    }) {
-                        log::debug!("tray acknowledgement window released: {error:#}");
+                    });
+                    let Some((epoch, sequence, relevant)) = cursor else {
+                        break;
+                    };
+                    use fluxdown_protocol::method::AGENT_PLATFORM_ACK_TRAY_DOWNLOADS;
+                    let params = serde_json::json!({ "epoch": epoch, "sequence": sequence });
+                    let result = client
+                        .call::<_, serde_json::Value>(
+                            AGENT_PLATFORM_ACK_TRAY_DOWNLOADS,
+                            Some(params),
+                        )
+                        .await;
+                    if !complete_tray_ack(&mut last_attempt.borrow_mut(), (epoch, relevant), result)
+                    {
+                        continue;
                     }
-                });
+                    // Events received while the request was in flight did not schedule a timer.
+                    // Exit immediately if there are no newer relevant events.
+                    let covered = cx.update(|cx| {
+                        uncovered_tray_cursor(session.read(cx), &last_attempt.borrow()).is_none()
+                    });
+                    if covered {
+                        break;
+                    }
+                }
+                pending.set(false);
             })
             .detach();
         }
@@ -338,45 +360,55 @@ fn tray_downloads_visible(
         && session.read(cx).tray_downloads_ready()
 }
 
-type TrayCursor = (String, u64);
-
-fn forget_failed_tray_ack(last_sent: &mut Option<TrayCursor>, cursor: &TrayCursor) {
-    if last_sent.as_ref() == Some(cursor) {
-        *last_sent = None;
-    }
+fn uncovered_tray_cursor<'a>(
+    view: &'a crate::session::AgentSession,
+    last: &Option<(String, u64)>,
+) -> Option<(&'a fluxdown_protocol::Snapshot, u64)> {
+    let snapshot = view.latest()?;
+    let relevant = view.tray_downloads_sequence();
+    (!tray_cursor_covered(last, &snapshot.epoch, relevant)).then_some((snapshot, relevant))
 }
 
-fn acknowledge_tray_downloads(
-    cursor: TrayCursor,
-    last_sent: Rc<std::cell::RefCell<Option<TrayCursor>>>,
-    cx: &App,
-) {
-    use fluxdown_protocol::method::AGENT_PLATFORM_ACK_TRAY_DOWNLOADS;
+fn tray_cursor_covered(last: &Option<(String, u64)>, epoch: &str, relevant: u64) -> bool {
+    last.as_ref()
+        .is_some_and(|(sent_epoch, sent)| sent_epoch == epoch && *sent >= relevant)
+}
 
-    let client = Desktop::global(cx).client.clone();
-    let params = serde_json::json!({ "epoch": cursor.0, "sequence": cursor.1 });
-    cx.spawn(async move |_| {
-        if let Err(error) = client
-            .call::<_, serde_json::Value>(AGENT_PLATFORM_ACK_TRAY_DOWNLOADS, Some(params))
-            .await
-        {
-            forget_failed_tray_ack(&mut last_sent.borrow_mut(), &cursor);
-            log::debug!("failed to acknowledge tray downloads: {:?}", error.code);
+fn complete_tray_ack(
+    last: &mut Option<(String, u64)>,
+    cursor: (String, u64),
+    result: Result<serde_json::Value, fluxdown_protocol::RpcErrorData>,
+) -> bool {
+    if let Err(error) = result {
+        log::debug!("failed to acknowledge tray downloads: {:?}", error.code);
+        if error.retryable {
+            return false;
         }
-    })
-    .detach();
+    }
+    *last = Some(cursor);
+    true
 }
 
 #[cfg(test)]
 #[test]
-fn failed_tray_ack_allows_same_cursor_on_next_check() {
-    let old = ("epoch".to_owned(), 3);
-    let new = ("epoch".to_owned(), 4);
-    let mut last_sent = Some(new.clone());
-    forget_failed_tray_ack(&mut last_sent, &old);
-    assert_eq!(last_sent.as_ref(), Some(&new));
-    forget_failed_tray_ack(&mut last_sent, &new);
-    assert_eq!(last_sent, None);
+fn tray_ack_retries_without_waiting_for_a_new_cursor() {
+    use fluxdown_protocol::{ApplicationErrorCode, RpcErrorData};
+
+    let cursor = ("epoch".into(), 7);
+    let mut last = None;
+    assert!(!complete_tray_ack(
+        &mut last,
+        cursor.clone(),
+        Err(RpcErrorData::new(ApplicationErrorCode::Internal, true)),
+    ));
+    assert!(!tray_cursor_covered(&last, "epoch", 7));
+    assert!(complete_tray_ack(
+        &mut last,
+        cursor,
+        Ok(serde_json::json!({"ok": true})),
+    ));
+    assert!(tray_cursor_covered(&last, "epoch", 7));
+    assert!(!tray_cursor_covered(&last, "epoch", 8));
 }
 
 /// 导入闸门挂起状态同步到下载页：挂起期间「全部开始」必须可点（它是唯一解除入口）。

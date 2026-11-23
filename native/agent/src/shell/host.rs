@@ -689,16 +689,28 @@ fn decode_icon_with_dot(bytes: &[u8], dot: Option<DownloadDot>) -> Result<Icon, 
     let radius = f64::from(width.min(height)) * 0.20;
     let center_x = f64::from(width) - radius;
     let center_y = f64::from(height) - radius;
-    let inner_radius_squared = (radius * 0.78).powi(2);
-    let outer_radius_squared = radius * radius;
-    for (x, y, pixel) in image.enumerate_pixels_mut() {
-        let dx = f64::from(x) + 0.5 - center_x;
-        let dy = f64::from(y) + 0.5 - center_y;
-        let distance_squared = dx * dx + dy * dy;
-        if distance_squared <= inner_radius_squared {
-            *pixel = image::Rgba(color);
-        } else if distance_squared <= outer_radius_squared {
-            *pixel = image::Rgba([32, 32, 32, 255]);
+    let inner_radius = radius * 0.78;
+    let first_x = (center_x - radius - 1.0).max(0.0) as u32;
+    let first_y = (center_y - radius - 1.0).max(0.0) as u32;
+    for y in first_y..height {
+        for x in first_x..width {
+            let distance = (f64::from(x) + 0.5 - center_x).hypot(f64::from(y) + 0.5 - center_y);
+            let outer = (radius + 0.5 - distance).clamp(0.0, 1.0);
+            if outer == 0.0 {
+                continue;
+            }
+            let fill = (inner_radius + 0.5 - distance).clamp(0.0, outer);
+            let pixel = image.get_pixel_mut(x, y);
+            let base = (1.0 - outer) * f64::from(pixel[3]) / 255.0;
+            let alpha = base + outer;
+            for channel in 0..3 {
+                pixel[channel] = ((base * f64::from(pixel[channel])
+                    + (outer - fill) * 32.0
+                    + fill * f64::from(color[channel]))
+                    / alpha)
+                    .round() as u8;
+            }
+            pixel[3] = (alpha * 255.0).round() as u8;
         }
     }
     Icon::from_rgba(image.into_raw(), width, height).map_err(|error| error.to_string())

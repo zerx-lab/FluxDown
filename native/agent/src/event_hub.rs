@@ -26,12 +26,20 @@ struct AgentEventState {
 #[derive(Default)]
 struct TrayRound {
     tasks: std::collections::HashMap<String, TrayTask>,
-    pending_notices: std::collections::HashMap<String, TrayTask>,
+    pending_notices: std::collections::HashMap<String, PendingTrayNotice>,
+    terminal_rows: std::collections::HashMap<String, (i32, u64)>,
     failure_sequence: u64,
     change_sequence: u64,
     acknowledged_sequence: u64,
     sequence: u64,
     reconcile_failures: bool,
+}
+
+#[cfg(all(feature = "desktop", any(windows, test)))]
+struct PendingTrayNotice {
+    next: TrayTask,
+    previous_status: Option<i32>,
+    expires: std::time::Instant,
 }
 
 #[cfg(all(feature = "desktop", any(windows, test)))]
@@ -75,6 +83,7 @@ impl TrayRound {
         }
         if next.is_unfinished() && !self.tasks.values().any(TrayTask::is_unfinished) {
             self.tasks.clear();
+            self.terminal_rows.clear();
             self.reconcile_failures = false;
         }
         if let Some(task) = self.tasks.get_mut(id) {
@@ -97,6 +106,18 @@ impl TrayRound {
     }
 
     fn observe_status(&mut self, id: &str, status: i32, error: &str) {
+        if matches!(status, 3 | 4) && error != "deleted" {
+            if let Some(terminal) = self.terminal_rows.get_mut(id) {
+                if terminal.0 != status {
+                    *terminal = (status, self.sequence);
+                }
+            } else if self.tasks.contains_key(id) {
+                self.terminal_rows
+                    .insert(id.to_owned(), (status, self.sequence));
+            }
+        } else {
+            self.terminal_rows.remove(id);
+        }
         match status {
             0 => self.set(id, TrayTask::Unfinished),
             1 | 5 => self.set(id, TrayTask::Running),
@@ -111,14 +132,44 @@ impl TrayRound {
 
     fn cancel(&mut self, id: &str) {
         self.pending_notices.remove(id);
+        self.terminal_rows.remove(id);
         if let Some(task) = self.tasks.get_mut(id) {
             task.cancel();
         }
     }
 
-    fn reconcile(&mut self, snapshot: &DaemonSnapshot) {
+    fn expire_notices(&mut self, now: std::time::Instant) {
+        if !self.pending_notices.is_empty() {
+            self.pending_notices
+                .retain(|_, notice| notice.expires > now);
+        }
+    }
+
+    fn resolve_notice(&mut self, id: &str, status: i32) {
+        let Some(notice) = self.pending_notices.get(id) else {
+            return;
+        };
+        let next = notice.next;
+        if notice.expires <= std::time::Instant::now() {
+            self.pending_notices.remove(id);
+            return;
+        }
+        if next.matches_row(status) {
+            self.pending_notices.remove(id);
+            self.set(id, next);
+        } else if notice.previous_status != Some(status) {
+            // The next distinct row superseded this notice rather than confirming it.
+            self.pending_notices.remove(id);
+        }
+    }
+
+    fn reconcile(&mut self, snapshot: &mut DaemonSnapshot, replaced: bool) {
         if snapshot.tables_loading() {
             return;
+        }
+        snapshot.ensure_task_index();
+        if replaced {
+            self.terminal_rows.clear();
         }
         // Only live/queued work enters from the snapshot. A paused task counts only
         // if it was already in this round or later resumes.
@@ -129,7 +180,12 @@ impl TrayRound {
         }
         self.reconcile_failures = false;
         for (id, task) in &mut self.tasks {
-            let next = match snapshot.task(id).map(|row| row.status) {
+            let status = snapshot.task(id).map(|row| row.status);
+            if replaced && let Some(status @ (3 | 4)) = status {
+                self.terminal_rows
+                    .insert(id.clone(), (status, self.sequence));
+            }
+            let next = match status {
                 Some(2) if task.is_unfinished() => TrayTask::Unfinished,
                 Some(3) => TrayTask::Completed,
                 Some(4) if *task == TrayTask::Failed => continue,
@@ -150,31 +206,58 @@ impl TrayRound {
                 }
             }
         }
+        if !replaced {
+            return;
+        }
+        let now = std::time::Instant::now();
+        // A complete replacement is authoritative, including for missing tasks.
+        let mut pending = std::mem::take(&mut self.pending_notices);
+        for (id, notice) in pending.drain() {
+            if notice.expires > now
+                && snapshot
+                    .task(&id)
+                    .is_some_and(|row| notice.next.matches_row(row.status))
+            {
+                self.set(&id, notice.next);
+            }
+        }
+        self.pending_notices = pending;
     }
 
-    fn apply(&mut self, event: &AgentEvent, snapshot: &DaemonSnapshot) {
+    fn apply(&mut self, event: &AgentEvent, snapshot: &mut DaemonSnapshot) {
         use fluxdown_protocol::WsServerMsg;
 
         match event {
             AgentEvent::DaemonSnapshotReplaced(_)
-            | AgentEvent::Daemon(DaemonEvent::SnapshotReplaced(_)) => self.reconcile(snapshot),
+            | AgentEvent::Daemon(DaemonEvent::SnapshotReplaced(_)) => {
+                self.reconcile(snapshot, true)
+            }
             AgentEvent::Daemon(DaemonEvent::RuntimeStatsChanged(stats))
                 if self.reconcile_failures && stats.retry_pending_tasks == 0 =>
             {
-                self.reconcile(snapshot);
+                self.reconcile(snapshot, false);
             }
             AgentEvent::Daemon(DaemonEvent::Engine(WsServerMsg::TaskProgress {
                 task_id,
                 status,
                 error_message,
                 ..
-            })) => self.observe_status(task_id, *status, error_message),
+            })) => {
+                self.observe_status(task_id, *status, error_message);
+                if !self.pending_notices.is_empty()
+                    && let Some(row) = snapshot.task(task_id)
+                {
+                    self.resolve_notice(task_id, row.status);
+                }
+            }
             AgentEvent::Daemon(DaemonEvent::TaskChanged(task)) => {
                 self.observe_status(&task.task_id, task.status, &task.error_message);
+                self.resolve_notice(&task.task_id, task.status);
             }
             AgentEvent::Daemon(DaemonEvent::TasksChanged(tasks)) => {
                 for task in tasks {
                     self.observe_status(&task.task_id, task.status, &task.error_message);
+                    self.resolve_notice(&task.task_id, task.status);
                 }
             }
             AgentEvent::Daemon(DaemonEvent::TaskDeleted { task_id }) => self.cancel(task_id),
@@ -185,21 +268,6 @@ impl TrayRound {
             }
             _ => {}
         }
-        // A global cursor is safe only once the projection contains the result.
-        let mut pending = std::mem::take(&mut self.pending_notices);
-        pending.retain(|id, next| {
-            match snapshot.task(id) {
-                Some(row) if next.matches_row(row.status) => {
-                    self.set(id, *next);
-                    false
-                }
-                // Once a row exists, its live state supersedes a mismatched
-                // create/start notice. Terminal notices still need their row.
-                Some(_) if next.is_unfinished() => false,
-                _ => true,
-            }
-        });
-        self.pending_notices = pending;
     }
 }
 
@@ -310,10 +378,25 @@ impl AgentEventHub {
         let status = state.snapshot.daemon.task(&task.id).map(|row| row.status);
         if status.is_some_and(|status| next.matches_row(status)) {
             state.tray.pending_notices.remove(&task.id);
-            state.tray.sequence = state.sequence;
+            // A late terminal notice belongs to the frame that displayed
+            // that result, not to intervening unrelated progress frames.
+            state.tray.sequence = state
+                .tray
+                .terminal_rows
+                .get(&task.id)
+                .filter(|(row_status, _)| Some(*row_status) == status)
+                .map_or(state.sequence, |(_, sequence)| *sequence);
             state.tray.set(&task.id, next);
         } else if status.is_none() || !next.is_unfinished() {
-            state.tray.pending_notices.insert(task.id.clone(), next);
+            state.tray.pending_notices.insert(
+                task.id.clone(),
+                PendingTrayNotice {
+                    next,
+                    previous_status: status,
+                    // Bound unmatched notices even when no more task frames arrive.
+                    expires: std::time::Instant::now() + std::time::Duration::from_secs(30),
+                },
+            );
         }
     }
 
@@ -328,8 +411,19 @@ impl AgentEventHub {
     #[cfg(all(feature = "desktop", any(windows, test)))]
     pub(crate) fn tray_download_dot(&self) -> Option<crate::shell::DownloadDot> {
         use crate::shell::DownloadDot;
-        let state = lock_or_recover(&self.state);
-        if !state.snapshot.daemon_connected {
+        let mut state = lock_or_recover(&self.state);
+        if !state.tray.pending_notices.is_empty() {
+            state.tray.expire_notices(std::time::Instant::now());
+        }
+        if !state.snapshot.daemon_connected
+            || state
+                .snapshot
+                .preferences
+                .values
+                .get("desktop.tray_download_status")
+                .and_then(serde_json::Value::as_bool)
+                == Some(false)
+        {
             return None;
         }
         let tray = &state.tray;
@@ -379,7 +473,7 @@ impl AgentEventHub {
                 ..
             } = &mut *state;
             tray.sequence = *sequence;
-            tray.apply(&event, &snapshot.daemon);
+            tray.apply(&event, &mut snapshot.daemon);
         }
         let frame = Arc::new(EventFrame {
             epoch: state.epoch.clone(),
@@ -410,6 +504,57 @@ mod tests {
     fn acknowledge_current(hub: &AgentEventHub) {
         let snapshot = hub.snapshot();
         hub.acknowledge_tray_downloads(&snapshot.epoch, snapshot.sequence);
+    }
+
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn tray_dot_does_not_resurface_an_already_visible_failure() -> Result<(), serde_json::Error> {
+        let hub = AgentEventHub::new(AgentSnapshot {
+            daemon_connected: true,
+            ..AgentSnapshot::default()
+        });
+        hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("a", 1)?));
+        hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("a", 4)?));
+        acknowledge_current(&hub);
+        hub.publish(fluxdown_protocol::AgentEvent::DaemonConnectionChanged(true));
+        hub.record_tray_result(&failed_notice("a"));
+        assert_eq!(hub.tray_download_dot(), None);
+        Ok(())
+    }
+
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn tray_dot_does_not_apply_a_superseded_failure_to_a_later_attempt()
+    -> Result<(), serde_json::Error> {
+        let hub = AgentEventHub::new(AgentSnapshot {
+            daemon_connected: true,
+            ..AgentSnapshot::default()
+        });
+        hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("a", 1)?));
+        hub.record_tray_result(&failed_notice("a"));
+        hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("a", 0)?));
+        hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("a", 1)?));
+        hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("a", 4)?));
+        assert_eq!(
+            hub.tray_download_dot(),
+            Some(crate::shell::DownloadDot::Downloading)
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "desktop")]
+    fn failed_notice(id: &str) -> fluxdown_protocol::TaskNoticeDto {
+        fluxdown_protocol::TaskNoticeDto {
+            delivery_id: String::new(),
+            event: "task.failed".into(),
+            timestamp_ms: 0,
+            queue_id: String::new(),
+            queue_name: String::new(),
+            task: Some(fluxdown_protocol::TaskNoticeTaskDto {
+                id: id.into(),
+                ..Default::default()
+            }),
+        }
     }
 
     #[cfg(feature = "desktop")]

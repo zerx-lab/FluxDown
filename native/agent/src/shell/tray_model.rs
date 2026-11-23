@@ -104,6 +104,16 @@ impl TrayPresenter {
         #[cfg(windows)]
         {
             model.download_dot = download_dot;
+            if let Some(dot) = download_dot {
+                use std::fmt::Write as _;
+                let label = match dot {
+                    super::DownloadDot::Downloading => "trayDownloadsInProgress",
+                    super::DownloadDot::Completed => "trayDownloadsCompleted",
+                    super::DownloadDot::Failed => "trayDownloadsFailed",
+                };
+                let result = write!(model.tooltip, " · {}", translator.text(label));
+                debug_assert!(result.is_ok());
+            }
             *last_dot = download_dot;
         }
         port.apply(&model);
