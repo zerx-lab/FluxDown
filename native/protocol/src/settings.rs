@@ -71,7 +71,6 @@ pub const SYNC_SETTING_SPECS: &[SettingSpec] = &[
     spec!("general.clipboard_watch", Preferences),
     spec!("general.floating_ball_enabled", Preferences),
     spec!("general.floating_ball_active_only", Preferences),
-    spec!("desktop.tray_download_status", Agent),
     spec!("ui.show_sidebar_status", Preferences),
     spec!("ui.show_sidebar_queues", Preferences),
     spec!("ui.show_sidebar_category", Preferences),
@@ -426,7 +425,6 @@ fn boolean_key(key: &str) -> bool {
             | "general.clipboard_watch"
             | "general.floating_ball_enabled"
             | "general.floating_ball_active_only"
-            | "desktop.tray_download_status"
             | "ui.show_sidebar_status"
             | "ui.show_sidebar_queues"
             | "ui.show_sidebar_category"
