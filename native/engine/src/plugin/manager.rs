@@ -556,7 +556,7 @@ impl PluginManager {
     /// 扫描根目录 + `plugin.dev.*` 键，解析并加载全部插件。
     pub async fn load_all(&self) {
         // Without a target directory, the scan records failures in the snapshot.
-        let _ = self.load_plugins(None).await;
+        drop(self.load_plugins(None).await);
     }
 
     async fn load_plugins(&self, install_dir: Option<&Path>) -> Result<(), PluginError> {
