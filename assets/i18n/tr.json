@@ -4248,5 +4248,12 @@
   "rssImageProxyUnverifiable": "Resim önizlemesi engellendi: hedef proxy üzerinden doğrulanamıyor.",
   "errReasonTaskFileClearPending": "Dosya temizliği hâlâ bekliyor. Dosya adını veya kayıt konumunu değiştirmeden önce orijinal kayıt konumunu geri yükleyip «Yalnızca dosyayı sil» işlemini yeniden deneyin.",
   "mobileDlNotifTaskChannel": "Tekil indirme ilerlemesi",
-  "mobileDlNotifTaskChannelDesc": "Bu cihazdaki her indirme için ayrı bir ilerleme bildirimi gösterir"
+  "mobileDlNotifTaskChannelDesc": "Bu cihazdaki her indirme için ayrı bir ilerleme bildirimi gösterir",
+  "diagnosticsLogLevel": "Ana bilgisayar günlük düzeyi",
+  "diagnosticsLogLevelDesc": "Ana bilgisayar yeniden başlatıldıktan sonra uygulanır. Yerleşik bir ana bilgisayar için uygulamayı tamamen kapatıp yeniden açın. Ortam değişkenleri bu ayarı geçersiz kılabilir.",
+  "diagnosticsLogLevelAuto": "Otomatik",
+  "diagnosticsLogLevelDebug": "Hata ayıklama",
+  "diagnosticsLogLevelInfo": "Bilgi",
+  "diagnosticsLogLevelWarn": "Uyarı",
+  "diagnosticsLogLevelError": "Hata"
 }

@@ -4248,5 +4248,12 @@
   "rssImageProxyUnverifiable": "Vista previa de imagen bloqueada: no se puede verificar el destino a través del proxy.",
   "errReasonTaskFileClearPending": "La limpieza de archivos aún está pendiente. Restaura la ubicación de guardado original y vuelve a intentar «Eliminar solo el archivo» antes de cambiar el nombre del archivo o la ubicación de guardado.",
   "mobileDlNotifTaskChannel": "Progreso de descarga individual",
-  "mobileDlNotifTaskChannelDesc": "Muestra una notificación de progreso aparte para cada descarga en este dispositivo"
+  "mobileDlNotifTaskChannelDesc": "Muestra una notificación de progreso aparte para cada descarga en este dispositivo",
+  "diagnosticsLogLevel": "Nivel de registro del host",
+  "diagnosticsLogLevelDesc": "Surte efecto tras reiniciar el host. En un host incorporado, cierra la aplicación por completo y vuelve a abrirla. Las variables de entorno pueden anular este ajuste.",
+  "diagnosticsLogLevelAuto": "Automático",
+  "diagnosticsLogLevelDebug": "Depuración",
+  "diagnosticsLogLevelInfo": "Información",
+  "diagnosticsLogLevelWarn": "Advertencia",
+  "diagnosticsLogLevelError": "Error"
 }
