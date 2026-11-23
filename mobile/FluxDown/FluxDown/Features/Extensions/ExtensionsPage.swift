@@ -79,8 +79,8 @@ private struct ExtensionsContent: View {
             case let .success(urls):
                 guard let url = urls.first else { return }
                 Task { await model.installFile(url) }
-            case let .failure(error):
-                container.toasts.show(text: L("pluginOpInstallFailed", ["message": error.localizedDescription]), tone: .error)
+            case .failure:
+                model.reportOperationFailure("pluginOpInstallFailed", HostError(.invalidArgument))
             }
         }
         .sheet(item: $model.sheet) { sheet in
@@ -105,6 +105,18 @@ private struct ExtensionsContent: View {
             Button(L("pluginDepsGoToComponents")) { model.goToComponents() }
         } message: {
             Text(missingMessage)
+        }
+        .alert(L("pluginLoadErrorTitle"), isPresented: Binding(
+            get: { model.operationFailure != nil },
+            set: { if !$0 { model.operationFailure = nil } }
+        ), presenting: model.operationFailure) { message in
+            Button(L("pluginLoadErrorCopy")) {
+                ExtensionsClipboard.copy(message)
+                container.toasts.show(text: L("pluginLoadErrorCopied"), tone: .success)
+            }
+            Button(L("close"), role: .cancel) {}
+        } message: { message in
+            Text(verbatim: message)
         }
     }
 
@@ -198,6 +210,7 @@ private struct ExtensionsContent: View {
 
         Section {
             Button {
+                model.operationFailure = nil
                 importing = true
             } label: {
                 HStack {

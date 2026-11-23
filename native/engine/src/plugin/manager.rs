@@ -555,10 +555,16 @@ impl PluginManager {
 
     /// 扫描根目录 + `plugin.dev.*` 键，解析并加载全部插件。
     pub async fn load_all(&self) {
+        // Without a target directory, the scan records failures in the snapshot.
+        let _ = self.load_plugins(None).await;
+    }
+
+    async fn load_plugins(&self, install_dir: Option<&Path>) -> Result<(), PluginError> {
         let _serial = self.load_lock.lock().await;
         self.migrate_consent().await;
         let mut loaded: Vec<LoadedPlugin> = Vec::new();
         let mut failed: Vec<FailedPlugin> = Vec::new();
+        let mut validated_install = false;
 
         // 1. 安装目录下的子目录。
         if let Ok(mut rd) = tokio::fs::read_dir(&self.root).await {
@@ -568,12 +574,24 @@ impl PluginManager {
                     .file_name()
                     .is_some_and(|name| name.to_string_lossy().starts_with('.'));
                 if path.is_dir() && !is_internal_dir {
+                    let is_install = install_dir == Some(path.as_path());
+                    // Validate the package itself before a same-identity dev copy can replace it.
                     match self.load_one(&path, false, None).await {
-                        Ok(p) => loaded.push(p),
+                        Ok(p) => {
+                            if is_install {
+                                self.validate_plugin(&p).await?;
+                                validated_install = true;
+                            }
+                            loaded.push(p);
+                        }
+                        Err(p) if is_install => return Err(p.error),
                         Err(p) => failed.push(p),
                     }
                 }
             }
+        }
+        if install_dir.is_some() && !validated_install {
+            return Err(PluginError::LoadFailed("未找到刚安装的插件目录".to_owned()));
         }
 
         // 2. dev 插件（plugin.dev.<identity> = abs path）。
@@ -621,6 +639,7 @@ impl PluginManager {
         self.reconcile_hosts().await;
         self.initialize_archive_rule_packs().await;
         self.archive_rule_updates_notify.notify_one();
+        Ok(())
     }
 
     /// 加载单个插件目录。失败记 warn 并保留诊断信息（不阻塞其他插件）。
@@ -1803,7 +1822,7 @@ impl PluginManager {
             .await
         {
             Ok(()) => match self.db.set_config(&dev_key, &abs.to_string_lossy()).await {
-                Ok(()) => self.activate_dev_install(&identity).await,
+                Ok(()) => self.load_and_validate_dev(&identity).await,
                 Err(e) => Err(PluginError::Runtime(e.to_string())),
             },
             Err(error) => Err(error),
@@ -1825,14 +1844,20 @@ impl PluginManager {
         Ok(identity)
     }
 
-    /// dev 安装的加载 + 校验：dev 副本必须真正加载成功（否则同 identity 的已安装
-    /// 副本会被顶替/保留，而 dev 版未生效却报成功）。
-    async fn activate_dev_install(&self, identity: &str) -> Result<(), PluginError> {
+    /// 安装或重载 dev 副本时，不能由同 identity 的已安装副本代替校验。
+    async fn load_and_validate_dev(&self, identity: &str) -> Result<(), PluginError> {
         self.load_all().await;
         if let Some(error) = self.dev_load_failure(identity).await {
             return Err(error);
         }
-        self.validate_loaded(identity, true).await
+        let snapshot = self.plugins.read().await.clone();
+        let Some(plugin) = snapshot
+            .iter()
+            .find(|p| p.dev && p.manifest.identity == identity)
+        else {
+            return Err(PluginError::LoadFailed("未找到已加载的开发插件".to_owned()));
+        };
+        self.validate_plugin(plugin).await
     }
 
     /// 本 identity 的 dev 登记对应的加载失败（忽略被 dev 顶替的已安装副本那条
@@ -1870,11 +1895,7 @@ impl PluginManager {
         if !registered {
             return Err(PluginError::NotDevPlugin(identity.to_string()));
         }
-        self.load_all().await;
-        if let Some(error) = self.dev_load_failure(identity).await {
-            return Err(error);
-        }
-        self.validate_loaded(identity, true).await?;
+        self.load_and_validate_dev(identity).await?;
         // 仅成功的重载替换了生效代码，失败不递增修订号。
         self.mark_code_replaced(identity).await;
         Ok(())
@@ -2014,9 +2035,7 @@ impl PluginManager {
     ) -> Result<(), PluginError> {
         self.apply_install_enable_rule(identity, new_version, prior)
             .await?;
-        // 整表重载后做 compile / pattern 校验；失败由调用方回滚。
-        self.load_all().await;
-        self.validate_loaded(identity, false).await
+        self.load_plugins(Some(&self.root.join(identity))).await
     }
 
     /// 安装（含 dev 安装）的启停写入规则，必须在加载新代码之前调用：
@@ -2047,28 +2066,8 @@ impl PluginManager {
         Ok(())
     }
 
-    /// 对当前快照中的插件做 compile / pattern 校验（不改任何状态）。
-    async fn validate_loaded(&self, identity: &str, dev: bool) -> Result<(), PluginError> {
-        let snapshot = self.plugins.read().await.clone();
-        let Some(p) = snapshot.iter().find(|p| p.manifest.identity == identity) else {
-            // A package that failed the scan is absent from the loaded snapshot. Match its
-            // install directory, not another copy or a stale dev registration with the same ID.
-            if !dev {
-                let dir = self.root.join(identity);
-                if let Some(failed) = self
-                    .failed_plugins
-                    .read()
-                    .await
-                    .iter()
-                    .find(|p| !p.dev_mode && *p.dir == dir)
-                {
-                    return Err(failed.error.clone());
-                }
-            }
-            return Err(PluginError::ManifestInvalid(
-                "安装后未能加载插件（校验失败或版本门槛不满足）".to_string(),
-            ));
-        };
+    /// 对扫描得到的具体插件副本做 compile / pattern 校验。
+    async fn validate_plugin(&self, p: &LoadedPlugin) -> Result<(), PluginError> {
         for src in [
             p.resolver_source().await,
             p.hooks_source().await,

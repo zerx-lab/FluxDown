@@ -329,6 +329,21 @@ public enum HostErrorCode: String, Sendable, Hashable, CaseIterable {
     case unavailable, timeout, cancelled, unsupported, `internal`
 }
 
+/// Redacted arguments for localized plugin operation diagnostics.
+public struct PluginDiagnostic: Sendable, Hashable {
+    public let kind: String
+    public let path: String?
+    public let line: UInt32?
+    public let column: UInt32?
+
+    public init(kind: String, path: String? = nil, line: UInt32? = nil, column: UInt32? = nil) {
+        self.kind = kind
+        self.path = path
+        self.line = line
+        self.column = column
+    }
+}
+
 /// `RpcErrorData`：UI 先按 `reason`（`ErrorReason` 的 wire 名）本地化，再按 `code` 回退。
 public struct HostError: Error, Sendable, Hashable, CustomStringConvertible {
     public var code: HostErrorCode
@@ -336,11 +351,20 @@ public struct HostError: Error, Sendable, Hashable, CustomStringConvertible {
     public var retryable: Bool
     public var message: String
 
-    public init(_ code: HostErrorCode, reason: String? = nil, retryable: Bool = false, message: String = "") {
+    public var pluginDiagnostic: PluginDiagnostic?
+
+    public init(
+        _ code: HostErrorCode,
+        reason: String? = nil,
+        retryable: Bool = false,
+        message: String = "",
+        pluginDiagnostic: PluginDiagnostic? = nil
+    ) {
         self.code = code
         self.reason = reason
         self.retryable = retryable
         self.message = message
+        self.pluginDiagnostic = pluginDiagnostic
     }
 
     public var description: String {

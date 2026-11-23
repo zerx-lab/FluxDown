@@ -114,6 +114,8 @@ On desktop and Web, install and update failures appear near the install controls
 
 A successful installation clears the last install error. Reinstalling or uninstalling a plugin clears its previous reload error.
 
+On Android and iOS, a failed install, update, or reload opens a diagnostic dialog. **Copy error** copies the same localized text shown in the dialog.
+
 ### Original engine messages in the daemon diagnostics log
 
 The table quotes the engine's original messages, not the desktop or Web text. Manifest errors in the log have the prefix `manifest 非法: ` (“manifest invalid:”). `npm run validate` and the SDK validator check the same manifest rules, use their own wording, and report every problem at once instead of stopping at the first.

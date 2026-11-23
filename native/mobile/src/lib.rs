@@ -34,7 +34,7 @@ pub use dto::{
     SelectionKindDto, SelectionOutcomeDto, SelectionRequestDto, TaskDto, TaskRuntimeDto,
     VariantOptionDto,
 };
-pub use error::{ErrorCodeDto, FluxError, HostErrorDto};
+pub use error::{ErrorCodeDto, FluxError, HostErrorDto, PluginDiagnosticDto};
 pub use flux_core::FluxCore;
 pub use import::{
     CREATE_CHUNK_SIZE, ImportBatchDto, ImportHandle, ImportItemDto, ImportProgressDto,

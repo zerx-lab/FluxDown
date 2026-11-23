@@ -53,6 +53,33 @@ enum ExtensionErrorText {
         }
     }
 
+    static func pluginFailure(_ error: HostError) -> String {
+        guard let detail = error.pluginDiagnostic else { return describe(error) }
+        switch detail.kind {
+        case "manifestUnreadable": return L("pluginDiagnosticManifestUnreadable")
+        case "manifestUnknownField": return L("pluginDiagnosticManifestUnknownField")
+        case "manifestJsonInvalid": return L("pluginDiagnosticManifestJsonInvalid")
+        case "manifestIdentityInvalid": return L("pluginDiagnosticManifestIdentityInvalid")
+        case "manifestNameMissing": return L("pluginDiagnosticManifestNameMissing")
+        case "manifestVersionInvalid": return L("pluginDiagnosticManifestVersionInvalid")
+        case "manifestMinAppVersionInvalid": return L("pluginDiagnosticManifestMinAppVersionInvalid")
+        case "manifestUnknownPermission": return L("pluginDiagnosticManifestUnknownPermission")
+        case "manifestAuthPermissionMissing": return L("pluginDiagnosticManifestAuthPermissionMissing")
+        case "scriptCompileFailed": return L("pluginDiagnosticScriptCompileFailed")
+        case "scriptCompileFailedAt":
+            guard let line = detail.line, let column = detail.column else {
+                return L("pluginDiagnosticScriptCompileFailed")
+            }
+            return L("pluginDiagnosticScriptCompileFailedAt", ["line": line, "column": column])
+        case "missingFile":
+            guard let path = detail.path, !path.isEmpty else { return describe(error) }
+            return L("pluginDiagnosticMissingFile", ["path": path])
+        case "loadFailed": return L("pluginDiagnosticLoadFailed")
+        case "notDevPlugin": return L("pluginDiagnosticNotDevPlugin")
+        default: return describe(error)
+        }
+    }
+
     private static let reasonKeys: [String: String] = [
         "marketUnreachable": "pluginErrorMarketUnreachable",
         "marketIndexInvalid": "pluginErrorMarketIndexInvalid",

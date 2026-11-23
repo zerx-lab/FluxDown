@@ -51,6 +51,8 @@ import com.fluxdown.core.protocol.QrEncoder
 import com.fluxdown.core.protocol.QrMatrix
 import com.fluxdown.fluxui.controls.FluxTag
 import com.fluxdown.fluxui.controls.Tone
+import com.fluxdown.fluxui.overlay.FluxDialogButton
+import com.fluxdown.fluxui.overlay.FluxDialogSpec
 import com.fluxdown.fluxui.overlay.FluxOverlayState
 import com.fluxdown.fluxui.overlay.FluxToastKind
 import com.fluxdown.fluxui.theme.FluxText
@@ -86,6 +88,23 @@ internal class ExtensionsEnv(val context: Context, private val overlays: FluxOve
     fun toast(text: String, kind: FluxToastKind) = overlays.toast(text, kind)
 
     fun error(e: HostException): String = extensionErrorText(context, e)
+
+    fun showPluginFailure(@StringRes operation: Int, error: HostException) {
+        val message = text(operation, "message" to pluginFailureText(context, error))
+        overlays.showDialog(
+            FluxDialogSpec(
+                title = text(R.string.statusError),
+                message = message,
+                buttons = listOf(
+                    FluxDialogButton(text(R.string.close)),
+                    FluxDialogButton(text(R.string.pluginLoadErrorCopy)) {
+                        context.copyPlainText(message)
+                        toast(text(R.string.pluginLoadErrorCopied), FluxToastKind.Success)
+                    },
+                ),
+            ),
+        )
+    }
 }
 
 @Composable
@@ -121,6 +140,35 @@ internal fun extensionErrorText(context: Context, e: HostException): String {
             else -> R.string.localServiceActionFailed
         },
     )
+}
+
+/** Only the structured diagnostic and localized reason/code fallback are safe to show or copy. */
+private fun pluginFailureText(context: Context, error: HostException): String {
+    val detail = error.pluginDiagnostic ?: return extensionErrorText(context, error)
+    return when (detail.kind) {
+        "manifestUnreadable" -> context.str(R.string.pluginDiagnosticManifestUnreadable)
+        "manifestUnknownField" -> context.str(R.string.pluginDiagnosticManifestUnknownField)
+        "manifestJsonInvalid" -> context.str(R.string.pluginDiagnosticManifestJsonInvalid)
+        "manifestIdentityInvalid" -> context.str(R.string.pluginDiagnosticManifestIdentityInvalid)
+        "manifestNameMissing" -> context.str(R.string.pluginDiagnosticManifestNameMissing)
+        "manifestVersionInvalid" -> context.str(R.string.pluginDiagnosticManifestVersionInvalid)
+        "manifestMinAppVersionInvalid" -> context.str(R.string.pluginDiagnosticManifestMinAppVersionInvalid)
+        "manifestUnknownPermission" -> context.str(R.string.pluginDiagnosticManifestUnknownPermission)
+        "manifestAuthPermissionMissing" -> context.str(R.string.pluginDiagnosticManifestAuthPermissionMissing)
+        "scriptCompileFailed" -> context.str(R.string.pluginDiagnosticScriptCompileFailed)
+        "scriptCompileFailedAt" -> {
+            val line = detail.line
+            val column = detail.column
+            if (line == null || column == null) context.str(R.string.pluginDiagnosticScriptCompileFailed)
+            else context.str(R.string.pluginDiagnosticScriptCompileFailedAt, "line" to line, "column" to column)
+        }
+        "missingFile" -> detail.path?.takeIf { it.isNotBlank() }?.let {
+            context.str(R.string.pluginDiagnosticMissingFile, "path" to it)
+        } ?: extensionErrorText(context, error)
+        "loadFailed" -> context.str(R.string.pluginDiagnosticLoadFailed)
+        "notDevPlugin" -> context.str(R.string.pluginDiagnosticNotDevPlugin)
+        else -> extensionErrorText(context, error)
+    }
 }
 
 // ───────────────────────────── 文案键映射 ─────────────────────────────

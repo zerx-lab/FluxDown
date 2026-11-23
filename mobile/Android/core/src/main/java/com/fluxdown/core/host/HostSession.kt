@@ -196,6 +196,14 @@ enum class HostErrorCode {
     Unavailable, Timeout, Cancelled, Unsupported, Internal,
 }
 
+/** Structured plugin failure arguments, separate from the daemon's error message. */
+data class PluginDiagnostic(
+    val kind: String,
+    val path: String?,
+    val line: UInt?,
+    val column: UInt?,
+)
+
 /**
  * `RpcErrorData`：UI 先按 [reason]（`ErrorReason` 的 wire 名）本地化，再按 [code] 回退。
  */
@@ -205,4 +213,5 @@ class HostException(
     val retryable: Boolean = false,
     message: String? = null,
     cause: Throwable? = null,
+    val pluginDiagnostic: PluginDiagnostic? = null,
 ) : Exception(message ?: reason ?: code.name, cause)

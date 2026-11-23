@@ -56,6 +56,7 @@ final class ExtensionsModel {
     var sheet: PluginSheet?
     private(set) var busy: Set<String> = []
     private(set) var installPhase: InstallPhase?
+    var operationFailure: String?
     /// 安装 / 重载成功但缺基础组件：弹窗提醒（提醒式，不阻断）。
     var missingComponents: [String]?
     struct ConflictNotice {
@@ -95,6 +96,10 @@ final class ExtensionsModel {
 
     private func toast(_ text: String, _ tone: ToastTone) {
         container.toasts.show(text: text, tone: tone)
+    }
+
+    func reportOperationFailure(_ key: String, _ error: HostError) {
+        operationFailure = L(key, ["message": ExtensionErrorText.pluginFailure(error)])
     }
 
     func requestPop() { popRequest += 1 }
@@ -172,15 +177,17 @@ final class ExtensionsModel {
 
     func reload(_ plugin: PluginDto) async {
         await withBusy(plugin.identity) {
+            operationFailure = nil
             do throws(HostError) {
                 let result: InstalledPlugin = try await session.call(
                     HostMethod.daemonPluginReloadDev,
                     params: PluginIdentityParams(identity: plugin.identity)
                 )
+                operationFailure = nil
                 toast(L("pluginOpReloadSuccess"), .success)
                 noteMissing(result)
             } catch {
-                toast(L("pluginOpReloadFailed", ["message": ExtensionErrorText.describe(error)]), .error)
+                reportOperationFailure("pluginOpReloadFailed", error)
             }
         }
     }
@@ -211,6 +218,7 @@ final class ExtensionsModel {
     /// 再 `daemon.plugin.install`。
     func installFile(_ url: URL) async {
         guard installPhase == nil else { return }
+        operationFailure = nil
         installPhase = .installing
         defer { installPhase = nil }
         let scoped = url.startAccessingSecurityScopedResource()
@@ -219,11 +227,12 @@ final class ExtensionsModel {
         do throws(HostError) {
             let data = try Self.readPackage(url)
             let result = try await installRemote(data, target: target)
+            operationFailure = nil
             toast(L("pluginOpInstallSuccess"), .success)
             await noteResolverConflicts(target, identity: result.identity)
             noteMissing(result)
         } catch {
-            toast(L("pluginOpInstallFailed", ["message": ExtensionErrorText.describe(error)]), .error)
+            reportOperationFailure("pluginOpInstallFailed", error)
         }
     }
 
@@ -297,6 +306,7 @@ final class ExtensionsModel {
 
     func requestInstall(_ entry: MarketEntry, installed: PluginDto?) {
         guard !marketPending.contains(entry.pluginId) else { return }
+        operationFailure = nil
         let request = PermissionRequest(entry: entry, installed: installed)
         if request.permissions.isEmpty {
             Task { await performInstall(request) }
@@ -313,6 +323,7 @@ final class ExtensionsModel {
     private func performInstall(_ request: PermissionRequest) async {
         let entry = request.entry
         guard !marketPending.contains(entry.pluginId) else { return }
+        operationFailure = nil
         marketPending.insert(entry.pluginId)
         defer { marketPending.remove(entry.pluginId) }
         let target = session
@@ -321,6 +332,7 @@ final class ExtensionsModel {
                 HostMethod.daemonPluginMarketInstall,
                 params: PluginMarketInstallParams(pluginId: entry.pluginId, version: entry.version)
             )
+            operationFailure = nil
             toast(L(request.isUpdate ? "pluginOpUpdateSuccess" : "pluginOpInstallSuccess"), .success)
             await noteResolverConflicts(target, identity: result.identity)
             noteMissing(result)
@@ -337,7 +349,7 @@ final class ExtensionsModel {
                 }
             }
             let key = request.isUpdate ? "pluginOpUpdateFailed" : "pluginOpInstallFailed"
-            toast(L(key, ["message": ExtensionErrorText.describe(error)]), .error)
+            reportOperationFailure(key, error)
         }
     }
 }

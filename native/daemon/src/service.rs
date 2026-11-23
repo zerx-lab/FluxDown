@@ -4119,39 +4119,65 @@ mod plugin_consent_audit_tests {
                     "identity": ID, "name": "Demo", "version": "1.0.0",
                     "permissions": ["archive"], "contributes": {"archive": "archive.js"},
                 }),
-                Some("const private-fixture-value = ;"),
+                Some(("archive.js", "const private-fixture-value = ;")),
+                json!({"kind": "scriptCompileFailedAt", "line": 1}),
+            ),
+            (
+                json!({
+                    "identity": ID, "name": "Demo", "version": "1.0.0",
+                    "resolvers": [{"entry": "resolve.js", "match": {"urls": ["https://example.invalid/*"]}}],
+                }),
+                Some(("resolve.js", "const private-fixture-value = ;")),
                 json!({"kind": "scriptCompileFailedAt", "line": 1}),
             ),
         ];
-        for (manifest, archive_source, mut detail) in cases {
-            let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
-            zip.start_file("manifest.json", SimpleFileOptions::default())
-                .unwrap();
-            zip.write_all(manifest.to_string().as_bytes()).unwrap();
-            if let Some(source) = archive_source {
-                zip.start_file("archive.js", SimpleFileOptions::default())
-                    .unwrap();
-                zip.write_all(source.as_bytes()).unwrap();
-            }
-            let bytes = zip.finish().unwrap().into_inner();
-            let id = f.service.blobs.put(BlobKind::Plugin, &bytes).await.unwrap();
-            let error = call(&f, method::DAEMON_PLUGIN_INSTALL, json!({"blobId": id}))
+        for dev in [false, true] {
+            if dev {
+                let src = f.base.join("dev");
+                write_plugin(&src, &[]);
+                call(
+                    &f,
+                    method::DAEMON_PLUGIN_INSTALL_DEV,
+                    json!({"dirPath": src}),
+                )
                 .await
-                .unwrap_err();
-            if archive_source.is_some() {
-                let wire = serde_json::to_value(&error).unwrap();
-                let column = wire["data"]["pluginDetail"]["column"].as_u64().unwrap();
-                assert!(column > 0);
-                detail["column"] = json!(column);
+                .unwrap();
             }
-            assert_plugin_diagnostic(error, detail);
-            assert!(!f.root.join(ID).exists());
-            assert_eq!(
-                call(&f, method::DAEMON_PLUGIN_LIST, json!({}))
+            for (manifest, script, detail) in &cases {
+                let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+                zip.start_file("manifest.json", SimpleFileOptions::default())
+                    .unwrap();
+                zip.write_all(manifest.to_string().as_bytes()).unwrap();
+                if let Some((entry, source)) = script {
+                    zip.start_file(*entry, SimpleFileOptions::default())
+                        .unwrap();
+                    zip.write_all(source.as_bytes()).unwrap();
+                }
+                let bytes = zip.finish().unwrap().into_inner();
+                let id = f.service.blobs.put(BlobKind::Plugin, &bytes).await.unwrap();
+                let error = call(&f, method::DAEMON_PLUGIN_INSTALL, json!({"blobId": id}))
                     .await
-                    .unwrap(),
-                json!([])
-            );
+                    .unwrap_err();
+                let mut detail = detail.clone();
+                if script.is_some() {
+                    let wire = serde_json::to_value(&error).unwrap();
+                    let column = wire["data"]["pluginDetail"]["column"].as_u64().unwrap();
+                    assert!(column > 0);
+                    detail["column"] = json!(column);
+                }
+                assert_plugin_diagnostic(error, detail);
+                assert!(!f.root.join(ID).exists());
+                if dev {
+                    let remaining = plugin(&f).await;
+                    assert_eq!(remaining["devMode"], true);
+                    assert_eq!(remaining["loadStatus"], "Loaded");
+                } else {
+                    let remaining = call(&f, method::DAEMON_PLUGIN_LIST, json!({}))
+                        .await
+                        .unwrap();
+                    assert_eq!(remaining, json!([]));
+                }
+            }
         }
     }
 
