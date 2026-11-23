@@ -555,8 +555,10 @@ impl PluginManager {
 
     /// 扫描根目录 + `plugin.dev.*` 键，解析并加载全部插件。
     pub async fn load_all(&self) {
-        // Without a target directory, the scan records failures in the snapshot.
-        drop(self.load_plugins(None).await);
+        // Individual plugin failures are recorded in the snapshot; log scan-level failures.
+        if let Err(error) = self.load_plugins(None).await {
+            crate::logger::report_error("plugin", "load_all", &error);
+        }
     }
 
     async fn load_plugins(&self, install_dir: Option<&Path>) -> Result<(), PluginError> {
