@@ -48,3 +48,17 @@ export function extensionDetailsUrl(userAgent: string, extensionId: string): str
   const scheme = /\bEdg\//.test(userAgent) ? "edge" : "chrome";
   return `${scheme}://extensions/?id=${extensionId}`;
 }
+
+/**
+ * 匹配规则 → 去重后的站点名（保持声明顺序），给普通用户看的摘要用：
+ * `*://*.lanzoub.com/*` → `lanzoub.com`，`https://pan.baidu.com/s/*` → `pan.baidu.com`。
+ * 主机为 `*` 或无法解析的规则原样保留，不吞掉信息。
+ */
+export function matchHosts(patterns: readonly string[]): string[] {
+  const hosts = patterns.map((pattern) => {
+    const host = /^[^:/]+:\/\/([^/]+)/.exec(pattern)?.[1];
+    if (!host || host === "*") return pattern;
+    return host.startsWith("*.") ? host.slice(2) : host;
+  });
+  return [...new Set(hosts)];
+}

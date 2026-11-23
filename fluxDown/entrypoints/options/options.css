@@ -746,6 +746,49 @@ body {
   white-space: pre;
 }
 
+/* 各插件卡片列宽一致；每行只放摘要，完整规则进详情弹窗 */
+.opt-ps-table {
+  table-layout: fixed;
+  min-width: 480px;
+}
+
+.opt-ps-col-script {
+  width: 40%;
+}
+
+.opt-ps-col-actions {
+  width: 88px;
+}
+
+.opt-ps-sites {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fd-text-secondary);
+}
+
+.opt-ps-detail {
+  margin: 0;
+}
+
+.opt-ps-detail dt {
+  margin-bottom: 4px;
+  color: var(--fd-text-secondary);
+  font-size: 12px;
+}
+
+.opt-ps-detail dd {
+  margin: 0 0 14px;
+}
+
+.opt-ps-detail dd:last-child {
+  margin-bottom: 0;
+}
+
+.opt-ps-matches-tall {
+  max-height: 50vh;
+}
+
 /* ===== 窄屏（手机 / 窄窗口）：侧栏变顶栏，设置行上下堆叠 ===== */
 @media (max-width: 720px) {
   .opt-layout {
