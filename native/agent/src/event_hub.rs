@@ -84,6 +84,8 @@ impl TrayRound {
         if next.is_unfinished() && !self.tasks.values().any(TrayTask::is_unfinished) {
             self.tasks.clear();
             self.terminal_rows.clear();
+            self.pending_notices
+                .retain(|_, notice| notice.next.is_unfinished());
             self.reconcile_failures = false;
         }
         if let Some(task) = self.tasks.get_mut(id) {
@@ -375,6 +377,11 @@ impl AgentEventHub {
             _ => return,
         };
         let mut state = lock_or_recover(&self.state);
+        // Terminal notices can finish a member of this round, not enroll a
+        // historical task whose terminal row is still in the daemon snapshot.
+        if !next.is_unfinished() && !state.tray.tasks.contains_key(&task.id) {
+            return;
+        }
         let status = state.snapshot.daemon.task(&task.id).map(|row| row.status);
         if status.is_some_and(|status| next.matches_row(status)) {
             state.tray.pending_notices.remove(&task.id);
@@ -519,6 +526,44 @@ mod tests {
         hub.publish(fluxdown_protocol::AgentEvent::DaemonConnectionChanged(true));
         hub.record_tray_result(&failed_notice("a"));
         assert_eq!(hub.tray_download_dot(), None);
+        Ok(())
+    }
+
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn tray_dot_ignores_a_failure_notice_from_the_previous_round() -> Result<(), serde_json::Error>
+    {
+        use crate::shell::DownloadDot;
+
+        let hub = AgentEventHub::new(AgentSnapshot {
+            daemon_connected: true,
+            ..AgentSnapshot::default()
+        });
+        hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("old", 1)?));
+        // Snapshot reconciliation can finish the round before the notice arrives.
+        hub.replace_daemon_snapshot(DaemonSnapshot {
+            tasks: vec![tray_task("old", 4)?],
+            ..DaemonSnapshot::default()
+        });
+        assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Failed));
+        acknowledge_current(&hub);
+
+        hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("new", 1)?));
+        hub.record_tray_result(&failed_notice("old"));
+        assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Downloading));
+        hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("new", 3)?));
+        hub.record_tray_result(&fluxdown_protocol::TaskNoticeDto {
+            event: "task.completed".into(),
+            ..failed_notice("new")
+        });
+        assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Completed));
+
+        // The same task ID can join a new round by actually resuming.
+        acknowledge_current(&hub);
+        hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("old", 1)?));
+        hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("old", 4)?));
+        hub.record_tray_result(&failed_notice("old"));
+        assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Failed));
         Ok(())
     }
 
