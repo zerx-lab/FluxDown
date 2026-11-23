@@ -33,9 +33,18 @@ fun defaultLocalSaveDir(context: Context): File =
     context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: File(context.filesDir, "downloads")
 
 /** 两种内部数据根都包含各自的 files、cache、no_backup；不要调用会创建子目录的 getter。 */
-internal fun externalLocalDirectory(context: Context): ExternalLocalDirectory = ExternalLocalDirectory(
-    listOf(context.dataDir, context.createDeviceProtectedStorageContext().dataDir),
-)
+internal fun externalLocalDirectory(context: Context): ExternalLocalDirectory {
+    // Android 11+ 保护 Android/data 下的应用专属树，即使其他应用获准访问所有文件也不能改写。
+    // 旧版 / 可移除存储不具备该保证。直接拼主卷路径，避免 getExternalFilesDir() 提前建目录。
+    val protectedRoot = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+        Environment.getExternalStorageState() == Environment.MEDIA_MOUNTED &&
+        Environment.isExternalStorageEmulated() && !Environment.isExternalStorageRemovable()
+    ) File(Environment.getExternalStorageDirectory(), "Android/data/${context.packageName}/files") else null
+    return ExternalLocalDirectory(
+        listOf(context.dataDir, context.createDeviceProtectedStorageContext().dataDir),
+        protectedRoot,
+    )
+}
 
 /**
  * 系统公共下载根目录（`/storage/emulated/0/Download`）。
