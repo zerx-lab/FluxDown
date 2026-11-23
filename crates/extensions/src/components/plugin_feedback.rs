@@ -131,16 +131,18 @@ impl Feedback {
             cx.spawn(async move |this, cx| {
                 let counts = future.await.ok().and_then(|value| {
                     let entries = value["entries"].as_array()?;
-                    Some(entries.iter().take(20).fold(
-                        (0, 0),
-                        |(errors, denied), entry| {
-                            let outcome = entry["outcome"].as_str();
-                            (
-                                errors + usize::from(outcome == Some("error")),
-                                denied + usize::from(outcome == Some("denied")),
-                            )
-                        },
-                    ))
+                    Some(
+                        entries
+                            .iter()
+                            .take(20)
+                            .fold((0, 0), |(errors, denied), entry| {
+                                let outcome = entry["outcome"].as_str();
+                                (
+                                    errors + usize::from(outcome == Some("error")),
+                                    denied + usize::from(outcome == Some("denied")),
+                                )
+                            }),
+                    )
                 });
                 let Ok(()) = this.update(cx, |form, cx| {
                     form.audit_counts = counts;
@@ -219,7 +221,8 @@ impl Feedback {
                 let result = result.ok();
                 form.issue = result
                     .as_ref()
-                    .and_then(|value| value["issueNumber"].as_u64());
+                    .and_then(|value| value["issueNumber"].as_u64())
+                    .filter(|&number| number > 0);
                 if form.issue.is_none() {
                     form.message = Some(
                         match result.as_ref().and_then(|value| value["status"].as_u64()) {
