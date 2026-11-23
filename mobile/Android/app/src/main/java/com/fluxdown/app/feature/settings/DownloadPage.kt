@@ -639,8 +639,8 @@ private fun GlassSectionScope.behaviorRows(
     }
 }
 
-/** 已完成记录保留天数的预设（天；0 = 从不），与 PC / Web 一致；其余值落在「自定义」。 */
-private val RetentionPresets = listOf(0L, 1L, 7L, 30L)
+/** 已完成记录保留的预设（0 = 从不，-1 = 立即），与 PC / Web 一致；其余值落在「自定义」。 */
+private val RetentionPresets = listOf(0L, -1L, 1L, 7L, 30L)
 private const val RETENTION_CUSTOM = "custom"
 private const val RETENTION_CUSTOM_START = 14L
 private const val RETENTION_KEY = "completed_record_retention_days"
@@ -662,6 +662,7 @@ private fun GlassSectionScope.retentionRows(
             val title = str(R.string.completedRecordRetention)
             val options = listOf(
                 SelectOption("0", str(R.string.retentionNever)),
+                SelectOption("-1", str(R.string.retentionImmediate)),
                 SelectOption("1", str(R.string.retentionDay1)),
                 SelectOption("7", str(R.string.retentionDay7)),
                 SelectOption("30", str(R.string.retentionDay30)),

@@ -2,8 +2,10 @@
 //!
 //! 视觉规则与全客户端一致（见 `fluxdown_ui_components::kit`）：
 //! - 分组卡片 = surface + hairline 描边 + `radius.lg`，行间 hairline 分隔，不加阴影；
-//! - 组标题 caption MEDIUM + 三级文字色；行标题 `typography.sm`，说明 `typography.xs` 二级文字色；
-//!   说明只占一行，超出时截断，完整内容收进标题旁信息图标的悬浮提示；
+//! - 组标题 [`group_heading`]（sm SEMIBOLD 正文色），分组间距 `spacing.xl`；行标题 `typography.sm`，
+//!   说明 `typography.xs` 二级文字色；内容区单列、最大宽度 [`CONTENT_MAX_WIDTH`]（[`SettingsTab::wide`] 豁免）；
+//! - 说明只显示首句（[`description_lead`]），且只在一行放得下时显示，不出现截断的半句话；完整说明与
+//!   补充说明收进悬浮提示，悬停行标题、说明文字或信息图标都会显示；
 //! - 右侧控件一律统一档 [`fluxdown_ui_theme::CONTROL_HEIGHT`]（28）：按钮 / 输入走 `ControlExt::control`，下拉为
 //!   outline + caret，数字输入同高；横排行最小行高 = `density.control` + [`ROW_MIN_PADDING`]；
 //!   开关保持 `Switch`。数字带物理量时必须显示单位（[`Control::unit`] 固定单位，或数字 + 单位下拉）。
@@ -115,6 +117,11 @@ pub(crate) fn caption_heading(cx: &App) -> Div {
         .line_height(extended.caption.line_height)
         .font_weight(FontWeight::MEDIUM)
         .text_color(extended.colors.text_tertiary)
+}
+
+/// 设置分组标题（`typography.sm` SEMIBOLD，正文色）：比行标题更醒目，分出「组 > 行」层级。
+pub(crate) fn group_heading(cx: &App) -> Div {
+    body_text(cx).font_weight(FontWeight::SEMIBOLD)
 }
 
 /// 页面内容区左右留白（设置页与 Webhook 独立页共用）。
@@ -240,8 +247,9 @@ pub(crate) fn empty_state(
         .child(meta_text(cx).text_center().child(description))
 }
 
-/// 触发双列排布的最小内容宽度。
-pub(crate) const TWO_COLUMN_MIN_WIDTH: f32 = 920.;
+/// 设置内容区的最大宽度（100% 基准值，随字号缩放）：标题与控件不至于在宽窗口里相隔
+/// 一整屏。列表 / 表格类 Tab 用 [`SettingsTab::wide`] 豁免。
+pub(crate) const CONTENT_MAX_WIDTH: f32 = 760.;
 
 pub(crate) type Getter<T> = Rc<dyn Fn(&App) -> T>;
 pub(crate) type Setter<T> = Rc<dyn Fn(T, &mut App)>;
@@ -271,6 +279,7 @@ pub(crate) enum Control {
     Input {
         get: Getter<SharedString>,
         set: Setter<SharedString>,
+        secret: bool,
     },
     Dropdown {
         options: Vec<(SharedString, SharedString)>,
@@ -335,9 +344,18 @@ impl Control {
         G: Fn(&App) -> SharedString + 'static,
         S: Fn(SharedString, &mut App) + 'static,
     {
+        Self::text_input(false, get, set)
+    }
+
+    pub(crate) fn text_input<G, S>(secret: bool, get: G, set: S) -> Self
+    where
+        G: Fn(&App) -> SharedString + 'static,
+        S: Fn(SharedString, &mut App) + 'static,
+    {
         Self::Input {
             get: Rc::new(get),
             set: Rc::new(set),
+            secret,
         }
     }
 
@@ -479,8 +497,6 @@ pub(crate) struct SettingsRow {
     full_tier: Option<f32>,
     /// 行下方的附加区（随值动态出现的提示等）；每帧调用，可返回空元素。
     footer: Option<Renderer>,
-    /// 显式高度权重；双列切分用。
-    weight: Option<f32>,
 }
 
 impl SettingsRow {
@@ -497,7 +513,6 @@ impl SettingsRow {
             full: None,
             full_tier: None,
             footer: None,
-            weight: None,
         }
     }
 
@@ -533,7 +548,6 @@ impl SettingsRow {
             })),
             full_tier: tier,
             footer: None,
-            weight: None,
         }
     }
 
@@ -614,17 +628,6 @@ impl SettingsRow {
             .chain(self.keywords.iter())
     }
 
-    /// 自适应分组排布的行权重。
-    fn layout_weight(&self) -> f32 {
-        self.weight.unwrap_or(if self.full.is_some() {
-            3.0
-        } else if self.vertical {
-            2.4
-        } else {
-            1.0
-        })
-    }
-
     /// 参与 Tab 统一宽度的字段宽度档；竖排行的字段占满行宽，不参与。
     fn field_tier(&self) -> Option<f32> {
         if self.vertical {
@@ -682,119 +685,135 @@ impl SettingsRow {
             .control
             .clone()
             .map(|control| render_control(&control, disabled, &key, layout, window, cx));
-        // 描述只占一行：超出时截断，完整内容收进标题旁信息图标的悬浮提示。
-        // 是否超出由描述容器 prepaint 时实测（取决于窗口宽度与控件宽度），只在变化时回写。
-        let overflow = self.description.as_ref().map(|_| {
+        // 说明只显示首句，且只在一行放得下时显示：不再出现截断的半句话。完整说明与补充说明
+        // 收进悬浮提示，悬停标题、说明或信息图标都能看到（图标太小，只靠它容易对不准）。
+        // 一行是否放得下由标签列 prepaint 时实测（取决于窗口宽度与控件宽度），只在变化时回写。
+        let lead = self
+            .description
+            .as_ref()
+            .map(|description| SharedString::from(description_lead(description).to_owned()));
+        let fits = lead.as_ref().map(|_| {
             window.use_keyed_state(
-                ElementId::from(SharedString::from(format!("{key}-desc-overflow"))),
+                ElementId::from(SharedString::from(format!("{key}-desc-fits"))),
                 cx,
-                |_, _| false,
+                |_, _| true,
             )
         });
-        let overflows = overflow.as_ref().is_some_and(|state| *state.read(cx));
+        let shown = lead
+            .clone()
+            .filter(|_| fits.as_ref().is_some_and(|state| *state.read(cx)));
         let details: Vec<SharedString> = self
             .description
             .clone()
-            .filter(|_| overflows)
+            .filter(|description| shown.as_ref() != Some(description))
             .into_iter()
             .chain(self.help.clone())
             .collect();
+        let has_details = !details.is_empty();
+        let hover_text: Option<SharedString> = if has_details {
+            Some(SharedString::from(
+                details
+                    .iter()
+                    .map(SharedString::as_ref)
+                    .collect::<Vec<_>>()
+                    .join("\n\n"),
+            ))
+        } else {
+            self.explain.as_ref().map(|explain| explain.hint.clone())
+        };
+        let with_hover = |element: gpui::Stateful<Div>| match hover_text.clone() {
+            Some(text) => element
+                .tooltip(move |window, cx| tooltip_view(text.clone(), window, cx))
+                .into_any_element(),
+            None => element.into_any_element(),
+        };
+        let title_target = div()
+            .id(ElementId::from(SharedString::from(format!("{key}-title"))))
+            .flex()
+            .items_center()
+            .min_w_0()
+            .gap(tokens.spacing.xs)
+            .child(body_text(cx).child(self.title.clone()))
+            .when(has_details, |this| {
+                this.child(
+                    div().flex().flex_none().items_center().child(
+                        Icon::new(FluxIcon::Info)
+                            .size(extended.icon.sm)
+                            .text_color(extended.colors.text_tertiary),
+                    ),
+                )
+            });
+        let mut title_row = div()
+            .flex()
+            .items_center()
+            .gap(tokens.spacing.xs)
+            .child(with_hover(title_target));
+        if let Some(explain) = self.explain.clone() {
+            let hint = explain.hint.clone();
+            title_row = title_row.child(
+                div()
+                    .id(ElementId::from(SharedString::from(format!(
+                        "{key}-explain"
+                    ))))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .size(badge_size)
+                    .rounded_full()
+                    .border_1()
+                    .border_color(extended.colors.text_tertiary)
+                    .text_color(extended.colors.text_tertiary)
+                    .text_size(badge_text_size)
+                    .line_height(badge_line_height)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .cursor_pointer()
+                    .hover(|style| {
+                        style
+                            .border_color(tokens.colors.foreground)
+                            .text_color(tokens.colors.foreground)
+                    })
+                    .tooltip(move |window, cx| tooltip_view(hint.clone(), window, cx))
+                    .on_click(move |_, window, cx| {
+                        open_explain_dialog(explain.clone(), window, cx);
+                    })
+                    .child("?"),
+            );
+        }
+        let description_size = tokens.typography.xs.size;
         let label = v_flex()
+            .relative()
+            .w_full()
             .gap(tokens.spacing.xxs)
             .min_w_0()
-            .child({
-                let mut title_row = div()
-                    .flex()
-                    .items_center()
-                    .gap(tokens.spacing.xs)
-                    .child(body_text(cx).child(self.title.clone()));
-                if !details.is_empty() {
-                    let text = SharedString::from(
-                        details
-                            .iter()
-                            .map(SharedString::as_ref)
-                            .collect::<Vec<_>>()
-                            .join("\n\n"),
-                    );
-                    title_row = title_row.child(
-                        div()
-                            .id(ElementId::from(SharedString::from(format!("{key}-info"))))
-                            .flex()
-                            .flex_none()
-                            .items_center()
-                            .tooltip(move |window, cx| tooltip_view(text.clone(), window, cx))
-                            .child(
-                                Icon::new(FluxIcon::Info)
-                                    .size(extended.icon.sm)
-                                    .text_color(extended.colors.text_tertiary),
-                            ),
-                    );
-                }
-                if let Some(explain) = self.explain.clone() {
-                    let hint = explain.hint.clone();
-                    title_row = title_row.child(
-                        div()
-                            .id(ElementId::from(SharedString::from(format!(
-                                "{key}-explain"
-                            ))))
-                            .flex()
-                            .flex_none()
-                            .items_center()
-                            .justify_center()
-                            .size(badge_size)
-                            .rounded_full()
-                            .border_1()
-                            .border_color(extended.colors.text_tertiary)
-                            .text_color(extended.colors.text_tertiary)
-                            .text_size(badge_text_size)
-                            .line_height(badge_line_height)
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .cursor_pointer()
-                            .hover(|style| {
-                                style
-                                    .border_color(tokens.colors.foreground)
-                                    .text_color(tokens.colors.foreground)
-                            })
-                            .tooltip(move |window, cx| tooltip_view(hint.clone(), window, cx))
-                            .on_click(move |_, window, cx| {
-                                open_explain_dialog(explain.clone(), window, cx);
-                            })
-                            .child("?"),
-                    );
-                }
-                title_row
+            .child(title_row)
+            .when_some(shown, |this, shown| {
+                this.child(with_hover(
+                    meta_text(cx)
+                        .id(ElementId::from(SharedString::from(format!("{key}-desc"))))
+                        .truncate()
+                        .child(shown),
+                ))
             })
-            .when_some(
-                self.description.clone().zip(overflow),
-                |this, (description, state)| {
-                    this.child(
-                        meta_text(cx)
-                            .relative()
-                            .truncate()
-                            .child(description.clone())
-                            .child(
-                                canvas(
-                                    move |bounds, window, cx| {
-                                        let overflow = description_overflows(
-                                            &description,
-                                            bounds.size.width,
-                                            window,
-                                        );
-                                        if *state.read(cx) != overflow {
-                                            state.update(cx, |value, cx| {
-                                                *value = overflow;
-                                                cx.notify();
-                                            });
-                                        }
-                                    },
-                                    |_, (), _, _| {},
-                                )
-                                .absolute()
-                                .size_full(),
-                            ),
+            .when_some(lead.zip(fits), |this, (lead, state)| {
+                this.child(
+                    canvas(
+                        move |bounds, window, cx| {
+                            let fits =
+                                !text_overflows(&lead, bounds.size.width, description_size, window);
+                            if *state.read(cx) != fits {
+                                state.update(cx, |value, cx| {
+                                    *value = fits;
+                                    cx.notify();
+                                });
+                            }
+                        },
+                        |_, (), _, _| {},
                     )
-                },
-            );
+                    .absolute()
+                    .size_full(),
+                )
+            });
 
         let footer = self
             .footer
@@ -828,21 +847,53 @@ impl SettingsRow {
     }
 }
 
-/// 描述按当前文字样式排成单行时是否超出 `available`（含换行符一律视为超出）。
-fn description_overflows(
-    description: &SharedString,
+/// 说明的首句：截到第一个句末标点（中文 `。；！？`、换行，或后跟空白的 `.;!?`，跳过
+/// `e.g.` 之类缩写）。只有一句时原样返回（含句末标点）。
+pub(crate) fn description_lead(description: &str) -> &str {
+    const ABBREVIATIONS: [&str; 4] = ["e.g", "i.e", "etc", "vs"];
+    let mut chars = description.char_indices().peekable();
+    while let Some((index, ch)) = chars.next() {
+        let ends = match ch {
+            '。' | '；' | '！' | '？' | '\n' => true,
+            '.' | ';' | '!' | '?' => {
+                chars.peek().is_some_and(|(_, next)| next.is_whitespace())
+                    && !description
+                        .get(..index)
+                        .is_some_and(|head| ABBREVIATIONS.iter().any(|abbr| head.ends_with(abbr)))
+            }
+            _ => false,
+        };
+        if !ends {
+            continue;
+        }
+        let head = description.get(..index).unwrap_or(description).trim_end();
+        let rest = description
+            .get(index + ch.len_utf8()..)
+            .unwrap_or_default()
+            .trim();
+        if head.is_empty() || rest.is_empty() {
+            return description;
+        }
+        return head;
+    }
+    description
+}
+
+/// 文字按 `font_size` 排成单行时是否超出 `available`（含换行符一律视为超出）。
+fn text_overflows(
+    text: &SharedString,
     available: gpui::Pixels,
+    font_size: gpui::Pixels,
     window: &Window,
 ) -> bool {
-    if description.contains('\n') {
+    if text.contains('\n') {
         return true;
     }
     let style = window.text_style();
-    let font_size = style.font_size.to_pixels(window.rem_size());
-    let run = style.to_run(description.len());
+    let run = style.to_run(text.len());
     let line = window
         .text_system()
-        .shape_line(description.clone(), font_size, &[run], None);
+        .shape_line(text.clone(), font_size, &[run], None);
     line.width > available
 }
 
@@ -882,8 +933,8 @@ fn render_control(
             );
             with_unit_column(number, unit.clone(), width.is_none(), unit_column, cx)
         }
-        Control::Input { get, set } => with_unit_column(
-            render_input(get, set, disabled, key, width, window, cx),
+        Control::Input { get, set, secret } => with_unit_column(
+            render_input((get, set, *secret), disabled, key, width, window, cx),
             None,
             false,
             unit_column,
@@ -1020,13 +1071,22 @@ pub(crate) fn dropdown_button(
 struct InputSlot {
     state: gpui::Entity<InputState>,
     /// 订阅回调读取的当前行 setter；每次 render 刷新，避免槽被别的行复用后写错键。
-    set: Rc<RefCell<Setter<SharedString>>>,
+    set: Setter<SharedString>,
+    last_synced: SharedString,
     _subscriptions: Vec<gpui::Subscription>,
 }
 
+impl InputSlot {
+    fn commit_secret(&mut self, value: SharedString, cx: &mut App) {
+        if self.last_synced.trim() != value.trim() {
+            self.last_synced = value.clone();
+            (self.set)(value, cx);
+        }
+    }
+}
+
 fn render_input(
-    get: &Getter<SharedString>,
-    set: &Setter<SharedString>,
+    (get, set, secret): (&Getter<SharedString>, &Setter<SharedString>, bool),
     disabled: bool,
     key: &SharedString,
     width: Option<Pixels>,
@@ -1041,31 +1101,51 @@ fn render_input(
             let value = value.clone();
             let set = set.clone();
             move |window, cx| {
-                let state = cx.new(|cx| InputState::new(window, cx).default_value(value));
-                let shared = Rc::new(RefCell::new(set));
-                let subscription = cx.subscribe(&state, {
-                    let shared = shared.clone();
-                    move |_, state, event: &InputEvent, cx| {
-                        if matches!(event, InputEvent::Change) {
-                            let set = shared.borrow().clone();
-                            set(state.read(cx).value(), cx);
-                        }
-                    }
+                let state = cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .default_value(value.clone())
+                        .masked(secret)
                 });
+                let subscription = cx.subscribe(
+                    &state,
+                    move |slot: &mut InputSlot, input, event: &InputEvent, cx| {
+                        if secret {
+                            if matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+                                slot.commit_secret(input.read(cx).value(), cx);
+                            }
+                        } else if matches!(event, InputEvent::Change) {
+                            (slot.set)(input.read(cx).value(), cx);
+                        }
+                    },
+                );
+                let mut subscriptions = vec![subscription];
+                if secret {
+                    subscriptions.push(cx.on_release(|slot: &mut InputSlot, cx| {
+                        slot.commit_secret(slot.state.read(cx).value(), cx);
+                    }));
+                }
                 InputSlot {
                     state,
-                    set: shared,
-                    _subscriptions: vec![subscription],
+                    set,
+                    last_synced: value,
+                    _subscriptions: subscriptions,
                 }
             }
         },
     );
     slot.update(cx, |slot, cx| {
-        *slot.set.borrow_mut() = set.clone();
-        // Text 类键 daemon 会 trim 归一化；按 trim 比较，避免逐字输入的空格被回写抹掉。
-        if slot.state.read(cx).value().trim() != value.trim() {
+        slot.set = set.clone();
+        // Secret URLs have local drafts; rerenders with the same saved value
+        // must not erase them before the user presses Enter or leaves the field.
+        let changed = if secret {
+            slot.last_synced.trim() != value.trim()
+        } else {
+            slot.state.read(cx).value().trim() != value.trim()
+        };
+        if changed {
+            slot.last_synced = value.clone();
             slot.state.update(cx, |state, cx| {
-                state.set_value(value.clone(), window, cx);
+                state.set_value(value, window, cx);
             });
         }
     });
@@ -1354,16 +1434,6 @@ impl SettingsSection {
         })
     }
 
-    fn layout_weight(&self) -> f32 {
-        let heading = if self.title.is_some() { 0.6 } else { 0. };
-        heading
-            + self
-                .rows
-                .iter()
-                .map(SettingsRow::layout_weight)
-                .sum::<f32>()
-    }
-
     /// 本组横排字段的最宽档；无字段返回 `None`。
     fn field_tier(&self) -> Option<f32> {
         self.rows
@@ -1421,7 +1491,7 @@ impl SettingsSection {
                 .children(
                     self.title
                         .clone()
-                        .map(|title| caption_heading(cx).child(title)),
+                        .map(|title| group_heading(cx).child(title)),
                 )
                 .children(
                     self.subtitle
@@ -1467,6 +1537,8 @@ pub(crate) struct SettingsTab {
     view: Option<gpui::AnyView>,
     /// 注入视图占满内容区高度并自管滚动（宿主不再包滚动容器）。
     fill: bool,
+    /// 不受 [`CONTENT_MAX_WIDTH`] 限制（列表 / 表格类 Tab）。
+    wide: bool,
 }
 
 impl SettingsTab {
@@ -1479,6 +1551,7 @@ impl SettingsTab {
             units: Vec::new(),
             view: None,
             fill: false,
+            wide: false,
         }
     }
 
@@ -1512,6 +1585,13 @@ impl SettingsTab {
         self
     }
 
+    /// 内容占满可用宽度（列表 / 表格类 Tab 需要横向空间）。
+    #[must_use]
+    pub(crate) fn wide(mut self) -> Self {
+        self.wide = true;
+        self
+    }
+
     /// 本 Tab 的分组（注入整页视图的 Tab 为空）。
     pub(crate) fn section_list(&self) -> &[SettingsSection] {
         &self.sections
@@ -1538,10 +1618,11 @@ impl SettingsTab {
             units: self.units.clone(),
             view: None,
             fill: false,
+            wide: self.wide,
         })
     }
 
-    fn render(&self, key: &str, width: f32, window: &mut Window, cx: &mut App) -> AnyElement {
+    fn render(&self, key: &str, window: &mut Window, cx: &mut App) -> AnyElement {
         if let Some(view) = self.view.clone() {
             if self.fill {
                 return v_flex()
@@ -1560,51 +1641,20 @@ impl SettingsTab {
             section.title = None;
         }
 
-        let spacing = active_theme(cx).tokens().spacing;
-        let gap = spacing.lg;
+        let theme = active_theme(cx);
+        // 分组之间留出明显大于行间距的空白，一眼分出「组 > 行」两级。
+        let gap = theme.tokens().spacing.xl;
+        let max_width = theme.text_extent(CONTENT_MAX_WIDTH);
         let layout = FieldLayout::measure(self.field_tier, &self.units, window, cx);
-        // 列数由宿主测得的内容宽度决定：不能用 container_query（它把高度钉死成
-        // 父级高度，内容无法撑开，滚动容器就永远没有可滚区）。
-        if sections.len() < 2
-            || width < f32::from(active_theme(cx).text_extent(TWO_COLUMN_MIN_WIDTH))
-        {
-            let mut column = v_flex().w_full().gap(gap);
-            for (index, section) in sections.iter().enumerate() {
-                column = column.child(section.render(key, index, layout, window, cx));
-            }
-            return column.into_any_element();
-        }
-
-        let weights: Vec<f32> = sections
-            .iter()
-            .map(SettingsSection::layout_weight)
-            .collect();
-        let total: f32 = weights.iter().sum();
-        let mut accumulated = 0.;
-        let mut split = 0usize;
-        while split + 1 < sections.len() && accumulated + weights[split] / 2. < total / 2. {
-            accumulated += weights[split];
-            split += 1;
-        }
-        let split = split.max(1);
-        let mut left = v_flex().flex_1().min_w_0().gap(gap);
-        let mut right = v_flex().flex_1().min_w_0().gap(gap);
-        for (index, section) in sections.iter().enumerate() {
-            let child = section.render(key, index, layout, window, cx);
-            if index < split {
-                left = left.child(child);
-            } else {
-                right = right.child(child);
-            }
-        }
-        div()
+        // 始终单列：双列切分会让视线在两列间来回跳，扫读反而更乱。
+        let mut column = v_flex()
             .w_full()
-            .flex()
-            .items_start()
-            .gap(spacing.xl)
-            .child(left)
-            .child(right)
-            .into_any_element()
+            .gap(gap)
+            .when(!self.wide, |this| this.max_w(max_width));
+        for (index, section) in sections.iter().enumerate() {
+            column = column.child(section.render(key, index, layout, window, cx));
+        }
+        column.into_any_element()
     }
 }
 
@@ -1693,20 +1743,14 @@ impl SettingsPage {
     }
 
     /// 渲染指定子 Tab 的内容；未知 id 回退首个 Tab。
-    pub(crate) fn render_tab(
-        &self,
-        tab_id: &str,
-        width: f32,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> AnyElement {
+    pub(crate) fn render_tab(&self, tab_id: &str, window: &mut Window, cx: &mut App) -> AnyElement {
         let tab = self
             .tabs
             .iter()
             .find(|tab| tab.id == tab_id)
             .or_else(|| self.tabs.first());
         match tab {
-            Some(tab) => tab.render(&format!("{}-{}", self.key, tab.id), width, window, cx),
+            Some(tab) => tab.render(&format!("{}-{}", self.key, tab.id), window, cx),
             None => div().into_any_element(),
         }
     }
@@ -1716,9 +1760,41 @@ impl SettingsPage {
 mod tests {
     use super::{
         Control, DROPDOWN_MIN_WIDTH, INPUT_WIDTH, NUMBER_WIDTH, SettingsRow, SettingsSection,
-        SettingsTab, format_number,
+        SettingsTab, description_lead, format_number,
     };
     use gpui::SharedString;
+
+    #[test]
+    fn description_lead_keeps_first_sentence_only() {
+        // 中文句号 / 分号断句，不带句末标点。
+        assert_eq!(
+            description_lead("重启主机后生效。内置主机需完全退出并重新打开应用。"),
+            "重启主机后生效"
+        );
+        assert_eq!(
+            description_lead("新建 BT 任务下载块的顺序；只作用于此后新建的任务"),
+            "新建 BT 任务下载块的顺序"
+        );
+        // 只有一句（含句末标点）时原样保留。
+        assert_eq!(description_lead("仅保存在本设备。"), "仅保存在本设备。");
+        assert_eq!(description_lead("没有标点的说明"), "没有标点的说明");
+        // 英文：句点后跟空白才断句，缩写与小数 / 域名不断。
+        assert_eq!(
+            description_lead("Takes effect after restart. Env vars override it."),
+            "Takes effect after restart"
+        );
+        assert_eq!(
+            description_lead("Extra types, e.g. cbz, mobi. Separate with commas."),
+            "Extra types, e.g. cbz, mobi"
+        );
+        assert_eq!(
+            description_lead("Use socks5://proxy.example:1080 or HTTP 1.1"),
+            "Use socks5://proxy.example:1080 or HTTP 1.1"
+        );
+        assert_eq!(description_lead("First line\nSecond line"), "First line");
+        // 以标点开头不产生空首句。
+        assert_eq!(description_lead("。后文"), "。后文");
+    }
 
     fn number(title: &str) -> SettingsRow {
         SettingsRow::new(

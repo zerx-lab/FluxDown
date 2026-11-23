@@ -9,6 +9,7 @@ use std::{
 };
 
 use fluxdown_protocol::{PluginDto, RpcErrorData, SettingFieldDto};
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     ControlExt as _, FluxIcon, field_error, form, form_field, input_with_action, option_group,
     option_row,
@@ -25,7 +26,6 @@ use gpui_component::{
     h_flex,
     input::{Input, InputState, Textarea, TextareaState},
     menu::{DropdownMenu as _, PopupMenuItem},
-    notification::Notification,
     scroll::ScrollableElement as _,
     switch::Switch,
     v_flex,
@@ -457,7 +457,7 @@ impl PluginSettingsForm {
             .read(cx)
             .text("pluginHelperScriptCopied")
             .to_owned();
-        window.push_notification(Notification::success(message), cx);
+        window.push_notification(toast::success(message), cx);
     }
 }
 

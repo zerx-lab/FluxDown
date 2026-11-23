@@ -11,6 +11,7 @@ use fluxdown_protocol::shortcuts::{
     ResolvedShortcut, ShortcutDomain, ShortcutScope, ShortcutSpec, ShortcutTrigger,
     resolve_shortcuts, shortcuts_pref_key,
 };
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{ButtonVariant, CalloutTone, FluxIcon, RevealCallout, tooltip_view};
 use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_theme::active_theme;
@@ -20,7 +21,7 @@ use gpui::{
     StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
     prelude::FluentBuilder as _, px,
 };
-use gpui_component::{Icon, WindowExt as _, h_flex, notification::Notification, v_flex};
+use gpui_component::{Icon, WindowExt as _, h_flex, v_flex};
 use serde_json::Value;
 
 use super::SectionContext;
@@ -344,7 +345,7 @@ fn commit(
         let text = env
             .translator
             .text_with("shortcutDisplaced", &[("action", &action)]);
-        window.push_notification(Notification::info(text), cx);
+        window.push_notification(toast::info(text), cx);
     }
     state.update(cx, |state, cx| state.stop(cx));
 }

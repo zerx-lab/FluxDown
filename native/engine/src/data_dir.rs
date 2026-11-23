@@ -79,6 +79,30 @@ pub fn resolve_data_dir(explicit: Option<&Path>) -> Result<PathBuf, DataDirError
     Ok(dir)
 }
 
+/// Windows 便携版（exe 旁有 `portable` 标记文件）的数据目录 `<exe 目录>/portable_data`；
+/// 安装版与其他平台返回 `None`。宿主据此对便携数据沿用所在文件夹的权限，不收紧 ACL。
+///
+/// # Examples
+///
+/// ```
+/// use fluxdown_engine::data_dir::portable_data_dir;
+///
+/// if let Some(dir) = portable_data_dir() {
+///     assert!(dir.ends_with("portable_data"));
+/// }
+/// ```
+#[must_use]
+pub fn portable_data_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        is_portable().then(|| exe_dir().join(PORTABLE_DATA_DIR))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
+}
+
 fn resolve_data_dir_inner() -> PathBuf {
     #[cfg(target_os = "linux")]
     {

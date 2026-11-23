@@ -1,3 +1,4 @@
+import { useByteFormatter } from '../../../lib/fileSizeUnits'
 // 状态栏小部件（下行 / 上行速度、全部暂停 / 全部开始、剩余空间）。
 // 状态直接读全局 store（`useRuntimeStats` / `useDaemonReady`），动作直接走 rpc（`pauseAll` / `resumeAll`），
 // 所以既能放进外壳的任意区域，也能用在移动端页面级状态栏。
@@ -43,17 +44,19 @@ function IconCell({
 
 /** 全局下行 / 上行速度。 */
 export function SpeedCell({ direction, ...rest }: WidgetProps & { direction: 'down' | 'up' }) {
+  const fmtBytes = useByteFormatter(formatBytes)
   const stats = useRuntimeStats()
   const bps = direction === 'down' ? stats.totalDownloadBps : stats.totalUploadBps
-  return <IconCell icon={direction === 'down' ? ArrowDown : ArrowUp} text={`${formatBytes(Math.max(0, bps))}/s`} {...rest} />
+  return <IconCell icon={direction === 'down' ? ArrowDown : ArrowUp} text={`${fmtBytes(Math.max(0, bps))}/s`} {...rest} />
 }
 
 /** 剩余磁盘空间；daemon 未上报时不渲染（`preview` 供布局编辑态占位，便于拖动）。 */
 export function DiskFreeCell({ preview = false, ...rest }: WidgetProps & { preview?: boolean }) {
+  const fmtBytes = useByteFormatter(formatBytes)
   const t = useT()
   const free = useRuntimeStats().diskFreeBytes
   if (free == null && !preview) return null
-  const size = free == null ? '—' : formatBytes(free)
+  const size = free == null ? '—' : fmtBytes(free)
   return <IconCell icon={HardDrive} className="narrow:hidden" text={t('diskSpaceFreeLabel', { size })} {...rest} />
 }
 

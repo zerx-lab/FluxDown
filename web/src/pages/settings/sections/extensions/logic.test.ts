@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import type { MarketEntryDto, PluginDto, SettingFieldDto } from '../../../../lib/rpc/protocol'
+import type { MarketEntryDto, PluginDto, PluginSiteDefaultDto, SettingFieldDto } from '../../../../lib/rpc/protocol'
 import {
   CHALLENGE_TEXT_LIMIT,
   MARKET_PAGE_SIZE,
@@ -12,6 +12,9 @@ import {
   localizedSettingField,
   pageOf,
   privateSearchVisible,
+  conflictNotice,
+  conflictReport,
+  siteResolution,
   safeHttpUrl,
   truncateChallengeText,
   validateField,
@@ -271,5 +274,75 @@ describe('liveDialogPlugins', () => {
 
   test('未打开的对话框恒为 null', () => {
     expect(liveDialogPlugins([plugin('a@x')], none)).toEqual(none)
+  })
+})
+
+describe('resolver conflict report', () => {
+  const plugins = [
+    {
+      identity: 'yt@test', name: 'YouTube', enabled: true,
+      resolverUrlConflicts: [
+        { pattern: '*://www.youtube.com/watch*', otherIdentity: 'any@test', otherPattern: '*://*/*', site: 'youtube.com' },
+        { pattern: '*://www.youtube.com/watch*', otherIdentity: 'yt@test', otherPattern: '*://WWW.youtube.com/watch*' },
+        { pattern: '*://www.youtube.com/watch*', otherIdentity: 'new@test', otherPattern: '*://*.youtube.com/*', site: 'youtube.com' },
+      ],
+    },
+    {
+      identity: 'any@test', name: 'Any', enabled: true,
+      resolverUrlConflicts: [
+        { pattern: '*://*/*', otherIdentity: 'all@test', otherPattern: '*' },
+        { pattern: '*://*/*', otherIdentity: 'bili@test', otherPattern: '*://www.bilibili.com/*', site: 'bilibili.com' },
+      ],
+    },
+    { identity: 'all@test', name: 'All', enabled: true },
+    { identity: 'bili@test', name: 'Bili', enabled: true },
+    { identity: 'new@test', name: 'New', enabled: false },
+  ] as PluginDto[]
+  const record = (site: string, identity: string, candidates: string[], automatic: boolean): PluginSiteDefaultDto => ({
+    site, identity, candidates, automatic,
+  })
+  const messages: Record<string, string> = {
+    pluginResolverConflictJoin: ', ',
+    pluginResolverConflictNoticeSites: 'S {plugins} | {sites}',
+    pluginResolverConflictNoticeAny: 'A {plugins}',
+    pluginResolverConflictNoticePending: 'P {plugins}',
+  }
+  const translate = (key: string, params?: Record<string, string | number>) =>
+    (messages[key] ?? key).replace(/\{(\w+)\}/g, (_, name: string) => String(params?.[name]))
+
+  test('groups active pairs by site and separates the rest', () => {
+    const report = conflictReport(plugins)
+    expect(report.sites.map((s) => [s.site, s.plugins])).toEqual([
+      ['bilibili.com', ['any@test', 'bili@test']],
+      ['youtube.com', ['yt@test', 'any@test']],
+    ])
+    expect(report.unscoped.map((p) => p.other)).toEqual(['all@test'])
+    expect(report.pending.map((p) => p.other)).toEqual(['new@test'])
+    expect(report.duplicates).toHaveLength(1)
+    const onlyBili = conflictReport(plugins, 'bili@test')
+    expect(onlyBili.sites).toHaveLength(1)
+    expect(onlyBili.unscoped).toEqual([])
+    expect(onlyBili.pending).toEqual([])
+  })
+
+  test('site resolved only by a confirmed record covering every plugin', () => {
+    const youtube = conflictReport(plugins).sites[1]!
+    expect(siteResolution(youtube, [])).toEqual({ kind: 'unset' })
+    expect(siteResolution(youtube, [record('youtube.com', 'yt@test', ['any@test', 'yt@test'], false)])).toEqual({ kind: 'confirmed' })
+    expect(siteResolution(youtube, [record('youtube.com', 'yt@test', ['yt@test', 'x@test'], false)])).toEqual({ kind: 'unset' })
+    expect(siteResolution(youtube, [record('youtube.com', 'any@test', ['any@test', 'yt@test'], true)])).toEqual({
+      kind: 'automatic',
+      identity: 'any@test',
+    })
+    expect(siteResolution(youtube, [record('youtube.com', 'gone@test', ['gone@test', 'yt@test'], false)])).toEqual({ kind: 'unset' })
+  })
+
+  test('notice names plugins and sites and skips confirmed sites', () => {
+    expect(conflictNotice(plugins, [], 'any@test', translate)).toBe(
+      'S Any, Bili, YouTube | bilibili.com, youtube.com\nA Any, All',
+    )
+    const confirmed = [record('bilibili.com', 'bili@test', ['any@test', 'bili@test'], false)]
+    expect(conflictNotice(plugins, confirmed, 'bili@test', translate)).toBeNull()
+    expect(conflictNotice(plugins, [], 'new@test', translate)).toBe('P YouTube, New')
   })
 })

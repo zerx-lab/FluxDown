@@ -87,7 +87,7 @@ describe('buildSeedLocalParams', () => {
 describe('分片大小选项', () => {
   test('自动 + 16 KiB … 16 MiB 的 2 的幂', () => {
     expect(SEED_PIECE_LENGTHS[0]).toBe(0)
-    expect(SEED_PIECE_LENGTHS.slice(1).map(pieceLengthLabel)).toEqual([
+    expect(SEED_PIECE_LENGTHS.slice(1).map((bytes) => pieceLengthLabel(bytes, 'iec'))).toEqual([
       '16 KiB', '32 KiB', '64 KiB', '128 KiB', '256 KiB', '512 KiB', '1 MiB', '2 MiB', '4 MiB', '8 MiB', '16 MiB',
     ])
     for (const bytes of SEED_PIECE_LENGTHS.slice(1)) expect(bytes >= 16_384 && (bytes & (bytes - 1)) === 0).toBe(true)

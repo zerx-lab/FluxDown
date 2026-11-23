@@ -40,7 +40,7 @@ fluxdown-agent  ---- HTTPS/SSE ----> FluxCloud
 ## 协议与传输
 
 - 控制面统一 JSON-RPC 2.0 语义；事件用带单调 `sequence` 的 JSON-RPC notification，断线后靠全量 snapshot 恢复。
-- Web 使用 HTTP + WebSocket；桌面初期复用同一传输，只有实测瓶颈后才增加 Windows Named Pipe / Unix Domain Socket。传输变化不得分叉方法、DTO、错误码或 UI 业务逻辑。
+- Web 使用 HTTP + WebSocket；桌面界面首选每用户 Named Pipe / Unix Domain Socket（`native/agent/src/gateway/ipc.rs`，同一 router、同一鉴权），回环 TCP 保留作回退与兼容 API。传输变化不得分叉方法、DTO、错误码或 UI 业务逻辑。
 - 二进制上传/下载、静态资源可走专用 HTTP endpoint；禁止为追求“全 JSON-RPC”把大文件普遍 Base64 化。
 - 新增 wire 类型先检查 `native/protocol` 与 `native/api/src/types.rs`，禁止创建同义 DTO；旧 API 迁移时必须一次性迁移调用方并删除旧路径。
 - daemon ↔ agent 先按 `native/protocol/src/handshake.rs` 双向挑战应答认证，再做版本与 capability 握手；新版 agent 校验服务端证明后才发客户端证明，不发送长期 token，专用 HTTP 使用会话派生凭据。daemon 保留旧 agent 静态 Bearer 校验兼容；协议不兼容必须显式失败。

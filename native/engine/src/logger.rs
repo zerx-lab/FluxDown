@@ -41,10 +41,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
 use chrono::Local;
+use fluxdown_logfile::Level;
 use thiserror::Error;
 use tracing::{Instrument, Metadata};
 use tracing_subscriber::fmt::MakeWriter;
 use uuid::Uuid;
+
+pub use fluxdown_logfile::startup;
 
 static LOGGER: OnceLock<Arc<AppLogger>> = OnceLock::new();
 static PANIC_HOOK_INSTALLED: OnceLock<()> = OnceLock::new();
@@ -106,6 +109,8 @@ struct LogState {
 
 struct AppLogger {
     log_dir: PathBuf,
+    fallback_dir: Option<PathBuf>,
+    using_fallback: AtomicBool,
     max_total_bytes: AtomicU64,
     degraded: AtomicBool,
     failure_count: AtomicU64,
@@ -121,6 +126,8 @@ impl AppLogger {
         })?;
         Ok(Self {
             log_dir,
+            fallback_dir: None,
+            using_fallback: AtomicBool::new(false),
             max_total_bytes: AtomicU64::new(DEFAULT_MAX_TOTAL_BYTES),
             degraded: AtomicBool::new(false),
             failure_count: AtomicU64::new(0),
@@ -134,35 +141,78 @@ impl AppLogger {
         })
     }
 
+    fn active_dir(&self) -> &Path {
+        if self.using_fallback.load(Ordering::Acquire)
+            && let Some(dir) = &self.fallback_dir
+        {
+            return dir;
+        }
+        &self.log_dir
+    }
+
     // ── 内部写入 ──
 
     /// 写入一行日志，自动按日期切换文件、按大小分割。`flush` 为 true 时立即刷盘。
-    fn write_impl(&self, message: &str, flush: bool) {
-        if let Err(error) = self.write_line(message, flush) {
+    fn write_impl(&self, message: &str, flush: bool, level: Option<fluxdown_logfile::Level>) {
+        if let Err(error) = self.write_line(message, flush, level) {
             self.record_failure("write", &error);
         }
     }
 
-    fn write_line(&self, message: &str, flush: bool) -> io::Result<()> {
+    fn write_line(
+        &self,
+        message: &str,
+        flush: bool,
+        level: Option<fluxdown_logfile::Level>,
+    ) -> io::Result<()> {
+        #[cfg(target_os = "android")]
+        let sanitized = sanitize_android_log(message);
+        #[cfg(target_os = "android")]
+        let message = &sanitized;
         let now = Local::now();
         let date_tag = now.format("%Y-%m-%d").to_string();
         let ts = now.format("%H:%M:%S%.3f").to_string();
-        let line = format!("{ts} {message}\n");
+        let line = match level {
+            Some(level) => format!("{ts} {} {message}\n", level.as_padded_str()),
+            None => format!("{ts} {message}\n"),
+        };
 
         let mut state = match self.state.lock() {
             Ok(state) => state,
             Err(poisoned) => poisoned.into_inner(),
         };
-        self.ensure_file(&mut state, &date_tag)?;
+        match self.append_line(&mut state, &date_tag, line.as_bytes(), flush) {
+            Err(error) if !self.using_fallback.load(Ordering::Relaxed) => {
+                let Some(dir) = &self.fallback_dir else {
+                    return Err(error);
+                };
+                self.record_failure("external write, switching to private storage", &error);
+                fs::create_dir_all(dir)?;
+                state.file = None;
+                self.using_fallback.store(true, Ordering::Release);
+                self.append_line(&mut state, &date_tag, line.as_bytes(), flush)
+            }
+            result => result,
+        }
+    }
+
+    fn append_line(
+        &self,
+        state: &mut LogState,
+        date_tag: &str,
+        line: &[u8],
+        flush: bool,
+    ) -> io::Result<()> {
+        self.ensure_file(state, date_tag)?;
         let file = state
             .file
             .as_mut()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "log file is not open"))?;
-        file.write_all(line.as_bytes())?;
+        file.write_all(line)?;
         if flush {
             file.flush()?;
         }
-        self.maybe_roll_by_size(&mut state)
+        self.maybe_roll_by_size(state)
     }
 
     fn record_failure(&self, operation: &str, error: &io::Error) {
@@ -208,14 +258,14 @@ impl AppLogger {
         } else {
             format!("fluxdown_{date_tag}.{part}.log")
         };
-        self.log_dir.join(name)
+        self.active_dir().join(name)
     }
 
     /// 找到 `date_tag` 当天已有的最大分卷序号；若该分卷已写满则返回下一个序号。
     /// 其他写入端可能已创建更高序号的分卷，通过该扫描收敛到同一文件。
     fn scan_active_part(&self, date_tag: &str) -> u32 {
         let mut max_part: Option<u32> = None;
-        if let Ok(entries) = fs::read_dir(&self.log_dir) {
+        if let Ok(entries) = fs::read_dir(self.active_dir()) {
             for entry in entries.flatten() {
                 let name = entry.file_name();
                 let name = name.to_str().unwrap_or("");
@@ -294,7 +344,7 @@ impl AppLogger {
     /// 清理超过 `max_days` 天的 `fluxdown_*.log` 文件。
     fn cleanup_old_logs(&self, max_days: u64) -> io::Result<()> {
         let cutoff = SystemTime::now() - Duration::from_secs(max_days * 86400);
-        for entry in fs::read_dir(&self.log_dir)? {
+        for entry in fs::read_dir(self.active_dir())? {
             let entry = entry?;
             let path = entry.path();
             let name = path
@@ -318,7 +368,7 @@ impl AppLogger {
         let max_total = self.max_total_bytes.load(Ordering::Relaxed);
         let mut files: Vec<(String, u32, PathBuf, u64)> = Vec::new();
         let mut total = 0_u64;
-        for entry in fs::read_dir(&self.log_dir)? {
+        for entry in fs::read_dir(self.active_dir())? {
             let entry = entry?;
             let path = entry.path();
             let name = path
@@ -378,7 +428,7 @@ impl Drop for AppLogWriter {
     fn drop(&mut self) {
         let message = String::from_utf8_lossy(&self.bytes);
         for line in message.lines().filter(|line| !line.is_empty()) {
-            self.logger.write_impl(line, self.flush);
+            self.logger.write_impl(line, self.flush, None);
         }
     }
 }
@@ -475,7 +525,7 @@ pub(crate) fn panic_hook_installed() -> bool {
 pub fn init() -> Result<(), LoggerInitError> {
     let data_dir =
         crate::data_dir::resolve_data_dir(None).map_err(LoggerInitError::ResolveDataDirectory)?;
-    init_at(data_dir.join("logs"))
+    init_with_dir(&data_dir)
 }
 
 /// 用显式数据目录初始化全局日志：日志写入 `<data_dir>/logs`。
@@ -484,43 +534,67 @@ pub fn init() -> Result<(), LoggerInitError> {
 /// 随之落到同一（可能是挂载卷的）目录，而非平台默认的 HOME 路径。Docker
 /// 部署（`FLUXDOWN_DATA_DIR=/data`）下日志因此持久化到 `/data/logs`。
 pub fn init_with_dir(data_dir: &Path) -> Result<(), LoggerInitError> {
-    init_at(data_dir.join("logs"))
+    init_at(data_dir, data_dir.join("logs"), None)
 }
 
-/// 默认日志级别决定优先级（474#1）：
-/// 1. `RUST_LOG` 环境变量——由 [`build_env_filter`] 处理，
-///    非空时始终优先于本函数返回的默认指令；
-/// 2. `FLUXDOWN_LOG_LEVEL` 环境变量（`error`/`warn`/`info`/`debug`/`trace`，
-///    大小写不敏感）——未设置 `RUST_LOG` 时的默认级别，供 headless
-///    server/CLI 无需改代码即可临时调高日志粒度排查问题；
-/// 3. 以上均未设置 → `INFO`（桌面端 UI 侧的等级选择留待后续迭代，当前只做
-///    环境变量这一层，见 474 讨论）。
-fn resolve_default_level_filter() -> tracing_subscriber::filter::LevelFilter {
-    parse_level_filter(std::env::var("FLUXDOWN_LOG_LEVEL").ok().as_deref())
-}
-
-/// [`resolve_default_level_filter`] 的纯实现，值显式传入以便测试
-/// （不依赖/不修改进程级 `std::env` 状态）。
-fn parse_level_filter(value: Option<&str>) -> tracing_subscriber::filter::LevelFilter {
-    use tracing_subscriber::filter::LevelFilter;
-    let Some(raw) = value else {
-        return LevelFilter::INFO;
-    };
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "error" => LevelFilter::ERROR,
-        "warn" => LevelFilter::WARN,
-        "info" => LevelFilter::INFO,
-        "debug" => LevelFilter::DEBUG,
-        "trace" => LevelFilter::TRACE,
-        other => {
-            if !other.is_empty() {
-                eprintln!(
-                    "[logger] 忽略未知 FLUXDOWN_LOG_LEVEL='{other}'（合法值：error/warn/info/debug/trace），回退 info"
-                );
-            }
-            LevelFilter::INFO
+/// Initialize Android logs at the host's external path, falling back to private storage.
+#[cfg(target_os = "android")]
+pub fn init_android(data_dir: &Path, preferred: Option<&Path>) -> Result<(), LoggerInitError> {
+    let private = data_dir.join("diagnostic-logs/engine");
+    if let Some(dir) = preferred {
+        match init_at(data_dir, dir.to_path_buf(), Some(private.clone())) {
+            Ok(()) => return Ok(()),
+            Err(error) => tracing::warn!(%error, "external engine log initialization failed"),
         }
     }
+    init_at(data_dir, private, None)
+}
+
+fn startup_filter(data_dir: &Path) -> (tracing_subscriber::EnvFilter, &'static str) {
+    use tracing_subscriber::filter::LevelFilter;
+
+    if let Ok(rust_log) = std::env::var("RUST_LOG")
+        && !rust_log.trim().is_empty()
+    {
+        match tracing_subscriber::EnvFilter::builder()
+            .with_default_directive(LevelFilter::INFO.into())
+            .parse(rust_log.trim())
+        {
+            Ok(filter) => return (filter, "RUST_LOG directives"),
+            Err(_) => eprintln!("invalid RUST_LOG; using FluxDown log level"),
+        }
+    }
+
+    let persisted = startup::read_level(data_dir).unwrap_or_else(|error| {
+        eprintln!(
+            "[logger] failed to read {}: {error}",
+            data_dir.join(startup::FILE_NAME).display()
+        );
+        None
+    });
+    let env_level = std::env::var("FLUXDOWN_LOG_LEVEL").ok();
+    let automatic = env_level.as_deref().and_then(Level::parse).is_none() && persisted.is_none();
+    let level = match startup::resolve_level_from(env_level.as_deref(), persisted) {
+        Level::Error => LevelFilter::ERROR,
+        Level::Warn => LevelFilter::WARN,
+        Level::Info => LevelFilter::INFO,
+        Level::Debug => LevelFilter::DEBUG,
+        Level::Trace => LevelFilter::TRACE,
+    };
+    let filter = build_env_filter(None, level);
+    let filter = if automatic && level == LevelFilter::DEBUG {
+        add_noisy_target_suppression(filter)
+    } else {
+        filter
+    };
+    let source = if automatic {
+        "build default"
+    } else if env_level.as_deref().and_then(Level::parse).is_some() {
+        "FLUXDOWN_LOG_LEVEL"
+    } else {
+        "logging.conf"
+    };
+    (filter, source)
 }
 
 /// librqbit 按单个 peer / 单次 announce 打 INFO/WARN（MSE 握手成败、tracker
@@ -550,24 +624,37 @@ fn build_env_filter(
     if let Some(directives) = rust_log.filter(|value| !value.trim().is_empty()) {
         return builder.parse_lossy(directives);
     }
-    let mut filter = builder.parse_lossy("");
+    let filter = builder.parse_lossy("");
     if level == LevelFilter::INFO || level == LevelFilter::WARN {
-        for directive in NOISY_TARGET_DIRECTIVES {
-            if let Ok(directive) = directive.parse() {
-                filter = filter.add_directive(directive);
-            }
+        add_noisy_target_suppression(filter)
+    } else {
+        filter
+    }
+}
+
+fn add_noisy_target_suppression(
+    mut filter: tracing_subscriber::EnvFilter,
+) -> tracing_subscriber::EnvFilter {
+    for directive in NOISY_TARGET_DIRECTIVES {
+        if let Ok(directive) = directive.parse() {
+            filter = filter.add_directive(directive);
         }
     }
     filter
 }
 
-fn init_at(log_dir: PathBuf) -> Result<(), LoggerInitError> {
+fn init_at(
+    data_dir: &Path,
+    log_dir: PathBuf,
+    fallback_dir: Option<PathBuf>,
+) -> Result<(), LoggerInitError> {
     if let Some(existing) = LOGGER.get() {
-        existing.write_impl("[logger] init skipped (already initialized)", false);
+        existing.write_impl("[logger] init skipped (already initialized)", false, None);
         return Ok(());
     }
-
-    let logger = Arc::new(AppLogger::new(log_dir.clone())?);
+    let mut logger = AppLogger::new(log_dir.clone())?;
+    logger.fallback_dir = fallback_dir;
+    let logger = Arc::new(logger);
     logger
         .write_session_header()
         .map_err(|source| LoggerInitError::InitializeFile {
@@ -587,9 +674,11 @@ fn init_at(log_dir: PathBuf) -> Result<(), LoggerInitError> {
         }
     }
 
-    let filter = build_env_filter(
-        std::env::var("RUST_LOG").ok().as_deref(),
-        resolve_default_level_filter(),
+    let (filter, source) = startup_filter(data_dir);
+    logger.write_impl(
+        &format!("[logger] diagnostic filter source: {source}"),
+        false,
+        None,
     );
     use tracing_subscriber::Layer as _;
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -613,6 +702,7 @@ fn init_at(log_dir: PathBuf) -> Result<(), LoggerInitError> {
             logger.write_impl(
                 "[logger] tracing subscriber already installed; reused existing",
                 false,
+                None,
             );
             return Ok(());
         }
@@ -622,6 +712,7 @@ fn init_at(log_dir: PathBuf) -> Result<(), LoggerInitError> {
         logger.write_impl(
             &format!("[logger] failed to install tracing subscriber: {error}"),
             true,
+            None,
         );
         return Err(LoggerInitError::InstallSubscriber(error));
     }
@@ -671,13 +762,26 @@ pub fn health() -> LoggerHealth {
 /// 直接写入一条普通日志。新代码优先使用 [`log_info!`] 或 `tracing`。
 pub fn write(message: &str) {
     if let Some(logger) = LOGGER.get() {
-        logger.write_impl(message, false);
+        logger.write_impl(message, false, None);
     } else {
         eprintln!(
             "{} [logger-uninitialized] {message}",
             Local::now().format("%H:%M:%S%.3f")
         );
     }
+}
+
+/// Accept a formatted tracing event from the embedded Android subscriber.
+#[cfg(target_os = "android")]
+pub fn write_embedded_event(level: fluxdown_logfile::Level, message: &str) -> bool {
+    let Some(logger) = LOGGER.get() else {
+        return false;
+    };
+    let flush = level == fluxdown_logfile::Level::Error;
+    for line in message.lines().filter(|line| !line.is_empty()) {
+        logger.write_impl(line, flush, Some(level));
+    }
+    true
 }
 
 #[doc(hidden)]
@@ -779,8 +883,14 @@ pub struct LogFileMeta {
 pub fn log_dir() -> PathBuf {
     LOGGER
         .get()
-        .map(|l| l.log_dir.clone())
+        .map(|l| l.active_dir().to_path_buf())
         .unwrap_or_else(resolve_log_dir)
+}
+
+/// Android publisher must not read the legacy/default directory before initialization.
+#[cfg(target_os = "android")]
+pub fn active_android_log_dir() -> Option<&'static Path> {
+    LOGGER.get().map(|logger| logger.active_dir())
 }
 
 /// 列举日志目录下全部日志文件，按文件名升序（即日期 + 分卷序）。
@@ -822,11 +932,22 @@ static SANITIZE_RULES: std::sync::LazyLock<Vec<(regex::Regex, &'static str)>> =
 
 /// 对日志文本脱敏（URL userinfo、令牌路径/query、Cookie、Authorization、用户目录）。
 pub fn sanitize_log_str(text: &str) -> String {
-    let mut content = text.to_owned();
+    let mut content = std::borrow::Cow::Borrowed(text);
     for (regex, replacement) in SANITIZE_RULES.iter() {
-        content = regex.replace_all(&content, *replacement).into_owned();
+        if let std::borrow::Cow::Owned(next) = regex.replace_all(&content, *replacement) {
+            content = std::borrow::Cow::Owned(next);
+        }
     }
-    content
+    content.into_owned()
+}
+
+#[cfg(any(target_os = "android", test))]
+fn sanitize_android_log(text: &str) -> String {
+    static URL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(fluxdown_logfile::ANDROID_DISK_URL_PATTERN)
+            .unwrap_or_else(|error| panic!("invalid Android URL redaction regex: {error}"))
+    });
+    sanitize_log_str(&URL.replace_all(text, "[URL_REDACTED]"))
 }
 
 /// [`sanitize_log_str`] 的字节版本（非 UTF-8 按 lossy 处理），供导出日志复用。
@@ -939,7 +1060,33 @@ mod tests {
 
     use thiserror::Error;
 
-    use super::sanitize_log_str;
+    use super::{sanitize_android_log, sanitize_log_str};
+
+    #[test]
+    fn android_disk_log_drops_sensitive_urls() {
+        for url in [
+            "https://example.invalid/o'brien/media.m3u8?md5=AAAAAAAAAAAAAAAAAAAAAA&expires=1800000000",
+            "ftp://example.invalid/o'brien/private-ticket",
+            "wss://example.invalid:8080/private-room",
+            "magnet:?xt=urn:btih:private-hash&dn=private-name",
+            "ED2K://|file|Private File.iso|1024|0123456789abcdef0123456789abcdef|/",
+        ] {
+            assert_eq!(
+                sanitize_android_log(&format!("start {url}")),
+                "start [URL_REDACTED]"
+            );
+        }
+    }
+
+    #[test]
+    fn android_disk_log_drops_all_set_cookie_attributes() {
+        assert_eq!(
+            sanitize_android_log(
+                "Set-Cookie: session=secret; Path=/private; HttpOnly; Secure\nnext"
+            ),
+            "Set-Cookie: [REDACTED]\nnext"
+        );
+    }
 
     #[test]
     fn sanitize_redacts_bot_token_and_secret_query_params() {
@@ -957,8 +1104,7 @@ mod tests {
     #[cfg_attr(not(feature = "bt"), allow(unused_imports))]
     use super::{
         AppLogWriterFactory, AppLogger, LoggerInitError, build_env_filter, format_error_chain,
-        install_panic_hook, list_log_files_in, parse_level_filter, parse_log_name, report_error,
-        spawn_logged,
+        install_panic_hook, list_log_files_in, parse_log_name, report_error, spawn_logged,
     };
 
     fn temp_dir(tag: &str) -> std::path::PathBuf {
@@ -971,23 +1117,52 @@ mod tests {
         dir
     }
 
-    // 474#1：FLUXDOWN_LOG_LEVEL 决定未设置 RUST_LOG 时的默认级别。
     #[test]
-    fn parse_level_filter_recognizes_all_levels() {
-        use tracing_subscriber::filter::LevelFilter;
-        assert_eq!(parse_level_filter(Some("error")), LevelFilter::ERROR);
-        assert_eq!(parse_level_filter(Some("WARN")), LevelFilter::WARN);
-        assert_eq!(parse_level_filter(Some(" info ")), LevelFilter::INFO);
-        assert_eq!(parse_level_filter(Some("Debug")), LevelFilter::DEBUG);
-        assert_eq!(parse_level_filter(Some("trace")), LevelFilter::TRACE);
+    fn external_write_failure_switches_engine_to_private_logs() -> std::io::Result<()> {
+        let dir = temp_dir("fallback");
+        let private = dir.join("private");
+        let result = (|| {
+            let mut logger = AppLogger::new(dir.join("external")).map_err(std::io::Error::other)?;
+            logger.fallback_dir = Some(private.clone());
+            logger.write_session_header()?;
+            {
+                let mut state = logger
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let path = logger.file_path(&state.date_tag, state.part);
+                state.file = Some(std::fs::File::open(path)?);
+            }
+            logger.write_line("crash diagnostic", true, None)?;
+            let state = logger
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let path = logger.file_path(&state.date_tag, state.part);
+            Ok::<_, std::io::Error>((path.clone(), std::fs::read_to_string(path)?))
+        })();
+        std::fs::remove_dir_all(&dir)?;
+        let (path, text) = result?;
+        assert_eq!(path.parent(), Some(private.as_path()));
+        assert!(text.contains("crash diagnostic"), "{text}");
+        Ok(())
     }
 
     #[test]
-    fn parse_level_filter_falls_back_to_info_when_unset_or_invalid() {
+    fn explicit_filter_retains_target_directives() {
+        use tracing::Level;
         use tracing_subscriber::filter::LevelFilter;
-        assert_eq!(parse_level_filter(None), LevelFilter::INFO);
-        assert_eq!(parse_level_filter(Some("")), LevelFilter::INFO);
-        assert_eq!(parse_level_filter(Some("verbose")), LevelFilter::INFO);
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let filter = build_env_filter(
+            Some("error,fluxdown_engine::logger=debug"),
+            LevelFilter::WARN,
+        );
+        let subscriber = tracing_subscriber::registry().with(filter);
+        tracing::subscriber::with_default(subscriber, || {
+            assert!(tracing::event_enabled!(target: "fluxdown_engine::logger", Level::DEBUG));
+            assert!(!tracing::event_enabled!(target: "other", Level::WARN));
+        });
     }
 
     #[cfg(feature = "bt")]
@@ -1273,7 +1448,7 @@ mod tests {
     fn persistent_write_failure_sets_degraded_health() {
         let dir = temp_dir("degraded");
         let logger = AppLogger::new(dir.clone()).unwrap();
-        logger.write_impl("first", true);
+        logger.write_impl("first", true, None);
         {
             let mut state = logger.state.lock().unwrap();
             state.file = None;
@@ -1281,7 +1456,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
         std::fs::write(&dir, b"not a directory").unwrap();
 
-        logger.write_impl("second", true);
+        logger.write_impl("second", true, None);
 
         assert!(logger.degraded.load(std::sync::atomic::Ordering::Acquire));
         assert_eq!(

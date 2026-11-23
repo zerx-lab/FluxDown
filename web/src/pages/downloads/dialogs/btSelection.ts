@@ -1,3 +1,20 @@
+import type { CustomCategoryDto } from '../../../lib/rpc'
+import { BUILTIN_OTHER_ID, CategoryIndex } from '../model/categories'
+
+export function btCategoryClassifier(rules: readonly CustomCategoryDto[]) {
+  const other = rules.find((rule) => rule.builtinType === 'other')?.id ?? BUILTIN_OTHER_ID
+  const index = new CategoryIndex(rules)
+  return (path: string): string => {
+    const name = path.slice(Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1)
+    return index.categoryOfFileName(name) ?? other
+  }
+}
+
+export function btFileMatches(name: string, size: number, category: string, query: string, minSize: number, categories: ReadonlySet<string>): boolean {
+  return (!minSize || size >= minSize) && (!categories.size || categories.has(category)) &&
+    (!query || name.toLowerCase().includes(query))
+}
+
 // BT 文件选择窗的输入规则（与 GPUI `pages/selection.rs` 对齐）。
 // 保存目录：预填是任务当前目录；只有修剪后非空且不同于预填才下发，引擎据此改目录后重开。
 // 空输入在预填非空时禁止确认（不能把已有目录清成空）。

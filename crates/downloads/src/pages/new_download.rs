@@ -5,11 +5,14 @@
 //! 未确认的捕获在窗口关闭时一并忽略。
 
 mod category;
+mod duplicate;
 mod hints;
 mod preview;
 mod probe;
 mod url_rule;
 
+use duplicate::DuplicateHint;
+use fluxdown_ui_components::toast;
 use hints::HintAutofill;
 use probe::LinkProbe;
 
@@ -21,8 +24,12 @@ use std::{
     time::Duration,
 };
 
+use super::download_name::DownloadName;
 use crate::{
-    components::threads_risk::threads_risk_callout,
+    components::{
+        selection_bar::{batch_link_info_text, save_task_info},
+        threads_risk::threads_risk_callout,
+    },
     controller::{
         CATEGORY_SAVE_DIR_HISTORY_PREF, DownloadsCommand, DownloadsPort, DownloadsResult,
         LAST_CATEGORY_MODE_PREF, LAST_DOWNLOAD_TARGET_PREF, LAST_SAVE_DIR_PREF,
@@ -35,10 +42,11 @@ use crate::{
         dispatch::{RemoteDirCheck, check_remote_save_dir},
         new_download::{
             BuiltRequests, DEFAULT_HASH_ALGORITHM, DraftOptions, HASH_ALGORITHMS, MAX_THREADS,
-            ProxyChoice, THREAD_PRESETS, ThreadChoice, UA_PRESET_CUSTOM, UA_PRESET_DEFAULT,
-            UA_PRESETS, UrlEntry, append_entries, build_requests, capture_entry, captured_referrer,
-            checksum_spec, compose_request, custom_segments, detect_ua_preset, manual_proxy_url,
-            parse_entries, parse_input, ua_preset_keys, ua_preset_value,
+            ProxyChoice, SubfolderError, THREAD_PRESETS, ThreadChoice, UA_PRESET_CUSTOM,
+            UA_PRESET_DEFAULT, UA_PRESETS, UrlEntry, append_entries, build_requests, capture_entry,
+            captured_referrer, check_subfolder, checksum_spec, compose_request, custom_segments,
+            detect_ua_preset, manual_proxy_url, parse_entries, parse_input, suggested_subfolder,
+            ua_preset_keys, ua_preset_value,
         },
         save_dir_category::{
             CategoryMode, NewDownloadCategory, category_mode_preference, category_options,
@@ -58,8 +66,8 @@ use fluxdown_protocol::{
     AgentSnapshot, CloudDevice, LinkDeviceInfo, PendingCaptureDto, QueueDto, SiteAuthCredentialDto,
 };
 use fluxdown_ui_components::{
-    ControlExt as _, FluxIcon, IconControlExt as _, field_error, field_hint, field_label, form,
-    form_field, form_gap, form_row, input_with_action, option_group, option_row,
+    ControlExt as _, FluxIcon, IconControlExt as _, check_row, field_error, field_hint,
+    field_label, form, form_field, form_gap, form_row, input_with_action, option_group, option_row,
 };
 use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_theme::active_theme;
@@ -75,7 +83,6 @@ use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState, Textarea, TextareaState},
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
-    notification::Notification,
     scroll::ScrollableElement as _,
     switch::Switch,
     v_flex,
@@ -190,13 +197,14 @@ pub(crate) fn build_new_download_context(
         .get(LAST_SAVE_DIR_PREF)
         .and_then(serde_json::Value::as_str)
         .unwrap_or("");
+    let default_save_dir = match config_str("default_save_dir") {
+        "" => runtime_save_dir,
+        configured => configured,
+    };
     let save_dir = if remember && !last_save_dir.is_empty() {
         last_save_dir
     } else {
-        match config_str("default_save_dir") {
-            "" => runtime_save_dir,
-            configured => configured,
-        }
+        default_save_dir
     };
     let queue_id = selected_queue.unwrap_or_else(|| match config_str("default_queue_id") {
         "" => fluxdown_protocol::MAIN_QUEUE_ID,
@@ -326,9 +334,12 @@ pub struct NewDownloadView {
     /// 尚未确认 / 忽略的外部捕获；按 URL 与链接行对应。
     captures: Vec<PendingCaptureDto>,
     save_dir: Entity<InputState>,
+    use_subfolder: bool,
+    checking_subfolder: bool,
     threads: ThreadChoice,
     custom_threads: Entity<InputState>,
     rename: Entity<InputState>,
+    download_name: DownloadName,
     advanced_open: bool,
     http_user: Entity<InputState>,
     http_password: Entity<InputState>,
@@ -337,6 +348,7 @@ pub struct NewDownloadView {
     hint_fill: HintAutofill,
     /// 链接预探测（#402）：文件名 / 大小提示，并把探测名预填进「文件名」输入框供编辑。
     probe: LinkProbe,
+    duplicate_hint: DuplicateHint,
     proxy_choice: ProxyChoice,
     custom_proxy: Entity<InputState>,
     ignore_tls_errors: bool,
@@ -375,6 +387,8 @@ pub struct NewDownloadView {
     category_predicted: Option<String>,
 }
 
+type DuplicateScope = fn(&App) -> Option<(&[fluxdown_protocol::TaskDto], &str)>;
+
 impl NewDownloadView {
     /// 创建表单并聚焦链接输入框。`port` 用于站点凭据匹配。
     pub fn new(
@@ -382,6 +396,7 @@ impl NewDownloadView {
         context: NewDownloadContext,
         port: Arc<dyn DownloadsPort>,
         on_submit: NewDownloadSubmit,
+        duplicate_scope: DuplicateScope,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -441,6 +456,7 @@ impl NewDownloadView {
         let mut this = Self {
             threads: ThreadChoice::from_segments(context.segments),
             rename,
+            download_name: DownloadName::default(),
             http_user: Self::input(strings.http_auth_user.clone(), window, cx),
             referrer: Self::input(strings.referrer_placeholder.clone(), window, cx),
             referrer_filled: None,
@@ -449,6 +465,7 @@ impl NewDownloadView {
             user_agent: Self::input(strings.user_agent_desc.clone(), window, cx),
             checksum: Self::input(strings.checksum_placeholder.clone(), window, cx),
             probe: LinkProbe::new(strings.rename_placeholder.clone()),
+            duplicate_hint: DuplicateHint::new(duplicate_scope),
             strings,
             translator: translator.clone(),
             preview_gate: crate::model::preview::PreviewGate::default(),
@@ -461,6 +478,8 @@ impl NewDownloadView {
             entries: Vec::new(),
             captures: Vec::new(),
             save_dir,
+            use_subfolder: false,
+            checking_subfolder: false,
             custom_threads,
             advanced_open: false,
             http_password,
@@ -552,9 +571,11 @@ impl NewDownloadView {
         cx.subscribe_in(
             &self.save_dir,
             window,
-            |this, _, event: &InputEvent, _, _| {
+            |this, _, event: &InputEvent, _, cx| {
                 if let InputEvent::Change = event {
                     this.category_dir_manually_edited = true;
+                    this.use_subfolder = false;
+                    cx.notify();
                 }
             },
         )
@@ -566,6 +587,7 @@ impl NewDownloadView {
             |this, _, event: &InputEvent, window, cx| {
                 if let InputEvent::Change = event {
                     this.sync_category(window, cx);
+                    this.sync_duplicate_hint(window, cx);
                 }
             },
         )
@@ -915,6 +937,7 @@ impl NewDownloadView {
 
     fn can_submit(&self, cx: &App) -> bool {
         if self.picking
+            || self.checking_subfolder
             || self.preview_gate.is_active()
             || self.manifest.is_some()
             || self.entries.is_empty()
@@ -956,6 +979,7 @@ impl NewDownloadView {
         }
         self.target = target;
         self.refresh_remote_placeholder(window, cx);
+        self.sync_duplicate_hint(window, cx);
         cx.notify();
     }
 
@@ -982,6 +1006,7 @@ impl NewDownloadView {
         self.context.targets = targets;
         if self.target != DispatchTarget::Local && self.target_entry().is_none() {
             self.target = DispatchTarget::Local;
+            self.sync_duplicate_hint(window, cx);
         }
         self.refresh_remote_placeholder(window, cx);
         cx.notify();
@@ -1227,6 +1252,95 @@ impl NewDownloadView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let target = self
+            .use_subfolder
+            .then(|| self.subfolder_target(cx))
+            .flatten()
+            .filter(|_| self.save_dir.read(cx).value().trim() == built.common.save_dir);
+        let Some(target) = target else {
+            self.dispatch_requests(built, None, window, cx);
+            return;
+        };
+        self.checking_subfolder = true;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let path = std::path::PathBuf::from(&target);
+            let result = cx
+                .background_executor()
+                .spawn(async move { check_subfolder(&path) })
+                .await;
+            let Ok(()) = this.update_in(cx, |this, window, cx| {
+                this.finish_subfolder_check(built, target, result, window, cx);
+            }) else {
+                // The window was closed during the filesystem check.
+                return;
+            };
+        })
+        .detach();
+    }
+
+    fn finish_subfolder_check(
+        &mut self,
+        mut built: BuiltRequests,
+        target: String,
+        result: Result<(), SubfolderError>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.checking_subfolder = false;
+        cx.notify();
+        let same_item =
+            self.entries
+                .first()
+                .zip(built.items.first())
+                .is_some_and(|(entry, item)| {
+                    let rename = self.rename_value(cx);
+                    let name = if rename.is_empty() {
+                        entry.file_name.as_str()
+                    } else {
+                        rename.as_str()
+                    };
+                    entry.url == item.url && item.file_name == name
+                });
+        if !self.can_submit(cx)
+            || !same_item
+            || !self.use_subfolder
+            || self.save_dir.read(cx).value().trim() != built.common.save_dir
+            || self.subfolder_target(cx).as_deref() != Some(&target)
+        {
+            let message = self
+                .translator
+                .read(cx)
+                .text("downloadSubfolderFormChanged");
+            window.push_notification(toast::warning(message.to_owned()), cx);
+            return;
+        }
+        if let Err(error) = result {
+            let translator = self.translator.read(cx);
+            let message = match error {
+                SubfolderError::Occupied => translator.text("downloadSubfolderOccupied").to_owned(),
+                SubfolderError::BrokenLink => {
+                    translator.text("downloadSubfolderBrokenLink").to_owned()
+                }
+                SubfolderError::Io(error) => translator.text_with(
+                    "downloadSubfolderUnavailable",
+                    &[("error", &error.to_string())],
+                ),
+            };
+            window.push_notification(toast::error(SharedString::from(message)), cx);
+            return;
+        }
+        let base = std::mem::replace(&mut built.common.save_dir, target);
+        self.dispatch_requests(built, Some(base), window, cx);
+    }
+
+    fn dispatch_requests(
+        &mut self,
+        built: BuiltRequests,
+        subfolder_base: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let BuiltRequests { common, items } = built;
         let mut tasks = Vec::with_capacity(items.len());
         let mut captures = Vec::new();
@@ -1243,19 +1357,20 @@ impl NewDownloadView {
                 None => tasks.push(item),
             }
         }
-        self.record_save_dir_history(&common.save_dir, cx);
+        self.record_save_dir_history(subfolder_base.as_deref().unwrap_or(&common.save_dir), cx);
         let offered_save_dir = self.context.save_dir.clone();
         (self.on_submit)(
             NewDownloadSubmission::Tasks {
                 common: Box::new(common),
                 items: tasks,
                 captures,
-                // 自动模式且目录框未被手改才按分类路由；用户改过的目录原样使用。
+                // A derived subfolder is the final directory, not a new category route root.
                 category_route: self
                     .context
                     .category_route
                     .clone()
-                    .filter(|_| self.routes_by_category(cx)),
+                    .filter(|_| subfolder_base.is_none() && self.routes_by_category(cx)),
+                subfolder_base,
                 last_category_mode: category_mode_preference(&self.category_mode),
                 offered_save_dir,
             },
@@ -1359,7 +1474,7 @@ impl NewDownloadView {
                 }
                 if imported.is_empty() {
                     window.push_notification(
-                        Notification::warning(this.strings.import_txt_none.clone()),
+                        toast::warning(this.strings.import_txt_none.clone()),
                         cx,
                     );
                     return;
@@ -1369,10 +1484,8 @@ impl NewDownloadView {
                 this.urls
                     .update(cx, |input, cx| input.set_value(merged, window, cx));
                 this.refresh_entries(window, cx);
-                window.push_notification(
-                    Notification::success(this.strings.format_import_found(count)),
-                    cx,
-                );
+                window
+                    .push_notification(toast::success(this.strings.format_import_found(count)), cx);
             }) else {
                 // 表单或窗口已释放，不再回写异步结果。
                 return;
@@ -1741,6 +1854,7 @@ impl NewDownloadView {
                 this.child(field_error(self.strings.no_valid_url.clone(), cx))
             })
             .children(self.render_probe_status(cx))
+            .children(self.render_duplicate_hint(cx))
             .when(!self.captures.is_empty() && !self.is_remote(), |this| {
                 this.child(field_hint(self.strings.capture_context_hint.clone(), cx))
             })
@@ -1824,6 +1938,25 @@ impl NewDownloadView {
         ))
     }
 
+    fn subfolder_target(&self, cx: &App) -> Option<String> {
+        let [entry] = self.entries.as_slice() else {
+            return None;
+        };
+        if self.is_remote() || !self.save_dir_untouched(cx) {
+            return None;
+        }
+        let rename = self.rename_value(cx);
+        suggested_subfolder(
+            &self.save_dir.read(cx).value(),
+            &entry.url,
+            if rename.is_empty() {
+                &entry.file_name
+            } else {
+                &rename
+            },
+        )
+    }
+
     fn render_save_dir(&self, cx: &mut Context<Self>) -> Div {
         if let Some(entry) = self.target_entry() {
             let invalid = self.remote_dir_check(entry, cx) == RemoteDirCheck::Invalid;
@@ -1867,6 +2000,25 @@ impl NewDownloadView {
             None,
             cx,
         )
+        .when_some(self.subfolder_target(cx), |field, dir| {
+            let title = self
+                .translator
+                .read(cx)
+                .text("useSuggestedSubfolder")
+                .to_owned();
+            field
+                .child(self.toggle(
+                    "new-download-use-suggested-subfolder",
+                    title.into(),
+                    None,
+                    self.use_subfolder,
+                    |this, enabled| this.use_subfolder = enabled,
+                    cx,
+                ))
+                .when(self.use_subfolder, |field| {
+                    field.child(field_hint(dir, cx).min_w_0().text_ellipsis_middle())
+                })
+        })
     }
 
     /// 下拉候选（偏好关闭时为空）：先列当前分类记住的目录，再列全局历史，排除当前输入。
@@ -2033,9 +2185,34 @@ impl NewDownloadView {
         if self.is_batch() {
             return None;
         }
+        let this = cx.weak_entity();
+        let auto = check_row(
+            "new-download-auto-name",
+            self.download_name.is_auto(),
+            self.strings.name_auto.clone(),
+            move |checked, window, cx| {
+                let Ok(()) = this.update(cx, |this, cx| {
+                    this.set_auto_name(checked, window, cx);
+                }) else {
+                    return;
+                };
+            },
+            cx,
+        )
+        .flex_none();
         Some(form_field(
             self.strings.rename.clone(),
-            Input::new(&self.rename).control(cx).w_full(),
+            h_flex()
+                .w_full()
+                .gap(active_theme(cx).tokens().spacing.sm)
+                .child(
+                    Input::new(&self.rename)
+                        .control(cx)
+                        .flex_1()
+                        .min_w_0()
+                        .disabled(self.download_name.is_auto()),
+                )
+                .child(auto),
             None,
             cx,
         ))
@@ -2422,6 +2599,27 @@ impl NewDownloadView {
             .bg(theme.extended().colors.chrome)
             .border_t(theme.extended().stroke.thin)
             .border_color(theme.extended().colors.hairline)
+            .when(self.entries.len() > 1, |footer| {
+                footer.child(
+                    Button::new("new-download-export-info")
+                        .outline()
+                        .label(
+                            self.translator
+                                .read(cx)
+                                .text("exportTaskInfoTxt")
+                                .to_owned(),
+                        )
+                        .control(cx)
+                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                            let failed = this
+                                .translator
+                                .read(cx)
+                                .text("taskInfoExportFailed")
+                                .to_owned();
+                            save_task_info(batch_link_info_text(&this.entries), failed, window, cx);
+                        })),
+                )
+            })
             .child(
                 Button::new("new-download-cancel")
                     .outline()

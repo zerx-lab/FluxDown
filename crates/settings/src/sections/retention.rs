@@ -1,6 +1,6 @@
-//! 已完成记录保留天数：预设下拉（从不 / 1 / 7 / 30 天）+ 「自定义」数字输入（天）。
+//! 已完成记录保留：预设下拉（从不 / 立即 / 1 / 7 / 30 天）+ 「自定义」数字输入（天）。
 //!
-//! 落库值是天数，0 = 从不。「自定义」是纯展示模式：值恰好等于某个预设时，
+//! 落库值是天数，`-1` = 立即，`0` = 从不。「自定义」是纯展示模式：值恰好等于某个预设时，
 //! 仍用会话内标记保持在自定义态，避免输入 `3` → `30` 的中途下拉与输入框突然切换。
 
 use std::rc::Rc;
@@ -19,8 +19,9 @@ use crate::ui::{
 const KEY: &str = "completed_record_retention_days";
 /// 会话内「处于自定义模式」标记（transient，不落库）。
 const CUSTOM_MODE_KEY: &str = "completed_record_retention_custom";
-/// 预设天数（0 = 从不），与下拉项一一对应。
-const PRESETS: [i64; 4] = [0, 1, 7, 30];
+/// 预设（0 = 从不，-1 = 立即），与下拉项一一对应。默认「从不」在首位，
+/// 会清掉现有记录的「立即」不放第一项，免得误触。
+const PRESETS: [i64; 5] = [0, -1, 1, 7, 30];
 /// 切到「自定义」且没有可复用的自定义值时的起始天数（刻意不等于任何预设）。
 const CUSTOM_START_DAYS: i64 = 14;
 const CUSTOM_ID: &str = "custom";
@@ -53,6 +54,7 @@ pub(super) fn control(ctx: &SectionContext) -> Control {
     };
     let options = vec![
         (SharedString::from("0"), ctx.t("retentionNever")),
+        (SharedString::from("-1"), ctx.t("retentionImmediate")),
         (SharedString::from("1"), ctx.t("retentionDay1")),
         (SharedString::from("7"), ctx.t("retentionDay7")),
         (SharedString::from("30"), ctx.t("retentionDay30")),

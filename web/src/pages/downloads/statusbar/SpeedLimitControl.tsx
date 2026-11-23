@@ -2,6 +2,7 @@ import { Check } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useState } from 'react'
 import { useT } from '../../../i18n'
+import { byteUnit, useFileSizeUnits } from '../../../lib/fileSizeUnits'
 import { cn } from '../../../lib/cn'
 import { rpc, useConfigValue, usePreferences } from '../../../lib/rpc'
 import { toastRpcError } from '../../../lib/rpcToast'
@@ -32,6 +33,7 @@ export function SpeedLimitControl({
   titleKey: 'speedLimitTitle' | 'uploadLimit'
   configKey: 'speed_limit_bytes' | 'upload_limit_bytes'
 } & WidgetProps) {
+  const units = useFileSizeUnits()
   const t = useT()
   const disabled = !useDaemonReady()
   const raw = useConfigValue(configKey)
@@ -42,12 +44,12 @@ export function SpeedLimitControl({
   const recent = readSpeedLimitRecent(usePreferences()[recentPref])
   const title = t(titleKey)
   const off = t('statusSpeedLimitOff')
-  const label = value <= 0 ? off : `${formatBytes(value)}/s`
+  const label = value <= 0 ? off : `${formatBytes(value, units)}/s`
   const presetHit = value <= 0 || SPEED_PRESETS_MB.some((mb) => mbToBytes(mb) === value)
   const recentHit = recent.some((kbps) => kbToBytes(kbps) === value)
   // 自定义输入框默认回显当前自定义值（KB/s）；用户编辑后以草稿为准。
   const custom = draft ?? (presetHit ? '' : String(Math.max(1, Math.round(value / 1024))))
-  const customLabel = presetHit ? t('speedLimitCustom') : t('speedLimitCustomWithValue', { value: `${formatBytes(value)}/s` })
+  const customLabel = presetHit ? t('speedLimitCustom') : t('speedLimitCustomWithValue', { value: `${formatBytes(value, units)}/s` })
   const desc = t(configKey === 'upload_limit_bytes' ? 'uploadLimitDesc' : 'speedLimitDesc')
 
   const row = (key: string, text: string, checked: boolean, bytes: number, close: () => void, recordKbps?: number) => (
@@ -116,8 +118,8 @@ export function SpeedLimitControl({
       {(close) => (
         <div className="flex min-w-56 flex-col p-1">
           {row('off', off, value <= 0, 0, close)}
-          {SPEED_PRESETS_MB.map((mb) => row(String(mb), `${mb} MB/s`, mbToBytes(mb) === value, mbToBytes(mb), close))}
-          {recent.map((kbps) => row(`recent-${kbps}`, `${formatBytes(kbToBytes(kbps))}/s`, kbToBytes(kbps) === value, kbToBytes(kbps), close, kbps))}
+          {SPEED_PRESETS_MB.map((mb) => row(String(mb), `${mb} ${byteUnit(2, units)}/s`, mbToBytes(mb) === value, mbToBytes(mb), close))}
+          {recent.map((kbps) => row(`recent-${kbps}`, `${formatBytes(kbToBytes(kbps), units)}/s`, kbToBytes(kbps) === value, kbToBytes(kbps), close, kbps))}
           <div className="my-1 h-px bg-hairline" />
           <div className="flex flex-col gap-1.5 px-2 py-1">
             <span className="flex items-center gap-2 text-sm">
@@ -138,7 +140,7 @@ export function SpeedLimitControl({
                 disabled={disabled}
                 className="flex-1"
               />
-              <span className="text-xs text-muted-foreground">{t('statusSpeedLimitKbs')}</span>
+              <span className="text-xs text-muted-foreground">{byteUnit(1, units)}/s</span>
               <Button variant="primary" disabled={disabled || custom.trim() === ''} onClick={() => apply(close)}>
                 {t('confirm')}
               </Button>

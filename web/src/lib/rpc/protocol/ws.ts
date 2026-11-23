@@ -99,7 +99,7 @@ export type WsServerMsg =
   | { type: 'taskMetaProbed'; taskId: string; fileName: string; totalBytes: number }
   | { type: 'queuesChanged'; queues: QueueDto[] }
   | { type: 'taskQueueChanged'; taskId: string; queueId: string }
-  /** 自动代理链路或站点规则决策落定；`route` 同 `TaskDto.autoRoute`，恒非空。 */
+  /** 任务出口链路标签落定 / 变更；`route` 同 `TaskDto.autoRoute`，恒非空。 */
   | { type: 'taskRouteChanged'; taskId: string; route: string }
   | { type: 'queuePositionsChanged'; positions: QueuePositionDto[] }
   /**

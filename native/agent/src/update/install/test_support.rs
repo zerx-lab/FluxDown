@@ -3,10 +3,10 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-pub(super) struct TempDir(PathBuf);
+pub(in crate::update) struct TempDir(PathBuf);
 
 impl TempDir {
-    pub(super) fn new(label: &str) -> io::Result<Self> {
+    pub(in crate::update) fn new(label: &str) -> io::Result<Self> {
         let path = std::env::temp_dir().join(format!(
             "fluxdown_update_{label}_{}",
             uuid::Uuid::new_v4().simple()
@@ -15,7 +15,7 @@ impl TempDir {
         Ok(Self(path))
     }
 
-    pub(super) fn path(&self) -> &Path {
+    pub(in crate::update) fn path(&self) -> &Path {
         &self.0
     }
 }

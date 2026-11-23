@@ -41,7 +41,7 @@ const PASS_HEADERS = [
 ];
 
 export default {
-  async fetch(request, context, env) {
+  async fetch(request, _context, env) {
     if (request.method !== "GET" && request.method !== "HEAD") {
       return new Response("Method Not Allowed", { status: 405, headers: { Allow: "GET, HEAD" } });
     }

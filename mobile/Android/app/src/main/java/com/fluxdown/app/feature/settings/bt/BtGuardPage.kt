@@ -31,6 +31,7 @@ import com.fluxdown.app.feature.settings.settingNumber
 import com.fluxdown.app.feature.settings.settingSwitch
 import com.fluxdown.app.i18n.str
 import com.fluxdown.app.i18n.fill
+import com.fluxdown.app.shell.LocalAppearance
 import com.fluxdown.core.format.Format
 import com.fluxdown.core.host.HostException
 import com.fluxdown.core.protocol.BtGuardAction
@@ -356,6 +357,7 @@ private fun RulesSection(ctx: SettingsCtx) {
 @Composable
 private fun ThresholdsSection(ctx: SettingsCtx) {
     val form = ctx.form
+    val sizeUnit = LocalAppearance.current.fileSizeUnits.byteLabel(2)
     GlassSection(title = str(R.string.btGuardSectionThresholds)) {
         if (BtSettingsRow.GuardExcessRatio.isVisible(form)) {
             settingNumber(
@@ -366,7 +368,7 @@ private fun ThresholdsSection(ctx: SettingsCtx) {
         if (BtSettingsRow.GuardMinTorrent.isVisible(form)) {
             settingNumber(
                 ctx, BtSettingsRow.GuardMinTorrent.configKey, R.string.btGuardMinTorrent, R.string.btGuardMinTorrentDesc,
-                range = 0L..1_048_576L, default = 64L, unit = R.string.btGuardUnitMib, id = BtSettingsRow.GuardMinTorrent.id,
+                range = 0L..1_048_576L, default = 64L, unitLabel = sizeUnit, id = BtSettingsRow.GuardMinTorrent.id,
             )
         }
         if (BtSettingsRow.GuardRewindTolerance.isVisible(form)) {
@@ -387,6 +389,7 @@ private fun ThresholdsSection(ctx: SettingsCtx) {
 @Composable
 private fun ActionsSection(ctx: SettingsCtx) {
     val form = ctx.form
+    val rateUnit = LocalAppearance.current.fileSizeUnits.rateLabel(1)
     val observe = str(R.string.btGuardDownloadingActionObserve)
     val throttle = str(R.string.btGuardDownloadingActionThrottle)
     val choke = str(R.string.btGuardDownloadingActionChoke)
@@ -395,7 +398,7 @@ private fun ActionsSection(ctx: SettingsCtx) {
         if (BtSettingsRow.GuardThrottle.isVisible(form)) {
             settingNumber(
                 ctx, BtSettingsRow.GuardThrottle.configKey, R.string.btGuardThrottleKib, R.string.btGuardThrottleKibDesc,
-                range = 1L..1_048_576L, default = 32L, unit = R.string.btGuardUnitKibps, id = BtSettingsRow.GuardThrottle.id,
+                range = 1L..1_048_576L, default = 32L, unitLabel = rateUnit, id = BtSettingsRow.GuardThrottle.id,
             )
         }
         if (BtSettingsRow.GuardBanBase.isVisible(form)) {

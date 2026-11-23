@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { UpdateStatusDto } from './rpc'
-import { bannerVisible, canCancel, canInstall, downloadPercent, manualLine, manualUrl, statusLine } from './update'
+import { bannerVisible, canCancel, canInstall, downloadPercent, manualLine, manualUrl, statusLine, versionBadge } from './update'
 
 function status(patch: Partial<UpdateStatusDto>): UpdateStatusDto {
   return {
@@ -75,5 +75,21 @@ describe('update view rules', () => {
     expect(bannerVisible(status({ phase: 'ready' }), '1.9.0')).toBe(true)
     expect(bannerVisible(status({ phase: 'installing' }), null)).toBe(false)
     expect(bannerVisible(status({ hasUpdate: false, phase: 'upToDate' }), null)).toBe(false)
+  })
+
+  test('版本条目形态与 GPUI update_badge 同组用例', () => {
+    expect(versionBadge(status({ phase: 'upToDate' }), null)).toBeNull()
+    expect(versionBadge(status({ phase: 'failed', hasUpdate: false }), null)).toBeNull()
+    expect(versionBadge(status({ phase: 'downloading', assetSize: 200, downloadedBytes: 90 }), null)).toEqual({ kind: 'downloading', version: '2.0.0', percent: 45 })
+    expect(versionBadge(status({ phase: 'ready' }), null)).toEqual({ kind: 'ready', version: '2.0.0' })
+    expect(versionBadge(status({ phase: 'downloading', installPending: true }), null)).toEqual({ kind: 'installing', version: '2.0.0' })
+    expect(versionBadge(status({ phase: 'installing' }), null)?.kind).toBe('installing')
+    expect(versionBadge(status({ phase: 'checking' }), null)).toEqual({ kind: 'available', version: '2.0.0', manual: false })
+    expect(versionBadge(status({ phase: 'available', manualReason: 'notWritable' }), null)).toEqual({ kind: 'available', version: '2.0.0', manual: true })
+    expect(versionBadge(status({ phase: 'failed', failure: 'network' }), null)).toEqual({ kind: 'failed', version: '2.0.0', failure: 'network' })
+    // 忽略的版本只在仍未下载时不提示。
+    expect(versionBadge(status({ phase: 'available' }), '2.0.0')).toBeNull()
+    expect(versionBadge(status({ phase: 'ready' }), '2.0.0')).not.toBeNull()
+    expect(versionBadge(status({ phase: 'available', latestVersion: '2.0.1' }), '2.0.0')).not.toBeNull()
   })
 })

@@ -66,6 +66,8 @@ data class PluginSettingField(
     }
 }
 
+data class PluginResolverUrlConflict(val pattern: String, val otherIdentity: String, val otherPattern: String)
+
 /** 已安装插件视图（`PluginDto`）。 */
 data class PluginDto(
     val identity: String,
@@ -89,6 +91,7 @@ data class PluginDto(
     val loadStatus: String = "Loaded",
     /** 加载失败原因；成功为空。 */
     val loadError: String = "",
+    val resolverUrlConflicts: List<PluginResolverUrlConflict> = emptyList(),
 ) {
     val loadFailed: Boolean get() = loadStatus == "Failed"
 
@@ -111,6 +114,13 @@ data class PluginDto(
                 subscriptionProviderIds = v.strings("subscriptionProviderIds"),
                 loadStatus = v.str("loadStatus", "Loaded"),
                 loadError = v.str("loadError"),
+                resolverUrlConflicts = v.list("resolverUrlConflicts").mapNotNull { conflict ->
+                    PluginResolverUrlConflict(
+                        conflict.strOrNull("pattern") ?: return@mapNotNull null,
+                        conflict.strOrNull("otherIdentity") ?: return@mapNotNull null,
+                        conflict.strOrNull("otherPattern") ?: return@mapNotNull null,
+                    )
+                },
             )
         }
 

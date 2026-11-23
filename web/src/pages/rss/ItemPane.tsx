@@ -8,11 +8,12 @@ import type { ReactNode } from 'react'
 import { useT } from '../../i18n'
 import { cn } from '../../lib/cn'
 import { RSS_ITEM_STATUS, rpc } from '../../lib/rpc'
-import type { RssSourceDto } from '../../lib/rpc'
+import type { RssItemDto, RssSourceDto } from '../../lib/rpc'
 import { Button, Checkbox, EmptyState, Icon, Input, Tooltip, confirmDialog } from '../../ui'
 import { sourceDisplayName } from './filter'
 import { sourceStatusLine, visibleIndices } from './format'
 import { ItemList } from './ItemList'
+import { ItemImagesDialog } from './ItemImagesDialog'
 import { useRssItems } from './useRssItems'
 import type { RssItemsState } from './useRssItems'
 
@@ -76,6 +77,11 @@ export function ItemPane({
   const state: RssItemsState = useRssItems(source.sourceId, stale)
   const { items, selected, busy, refreshBusy, readBusy } = state
   const [deleteBusy, setDeleteBusy] = useState(false)
+  const [imageItem, setImageItem] = useState<RssItemDto | null>(null)
+
+  useEffect(() => {
+    if (stale) setImageItem(null)
+  }, [stale])
 
   useEffect(() => {
     onRefreshingChange(refreshBusy)
@@ -165,6 +171,7 @@ export function ItemPane({
         mobile={mobile}
         onToggle={state.toggle}
         onAct={(guids, action) => void state.act(guids, action)}
+        onViewImages={setImageItem}
       />
     )
   }
@@ -257,6 +264,10 @@ export function ItemPane({
       ) : null}
 
       {body}
+
+      {imageItem && !stale ? (
+        <ItemImagesDialog key={imageItem.guid} item={imageItem} onClose={() => setImageItem(null)} />
+      ) : null}
 
       {selected.size > 0 && mobile ? (
         <div className="shrink-0 border-t border-hairline bg-chrome px-3 py-2">{batch}</div>

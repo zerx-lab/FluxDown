@@ -5582,6 +5582,13 @@
             },
             "description": "manifest 声明的能力权限（如 `[\"ffmpeg\"]`，供 UI 展示授权徽章）。"
           },
+          "resolverUrlConflicts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PluginResolverUrlConflictDto"
+            },
+            "description": "已安装插件列表中的 resolver URL 重叠提示。"
+          },
           "resolverUrls": {
             "type": "array",
             "items": {
@@ -5650,6 +5657,32 @@
           "world": {
             "type": "string",
             "description": "`isolated` / `main`。"
+          }
+        }
+      },
+      "PluginResolverUrlConflictDto": {
+        "type": "object",
+        "required": [
+          "pattern",
+          "otherIdentity",
+          "otherPattern"
+        ],
+        "properties": {
+          "otherIdentity": {
+            "type": "string"
+          },
+          "otherPattern": {
+            "type": "string"
+          },
+          "pattern": {
+            "type": "string"
+          },
+          "site": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "重叠所在站点的站点键（同 `PluginSiteDefaultDto.site`），可据此设置站点默认插件；\n两侧主机都是通配或非层级 URL（`magnet:` 等）时为空，同插件重复声明恒为空。"
           }
         }
       },
@@ -6054,6 +6087,13 @@
           "guid": {
             "type": "string",
             "description": "去重主键。"
+          },
+          "imageCount": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Number of available description image thumbnails.",
+            "default": 0,
+            "minimum": 0
           },
           "link": {
             "type": "string"
@@ -6492,7 +6532,7 @@
         "properties": {
           "autoRoute": {
             "type": "string",
-            "description": "Auto 路由或站点规则标签（可追溯性）：Auto 为 `direct` /\n`direct:sampled` / `direct:pinned` / `direct:failover` /\n`proxy:cached` / `proxy:sampled` / `proxy:failover`（代理类标签带\n候选来源后缀 `:system`/`:manual`）；站点规则为 `rule:direct` /\n`rule:system` / `rule:manual` / `rule:custom`；空串 = 非 Auto 且未命中规则。"
+            "description": " 任务出口「链路」标签（可追溯性）：Auto 为 `direct` /\n `direct:sampled` / `direct:pinned` / `direct:failover` /\n `proxy:cached` / `proxy:sampled` / `proxy:failover`（代理类标签带\n 候选来源后缀 `:system`/`:manual`）；站点规则为 `rule:direct` /\n `rule:system` / `rule:manual` / `rule:custom`；全局代理为 `global:direct` /\n `global:bypass` / `global:manual` / `global:system` / `global:pac`；任务级代理为\n `task:proxy` / `task:direct`；协议代理覆盖为 `protocol:direct` / `protocol:proxy`；\n BT 会话为 `bt:direct` / `bt:trackers:{manual,system}` / `bt:all:{manual,system}`\n（BT 协议代理覆盖生效时为 `protocol:proxy`）。空串 = 尚未启动过（或出口构建失败退回全局直连）。"
           },
           "btDownloadLimitBps": {
             "type": "integer",

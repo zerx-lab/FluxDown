@@ -23,6 +23,9 @@ pub(crate) const AFTER_UPDATE_ARG: &str = "--after-update";
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub(crate) const RELAUNCH_ARG: &str = "--relaunch";
 
+/// Agent-only relaunch after an opted-in idle update; never opens a desktop window.
+pub const BACKGROUND_UPDATE_ARG: &str = "--background-update";
+
 /// macOS：经 LaunchServices 拉起整个 bundle（签名与权限归属正确，与更新重启一致）。
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 const OPEN: &str = "/usr/bin/open";
@@ -53,7 +56,17 @@ enum Action {
     },
     /// 静默运行 Inno Setup 安装器（Windows 安装版）。
     #[cfg(windows)]
-    Installer { installer: PathBuf, log: PathBuf },
+    Installer {
+        installer: PathBuf,
+        log: PathBuf,
+        background: bool,
+    },
+    #[cfg(windows)]
+    Portable {
+        commit: std::process::ChildStdin,
+        desktop: PathBuf,
+        background: Option<Box<RestartPlan>>,
+    },
 }
 
 impl RestartPlan {
@@ -82,8 +95,53 @@ impl RestartPlan {
     #[cfg(windows)]
     pub(crate) fn installer(installer: PathBuf, log: PathBuf) -> Self {
         Self {
-            action: Action::Installer { installer, log },
+            action: Action::Installer {
+                installer,
+                log,
+                background: false,
+            },
             server: false,
+        }
+    }
+
+    #[cfg(windows)]
+    pub(super) fn portable(commit: std::process::ChildStdin, desktop: PathBuf) -> Self {
+        Self {
+            action: Action::Portable {
+                commit,
+                desktop,
+                background: None,
+            },
+            server: false,
+        }
+    }
+
+    pub(super) fn in_background(self, background_agent: Self) -> Self {
+        match self.action {
+            #[cfg(windows)]
+            Action::Portable {
+                commit, desktop, ..
+            } => Self {
+                action: Action::Portable {
+                    commit,
+                    desktop,
+                    background: Some(Box::new(background_agent)),
+                },
+                server: false,
+            },
+            #[cfg(windows)]
+            Action::Installer { installer, log, .. } => Self {
+                action: Action::Installer {
+                    installer,
+                    log,
+                    background: true,
+                },
+                server: false,
+            },
+            #[cfg(any(not(unix), target_os = "linux", target_os = "macos"))]
+            Action::Spawn { .. } => background_agent,
+            #[cfg(unix)]
+            Action::Exec { .. } => background_agent,
         }
     }
 
@@ -103,14 +161,92 @@ impl RestartPlan {
                 Err(std::process::Command::new(&program).args(&args).exec())
             }
             #[cfg(windows)]
-            Action::Installer { installer, log } => run_installer(&installer, &log),
+            Action::Installer {
+                installer,
+                log,
+                background,
+            } => run_installer(&installer, &log, background),
+            #[cfg(windows)]
+            Action::Portable {
+                mut commit,
+                desktop,
+                background,
+            } => {
+                use super::windows_portable::CommitMode;
+                let mode = if background.is_some() {
+                    CommitMode::Background
+                } else {
+                    CommitMode::Desktop
+                };
+                if let Err(error) = std::io::Write::write_all(&mut commit, &[mode as u8]) {
+                    tracing::error!(%error, "portable update worker exited before taking over");
+                    if let Some(plan) = background {
+                        plan.run()?;
+                    } else {
+                        spawn_detached(&desktop, &[RELAUNCH_ARG.into()])?;
+                    }
+                    return Err(error);
+                }
+                Ok(())
+            }
         }
     }
 }
 
-/// 登记重启计划；agent 运行期完全结束后由 [`run_pending`] 执行。后登记的覆盖先登记的。
+/// Resolve a UI-free restart before the running files are renamed by installation.
+pub(super) fn background_agent() -> std::io::Result<RestartPlan> {
+    let agent = std::env::current_exe()?;
+    #[cfg(target_os = "linux")]
+    if let Some(appimage) = std::env::var_os("APPIMAGE").filter(|path| !path.is_empty()) {
+        return Ok(RestartPlan::desktop(
+            PathBuf::from(appimage),
+            vec![
+                crate::platform::AUTOSTART_ARG.into(),
+                BACKGROUND_UPDATE_ARG.into(),
+            ],
+        ));
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(helper) = agent
+        .parent()
+        .and_then(std::path::Path::parent)
+        .and_then(std::path::Path::parent)
+        .filter(|path| path.extension().is_some_and(|ext| ext == "app"))
+    {
+        return Ok(RestartPlan::desktop(
+            OPEN.into(),
+            vec![
+                "-g".into(),
+                "-n".into(),
+                helper.as_os_str().to_owned(),
+                "--args".into(),
+                BACKGROUND_UPDATE_ARG.into(),
+            ],
+        ));
+    }
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+    return Ok(RestartPlan::desktop(
+        agent,
+        vec![BACKGROUND_UPDATE_ARG.into()],
+    ));
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+    Ok(RestartPlan::server(
+        agent,
+        vec![BACKGROUND_UPDATE_ARG.into()],
+    ))
+}
+
+/// 登记重启计划；agent 运行期结束后执行。便携更新已接管时，不允许普通重启覆盖它。
 pub(crate) fn schedule(plan: RestartPlan) {
-    *PENDING.lock().unwrap_or_else(PoisonError::into_inner) = Some(plan);
+    let mut pending = PENDING.lock().unwrap_or_else(PoisonError::into_inner);
+    #[cfg(windows)]
+    if matches!(
+        pending.as_ref().map(|plan| &plan.action),
+        Some(Action::Portable { .. })
+    ) {
+        return;
+    }
+    *pending = Some(plan);
 }
 
 /// 已登记的计划是否是 headless 服务器自身重启。
@@ -242,10 +378,31 @@ fn detach(command: &mut std::process::Command) {
 }
 
 #[cfg(windows)]
-fn detach(command: &mut std::process::Command) {
+pub(super) fn detach(command: &mut std::process::Command) {
     use std::os::windows::process::CommandExt;
 
     command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
+}
+
+#[cfg(windows)]
+pub(super) fn spawn_portable_worker(
+    command: &mut std::process::Command,
+) -> std::io::Result<std::process::Child> {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    const ERROR_ACCESS_DENIED: i32 = 5;
+    command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB);
+    match command.spawn() {
+        Err(error) if error.raw_os_error() == Some(ERROR_ACCESS_DENIED) => {
+            tracing::warn!(
+                "portable update worker could not break away from the Windows Job; retrying without breakaway"
+            );
+            detach(command);
+            command.spawn()
+        }
+        result => result,
+    }
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -262,7 +419,11 @@ const ERROR_ELEVATION_REQUIRED: i32 = 740;
 /// 静默运行安装器。安装器清单要求提权（os error 740）时用 `__COMPAT_LAYER=RunAsInvoker`
 /// 重试：安装器是每用户安装，不需要管理员权限。
 #[cfg(windows)]
-fn run_installer(installer: &std::path::Path, log: &std::path::Path) -> std::io::Result<()> {
+fn run_installer(
+    installer: &std::path::Path,
+    log: &std::path::Path,
+    background: bool,
+) -> std::io::Result<()> {
     use std::os::windows::process::CommandExt;
 
     let launch = |run_as_invoker: bool| {
@@ -275,6 +436,13 @@ fn run_installer(installer: &std::path::Path, log: &std::path::Path) -> std::io:
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
+        if background {
+            command.args([
+                "/BACKGROUNDUPDATE=1",
+                "/NOCLOSEAPPLICATIONS",
+                "/NORESTARTAPPLICATIONS",
+            ]);
+        }
         if run_as_invoker {
             command.env("__COMPAT_LAYER", "RunAsInvoker");
         }

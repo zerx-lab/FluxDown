@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use fluxdown_protocol::method;
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     BusyExt as _, ControlExt as _, dialog_title, field_error, form, form_field, input_with_action,
 };
@@ -19,7 +20,6 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputContentType, InputEvent, InputState},
-    notification::Notification,
     v_flex,
 };
 
@@ -235,7 +235,7 @@ impl PasswordResetDialog {
                 match result {
                     Ok(_) if operation == Operation::Reset => {
                         window.push_notification(
-                            Notification::success(this.text("accountPasswordResetSuccess", cx)),
+                            toast::success(this.text("accountPasswordResetSuccess", cx)),
                             cx,
                         );
                         this.closed = true;

@@ -370,13 +370,18 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 /// 非 UTF-8 字节按有损解码，不会因编码问题跳过脱敏。
 #[must_use]
 pub fn sanitize_text(bytes: &[u8]) -> Vec<u8> {
-    let mut text = String::from_utf8_lossy(bytes).into_owned();
+    let text = String::from_utf8_lossy(bytes);
+    redact_text(&text).into_bytes()
+}
+
+pub(crate) fn redact_text(text: &str) -> String {
+    let mut text = Cow::Borrowed(text);
     for (regex, replacement) in sanitize_rules() {
         if let Cow::Owned(next) = regex.replace_all(&text, *replacement) {
-            text = next;
+            text = Cow::Owned(next);
         }
     }
-    text.into_bytes()
+    text.into_owned()
 }
 
 /// 编译一次并缓存；模式是编译期常量，编译失败属于规则表缺陷，测试会钉住条数一致。
@@ -419,9 +424,10 @@ fn is_secret_key(key: &str) -> bool {
     matches!(
         key.as_str(),
         "proxy_username" | "proxy_password" | "proxy_rules" | "webhook.endpoints"
-    ) || ["password", "secret", "token", "authorization", "cookie"]
-        .iter()
-        .any(|needle| key.contains(needle))
+    ) || key.starts_with("proxy_protocol_")
+        || ["password", "secret", "token", "authorization", "cookie"]
+            .iter()
+            .any(|needle| key.contains(needle))
 }
 
 fn redact_secret_values(value: &mut serde_json::Value) {
@@ -460,7 +466,7 @@ mod tests {
         let log = "webhook failed: https://api.telegram.org/bot123456:AAH-secret_token/sendMessage\n\
                    gotify POST https://push.example.com/message?token=abc123&x=1\n\
                    proxy http://user:hunter2@proxy.local:8080 via /home/alice/.config\n\
-                   Cookie: sid=abcdef\nAuthorization: Bearer topsecret\n\
+                   Cookie: sid=abcdef; other=also-secret\nAuthorization: Bearer topsecret\n\
                    private plugin GET https://cloud.example.com/api/v1/private-plugins/packages/TkT-9f8e7d6c5b4a (120s)\n\
                    C:\\Users\\Bob\\AppData\\fluxdown\n";
         let cleaned = String::from_utf8(sanitize_text(log.as_bytes())).expect("utf8");
@@ -470,6 +476,7 @@ mod tests {
             "hunter2",
             "alice",
             "sid=abcdef",
+            "also-secret",
             "topsecret",
             "Bob",
             "TkT-9f8e7d6c5b4a",
@@ -492,6 +499,7 @@ mod tests {
                     "proxy_username": "alice",
                     "proxy_password": "hunter2",
                     "proxy_url": "http://127.0.0.1:7890",
+                    "proxy_protocol_bt": "socks5://private-user:p2p-secret@relay.example:1080",
                     "webhook.endpoints":
                         "[{\"url\":\"https://hooks.example.com/x\",\"signSecret\":\"s3cr3t\"}]",
                     "max_concurrent_downloads": "3",
@@ -502,7 +510,14 @@ mod tests {
         let raw = serde_json::to_vec(&snapshot).expect("serialize snapshot");
         let cleaned = sanitize_json_export(&raw);
         let text = String::from_utf8(cleaned.clone()).expect("utf8");
-        for leaked in ["alice", "hunter2", "s3cr3t", "hooks.example.com"] {
+        for leaked in [
+            "alice",
+            "hunter2",
+            "s3cr3t",
+            "hooks.example.com",
+            "private-user",
+            "p2p-secret",
+        ] {
             assert!(!text.contains(leaked), "{leaked} leaked: {text}");
         }
         let value: serde_json::Value = serde_json::from_slice(&cleaned).expect("still JSON");

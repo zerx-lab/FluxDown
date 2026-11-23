@@ -7,9 +7,10 @@
 //! 与 Web `model/actions.ts::copyTaskFiles` 一致。
 
 use fluxdown_protocol::{ApplicationErrorCode, RpcErrorData};
+use fluxdown_ui_components::toast;
 use fluxdown_ui_i18n::Translator;
 use gpui::{Context, Window};
-use gpui_component::{WindowExt as _, notification::Notification};
+use gpui_component::WindowExt as _;
 
 use crate::{
     actions::CopySelectedFiles, components::task_table::task_menu_facts_for,
@@ -55,8 +56,8 @@ impl DownloadView {
                 return;
             }
             let notification = translator.read_with(cx, |translator, _| match &result {
-                Ok(_) => Notification::success(translator.text("fileCopiedToClipboard").to_owned()),
-                Err(error) => Notification::error(failure_text(translator, error)),
+                Ok(_) => toast::success(translator.text("fileCopiedToClipboard").to_owned()),
+                Err(error) => toast::error(failure_text(translator, error)),
             });
             if let Err(error) = handle.update(cx, |_, window, cx| {
                 window.push_notification(notification, cx);

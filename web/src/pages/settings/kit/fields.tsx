@@ -1,6 +1,6 @@
 // 设置控件与「绑定到配置键」的行（GPUI `SectionContext::daemon_* / pref_*`）。
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useEffectEvent, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useT } from '../../../i18n'
 import { cn } from '../../../lib/cn'
@@ -89,10 +89,11 @@ export function NumberField({
   )
 }
 
-/** 文本输入：草稿本地维护，逐字提交；外部值变化且未聚焦时回显。 */
+/** 文本输入：草稿本地维护；支持失焦、回车或卸载时统一提交。 */
 export function TextField({
   value,
   onCommit,
+  commitOnBlur = false,
   placeholder,
   disabled,
   className,
@@ -103,6 +104,7 @@ export function TextField({
 }: {
   value: string
   onCommit: (value: string) => void
+  commitOnBlur?: boolean
   placeholder?: string
   disabled?: boolean
   className?: string
@@ -113,6 +115,20 @@ export function TextField({
 }) {
   const [draft, setDraft] = useState(value)
   const focused = useRef(false)
+  const pendingDraft = useRef<string | undefined>(undefined)
+  const commitDraft = () => {
+    const pending = pendingDraft.current
+    pendingDraft.current = undefined
+    if (disabled || pending === undefined || pending === value) return false
+    onCommit(pending)
+    return true
+  }
+  const commitOnUnmount = useEffectEvent(() => {
+    commitDraft()
+  })
+  useEffect(() => {
+    if (commitOnBlur) return () => commitOnUnmount()
+  }, [commitOnBlur])
   useEffect(() => {
     if (!focused.current) setDraft(value)
   }, [value])
@@ -125,19 +141,24 @@ export function TextField({
       disabled={disabled}
       invalid={invalid}
       trailing={trailing}
-      autoComplete="off"
+      autoComplete={type === 'password' ? 'new-password' : 'off'}
       spellCheck={false}
       className={cn(WIDTH_INPUT, className)}
       onFocus={() => {
         focused.current = true
       }}
       onChange={(event) => {
-        setDraft(event.target.value)
-        onCommit(event.target.value)
+        const next = event.target.value
+        setDraft(next)
+        if (commitOnBlur) pendingDraft.current = next
+        else onCommit(next)
+      }}
+      onKeyDown={(event) => {
+        if (commitOnBlur && event.key === 'Enter') event.currentTarget.blur()
       }}
       onBlur={() => {
         focused.current = false
-        setDraft(value)
+        if (!commitOnBlur || !commitDraft()) setDraft(value)
       }}
     />
   )
@@ -268,7 +289,7 @@ export function PrefSwitchRow({ prefKey, fallback, titleKey, descKey, disabled, 
   const checked = usePrefBoolean(prefKey, fallback)
   return (
     <SettingsRow title={title} description={description} compact disabled={disabled}>
-      <Switch checked={checked} onCheckedChange={(next) => setPref(prefKey, next, { immediate: immediate === true })} aria-label={title} />
+      <Switch checked={checked} disabled={disabled} onCheckedChange={(next) => setPref(prefKey, next, { immediate: immediate === true })} aria-label={title} />
     </SettingsRow>
   )
 }

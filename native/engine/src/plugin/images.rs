@@ -2,20 +2,15 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    io::Cursor,
-    sync::{Arc, LazyLock, Mutex},
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 use serde::Deserialize;
 use sha2::Digest;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-const MAX_WIDTH: u32 = 2048;
-const MAX_SOURCE_BYTES: usize = 8 * 1024 * 1024;
-const MAX_SOURCE_PIXELS: u64 = 16_000_000;
-const MAX_DIMENSION: u32 = 8192;
-const MAX_DECODE_BYTES: u64 = 64 * 1024 * 1024;
+use crate::raster::{self, MAX_THUMBNAIL_DIMENSION, ThumbnailError};
+
 const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 const SESSION_IMAGE_COUNT: usize = 128;
 const GLOBAL_IMAGE_COUNT: usize = 4096;
@@ -56,8 +51,8 @@ fn default_cache() -> bool {
 impl ImageLoadOptions {
     /// Validate the URL, thumbnail dimensions, and bounded HTTP headers before network access.
     pub fn validate(&self) -> Result<(), crate::plugin::runtime::PluginError> {
-        if !(1..=MAX_WIDTH).contains(&self.max_width) || !(1..=MAX_WIDTH).contains(&self.max_height)
-        {
+        let dimensions = 1..=MAX_THUMBNAIL_DIMENSION;
+        if !dimensions.contains(&self.max_width) || !dimensions.contains(&self.max_height) {
             return Err(crate::plugin::runtime::PluginError::InvalidOutput(
                 "图片尺寸必须在 1..=2048 范围内".to_string(),
             ));
@@ -389,96 +384,12 @@ pub async fn thumbnail(
     opts: &ImageLoadOptions,
 ) -> Result<Vec<u8>, crate::plugin::runtime::PluginError> {
     opts.validate()?;
-    if bytes.len() > MAX_SOURCE_BYTES {
-        return Err(image_error("图片超过 8 MiB 上限"));
-    }
-    let permit: OwnedSemaphorePermit = image_semaphore()
-        .clone()
-        .acquire_owned()
+    raster::thumbnail(bytes, opts.max_width, opts.max_height, MAX_OUTPUT_BYTES)
         .await
-        .map_err(|_| image_error("图片解码器已关闭"))?;
-    let width = opts.max_width;
-    let height = opts.max_height;
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        decode_thumbnail(bytes, width, height)
-    })
-    .await
-    .map_err(|e| image_error(&format!("图片处理任务失败: {e}")))?
-}
-
-static IMAGE_SEMAPHORE: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(2)));
-
-fn image_semaphore() -> &'static Arc<Semaphore> {
-    &IMAGE_SEMAPHORE
-}
-
-fn decode_thumbnail(
-    bytes: Vec<u8>,
-    max_width: u32,
-    max_height: u32,
-) -> Result<Vec<u8>, crate::plugin::runtime::PluginError> {
-    use image::{ImageFormat, ImageReader, imageops::FilterType};
-    let format =
-        image::guess_format(&bytes).map_err(|_| image_error("不支持或无法识别的图片格式"))?;
-    if !matches!(
-        format,
-        ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP
-    ) {
-        return Err(image_error("仅支持 PNG、JPEG、WebP 图片"));
-    }
-    let mut header_reader = ImageReader::with_format(Cursor::new(bytes.as_slice()), format);
-    header_reader.limits(decoder_limits());
-    let (width, height) = header_reader
-        .into_dimensions()
-        .map_err(|e| image_error(&format!("图片尺寸读取失败: {e}")))?;
-    check_dimensions(width, height)?;
-    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
-    reader.limits(decoder_limits());
-    let image = reader
-        .decode()
-        .map_err(|e| image_error(&format!("图片解码失败: {e}")))?;
-    let thumbnail = if width <= max_width && height <= max_height {
-        image
-    } else {
-        let scale = (f64::from(max_width) / f64::from(width))
-            .min(f64::from(max_height) / f64::from(height))
-            .min(1.0);
-        let out_width = (f64::from(width) * scale).floor().max(1.0) as u32;
-        let out_height = (f64::from(height) * scale).floor().max(1.0) as u32;
-        image.resize_exact(out_width, out_height, FilterType::Lanczos3)
-    };
-    let mut output = Cursor::new(Vec::new());
-    thumbnail
-        .write_to(&mut output, ImageFormat::Png)
-        .map_err(|e| image_error(&format!("PNG 编码失败: {e}")))?;
-    let output = output.into_inner();
-    if output.len() > MAX_OUTPUT_BYTES {
-        return Err(image_error("缩略图超过 4 MiB 上限"));
-    }
-    Ok(output)
-}
-
-fn decoder_limits() -> image::Limits {
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(MAX_DIMENSION);
-    limits.max_image_height = Some(MAX_DIMENSION);
-    limits.max_alloc = Some(MAX_DECODE_BYTES);
-    limits
-}
-
-fn check_dimensions(width: u32, height: u32) -> Result<(), crate::plugin::runtime::PluginError> {
-    let pixels = u64::from(width).saturating_mul(u64::from(height));
-    if width == 0
-        || height == 0
-        || width > MAX_DIMENSION
-        || height > MAX_DIMENSION
-        || pixels > MAX_SOURCE_PIXELS
-        || pixels.saturating_mul(4) > MAX_DECODE_BYTES
-    {
-        return Err(image_error("图片尺寸或解码内存超过限制"));
-    }
-    Ok(())
+        .map_err(|error| match error {
+            ThumbnailError::OutputTooLarge { .. } => image_error("缩略图超过 4 MiB 上限"),
+            error => crate::plugin::runtime::PluginError::InvalidOutput(error.to_string()),
+        })
 }
 
 fn image_error(message: &str) -> crate::plugin::runtime::PluginError {
@@ -487,6 +398,8 @@ fn image_error(message: &str) -> crate::plugin::runtime::PluginError {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use super::*;
     use image::{DynamicImage, ImageFormat, ImageReader, Rgba, RgbaImage};
 
@@ -637,13 +550,6 @@ mod tests {
             .into_dimensions()
             .unwrap();
         assert_eq!(dimensions, (512, 256));
-    }
-
-    #[test]
-    fn rejects_pixel_and_dimension_overflow() {
-        assert!(check_dimensions(8193, 1).is_err());
-        assert!(check_dimensions(4096, 4096).is_err());
-        assert!(check_dimensions(4000, 4000).is_ok());
     }
 
     #[test]

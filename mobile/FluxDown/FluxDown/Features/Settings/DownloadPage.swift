@@ -186,6 +186,7 @@ struct DownloadPage: View {
         let effective = SettingsRetention.modeID(days: days, customFlag: retentionForceCustom)
         let options: [ConfigPickerRow.Option] = SettingsRetention.presets.map { preset in
             let key = switch preset {
+            case -1: "retentionImmediate"
             case 0: "retentionNever"
             case 1: "retentionDay1"
             case 7: "retentionDay7"

@@ -5,6 +5,7 @@
 
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { useState } from 'react'
+import { useFileSizeUnits } from '../../../lib/fileSizeUnits'
 import { useT } from '../../../i18n'
 import { rpc } from '../../../lib/rpc'
 import type { SeedTorrentVersion } from '../../../lib/rpc'
@@ -21,6 +22,7 @@ const VERSION_KEY: Record<SeedTorrentVersion, string> = {
 }
 
 export function SeedLocalDialog() {
+  const units = useFileSizeUnits()
   const t = useT()
   const [form, setForm] = useState<SeedLocalForm>(SEED_LOCAL_FORM_DEFAULTS)
   const [optionsOpen, setOptionsOpen] = useState(false)
@@ -145,7 +147,7 @@ export function SeedLocalDialog() {
                       value={String(form.pieceLength)}
                       disabled={pending}
                       aria-label={t('btCreatePieceLength')}
-                      options={SEED_PIECE_LENGTHS.map((bytes) => ({ value: String(bytes), label: bytes === 0 ? t('btCreatePieceLengthAuto') : pieceLengthLabel(bytes) }))}
+                      options={SEED_PIECE_LENGTHS.map((bytes) => ({ value: String(bytes), label: bytes === 0 ? t('btCreatePieceLengthAuto') : pieceLengthLabel(bytes, units) }))}
                       onValueChange={(next) => set('pieceLength', Number(next))}
                     />
                   </FormField>

@@ -27,7 +27,6 @@ thiserror = "2"
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "signal", "net", "io-util", "fs", "time"] }
 tokio-util = { version = "0.7.18", features = ["io"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3.23", features = ["fmt", "env-filter"] }
 uuid = { version = "1.23.4", features = ["v4"] }
 
 [features]
@@ -38,3 +37,6 @@ plugins = ["fluxdown_engine/plugins", "fluxdown_engine_protocol/plugins"]
 components = ["fluxdown_engine/components", "fluxdown_engine_protocol/components"]
 bt = ["fluxdown_engine/bt", "fluxdown_engine_protocol/bt"]
 ed2k = ["fluxdown_engine/ed2k", "fluxdown_engine_protocol/ed2k"]
+
+[target."cfg(windows)".build-dependencies]
+winresource.workspace = true

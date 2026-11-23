@@ -3,6 +3,7 @@
 mod assets;
 mod controller;
 mod editor;
+mod images;
 mod provider;
 mod view;
 
@@ -21,4 +22,7 @@ pub trait RssPort: Send + Sync {
         method: &'static str,
         params: serde_json::Value,
     ) -> PortFuture<serde_json::Value>;
+
+    /// Fetch one zero-based PNG preview for a persisted RSS item from the agent.
+    fn image(&self, source_id: String, guid: String, index: usize) -> PortFuture<Vec<u8>>;
 }

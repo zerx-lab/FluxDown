@@ -18,8 +18,10 @@ import { PluginAuditDialog } from './PluginAuditDialog'
 import { PluginAuthDialog } from './PluginAuthDialog'
 import { GrantConsentDialog, RiskBadge } from './PluginConsentDialog'
 import { PluginDetailDialog } from './PluginDetailDialog'
+import { ResolverConflictCard } from './ResolverConflictCard'
+import { useSiteDefaults } from './useSiteDefaults'
 import { PluginSettingsDialog } from './PluginSettingsDialog'
-import { liveDialogPlugins, postInstallConsent } from './logic'
+import { conflictNotice, hasPendingConsent, liveDialogPlugins, postInstallConsent } from './logic'
 import type { ConsentSet } from './logic'
 
 const EMPTY_PLUGINS: PluginDto[] = []
@@ -133,6 +135,24 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
     })
   }
 
+  const siteDefaults = useSiteDefaults(plugins, active)
+
+  const showResolverConflicts = async (latest: PluginDto[], identity: string) => {
+    // 提示需对照最新站点默认；读取失败按「无记录」处理（宁可多提示）。
+    const defaults = await rpc.daemon.plugin.siteDefaults().catch(() => [])
+    const message = conflictNotice(latest, defaults, identity, t)
+    if (message !== null) toast.warning(`${t('pluginResolverConflictsHeading')}\n\n${message}`)
+  }
+
+  const readPluginsForConflictCheck = async () => {
+    try {
+      return await rpc.daemon.plugin.list()
+    } catch (error) {
+      toast.error(t('pluginResolverUrlConflictsCheckFailed', { message: extensionErrorText(t, error) }))
+      return null
+    }
+  }
+
   /**
    * 安装 / 更新成功后的统一授权流程：待授权集合与用户安装前确认的集合吻合 → 直接授权，否则弹授权对话框。
    * `confirmed` 仅市场路径提供；`updating` = 操作发起时该插件已安装（提示文案用「已更新」）。
@@ -142,13 +162,9 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
     clearReloadError(result.identity)
     toast.success(t(updating ? 'pluginOpUpdateSuccess' : 'pluginOpInstallSuccess'))
     if (result.missingComponents?.length) setMissing(result.missingComponents)
-    let plugin: PluginDto | undefined
-    try {
-      plugin = (await rpc.daemon.plugin.list()).find((item) => item.identity === result.identity)
-    } catch (error) {
-      toast.error(t('pluginConsentFailed', { message: extensionErrorText(t, error) }))
-      return
-    }
+    let latest = await readPluginsForConflictCheck()
+    if (latest === null) return
+    const plugin = latest.find((item) => item.identity === result.identity)
     if (plugin === undefined) return
     const action = postInstallConsent(plugin, confirmed)
     if (action === 'dialog') {
@@ -156,11 +172,14 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
     } else if (action === 'grant') {
       try {
         await rpc.daemon.plugin.consent({ identity: plugin.identity, permissions: plugin.permissions, networkHosts: plugin.networkHosts })
+        // Market pre-approval can turn a potential overlap into an active one.
+        latest = await readPluginsForConflictCheck()
       } catch (error) {
         toast.error(t('pluginConsentFailed', { message: extensionErrorText(t, error) }))
         setConsentIdentity(plugin.identity)
       }
     }
+    if (latest !== null) await showResolverConflicts(latest, result.identity)
   }
   const onInstallFailed = (error: unknown) => {
     setInstallError(t('pluginOpInstallFailed', { message: pluginFailureText(t, error) }))
@@ -187,6 +206,11 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
         await rpc.daemon.plugin.setEnabled({ identity: plugin.identity, enabled })
       } catch (error) {
         toast.error(t('pluginOpEnabledFailed', { message: extensionErrorText(t, error) }))
+        return
+      }
+      if (enabled) {
+        const latest = await readPluginsForConflictCheck()
+        if (latest !== null) await showResolverConflicts(latest, plugin.identity)
       }
     })
 
@@ -332,6 +356,15 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
       ) : null}
       {installError && <PluginFailure message={installError} onClose={() => setInstallError(undefined)} />}
 
+      <ResolverConflictCard
+        plugins={plugins}
+        defaults={siteDefaults.entries}
+        defaultsLoaded={siteDefaults.loaded}
+        devMode={devMode}
+        stale={stale}
+        onChanged={siteDefaults.refresh}
+      />
+
       {plugins.length === 0 ? (
         <EmptyState icon={Package} title={t('pluginsEmpty')} />
       ) : (
@@ -457,6 +490,7 @@ function PluginRow({
 }) {
   const t = useT()
   const loadFailed = plugin.loadStatus === 'Failed'
+  const consentPending = !loadFailed && hasPendingConsent(plugin)
   return (
     <ListRow
       info={
@@ -471,7 +505,7 @@ function PluginRow({
             {plugin.disabledReason === 'Manual' ? <Badge>{t('pluginDisabledManual')}</Badge> : null}
             {plugin.disabledReason === 'CircuitBreaker' ? <Badge tone="destructive">{t('pluginDisabledCircuitBreaker')}</Badge> : null}
             {plugin.disabledReason === 'Revoked' ? <Badge tone="destructive">{t('pluginDisabledRevoked')}</Badge> : null}
-            {plugin.disabledReason === 'ConsentRequired' ? <Badge tone="warning">{t('pluginDisabledConsentRequired')}</Badge> : null}
+            {consentPending ? <Badge tone="warning">{t('pluginDisabledConsentRequired')}</Badge> : null}
           </div>
           {plugin.homepage ? <ExtLink href={plugin.homepage} /> : null}
           {plugin.description ? <div className="line-clamp-2 break-words text-xs text-muted-foreground">{plugin.description}</div> : null}
@@ -483,7 +517,7 @@ function PluginRow({
         <>
           {plugin.devMode ? <IconButton icon={RotateCw} label={t('pluginReloadTooltip')} onClick={onReload} disabled={disabled} /> : null}
           <IconButton icon={Info} label={t('pluginDetailDescription')} onClick={onDetail} />
-          {plugin.disabledReason === 'ConsentRequired' ? (
+          {consentPending ? (
             <Button variant="outline" onClick={onConsent} disabled={disabled}>
               {t('pluginConsentButton')}
             </Button>
@@ -499,7 +533,7 @@ function PluginRow({
           <IconButton icon={Trash2} label={t('pluginUninstallTooltip')} onClick={onUninstall} disabled={disabled} destructive />
           <Switch
             checked={plugin.enabled && !loadFailed}
-            disabled={disabled || loadFailed}
+            disabled={disabled || loadFailed || consentPending}
             aria-label={plugin.name}
             onCheckedChange={onToggle}
             className="mx-1"

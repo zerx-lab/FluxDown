@@ -13,6 +13,7 @@ use fluxdown_protocol::app_icon::{
     PlatformSetAppIconParams,
 };
 use fluxdown_protocol::{ApplicationErrorCode, RpcErrorData, method};
+use fluxdown_ui_components::toast::{self, ToastTone};
 use fluxdown_ui_components::{ButtonVariant, FluxIcon};
 use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_theme::active_theme;
@@ -22,7 +23,7 @@ use gpui::{
     StatefulInteractiveElement as _, Styled as _, Window, div, img, prelude::FluentBuilder as _,
     px,
 };
-use gpui_component::{Icon, WindowExt as _, h_flex, notification::Notification, v_flex};
+use gpui_component::{Icon, WindowExt as _, h_flex, v_flex};
 use serde_json::{Value, json};
 
 use super::SectionContext;
@@ -397,8 +398,11 @@ fn set_icon(
             },
             Err(error) => error.to_string(),
         };
-        let notification =
-            Notification::error(message).title(translator.text("appIconApplyFailed").to_owned());
+        let notification = toast::titled(
+            ToastTone::Error,
+            translator.text("appIconApplyFailed").to_owned(),
+            message,
+        );
         let Ok(()) = window_handle.update(cx, move |_, window: &mut Window, cx| {
             window.push_notification(notification, cx);
         }) else {

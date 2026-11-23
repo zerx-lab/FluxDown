@@ -1,12 +1,15 @@
-//! 跨设备任务全量投影、本地执行路由、绑定评分与缺失宽限。
+//! 跨设备任务投影（只含本设备发起或执行的任务）、本地执行路由、绑定评分与缺失宽限。
 //!
 //! 角色：
 //! - 发起端：`dispatch` 经 FluxCloud 下发任务，`command` 控制远端任务；
 //! - 执行端：SSE 收到 `task.dispatch` 后逐条接单建 daemon 任务，并上报状态 / 进度；
 //!   收到 `task.command` 后映射到本机 daemon。
 //!
+//! 可见性按设备：FluxCloud 只把任务推给它的发起端与执行端，同账号的其它设备看不到；本机投影再按
+//! `involves_device` 兜一层。设备身份（`AgentState::device_id`）跨登出 / 重新登录不变。
+//!
 //! 执行端的「云端任务 → 本机 daemon 任务」绑定持久化在 `AgentState::remote_bindings`，
-//! 重启后不会为同一个云端任务重复建任务。
+//! 重启后不会为同一个云端任务重复建任务；登出 / 换号时按账号暂存，重新登录同一账号即恢复。
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -34,6 +37,10 @@ use crate::event_hub::AgentEventHub;
 use crate::link::{resolve_receive_dir, valid_file_name};
 use crate::state::{AgentState, StateStore};
 
+mod batch;
+mod projection;
+
+/// 执行端：绑定的本机任务连续这么多轮（每轮 1 秒）不在 daemon 快照里才判定消失。
 const MISSING_GRACE_ROUNDS: u8 = 3;
 const SSE_STABLE: Duration = Duration::from_secs(60);
 const SSE_IDLE_TIMEOUT: Duration = Duration::from_secs(75);
@@ -121,7 +128,6 @@ impl BoundedIds {
 /// 只属于当前登录会话的运行期状态；登出时整体丢弃。
 #[derive(Default)]
 struct Runtime {
-    missing_rounds: HashMap<String, u8>,
     local_missing_rounds: HashMap<String, u8>,
     reported_statuses: HashMap<String, RemoteTaskStatus>,
     confirmed_commands: BoundedIds,
@@ -130,6 +136,11 @@ struct Runtime {
     /// 本进程内建立绑定的时刻。快照请求发出之后才建立的绑定不能凭「快照里没有」判定记录已删除
     /// （任务可能在该快照之后才下发）；没有条目 = 启动前持久化的旧绑定。
     bound_at: HashMap<String, Instant>,
+    /// 投影行最近一次由本进程写入（下发 / 实时事件 / 指令落地）的时刻：快照请求发出之后写入的行
+    /// 比该快照新，合并时以本地为准。每次快照合并后清掉早于该快照请求的条目。
+    touched_at: HashMap<String, Instant>,
+    /// 投影行被本进程移除（删除 / `task.removed` / 云端 404）的时刻：防止在途快照把它带回来。
+    removed_at: HashMap<String, Instant>,
 }
 
 pub struct RemoteTaskService {
@@ -153,6 +164,8 @@ pub struct RemoteTaskService {
     /// 云端 SSE 里推送相关的事件（`notify.changed` / `notify.delivery` / 重连 / `resync`）转交云端推送模块。
     notify_feed: Option<crate::cloud_notify::NotifyFeed>,
     runtime: Mutex<Runtime>,
+    /// 云端没有批量指令端点（旧版 FluxCloud 回 404 / 405）：本进程内直接逐条下发。
+    batch_unsupported: AtomicBool,
 }
 
 impl RemoteTaskService {
@@ -180,6 +193,7 @@ impl RemoteTaskService {
             ws_handshaking: AtomicBool::new(false),
             notify_feed: None,
             runtime: Mutex::new(Runtime::default()),
+            batch_unsupported: AtomicBool::new(false),
         }
     }
 
@@ -998,12 +1012,17 @@ impl RemoteTaskService {
         {
             "task.dispatch" | "task.status" => {
                 let task = serde_json::from_value::<RemoteTaskDto>(event)?;
-                let canceled_here = task.status == RemoteTaskStatus::Canceled
-                    && task.to_device == self.local_device_id().await;
+                let local_device = self.local_device_id().await;
+                if !involves_device(&task, &local_device) {
+                    return Ok(None);
+                }
+                let canceled_here =
+                    task.status == RemoteTaskStatus::Canceled && task.to_device == local_device;
                 let remote_id = task.id.clone();
                 self.upsert_task(task, epoch).await?;
                 if canceled_here {
-                    self.discard_local_task_epoch(&remote_id, epoch).await;
+                    self.discard_local_task_epoch(&remote_id, epoch, Discard::Explicit)
+                        .await;
                 }
                 self.rebuild_bindings(epoch).await;
                 self.accept_pending_dispatches_epoch(epoch).await;
@@ -1014,10 +1033,8 @@ impl RemoteTaskService {
                     .and_then(Value::as_array)
                     .map_or(&[][..], Vec::as_slice);
                 // 进度只合并进内存投影，不落盘（约 1 次 / 秒）。
-                let mut tasks = self.tasks().await;
-                if apply_progress_items(&mut tasks, items) {
-                    self.replace_tasks(tasks, false, epoch).await?;
-                }
+                self.mutate_tasks(epoch, false, |tasks, _| apply_progress_items(tasks, items))
+                    .await?;
             }
             "task.command" => {
                 let target = event
@@ -1032,13 +1049,9 @@ impl RemoteTaskService {
             "task.removed" => {
                 // 记录被删除（任意状态）：从投影移除；本设备正在执行它时删除本机任务。
                 if let Some(id) = event.get("taskId").and_then(Value::as_str) {
-                    let mut tasks = self.tasks().await;
-                    let before = tasks.len();
-                    tasks.retain(|task| task.id != id);
-                    if tasks.len() != before {
-                        self.replace_tasks(tasks, true, epoch).await?;
-                    }
-                    self.discard_local_task_epoch(id, epoch).await;
+                    self.forget_tasks(&[id.to_owned()], epoch).await?;
+                    self.discard_local_task_epoch(id, epoch, Discard::Explicit)
+                        .await;
                 }
             }
             "presence.kicked" => {
@@ -1103,41 +1116,116 @@ impl RemoteTaskService {
         Ok(None)
     }
 
+    /// 在一次 `lock_epoch` 临界区内读改写任务投影（与 `Runtime` 一起），变化时发布；`persist`
+    /// 为 `false` 时只更新内存。读改写不跨 await，并发的指令 / 下发 / 快照合并不会互相覆盖。
+    async fn mutate_tasks<F>(
+        &self,
+        epoch: crate::cloud::RequestEpoch,
+        persist: bool,
+        mutate: F,
+    ) -> Result<bool, RemoteError>
+    where
+        F: FnOnce(&mut Vec<RemoteTaskDto>, &mut Runtime) -> bool,
+    {
+        let changed = {
+            let mut state = self.cloud.lock_epoch(epoch).await?;
+            let mut runtime = self.runtime.lock().await;
+            let changed = mutate(&mut state.remote_tasks, &mut runtime);
+            drop(runtime);
+            if changed {
+                self.events
+                    .publish(AgentEvent::RemoteTasksChanged(state.remote_tasks.clone()));
+            }
+            changed
+        };
+        if changed && persist {
+            self.store.persist(&self.state).await?;
+        }
+        Ok(changed)
+    }
+
     /// 替换任务投影；`persist` 为 `false` 时只更新内存并发布事件。
+    #[cfg(test)]
     async fn replace_tasks(
         &self,
         tasks: Vec<RemoteTaskDto>,
         persist: bool,
         epoch: crate::cloud::RequestEpoch,
     ) -> Result<(), RemoteError> {
-        {
-            let mut state = self.cloud.lock_epoch(epoch).await?;
-            state.remote_tasks.clone_from(&tasks);
-            self.events.publish(AgentEvent::RemoteTasksChanged(tasks));
-        }
-        if persist {
-            self.store.persist(&self.state).await?;
-        }
-        Ok(())
+        self.mutate_tasks(epoch, persist, |current, _| {
+            *current = tasks;
+            true
+        })
+        .await
+        .map(drop)
     }
 
+    /// 实时事件 / 下发结果写入投影；本进程已移除的记录（云端 id 不复用）不再被迟到事件带回。
     async fn upsert_task(
         &self,
         task: RemoteTaskDto,
         epoch: crate::cloud::RequestEpoch,
     ) -> Result<(), RemoteError> {
-        let mut state = self.cloud.lock_epoch(epoch).await?;
-        let tasks = &mut state.remote_tasks;
-        if let Some(existing) = tasks.iter_mut().find(|existing| existing.id == task.id) {
-            existing.clone_from(&task);
-        } else {
-            tasks.push(task);
-        }
-        self.events
-            .publish(AgentEvent::RemoteTasksChanged(tasks.clone()));
-        drop(state);
-        self.store.persist(&self.state).await?;
-        Ok(())
+        self.mutate_tasks(epoch, true, |tasks, runtime| {
+            if runtime.removed_at.contains_key(&task.id) {
+                return false;
+            }
+            runtime.touched_at.insert(task.id.clone(), Instant::now());
+            projection::upsert(tasks, task);
+            true
+        })
+        .await
+        .map(drop)
+    }
+
+    /// 云端已没有（或刚被删除）的记录：从投影移除并记下移除时刻；返回实际移除的条数。
+    async fn forget_tasks(
+        &self,
+        ids: &[String],
+        epoch: crate::cloud::RequestEpoch,
+    ) -> Result<usize, RemoteError> {
+        let mut removed = 0;
+        self.mutate_tasks(epoch, true, |tasks, runtime| {
+            let now = Instant::now();
+            let gone = ids.iter().map(String::as_str).collect::<HashSet<_>>();
+            for id in ids {
+                runtime.removed_at.insert(id.clone(), now);
+                runtime.touched_at.remove(id);
+            }
+            let before = tasks.len();
+            tasks.retain(|task| !gone.contains(task.id.as_str()));
+            removed = before - tasks.len();
+            removed > 0
+        })
+        .await?;
+        Ok(removed)
+    }
+
+    /// 取消已被云端受理：未结束的行立即置 `canceled`（云端对未终态任务的 cancel 必然落成
+    /// `canceled`），不等实时事件回写——事件通道断开时也不会一直显示为进行中。
+    async fn mark_canceled(
+        &self,
+        ids: &[String],
+        epoch: crate::cloud::RequestEpoch,
+    ) -> Result<(), RemoteError> {
+        self.mutate_tasks(epoch, true, |tasks, runtime| {
+            let targets = ids.iter().map(String::as_str).collect::<HashSet<_>>();
+            let now = Instant::now();
+            let mut changed = false;
+            for task in tasks
+                .iter_mut()
+                .filter(|task| targets.contains(task.id.as_str()) && !task.status.is_terminal())
+            {
+                task.status = RemoteTaskStatus::Canceled;
+                task.speed = 0;
+                task.error = None;
+                runtime.touched_at.insert(task.id.clone(), now);
+                changed = true;
+            }
+            changed
+        })
+        .await
+        .map(drop)
     }
 
     async fn binding(
@@ -1210,8 +1298,15 @@ impl RemoteTaskService {
     /// 云端已取消 / 删除本设备执行的任务：删除绑定的本机 daemon 任务并解除绑定。
     ///
     /// 保留已下载文件——目标离线期间发起端的 `deleteFiles` 选择送不到这里；本机已完成的任务不动。
+    /// [`Discard::SnapshotMissing`]（只凭「快照里没有」推断，可能是终态记录超出快照条数上限）
+    /// 另外保留本机已失败的任务，只解除绑定。
     /// daemon 暂时不可用时保留绑定，由下一次状态上报（404 / 409）或快照对照重试。
-    async fn discard_local_task_epoch(&self, remote_id: &str, epoch: crate::cloud::RequestEpoch) {
+    async fn discard_local_task_epoch(
+        &self,
+        remote_id: &str,
+        epoch: crate::cloud::RequestEpoch,
+        reason: Discard,
+    ) {
         let local_id = match self.cloud.lock_epoch(epoch).await {
             Ok(state) => state.remote_bindings.get(remote_id).cloned(),
             Err(error) => {
@@ -1222,13 +1317,16 @@ impl RemoteTaskService {
         let Some(local_id) = local_id else {
             return;
         };
-        // daemon 状态 3 = 已完成。
-        let completed = daemon_tasks(&self.events).is_some_and(|tasks| {
+        // daemon 状态 3 = 已完成，4 = 失败。
+        let local_status = daemon_tasks(&self.events).and_then(|tasks| {
             tasks
                 .iter()
-                .any(|task| task.task_id == local_id && task.status == 3)
+                .find(|task| task.task_id == local_id)
+                .map(|task| task.status)
         });
-        if !completed {
+        let keep = local_status == Some(3)
+            || (reason == Discard::SnapshotMissing && local_status == Some(4));
+        if !keep {
             tracing::info!(task = %remote_id, local = %local_id, "remote task was canceled or deleted in FluxCloud; removing the local task");
             if let Err(error) = self
                 .daemon_task_call(
@@ -1405,7 +1503,8 @@ impl RemoteTaskService {
                     // 接单期间记录已被删除：删除刚建的本机任务。
                     Err(error) if error.status == Some(404) => {
                         tracing::info!(task = %task.id, "accepted task no longer exists in FluxCloud");
-                        self.discard_local_task_epoch(&task.id, epoch).await;
+                        self.discard_local_task_epoch(&task.id, epoch, Discard::Explicit)
+                            .await;
                     }
                     // 接单期间已被取消。
                     Err(error) if error.status == Some(409) => {
@@ -1689,7 +1788,8 @@ impl RemoteTaskService {
             Err(error) if error.status == Some(404) => {
                 // 云端已删除该任务（离线期间被删除等）：删除本机任务并解除绑定。
                 tracing::info!(task = %remote_id, "remote task no longer exists in FluxCloud");
-                self.discard_local_task_epoch(remote_id, epoch).await;
+                self.discard_local_task_epoch(remote_id, epoch, Discard::Explicit)
+                    .await;
                 Ok(())
             }
             Err(error) if error.status == Some(403) => {
@@ -1720,7 +1820,8 @@ impl RemoteTaskService {
             .find(|task| task.id == remote_id)
             .map(|task| task.status);
         if matches!(cloud_status, Some(RemoteTaskStatus::Canceled) | None) {
-            self.discard_local_task_epoch(remote_id, epoch).await;
+            self.discard_local_task_epoch(remote_id, epoch, Discard::Explicit)
+                .await;
         } else {
             self.remove_binding_epoch(remote_id, epoch).await;
         }
@@ -1755,75 +1856,85 @@ impl RemoteTaskService {
         let requested_at = Instant::now();
         let value = self.cloud.at_epoch(epoch).remote_tasks().await?;
         drop(self.cloud.lock_epoch(epoch).await?);
-        let tasks = parse_task_list(&value);
-        let (stale, deleted) = self.stale_bindings(&tasks, requested_at, epoch).await?;
-        for remote_id in &stale {
-            self.discard_local_task_epoch(remote_id, epoch).await;
+        let local_device = self.local_device_id().await;
+        let mut tasks = parse_task_list(&value);
+        tasks.retain(|task| involves_device(task, &local_device));
+        let stale = self.stale_bindings(&tasks, requested_at, epoch).await?;
+        for (remote_id, reason) in &stale {
+            self.discard_local_task_epoch(remote_id, epoch, *reason)
+                .await;
         }
-        let mut merged = self.apply_missing_grace_epoch(tasks, epoch).await?;
-        merged.retain(|task| !deleted.contains(&task.id));
-        let bound = {
+        let merged = {
             let mut state = self.cloud.lock_epoch(epoch).await?;
+            let mut runtime = self.runtime.lock().await;
+            // 合并与写回在同一临界区：快照请求期间落地的删除 / 下发 / 状态变化不会被覆盖。
+            let merged = projection::merge_snapshot(
+                tasks,
+                &state.remote_tasks,
+                &[&runtime.touched_at, &runtime.bound_at],
+                &runtime.removed_at,
+                requested_at,
+            );
             state.remote_tasks.clone_from(&merged);
             // 已终态 / 已被云端删除的任务不再需要绑定；本机任务删除失败（daemon 暂不可用）的保留重试。
             let live = merged
                 .iter()
                 .filter(|task| !task.status.is_terminal())
                 .map(|task| task.id.as_str())
-                .chain(stale.iter().map(String::as_str))
+                .chain(stale.iter().map(|(remote_id, _)| remote_id.as_str()))
                 .collect::<HashSet<_>>();
             state
                 .remote_bindings
                 .retain(|remote_id, _| live.contains(remote_id.as_str()));
-            state
-                .remote_bindings
-                .keys()
-                .cloned()
-                .collect::<HashSet<_>>()
-        };
-        {
-            let _state = self.cloud.lock_epoch(epoch).await?;
-            self.runtime
-                .lock()
-                .await
+            let bindings = &state.remote_bindings;
+            runtime
                 .bound_at
-                .retain(|remote_id, _| bound.contains(remote_id));
+                .retain(|remote_id, _| bindings.contains_key(remote_id));
+            // 早于本次快照请求的写入 / 移除已被快照覆盖，不再影响以后的合并。
+            runtime.touched_at.retain(|_, at| *at > requested_at);
+            runtime.removed_at.retain(|_, at| *at > requested_at);
+            drop(runtime);
             self.events
                 .publish(AgentEvent::RemoteTasksChanged(merged.clone()));
-        }
+            merged
+        };
         self.store.persist(&self.state).await?;
         Ok(merged)
     }
 
-    /// 快照对照本机绑定：返回（需要删除本机任务的绑定，其中记录已被删除的那部分）。
-    /// 快照请求发出之后才建立的绑定不凭缺失判定——任务可能在该快照之后才下发。
+    /// 快照对照本机绑定：返回需要处理本机任务的绑定及原因。云端已 `canceled` → 明确取消；
+    /// 快照请求发出前就已绑定、快照里却没有 → 凭缺失推断（未终态记录不会被快照截断，但离线期间
+    /// 已终态的记录可能超出终态条数上限或已过期清理）。快照请求发出之后才建立的绑定不凭缺失判定。
     async fn stale_bindings(
         &self,
         snapshot: &[RemoteTaskDto],
         requested_at: Instant,
         epoch: crate::cloud::RequestEpoch,
-    ) -> Result<(Vec<String>, HashSet<String>), RemoteError> {
+    ) -> Result<Vec<(String, Discard)>, RemoteError> {
         let state = self.cloud.lock_epoch(epoch).await?;
-        let bound = state.remote_bindings.keys().cloned().collect::<Vec<_>>();
         let runtime = self.runtime.lock().await;
+        let by_id = snapshot
+            .iter()
+            .map(|task| (task.id.as_str(), task.status))
+            .collect::<HashMap<_, _>>();
         let mut stale = Vec::new();
-        let mut deleted = HashSet::new();
-        for remote_id in bound {
-            match snapshot.iter().find(|task| task.id == remote_id) {
-                Some(task) if task.status == RemoteTaskStatus::Canceled => stale.push(remote_id),
+        for remote_id in state.remote_bindings.keys() {
+            match by_id.get(remote_id.as_str()) {
+                Some(RemoteTaskStatus::Canceled) => {
+                    stale.push((remote_id.clone(), Discard::Explicit));
+                }
                 Some(_) => {}
                 None if runtime
                     .bound_at
-                    .get(&remote_id)
+                    .get(remote_id)
                     .is_none_or(|bound_at| *bound_at < requested_at) =>
                 {
-                    deleted.insert(remote_id.clone());
-                    stale.push(remote_id);
+                    stale.push((remote_id.clone(), Discard::SnapshotMissing));
                 }
                 None => {}
             }
         }
-        Ok((stale, deleted))
+        Ok(stale)
     }
 
     pub async fn local_device_id(&self) -> String {
@@ -1915,22 +2026,13 @@ impl RemoteTaskService {
         let task_value = value.get("task").cloned().unwrap_or(value);
         let task = serde_json::from_value::<RemoteTaskDto>(task_value)?;
         // 立即进入投影：UI 不必等云端推送。
-        {
-            let mut state = self.cloud.lock_epoch(epoch).await?;
-            if let Some(existing) = state
-                .remote_tasks
-                .iter_mut()
-                .find(|existing| existing.id == task.id)
-            {
-                existing.clone_from(&task);
-            } else {
-                state.remote_tasks.push(task.clone());
+        match self.upsert_task(task.clone(), epoch).await {
+            Ok(()) => {}
+            // 已下发成功：本地落盘失败不让调用方误以为没有下发。
+            Err(RemoteError::State(error)) => {
+                tracing::warn!(error = %error, "persisting the dispatched task failed");
             }
-            self.events
-                .publish(AgentEvent::RemoteTasksChanged(state.remote_tasks.clone()));
-        }
-        if let Err(error) = self.store.persist(&self.state).await {
-            tracing::warn!(error = %error, "projecting the dispatched task failed");
+            Err(error) => return Err(error),
         }
         Ok(RemoteDispatchResult { task })
     }
@@ -1940,7 +2042,9 @@ impl RemoteTaskService {
     /// - pause / resume：目标是本机时直接映射到 daemon；否则经云端转发（目标离线时云端 409）。
     /// - cancel / delete：目标是本机且已接单时先处理本机任务（delete 按 `delete_files`），再交给云端
     ///   落库。云端不依赖目标在线判定：cancel 置 `canceled`，delete 删除任何状态的记录；执行端据
-    ///   持久态收敛本机任务。delete 成功后立即从投影移除该行。
+    ///   持久态收敛本机任务。delete 成功后立即从投影移除该行，cancel 成功后立即置 `canceled`。
+    /// - 云端已没有这条记录（404，或投影里也没有）：从投影移除；cancel / delete 的目标已达成，按成功
+    ///   返回；pause / resume 返回 [`RemoteError::Gone`]（`notFound` + `remoteTaskGone`）。
     /// - `command_id` 缺省生成唯一值，同一动作可重复下发；相同 id 只执行一次。
     pub async fn command(&self, params: RemoteCommandParams) -> Result<(), RemoteError> {
         let epoch = self.cloud.request_epoch();
@@ -1958,18 +2062,30 @@ impl RemoteTaskService {
         {
             return Ok(());
         }
-        let task = self
+        let finalizes = matches!(
+            params.action,
+            RemoteCommandAction::Cancel | RemoteCommandAction::Delete
+        );
+        let task_id = params.task_id.clone();
+        let known = self
             .tasks()
             .await
             .into_iter()
-            .find(|task| task.id == params.task_id)
-            .ok_or_else(|| RemoteError::NotFound(params.task_id.clone()))?;
-        if task.status == RemoteTaskStatus::Unknown {
-            return Err(RemoteError::TaskUnavailable(task.id));
+            .find(|task| task.id == task_id);
+        match &known {
+            // 投影里没有：暂停 / 继续无从送达；取消 / 删除仍交给云端，已不存在即视为达成。
+            None if !finalizes => return Err(RemoteError::Gone(task_id)),
+            Some(task) if task.status == RemoteTaskStatus::Unknown => {
+                return Err(RemoteError::TaskUnavailable(task_id));
+            }
+            _ => {}
         }
-        let local_target = task.to_device == self.local_device_id().await;
+        let local_target = match &known {
+            Some(task) => task.to_device == self.local_device_id().await,
+            None => false,
+        };
         let local_command = IncomingCommand {
-            task_id: task.id.clone(),
+            task_id: task_id.clone(),
             action: params.action,
             command_id: command_id.clone(),
             delete_files: params.delete_files,
@@ -1988,7 +2104,7 @@ impl RemoteTaskService {
             .cloud
             .at_epoch(epoch)
             .command_remote(
-                &task.id,
+                &task_id,
                 &json!({
                     "action": action_wire(params.action),
                     "commandId": command_id,
@@ -1996,27 +2112,29 @@ impl RemoteTaskService {
                 }),
             )
             .await;
-        match sent {
-            Ok(_) => {}
-            // 记录已被别的设备删除：删除的目标已达成。
-            Err(error)
-                if params.action == RemoteCommandAction::Delete && error.status == Some(404) => {}
+        let gone = match sent {
+            Ok(_) => false,
+            // 记录已被别的设备删除或过期清理。
+            Err(error) if error.status == Some(404) => true,
             Err(error) => return Err(RemoteError::Cloud(error)),
+        };
+        if gone || params.action == RemoteCommandAction::Delete {
+            self.forget_tasks(std::slice::from_ref(&task_id), epoch)
+                .await?;
+        } else if params.action == RemoteCommandAction::Cancel {
+            self.mark_canceled(std::slice::from_ref(&task_id), epoch)
+                .await?;
         }
-        {
-            let mut state = self.cloud.lock_epoch(epoch).await?;
-            if params.action == RemoteCommandAction::Delete {
-                state.remote_tasks.retain(|existing| existing.id != task.id);
-                self.events
-                    .publish(AgentEvent::RemoteTasksChanged(state.remote_tasks.clone()));
-            }
-            self.runtime
-                .lock()
-                .await
-                .confirmed_commands
-                .insert(command_id);
+        if gone && !finalizes {
+            tracing::info!(task = %task_id, "remote task no longer exists in FluxCloud; removed from the projection");
+            return Err(RemoteError::Gone(task_id));
         }
-        self.store.persist(&self.state).await?;
+        let _state = self.cloud.lock_epoch(epoch).await?;
+        self.runtime
+            .lock()
+            .await
+            .confirmed_commands
+            .insert(command_id);
         Ok(())
     }
 
@@ -2137,44 +2255,15 @@ impl RemoteTaskService {
         }
         score
     }
+}
 
-    async fn apply_missing_grace_epoch(
-        &self,
-        incoming: Vec<RemoteTaskDto>,
-        epoch: crate::cloud::RequestEpoch,
-    ) -> Result<Vec<RemoteTaskDto>, RemoteError> {
-        let mut state = self.cloud.lock_epoch(epoch).await?;
-        let previous = state.remote_tasks.clone();
-        let incoming_ids = incoming
-            .iter()
-            .map(|task| task.id.clone())
-            .collect::<HashSet<_>>();
-        let mut expired = Vec::new();
-        let mut merged = incoming;
-        {
-            let mut runtime = self.runtime.lock().await;
-            for task in previous {
-                if incoming_ids.contains(task.id.as_str()) || task.status.is_terminal() {
-                    runtime.missing_rounds.remove(&task.id);
-                    continue;
-                }
-                let round = runtime.missing_rounds.entry(task.id.clone()).or_default();
-                *round = round.saturating_add(1);
-                if *round < MISSING_GRACE_ROUNDS {
-                    merged.push(task);
-                } else {
-                    runtime.missing_rounds.remove(&task.id);
-                    expired.push(task.id);
-                }
-            }
-        }
-        if !expired.is_empty() {
-            for id in expired {
-                state.remote_bindings.remove(&id);
-            }
-        }
-        Ok(merged)
-    }
+/// 执行端删除本机任务的依据。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Discard {
+    /// 云端明确取消 / 删除了记录（`canceled`、`task.removed`、上报 404 等）。
+    Explicit,
+    /// 只凭「快照里没有」推断：可能是离线期间已终态的记录超出快照条数上限或已过期清理。
+    SnapshotMissing,
 }
 
 /// 云端下发的命令（SSE `task.command` 或本机直接控制）。
@@ -2400,6 +2489,12 @@ fn parse_task_list(value: &Value) -> Vec<RemoteTaskDto> {
     parse_list(value, &["tasks", "value"], "remote task")
 }
 
+/// 任务属于本设备：本设备是它的发起端或执行端。同账号其它设备之间的任务不进本机投影——FluxCloud 已按
+/// 设备过滤整拉与实时事件，这里再兜一层，旧版云端仍返回全账号任务时行为一致。本机身份缺失时不过滤。
+fn involves_device(task: &RemoteTaskDto, local_device: &str) -> bool {
+    local_device.is_empty() || task.from_device == local_device || task.to_device == local_device
+}
+
 fn parse_device_list(value: &Value) -> Vec<CloudDevice> {
     parse_list(value, &["devices", "value"], "cloud device")
 }
@@ -2438,8 +2533,9 @@ pub enum RemoteError {
     InvalidAction(String),
     #[error("remote task protocol error: {0}")]
     Protocol(String),
-    #[error("remote task not found: {0}")]
-    NotFound(String),
+    /// FluxCloud 已没有这条记录（或本机投影里就没有）；投影已同步移除。
+    #[error("remote task no longer exists: {0}")]
+    Gone(String),
     /// 云端给出了本端不认识的任务状态，不可控制。
     #[error("remote task {0} is in a state this agent cannot control")]
     TaskUnavailable(String),
@@ -2458,6 +2554,48 @@ impl RemoteError {
             Self::Kicked => true,
             Self::Cloud(error) => error.reason() == Some(ErrorReason::OnlineDeviceLimit),
             _ => false,
+        }
+    }
+
+    /// 本机 RPC 错误详情（网关单指令与批量指令共用）；原始消息只进日志。
+    pub(crate) fn into_rpc_error(self) -> RpcErrorData {
+        use fluxdown_protocol::ApplicationErrorCode as Code;
+        match self {
+            Self::Daemon(error) => error,
+            Self::Cloud(error) => {
+                tracing::debug!(status = ?error.status, code = ?error.code, message = %error.message, "FluxCloud request failed");
+                error.to_rpc_error()
+            }
+            Self::Gone(_) => {
+                RpcErrorData::new(Code::NotFound, false).with_reason(ErrorReason::RemoteTaskGone)
+            }
+            Self::TaskUnavailable(_) => {
+                RpcErrorData::new(Code::Conflict, false).with_reason(ErrorReason::TaskStateConflict)
+            }
+            Self::InvalidArgument {
+                field,
+                reason,
+                message,
+            } => {
+                tracing::debug!(field, %message, "remote RPC argument rejected");
+                let mut data = RpcErrorData::new(Code::InvalidArgument, false);
+                data.field = Some(field.to_owned());
+                data.reason = reason;
+                data
+            }
+            Self::InvalidAction(action) => {
+                tracing::debug!(%action, "unknown remote task action");
+                let mut data = RpcErrorData::new(Code::InvalidArgument, false);
+                data.field = Some("action".to_owned());
+                data
+            }
+            Self::Kicked => {
+                RpcErrorData::new(Code::Conflict, false).with_reason(ErrorReason::OnlineDeviceLimit)
+            }
+            error @ (Self::Json(_) | Self::State(_) | Self::Protocol(_)) => {
+                tracing::error!(error = %error, "remote task internal error");
+                RpcErrorData::new(Code::Internal, false)
+            }
         }
     }
 }
@@ -3024,6 +3162,7 @@ mod tests {
                     refresh_token: "refresh".to_owned(),
                     expires_at_unix: i64::MAX,
                     session: None,
+                    issuer: String::new(),
                 }),
                 ..Default::default()
             };
@@ -3172,7 +3311,7 @@ mod tests {
             if state.snapshots.fetch_add(1, Ordering::SeqCst) == 0 {
                 return StatusCode::SERVICE_UNAVAILABLE.into_response();
             }
-            axum::Json(json!({"tasks": [{"id": "recovered", "url": "https://example.test/a", "status": "completed"}]})).into_response()
+            axum::Json(json!({"tasks": [{"id": "recovered", "url": "https://example.test/a", "fromDevice": "device-1", "toDevice": "device-2", "status": "completed"}]})).into_response()
         }
         let harness = Harness::new("snapshot_recovery", |router| {
             router
@@ -4357,12 +4496,26 @@ mod tests {
             }
             axum::Json(json!({"devices": [{"id": "d1", "deviceId": "device-1", "isCurrent": true, "isOnline": true}]})).into_response()
         }
-        let mut harness = Harness::new("roster_retry", |router| {
+        let release_retry = Arc::new(tokio::sync::Notify::new());
+        let retry_gate = release_retry.clone();
+        let mut harness = Harness::new("roster_retry", move |router| {
             router
                 .route("/api/v1/tasks/events", get(live_events))
                 .route("/api/v1/tasks/presence", post(mock_presence))
                 .route("/api/v1/tasks/remote", get(mock_remote_snapshot))
-                .route("/api/v1/devices", get(flaky_roster))
+                .route(
+                    "/api/v1/devices",
+                    get(move |state| {
+                        let retry_gate = retry_gate.clone();
+                        async move {
+                            let response = flaky_roster(state).await;
+                            if response.status().is_success() {
+                                retry_gate.notified().await;
+                            }
+                            response
+                        }
+                    }),
+                )
         })
         .await;
         Arc::get_mut(&mut harness.service)
@@ -4375,6 +4528,7 @@ mod tests {
             connection_state(&harness.service).state,
             fluxdown_protocol::CloudConnectionState::Connected
         );
+        release_retry.notify_one();
         wait_until(|| {
             connection_state(&harness.service).state
                 == fluxdown_protocol::CloudConnectionState::Connected
@@ -4829,11 +4983,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deleting_a_record_another_device_already_removed_still_succeeds() {
+    async fn commands_on_a_record_the_cloud_no_longer_has_drop_the_row() {
         let harness = Harness::new("delete_gone", |router| {
             router.route("/api/v1/tasks/{id}/command", post(not_found))
         })
         .await;
+        // pause：云端 404 → 行被移除，返回 Gone（notFound + remoteTaskGone）。
         seed_remote_task(&harness, "downloading").await;
         let pause = harness
             .service
@@ -4843,13 +4998,365 @@ mod tests {
                 ..delete_params(None)
             })
             .await;
-        assert!(matches!(pause, Err(RemoteError::Cloud(_))));
+        let Err(error) = pause else {
+            panic!("pausing a gone record must fail");
+        };
+        assert!(matches!(error, RemoteError::Gone(_)));
+        let data = error.into_rpc_error();
+        assert_eq!(data.code, fluxdown_protocol::ApplicationErrorCode::NotFound);
+        assert_eq!(
+            data.reason,
+            Some(fluxdown_protocol::ErrorReason::RemoteTaskGone)
+        );
+        assert!(harness.service.tasks().await.is_empty());
+        // 投影里已没有：再次暂停直接 Gone，不打云端。
+        assert!(matches!(
+            harness
+                .service
+                .command(RemoteCommandParams {
+                    action: RemoteCommandAction::Pause,
+                    delete_files: false,
+                    ..delete_params(None)
+                })
+                .await,
+            Err(RemoteError::Gone(_))
+        ));
+        // cancel / delete：已不存在即达成，即便投影里也没有（重复删除）。
+        seed_remote_task(&harness, "pending").await;
+        harness
+            .service
+            .command(RemoteCommandParams {
+                action: RemoteCommandAction::Cancel,
+                delete_files: false,
+                ..delete_params(None)
+            })
+            .await
+            .expect("canceling a gone record counts as canceled");
+        assert!(harness.service.tasks().await.is_empty());
+        for _ in 0..2 {
+            harness
+                .service
+                .command(delete_params(None))
+                .await
+                .expect("an already deleted record counts as deleted");
+        }
+        assert!(harness.service.tasks().await.is_empty());
+        harness.finish().await;
+    }
+
+    #[tokio::test]
+    async fn cancel_marks_the_row_canceled_without_waiting_for_the_event() {
+        let harness = Harness::new("cancel_now", command_mock).await;
+        seed_remote_task(&harness, "pending").await;
+        harness
+            .service
+            .command(RemoteCommandParams {
+                action: RemoteCommandAction::Cancel,
+                delete_files: false,
+                ..delete_params(None)
+            })
+            .await
+            .expect("cancel");
+        let tasks = harness.service.tasks().await;
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].status, RemoteTaskStatus::Canceled);
+        harness.finish().await;
+    }
+
+    /// 新进程（运行期记录为空）的第一次快照：云端已没有的持久化行一律收敛，不论是否终态。
+    #[tokio::test]
+    async fn phantom_rows_from_a_previous_process_vanish_on_the_first_snapshot() {
+        async fn snapshot() -> impl IntoResponse {
+            axum::Json(json!({"tasks": [
+                {"id": "kept", "toDevice": "device-2", "fromDevice": "device-1", "status": "downloading"}
+            ]}))
+        }
+        let harness = Harness::new("phantoms", |router| {
+            router.route("/api/v1/tasks/remote", get(snapshot))
+        })
+        .await;
+        {
+            let mut state = harness.state.lock().await;
+            for (id, status) in [
+                ("phantom-pending", "pending"),
+                ("phantom-failed", "failed"),
+                ("kept", "pending"),
+            ] {
+                state.remote_tasks.push(remote_task(json!({
+                    "id": id, "toDevice": "device-2", "fromDevice": "device-1", "status": status
+                })));
+            }
+        }
+        let merged = harness.service.refresh_snapshot().await.expect("snapshot");
+        assert_eq!(
+            merged
+                .iter()
+                .map(|task| (task.id.as_str(), task.status))
+                .collect::<Vec<_>>(),
+            [("kept", RemoteTaskStatus::Downloading)]
+        );
+        assert_eq!(harness.service.tasks().await, merged);
+        let persisted = harness.store.load().await.expect("persisted state");
+        assert_eq!(persisted.remote_tasks, merged);
+        harness.finish().await;
+    }
+
+    /// 投影只收本机发起或执行的任务：旧版云端整拉 / 推送里夹带的同账号其它设备之间的任务一律不进投影。
+    #[tokio::test]
+    async fn tasks_between_other_devices_never_enter_the_projection() {
+        async fn snapshot() -> impl IntoResponse {
+            axum::Json(json!({"tasks": [
+                {"id": "mine", "toDevice": "device-2", "fromDevice": "device-1", "status": "downloading"},
+                {"id": "for-me", "toDevice": "device-1", "fromDevice": "device-2", "status": "paused"},
+                {"id": "foreign", "toDevice": "device-3", "fromDevice": "device-2", "status": "downloading"}
+            ]}))
+        }
+        let harness = Harness::new("foreign_tasks", |router| {
+            router.route("/api/v1/tasks/remote", get(snapshot))
+        })
+        .await;
+        let merged = harness.service.refresh_snapshot().await.expect("snapshot");
+        assert_eq!(
+            merged
+                .iter()
+                .map(|task| task.id.as_str())
+                .collect::<Vec<_>>(),
+            ["mine", "for-me"]
+        );
+        for kind in ["task.dispatch", "task.status"] {
+            harness
+                .service
+                .apply_remote_event(json!({
+                    "type": kind, "id": "foreign-live", "toDevice": "device-3",
+                    "fromDevice": "device-2", "status": "pending"
+                }))
+                .await
+                .expect("foreign event");
+        }
+        assert!(
+            harness
+                .service
+                .tasks()
+                .await
+                .iter()
+                .all(|task| task.id != "foreign-live")
+        );
+        harness.finish().await;
+    }
+
+    /// 快照请求在途时落地的删除 / 下发不被快照覆盖。
+    #[tokio::test]
+    async fn writes_during_an_inflight_snapshot_survive_the_merge() {
+        async fn slow_snapshot(State(state): State<Arc<RemoteMockState>>) -> impl IntoResponse {
+            state.snapshots.fetch_add(1, Ordering::SeqCst);
+            state.snapshot_ready.notified().await;
+            axum::Json(json!({"tasks": [
+                {"id": "r1", "toDevice": "device-2", "fromDevice": "device-1", "status": "pending"}
+            ]}))
+        }
+        let harness = Harness::new("inflight", |router| {
+            command_mock(router).route("/api/v1/tasks/remote", get(slow_snapshot))
+        })
+        .await;
+        seed_remote_task(&harness, "pending").await;
+        let service = harness.service.clone();
+        let refresh = tokio::spawn(async move { service.refresh_snapshot().await });
+        while harness.mock.snapshots.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
         harness
             .service
             .command(delete_params(None))
             .await
-            .expect("an already deleted record counts as deleted");
+            .expect("delete while the snapshot is in flight");
+        harness
+            .service
+            .upsert_task(
+                remote_task(json!({
+                    "id": "fresh", "toDevice": "device-2", "fromDevice": "device-1", "status": "pending"
+                })),
+                harness.service.cloud.request_epoch(),
+            )
+            .await
+            .expect("dispatch result lands");
+        harness.mock.snapshot_ready.notify_one();
+        let merged = refresh.await.expect("join").expect("snapshot");
+        assert_eq!(
+            merged
+                .iter()
+                .map(|task| task.id.as_str())
+                .collect::<Vec<_>>(),
+            ["fresh"]
+        );
+        harness.finish().await;
+    }
+
+    async fn mock_batch(
+        State(state): State<Arc<RemoteMockState>>,
+        axum::Json(body): axum::Json<Value>,
+    ) -> impl IntoResponse {
+        let ids = body["taskIds"].as_array().cloned().unwrap_or_default();
+        state.commands.lock().await.push(body.clone());
+        let results = ids
+            .iter()
+            .map(|id| {
+                let outcome = if id == "gone" { "notFound" } else { "ok" };
+                json!({"taskId": id, "outcome": outcome})
+            })
+            .collect::<Vec<_>>();
+        axum::Json(json!({ "results": results }))
+    }
+
+    async fn seed_rows(harness: &Harness, rows: &[(&str, &str)]) {
+        let mut state = harness.state.lock().await;
+        for (id, status) in rows {
+            state.remote_tasks.push(remote_task(json!({
+                "id": id, "toDevice": "device-2", "fromDevice": "device-1", "status": status
+            })));
+        }
+    }
+
+    #[tokio::test]
+    async fn command_many_uses_the_batch_endpoint_and_settles_the_projection_once() {
+        let harness = Harness::new("batch", |router| {
+            router.route("/api/v1/tasks/commands", post(mock_batch))
+        })
+        .await;
+        seed_rows(
+            &harness,
+            &[("a", "pending"), ("gone", "pending"), ("b", "failed")],
+        )
+        .await;
+        let result = harness
+            .service
+            .command_many(fluxdown_protocol::RemoteCommandManyParams {
+                task_ids: ["a", "gone", "a", "missing", "b"]
+                    .map(str::to_owned)
+                    .to_vec(),
+                action: RemoteCommandAction::Delete,
+                delete_files: true,
+            })
+            .await
+            .expect("batch delete");
+        assert_eq!(result.succeeded, ["a", "gone", "missing", "b"]);
+        assert!(result.failed.is_empty());
         assert!(harness.service.tasks().await.is_empty());
+        let commands = harness.mock.commands.lock().await.clone();
+        assert_eq!(commands.len(), 1, "one cloud request for the whole batch");
+        assert_eq!(commands[0]["deleteFiles"], true);
+        harness.finish().await;
+    }
+
+    #[tokio::test]
+    async fn command_many_reports_gone_rows_for_pause_and_rejects_oversized_batches() {
+        let harness = Harness::new("batch_pause", |router| {
+            router.route("/api/v1/tasks/commands", post(mock_batch))
+        })
+        .await;
+        seed_rows(&harness, &[("a", "downloading"), ("gone", "downloading")]).await;
+        let result = harness
+            .service
+            .command_many(fluxdown_protocol::RemoteCommandManyParams {
+                task_ids: ["a", "gone", "unknown"].map(str::to_owned).to_vec(),
+                action: RemoteCommandAction::Pause,
+                delete_files: false,
+            })
+            .await
+            .expect("batch pause");
+        assert_eq!(result.succeeded, ["a"]);
+        let failed = result
+            .failed
+            .iter()
+            .map(|failure| (failure.task_id.as_str(), failure.error.reason))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            failed,
+            [
+                ("gone", Some(fluxdown_protocol::ErrorReason::RemoteTaskGone)),
+                (
+                    "unknown",
+                    Some(fluxdown_protocol::ErrorReason::RemoteTaskGone)
+                ),
+            ]
+        );
+        assert_eq!(
+            harness
+                .service
+                .tasks()
+                .await
+                .iter()
+                .map(|task| task.id.as_str())
+                .collect::<Vec<_>>(),
+            ["a"]
+        );
+        let oversized = harness
+            .service
+            .command_many(fluxdown_protocol::RemoteCommandManyParams {
+                task_ids: vec!["x".to_owned(); fluxdown_protocol::REMOTE_COMMAND_MANY_MAX + 1],
+                action: RemoteCommandAction::Delete,
+                delete_files: false,
+            })
+            .await;
+        assert!(matches!(
+            oversized,
+            Err(RemoteError::InvalidArgument {
+                field: "taskIds",
+                ..
+            })
+        ));
+        harness.finish().await;
+    }
+
+    /// 旧版云端没有批量端点（405）：回退逐条下发，之后不再尝试批量端点。
+    #[tokio::test]
+    async fn command_many_falls_back_to_single_commands_on_old_clouds() {
+        async fn method_not_allowed() -> StatusCode {
+            StatusCode::METHOD_NOT_ALLOWED
+        }
+        let harness = Harness::new("batch_fallback", |router| {
+            command_mock(router).route("/api/v1/tasks/commands", post(method_not_allowed))
+        })
+        .await;
+        let rows = (0..10).map(|index| format!("r{index}")).collect::<Vec<_>>();
+        seed_rows(
+            &harness,
+            &rows
+                .iter()
+                .map(|id| (id.as_str(), "pending"))
+                .collect::<Vec<_>>(),
+        )
+        .await;
+        for action in [RemoteCommandAction::Cancel, RemoteCommandAction::Delete] {
+            let result = harness
+                .service
+                .command_many(fluxdown_protocol::RemoteCommandManyParams {
+                    task_ids: rows.clone(),
+                    action,
+                    delete_files: false,
+                })
+                .await
+                .expect("fallback batch");
+            assert_eq!(result.succeeded.len(), rows.len());
+        }
+        assert!(harness.service.batch_unsupported.load(Ordering::Relaxed));
+        assert_eq!(harness.mock.commands.lock().await.len(), rows.len() * 2);
+        assert!(harness.service.tasks().await.is_empty());
+        harness.finish().await;
+    }
+
+    /// 只凭「快照里没有」推断时，本机已失败的任务保留（只解除绑定）；运行中的照常删除。
+    #[tokio::test]
+    async fn snapshot_missing_bindings_keep_failed_local_tasks() {
+        let harness = Harness::with_daemon("missing_keeps_failed", |router| {
+            router.route("/api/v1/tasks/remote", get(mock_remote_snapshot))
+        })
+        .await;
+        seed_daemon_tasks(&harness, vec![local_task("l1", 4), local_task("l2", 1)]);
+        bind(&harness, "r1", "l1").await;
+        bind(&harness, "r2", "l2").await;
+        harness.service.refresh_snapshot().await.expect("snapshot");
+        assert_eq!(daemon_deletes(&harness).await, [("l2".to_owned(), false)]);
+        assert!(bound_remote_ids(&harness).await.is_empty());
         harness.finish().await;
     }
 
@@ -5369,7 +5876,7 @@ mod tests {
             .await;
         harness
             .service
-            .discard_local_task_epoch("b-bound", epoch)
+            .discard_local_task_epoch("b-bound", epoch, super::Discard::Explicit)
             .await;
         assert!(
             harness

@@ -86,13 +86,28 @@ enum TaskDetailText {
         }
     }
 
-    /// Auto 路由或站点规则 wire 标签 → 文案；未知值原样返回。
+    /// 任务链路 wire 标签（Auto 路由、站点规则、全局 / 任务级代理与 BT 会话出口）→ 文案；未知值原样返回。
+    /// 整串精确匹配必须先于后缀拆分，否则 `rule:system`、`bt:all:manual` 会被误拆。
     static func routeLabel(_ route: String) -> String {
         switch route {
         case "rule:direct": return L("taskRouteRuleDirect")
         case "rule:system": return L("taskRouteRuleSystem")
         case "rule:manual": return L("taskRouteRuleManual")
         case "rule:custom": return L("taskRouteRuleCustom")
+        case "global:direct": return L("taskRouteGlobalDirect")
+        case "global:bypass": return L("taskRouteGlobalBypass")
+        case "global:manual": return L("taskRouteGlobalManual")
+        case "global:system": return L("taskRouteGlobalSystem")
+        case "global:pac": return L("taskRouteGlobalPac")
+        case "task:proxy": return L("taskRouteTaskProxy")
+        case "task:direct": return L("taskRouteTaskDirect")
+        case "protocol:direct": return L("taskRouteProtocolDirect")
+        case "protocol:proxy": return L("taskRouteProtocolProxy")
+        case "bt:direct": return L("taskRouteBtDirect")
+        case "bt:trackers:manual": return L("taskRouteBtTrackersManual")
+        case "bt:trackers:system": return L("taskRouteBtTrackersSystem")
+        case "bt:all:manual": return L("taskRouteBtAllManual")
+        case "bt:all:system": return L("taskRouteBtAllSystem")
         default: break
         }
         var base = route

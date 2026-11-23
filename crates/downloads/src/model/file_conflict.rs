@@ -10,7 +10,7 @@ use gpui::SharedString;
 
 use super::{file_extension, format_bytes};
 
-/// 一条待确认请求。大小 / 时间文本在建模时算好，渲染（含每秒倒计时重绘）不再分配。
+/// 一条待确认请求。保留字节数，以便对话框随设备的显示偏好刷新。
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct FileConflictItem {
     pub(crate) request_id: String,
@@ -22,11 +22,11 @@ pub(crate) struct FileConflictItem {
     pub(crate) kind: FileKind,
     pub(crate) extension: SharedString,
     /// 已有文件大小；主机读取失败时为 `None`。
-    pub(crate) existing_size: Option<SharedString>,
+    pub(crate) existing_size: Option<u64>,
     /// 已有文件修改时间（本地时间，到分钟）；未知时为 `None`。
     pub(crate) existing_modified: Option<SharedString>,
     /// 新下载大小；未知时为 `None`（由视图显示「大小未知」）。
-    pub(crate) incoming_size: Option<SharedString>,
+    pub(crate) incoming_size: Option<u64>,
     pub(crate) rename_preview: SharedString,
     actions: Vec<FileExistsAction>,
     pub(crate) deadline_unix_ms: i64,
@@ -55,15 +55,23 @@ impl FileConflictItem {
             name_fold: file_name.to_lowercase(),
             kind: FileKind::of_name(file_name),
             extension: file_extension(file_name),
-            existing_size: existing_size.map(|size| SharedString::from(format_bytes(size))),
+            existing_size: *existing_size,
             existing_modified: existing_modified_unix_ms.and_then(format_modified),
             incoming_size: incoming_size
                 .filter(|size| *size > 0)
-                .map(|size| SharedString::from(format_bytes(size.unsigned_abs()))),
+                .map(i64::unsigned_abs),
             rename_preview: SharedString::from(rename_preview.clone()),
             actions: actions.clone(),
             deadline_unix_ms: request.deadline_unix_ms,
         })
+    }
+
+    pub(crate) fn existing_size_text(&self) -> Option<SharedString> {
+        self.existing_size.map(format_bytes).map(SharedString::from)
+    }
+
+    pub(crate) fn incoming_size_text(&self) -> Option<SharedString> {
+        self.incoming_size.map(format_bytes).map(SharedString::from)
     }
 
     /// 重命名恒可用（协议保证）；覆盖 / 跳过取决于任务协议。

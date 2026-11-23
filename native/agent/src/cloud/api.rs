@@ -116,6 +116,12 @@ impl CloudApi {
         .await
     }
 
+    /// `POST /tasks/commands`：同一动作批量作用于至多 200 条记录（旧版云端 404 / 405）。
+    pub async fn command_remote_many<P: Serialize>(&self, body: &P) -> Result<Value, CloudError> {
+        self.authed(Method::POST, "/api/v1/tasks/commands", Some(body))
+            .await
+    }
+
     pub async fn report_remote_status<P: Serialize>(
         &self,
         id: &str,

@@ -3,7 +3,7 @@ title: 快速上手
 description: 创建第一个下载任务,掌握任务控制,并了解队列与限速。
 section: getting-started
 order: 2
-sourceHash: "819e43505d55"
+sourceHash: "0f74a0bfead5"
 ---
 
 本文带你走完在 FluxDown 中新建下载、控制运行中任务、用队列与限速组织任务的完整流程。如果还没安装,先看[安装](/docs/zh/getting-started/installation/);想了解各面板的具体位置,可参考[界面总览](/docs/zh/getting-started/interface/)。
@@ -23,7 +23,7 @@ sourceHash: "819e43505d55"
 
 | 字段 | 作用 |
 |---|---|
-| **任务代理** | 仅用于此任务的代理,例如 `socks5://127.0.0.1:1080` 或 `http://host:port`。留空则使用全局代理。BT 下载不支持代理。 |
+| **任务代理** | 仅用于此任务的代理，例如 `socks5://127.0.0.1:1080` 或 `http://host:port`。留空则跟随站点规则、协议或全局出口。BitTorrent 和 eD2K 请在**设置 → 代理**中配置协议代理。 |
 | **User-Agent** | 选择预设(Chrome、Firefox、Edge、Safari),或直接输入自定义字符串。 |
 | **Cookie** | `name=value; name2=value2` 格式的原始 Cookie,用于需要登录态的下载。 |
 | **哈希校验** | 选择算法(MD5/SHA-1/SHA-256/SHA-512)并粘贴期望的哈希值,下载完成后 FluxDown 会校验文件完整性,不一致时给出提示。留空则跳过校验。 |

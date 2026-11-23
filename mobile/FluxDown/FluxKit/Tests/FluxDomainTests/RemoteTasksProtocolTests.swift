@@ -266,3 +266,158 @@ struct RemoteTasksProtocolTests {
         #expect(notReady[0].online == nil && !notReady[0].routesViaLink)
     }
 }
+
+/// `agent.remote.commandMany` 的 wire 形态与多选批量执行助手。
+struct RemoteBatchTests {
+    private static func decode<T: Decodable>(_ json: String, as type: T.Type = T.self) throws -> T {
+        try ProtocolJSON.decode(T.self, from: Data(json.utf8), what: "test")
+    }
+
+    /// 线程安全的调用记录（闭包是 `@Sendable`）。
+    private final class Recorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var items: [[String]] = []
+        private var running = 0
+        private(set) var peak = 0
+
+        func record(_ ids: [String]) {
+            lock.lock()
+            items.append(ids)
+            lock.unlock()
+        }
+
+        var calls: [[String]] {
+            lock.lock()
+            defer { lock.unlock() }
+            return items
+        }
+
+        func enter() {
+            lock.lock()
+            running += 1
+            peak = max(peak, running)
+            lock.unlock()
+        }
+
+        func leave() {
+            lock.lock()
+            running -= 1
+            lock.unlock()
+        }
+    }
+
+    @Test func constantsAndParamsShape() throws {
+        #expect(HostMethod.agentRemoteCommandMany == "agent.remote.commandMany")
+        #expect(HostCapability.agentRemoteBatch == "agent.remoteBatch")
+        #expect(RemoteCommandManyParams.maxIds == 1000)
+        let json = try ProtocolJSON.encode(RemoteCommandManyParams(taskIds: ["a", "b"], action: .delete, deleteFiles: true), what: "t")
+        #expect(String(decoding: json, as: UTF8.self) == #"{"action":"delete","deleteFiles":true,"taskIds":["a","b"]}"#)
+        let plain = try ProtocolJSON.encode(RemoteCommandManyParams(taskIds: ["a"], action: .pause), what: "t")
+        #expect(String(decoding: plain, as: UTF8.self) == #"{"action":"pause","deleteFiles":false,"taskIds":["a"]}"#)
+    }
+
+    @Test func resultDecodesFailuresIntoHostErrorsAndToleratesMissingArrays() throws {
+        let result = try Self.decode("""
+        {"succeeded":["a","b"],"failed":[
+          {"taskId":"c","error":{"code":"notFound","retryable":false,"reason":"remoteTaskGone"}},
+          {"taskId":"d","error":{"code":"unavailable","retryable":true,"reason":"targetDeviceOffline","field":"x","revision":3}},
+          {"taskId":"e","error":{"code":"somethingNew"}}
+        ]}
+        """, as: RemoteCommandManyResult.self)
+        #expect(result.succeeded == ["a", "b"])
+        #expect(result.failed.map(\.taskId) == ["c", "d", "e"])
+        #expect(result.failed[0].error.code == .notFound)
+        #expect(result.failed[0].error.reason == "remoteTaskGone")
+        #expect(!result.failed[0].error.retryable)
+        #expect(result.failed[1].error.code == .unavailable)
+        #expect(result.failed[1].error.retryable)
+        #expect(result.failed[1].error.reason == "targetDeviceOffline")
+        // 未知 code 不抛错，落入 internal。
+        #expect(result.failed[2].error.code == .internal)
+        #expect(result.failed[2].error.reason == nil)
+
+        let empty = try Self.decode("{}", as: RemoteCommandManyResult.self)
+        #expect(empty.succeeded.isEmpty && empty.failed.isEmpty)
+        let onlyOk = try Self.decode(#"{"succeeded":["x"]}"#, as: RemoteCommandManyResult.self)
+        #expect(onlyOk.succeeded == ["x"] && onlyOk.failed.isEmpty)
+    }
+
+    @Test func eligibleIdsFollowControlMatrixAndDedupe() {
+        let tasks = [
+            RemoteTaskDto(id: "dl", toDevice: "pc", status: .downloading),
+            RemoteTaskDto(id: "dl", toDevice: "pc", status: .downloading),
+            RemoteTaskDto(id: "paused", toDevice: "pc", status: .paused),
+            RemoteTaskDto(id: "off", toDevice: "nas", status: .downloading),
+            RemoteTaskDto(id: "done", toDevice: "pc", status: .completed),
+            RemoteTaskDto(id: "odd", toDevice: "pc", status: .unknown("x")),
+        ]
+        let online: (RemoteTaskDto) -> Bool? = { $0.toDevice == "nas" ? false : true }
+        #expect(RemoteBatch.eligibleIds(.pause, in: tasks, targetOnline: online) == ["dl"])
+        #expect(RemoteBatch.eligibleIds(.resume, in: tasks, targetOnline: online) == ["paused"])
+        // 取消 / 删除不依赖目标在线；未知状态永不可控制。
+        #expect(RemoteBatch.eligibleIds(.cancel, in: tasks, targetOnline: online) == ["dl", "paused", "off"])
+        #expect(RemoteBatch.eligibleIds(.delete, in: tasks, targetOnline: online) == ["dl", "paused", "off", "done"])
+        // 在线未知（nil）不据此禁用。
+        #expect(RemoteBatch.eligibleIds(.pause, in: tasks, targetOnline: { _ in nil }) == ["dl", "off"])
+    }
+
+    @Test func chunksSplitBySize() {
+        let ids = (0 ..< 2500).map(String.init)
+        let parts = RemoteBatch.chunks(ids)
+        #expect(parts.map(\.count) == [1000, 1000, 500])
+        #expect(parts.flatMap { $0 } == ids)
+        #expect(RemoteBatch.chunks([]).isEmpty)
+        #expect(RemoteBatch.chunks(["a", "b", "c"], size: 2) == [["a", "b"], ["c"]])
+    }
+
+    @Test func batchedRunChunksAndMergesResultsAndTurnsCallFailureIntoPerIdFailures() async {
+        let recorder = Recorder()
+        let gone = HostError(.notFound, reason: "remoteTaskGone")
+        let outcome = await RemoteBatch.run(
+            ids: ["a", "b", "c", "d", "e"],
+            batched: true,
+            chunkSize: 2,
+            many: { ids throws(HostError) in
+                recorder.record(ids)
+                if ids == ["c", "d"] { throw HostError(.unavailable, retryable: true) }
+                if ids == ["e"] { return RemoteCommandManyResult(failed: [RemoteCommandFailure(taskId: "e", error: gone)]) }
+                return RemoteCommandManyResult(succeeded: ids)
+            },
+            single: { _ throws(HostError) in Issue.record("single must not run when batched") }
+        )
+        #expect(recorder.calls == [["a", "b"], ["c", "d"], ["e"]])
+        #expect(outcome.succeeded == ["a", "b"])
+        #expect(outcome.failed.map(\.taskId) == ["c", "d", "e"])
+        #expect(outcome.failed[0].error.code == .unavailable)
+        #expect(outcome.firstError?.code == .unavailable)
+        #expect(outcome.failed[2].error.reason == "remoteTaskGone")
+    }
+
+    @Test func fallbackRunIsBoundedAndKeepsInputOrder() async {
+        let recorder = Recorder()
+        let ids = (0 ..< 12).map { "t\($0)" }
+        let outcome = await RemoteBatch.run(
+            ids: ids,
+            batched: false,
+            concurrency: 4,
+            many: { _ throws(HostError) in
+                Issue.record("many must not run on the per-id fallback")
+                return RemoteCommandManyResult()
+            },
+            single: { id throws(HostError) in
+                recorder.enter()
+                defer { recorder.leave() }
+                recorder.record([id])
+                // 让后启动的任务更早完成，验证结果仍按输入顺序。
+                try? await Task.sleep(for: .milliseconds(id == "t0" ? 40 : 5))
+                if id == "t3" || id == "t7" { throw HostError(.notFound) }
+            }
+        )
+        #expect(recorder.peak <= 4)
+        #expect(recorder.peak >= 2)
+        #expect(recorder.calls.count == 12)
+        #expect(outcome.failed.map(\.taskId) == ["t3", "t7"])
+        #expect(outcome.succeeded == ids.filter { $0 != "t3" && $0 != "t7" })
+        #expect(outcome.firstError?.code == .notFound)
+    }
+}

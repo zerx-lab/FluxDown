@@ -428,6 +428,12 @@ mod tests {
     async fn fake_server(
         reply: Option<&'static str>,
     ) -> std::io::Result<(u16, Arc<std::sync::atomic::AtomicUsize>)> {
+        fake_server_with(move |_| reply).await
+    }
+
+    async fn fake_server_with(
+        reply: impl Fn(&[u8]) -> Option<&'static str> + Copy + Send + 'static,
+    ) -> std::io::Result<(u16, Arc<std::sync::atomic::AtomicUsize>)> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let port = listener.local_addr()?.port();
@@ -445,7 +451,7 @@ mod tests {
                             Ok(n) => seen.extend_from_slice(&buf[..n]),
                         }
                     }
-                    match reply {
+                    match reply(&seen) {
                         Some(reply) => {
                             if let Err(error) = socket.write_all(reply.as_bytes()).await {
                                 tracing::debug!("fake server peer closed early: {error}");
@@ -489,6 +495,9 @@ mod tests {
         let mut params =
             crate::downloader::test_support::params_with_interceptor(url, crate::intercept::noop())
                 .await?;
+        // 生产的起飞 client 在竞速前就已构建。用同一装配路径初始化共享根证书库，
+        // 不把 nextest 独立进程首次读取系统证书的时间算进错峰断言。
+        params.client = crate::downloader::build_client(&params.proxy_config, "")?;
         params.auto_proxy = Some(Arc::new(AutoProxyCtx {
             host: host.to_string(),
             user_agent: String::new(),
@@ -541,6 +550,31 @@ mod tests {
                 "直连失败须记入路径失败权重，下个任务不再以它起飞"
             );
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn head_not_supported_does_not_mask_get_transport_failure() -> TestResult {
+        let (direct_port, _) = fake_server_with(|request| {
+            Some(if request.starts_with(b"HEAD ") {
+                "HTTP/1.1 405 Method Not Allowed\r\nAllow: GET\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            } else {
+                // Both GET probes reach the server, but it closes without sending headers.
+                ""
+            })
+        })
+        .await?;
+        let (proxy_port, _) = fake_server(Some(OK_RESPONSE)).await?;
+        let url = format!("http://127.0.0.1:{direct_port}/f.bin");
+        let host = format!("race-get-closed-{proxy_port}.test");
+        let mut params = race_params(&url, &host, vec![system_proxy_path(proxy_port)]).await?;
+
+        let probed = race_probe(&mut params, ProbeKind::HeadAndRange).await?;
+
+        assert_eq!(probed.info.total_bytes, 5);
+        assert_eq!(params.proxy_config.port, proxy_port);
+        let ctx = params.auto_proxy.as_ref().ok_or("ctx")?;
+        assert_eq!(ctx.start_label, route::PROXY_FAILOVER_SYSTEM);
         Ok(())
     }
 

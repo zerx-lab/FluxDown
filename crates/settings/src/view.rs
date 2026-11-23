@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     ControlExt as _, FluxIcon, nav_icon_color, segmented_tabs, sidebar_navigation_button,
 };
@@ -18,7 +19,6 @@ use gpui::{
 use gpui_component::{
     Icon, WindowExt as _,
     input::{Input, InputState},
-    notification::Notification,
     scroll::ScrollableElement as _,
     v_flex,
 };
@@ -32,6 +32,7 @@ use crate::store::{SettingsErrorKind, SettingsStore};
 use crate::ui::{
     CONTENT_PADDING_LEFT, CONTENT_PADDING_RIGHT, SettingsPage, meta_text, page_heading,
 };
+use crate::version_button::VersionHostAction;
 
 /// 分类导航列宽（与下载侧栏默认宽一致）。
 const SIDEBAR_WIDTH: f32 = 200.;
@@ -72,8 +73,8 @@ pub(crate) enum ReferralPage {
     Shown(Option<AnyView>),
 }
 
-/// app 注入的外部内容：账户 / 推介页与扩展页由对应 capability 提供；活动栏开关由 app 的
-/// 活动栏注册表派生。
+/// app 注入的外部内容与宿主动作：账户 / 推介页与扩展页由对应 capability 提供；活动栏开关由
+/// app 的活动栏注册表派生。
 #[derive(Default)]
 pub struct SettingsContentSlots {
     pub account: Option<AnyView>,
@@ -82,6 +83,8 @@ pub struct SettingsContentSlots {
     pub referral: Option<VisibleSlot>,
     /// 「通用 → 活动栏」分区的开关行，按活动栏自上而下顺序。
     pub activity_bar: Vec<ActivityBarToggle>,
+    /// 打开独立的更新窗口（版本信息、更新日志与更新动作）；缺省时「关于」页不显示更新日志按钮。
+    pub open_update_prompt: Option<VersionHostAction>,
 }
 
 /// 活动栏可选入口的可见性开关：一个布尔偏好（缺省视为显示）+ 标题 / 描述文案键。
@@ -139,12 +142,12 @@ impl SettingsView {
                             | SettingsErrorKind::GatewayRestartFailed
                     ) =>
                 {
-                    Some(Notification::error(
+                    Some(toast::error(
                         translator.text(error.kind.i18n_key()).to_owned(),
                     ))
                 }
                 None if snapshot.last_notice() == Some("apiServiceRestarted") => {
-                    Some(Notification::success(translator.text_with(
+                    Some(toast::success(translator.text_with(
                         "apiServiceRestarted",
                         &[("port", &snapshot.gateway().port.to_string())],
                     )))
@@ -159,10 +162,12 @@ impl SettingsView {
         })
         .detach();
         // 站点凭据由新建任务等流程在窗口外写入且无事件推送：每次打开窗口重新加载一次。
-        // 系统集成状态上次失败的话，重新打开窗口也给一次重试机会。
+        // 系统集成状态上次失败的话，重新打开窗口也给一次重试机会。浏览器扩展可能已在浏览器里
+        // 启用 / 移除，同样重新检测（保留旧结果直到新结果到达）。
         store.update(cx, |store, _| {
             store.reset_load("siteAuth");
             store.reset_load("integration");
+            store.reset_load(crate::store::BROWSER_EXTENSION_LOAD);
         });
         let placeholder = translator.read(cx).text("settingsSearchHint").to_owned();
         let search = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
@@ -222,6 +227,7 @@ impl SettingsView {
         let ctx = SectionContext {
             store: &self.store,
             translator: &translator,
+            open_update_prompt: self.slots.open_update_prompt.clone(),
         };
         build_pages(
             &ctx,
@@ -252,7 +258,7 @@ impl SettingsView {
         cx.notify();
     }
 
-    /// 端口映射状态行可见时每 [`PORT_STATUS_POLL_INTERVAL`] 拉一次，不可见即停。
+    /// BT「连接」页签可见时每 [`PORT_STATUS_POLL_INTERVAL`] 拉一次，不可见即停。
     /// 重叠请求由 store 的在途标记挡掉。
     fn sync_port_status_poll(&mut self, visible: bool, cx: &mut Context<Self>) {
         if !visible {
@@ -398,7 +404,6 @@ impl SettingsView {
     fn render_content(
         &self,
         page: &SettingsPage,
-        content_width: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -444,7 +449,7 @@ impl SettingsView {
                     .pr(px(CONTENT_PADDING_RIGHT))
                     .pt(tokens.spacing.lg + tokens.spacing.xs)
                     .pb(tokens.spacing.xl)
-                    .child(page.render_tab(tab_id, content_width, window, cx));
+                    .child(page.render_tab(tab_id, window, cx));
                 // 占满高度的注入视图自管滚动（固定头部 + 局部滚动），宿主不再包滚动容器。
                 if fill {
                     body.into_any_element()
@@ -529,21 +534,13 @@ impl Render for SettingsView {
         {
             self.selected = SharedString::from(first.key);
         }
-        // 内容区可用宽度：窗口宽 - 侧栏 - 左右留白（列数判定用，不参与布局）。
-        let content_width = f32::from(window.viewport_size().width)
-            - f32::from(active_theme(cx).text_extent(SIDEBAR_WIDTH))
-            - CONTENT_PADDING_LEFT
-            - CONTENT_PADDING_RIGHT;
         let feedback = self.feedback(cx);
         let active = pages
             .iter()
             .find(|page| self.selected == page.key)
             .or_else(|| pages.first());
-        let port_status_visible = active.is_some_and(|page| {
-            page.key == "bt"
-                && self.active_tab_id(page) == "connection"
-                && self.store.read(cx).daemon_bool("bt_enable_upnp")
-        });
+        let port_status_visible =
+            active.is_some_and(|page| page.key == "bt" && self.active_tab_id(page) == "connection");
         self.sync_port_status_poll(port_status_visible, cx);
 
         v_flex()
@@ -569,9 +566,7 @@ impl Render for SettingsView {
                     .flex()
                     .items_stretch()
                     .child(self.render_sidebar(&pages, cx))
-                    .children(
-                        active.map(|page| self.render_content(page, content_width, window, cx)),
-                    ),
+                    .children(active.map(|page| self.render_content(page, window, cx))),
             )
     }
 }

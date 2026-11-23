@@ -16,4 +16,12 @@ pub trait SettingsPort: Send + Sync {
     fn foreground_open_directory(&self, _path: &str) -> Option<PortFuture<serde_json::Value>> {
         None
     }
+
+    /// 宿主需要由前台进程安装浏览器扩展（拉起浏览器）时返回执行 future；`None` 保留原有 agent RPC。
+    fn foreground_install_browser_extension(
+        &self,
+        _browser: fluxdown_protocol::browser_extension::BrowserKind,
+    ) -> Option<PortFuture<serde_json::Value>> {
+        None
+    }
 }

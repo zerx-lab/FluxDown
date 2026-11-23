@@ -179,7 +179,10 @@ export interface DomRuleEntry {
 /** page 阶段规则给内容脚本的提示。 */
 export interface PageHints {
   titles: { selector: string; attr?: string }[];
+  /** `float: "hide"`：这些容器内的媒体元素不显示浮钮。 */
   players: { selector: string }[];
+  /** `float: "inset"`：这些容器内的媒体元素，贴顶部的浮钮离元素顶部至少 `top` px。 */
+  insets: { selector: string; top: number }[];
 }
 
 /**
@@ -1021,11 +1024,12 @@ export function compileRules(input: CompileInput): CompiledRules {
 
     pageHints(pageUrl) {
       const c = makeCtx(pageUrl, pageUrl);
-      const hints: PageHints = { titles: [], players: [] };
+      const hints: PageHints = { titles: [], players: [], insets: [] };
       for (const r of pageRules) {
         if (!r.matches(c)) continue;
         const a = r.rule.action;
         if (a.kind === "title") hints.titles.push(a.attr ? { selector: a.selector, attr: a.attr } : { selector: a.selector });
+        else if (a.kind === "player" && a.float === "inset") hints.insets.push({ selector: a.selector, top: a.top });
         else if (a.kind === "player") hints.players.push({ selector: a.selector });
       }
       return hints;

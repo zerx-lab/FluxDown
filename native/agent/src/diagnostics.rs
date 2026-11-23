@@ -67,8 +67,8 @@ const CHECK_NMH_POLICY: &str = "nmh_policy";
 const CHECK_NMH_COMSPEC: &str = "nmh_comspec";
 /// 类 Unix：属于其他用户的 NMH 启动脚本 / 清单（以后的自动注册改不了）。
 const CHECK_NMH_OWNERSHIP: &str = "nmh_ownership";
-/// 桌面宿主以提权身份运行：类 Unix 为 root；Windows 为 UAC 完整管理员令牌（浏览器中继连不上
-/// 本进程的命名管道，经它打开的文件也以管理员身份运行）。
+/// 桌面宿主以提权身份运行：类 Unix 为 root（浏览器中继连不上 root 的 socket）；Windows 为 UAC
+/// 完整管理员令牌（管道已用固定安全描述符，中继仍连得上，但经它打开的文件也以管理员身份运行）。
 #[cfg(any(unix, windows))]
 const CHECK_ELEVATED_RUN: &str = "elevated_run";
 
@@ -250,10 +250,20 @@ impl DiagnosticsService {
         self
     }
 
+    fn agent_log_dir(&self) -> PathBuf {
+        #[cfg(target_os = "android")]
+        if self.embedded
+            && let Some(dir) = crate::logging::active_android_log_dir()
+        {
+            return dir.to_path_buf();
+        }
+        crate::log_export::agent_log_dir(self.store.data_dir())
+    }
+
     /// 运行全部探测并生成报告。
     pub async fn run(&self) -> Result<DiagnosticsReportDto, DiagnosticsError> {
         let gateway = self.state.lock().await.gateway.clone();
-        let data_dir = self.store.data_dir().to_path_buf();
+        let agent_log_dir = self.agent_log_dir();
         let opted_out = self.events.inspect(opted_out_associations);
         let disk_sleep = if self.embedded {
             None
@@ -261,9 +271,10 @@ impl DiagnosticsService {
             self.events.inspect(disk_sleep_blockers)
         };
         let category_dirs = self.events.inspect(category_probe_targets);
-        let sync_probe = tokio::task::spawn_blocking(move || probe_sync(&data_dir, &opted_out))
-            .await
-            .map_err(join_error)?;
+        let sync_probe =
+            tokio::task::spawn_blocking(move || probe_sync(&agent_log_dir, &opted_out))
+                .await
+                .map_err(join_error)?;
         let gateway_probes = async {
             if self.embedded {
                 None
@@ -407,10 +418,7 @@ impl DiagnosticsService {
     /// agent 与 daemon 的日志目录；daemon 不可达时其目录为空串。
     pub async fn log_paths(&self) -> LogPathsDto {
         let describe = self.daemon_describe().await;
-        crate::log_export::log_paths(
-            &crate::log_export::agent_log_dir(self.store.data_dir()),
-            daemon_log_dir(describe.as_ref()),
-        )
+        crate::log_export::log_paths(&self.agent_log_dir(), daemon_log_dir(describe.as_ref()))
     }
 
     /// 打包 agent 摘要、Doctor 报告、daemon 快照与两侧日志到 `.zip`。
@@ -452,7 +460,7 @@ impl DiagnosticsService {
         }
 
         // 日志里会出现请求 URL、代理与 Webhook 错误等：所有文本日志按共享规则脱敏后再打包。
-        let agent_logs = crate::log_export::agent_log_dir(self.store.data_dir());
+        let agent_logs = self.agent_log_dir();
         for (name, bytes) in crate::log_export::collect_log_files(&agent_logs).await {
             zip.add(
                 &format!("agent/logs/{name}"),
@@ -773,13 +781,13 @@ struct SyncProbe {
     log_dir: DiagnosticCheckDto,
 }
 
-fn probe_sync(data_dir: &Path, opted_out: &[OpenAssociation]) -> SyncProbe {
+fn probe_sync(agent_log_dir: &Path, opted_out: &[OpenAssociation]) -> SyncProbe {
     let nmh_diagnosis = crate::nmh::registry::diagnose();
     SyncProbe {
         nmh: nmh_checks(&nmh_diagnosis),
         nmh_diagnosis,
         shell: shell_checks(&crate::platform::integration_status(), opted_out),
-        log_dir: probe_log_dir(&crate::log_export::agent_log_dir(data_dir)),
+        log_dir: probe_log_dir(agent_log_dir),
     }
 }
 

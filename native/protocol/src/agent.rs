@@ -604,6 +604,45 @@ pub struct RemoteCommandParams {
     pub delete_files: bool,
 }
 
+/// `agent.remote.commandMany` 单次请求的任务数上限（客户端按此分块；agent 再按云端批量上限拆分）。
+pub const REMOTE_COMMAND_MANY_MAX: usize = 1000;
+
+/// `agent.remote.commandMany` 参数：同一动作批量作用于多条远程任务。
+///
+/// 与逐条 `agent.remote.command` 语义相同：cancel / delete 不依赖目标在线，云端已没有的记录
+/// 视为已达成（从投影移除）；pause / resume 遇到不存在的记录失败为 `notFound` + `remoteTaskGone`。
+/// 重复 id 只处理一次；超过 [`REMOTE_COMMAND_MANY_MAX`] 条返回 `invalidArgument`。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteCommandManyParams {
+    pub task_ids: Vec<String>,
+    pub action: RemoteCommandAction,
+    /// 仅 `Delete`：目标设备同时删除已下载文件。
+    #[serde(default)]
+    pub delete_files: bool,
+}
+
+/// 批量远程指令中失败的一条。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteCommandFailure {
+    pub task_id: String,
+    pub error: crate::RpcErrorData,
+}
+
+/// `agent.remote.commandMany` 结果：`succeeded` 与 `failed` 互斥，合起来覆盖去重后的全部 id。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteCommandManyResult {
+    #[serde(default)]
+    pub succeeded: Vec<String>,
+    #[serde(default)]
+    pub failed: Vec<RemoteCommandFailure>,
+}
+
 /// UI Gateway 运行状态；永远不携带 token 文本。
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -705,7 +744,7 @@ pub struct ShellStatusDto {
     pub global_shortcuts: crate::shortcuts::GlobalShortcutsStatusDto,
 }
 
-/// 定时电源操作：到点关机还是睡眠（挂起到内存）。
+/// 定时完成动作：关机、睡眠或完全退出桌面应用。
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
@@ -713,24 +752,44 @@ pub enum PowerAction {
     #[default]
     Shutdown,
     Sleep,
+    Quit,
 }
 
-/// 定时关机 / 睡眠的调度状态（agent 拥有状态机与执行）。
+/// Low-speed power actions always allow this many seconds to cancel before execution.
+pub const POWER_LOW_SPEED_WARNING_SECS: u64 = 30;
+
+/// Aggregate download speed must stay strictly below `threshold_bps` for `duration_secs`.
+/// Accepted ranges: 1..=1 GiB/s and 60..=86400 seconds.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct PowerLowSpeedCondition {
+    pub threshold_bps: u64,
+    pub duration_secs: u64,
+}
+
+/// 定时电源动作的调度状态（agent 拥有状态机与执行）。
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct PowerStatusDto {
     /// 已排定的延迟（秒）；`None` = 未启用。
     pub armed_delay_secs: Option<u64>,
-    /// 全部任务结束（或排定时本就没有任务）、真正开始倒计时后的剩余秒数；等待任务完成阶段为 `None`。
+    /// 倒计时剩余秒数；等待触发条件（含 daemon 断连）或未启用时为 `None`。
     pub countdown_remaining_secs: Option<u64>,
     /// 已排定的操作；未启用时为默认值（旧 agent 缺省 = 关机）。
     #[serde(default)]
     pub action: PowerAction,
+    /// `None` retains the completion-based trigger.
+    #[serde(default)]
+    pub low_speed: Option<PowerLowSpeedCondition>,
+    /// Continuous qualifying seconds; `None` while blocked, disconnected, or above the threshold.
+    #[serde(default)]
+    pub low_speed_elapsed_secs: Option<u64>,
 }
 
-/// `agent.power.arm` 参数：没有任务时立即开始倒计时，否则全部任务完成后再等待 `delay_secs`
-/// 秒执行 `action`。`delay_secs = 0`（完成后立即）只在有任务时接受。
+/// `agent.power.arm` 参数：完成模式在 daemon 在线且没有待完成任务时开始 `delay_secs` 倒计时。
+/// `delay_secs = 0`（完成后立即）只在 daemon 在线且有待完成任务时接受。
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
@@ -739,6 +798,9 @@ pub struct PowerArmParams {
     /// 缺省 = 关机（旧客户端）。
     #[serde(default)]
     pub action: PowerAction,
+    /// When present, `delay_secs` is replaced by the fixed cancellable warning interval; `quit` is not supported.
+    #[serde(default)]
+    pub low_speed: Option<PowerLowSpeedCondition>,
 }
 
 /// agent 配置同步状态投影。
@@ -1048,8 +1110,8 @@ pub struct CaptureCreateGroupParams {
 
 /// `agent.capture.submitTorrentFile` 参数。
 ///
-/// `silent=true`（系统打开 / 关联启动）全选文件直接建任务；`silent=false`（用户主动选择）
-/// 由 daemon 发 BT 文件选择请求。`saveDir` / `queueId` / `startPaused` 缺省维持旧行为
+/// `silent=true`（系统打开 / 关联启动）且「免打扰下载」与「跳过二次选择」偏好均开启时
+/// 全选文件直接建任务；否则（含 `silent=false` 用户主动选择）由 daemon 发 BT 文件选择请求。`saveDir` / `queueId` / `startPaused` 缺省维持旧行为
 /// （daemon 默认目录 / 默认队列 / 立即开始），新建下载表单入口携带表单值。
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

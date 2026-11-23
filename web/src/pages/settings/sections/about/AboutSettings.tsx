@@ -4,17 +4,20 @@
 
 import { useState } from 'react'
 import { useI18n, useT } from '../../../../i18n'
+import { copyText } from '../../../../lib/copy'
+import { diagnosticText } from '../../../../lib/diagnosticInfo'
+import { byteUnit, useFileSizeUnits } from '../../../../lib/fileSizeUnits'
 import { exportLogs, rpc, useRpcSelector } from '../../../../lib/rpc'
 import type { ReleaseNoteDto } from '../../../../lib/rpc'
-import { Button, toast } from '../../../../ui'
+import { Button, Dialog, toast } from '../../../../ui'
 import { rpcErrorText } from '../../../../lib/rpcErrorText'
 import { localizedReleaseBody, releaseDate, releaseNoteBlocks, stripVersionHeading } from '../../../../lib/releaseNotes'
 import { canCancel, canInstall, manualLine, manualUrl, statusLine, updateLineText, useUpdateStatus } from '../../../../lib/update'
-import { DaemonNumberRow, PrefDropdownRow, PrefSwitchRow, SettingsCustomRow, SettingsPage, SettingsRow, SettingsSection, useSettingsReadOnly, usePrefString } from '../../kit'
+import { DaemonNumberRow, PrefDropdownRow, PrefSwitchRow, SettingsPage, SettingsRow, SettingsSection, useSettingsReadOnly, usePrefBoolean, usePrefString } from '../../kit'
 
-const CHROME_STORE = 'https://chromewebstore.google.com/search/FluxDown'
+const CHROME_STORE = 'https://chromewebstore.google.com/detail/fluxdown/meleenglfggcmcajknpeeeiobnpfmahc'
 const FIREFOX_STORE = 'https://addons.mozilla.org/firefox/addon/fluxdown/'
-const EDGE_STORE = 'https://microsoftedge.microsoft.com/addons/search/FluxDown'
+const EDGE_STORE = 'https://microsoftedge.microsoft.com/addons/detail/fluxdown/nglkkjbogjghekbhhcnccnpfedjbdhhd'
 const DONATE = 'https://fluxdown.com/sponsor'
 const WEBSITE = 'https://fluxdown.com'
 /** 服务端资产随统一的 `vX.Y.Z` release 发布（更早版本在 `server-v*` release）。 */
@@ -88,6 +91,7 @@ function UpdateRow() {
   const channel = usePrefString('general.update_channel', 'stable')
   const status = useUpdateStatus()
   const [busy, setBusy] = useState<'check' | 'install' | 'cancel' | null>(null)
+  const [notesOpen, setNotesOpen] = useState(false)
 
   const run = async (kind: 'check' | 'install' | 'cancel', action: () => Promise<unknown>) => {
     if (busy) return
@@ -106,6 +110,7 @@ function UpdateRow() {
   // 「检查中」由检查按钮的 loading 承担，状态行不再重复显示。
   const lines = status ? [checking ? null : statusLine(status), manualLine(status)].flatMap((line) => (line ? [updateLineText(t, line)] : [])) : []
   const url = status ? manualUrl(status) : null
+  const notes = status?.notes ?? []
 
   return (
     <>
@@ -117,6 +122,11 @@ function UpdateRow() {
             </span>
           ))}
           <div className="flex flex-wrap items-center gap-2 desktop:justify-end">
+            {notes.length > 0 ? (
+              <Button variant="ghost" onClick={() => setNotesOpen(true)}>
+                {t('viewReleaseNotes')}
+              </Button>
+            ) : null}
             {status && canCancel(status) ? (
               <Button loading={busy === 'cancel'} disabled={disabled || busy !== null} onClick={() => void run('cancel', () => rpc.agent.update.cancel())}>
                 {t('cancel')}
@@ -142,14 +152,41 @@ function UpdateRow() {
           </div>
         </div>
       </SettingsRow>
-      {status && status.notes.length > 0 ? (
-        <SettingsCustomRow className="flex flex-col gap-4">
-          {status.notes.slice(0, 10).map((note, index) => (
+      {/* 更新日志放进对话框滚动阅读（GPUI 为独立更新窗口），不在关于页里展开长列表。 */}
+      <Dialog open={notesOpen && notes.length > 0} onOpenChange={setNotesOpen} title={t('viewReleaseNotes')} size="lg">
+        <div className="flex flex-col gap-4 pb-2">
+          {notes.slice(0, 10).map((note, index) => (
             <ReleaseNote key={note.version} note={note} locale={locale} divided={index > 0} />
           ))}
-        </SettingsCustomRow>
-      ) : null}
+        </div>
+      </Dialog>
     </>
+  )
+}
+
+const HOST_LOG_LEVEL_PREF = 'diagnostics.log_level'
+
+function HostLogLevelRow() {
+  const t = useT()
+  const level = useRpcSelector((state) => state.snapshot?.preferences.values[HOST_LOG_LEVEL_PREF])
+  const options = [
+    { value: 'auto', label: t('diagnosticsLogLevelAuto') },
+    { value: 'debug', label: t('diagnosticsLogLevelDebug') },
+    { value: 'info', label: t('diagnosticsLogLevelInfo') },
+    { value: 'warn', label: t('diagnosticsLogLevelWarn') },
+    { value: 'error', label: t('diagnosticsLogLevelError') },
+  ]
+  // Supporting hosts publish the value even when it is set to Automatic.
+  if (!options.some(({ value }) => value === level)) return null
+  return (
+    <PrefDropdownRow
+      prefKey={HOST_LOG_LEVEL_PREF}
+      fallback="auto"
+      titleKey="diagnosticsLogLevel"
+      descKey="diagnosticsLogLevelDesc"
+      options={options}
+      immediate
+    />
   )
 }
 
@@ -180,14 +217,36 @@ function ExportRow() {
 }
 
 export function AboutSettings() {
+  const units = useFileSizeUnits()
   const t = useT()
-  const version = useRpcSelector((state) => state.hello?.serviceVersion ?? '')
+  const { locale } = useI18n()
+  const hello = useRpcSelector((state) => state.hello)
+  const version = hello?.serviceVersion ?? ''
+  const update = useUpdateStatus()
+  const autoCheck = usePrefBoolean('general.auto_check_update', true)
+  const silentSupported = update != null && (
+    update.installKind === 'windowsSetup'
+    || update.installKind === 'windowsPortable'
+    || update.installKind === 'macosApp'
+    || update.installKind === 'linuxAppImage'
+    || update.installKind === 'linuxPortable'
+  )
 
   return (
     <SettingsPage title={t('settingsCatAbout')} description={t('settingsCatAboutDesc')}>
       <SettingsSection title="FluxDown">
         <SettingsRow title={t('currentVersion')}>
-          <span className="text-sm tabular text-foreground">{version ? `v${version}` : '—'}</span>
+          <div className="flex flex-wrap items-center gap-2 desktop:justify-end">
+            <span className="text-sm tabular text-foreground">{version ? `v${version}` : '—'}</span>
+            <Button
+              onClick={() => {
+                copyText(diagnosticText({ serviceVersion: version, protocolVersion: hello?.protocolVersion ?? null, status: update, locale, userAgent: navigator.userAgent }))
+                toast.success(t('diagnosticInfoCopied'))
+              }}
+            >
+              {t('copyDiagnosticInfo')}
+            </Button>
+          </div>
         </SettingsRow>
       </SettingsSection>
       <SettingsSection title={t('softwareUpdate')}>
@@ -202,13 +261,23 @@ export function AboutSettings() {
           ]}
         />
         <PrefSwitchRow prefKey="general.auto_check_update" fallback titleKey="autoCheckUpdate" descKey="autoCheckUpdateBackgroundDesc" />
+        {silentSupported ? (
+          <PrefSwitchRow
+            prefKey="general.silent_auto_update"
+            fallback={false}
+            titleKey="silentAutoUpdate"
+            descKey="silentAutoUpdateDesc"
+            disabled={!autoCheck}
+          />
+        ) : null}
         <UpdateRow />
         <SettingsRow title={t('webServerReleases')}>
           <LinkButtons links={[{ label: 'GitHub', url: SERVER_RELEASES }]} />
         </SettingsRow>
       </SettingsSection>
       <SettingsSection title={t('logExport')} subtitle={t('logExportDesc')}>
-        <DaemonNumberRow configKey="log_max_size_mb" titleKey="logMaxSize" descKey="logMaxSizeDesc" unit="MB" />
+        <HostLogLevelRow />
+        <DaemonNumberRow configKey="log_max_size_mb" titleKey="logMaxSize" descKey="logMaxSizeDesc" unit={byteUnit(2, units)} />
         <ExportRow />
       </SettingsSection>
       <SettingsSection title={t('extensionCardTitle')} subtitle={t('extensionCardDesc')}>

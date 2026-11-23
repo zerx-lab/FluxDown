@@ -2,11 +2,16 @@
 //!
 //! 逐包状态机、PES / ADTS / H.264 参数解析与以 AUD 为界的切帧。输入按块读取，样本经
 //! [`SampleSink`] 逐个交出：常驻内存只有读窗口、当前帧、音频残片与样本索引表，
-//! 与文件体积无关。产出的样本序列与 `ts2mp4::convert_ts_to_mp4`（0.3.2）一致。
+//! 与文件体积无关。
+//!
+//! 时间戳按 H.222.0 语义归属：PES 头的 PTS / DTS 属于**起点落在该 PES 内的第一个**
+//! 访问单元（视频帧 / ADTS 帧），同一 PES 里的后续单元不带时间戳，由 [`super::timing`]
+//! 按帧长推算。
 //!
 //! 单帧 / 音频残片 / 索引表超过下方上限时报错（调用方保留 `.ts`），让损坏或恶意的
 //! 输入无法把内存撑大。
 
+use std::collections::VecDeque;
 use std::io::{self, ErrorKind, Read};
 
 use tokio_util::sync::CancellationToken;
@@ -31,16 +36,96 @@ pub(super) trait SampleSink {
 /// 生成 moov 所需的流级元数据（样本字节本身不在这里）。
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct StreamMeta {
-    /// 每个视频 PES 起始包的 (PTS, DTS)。
-    pub frame_timestamps: Vec<(Option<u64>, Option<u64>)>,
-    /// 每个音频样本的 PTS（与音频样本一一对应）。
+    /// 每个视频样本的 (PTS, DTS)，与视频样本一一对应；同一 PES 内第一帧之后的帧为 `(None, None)`。
+    pub video_timestamps: Vec<(Option<u64>, Option<u64>)>,
+    /// 每个音频样本的 PTS，与音频样本一一对应；同一 PES 内第一帧之后的帧为 `None`。
     pub audio_timestamps: Vec<Option<u64>>,
+    /// ADTS 头声明的编码参数（整条流必须一致）；没有音频样本时为 `None`。
+    pub audio_config: Option<AacConfig>,
     pub width: u16,
     pub height: u16,
     pub sps: Option<Vec<u8>>,
     pub pps: Option<Vec<u8>>,
     /// 拼接后视频基本流的总字节数；为 0 时不产出 MP4（"No video data found"）。
     pub video_stream_len: u64,
+}
+
+/// ADTS `sampling_frequency_index` → 采样率（ISO/IEC 14496-3 表 1.18）。
+const AAC_SAMPLE_RATES: [u32; 13] = [
+    96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000,
+    7_350,
+];
+
+/// AAC 编码参数：MP4 的 `mp4a` / `esds` 与音轨时基都由它决定。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct AacConfig {
+    /// MPEG-4 Audio Object Type（ADTS profile + 1：1 Main / 2 LC / 3 SSR / 4 LTP）。
+    pub object_type: u8,
+    /// `sampling_frequency_index`，解析时已保证 < 13。
+    pub frequency_index: u8,
+    /// `channel_configuration`，解析时已保证为 1..=7。
+    pub channel_config: u8,
+}
+
+impl AacConfig {
+    pub fn sample_rate(self) -> u32 {
+        AAC_SAMPLE_RATES
+            .get(usize::from(self.frequency_index))
+            .copied()
+            .unwrap_or(48_000)
+    }
+
+    /// 输出声道数（配置 7 = 7.1 声道）。
+    pub fn channels(self) -> u16 {
+        if self.channel_config == 7 {
+            8
+        } else {
+            u16::from(self.channel_config)
+        }
+    }
+
+    /// 2 字节 AudioSpecificConfig：5 位 AOT + 4 位采样率索引 + 4 位声道配置 + 3 位 0。
+    pub fn audio_specific_config(self) -> [u8; 2] {
+        let bits = (u16::from(self.object_type) << 11)
+            | (u16::from(self.frequency_index) << 7)
+            | (u16::from(self.channel_config) << 3);
+        bits.to_be_bytes()
+    }
+}
+
+/// 一个 ADTS 帧头。
+struct AdtsHeader {
+    config: AacConfig,
+    frame_length: usize,
+    header_len: usize,
+    raw_blocks: u8,
+}
+
+impl AdtsHeader {
+    /// `bytes` 起点不是合法 ADTS 同步头（syncword、layer = 0、采样率索引有效）时返回 `None`。
+    fn parse(bytes: &[u8]) -> Option<Self> {
+        let header = bytes.get(..7)?;
+        if header[0] != 0xFF || (header[1] & 0xF0) != 0xF0 || (header[1] & 0x06) != 0 {
+            return None;
+        }
+        let frequency_index = (header[2] >> 2) & 0x0F;
+        if usize::from(frequency_index) >= AAC_SAMPLE_RATES.len() {
+            return None;
+        }
+        let protection_absent = (header[1] & 0x01) == 1;
+        Some(Self {
+            config: AacConfig {
+                object_type: (header[2] >> 6) + 1,
+                frequency_index,
+                channel_config: ((header[2] & 0x01) << 2) | (header[3] >> 6),
+            },
+            frame_length: ((usize::from(header[3]) & 0x03) << 11)
+                | (usize::from(header[4]) << 3)
+                | (usize::from(header[5]) >> 5),
+            header_len: if protection_absent { 7 } else { 9 },
+            raw_blocks: (header[6] & 0x03) + 1,
+        })
+    }
 }
 
 fn invalid(message: &'static str) -> io::Error {
@@ -160,7 +245,8 @@ struct Demuxer {
     video_pid: Option<u16>,
     audio_pid: Option<u16>,
     audio_buffer: Vec<u8>,
-    current_audio_pts: Option<u64>,
+    /// 当前音频 PES 的 (负载在 `audio_buffer` 中的起点, PTS)，交给第一个从该处起始的 ADTS 帧。
+    audio_mark: Option<(usize, u64)>,
     frames: FrameSplitter,
     /// AVCC 转换的复用缓冲。
     avcc: Vec<u8>,
@@ -170,8 +256,9 @@ impl Demuxer {
     fn new() -> Self {
         Self {
             meta: StreamMeta {
-                frame_timestamps: Vec::new(),
+                video_timestamps: Vec::new(),
                 audio_timestamps: Vec::new(),
+                audio_config: None,
                 width: 1920,
                 height: 1080,
                 sps: None,
@@ -183,7 +270,7 @@ impl Demuxer {
             video_pid: None,
             audio_pid: None,
             audio_buffer: Vec::new(),
-            current_audio_pts: None,
+            audio_mark: None,
             frames: FrameSplitter::default(),
             avcc: Vec::new(),
         }
@@ -211,7 +298,7 @@ impl Demuxer {
         } else if Some(pid) == self.pmt_pid && !self.pat_pmt_parsed {
             if let Some((video, audio)) = parse_pmt(payload, payload_start) {
                 self.video_pid = Some(video);
-                self.audio_pid = Some(audio);
+                self.audio_pid = audio;
                 self.pat_pmt_parsed = true;
             }
         } else if Some(pid) == self.video_pid {
@@ -229,10 +316,8 @@ impl Demuxer {
         sink: &mut dyn SampleSink,
     ) -> io::Result<()> {
         if payload_start && payload.len() >= 9 {
-            if self.meta.frame_timestamps.len() >= MAX_TABLE_ENTRIES {
-                return Err(too_large("too many video PES packets"));
-            }
-            self.meta.frame_timestamps.push(pes_timestamps(payload));
+            self.frames
+                .mark_pes(self.meta.video_stream_len, pes_timestamps(payload))?;
             let pes = pes_payload(payload);
             if !pes.is_empty() {
                 // SPS / PPS 都已拿到时扫描不再改变任何状态，直接跳过。
@@ -259,38 +344,29 @@ impl Demuxer {
         sink: &mut dyn SampleSink,
     ) -> io::Result<()> {
         if payload_start && payload.len() >= 9 {
-            // 上一个 PES 的残留先按它自己的 PTS 收尾；即便没切出帧也丢弃已消费字节。
-            if !self.audio_buffer.is_empty() {
-                let drained = drain_aac(
-                    &self.audio_buffer,
-                    self.current_audio_pts,
-                    &mut self.meta.audio_timestamps,
-                    sink,
-                )?;
-                self.audio_buffer.drain(..drained.consumed);
-            }
+            // 每个包之后都已切走完整帧，缓冲里只剩上一个 PES 不足一帧的残片。
             let (pts, _) = pes_timestamps(payload);
-            self.current_audio_pts = pts;
+            self.audio_mark = pts.map(|pts| (self.audio_buffer.len(), pts));
             self.extend_audio(pes_payload(payload))?;
-            let drained = drain_aac(
-                &self.audio_buffer,
-                pts,
-                &mut self.meta.audio_timestamps,
-                sink,
-            )?;
-            if drained.frames > 0 {
-                self.audio_buffer.drain(..drained.consumed);
-            }
+            self.drain_audio(sink)?;
         } else if !payload_start && !payload.is_empty() {
             self.extend_audio(payload)?;
-            let drained = drain_aac(
-                &self.audio_buffer,
-                self.current_audio_pts,
-                &mut self.meta.audio_timestamps,
-                sink,
-            )?;
-            if drained.frames > 0 {
-                self.audio_buffer.drain(..drained.consumed);
+            self.drain_audio(sink)?;
+        }
+        Ok(())
+    }
+
+    fn drain_audio(&mut self, sink: &mut dyn SampleSink) -> io::Result<()> {
+        let consumed = drain_aac(
+            &self.audio_buffer,
+            &mut self.audio_mark,
+            &mut self.meta,
+            sink,
+        )?;
+        if consumed > 0 {
+            self.audio_buffer.drain(..consumed);
+            if let Some((start, _)) = &mut self.audio_mark {
+                *start = start.saturating_sub(consumed);
             }
         }
         Ok(())
@@ -305,15 +381,9 @@ impl Demuxer {
     }
 
     fn finish(mut self, sink: &mut dyn SampleSink) -> io::Result<StreamMeta> {
-        if !self.audio_buffer.is_empty() {
-            drain_aac(
-                &self.audio_buffer,
-                self.current_audio_pts,
-                &mut self.meta.audio_timestamps,
-                sink,
-            )?;
-        }
+        self.drain_audio(sink)?;
         self.frames.finish(&mut self.avcc, sink)?;
+        self.meta.video_timestamps = std::mem::take(&mut self.frames.timestamps);
         Ok(self.meta)
     }
 }
@@ -332,7 +402,8 @@ fn parse_pat(payload: &[u8], payload_start: bool) -> Option<u16> {
     Some(((u16::from(payload[offset + 10]) & 0x1F) << 8) | u16::from(payload[offset + 11]))
 }
 
-fn parse_pmt(payload: &[u8], payload_start: bool) -> Option<(u16, u16)> {
+/// 返回 (视频 PID, 音频 PID)；纯视频节目（独立音轨的 HLS 视频流）音频为 `None`。
+fn parse_pmt(payload: &[u8], payload_start: bool) -> Option<(u16, Option<u16>)> {
     if !payload_start || payload.len() < 16 {
         return None;
     }
@@ -369,10 +440,7 @@ fn parse_pmt(payload: &[u8], payload_start: bool) -> Option<(u16, u16)> {
         }
         offset += 5 + es_info_length;
     }
-    match (video_pid, audio_pid) {
-        (Some(video), Some(audio)) => Some((video, audio)),
-        _ => None,
-    }
+    video_pid.map(|video| (video, audio_pid))
 }
 
 /// PES 头之后的负载；不是合法 PES 起始时为空。
@@ -606,47 +674,71 @@ impl<'a> BitReader<'a> {
     }
 }
 
-struct AacDrain {
-    frames: usize,
-    consumed: usize,
-}
-
-/// 从累积缓冲里切出完整 ADTS 帧（去头）交给 `sink`，并为每帧记一条 PTS。
-/// `consumed` 截至最后一个完整帧（含长度不足以带负载、因而不产出样本的帧）。
+/// 从累积缓冲里切出完整 ADTS 帧（去头）交给 `sink`，返回截至最后一个完整帧的字节数
+/// （含长度不足以带负载、因而不产出样本的帧）。
+///
+/// `mark` 的 PTS 交给第一个起点不早于 `mark.0` 的帧（即起始于该 PES 内的第一帧）。
 fn drain_aac(
     buffer: &[u8],
-    pts: Option<u64>,
-    timestamps: &mut Vec<Option<u64>>,
+    mark: &mut Option<(usize, u64)>,
+    meta: &mut StreamMeta,
     sink: &mut dyn SampleSink,
-) -> io::Result<AacDrain> {
+) -> io::Result<usize> {
     let mut offset = 0;
     let mut consumed = 0;
-    let mut frames = 0;
     while offset + 7 < buffer.len() {
-        if buffer[offset] != 0xFF || (buffer[offset + 1] & 0xF0) != 0xF0 {
+        let Some(header) = AdtsHeader::parse(&buffer[offset..]) else {
             offset += 1;
             continue;
-        }
-        let protection_absent = (buffer[offset + 1] & 0x01) == 1;
-        let frame_length = ((usize::from(buffer[offset + 3]) & 0x03) << 11)
-            | (usize::from(buffer[offset + 4]) << 3)
-            | (usize::from(buffer[offset + 5]) >> 5);
+        };
+        let frame_length = header.frame_length;
         if frame_length < 7 || offset + frame_length > buffer.len() {
             break;
         }
-        let header_size = if protection_absent { 7 } else { 9 };
-        if header_size < frame_length {
-            if timestamps.len() >= MAX_TABLE_ENTRIES {
+        let pts = match *mark {
+            Some((start, pts)) if offset >= start => {
+                *mark = None;
+                Some(pts)
+            }
+            _ => None,
+        };
+        if header.header_len < frame_length {
+            accept_aac_config(meta, &header)?;
+            if meta.audio_timestamps.len() >= MAX_TABLE_ENTRIES {
                 return Err(too_large("too many audio samples"));
             }
-            timestamps.push(pts);
-            sink.audio_sample(&buffer[offset + header_size..offset + frame_length])?;
-            frames += 1;
+            meta.audio_timestamps.push(pts);
+            sink.audio_sample(&buffer[offset + header.header_len..offset + frame_length])?;
         }
         offset += frame_length;
         consumed = offset;
     }
-    Ok(AacDrain { frames, consumed })
+    Ok(consumed)
+}
+
+/// MP4 只能为一条音轨写一份解码参数：参数中途变化（如插播 48kHz 广告）或无法用
+/// 2 字节 AudioSpecificConfig 描述时拒绝转换，调用方保留可正常播放的 `.ts`。
+fn accept_aac_config(meta: &mut StreamMeta, header: &AdtsHeader) -> io::Result<()> {
+    if header.config.channel_config == 0 {
+        return Err(io::Error::new(
+            ErrorKind::Unsupported,
+            "AAC channel layout carried in a PCE is not supported",
+        ));
+    }
+    if header.raw_blocks != 1 {
+        return Err(io::Error::new(
+            ErrorKind::Unsupported,
+            "ADTS frames with multiple raw data blocks are not supported",
+        ));
+    }
+    match meta.audio_config {
+        None => meta.audio_config = Some(header.config),
+        Some(config) if config != header.config => {
+            return Err(invalid("AAC stream parameters change mid-stream"));
+        }
+        Some(_) => {}
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -657,12 +749,24 @@ enum SplitPhase {
     ScanEnd { nal_end: usize },
 }
 
+/// 视频 PES 的时间戳：(PTS, DTS)。
+type PesTimestamps = (Option<u64>, Option<u64>);
+
 /// `split_into_frames` 的流式版本：以 AUD 为界切帧，`window` 只留未消费的尾部。
+///
+/// 偏移一律以「拼接后视频基本流」计：`base` 是 `window[0]` 的流内偏移。
 struct FrameSplitter {
     window: Vec<u8>,
+    base: u64,
     pos: usize,
     phase: SplitPhase,
     frame: Vec<u8>,
+    /// 当前帧第一个字节的流内偏移。
+    frame_start: u64,
+    /// 尚未归属到帧的视频 PES：(负载起点的流内偏移, 时间戳)。
+    pes_marks: VecDeque<(u64, PesTimestamps)>,
+    /// 已产出样本的时间戳，与视频样本一一对应。
+    timestamps: Vec<PesTimestamps>,
     /// 流尾遇到「起始码后无数据」时停止切帧，其后的数据全部忽略。
     stopped: bool,
 }
@@ -671,15 +775,31 @@ impl Default for FrameSplitter {
     fn default() -> Self {
         Self {
             window: Vec::new(),
+            base: 0,
             pos: 0,
             phase: SplitPhase::Seek,
             frame: Vec::new(),
+            frame_start: 0,
+            pes_marks: VecDeque::new(),
+            timestamps: Vec::new(),
             stopped: false,
         }
     }
 }
 
 impl FrameSplitter {
+    /// 记一个视频 PES 起点；`offset` 为它的负载在视频基本流里的起始偏移。
+    fn mark_pes(&mut self, offset: u64, timestamps: PesTimestamps) -> io::Result<()> {
+        if self.stopped {
+            return Ok(());
+        }
+        if self.pes_marks.len() >= MAX_TABLE_ENTRIES {
+            return Err(too_large("too many video PES packets"));
+        }
+        self.pes_marks.push_back((offset, timestamps));
+        Ok(())
+    }
+
     fn push(
         &mut self,
         data: &[u8],
@@ -694,6 +814,7 @@ impl FrameSplitter {
             if let SplitPhase::ScanEnd { nal_end } = &mut self.phase {
                 *nal_end -= self.pos;
             }
+            self.base += self.pos as u64;
             self.pos = 0;
         }
         self.window.extend_from_slice(data);
@@ -703,9 +824,24 @@ impl FrameSplitter {
     fn finish(&mut self, avcc: &mut Vec<u8>, sink: &mut dyn SampleSink) -> io::Result<()> {
         self.run(true, avcc, sink)?;
         if !self.frame.is_empty() {
-            emit_frame(&self.frame, avcc, sink)?;
-            self.frame.clear();
+            self.emit(avcc, sink)?;
         }
+        Ok(())
+    }
+
+    /// 交出当前帧：时间戳取帧起点所在 PES 的那份（该 PES 已被更早的帧取走则为空）。
+    fn emit(&mut self, avcc: &mut Vec<u8>, sink: &mut dyn SampleSink) -> io::Result<()> {
+        let mut timestamps = (None, None);
+        while let Some(&(offset, stamp)) = self.pes_marks.front()
+            && offset <= self.frame_start
+        {
+            timestamps = stamp;
+            self.pes_marks.pop_front();
+        }
+        if emit_frame(&self.frame, avcc, sink)? {
+            self.timestamps.push(timestamps);
+        }
+        self.frame.clear();
         Ok(())
     }
 
@@ -731,8 +867,7 @@ impl FrameSplitter {
                     }
                     let nal_type = self.window[nal_start] & 0x1F;
                     if nal_type == 9 && !self.frame.is_empty() {
-                        emit_frame(&self.frame, avcc, sink)?;
-                        self.frame.clear();
+                        self.emit(avcc, sink)?;
                     }
                     self.phase = SplitPhase::ScanEnd {
                         nal_end: nal_start + 1,
@@ -769,19 +904,23 @@ impl FrameSplitter {
         if self.frame.len() + (end - self.pos) > MAX_FRAME_BYTES {
             return Err(too_large("video frame exceeds limit"));
         }
+        if self.frame.is_empty() {
+            self.frame_start = self.base + self.pos as u64;
+        }
         self.frame.extend_from_slice(&self.window[self.pos..end]);
         self.pos = end;
         Ok(())
     }
 }
 
-/// 把一帧 Annex B 转成 AVCC，非空时交给 `sink`（空帧不成为样本）。
-fn emit_frame(frame: &[u8], avcc: &mut Vec<u8>, sink: &mut dyn SampleSink) -> io::Result<()> {
+/// 把一帧 Annex B 转成 AVCC，非空时交给 `sink` 并返回 `true`（空帧不成为样本）。
+fn emit_frame(frame: &[u8], avcc: &mut Vec<u8>, sink: &mut dyn SampleSink) -> io::Result<bool> {
     annexb_to_avcc(frame, avcc);
     if avcc.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
-    sink.video_sample(avcc)
+    sink.video_sample(avcc)?;
+    Ok(true)
 }
 
 /// `convert_annexb_to_avcc`：去掉 SPS / PPS / AUD，其余 NAL 以 4 字节大端长度前缀。

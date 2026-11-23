@@ -1,3 +1,4 @@
+import type { FileSizeUnits } from '../../../lib/fileSizeUnits'
 // 表格单元格语义（plugin_view_schema.json `table.columns[].kind`）：纯函数，组件只负责展示。
 
 import { formatBytes, formatDateTime } from '../../downloads/model/task'
@@ -24,15 +25,15 @@ function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value))
 }
 
-export function formatCell(kind: string, value: unknown): CellView {
+export function formatCell(kind: string, value: unknown, units?: FileSizeUnits): CellView {
   switch (kind) {
     case 'bytes': {
       const n = finite(value)
-      return { text: n === null ? EMPTY : formatBytes(Math.max(0, n)) }
+      return { text: n === null ? EMPTY : formatBytes(Math.max(0, n), units) }
     }
     case 'speed': {
       const n = finite(value)
-      return { text: n === null ? EMPTY : `${formatBytes(Math.max(0, n))}/s` }
+      return { text: n === null ? EMPTY : `${formatBytes(Math.max(0, n), units)}/s` }
     }
     case 'percent': {
       const n = finite(value)

@@ -63,10 +63,11 @@ pub(crate) enum ViewGroupBy {
     Queue,
     Site,
     Directory,
+    Content,
 }
 
 impl ViewGroupBy {
-    const CYCLE: [Self; 7] = [
+    const CYCLE: [Self; 8] = [
         Self::None,
         Self::Status,
         Self::Date,
@@ -74,6 +75,7 @@ impl ViewGroupBy {
         Self::Queue,
         Self::Site,
         Self::Directory,
+        Self::Content,
     ];
 
     pub(crate) fn next(self) -> Self {

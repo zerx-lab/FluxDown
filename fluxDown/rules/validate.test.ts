@@ -236,10 +236,15 @@ describe("page / request / mirror / manifest 规则校验", () => {
     expect(check(rule({ id: "official.h3", tier: "official", stage: "request", match: { host: ["a.com"] }, action: { kind: "headers", set: { Referer: "https://a.com/" } } }))).toHaveLength(0);
   });
 
-  test("page 规则：非本地规则必须限定页面；player.float 只接受 hide", () => {
+  test("page 规则：非本地规则必须限定页面；player.float 只接受 hide / inset，inset 的 top 须为 1–200 的整数", () => {
     expect(check(rule({ id: "community.t1", tier: "community", stage: "page", match: {}, action: { kind: "title", selector: ".t" } }))).toHaveLength(1);
     expect(check(rule({ id: "official.p1", tier: "official", stage: "page", match: { pageHost: ["a.com"] }, action: { kind: "player", selector: ".ad", float: "show" as "hide" } }))).toHaveLength(1);
     expect(check(rule({ id: "official.p2", tier: "official", stage: "page", match: { pageHost: ["a.com"] }, action: { kind: "player", selector: ".ad", float: "hide" } }))).toHaveLength(0);
+    const inset = (top: unknown) =>
+      check(rule({ id: "official.p3", tier: "official", stage: "page", match: { pageHost: ["a.com"] }, action: { kind: "player", selector: ".mini", float: "inset", top: top as number } }));
+    expect(inset(52)).toHaveLength(0);
+    expect(inset(200)).toHaveLength(0);
+    for (const bad of [undefined, 0, 201, 12.5, "52"]) expect(inset(bad).map((r) => r.code)).toEqual(["player_top_invalid"]);
   });
 
   test("mirror 至少两个合法 host；manifest 的 path 必须是字符串", () => {
