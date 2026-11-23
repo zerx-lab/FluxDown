@@ -29,14 +29,9 @@ struct PluginFeedbackSheet: View {
             && !version.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var isLocal: Bool {
-        if case .local = container.host { return true }
-        return false
-    }
-
     private var diagnosticEnvironment: String? {
         var fields: [String] = []
-        if isLocal {
+        if container.isLocalHost {
             let os = ProcessInfo.processInfo.operatingSystemVersion
             fields.append("platform=iOS; osVersion=\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)")
         }
@@ -129,7 +124,7 @@ struct PluginFeedbackSheet: View {
                 Text(verbatim: version).textSelection(.enabled)
             }
             LabeledContent(L("feedbackVersionLabel"), value: appVersion)
-            if isLocal { LabeledContent(L("feedbackSysInfoSystem"), value: "iOS") }
+            if container.isLocalHost { LabeledContent(L("feedbackSysInfoSystem"), value: "iOS") }
             VStack(alignment: .leading) {
                 Text(L("feedbackTitleLabel"))
                 TextField(L("feedbackTitlePlaceholder"), text: $title)
@@ -176,7 +171,7 @@ struct PluginFeedbackSheet: View {
                 guard !submitting else { return }
                 let report = PluginFeedbackHTTP.Report(
                     title: titleValue, description: descriptionValue, appVersion: appVersion,
-                    environment: reviewedEnvironment ?? (isLocal ? "iOS" : nil),
+                    environment: reviewedEnvironment ?? (container.isLocalHost ? "iOS" : nil),
                     pluginIdentity: identity, pluginVersion: version, repository: repository
                 )
                 submitting = true
