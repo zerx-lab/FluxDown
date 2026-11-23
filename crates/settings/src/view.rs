@@ -404,7 +404,6 @@ impl SettingsView {
     fn render_content(
         &self,
         page: &SettingsPage,
-        content_width: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -450,7 +449,7 @@ impl SettingsView {
                     .pr(px(CONTENT_PADDING_RIGHT))
                     .pt(tokens.spacing.lg + tokens.spacing.xs)
                     .pb(tokens.spacing.xl)
-                    .child(page.render_tab(tab_id, content_width, window, cx));
+                    .child(page.render_tab(tab_id, window, cx));
                 // 占满高度的注入视图自管滚动（固定头部 + 局部滚动），宿主不再包滚动容器。
                 if fill {
                     body.into_any_element()
@@ -535,11 +534,6 @@ impl Render for SettingsView {
         {
             self.selected = SharedString::from(first.key);
         }
-        // 内容区可用宽度：窗口宽 - 侧栏 - 左右留白（列数判定用，不参与布局）。
-        let content_width = f32::from(window.viewport_size().width)
-            - f32::from(active_theme(cx).text_extent(SIDEBAR_WIDTH))
-            - CONTENT_PADDING_LEFT
-            - CONTENT_PADDING_RIGHT;
         let feedback = self.feedback(cx);
         let active = pages
             .iter()
@@ -572,9 +566,7 @@ impl Render for SettingsView {
                     .flex()
                     .items_stretch()
                     .child(self.render_sidebar(&pages, cx))
-                    .children(
-                        active.map(|page| self.render_content(page, content_width, window, cx)),
-                    ),
+                    .children(active.map(|page| self.render_content(page, window, cx))),
             )
     }
 }

@@ -48,9 +48,12 @@ pub(crate) fn tabs(ctx: &SectionContext, cx: &mut App) -> Vec<SettingsTab> {
             filter_section(ctx, enabled),
             report_section(ctx),
         ]),
-        SettingsTab::new("guardBans", ctx.t("btGuardTabBans")).section(bt_guard_bans::section(ctx)),
+        SettingsTab::new("guardBans", ctx.t("btGuardTabBans"))
+            .section(bt_guard_bans::section(ctx))
+            .wide(),
         SettingsTab::new("guardEvents", ctx.t("btGuardTabEvents"))
-            .section(bt_guard_events::section(ctx)),
+            .section(bt_guard_events::section(ctx))
+            .wide(),
     ]
 }
 
