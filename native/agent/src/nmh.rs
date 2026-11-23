@@ -14,10 +14,16 @@ use crate::daemon_client::DaemonClient;
 use crate::sniff_rules::{Have, SniffRuleStore};
 
 pub mod comspec;
+#[cfg(any(windows, test))]
+mod endpoint_file;
 
 const MAX_MESSAGE_SIZE: u32 = 1024 * 1024;
 const MAX_BATCH_ITEMS: usize = 1000;
 const ACCEPT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
+/// IPC 端点停止后重建的首次等待；连续失败按倍数退避到 [`ENDPOINT_RETRY_MAX`]。
+const ENDPOINT_RETRY_MIN: std::time::Duration = std::time::Duration::from_secs(1);
+/// 重建退避上限：端点长时间建不起来时，最多这么久再试一次（失败只在首次记 warn）。
+const ENDPOINT_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(60);
 const MAX_COMPLETED_TASKS: usize = 10;
 /// 扩展 ↔ agent 的 NMH 协议版本；v2 增加应答 `data`、`capabilities`、`capture_status`、`sniff_rules`。
 pub const EXTENSION_PROTOCOL_VERSION: u32 = 2;
@@ -187,13 +193,46 @@ impl NmhService {
         self
     }
 
-    /// `ready` 在 IPC 端点开始监听后触发；端点不可用时随错误一起被丢弃。
+    /// 监管 IPC 端点直到 `cancel`：端点任何原因停止（建实例失败、名字被占、发布失败）都退避后
+    /// 重建，扩展不会因一次失败离线到 agent 重启。`ready` 在端点首次开始监听后触发；首轮就失败时
+    /// 被丢弃，等待方据此得知端点此刻不在线。
     pub async fn run(
         self,
         cancel: CancellationToken,
         ready: tokio::sync::oneshot::Sender<()>,
     ) -> Result<(), std::io::Error> {
-        run_server(self, cancel, ready).await
+        let mut readiness = Readiness {
+            startup: Some(ready),
+            listening: false,
+            failing: false,
+        };
+        let mut delay = ENDPOINT_RETRY_MIN;
+        loop {
+            readiness.listening = false;
+            let outcome = run_server(self.clone(), cancel.clone(), &mut readiness).await;
+            if cancel.is_cancelled() {
+                return Ok(());
+            }
+            if readiness.listening {
+                delay = ENDPOINT_RETRY_MIN;
+            }
+            let reason = match outcome {
+                Ok(()) => "stopped unexpectedly".to_owned(),
+                Err(error) => format!("{error}"),
+            };
+            if readiness.failing {
+                tracing::debug!(error = %reason, retry_in = ?delay, "NMH IPC endpoint still unavailable");
+            } else {
+                tracing::warn!(error = %reason, retry_in = ?delay, "NMH IPC endpoint unavailable; browser relay offline until it is rebuilt");
+                readiness.failing = true;
+            }
+            drop(readiness.startup.take());
+            tokio::select! {
+                () = cancel.cancelled() => return Ok(()),
+                () = tokio::time::sleep(delay) => {}
+            }
+            delay = delay.saturating_mul(2).min(ENDPOINT_RETRY_MAX);
+        }
     }
 
     async fn dispatch(&self, message: PipeMessage) -> PipeResponse {
@@ -689,11 +728,34 @@ where
     }
 }
 
+/// 端点开始监听的通知：首次触发启动等待方（注册自愈），之后只供监管循环判断「本轮曾在线」。
+struct Readiness {
+    startup: Option<tokio::sync::oneshot::Sender<()>>,
+    listening: bool,
+    /// 上一轮失败过：恢复时记一条 info，持续失败只记首条 warn。
+    failing: bool,
+}
+
+impl Readiness {
+    fn listening(&mut self, endpoint: &str) {
+        self.listening = true;
+        if self.failing {
+            tracing::info!(endpoint = %endpoint, "NMH IPC endpoint rebuilt");
+            self.failing = false;
+        }
+        if let Some(startup) = self.startup.take()
+            && startup.send(()).is_err()
+        {
+            tracing::debug!("NMH startup waiter closed before the endpoint became ready");
+        }
+    }
+}
+
 #[cfg(unix)]
 async fn run_server(
     service: NmhService,
     cancel: CancellationToken,
-    ready: tokio::sync::oneshot::Sender<()>,
+    readiness: &mut Readiness,
 ) -> Result<(), std::io::Error> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
@@ -721,9 +783,7 @@ async fn run_server(
     }
     let listener = tokio::net::UnixListener::bind(&path)?;
     tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).await?;
-    if ready.send(()).is_err() {
-        tracing::debug!("NMH startup waiter closed before socket became ready");
-    }
+    readiness.listening(&path.display().to_string());
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
@@ -782,29 +842,31 @@ fn unix_socket_path() -> Option<std::path::PathBuf> {
     directories::BaseDirs::new().map(|dirs| socket_path_under(dirs.home_dir()))
 }
 
+/// Windows：随机名管道（契约见 [`endpoint_file`]），以固定安全描述符建实例（当前用户 + SYSTEM、
+/// 中完整性，agent 提权运行时浏览器中继也能读写，见 `platform::pipe_security`）。
 #[cfg(windows)]
 async fn run_server(
     service: NmhService,
     cancel: CancellationToken,
-    ready: tokio::sync::oneshot::Sender<()>,
+    readiness: &mut Readiness,
 ) -> Result<(), std::io::Error> {
-    use tokio::net::windows::named_pipe::ServerOptions;
+    use crate::platform::pipe_security::create_pipe_instance;
 
-    let pipe_name = pipe_name().ok_or_else(endpoint_unavailable)?;
-    let mut first = true;
-    let mut ready = Some(ready);
-    loop {
-        let server = ServerOptions::new()
-            .first_pipe_instance(first)
-            .create(&pipe_name)?;
-        first = false;
-        if let Some(ready) = ready.take()
-            && ready.send(()).is_err()
-        {
-            tracing::debug!("NMH startup waiter closed before pipe became ready");
-        }
+    let pipe_name = endpoint_file::new_pipe_name();
+    let mut next = Some(create_pipe_instance(&pipe_name, true)?);
+    endpoint_file::publish(&pipe_name).await?;
+    readiness.listening(&pipe_name);
+    let result = loop {
+        let server = match next.take() {
+            Some(server) => server,
+            None => match create_pipe_instance(&pipe_name, false) {
+                Ok(server) => server,
+                // 交给监管循环换新名字重建。
+                Err(error) => break Err(error),
+            },
+        };
         tokio::select! {
-            _ = cancel.cancelled() => return Ok(()),
+            _ = cancel.cancelled() => break Ok(()),
             connected = server.connect() => {
                 if let Err(error) = connected {
                     // 单个客户端的握手失败不应让整个 NMH 端点（乃至 agent）退出。
@@ -814,16 +876,27 @@ async fn run_server(
                 }
             }
         }
+        // 先备好下一个实例再交出已连接的：名字不出现空窗，并发连接的中继（每插件专用端口）不会
+        // 撞上 ERROR_PIPE_BUSY。建不起来时下一轮循环再试。
+        next = match create_pipe_instance(&pipe_name, false) {
+            Ok(server) => Some(server),
+            Err(error) => {
+                tracing::warn!(error = %error, "NMH pipe instance creation failed");
+                None
+            }
+        };
         let service = service.clone();
         tokio::spawn(async move {
             if let Err(error) = handle_stream(server, service).await {
                 tracing::debug!(error = %error, "NMH pipe closed");
             }
         });
-    }
+    };
+    endpoint_file::retract(&pipe_name).await;
+    result
 }
 
-/// 中继拨号的 IPC 端点（unix socket 路径或命名管道名）；无法确定当前用户时为 `unavailable`。
+/// 中继拨号的 IPC 端点（unix socket 路径或当前发布的命名管道名）；不可用时为 `unavailable`。
 #[must_use]
 pub fn ipc_endpoint() -> String {
     #[cfg(unix)]
@@ -835,34 +908,35 @@ pub fn ipc_endpoint() -> String {
     }
     #[cfg(windows)]
     {
-        pipe_name().unwrap_or_else(|| "unavailable".to_owned())
+        endpoint_file::read_published().unwrap_or_else(|_| "unavailable".to_owned())
     }
 }
 
-/// Windows Named Pipe for the current account: `\\.\pipe\fluxdown-<account>`。账户名转小写后，
-/// `[a-z0-9]` 之外的每个字节编码为 `_xx`（下划线本身也编码），不同账户不会落到同一管道。
-/// 中继（`native/nmh/src/main.rs` 的 `pipe_name_for`）独立推导同一名字，两侧测试用同一组字面量钉住。
-#[cfg(any(windows, test))]
-fn pipe_name_for(user: &str) -> Option<String> {
-    if user.is_empty() {
-        return None;
-    }
-    let mut name = String::from(r"\\.\pipe\fluxdown-");
-    for byte in user.to_lowercase().bytes() {
-        if byte.is_ascii_lowercase() || byte.is_ascii_digit() {
-            name.push(char::from(byte));
-        } else {
-            name.push_str(&format!("_{byte:02x}"));
+/// Windows：等管道实例空出的上限（所有实例都在服务其他中继时返回 `ERROR_PIPE_BUSY`）。
+#[cfg(windows)]
+const PIPE_BUSY_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Windows `ERROR_PIPE_BUSY`。
+#[cfg(windows)]
+const ERROR_PIPE_BUSY: i32 = 231;
+
+/// 按中继的方式打开当前发布的管道：读发现文件，实例全忙时短暂等待重试。
+#[cfg(windows)]
+async fn open_published_pipe()
+-> Result<tokio::net::windows::named_pipe::NamedPipeClient, std::io::Error> {
+    let name = endpoint_file::read_published()?;
+    let deadline = tokio::time::Instant::now() + PIPE_BUSY_WAIT;
+    loop {
+        match tokio::net::windows::named_pipe::ClientOptions::new().open(&name) {
+            Err(error)
+                if error.raw_os_error() == Some(ERROR_PIPE_BUSY)
+                    && tokio::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            result => return result,
         }
     }
-    Some(name)
-}
-
-#[cfg(windows)]
-fn pipe_name() -> Option<String> {
-    std::env::var("USERNAME")
-        .ok()
-        .and_then(|user| pipe_name_for(&user))
 }
 
 /// 以中继的长度帧协议向本进程 IPC 端点发送 `ping`，成功返回 `pong` 载荷。
@@ -874,20 +948,18 @@ pub async fn probe_ipc(timeout: std::time::Duration) -> Result<String, std::io::
             tokio::net::UnixStream::connect(path).await?
         };
         #[cfg(windows)]
-        let stream = {
-            let name = pipe_name().ok_or_else(endpoint_unavailable)?;
-            tokio::net::windows::named_pipe::ClientOptions::new().open(name)?
-        };
+        let stream = open_published_pipe().await?;
         ping_stream(stream).await
     })
     .await
     .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "IPC ping timed out"))?
 }
 
+#[cfg(unix)]
 fn endpoint_unavailable() -> std::io::Error {
     std::io::Error::new(
         std::io::ErrorKind::NotFound,
-        "native messaging IPC endpoint is unavailable (no home directory / account name)",
+        "native messaging IPC endpoint is unavailable (no home directory)",
     )
 }
 
@@ -2749,7 +2821,7 @@ mod tests {
 
     use super::{
         MAX_BATCH_ITEMS, NmhService, PipeMessage, SNIFF_REPLY_BUDGET, handle_stream, ping_stream,
-        pipe_name_for, select_task_briefs, socket_path_under,
+        select_task_briefs, socket_path_under,
     };
 
     /// 与 `native/nmh/src/main.rs` 的 `unix_socket_lives_in_a_private_per_user_ipc_dir`
@@ -2773,30 +2845,6 @@ mod tests {
         );
     }
 
-    /// 与 `native/nmh/src/main.rs` 的 `pipe_name_is_per_user_and_injective` 使用同一组字面量。
-    #[test]
-    fn pipe_name_is_per_user_and_injective() {
-        assert_eq!(
-            pipe_name_for("Alice Smith").as_deref(),
-            Some(r"\\.\pipe\fluxdown-alice_20smith")
-        );
-        assert_eq!(
-            pipe_name_for("a_b"),
-            Some(r"\\.\pipe\fluxdown-a_5fb".to_owned())
-        );
-        assert_eq!(
-            pipe_name_for("a b"),
-            Some(r"\\.\pipe\fluxdown-a_20b".to_owned())
-        );
-        assert_eq!(
-            pipe_name_for("张三").as_deref(),
-            Some(r"\\.\pipe\fluxdown-_e5_bc_a0_e4_b8_89")
-        );
-        assert_eq!(pipe_name_for(""), None);
-        assert_ne!(pipe_name_for("alice"), pipe_name_for("bob"));
-        // Windows 账户名不区分大小写。
-        assert_eq!(pipe_name_for("ALICE"), pipe_name_for("alice"));
-    }
     #[test]
     fn task_panel_reports_live_download_speed() {
         let task = |id: &str| -> fluxdown_protocol::TaskDto {

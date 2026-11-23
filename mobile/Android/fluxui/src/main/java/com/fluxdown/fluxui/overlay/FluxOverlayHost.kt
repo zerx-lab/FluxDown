@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -98,6 +99,11 @@ class FluxOverlayState {
         align: FluxMenuAlign? = null,
     ) {
         menuEntry = MenuEntry(++seq, anchor, items, header, align)
+    }
+
+    /** 已打开的菜单随条目状态更新，保留锚点与进场状态。 */
+    fun showMenu(anchor: Rect, items: State<List<FluxMenuItem>>) {
+        menuEntry = MenuEntry(++seq, anchor, emptyList(), header = null, align = null, liveItems = items)
     }
 
     fun dismissMenu() {

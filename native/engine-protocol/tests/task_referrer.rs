@@ -20,6 +20,7 @@ fn task_dto_json_carries_referrer() -> Result<(), serde_json::Error> {
         checksum: String::new(),
         ignore_tls_errors: false,
         file_missing: false,
+        file_clear_state: fluxdown_engine::model::FileClearState::None,
         completed_at: String::new(),
         file_hash: String::new(),
         segments: 0,
@@ -45,6 +46,7 @@ fn task_dto_json_carries_referrer() -> Result<(), serde_json::Error> {
         auto_route: String::new(),
         source_bytes: SourceBytes::default(),
         properties: Default::default(),
+        html_only: false,
     };
     let dto = fluxdown_engine_protocol::task_info_to_dto(info);
     assert_eq!(dto.referrer, "https://example.com/page");
@@ -77,6 +79,7 @@ fn task_dto_json_carries_persisted_source_bytes() -> Result<(), serde_json::Erro
         checksum: String::new(),
         ignore_tls_errors: false,
         file_missing: false,
+        file_clear_state: fluxdown_engine::model::FileClearState::None,
         completed_at: String::new(),
         file_hash: String::new(),
         segments: 0,
@@ -106,6 +109,7 @@ fn task_dto_json_carries_persisted_source_bytes() -> Result<(), serde_json::Erro
             nic: 30,
         },
         properties: Default::default(),
+        html_only: false,
     };
     let dto = fluxdown_engine_protocol::task_info_to_dto(info);
     assert_eq!(

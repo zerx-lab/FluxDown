@@ -68,6 +68,7 @@ impl LocalHost {
         let agent_data_dir = data_dir.join("agent");
         // 先于 daemon 装订阅者：同进程的 daemon / agent 事件都落到 `<agent>/logs/agent.log`
         // （诊断「日志目录」检查与日志导出读这里）；移动端没有可读的 stderr。
+        // 日志启动配置与内嵌网关共用同一个引擎数据根（不是 agent 子目录）。
         fluxdown_agent::logging::init_embedded(&agent_data_dir, &data_dir);
         let host_cancel = CancellationToken::new();
 

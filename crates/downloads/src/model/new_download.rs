@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use fluxdown_protocol::{CreateTaskItem, CreateTaskRequest, MAX_TASK_SEGMENTS, PendingCaptureDto};
 
 use super::aria2c::{RequestHints, join_continuations, parse_command};
+use super::series_title::series_title;
 
 /// 一条解析出的下载条目（aria2 风格：URL + 可选 `out=` / `checksum=` 选项行）。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -86,6 +87,120 @@ pub(crate) fn url_file_segment(url: &str) -> Option<&str> {
     path.rsplit('/')
         .next()
         .filter(|segment| !segment.is_empty())
+}
+
+pub(crate) fn suggested_subfolder(base: &str, url: &str, file_name: &str) -> Option<String> {
+    let base = std::path::Path::new(base.trim());
+    if !base.is_absolute() {
+        return None;
+    }
+    let (scheme, rest) = url.split_once(':')?;
+    let magnet = scheme.eq_ignore_ascii_case("magnet");
+    if !magnet
+        && !["http", "https", "ftp", "ftps"]
+            .iter()
+            .any(|s| scheme.eq_ignore_ascii_case(s))
+    {
+        return None;
+    }
+    let decoded;
+    let name = if !file_name.trim().is_empty() {
+        file_name.trim()
+    } else if magnet {
+        let query = rest.strip_prefix('?')?;
+        let query = query.split_once('#').map_or(query, |(query, _)| query);
+        let (_, value) = query
+            .split('&')
+            .filter_map(|part| part.split_once('='))
+            .find(|(key, value)| key.eq_ignore_ascii_case("dn") && !value.is_empty())?;
+        decoded = percent_decode_utf8(&value.replace('+', " "))?;
+        decoded.as_str()
+    } else {
+        decoded = percent_decode_utf8(url_file_segment(url)?)?;
+        decoded.as_str()
+    };
+    if name.ends_with([' ', '.'])
+        || name
+            .chars()
+            .any(|ch| ch.is_control() || "/\\:<>\"|?*".contains(ch))
+    {
+        return None;
+    }
+    let name = name.trim_start();
+    let stem = series_title(name).unwrap_or_else(|| {
+        if magnet {
+            name
+        } else {
+            subfolder_file_stem(name)
+        }
+    });
+    let device = stem.split('.').next()?.trim_end();
+    if stem.is_empty()
+        || stem.starts_with('.')
+        || stem.ends_with('.')
+        || stem.len() > 255
+        || ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
+            .iter()
+            .any(|reserved| device.eq_ignore_ascii_case(reserved))
+        || device.get(..3).is_some_and(|prefix| {
+            (prefix.eq_ignore_ascii_case("COM") || prefix.eq_ignore_ascii_case("LPT"))
+                && matches!(
+                    device.get(3..),
+                    Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³")
+                )
+        })
+    {
+        return None;
+    }
+    base.join(stem).to_str().map(str::to_owned)
+}
+
+fn subfolder_file_stem(name: &str) -> &str {
+    let Some((stem, extension)) = name.rsplit_once('.') else {
+        return name;
+    };
+    if ["gz", "bz2", "xz", "zst"]
+        .iter()
+        .any(|suffix| extension.eq_ignore_ascii_case(suffix))
+        && let Some((archive, suffix)) = stem.rsplit_once('.')
+        && suffix.eq_ignore_ascii_case("tar")
+    {
+        return archive;
+    }
+    if extension.len() <= 8
+        && extension.bytes().all(|b| b.is_ascii_alphanumeric())
+        && extension.bytes().any(|b| b.is_ascii_alphabetic())
+    {
+        stem.trim_end()
+    } else {
+        name
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum SubfolderError {
+    Occupied,
+    BrokenLink,
+    Io(std::io::Error),
+}
+
+pub(crate) fn check_subfolder(path: &std::path::Path) -> Result<(), SubfolderError> {
+    use std::{fs, io::ErrorKind::NotFound};
+
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_dir() => Ok(()),
+        Err(error) if error.kind() == NotFound => match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.is_symlink() => Err(SubfolderError::BrokenLink),
+            // The directory may have been created between the two lookups.
+            Ok(metadata) if metadata.is_dir() => Ok(()),
+            Ok(_) => Err(SubfolderError::Occupied),
+            // Only a missing entry can be created by the engine when it opens the output.
+            Err(error) if error.kind() == NotFound => Ok(()),
+            Err(error) => Err(SubfolderError::Io(error)),
+        },
+        Ok(_) => Err(SubfolderError::Occupied),
+        Err(error) => Err(SubfolderError::Io(error)),
+    }
 }
 
 /// 解析多行文本为下载条目。
@@ -610,6 +725,106 @@ mod tests {
         capture_entry, captured_referrer, checksum_spec, custom_segments, detect_ua_preset,
         manual_proxy_url, parse_entries, parse_input,
     };
+
+    #[test]
+    fn suggested_subfolder_uses_the_current_root_and_preserves_dotted_titles() {
+        let base = std::env::temp_dir().join("分类 Videos");
+        let root = base.to_str().expect("UTF-8 root");
+        for (url, name) in [
+            (
+                "https://example.org/%E8%A7%86%E9%A2%91.mkv?token=secret",
+                "视频",
+            ),
+            ("https://example.org/Show.Name.2024", "Show.Name.2024"),
+            ("https://example.org/Archive.tar.gz", "Archive"),
+            (
+                "magnet:?xt=urn:btih:abc&dn=Show.Name.2024",
+                "Show.Name.2024",
+            ),
+            ("magnet:?dn=Show+A%2BB#fragment", "Show A+B"),
+            ("https://example.org/Show.S01E02.mkv", "Show"),
+            ("magnet:?dn=Show.S01E100.1080p", "Show"),
+            ("magnet:?dn=%5BGroup%5D+Show+-+05+%5B1080p%5D", "Show"),
+            (
+                "https://example.org/Show%20-%2005.mkv.pt_BR.forced.srt",
+                "Show",
+            ),
+            (
+                "https://example.org/Report%20-%2012%20Months.pdf",
+                "Report - 12 Months",
+            ),
+        ] {
+            assert_eq!(
+                super::suggested_subfolder(root, url, "").as_deref(),
+                base.join(name).to_str(),
+                "{url}"
+            );
+        }
+        assert_eq!(
+            super::suggested_subfolder(root, "https://example.org/get", "Renamed.mp4").as_deref(),
+            base.join("Renamed").to_str()
+        );
+        for url in [
+            "https://example.org/..",
+            "https://example.org/a%2Fb.mkv",
+            "https://example.org/a%5Cb.mkv",
+            "https://example.org/NUL.mkv",
+            "https://example.org/COM%C2%B9.mkv",
+            "https://example.org/CON.S01E02.mp4",
+            "https://example.org/",
+            "magnet:?xt=urn:btih:abc",
+            "magnet:?dn=%2E%2E%2Fescape",
+        ] {
+            assert_eq!(super::suggested_subfolder(root, url, ""), None, "{url}");
+        }
+    }
+
+    #[test]
+    fn subfolder_check_distinguishes_directories_and_files() -> std::io::Result<()> {
+        use super::{SubfolderError, check_subfolder};
+        use std::{fs, io, time::SystemTime};
+
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_err(io::Error::other)?
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("fluxdown-subfolder-{}-{nonce}", std::process::id()));
+        fs::create_dir(&root)?;
+        let result = (|| {
+            let child = root.join("Movie");
+            check_subfolder(&child).expect("missing subfolder can be created");
+            fs::create_dir(&child)?;
+            check_subfolder(&child).expect("existing subfolder can be reused");
+            let file = root.join("occupied");
+            fs::write(&file, [])?;
+            assert!(matches!(
+                check_subfolder(&file),
+                Err(SubfolderError::Occupied)
+            ));
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::symlink;
+                let linked_dir = root.join("linked-dir");
+                symlink(&child, &linked_dir)?;
+                check_subfolder(&linked_dir).expect("linked subfolder can be reused");
+                let linked_file = root.join("linked-file");
+                symlink(&file, &linked_file)?;
+                assert!(matches!(
+                    check_subfolder(&linked_file),
+                    Err(SubfolderError::Occupied)
+                ));
+                fs::remove_dir(&child)?;
+                assert!(matches!(
+                    check_subfolder(&linked_dir),
+                    Err(SubfolderError::BrokenLink)
+                ));
+            }
+            Ok(())
+        })();
+        let cleanup = fs::remove_dir_all(&root);
+        result.and(cleanup)
+    }
 
     fn capture(url: &str, referrer: &str) -> PendingCaptureDto {
         PendingCaptureDto {

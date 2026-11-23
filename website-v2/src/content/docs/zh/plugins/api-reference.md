@@ -3,7 +3,7 @@ title: 插件 API 参考
 description: 全部入口函数、flux.* 接口、JavaScript 运行环境、运行时限制，以及插件会遇到的错误信息。
 section: plugins
 order: 11
-sourceHash: "e868448f5533"
+sourceHash: "e3ba7672f6ce"
 ---
 
 本页列出插件脚本能看到的一切：FluxDown 会调用的入口函数、注入的 `flux` 对象、JavaScript 运行环境、运行时限制，以及开发中会遇到的错误信息。这是一份参考手册；分步教程请看[你的第一个插件](/docs/zh/plugins/your-first-plugin/)、[TypeScript 项目](/docs/zh/plugins/typescript-project/)、[事件钩子指南](/docs/zh/plugins/hooks-guide/)、[账号登录指南](/docs/zh/plugins/auth-guide/)、[订阅源指南](/docs/zh/plugins/subscription-guide/)、[可移植界面指南](/docs/zh/plugins/ui-guide/)和[桌面原生界面指南](/docs/zh/plugins/desktop-ui-guide/)。
@@ -56,6 +56,8 @@ sourceHash: "e868448f5533"
 ### `resolve(ctx)`
 
 在协议分派之前调用，任务每次**开始和恢复**时都会调用（前提是匹配 `resolvers[0].match.urls`；解析是惰性的，见[概览](/docs/zh/plugins/overview/)）。清单声明了 `multi: true` 的 resolver，还会被新建下载窗口调用一次做预解析（见[清单结果](#清单结果manifest)）。
+
+当解析得到的 URL 选择了与原始 URL 不同的下载协议时，FluxDown 可能会使用该协议的代理出口再次调用 `resolve`。第二次返回值会替换第一次的结果，并且仍须对应同一个已选变体。如果该格式已不可用，解析会失败，而不会下载另一种格式。第二次调用失败时会作为 resolver 错误报告。
 
 如果某个必填设置既没有用户值也没有 `default`，调用会在你的脚本运行**之前**以 `缺少必填设置项` 失败。
 

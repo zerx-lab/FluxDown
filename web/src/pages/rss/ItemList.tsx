@@ -17,6 +17,7 @@ export function ItemList({
   mobile,
   onToggle,
   onAct,
+  onViewImages,
 }: {
   rows: readonly RssItemDto[]
   selected: ReadonlySet<string>
@@ -26,6 +27,7 @@ export function ItemList({
   mobile: boolean
   onToggle: (guid: string) => void
   onAct: (guids: readonly string[], action: ItemAction) => void
+  onViewImages: (item: RssItemDto) => void
 }) {
   const parentRef = useRef<HTMLDivElement>(null)
   const rowHeight = mobile ? ROW_HEIGHT_MOBILE : ROW_HEIGHT_DESKTOP
@@ -55,9 +57,11 @@ export function ItemList({
                 selected={selected.has(item.guid)}
                 busy={isBusy}
                 canAct={!stale && !isBusy}
+                stale={stale}
                 mobile={mobile}
                 onToggle={onToggle}
                 onAct={onAct}
+                onViewImages={onViewImages}
               />
             </div>
           )

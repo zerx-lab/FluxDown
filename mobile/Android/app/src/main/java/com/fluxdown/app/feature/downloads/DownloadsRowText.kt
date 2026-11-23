@@ -14,6 +14,7 @@ import com.fluxdown.app.i18n.fill
 import com.fluxdown.app.i18n.str
 import com.fluxdown.app.ui.TaskVisualState
 import com.fluxdown.core.format.Format
+import com.fluxdown.core.format.FileSizeUnits
 import com.fluxdown.core.model.Queue
 import com.fluxdown.core.model.SeedingStatus
 import com.fluxdown.core.model.TaskErrorMessage
@@ -39,11 +40,15 @@ internal class RowText(c: Context) {
     val failed = c.str(R.string.statusError)
     private val errorPostOnlyEndpoint = c.str(R.string.taskErrorPostOnlyEndpoint)
     private val errorPostOnlyResume = c.str(R.string.taskErrorPostOnlyResume)
+    private val errorUnexpectedHtml = c.str(R.string.taskErrorUnexpectedHtml)
+    private val errorHtmlChanged = c.str(R.string.taskErrorHtmlChanged)
 
     /** 引擎稳定错误文案 → 本地化；其余原样。 */
     fun taskError(raw: String): String = when (TaskErrorMessage.match(raw)) {
         TaskErrorMessage.PostOnlyEndpoint -> errorPostOnlyEndpoint
         TaskErrorMessage.PostOnlyResume -> errorPostOnlyResume
+        TaskErrorMessage.UnexpectedHtml -> errorUnexpectedHtml
+        TaskErrorMessage.HtmlChanged -> errorHtmlChanged
         null -> raw
     }
 
@@ -54,6 +59,11 @@ internal class RowText(c: Context) {
     private val relMinutesFmt = c.getString(R.string.mobileTimeMinutesAgo)
     private val relHoursFmt = c.getString(R.string.mobileTimeHoursAgo)
     private val relDaysFmt = c.getString(R.string.mobileTimeDaysAgo)
+    private val hlsFragmentsFmt = c.getString(R.string.hlsFragmentProgress)
+    private val writtenBytesLabel = c.str(R.string.infoWrittenBytes)
+
+    fun hlsProgress(written: Long, total: Long): String = hlsFragmentsFmt.fill("done" to written, "total" to total)
+    fun writtenBytes(bytes: Long, units: FileSizeUnits): String = "$writtenBytesLabel: ${Format.bytes(bytes, units)}"
 
     private val mainQueue = c.str(R.string.mainQueue)
     private val laterQueue = c.str(R.string.downloadLater)
@@ -62,7 +72,7 @@ internal class RowText(c: Context) {
     val ringResume = c.str(R.string.resume)
     val ringRetry = c.str(R.string.mobileRetry)
     val ringRedownload = c.str(R.string.redownloadTask)
-    val ringSeeding = c.str(R.string.statusSeeding)
+    val select = c.str(R.string.selectTasks)
     val ringOpen = c.str(R.string.mobileOpenFile)
 
     val boost = c.str(R.string.boostDownload)
@@ -140,42 +150,60 @@ internal fun buildRowMeta(
     fields: Set<CardField>,
     nowSec: Long,
     queuePosition: Int,
+    sizeUnits: FileSizeUnits,
 ): AnnotatedString = colors.buildTaskMeta {
     val task = item.task
     val showSize = CardField.Size in fields
     val showSpeed = CardField.Speed in fields
     val showEta = CardField.Eta in fields
     val total = task.totalBytes
-    val progress = task.progress
-    val pct = progress?.let(Format::percent).orEmpty()
-    val doneOfTotal = if (total > 0) "${Format.bytes(task.downloadedBytes)}/${Format.bytes(total)}" else Format.bytes(task.downloadedBytes).toString()
-    val totalSize = if (total > 0) Format.bytes(total).toString() else ""
-    val upText = if (item.speedUp > 0) "↑ ${Format.speed(item.speedUp)}" else ""
+    val fragments = item.hlsFragments
+    val progressText = if (fragments != null) {
+        t.hlsProgress(fragments.written, fragments.total)
+    } else item.progress?.let(Format::percent).orEmpty()
+    val doneOfTotal = if (showSize) when {
+        fragments != null -> t.writtenBytes(task.downloadedBytes, sizeUnits)
+        total > 0 -> "${Format.bytes(task.downloadedBytes, sizeUnits)}/${Format.bytes(total, sizeUnits)}"
+        else -> Format.bytes(task.downloadedBytes, sizeUnits).toString()
+    } else ""
+    val totalSize = if (showSize && total > 0) Format.bytes(total, sizeUnits).toString() else ""
+    val upText = Format.speed(item.speedUp, sizeUnits)?.let { "↑ $it" }.orEmpty()
 
     when (item.visual) {
         TaskVisualState.Downloading -> {
-            if (showSpeed && item.speedDown > 0) part(Format.speed(item.speedDown).toString(), MetaTone.Accent)
-            if (showEta) part(item.eta?.let(t::eta) ?: "—")
-            part(pct)
-            if (showSize) part(doneOfTotal)
+            if (showSpeed) Format.speed(item.speedDown, sizeUnits)?.let { part(it.toString(), MetaTone.Accent) }
+            if (showEta && fragments == null) part(item.eta?.let(t::eta) ?: "—")
+            part(progressText)
+            part(doneOfTotal)
             if (showSpeed) part(upText)
         }
         TaskVisualState.Paused -> {
             part(t.paused)
-            part(pct)
-            if (showSize && total > 0) part(doneOfTotal)
+            part(progressText)
+            if (showSize && (fragments != null || total > 0)) part(doneOfTotal)
         }
         TaskVisualState.Queued -> {
             part(t.queued(queuePosition))
+            if (fragments != null) part(progressText)
             if (showSize) part(totalSize)
         }
         TaskVisualState.Pending -> {
             part(t.pending)
+            if (fragments != null) part(progressText)
             if (showSize) part(totalSize)
         }
-        TaskVisualState.Preparing -> part(t.preparing)
-        TaskVisualState.Verifying -> part(t.verifying)
-        TaskVisualState.Failed -> part(firstLine(t.taskError(task.errorMessage)) ?: t.failed, MetaTone.Coral)
+        TaskVisualState.Preparing -> {
+            part(t.preparing)
+            if (fragments != null) part(progressText)
+        }
+        TaskVisualState.Verifying -> {
+            part(t.verifying)
+            if (fragments != null) part(progressText)
+        }
+        TaskVisualState.Failed -> {
+            part(firstLine(t.taskError(task.errorMessage)) ?: t.failed, MetaTone.Coral)
+            if (fragments != null) part(progressText, MetaTone.Coral)
+        }
         TaskVisualState.Missing -> {
             part(t.missing, MetaTone.Amber)
             if (showSize) part(totalSize)

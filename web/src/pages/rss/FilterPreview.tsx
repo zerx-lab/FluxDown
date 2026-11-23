@@ -1,6 +1,7 @@
 // 过滤规则实时预览：用与引擎 `filter.rs` 逐条对齐的前端副本（./filter.ts）对样本条目整轮试跑。
 
 import { useMemo } from 'react'
+import { useFileSizeUnits } from '../../lib/fileSizeUnits'
 import { useT } from '../../i18n'
 import type { RssItemDto } from '../../lib/rpc'
 import { Badge } from '../../ui'
@@ -12,6 +13,7 @@ import { bytesText } from './format'
 const MAX_ROWS = 200
 
 export function FilterPreview({ rule, items }: { rule: RssFilterRule; items: readonly RssItemDto[] }) {
+  const units = useFileSizeUnits()
   const t = useT()
   const rows = useMemo(() => previewRule(rule, [...items]), [rule, items])
   const hit = rows.filter((row) => row.verdict.accepted).length
@@ -35,7 +37,7 @@ export function FilterPreview({ rule, items }: { rule: RssFilterRule; items: rea
                 <span className={verdict.accepted ? 'min-w-0 flex-1 truncate text-foreground' : 'min-w-0 flex-1 truncate text-text-tertiary'} title={item.title}>
                   {item.title}
                 </span>
-                <span className="max-w-[45%] shrink-0 truncate text-text-tertiary">{key ? t(key) : verdict.accepted ? bytesText(item.enclosureLength) : ''}</span>
+                <span className="max-w-[45%] shrink-0 truncate text-text-tertiary">{key ? t(key) : verdict.accepted ? bytesText(item.enclosureLength, units) : ''}</span>
               </li>
             )
           })}

@@ -24,6 +24,7 @@ import {
   useFileConflicts,
 } from './fileConflict'
 import type { FileConflict, FileExistsKind } from './fileConflict'
+import { useFileSizeUnits, type FileSizeUnits } from '../../../lib/fileSizeUnits'
 import { formatBytes, useNow } from './utils'
 
 const ACTION_ICON: Record<FileExistsAction, LucideIcon> = { rename: Copy, overwrite: Replace, skip: SkipForward }
@@ -135,12 +136,12 @@ function ConflictDialogBody({ conflicts, onResolved }: { conflicts: readonly Fil
 }
 
 /** 已有文件大小；未知显示「大小未知」。 */
-function existingSizeLabel(t: TFunction, kind: FileExistsKind): string {
-  return kind.existingSize === undefined ? t('fileConflictSizeUnknown') : formatBytes(kind.existingSize)
+function existingSizeLabel(t: TFunction, kind: FileExistsKind, units: FileSizeUnits): string {
+  return kind.existingSize === undefined ? t('fileConflictSizeUnknown') : formatBytes(kind.existingSize, units)
 }
 
-function incomingSizeLabel(t: TFunction, kind: FileExistsKind): string {
-  return kind.incomingSize === undefined || kind.incomingSize <= 0 ? t('fileConflictSizeUnknown') : formatBytes(kind.incomingSize)
+function incomingSizeLabel(t: TFunction, kind: FileExistsKind, units: FileSizeUnits): string {
+  return kind.incomingSize === undefined || kind.incomingSize <= 0 ? t('fileConflictSizeUnknown') : formatBytes(kind.incomingSize, units)
 }
 
 function modifiedLabel(t: TFunction, kind: FileExistsKind): string | null {
@@ -148,6 +149,7 @@ function modifiedLabel(t: TFunction, kind: FileExistsKind): string | null {
 }
 
 function SingleConflict({ t, conflict, busy, onChoose }: { t: TFunction; conflict: FileConflict; busy: boolean; onChoose: (action: FileExistsAction) => void }) {
+  const units = useFileSizeUnits()
   const kind = conflict.kind
   const modified = modifiedLabel(t, kind)
   return (
@@ -159,12 +161,12 @@ function SingleConflict({ t, conflict, busy, onChoose }: { t: TFunction; conflic
       <Card className="grid grid-cols-1 divide-y divide-hairline desktop:grid-cols-2 desktop:divide-x desktop:divide-y-0">
         <div className="flex min-w-0 flex-col gap-0.5 p-3">
           <span className="text-caption text-text-tertiary">{t('fileConflictExisting')}</span>
-          <span className="tabular text-sm text-foreground">{existingSizeLabel(t, kind)}</span>
+          <span className="tabular text-sm text-foreground">{existingSizeLabel(t, kind, units)}</span>
           {modified ? <span className="text-xs text-text-tertiary">{modified}</span> : null}
         </div>
         <div className="flex min-w-0 flex-col gap-0.5 p-3">
           <span className="text-caption text-text-tertiary">{t('fileConflictIncoming')}</span>
-          <span className="tabular text-sm text-foreground">{incomingSizeLabel(t, kind)}</span>
+          <span className="tabular text-sm text-foreground">{incomingSizeLabel(t, kind, units)}</span>
         </div>
       </Card>
       <div className="flex flex-col gap-2">
@@ -222,9 +224,10 @@ function ActionOption({
 }
 
 function ConflictRow({ t, conflict, busy, onChoose }: { t: TFunction; conflict: FileConflict; busy: boolean; onChoose: (action: FileExistsAction) => void }) {
+  const units = useFileSizeUnits()
   const kind = conflict.kind
   const modified = modifiedLabel(t, kind)
-  const meta = [`${t('fileConflictExisting')} ${existingSizeLabel(t, kind)}`, modified, `${t('fileConflictIncoming')} ${incomingSizeLabel(t, kind)}`]
+  const meta = [`${t('fileConflictExisting')} ${existingSizeLabel(t, kind, units)}`, modified, `${t('fileConflictIncoming')} ${incomingSizeLabel(t, kind, units)}`]
     .filter((part): part is string => part !== null)
     .join(' · ')
   return (

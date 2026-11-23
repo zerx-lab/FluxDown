@@ -83,7 +83,7 @@ impl ViewMenuPage {
     }
 }
 
-const GROUP_OPTIONS: [ViewGroupBy; 7] = [
+const GROUP_OPTIONS: [ViewGroupBy; 8] = [
     ViewGroupBy::None,
     ViewGroupBy::Status,
     ViewGroupBy::Date,
@@ -91,6 +91,7 @@ const GROUP_OPTIONS: [ViewGroupBy; 7] = [
     ViewGroupBy::Queue,
     ViewGroupBy::Site,
     ViewGroupBy::Directory,
+    ViewGroupBy::Content,
 ];
 
 const SORT_OPTIONS: [ViewSortKey; 7] = [
@@ -112,6 +113,7 @@ fn group_by_key(group_by: ViewGroupBy) -> &'static str {
         ViewGroupBy::Queue => "viewGroupQueue",
         ViewGroupBy::Site => "viewGroupSite",
         ViewGroupBy::Directory => "viewGroupDirectory",
+        ViewGroupBy::Content => "viewGroupByContent",
     }
 }
 

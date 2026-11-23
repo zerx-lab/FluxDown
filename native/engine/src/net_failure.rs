@@ -173,6 +173,7 @@ pub fn classify_download_error(e: &crate::downloader::DownloadError) -> Option<N
         DownloadError::Other(msg) | DownloadError::CdnNodeFailed(msg) => {
             tag_of(msg).or_else(|| is_engine_stall(msg).then_some(NetFailure::Stalled))
         }
+        DownloadError::RangeRestartFailed(inner) => classify_download_error(inner),
         _ => None,
     }
 }

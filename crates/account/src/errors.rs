@@ -111,11 +111,14 @@ pub(crate) fn reason_key(reason: ErrorReason, context: ErrorContext) -> Option<&
         ErrorReason::PeerOutdated => "errReasonPeerOutdated",
         ErrorReason::LinkUnavailable => "errReasonLinkUnavailable",
         ErrorReason::TargetDeviceOffline => "errReasonTargetDeviceOffline",
+        ErrorReason::RemoteTaskGone => "errReasonRemoteTaskGone",
         ErrorReason::TaskStateConflict => "errReasonTaskStateConflict",
         ErrorReason::TaskDeviceMismatch => "errReasonTaskDeviceMismatch",
         ErrorReason::SaveDirUnavailable => "errReasonSaveDirUnavailable",
         ErrorReason::TaskFilesInUse => "errReasonTaskFilesInUse",
         ErrorReason::TaskFilesNotDeleted => "errReasonTaskFilesNotDeleted",
+        ErrorReason::TaskFileClearPending => "errReasonTaskFileClearPending",
+        ErrorReason::BrowserRequestRequired => "taskErrorPostOnlyResume",
         ErrorReason::PaymentDisabled
         | ErrorReason::PaymentGatewayFailed
         | ErrorReason::PlanNotPurchasable
@@ -149,6 +152,7 @@ pub(crate) fn reason_key(reason: ErrorReason, context: ErrorContext) -> Option<&
         | ErrorReason::NotifyDisabled
         | ErrorReason::NotifyTargetInvalid
         | ErrorReason::SoundUnplayable
+        | ErrorReason::RssImageProxyUnverifiable
         | ErrorReason::Unknown => return None,
     })
 }
@@ -439,11 +443,13 @@ mod tests {
             ErrorReason::PeerOutdated,
             ErrorReason::LinkUnavailable,
             ErrorReason::TargetDeviceOffline,
+            ErrorReason::RemoteTaskGone,
             ErrorReason::TaskStateConflict,
             ErrorReason::TaskDeviceMismatch,
             ErrorReason::SaveDirUnavailable,
             ErrorReason::TaskFilesInUse,
             ErrorReason::TaskFilesNotDeleted,
+            ErrorReason::TaskFileClearPending,
         ];
         let contexts = [
             ErrorContext::General,

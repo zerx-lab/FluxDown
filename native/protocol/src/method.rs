@@ -18,6 +18,8 @@ pub const DAEMON_TASK_ACTIVITY: &str = "daemon.task.activity";
 /// 单任务速度历史（`TaskSpeedHistoryQuery` → `Option<TaskSpeedHistoryDto>`）。
 pub const DAEMON_TASK_SPEED_HISTORY: &str = "daemon.task.speedHistory";
 pub const DAEMON_TASK_CREATE: &str = "daemon.task.create";
+/// Replay a failed HTML response as a new task (`{taskId}` → `CreatedTask`).
+pub const DAEMON_TASK_SAVE_HTML: &str = "daemon.task.saveHtml";
 pub const DAEMON_TASK_PAUSE: &str = "daemon.task.pause";
 pub const DAEMON_TASK_RESUME: &str = "daemon.task.resume";
 pub const DAEMON_TASK_RENAME: &str = "daemon.task.rename";
@@ -32,6 +34,9 @@ pub const DAEMON_TASK_EDIT_INFO: &str = "daemon.task.editInfo";
 /// Validate and atomically apply a unified task property update.
 pub const DAEMON_TASK_EDIT: &str = "daemon.task.edit";
 pub const DAEMON_TASK_DELETE: &str = "daemon.task.delete";
+pub const DAEMON_TASK_CLEAR_FILE: &str = "daemon.task.clearFile";
+/// Redownload a completed non-BT task with missing output (`{taskId}`).
+pub const DAEMON_TASK_RESTART_FILE: &str = "daemon.task.restartFile";
 pub const DAEMON_TASK_PAUSE_ALL: &str = "daemon.task.pauseAll";
 pub const DAEMON_TASK_RESUME_ALL: &str = "daemon.task.resumeAll";
 pub const DAEMON_TASK_RESCAN: &str = "daemon.task.rescan";
@@ -78,6 +83,8 @@ pub const DAEMON_TASK_MOVE_STORAGE: &str = "daemon.task.moveStorage";
 pub const DAEMON_TASK_SET_BT_LIMITS: &str = "daemon.task.setBtLimits";
 /// 超级做种开关（`SetTaskSuperSeedingParams`）：任务完成（做种）后才实际生效，可提前设置。
 pub const DAEMON_TASK_SET_SUPER_SEEDING: &str = "daemon.task.setSuperSeeding";
+/// Appends a BEP 19 HTTP source to an existing BitTorrent task (`AddTaskWebSeedParams`).
+pub const DAEMON_TASK_ADD_WEB_SEED: &str = "daemon.task.addWebSeed";
 /// 立即向 tracker 重新汇报（`{taskId}`）；任务当前不在运行返回 `taskStateConflict`。
 pub const DAEMON_TASK_REANNOUNCE: &str = "daemon.task.reannounce";
 /// eD2K 任务实况（`DaemonEd2kStatusParams` → `Ed2kStatusDto`）：源列表、查询过的服务器、Kad 节点
@@ -134,6 +141,7 @@ pub const DAEMON_FS_LIST: &str = "daemon.fs.list";
 
 pub const DAEMON_RSS_LIST_SOURCES: &str = "daemon.rss.listSources";
 pub const DAEMON_RSS_GET_ITEMS: &str = "daemon.rss.getItems";
+pub const DAEMON_RSS_GET_IMAGE: &str = "daemon.rss.getImage";
 pub const DAEMON_RSS_CREATE_SOURCE: &str = "daemon.rss.createSource";
 pub const DAEMON_RSS_UPDATE_SOURCE: &str = "daemon.rss.updateSource";
 pub const DAEMON_RSS_DELETE_SOURCE: &str = "daemon.rss.deleteSource";
@@ -316,6 +324,9 @@ pub const AGENT_CLOUD_ENDPOINT_SET: &str = "agent.cloud.endpointSet";
 pub const AGENT_REMOTE_LIST: &str = "agent.remote.list";
 pub const AGENT_REMOTE_DISPATCH: &str = "agent.remote.dispatch";
 pub const AGENT_REMOTE_COMMAND: &str = "agent.remote.command";
+/// 批量远程指令（`RemoteCommandManyParams` → `RemoteCommandManyResult`）；宿主声明
+/// [`CAPABILITY_AGENT_REMOTE_BATCH`] 时可用，旧宿主逐条回退 `agent.remote.command`。
+pub const AGENT_REMOTE_COMMAND_MANY: &str = "agent.remote.commandMany";
 /// 局域网直连（L1）：展示本机配对码并开始广播 → `LinkPairingCodeDto`。
 pub const AGENT_LINK_PAIRING_CODE: &str = "agent.link.pairingCode";
 /// 停止展示配对码 / 停止配对广播。
@@ -457,6 +468,8 @@ pub const CAPABILITY_AGENT_GATEWAY: &str = "agent.gateway";
 pub const CAPABILITY_AGENT_AUTH: &str = "agent.auth";
 pub const CAPABILITY_AGENT_SYNC: &str = "agent.sync";
 pub const CAPABILITY_AGENT_REMOTE_TASKS: &str = "agent.remoteTasks";
+/// 宿主支持 `agent.remote.commandMany`（批量远程指令）与 `remoteTaskGone` 原因。
+pub const CAPABILITY_AGENT_REMOTE_BATCH: &str = "agent.remoteBatch";
 pub const CAPABILITY_AGENT_BILLING: &str = "agent.billing";
 pub const CAPABILITY_AGENT_REFERRALS: &str = "agent.referrals";
 pub const CAPABILITY_AGENT_DEVICE_LINK: &str = "agent.deviceLink";
@@ -485,6 +498,7 @@ pub const ALL_METHODS: &[&str] = &[
     DAEMON_TASK_SPEED_HISTORY,
     DAEMON_TASK_CREATE,
     DAEMON_TASK_CREATE_MANY,
+    DAEMON_TASK_SAVE_HTML,
     DAEMON_TASK_PAUSE,
     DAEMON_TASK_RESUME,
     DAEMON_TASK_RENAME,
@@ -494,6 +508,8 @@ pub const ALL_METHODS: &[&str] = &[
     DAEMON_TASK_EDIT_INFO,
     DAEMON_TASK_EDIT,
     DAEMON_TASK_DELETE,
+    DAEMON_TASK_CLEAR_FILE,
+    DAEMON_TASK_RESTART_FILE,
     DAEMON_TASK_PAUSE_ALL,
     DAEMON_TASK_RESUME_ALL,
     DAEMON_TASK_RESCAN,
@@ -511,6 +527,7 @@ pub const ALL_METHODS: &[&str] = &[
     DAEMON_TASK_MOVE_STORAGE,
     DAEMON_TASK_SET_BT_LIMITS,
     DAEMON_TASK_SET_SUPER_SEEDING,
+    DAEMON_TASK_ADD_WEB_SEED,
     DAEMON_TASK_REANNOUNCE,
     DAEMON_TASK_ED2K_STATUS,
     DAEMON_TASK_PAUSE_MANY,
@@ -550,6 +567,7 @@ pub const ALL_METHODS: &[&str] = &[
     DAEMON_FS_LIST,
     DAEMON_RSS_LIST_SOURCES,
     DAEMON_RSS_GET_ITEMS,
+    DAEMON_RSS_GET_IMAGE,
     DAEMON_RSS_CREATE_SOURCE,
     DAEMON_RSS_UPDATE_SOURCE,
     DAEMON_RSS_DELETE_SOURCE,
@@ -669,6 +687,7 @@ pub const ALL_METHODS: &[&str] = &[
     AGENT_REMOTE_LIST,
     AGENT_REMOTE_DISPATCH,
     AGENT_REMOTE_COMMAND,
+    AGENT_REMOTE_COMMAND_MANY,
     AGENT_LINK_PAIRING_CODE,
     AGENT_LINK_STOP_PAIRING,
     AGENT_LINK_DISCOVERY_SET,
@@ -744,6 +763,7 @@ pub const ALL_METHODS: &[&str] = &[
 /// 会等待网络、下载或外部 IO 的 daemon 方法。daemon 对这些方法按请求并发处理，
 /// agent 网关也把它们放到独立于普通 daemon 命令的通道，避免长耗时调用堵住暂停/恢复/设置写入。
 pub const SLOW_DAEMON_METHODS: &[&str] = &[
+    DAEMON_RSS_GET_IMAGE,
     DAEMON_COMPONENT_LIST_VERSIONS,
     DAEMON_COMPONENT_INSTALL,
     DAEMON_PLUGIN_AUTH,
@@ -778,6 +798,8 @@ pub const SLOW_DAEMON_METHODS: &[&str] = &[
     DAEMON_TASK_HASH,
     DAEMON_TASK_SEED_LOCAL,
     DAEMON_TASK_MOVE_STORAGE,
+    DAEMON_TASK_CLEAR_FILE,
+    DAEMON_TASK_RESTART_FILE,
     DAEMON_TASK_EDIT,
     DAEMON_EGRESS_PLAN,
 ];
@@ -812,6 +834,7 @@ pub const AGENT_CAPABILITIES: &[&str] = &[
     CAPABILITY_AGENT_AUTH,
     CAPABILITY_AGENT_SYNC,
     CAPABILITY_AGENT_REMOTE_TASKS,
+    CAPABILITY_AGENT_REMOTE_BATCH,
     CAPABILITY_AGENT_BILLING,
     CAPABILITY_AGENT_REFERRALS,
     CAPABILITY_AGENT_DEVICE_LINK,

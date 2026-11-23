@@ -177,6 +177,174 @@ public struct RemoteCommandParams: Sendable, Hashable, Codable {
     }
 }
 
+/// `agent.remote.commandMany` 参数：同一动作批量作用于多条远程任务（语义同逐条 `agent.remote.command`）。
+public struct RemoteCommandManyParams: Sendable, Hashable, Encodable {
+    /// 单次调用的任务数上限（`REMOTE_COMMAND_MANY_MAX`）；更大的选择由客户端分块。
+    public static let maxIds = 1000
+
+    public var taskIds: [String]
+    public var action: RemoteCommandAction
+    /// 仅 `delete`：目标设备同时删除已下载文件。
+    public var deleteFiles: Bool
+
+    public init(taskIds: [String], action: RemoteCommandAction, deleteFiles: Bool = false) {
+        self.taskIds = taskIds
+        self.action = action
+        self.deleteFiles = deleteFiles
+    }
+}
+
+/// 批量命令中失败的一条：`error` 是标准 `RpcErrorData`，映射为 `HostError`（未知 `code` 落入 `.internal`）。
+public struct RemoteCommandFailure: Sendable, Hashable, Decodable {
+    public var taskId: String
+    public var error: HostError
+
+    public init(taskId: String, error: HostError) {
+        self.taskId = taskId
+        self.error = error
+    }
+
+    private enum CodingKeys: String, CodingKey { case taskId, error }
+
+    private struct Wire: Decodable {
+        var code: String?
+        var retryable: Bool?
+        var reason: String?
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        taskId = try c.decode(String.self, forKey: .taskId)
+        let wire = try c.decodeIfPresent(Wire.self, forKey: .error)
+        error = HostError(
+            wire?.code.flatMap(HostErrorCode.init(rawValue:)) ?? .internal,
+            reason: wire?.reason,
+            retryable: wire?.retryable ?? false
+        )
+    }
+}
+
+/// `agent.remote.commandMany` 结果：`succeeded` 与 `failed` 合起来覆盖去重后的输入 id。缺失的数组按空处理。
+public struct RemoteCommandManyResult: Sendable, Hashable, Decodable {
+    public var succeeded: [String]
+    public var failed: [RemoteCommandFailure]
+
+    public init(succeeded: [String] = [], failed: [RemoteCommandFailure] = []) {
+        self.succeeded = succeeded
+        self.failed = failed
+    }
+
+    private enum CodingKeys: String, CodingKey { case succeeded, failed }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        succeeded = try c.decodeIfPresent([String].self, forKey: .succeeded) ?? []
+        failed = try c.decodeIfPresent([RemoteCommandFailure].self, forKey: .failed) ?? []
+    }
+}
+
+/// 多选里的远程任务批量命令：筛选可下发项、分块、执行与汇总（纯逻辑；调用方注入 RPC 闭包）。
+public enum RemoteBatch {
+    /// 旧主机（无 `agent.remoteBatch`）逐条下发的并发上限。
+    public static let fallbackConcurrency = 4
+
+    /// 汇总：成功 id 与失败项均按输入顺序。
+    public struct Outcome: Sendable, Hashable {
+        public var succeeded: [String]
+        public var failed: [RemoteCommandFailure]
+
+        public init(succeeded: [String] = [], failed: [RemoteCommandFailure] = []) {
+            self.succeeded = succeeded
+            self.failed = failed
+        }
+
+        /// 第一个失败的错误（Toast 用）。
+        public var firstError: HostError? { failed.first?.error }
+        public var isEmpty: Bool { succeeded.isEmpty && failed.isEmpty }
+    }
+
+    /// 选中的远程任务里对 `action` 适用的 id（去重、保序）；适用性只走 `RemoteTaskRules.canIssue`。
+    public static func eligibleIds(
+        _ action: RemoteCommandAction,
+        in tasks: [RemoteTaskDto],
+        targetOnline: (RemoteTaskDto) -> Bool?
+    ) -> [String] {
+        var seen = Set<String>()
+        var out: [String] = []
+        for task in tasks where RemoteTaskRules.canIssue(action, to: task, targetOnline: targetOnline(task)) {
+            if seen.insert(task.id).inserted { out.append(task.id) }
+        }
+        return out
+    }
+
+    /// 按 `size`（默认 `RemoteCommandManyParams.maxIds`）分块。
+    public static func chunks(_ ids: [String], size: Int = RemoteCommandManyParams.maxIds) -> [[String]] {
+        let size = max(1, size)
+        return stride(from: 0, to: ids.count, by: size).map { Array(ids[$0 ..< min($0 + size, ids.count)]) }
+    }
+
+    /// 执行：`batched` 时逐块调用 `many`（整块调用失败 = 该块全部记失败），否则用 `single` 以有界并发逐条下发。
+    /// 不抛出：所有失败都进入结果。
+    public static func run(
+        ids: [String],
+        batched: Bool,
+        chunkSize: Int = RemoteCommandManyParams.maxIds,
+        concurrency: Int = fallbackConcurrency,
+        many: @escaping @Sendable ([String]) async throws(HostError) -> RemoteCommandManyResult,
+        single: @escaping @Sendable (String) async throws(HostError) -> Void
+    ) async -> Outcome {
+        var outcome = Outcome()
+        if batched {
+            for chunk in chunks(ids, size: chunkSize) {
+                do throws(HostError) {
+                    let result = try await many(chunk)
+                    outcome.succeeded.append(contentsOf: result.succeeded)
+                    outcome.failed.append(contentsOf: result.failed)
+                } catch {
+                    outcome.failed.append(contentsOf: chunk.map { RemoteCommandFailure(taskId: $0, error: error) })
+                }
+            }
+            return outcome
+        }
+        let limit = max(1, concurrency)
+        let results = await withTaskGroup(of: (Int, HostError?).self, returning: [(Int, HostError?)].self) { group in
+            var collected: [(Int, HostError?)] = []
+            var next = 0
+            func start(_ index: Int, in group: inout TaskGroup<(Int, HostError?)>) {
+                let id = ids[index]
+                group.addTask {
+                    do throws(HostError) {
+                        try await single(id)
+                        return (index, nil)
+                    } catch {
+                        return (index, error)
+                    }
+                }
+            }
+            while next < min(limit, ids.count) {
+                start(next, in: &group)
+                next += 1
+            }
+            while let done = await group.next() {
+                collected.append(done)
+                if next < ids.count {
+                    start(next, in: &group)
+                    next += 1
+                }
+            }
+            return collected
+        }
+        for (index, error) in results.sorted(by: { $0.0 < $1.0 }) {
+            if let error {
+                outcome.failed.append(RemoteCommandFailure(taskId: ids[index], error: error))
+            } else {
+                outcome.succeeded.append(ids[index])
+            }
+        }
+        return outcome
+    }
+}
+
 // MARK: - 纯规则
 
 /// 远程任务列表规则。

@@ -212,6 +212,8 @@ pub struct RssItemInfo {
     pub title: String,
     /// 条目页面链接。
     pub link: String,
+    /// Description image URLs; absent for older rows that have not been backfilled.
+    pub image_urls: Option<Vec<String>>,
     /// enclosure 直链（Mikan 即 `.torrent`；空 = 回退 `link`）。
     pub enclosure_url: String,
     /// 下载目标（enclosure / media:content，无 enclosure 时为回退链接）声明的 MIME 类型，

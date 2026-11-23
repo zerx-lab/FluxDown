@@ -9,6 +9,7 @@ import { Check, Palette } from 'lucide-react'
 import { useT } from '../../../../i18n'
 import { LOCALE_PREF_KEY, useI18n } from '../../../../i18n'
 import { cn } from '../../../../lib/cn'
+import { setFileSizeUnits, useFileSizeUnits } from '../../../../lib/fileSizeUnits'
 import { useTheme } from '../../../../theme'
 import {
   ACCENT_LABEL_KEYS,
@@ -208,6 +209,25 @@ function UiScaleRow() {
     </SettingsRow>
   )
 }
+function FileSizeUnitsRow({ disabled }: { disabled: boolean }) {
+  const t = useT()
+  const units = useFileSizeUnits()
+  const options = [
+    { value: 'legacy', label: t('fileSizeUnitsLegacy') },
+    { value: 'iec', label: t('fileSizeUnitsIec') },
+  ]
+  return (
+    <SettingsRow title={t('fileSizeUnits')} description={t('fileSizeUnitsDesc')} disabled={disabled}>
+      <DropdownField
+        value={units}
+        options={options}
+        aria-label={t('fileSizeUnits')}
+        onValueChange={(next) => setFileSizeUnits(next === 'iec' ? 'iec' : 'legacy')}
+      />
+    </SettingsRow>
+  )
+}
+
 
 export function AppearanceSettings() {
   const t = useT()
@@ -234,6 +254,7 @@ export function AppearanceSettings() {
       </SettingsSection>
       <SettingsSection title={t('settingsGroupInterface')}>
         <FontFamilyRow />
+        <FileSizeUnitsRow disabled={disabled} />
         <UiScaleRow />
       </SettingsSection>
     </SettingsPage>

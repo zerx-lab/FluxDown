@@ -93,6 +93,12 @@ public struct PluginSettingField: Codable, Sendable, Hashable, Identifiable {
     }
 }
 
+public struct PluginResolverUrlConflict: Codable, Sendable, Hashable {
+    public let pattern: String
+    public let otherIdentity: String
+    public let otherPattern: String
+}
+
 /// 已安装插件视图（`PluginDto`）。
 public struct PluginDto: Codable, Sendable, Hashable, Identifiable {
     public var identity: String
@@ -116,6 +122,7 @@ public struct PluginDto: Codable, Sendable, Hashable, Identifiable {
     public var loadStatus: String
     /// 加载失败原因；成功为空。
     public var loadError: String
+    public var resolverUrlConflicts: [PluginResolverUrlConflict]
 
     public var id: String { identity }
     public var loadFailed: Bool { loadStatus == "Failed" }
@@ -135,7 +142,8 @@ public struct PluginDto: Codable, Sendable, Hashable, Identifiable {
         authSupported: Bool = false,
         subscriptionProviderIds: [String] = [],
         loadStatus: String = "Loaded",
-        loadError: String = ""
+        loadError: String = "",
+        resolverUrlConflicts: [PluginResolverUrlConflict] = []
     ) {
         self.identity = identity
         self.name = name
@@ -152,6 +160,7 @@ public struct PluginDto: Codable, Sendable, Hashable, Identifiable {
         self.subscriptionProviderIds = subscriptionProviderIds
         self.loadStatus = loadStatus
         self.loadError = loadError
+        self.resolverUrlConflicts = resolverUrlConflicts
     }
 
     public init(from decoder: any Decoder) throws {
@@ -171,6 +180,7 @@ public struct PluginDto: Codable, Sendable, Hashable, Identifiable {
         subscriptionProviderIds = try c.decodeIfPresent([String].self, forKey: .subscriptionProviderIds) ?? []
         loadStatus = try c.decodeIfPresent(String.self, forKey: .loadStatus) ?? "Loaded"
         loadError = try c.decodeIfPresent(String.self, forKey: .loadError) ?? ""
+        resolverUrlConflicts = try c.decodeIfPresent([PluginResolverUrlConflict].self, forKey: .resolverUrlConflicts) ?? []
     }
 }
 

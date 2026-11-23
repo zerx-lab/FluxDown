@@ -51,8 +51,8 @@ use request_path::RequestPath;
 use crate::cdn::NodePool;
 use crate::db::Db;
 use crate::downloader::{
-    DownloadError, ProgressUpdate, SegmentProgressInfo, is_disk_full, is_range_not_satisfiable,
-    is_server_rejection,
+    DownloadError, ProgressUpdate, RangeRejection, SegmentProgressInfo, is_disk_full,
+    is_range_not_satisfiable, is_server_rejection,
 };
 use crate::events::{EngineEvent, EventSink};
 use crate::logger::{log_info, log_warn};
@@ -516,9 +516,9 @@ const RANGE_VERDICT_UNKNOWN: u8 = 0;
 const RANGE_VERDICT_SUPPORTED: u8 = 1;
 const RANGE_VERDICT_UNSUPPORTED: u8 = 2;
 
-/// 「全员被拒 + 瞬时 200 家族」归一为 RangeNotSupported（触发清盘单流回退）
-/// 时允许丢弃的已下字节上限。低于此值：一次性下完的收益 > 重下代价；高于
-/// 此值：保留 fail-loud + 数据，用户 resume 重新 probe 后仍可多段续传。
+/// Below this threshold the existing fallback can discard the partial file.
+/// A deeper checkpoint is kept until a full-stream replacement is verified.
+/// This never classifies HTTP connection/rate-limit rejections as ignored Range.
 const RANGE_FAMILY_DISCARD_MAX: i64 = 8 * 1024 * 1024;
 
 /// 扩容有效判据：扩容后窗口吞吐 >= 扩容前吞吐 × 此系数才继续扩容，
@@ -970,7 +970,7 @@ fn segment_retry_budget(
 /// 回队列重派这么多次；再失败按原语义上抛（整任务失败交由自动重试）。
 const SEGMENT_TRANSIENT_REQUEUE_MAX: u32 = 3;
 
-/// 全员 429 后单连接复活的次数上限（每次退避 = 基数 × 第几次：5s / 10s / 15s）。
+/// 所有分段连接被限流后，以单连接续传的退避预算（5s / 10s / 15s）。
 const ALL_REJECTED_REVIVE_MAX: u32 = 3;
 const ALL_REJECTED_REVIVE_BASE_DELAY: Duration = Duration::from_secs(5);
 
@@ -1404,6 +1404,7 @@ fn sampled_http_runtime(
             .collect(),
         // 来源累计由持有节点池的调用方按需回填；这里不做归因。
         source_bytes: None,
+        hls_fragments: None,
     };
     (snapshot, runtime)
 }
@@ -1454,9 +1455,8 @@ async fn flush_source_bytes(
 
 /// 本次 coordinator generation 中仍在读取 body 的已验证响应数。
 ///
-/// `total_downloaded` 与 Completed 段都包含恢复前的历史进度，不能证明“当前这批
-/// 连接里仍有请求成功”。域名连接上限只有在 403/429 与另一个已通过 Range、
-/// validator、大小和编码校验的存活响应并存时才可学习。
+/// 历史进度或已完成响应不能证明当前并发中仍有请求成功。学习域名上限时，
+/// 403/429 必须与另一个已通过 Range、validator、大小和编码校验的存活响应并存。
 #[derive(Default)]
 struct GenerationEvidence {
     tracker: TransferTracker,
@@ -2319,9 +2319,12 @@ pub async fn run_coordinated_download(
     // 是越界证据而非连接压力：回退到它，不计拒绝、不写域名缓存，本任务不再解封。
     let mut uncap_floor: Option<usize> = None;
     let mut uncap_disabled = false;
-    // 全员 429 后的单连接复活：到点由 ramp tick 派一个 worker 续传 Pending 段。
+    // 403 也可能是权限/签名错误，只有本次运行中的并发拒绝才允许退避续传。
+    let mut confirmed_parallel_pressure = false;
     let mut revive_at: Option<Instant> = None;
     let mut revives_used: u32 = 0;
+    // 无并发证据的 429 只在退避及首个已验证响应之前临时串行。
+    let mut probing_after_429 = false;
     // 上个 ramp tick 刚扩容，本 tick 用窗口吞吐评估扩容效果。
     let mut awaiting_ramp_eval = false;
     // 当前 awaiting 是否为软冻结 +1 试探窗（非倍增）。试探失败不写域名缓存。
@@ -2385,6 +2388,13 @@ pub async fn run_coordinated_download(
                     Some(WorkerEvent::Done { worker_id, seg_index, downloaded_bytes }) => {
                         if open_ended_streaming == Some(seg_index) {
                             open_ended_streaming = None;
+                        }
+                        if probing_after_429
+                            && range_verdict.load(Ordering::Relaxed) == RANGE_VERDICT_SUPPORTED
+                        {
+                            probing_after_429 = false;
+                            serial_mode = false;
+                            ramp_interval.reset_immediately();
                         }
                         // Mark segment completed in our authoritative map.
                         // 合并竞态兜底：开放式首段被 merge 扩容的瞬间，worker 可能
@@ -2925,21 +2935,26 @@ pub async fn run_coordinated_download(
                         let server_rejection = is_server_rejection(&error);
                         // 400 可参与当前任务降级，但语义宽泛，永不写域名连接缓存。
                         let conn_rejection = server_rejection || is_http_400(&error);
-                        // ---- 全员 429 后单连接复活 ----
-                        // 最后一条在途连接也被 429（按 IP 的请求速率 / 并发窗口），但已有
-                        // 进度：限流窗口过去后单连接通常就能继续（USTC 实测全员 429 后
-                        // 单连接 100 MB/s）。退避后由 ramp tick 派一个 worker 续传，而不是
-                        // 立刻失败——那会让 manager 隔 5s 从头爬坡重来。复活次数有上限，
-                        // 用完仍被拒才走下方原有的致命出口。
-                        if is_http_429(&error)
-                            && any_data
-                            && !other_in_flight
+                        if server_rejection && other_in_flight {
+                            confirmed_parallel_pressure |= generation_evidence.has_active_response();
+                        }
+                        // 429 是明确的限流信号，首个分段尚未写入时也可退避。403
+                        // 仅在本次运行曾出现并发拒绝时试单连接；历史进度不是证据。
+                        let rate_limited = is_http_429(&error);
+                        let may_recover = rate_limited || (server_rejection && confirmed_parallel_pressure);
+                        if may_recover && !other_in_flight
+                            && range_verdict.load(Ordering::Relaxed) != RANGE_VERDICT_UNSUPPORTED
                             && revives_used < ALL_REJECTED_REVIVE_MAX
                         {
                             revives_used += 1;
                             let delay = ALL_REJECTED_REVIVE_BASE_DELAY * revives_used;
+                            probing_after_429 |= rate_limited && !serial_mode && !confirmed_parallel_pressure;
                             serial_mode = true;
-                            freeze = FreezeState::Hard;
+                            if !probing_after_429 {
+                                worker_cap = 1;
+                                allowed_workers = 1;
+                                freeze = FreezeState::Hard;
+                            }
                             awaiting_ramp_eval = false;
                             probe_window = false;
                             if let Some(seg) = segments.get_mut(&seg_index) {
@@ -2951,7 +2966,7 @@ pub async fn run_coordinated_download(
                             }
                             revive_at = Some(Instant::now() + delay);
                             log_info!(
-                                "[coordinator] task {} seg {} 全部连接被 429，{:?} 后单连接复活（{}/{}）",
+                                "[coordinator] task {} seg {} 被服务器拒绝（{error}），{:?} 后降为单连接续传（{}/{}）",
                                 task_id,
                                 seg_index,
                                 delay,
@@ -3019,6 +3034,9 @@ pub async fn run_coordinated_download(
                                 );
                             } else if !serial_mode && reject_strikes == 1 && alive > 2 {
                                 allowed_workers = (alive / 2).max(1);
+                                if server_rejection {
+                                    worker_cap = allowed_workers;
+                                }
                                 reject_quota = allowed_workers;
                                 log_info!(
                                     "[adaptive] task {} ramp down: {} -> {}, reason={}, \
@@ -3046,6 +3064,8 @@ pub async fn run_coordinated_download(
                                     reason
                                 );
                                 serial_mode = true;
+                                worker_cap = 1;
+                                allowed_workers = 1;
                                 // 同上：只凭历史 Completed 段或其它尚未收到响应的
                                 // Active 请求，不能把整个域名投毒成 24h 单连接。
                                 if generation_evidence.can_learn_conn_cap(server_rejection) {
@@ -3079,35 +3099,32 @@ pub async fn run_coordinated_download(
                                 *slot = None;
                             }
 
-                            // 安全检查：如果所有 worker 都已退休且无活跃分段，
-                            // 说明服务器甚至拒绝单连接 → 多段路线无法继续。
+                            // 无存活 worker 时，无进度或浅进度的 Range 拒绝仍可清盘回退。
+                            // 深断点上的 403/429/400 可能是配额、并发或请求限制；
+                            // 清盘不会解除限制，只会丢掉可续传的数据。
+                            // 只有 200 明确表示服务器忽略 Range，才另存一份普通 GET，
+                            // 在校验并保存成功前不碰原断点。
                             let any_alive = worker_assign_txs.iter().any(|tx| tx.is_some())
                                 || segments.values().any(|s| s.state == SegState::Active);
                             if !any_alive && !all_done(&segments) {
-                                // 归一为 RangeNotSupported 上抛（run_download_inner
-                                // 捕获后清盘回退单流 plain GET）的两种情形：
-                                //   • any_data==0：从未有任何段拿到过 206/写入数据，
-                                //     磁盘无可保留进度。Range 敌对的配额型端点
-                                //     （fnOS multiple-download 对带 Range 的请求回
-                                //     400，仅裸 GET 可用）唯一能下完的方式。
-                                //   • 触发错误本身是 RangeNotSupported（瞬时 200
-                                //     家族且重试打满）**且已下进度可忽略**（<
-                                //     RANGE_FAMILY_DISCARD_MAX）：服务器持续对
-                                //     Range 回 200 全量——plain GET 必然可用，丢弃
-                                //     少量已下数据换一次性下完。
-                                // 其余 any_data>0 的失败保留致命错误（fail-loud +
-                                // 数据保留）：403/429/400 是配额/并发问题，清盘重下
-                                // 反丢进度；深进度大文件即便是 200 家族也绝不清盘
-                                // ——resume 重新 probe 后仍有机会多段续传，无条件
-                                // 清盘会把 90% 进度的 4GB 文件整个重下。
                                 let downloaded = total_downloaded.load(Ordering::Relaxed);
                                 let range_family =
                                     matches!(error, DownloadError::RangeNotSupported(_));
                                 let discard_ok = downloaded < RANGE_FAMILY_DISCARD_MAX;
-                                final_error = Some(if !any_data || (range_family && discard_ok) {
-                                    DownloadError::RangeNotSupported(format!(
-                                        "every connection rejected ({error})"
+                                let ignored_range = matches!(
+                                    &error,
+                                    DownloadError::RangeNotSupported(RangeRejection::Http(
+                                        reqwest::StatusCode::OK
                                     ))
+                                );
+                                final_error = Some(if !any_data || (range_family && discard_ok) {
+                                    DownloadError::RangeNotSupported(RangeRejection::Other(
+                                        format!("every connection rejected ({error})"),
+                                    ))
+                                } else if ignored_range {
+                                    DownloadError::RangeResumeRejected {
+                                        total_bytes: effective_total_bytes,
+                                    }
                                 } else {
                                     DownloadError::Other(format!(
                                         "服务器拒绝所有下载连接（包括单连接），无法继续下载：{error}"
@@ -3135,13 +3152,16 @@ pub async fn run_coordinated_download(
                                 *tx = None;
                             }
                             if final_error.is_none() {
-                                // 连接级拒绝（400/403/429）且从未下到任何字节：与上方
-                                // "全员被拒"出口同理，归一为 RangeNotSupported 触发
-                                // 单流 plain GET 回退（16 连接同时被拒时，最后一个失败
-                                // 事件看到的其余段全是 Pending，走的是本分支而非上方）。
-                                final_error = Some(if conn_rejection && !any_data {
-                                    DownloadError::RangeNotSupported(format!(
-                                        "every connection rejected, no byte ever served: {error}"
+                                // 已验证 Range 请求持续被限流时保留零进度裸 GET 回退；
+                                // 未验证的裸 GET 已经耗尽退避，不再发同一个请求。
+                                let tried_range =
+                                    range_verdict.load(Ordering::Relaxed) == RANGE_VERDICT_SUPPORTED;
+                                final_error = Some(if conn_rejection
+                                    && !any_data
+                                    && (!may_recover || (rate_limited && tried_range))
+                                {
+                                    DownloadError::RangeNotSupported(RangeRejection::Other(
+                                        format!("every connection rejected, no byte ever served: {error}"),
                                     ))
                                 } else {
                                     error
@@ -3373,31 +3393,31 @@ pub async fn run_coordinated_download(
                     }
                 }
                 let mut alive = worker_assign_txs.iter().filter(|t| t.is_some()).count();
+                if probing_after_429 && revive_at.is_none()
+                    && generation_evidence.has_active_response()
+                    && range_verdict.load(Ordering::Relaxed) == RANGE_VERDICT_SUPPORTED
+                {
+                    probing_after_429 = false;
+                    serial_mode = false;
+                }
 
-                // 全员 429 复活：退避到点、无存活 worker 时派一个 worker 领 Pending 段。
+                // 退避到点且无在途连接，只派一个 worker 从已有分段的偏移续传。
                 if let Some(at) = revive_at
                     && now >= at
                 {
                     revive_at = None;
                     sync_downloaded_from_shared(&mut segments, &seg_states);
                     if alive == 0
-                        && let Some(next) = find_next_work(
-                            &mut segments,
-                            &mut next_index,
-                            effective_total_bytes,
-                            current_min_split,
-                            split_cost(&request_path, conn_bps_hint, split_window),
-                        )
+                        && let Some(mut next) = find_next_pending_only(&mut segments)
                     {
                         let new_seg_idx = next.assignment.seg_index;
-                        if let Err(error) = persist_segment_change(
-                            db, task_id, &segments,
-                            new_seg_idx, next.split_parent,
-                        ).await {
-                            worker_cancel.cancel();
-                            for tx in &mut worker_assign_txs { *tx = None; }
-                            final_error = Some(error);
-                            break 'coordinator;
+                        // 还未裁决 Range 能力的首枪限流：重试同样的 plain GET，
+                        // 不能在未验证的端点上改发有界 Range。
+                        let plain_start = next.assignment.actual_start == 0
+                            && range_verdict.load(Ordering::Relaxed) == RANGE_VERDICT_UNKNOWN;
+                        if plain_start {
+                            next.assignment.no_range = true;
+                            next.assignment.open_ended = true;
                         }
                         rebuild_seg_states(&segments, &seg_states);
                         let worker_id = worker_assign_txs.len();
@@ -3409,6 +3429,9 @@ pub async fn run_coordinated_download(
                         } else {
                             worker_assign_txs.push(Some(assign_tx));
                             worker_handles.push(Some(handle));
+                            if plain_start {
+                                open_ended_streaming = Some(new_seg_idx);
+                            }
                             alive += 1;
                             log_info!(
                                 "[coordinator] task {} 单连接复活：seg {}",
@@ -3527,6 +3550,7 @@ pub async fn run_coordinated_download(
                         sampling: !limiter_throttled,
                         may_reroute: range_ok_now
                             && !serial_mode
+                            && reject_quota == usize::MAX
                             && !limiter_throttled
                             && !conn_sensitive.load(Ordering::Relaxed)
                             && !reconnect_hostile.load(Ordering::Relaxed),
@@ -4220,6 +4244,7 @@ pub async fn run_coordinated_download(
     let hint_scale = beneficial_hint_scale(proven_scale, beneficial_scale);
     if hint_scale > RAMP_INITIAL_WORKERS
         && reject_strikes == 0
+        && revives_used == 0
         && !serial_mode
         && !conn_sensitive.load(Ordering::Relaxed)
         && !multipath.alternates_used(&nodes)
@@ -5579,7 +5604,9 @@ async fn do_segment_with_retry(
                     task_id,
                     seg_idx
                 );
-                return Err(DownloadError::RangeNotSupported(format!("416 ({e})")));
+                return Err(DownloadError::RangeNotSupported(RangeRejection::Other(
+                    format!("416 ({e})"),
+                )));
             }
             Err(e) => {
                 if cancel.is_cancelled() {
@@ -5649,7 +5676,7 @@ async fn do_segment_with_retry(
                 }
                 // 瞬时失败必须留痕：截断/停滞/网络错误此前静默进退避，日志里
                 // 只见"最后一击"（如重连撞 400），无法还原首因（断流 vs 停滞）。
-                log_info!(
+                tracing::debug!(
                     "[segment-retry] task {} seg {} 瞬时失败（第 {}/{} 次重试前）：{}",
                     task_id,
                     seg_idx,
@@ -5970,7 +5997,9 @@ async fn do_segment(
             if sys_lease && total_downloaded.load(Ordering::Relaxed) == 0 {
                 record_single_conn_domain_persist(url, db);
             }
-            return Err(DownloadError::RangeNotSupported(resp.status().to_string()));
+            return Err(DownloadError::RangeNotSupported(RangeRejection::Http(
+                resp.status(),
+            )));
         }
         log_info!(
             "[coordinator] task {} seg {} 开放式首段收到 200 全量流（{}），\
@@ -6065,7 +6094,7 @@ async fn do_segment(
             )));
         }
         generation_evidence.note_lm_drift_tolerated();
-        log_warn!(
+        tracing::debug!(
             "[coordinator] task {} seg {} Last-Modified 跨 CDN edge 不同（probe=\"{}\" 本段=\"{}\"）\
              但 Content-Range 总大小（{:?}，已知 {}）与请求起点（{:?}，请求 {}）均一致，\
              判定为时钟/格式差异，继续该段下载",

@@ -6,6 +6,7 @@ import { useState } from 'react'
 import { useI18n, useT } from '../../../../i18n'
 import { copyText } from '../../../../lib/copy'
 import { diagnosticText } from '../../../../lib/diagnosticInfo'
+import { byteUnit, useFileSizeUnits } from '../../../../lib/fileSizeUnits'
 import { exportLogs, rpc, useRpcSelector } from '../../../../lib/rpc'
 import type { ReleaseNoteDto } from '../../../../lib/rpc'
 import { Button, toast } from '../../../../ui'
@@ -155,6 +156,32 @@ function UpdateRow() {
   )
 }
 
+const HOST_LOG_LEVEL_PREF = 'diagnostics.log_level'
+
+function HostLogLevelRow() {
+  const t = useT()
+  const level = useRpcSelector((state) => state.snapshot?.preferences.values[HOST_LOG_LEVEL_PREF])
+  const options = [
+    { value: 'auto', label: t('diagnosticsLogLevelAuto') },
+    { value: 'debug', label: t('diagnosticsLogLevelDebug') },
+    { value: 'info', label: t('diagnosticsLogLevelInfo') },
+    { value: 'warn', label: t('diagnosticsLogLevelWarn') },
+    { value: 'error', label: t('diagnosticsLogLevelError') },
+  ]
+  // Supporting hosts publish the value even when it is set to Automatic.
+  if (!options.some(({ value }) => value === level)) return null
+  return (
+    <PrefDropdownRow
+      prefKey={HOST_LOG_LEVEL_PREF}
+      fallback="auto"
+      titleKey="diagnosticsLogLevel"
+      descKey="diagnosticsLogLevelDesc"
+      options={options}
+      immediate
+    />
+  )
+}
+
 function ExportRow() {
   const t = useT()
   const disabled = useSettingsReadOnly()
@@ -182,6 +209,7 @@ function ExportRow() {
 }
 
 export function AboutSettings() {
+  const units = useFileSizeUnits()
   const t = useT()
   const { locale } = useI18n()
   const hello = useRpcSelector((state) => state.hello)
@@ -240,7 +268,8 @@ export function AboutSettings() {
         </SettingsRow>
       </SettingsSection>
       <SettingsSection title={t('logExport')} subtitle={t('logExportDesc')}>
-        <DaemonNumberRow configKey="log_max_size_mb" titleKey="logMaxSize" descKey="logMaxSizeDesc" unit="MB" />
+        <HostLogLevelRow />
+        <DaemonNumberRow configKey="log_max_size_mb" titleKey="logMaxSize" descKey="logMaxSizeDesc" unit={byteUnit(2, units)} />
         <ExportRow />
       </SettingsSection>
       <SettingsSection title={t('extensionCardTitle')} subtitle={t('extensionCardDesc')}>

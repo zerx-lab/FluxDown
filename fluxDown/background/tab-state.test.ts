@@ -8,8 +8,18 @@ mock.module("wxt/browser", () => ({ browser: { storage: {}, tabs: {} } }));
 const engine = compileBundled();
 mock.module("./rules-store", () => ({ getEngine: () => engine }));
 // 必须先 mock 再加载被测模块（与 settings.test.ts 同一约定），故此处动态导入。
-const { getElements, getResources, getRetiredElements, ingestResources, registerSession, setSessionHooks, unseenEvidence, updateElements } =
-  await import("./tab-state");
+const {
+  getElements,
+  getResources,
+  getRetiredElements,
+  ingestResources,
+  isCurrentFramePage,
+  registerSession,
+  setSessionHooks,
+  syncTabPageUrl,
+  unseenEvidence,
+  updateElements,
+} = await import("./tab-state");
 
 let nextTab = 1;
 
@@ -165,5 +175,15 @@ describe("嵌入 PDF 入库", () => {
     expect(getResources(tab).map((r) => [r.url, r.type, r.confidence])).toEqual([
       ["https://x.com/api/v1/files/42/content", "document", "high"],
     ]);
+  });
+});
+
+describe("帧上报的页面归属", () => {
+  test("顶层帧按当前投影判定，子帧（嵌入播放器）的 location 不是 tab 页面也接受", () => {
+    const tab = nextTab++;
+    syncTabPageUrl(tab, "https://site.example/watch/1.html", "document");
+    expect(isCurrentFramePage(tab, 0, "https://site.example/watch/1.html")).toBe(true);
+    expect(isCurrentFramePage(tab, 0, "https://site.example/watch/0.html")).toBe(false);
+    expect(isCurrentFramePage(tab, 82, "https://player.example/embed/abc#site.example")).toBe(true);
   });
 });

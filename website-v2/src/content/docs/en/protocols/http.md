@@ -33,7 +33,11 @@ FluxDown doesn't just fix the segment count at the start. While segments are dow
 Download progress — including the exact byte ranges of every segment — is written to FluxDown's local database roughly every 3 seconds. Pausing a task, closing the app, or a crash therefore loses at most a few seconds of progress, never the whole file. On resume:
 
 - FluxDown re-validates the remote file (via `ETag`/`Last-Modified`) before continuing. If the file changed on the server since the download started, it discards the partial data and starts over instead of silently splicing old and new bytes together.
-- If the server no longer honours `Range` requests, or the previous multi-segment state is inconsistent, FluxDown restarts the download from scratch rather than producing a corrupted file.
+- If the remaining `Range` requests keep returning `200 OK` instead of `206 Partial Content`, FluxDown can try a full GET without `Range`. With at least 8 MiB already downloaded, it writes the replacement separately and keeps the original checkpoint until the new file is verified and saved. Progress starts again from zero because the whole file is downloaded again, and both copies need disk space until the replacement succeeds.
+  If the full GET fails, FluxDown keeps the original checkpoint and waits for you to resume manually. If the server still ignores `Range`, manual resume can trigger another full download. If the server sends compressed data despite `Accept-Encoding: identity`, FluxDown stops the fallback and keeps the checkpoint.
+  For transport failures, the task error includes the underlying cause and any detected network failure category. This is diagnostic information, not a signal to retry automatically.
+  When a task starts again or is deleted, FluxDown tries to clear its `.fluxdown-restart-*` staging directory in the current save location. A crash or forced stop can leave a staging file as large as the download. If the save location changes, the old location is not checked; the fallback log identifies the staging path.
+  If removing the old checkpoint fails after the replacement is saved, FluxDown logs the failure and leaves any remaining checkpoint data in place. If FluxDown crashes after naming the final file but before recording completion, the old checkpoint may remain, and a later resume may download the file again under a deduplicated name.
 
 ## Cookies, headers, User-Agent and Referer
 
@@ -72,7 +76,7 @@ Supported types: `http`, `https`, `socks4`, `socks5`. Leave the field empty to u
 
 - **Probing** the file's name/size/Range support is retried up to 3 times with exponential backoff (1s, then 2s). The final retry drops any browser-captured User-Agent to work around Cloudflare's bot detection.
 - **In-flight segments**: if a segment receives no data for 5 seconds it's treated as stalled — FluxDown drops that connection and resumes it from the last confirmed byte via `Range`, up to 5 attempts with increasing backoff (2s, 4s, 8s, 16s), roughly 80 seconds of total tolerance for one segment.
-- **Server rejections**: if a server actively refuses extra parallel connections (HTTP 403/429), FluxDown remembers that domain and downloads from it single-threaded for the next 24 hours before trying multi-thread again.
+- **Server rejections**: FluxDown lowers concurrency when parallel requests are refused, without interrupting connections still transferring data. If no other transfer is still active, HTTP 429 (or a 403 after confirmed parallel refusals) can trigger up to three backoff retries with one connection from the existing segment offsets. An isolated 429 does not change the learned cap; normal ramp-up can resume once the server accepts the retry. If Range requests are still rate-limited after all retries and there is no data to preserve, FluxDown tries one GET without a Range header. Caps learned from parallel refusals expire after 24 hours and do not prevent the first encounter with a server limit.
 - **Whole-task auto-retry**: if a task ultimately fails from a transient error, FluxDown can automatically resume it later — configurable in *Settings → Download → Auto-retry Attempts* (off, a fixed count up to 10, or unlimited) and *Retry Interval* (the wait before each attempt, increasing per attempt).
 
 ## Related settings

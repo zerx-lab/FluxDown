@@ -360,6 +360,12 @@ export const DAEMON_CONFIG_FIELDS: readonly DaemonConfigField[] = [
   text('proxy_username'),
   text('proxy_password'),
   text('proxy_no_list'),
+  text('proxy_protocol_http'),
+  text('proxy_protocol_ftp'),
+  text('proxy_protocol_hls'),
+  text('proxy_protocol_dash'),
+  text('proxy_protocol_bt'),
+  text('proxy_protocol_ed2k'),
   text('proxy_rules'),
   // Webhook：JSON 数组字符串（端点列表）
   text('webhook.endpoints'),

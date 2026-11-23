@@ -515,7 +515,14 @@ pub(crate) async fn relocate_completed(p: &DownloadParams) -> Option<(String, i6
     // mux 降级留下独立音轨（DASH / HLS 音频组 / 轨对）时产物是两个文件：不拆散，整体
     // 留在原目录。无法确认是否存在时同样保守处理。
     let sidecar = crate::dash_downloader::build_audio_path(&src);
-    if tokio::fs::try_exists(&sidecar).await.unwrap_or(true) {
+    let has_artifacts = match p.db.load_task_artifacts(&p.task_id).await {
+        Ok(names) => !names.is_empty(),
+        Err(error) => {
+            crate::logger::report_warning("category-route", "load task artifacts", &error);
+            true
+        }
+    };
+    if has_artifacts || tokio::fs::try_exists(&sidecar).await.unwrap_or(true) {
         notes
             .add("存在独立音轨文件，未移入分类目录".to_string())
             .await;

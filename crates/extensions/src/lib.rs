@@ -24,7 +24,10 @@ use gpui_component::{WindowExt as _, h_flex, v_flex};
 use components::plugin_live::LivePlugins;
 use controller::{COMPONENT_KINDS, component_slot};
 pub use controller::{ExtensionsController, ExtensionsSignal};
-use pages::{managed_components::ComponentUi, plugins::PluginsUi};
+use pages::{
+    managed_components::{ComponentMirrorUi, ComponentUi},
+    plugins::PluginsUi,
+};
 
 pub type PortFuture<T> = Pin<Box<dyn Future<Output = Result<T, RpcErrorData>> + Send + 'static>>;
 
@@ -75,6 +78,7 @@ pub struct ExtensionsView {
     last_error: Option<String>,
     plugins: PluginsUi,
     components: [ComponentUi; 2],
+    component_mirror: ComponentMirrorUi,
     plugin_view_factory: Option<PluginViewFactory>,
     /// 打开中的插件对话框跟随的实时插件列表。
     live_plugins: Entity<LivePlugins>,
@@ -108,6 +112,7 @@ impl ExtensionsView {
             last_error: None,
             plugins: PluginsUi::default(),
             components: [ComponentUi::default(), ComponentUi::default()],
+            component_mirror: ComponentMirrorUi::default(),
             plugin_view_factory: None,
             live_plugins: cx.new(|_| LivePlugins::default()),
         }

@@ -92,6 +92,7 @@ struct TaskDetailGeneralPage: View {
                 copyable: true,
                 tone: .failure,
                 copyLabel: L("webCopy"),
+                copyValue: task.errorMessage,
                 onCopy: { container.toasts.show(text: L("detailErrorCopied"), tone: .success, systemImage: FluxSymbol.copy) }
             )
         }

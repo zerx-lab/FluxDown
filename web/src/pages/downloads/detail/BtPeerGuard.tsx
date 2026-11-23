@@ -1,3 +1,4 @@
+import { useByteFormatter } from '../../../lib/fileSizeUnits'
 // BT 详情 › 连接：防吸血列单元、右键处置与证据对话框。
 
 import { useEffect, useState } from 'react'
@@ -22,6 +23,7 @@ const EVIDENCE_EVENT_ROWS = 20
 
 /** 悬停证据摘要：IP 组、累计送达、命中规则、处置。 */
 function PeerTip({ view }: { view: PeerGuardView }) {
+  const fmtBytes = useByteFormatter(formatBytes)
   const t = useT()
   const action = peerActionText(t, view)
   return (
@@ -30,7 +32,7 @@ function PeerTip({ view }: { view: PeerGuardView }) {
         {t('btGuardPeerGroup')}: {view.ipGroup}
       </span>
       <span>
-        {t('btGuardPeerUploaded')}: {formatBytes(view.groupDeliveredBytes)}
+        {t('btGuardPeerUploaded')}: {fmtBytes(view.groupDeliveredBytes)}
       </span>
       <span>
         {t('btGuardPeerSuspicion')}: {t(`btGuardSuspicion${camel(view.suspicion)}`)}

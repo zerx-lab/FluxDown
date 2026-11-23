@@ -164,6 +164,11 @@ struct AgentAPI: Sendable {
         try await session.callVoid(HostMethod.agentRemoteCommand, params: params)
     }
 
+    /// 批量下发同一动作（主机需声明 `agent.remoteBatch`；`params.taskIds` ≤ `RemoteCommandManyParams.maxIds`）。
+    func remoteCommandMany(_ params: RemoteCommandManyParams) async throws(HostError) -> RemoteCommandManyResult {
+        try await session.call(HostMethod.agentRemoteCommandMany, params: params)
+    }
+
     // MARK: 局域网直连
 
     func linkPairingCode() async throws(HostError) -> LinkPairingCodeDto {

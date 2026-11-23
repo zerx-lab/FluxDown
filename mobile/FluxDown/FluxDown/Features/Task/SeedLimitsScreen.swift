@@ -252,7 +252,7 @@ struct SeedLimitsScreen: View {
                     isValid: draft.upload.isValid,
                     keyboard: .numberPad,
                     prompt: "0",
-                    unit: L("statusSpeedLimitKbs")
+                    unit: SettingsRateUnit.kb.unitLabel(iec: container.appearance.fileSizeUnits == .iec)
                 )
             }
         } header: {

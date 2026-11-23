@@ -3,6 +3,7 @@ package com.fluxdown.app.feature.downloads
 import androidx.compose.runtime.Immutable
 import com.fluxdown.app.ui.TaskVisualState
 import com.fluxdown.core.model.Category
+import com.fluxdown.core.model.HlsFragmentProgress
 import com.fluxdown.core.model.Queue
 import com.fluxdown.core.model.Task
 import com.fluxdown.core.model.TaskStatus
@@ -103,6 +104,8 @@ data class TaskItem(
     val visual: TaskVisualState,
     val flow: List<FlowSegmentUi>?,
     val flowState: FlowStripState,
+    val progress: Float?,
+    val hlsFragments: HlsFragmentProgress?,
     val eta: Long?,
 ) : DownloadItem {
     override val id: String get() = task.taskId
@@ -121,7 +124,7 @@ data class TaskItem(
     override val createdSec: Long get() = task.createdAt
     override val sortName: String get() = task.fileName
     override val sizeBytes: Long get() = task.totalBytes
-    override val sortProgress: Float? get() = task.progress
+    override val sortProgress: Float? get() = progress
     override val sortSpeed: Long get() = speedDown
     override val inflight: Boolean
         get() = task.status == TaskStatus.Pending || task.status == TaskStatus.Downloading || task.status == TaskStatus.Preparing
@@ -137,7 +140,7 @@ data class TaskItem(
 
 /**
  * 其他设备上执行的远程任务（云端下发，同 PC 下载页的远程行）。状态投影与 [StatusFolder.accepts] 一致：
- * 等待接单 / 已接单 / 未知 → 等待（传输中），失败 / 已取消 → 失败。不参与多选。
+ * 等待接单 / 已接单 / 未知 → 等待（传输中），失败 / 已取消 → 失败。参与多选（id 见 [RemoteItem.id]）。
  */
 @Immutable
 data class RemoteItem(
@@ -149,7 +152,7 @@ data class RemoteItem(
     /** `createdAt`（ISO-8601）解析出的 Unix 秒；解析失败 0。 */
     override val createdSec: Long,
 ) : DownloadItem {
-    override val id: String get() = "remote:${task.id}"
+    override val id: String get() = REMOTE_ID_PREFIX + task.id
     override val sortTier: Int
         get() = when (task.status) {
             RemoteTaskStatus.Downloading -> 1
@@ -253,7 +256,7 @@ data class RowEntry(
         }
 }
 
-/** 远程任务行：与本地行同一列表、同一分区样式（[zone]）；不参与多选。 */
+/** 远程任务行：与本地行同一列表、同一分区样式（[zone]）；参与多选（选择集合里是 [RemoteItem.id]，与本地任务 id 不相交）。 */
 @Immutable
 data class RemoteRowEntry(
     val item: RemoteItem,
@@ -266,7 +269,7 @@ data class RemoteRowEntry(
 }
 
 /**
- * 派生出的列表：条目 + 可见任务 id（全选范围）+ 总任务数（区分「无任务」与「筛选后为空」）。
+ * 派生出的列表：条目 + 可见任务 id（全选范围，含远程行的 [RemoteItem.id]）+ 总任务数（区分「无任务」与「筛选后为空」）。
  * [loading] 非空 = 主机的任务表正在分页载入：[entries] 为空不代表“没有任务”，页面只能显示加载态。
  */
 @Immutable
@@ -276,6 +279,8 @@ data class DownloadsList(
     val taskTotal: Int,
     val loaded: Boolean,
     val loading: TaskTable.Loading? = null,
+    /** 全部远程任务（未经筛选；选择坞按 [RemoteItem.id] 取已选项，筛选后仍选中的行照常处理）。 */
+    val remote: List<RemoteItem> = emptyList(),
 ) {
     companion object {
         val Initial = DownloadsList(emptyList(), emptyList(), 0, loaded = false)
@@ -306,3 +311,8 @@ data class Facets(
         val Initial = Facets(List(StatusFolder.entries.size) { 0 }, emptyList(), emptyList(), 0, 0)
     }
 }
+
+/** [RemoteItem.id] 前缀：多选集合里区分远程任务与本地任务 id（本地 id 永不带此前缀，本机守护进程调用不会收到远程 id）。 */
+internal const val REMOTE_ID_PREFIX = "remote:"
+
+internal fun isRemoteSelectionId(id: String): Boolean = id.startsWith(REMOTE_ID_PREFIX)

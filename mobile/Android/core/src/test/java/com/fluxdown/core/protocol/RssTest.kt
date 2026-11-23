@@ -57,7 +57,7 @@ class RssTest {
         val items = RssItemDto.listFromJson(
             Json.parse(
                 """[{"sourceId":"s1","guid":"g1","title":"Show - 02 [1080p]","link":"https://x/1","enclosureUrl":"https://x/1.torrent",
-                "enclosureLength":734003200,"pubDate":1700000000,"fetchedAt":1700000050,"status":1,"taskId":"t9","episodeKey":"show:2","reason":""},
+                "enclosureLength":734003200,"pubDate":1700000000,"fetchedAt":1700000050,"status":1,"taskId":"t9","episodeKey":"show:2","reason":"","imageCount":2},
                 {"sourceId":"s1","guid":"g2","title":"Other","link":"","enclosureUrl":"","enclosureLength":0,"pubDate":0,"fetchedAt":1,
                 "status":3,"taskId":"","episodeKey":"","reason":"too_large"},
                 {"sourceId":"s1","guid":"g3","title":"Future","link":"https://x/3","enclosureUrl":"","status":42,"reason":"brand_new_reason"},
@@ -69,8 +69,10 @@ class RssTest {
         assertEquals("t9", items[0].taskId)
         assertEquals(734_003_200L, items[0].enclosureLength)
         assertEquals("https://x/1.torrent", items[0].effectiveLink)
+        assertEquals(2, items[0].imageCount)
         assertEquals(RssItemStatus.Filtered, items[1].state)
         assertEquals(RssReason.TooLarge, items[1].reasonCode)
+        assertEquals(0, items[1].imageCount)
         assertEquals(RssItemStatus.Unknown, items[2].state)
         assertEquals(RssReason.Unknown, items[2].reasonCode)
         assertEquals("https://x/3", items[2].effectiveLink)

@@ -173,7 +173,11 @@ pub struct EgressPlan {
 }
 
 impl EgressPlan {
-    fn fixed(proxy: ProxyConfig, explicit: bool, rules: Option<Arc<ProxyRuleSet>>) -> Self {
+    pub(crate) fn fixed(
+        proxy: ProxyConfig,
+        explicit: bool,
+        rules: Option<Arc<ProxyRuleSet>>,
+    ) -> Self {
         Self {
             steps: vec![EgressStep {
                 route: None,

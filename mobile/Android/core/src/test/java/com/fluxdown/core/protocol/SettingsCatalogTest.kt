@@ -141,6 +141,18 @@ class SettingsCatalogTest {
     }
 
     @Test
+    fun logLevelWritesOnlyLocalPreferences() {
+        val key = "diagnostics.log_level"
+        for (level in listOf("auto", "debug", "info", "warn", "error")) {
+            val plan = (SettingsWritePlan.make(mapOf(key to level)) as SettingsWritePlan.Result.Ok).plan
+            assertEquals(mapOf(key to JsonValue.Str(level)), plan.localPreferences)
+            assertTrue(plan.daemon.isEmpty())
+            assertTrue(plan.syncedPreferences.isEmpty())
+        }
+        assertTrue(rejected(key, "trace"))
+    }
+
+    @Test
     fun writePlanRejectsWholeBatchOnAnyInvalidValue() {
         val result = SettingsWritePlan.make(mapOf("proxy_mode" to "manual", "bt_port_start" to "0"))
         assertTrue(result is SettingsWritePlan.Result.Rejected)

@@ -34,6 +34,7 @@ md4 = { version = "0.10", optional = true }
 rand = "0.9"
 # 与 feed-rs 同版本：feed 扩展命名空间（Mikan `<torrent><pubDate>`）的二次扫描。
 quick-xml = { version = "0.41", features = ["encoding"] }
+html5ever = "0.29.1"
 regex = "1"
 # 全平台 rustls（Windows 同样不用 native-tls / schannel：其 ClientHello 缺 status_request 与 ALPN，
 # 部分 Cloudflare WAF 直接 403，#1072）。代码侧另经 `downloader::client_builder` 显式选 rustls，
@@ -63,7 +64,7 @@ fs2 = "0.4.3"
 fluxdown_logfile = { version = "0.1.0", path = "../logfile" }
 psl = "2.1.245"
 ed25519-dalek = { version = "3", default-features = false, features = ["fast"], optional = true }
-image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"], optional = true }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
 file-format = { version = "0.29", default-features = false, features = ["reader-zip", "reader-mp4", "reader-ebml", "reader-cfb", "reader-exe", "reader-txt"], optional = true }
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
 rustls-native-certs = "0.8"
@@ -88,7 +89,7 @@ http = "1.4.0"
 
 [features]
 # 默认关闭；desktop/server 构建显式开启，mobile（Android/iOS）保持关闭以免背 JS 引擎债。
-plugins = ["dep:rquickjs", "dep:zip", "dep:ed25519-dalek", "dep:image", "dep:file-format"]
+plugins = ["dep:rquickjs", "dep:zip", "dep:ed25519-dalek", "dep:file-format"]
 # 组件托管安装（ffmpeg 下载/解压）；desktop/server 开启，mobile/CLI 关闭。
 components = ["dep:zip"]
 # P2P 能力（BitTorrent / eD2K）。默认开启；App Store 的 iOS 商店构建通过

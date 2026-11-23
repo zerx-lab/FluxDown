@@ -61,6 +61,7 @@ fn ftp_runtime(
             })
             .collect(),
         source_bytes: None,
+        hls_fragments: None,
     }
 }
 
@@ -540,6 +541,7 @@ fn resolve_ftp_info_sync(
     Ok(FileInfo {
         file_name,
         name_source: crate::naming::NameSource::UrlPath,
+        html_attachment: false,
         total_bytes,
         supports_range,
         content_type: String::new(),

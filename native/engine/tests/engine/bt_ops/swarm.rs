@@ -407,14 +407,17 @@ impl Downloader {
             .local_addr()
             .expect("local addr")
             .port();
+        // The probe releases the port before the lazy BT session binds it. Give
+        // the session alternate ports if another parallel test takes that port.
+        let port_start = port.min(u16::MAX - 15);
         let mut bt_config = BtConfig {
             enabled: true,
             enable_dht: false,
             enable_upnp: false,
             enable_utp: false,
             enable_lsd: false,
-            port_start: port,
-            port_end: port,
+            port_start,
+            port_end: port_start + 15,
             custom_trackers: tracker.url.clone(),
             ..Default::default()
         };

@@ -13,19 +13,17 @@
 //! 无节点 / 超时 / cancel → 返回空 vec 或 [`DownloadError`]，绝不 panic。
 
 use std::collections::HashSet;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{SocketAddr, SocketAddrV4};
 use std::time::{Duration, Instant};
 
 use rand::Rng;
 use rand::seq::SliceRandom;
-use tokio::net::UdpSocket;
 use tokio_util::sync::CancellationToken;
 
 use super::proto::{self, Contact, KadId};
 use crate::downloader::DownloadError;
 use crate::ed2k::server::PeerAddr;
 use crate::ed2k::status::{KadLive, KadNodeOrigin, KadNodeRow, KadNodeState, KadPhase, KadView};
-use crate::logger::log_info;
 
 /// 每轮 FindNode 并发查询的节点数。
 const BRANCH: usize = 5;
@@ -172,7 +170,7 @@ impl Progress<'_> {
 /// 它当前的鲜活联系点）与 `HelloReq`（让对端把我方计入路由表——KADEMLIA2 节点通常不理会
 /// 未握手的发送方），在 `window_end` 前收应答并入候选集。返回发出请求的节点数。
 async fn handshake_round(
-    socket: &UdpSocket,
+    socket: &crate::ed2k::proxy::KadSocket,
     self_id: &KadId,
     tcp_port: u16,
     candidates: &mut Vec<Candidate>,
@@ -180,7 +178,7 @@ async fn handshake_round(
     progress: &mut Progress<'_>,
     window_end: Instant,
 ) -> u32 {
-    let mut buf = vec![0u8; RECV_BUF];
+    let mut buf = vec![0u8; RECV_BUF + crate::ed2k::proxy::MAX_UDP_HEADER];
     let boot_targets: Vec<SocketAddrV4> = candidates
         .iter_mut()
         .take(BOOTSTRAP_FANOUT)
@@ -199,21 +197,19 @@ async fn handshake_round(
             Ok(_) => send_ok += 1,
             Err(_) => send_err += 1,
         }
-        if let Err(error) = socket.send_to(&hello_req, SocketAddr::V4(*addr)).await {
-            tracing::debug!(%addr, %error, "Kad hello send failed; continuing with other nodes");
+        if socket
+            .send_to(&hello_req, SocketAddr::V4(*addr))
+            .await
+            .is_err()
+        {
+            tracing::debug!("Kad hello send failed; continuing with other nodes");
         }
     }
-    log_info!(
-        "[ed2k-kad] bootstrap sent to {} targets ({} ok, {} send-err)",
-        boot_targets.len(),
-        send_ok,
-        send_err
-    );
 
     let mut boot_responses = 0u32;
-    while let Some((n, from)) = recv_within(socket, &mut buf, window_end).await {
+    while let Some((packet, from)) = recv_within(socket, &mut buf, window_end).await {
         let Some((opcode, payload)) = buf
-            .get(..n)
+            .get(packet)
             .and_then(|datagram| proto::parse_datagram(datagram, RECV_BUF * 8))
         else {
             continue;
@@ -234,10 +230,13 @@ async fn handshake_round(
             _ => {}
         }
     }
-    log_info!(
-        "[ed2k-kad] bootstrap: {} responses, {} candidates after merge",
-        boot_responses,
-        candidates.len()
+    tracing::info!(
+        targets = boot_targets.len(),
+        send_ok,
+        send_err,
+        responses = boot_responses,
+        candidates = candidates.len(),
+        "Kad bootstrap finished"
     );
     u32::try_from(boot_targets.len()).unwrap_or(u32::MAX)
 }
@@ -272,7 +271,7 @@ pub struct BootstrapOutcome {
 /// use std::time::Duration;
 ///
 /// // 没有可联系的节点：立即返回空结果。
-/// let outcome = bootstrap(&[], 4662, Duration::from_secs(1)).await.unwrap_or_default();
+/// let outcome = bootstrap(&[], 4662, Duration::from_secs(1), "").await.unwrap_or_default();
 /// assert_eq!(outcome.contacted, 0);
 /// # }
 /// ```
@@ -280,6 +279,7 @@ pub async fn bootstrap(
     contacts: &[Contact],
     tcp_port: u16,
     window: Duration,
+    proxy_url: &str,
 ) -> Result<BootstrapOutcome, DownloadError> {
     let mut candidates: Vec<Candidate> = Vec::new();
     let mut seen: HashSet<SocketAddrV4> = HashSet::new();
@@ -299,9 +299,8 @@ pub async fn bootstrap(
     let mut self_bytes = [0u8; 16];
     rand::rng().fill(&mut self_bytes);
     let self_id = KadId::from_memory(&self_bytes);
-    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
-        .await
-        .map_err(DownloadError::Io)?;
+    let proxy = crate::ed2k::proxy::Socks5::parse(proxy_url)?;
+    let socket = crate::ed2k::proxy::KadSocket::bind(proxy.as_ref(), 0).await?;
     let mut progress = Progress {
         live: None,
         bootstrap_nodes: u32::try_from(candidates.len()).unwrap_or(u32::MAX),
@@ -362,7 +361,7 @@ pub async fn bootstrap(
 /// let cancel = CancellationToken::new();
 /// // 空 nodes.dat → 无 bootstrap，立即返回空。
 /// let sources = find_sources_kad(
-///     &[0u8; 16], 1024, 0, 4662, &[], Duration::from_secs(1), &cancel, None,
+///     &[0u8; 16], 1024, 0, 4662, &[], Duration::from_secs(1), &cancel, None, "",
 /// )
 /// .await
 /// .unwrap_or_default();
@@ -379,6 +378,7 @@ pub async fn find_sources_kad(
     timeout: Duration,
     cancel: &CancellationToken,
     live: Option<&KadLive>,
+    proxy_url: &str,
 ) -> Result<Vec<PeerAddr>, DownloadError> {
     // 自身 KadID（随机）：Hello 握手上报，供对端把我方计入路由表。
     let mut self_bytes = [0u8; 16];
@@ -389,9 +389,8 @@ pub async fn find_sources_kad(
         return Ok(Vec::new());
     }
 
-    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, udp_port))
-        .await
-        .map_err(DownloadError::Io)?;
+    let proxy = crate::ed2k::proxy::Socks5::parse(proxy_url)?;
+    let socket = crate::ed2k::proxy::KadSocket::bind(proxy.as_ref(), udp_port).await?;
 
     let target = KadId::from_memory(file_hash);
 
@@ -416,8 +415,9 @@ pub async fn find_sources_kad(
         discovered: 0,
     };
 
-    let overall_deadline = Instant::now() + timeout;
-    let mut buf = vec![0u8; RECV_BUF];
+    let started = Instant::now();
+    let overall_deadline = started + timeout;
+    let mut buf = vec![0u8; RECV_BUF + crate::ed2k::proxy::MAX_UDP_HEADER];
 
     // ---------------- Phase 0: Bootstrap + Hello 握手 ----------------
     let window_end = (Instant::now() + BOOTSTRAP_WINDOW).min(overall_deadline);
@@ -461,15 +461,15 @@ pub async fn find_sources_kad(
 
         for (addr, id) in &batch {
             let pkt = proto::build_find_node_req(&target, id);
-            if let Err(error) = socket.send_to(&pkt, SocketAddr::V4(*addr)).await {
-                tracing::debug!(%addr, %error, "Kad find-node send failed; continuing with other nodes");
+            if socket.send_to(&pkt, SocketAddr::V4(*addr)).await.is_err() {
+                tracing::debug!("Kad find-node send failed; continuing with other nodes");
             }
         }
 
         let prev_best = candidates.first().map(|c| c.id);
         let window_end = (Instant::now() + ROUND_WINDOW).min(p1_deadline);
-        while let Some((n, from)) = recv_within(&socket, &mut buf, window_end).await {
-            let Some((opcode, payload)) = proto::parse_datagram(&buf[..n], RECV_BUF * 8) else {
+        while let Some((packet, from)) = recv_within(&socket, &mut buf, window_end).await {
+            let Some((opcode, payload)) = proto::parse_datagram(&buf[packet], RECV_BUF * 8) else {
                 continue;
             };
             if opcode != proto::OP_RES {
@@ -500,10 +500,10 @@ pub async fn find_sources_kad(
             }
         }
     }
-    log_info!(
-        "[ed2k-kad] findnode: {} responses, {} candidates",
-        fn_responses,
-        candidates.len()
+    tracing::info!(
+        responses = fn_responses,
+        candidates = candidates.len(),
+        "Kad node discovery finished"
     );
 
     // ---------------- Phase 2: SearchSources ----------------
@@ -521,8 +521,8 @@ pub async fn find_sources_kad(
         if cancel.is_cancelled() {
             return Err(DownloadError::Cancelled);
         }
-        if let Err(error) = socket.send_to(&req, SocketAddr::V4(*addr)).await {
-            tracing::debug!(%addr, %error, "Kad source-search send failed; continuing with other nodes");
+        if socket.send_to(&req, SocketAddr::V4(*addr)).await.is_err() {
+            tracing::debug!("Kad source-search send failed; continuing with other nodes");
         }
     }
 
@@ -536,9 +536,10 @@ pub async fn find_sources_kad(
         }
         let window_end = (Instant::now() + ROUND_WINDOW).min(overall_deadline);
         match recv_within(&socket, &mut buf, window_end).await {
-            Some((n, from)) => {
+            Some((packet, from)) => {
                 idle_gaps = 0;
-                let Some((opcode, payload)) = proto::parse_datagram(&buf[..n], RECV_BUF * 8) else {
+                let Some((opcode, payload)) = proto::parse_datagram(&buf[packet], RECV_BUF * 8)
+                else {
                     continue;
                 };
                 if opcode != proto::OP_SEARCH_RES {
@@ -566,12 +567,14 @@ pub async fn find_sources_kad(
         }
     }
 
-    log_info!(
-        "[ed2k-kad] done: {} sources ({} search-res) from {} bootstrap contacts, {} search targets",
-        sources.len(),
-        search_responses,
-        bootstrap.len(),
-        search_targets.len()
+    tracing::info!(
+        sources = sources.len(),
+        responses = search_responses,
+        bootstrap_contacts = bootstrap.len(),
+        targets = search_targets.len(),
+        cancelled = cancel.is_cancelled(),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "Kad source search finished"
     );
     progress.publish(KadPhase::Done, &candidates, sources.len());
     Ok(sources)
@@ -584,10 +587,10 @@ pub async fn find_sources_kad(
 /// 单个死节点就会终止整个接收窗口，漏掉其后所有存活节点的回包。故遇 10054
 /// 忽略并继续等到 deadline。
 async fn recv_within(
-    socket: &UdpSocket,
+    socket: &crate::ed2k::proxy::KadSocket,
     buf: &mut [u8],
     deadline: Instant,
-) -> Option<(usize, SocketAddr)> {
+) -> Option<(std::ops::Range<usize>, SocketAddr)> {
     loop {
         let now = Instant::now();
         if now >= deadline {
@@ -656,6 +659,7 @@ mod tests {
             &[manual, contact(5, silent_port)],
             4662,
             Duration::from_millis(800),
+            "",
         )
         .await
         .expect("bootstrap");
@@ -710,6 +714,7 @@ mod tests {
             Duration::from_millis(1500),
             &cancel,
             Some(&live),
+            "",
         )
         .await
         .expect("search finishes");
@@ -757,6 +762,7 @@ mod tests {
             Duration::from_secs(5),
             &cancel,
             None,
+            "",
         )
         .await;
         // 空 bootstrap 立即返回，不触网、不等满 timeout。
@@ -791,6 +797,7 @@ mod tests {
             Duration::from_millis(600),
             &cancel,
             None,
+            "",
         )
         .await;
         assert!(start.elapsed() < Duration::from_secs(3));
@@ -821,6 +828,7 @@ mod tests {
             Duration::from_secs(5),
             &cancel,
             None,
+            "",
         )
         .await;
         assert!(matches!(

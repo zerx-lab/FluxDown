@@ -1,5 +1,6 @@
 //! FluxDown CLI 入口 —— aria2c 风格命令行下载客户端。
 
+use std::path::{Path, PathBuf};
 use std::process::ExitCode as ProcExitCode;
 use std::time::Duration;
 
@@ -10,6 +11,7 @@ use fluxdown_cli::exit::ExitCode;
 use fluxdown_cli::format::{
     human_bytes, human_time, percent, rss_item_status_name, status_name, truncate,
 };
+use fluxdown_engine::logger::{self, startup};
 use fluxdown_protocol::daemon::{CreateTaskRequest, RssSourceDto};
 
 /// mimalloc 全局分配器：`--local` 内嵌引擎时吞吐与内存碎片均优于 musl/glibc 默认分配器。
@@ -237,37 +239,47 @@ struct ConfigArgs {
 
 #[derive(Debug, Subcommand)]
 enum ConfigCmd {
-    /// 设置一个配置项（url / token / timeout）。
+    /// 设置一个配置项。log_level 取值 auto/debug/info/warn/error，重启后生效。
     Set {
-        /// 配置键：url / token / timeout。
+        /// 配置键：url / token / timeout / log_level。
         key: String,
         /// 配置值。
         value: String,
     },
     /// 清除一个配置项。
     Unset {
-        /// 配置键：url / token / timeout。
+        /// 配置键：url / token / timeout / log_level。
         key: String,
     },
     /// 读取一个配置项（省略 key 则等同 list）。
     Get {
-        /// 配置键：url / token / timeout。
+        /// 配置键：url / token / timeout / log_level。
         key: Option<String>,
     },
     /// 列出全部配置项及其当前值。
     List,
-    /// 打印配置文件路径。
+    /// 打印 CLI 配置文件路径（log_level 位于引擎数据目录的 logging.conf）。
     Path,
 }
 
 fn main() -> ProcExitCode {
-    if let Err(error) = fluxdown_engine::logger::init() {
-        eprintln!(
-            "fluxdown: failed to initialize logger: {}",
-            fluxdown_engine::logger::format_error_chain(&error)
-        );
-        return ProcExitCode::from(ExitCode::Unknown.code() as u8);
-    }
+    let override_dir = std::env::var_os("FLUXDOWN_DATA_DIR").map(PathBuf::from);
+    let data_dir = fluxdown_engine::data_dir::resolve_data_dir(override_dir.as_deref())
+        .map_err(logger::LoggerInitError::ResolveDataDirectory)
+        .and_then(|data_dir| {
+            logger::init_with_dir(&data_dir)?;
+            Ok(data_dir)
+        });
+    let data_dir = match data_dir {
+        Ok(data_dir) => data_dir,
+        Err(error) => {
+            eprintln!(
+                "fluxdown: failed to initialize logger: {}",
+                logger::format_error_chain(&error)
+            );
+            return ProcExitCode::from(ExitCode::Unknown.code() as u8);
+        }
+    };
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error) => {
@@ -292,7 +304,7 @@ fn main() -> ProcExitCode {
             return ProcExitCode::from(ExitCode::Unknown.code() as u8);
         }
     };
-    let code = rt.block_on(run(cli));
+    let code = rt.block_on(run(cli, &data_dir));
     ProcExitCode::from(code as u8)
 }
 
@@ -329,16 +341,23 @@ fn read_url_file(path: &str) -> Result<Vec<String>, String> {
         .collect())
 }
 
-async fn run(cli: Cli) -> i32 {
+async fn run(cli: Cli, data_dir: &Path) -> i32 {
     let json = cli.json;
 
     // config 子命令是纯本地文件操作，不连服务器、不需要 token —— 提前分流。
     if let Command::Config(args) = cli.command {
-        return match cmd_config(args.action, json) {
+        return match cmd_config(args.action, json, data_dir) {
             Ok(()) => ExitCode::Success.code(),
             Err(e) => {
                 fluxdown_engine::logger::report_error("cli", "config command", &e);
                 eprintln!("fluxdown: {e}");
+                if matches!(e, ConfigError::UnknownKey(_)) {
+                    eprintln!(
+                        "fluxdown: {} is a separate host setting stored in {}",
+                        startup::KEY,
+                        startup::FILE_NAME
+                    );
+                }
                 e.exit().code()
             }
         };
@@ -349,7 +368,7 @@ async fn run(cli: Cli) -> i32 {
         let Command::Add(a) = cli.command else {
             unreachable!("guarded by matches! above")
         };
-        return match local::run_add_local(*a, json).await {
+        return match local::run_add_local(*a, json, data_dir).await {
             Ok(()) => ExitCode::Success.code(),
             Err(e) => {
                 fluxdown_engine::logger::report_error("cli", "local add", &e);
@@ -422,8 +441,32 @@ fn cmd_simple(res: Result<(), ClientError>, ok_msg: &str) -> Result<(), ClientEr
 }
 
 /// 处理 `config` 子命令：读写持久化配置文件（纯本地，不连服务器）。
-fn cmd_config(action: ConfigCmd, json: bool) -> Result<(), ConfigError> {
+fn cmd_config(action: ConfigCmd, json: bool, data_dir: &Path) -> Result<(), ConfigError> {
+    let io_error = |source| ConfigError::Io {
+        path: data_dir.join(startup::FILE_NAME).display().to_string(),
+        source,
+    };
+    let read_level = || startup::read_level(data_dir).map(startup::setting_name);
     match action {
+        ConfigCmd::Set { key, value } if key == startup::KEY => {
+            let level =
+                startup::parse_setting(&value).map_err(|error| ConfigError::InvalidValue {
+                    key,
+                    reason: error.to_string(),
+                })?;
+            startup::write_level(data_dir, level).map_err(io_error)?;
+            println!("set {}", startup::KEY);
+            Ok(())
+        }
+        ConfigCmd::Unset { key } if key == startup::KEY => {
+            startup::write_level(data_dir, None).map_err(io_error)?;
+            println!("unset {}", startup::KEY);
+            Ok(())
+        }
+        ConfigCmd::Get { key: Some(key) } if key == startup::KEY => {
+            println!("{}", read_level().map_err(io_error)?);
+            Ok(())
+        }
         ConfigCmd::Set { key, value } => {
             let mut cfg = CliConfig::load()?;
             cfg.set(&key, &value)?;
@@ -438,20 +481,20 @@ fn cmd_config(action: ConfigCmd, json: bool) -> Result<(), ConfigError> {
             println!("unset {key}");
             Ok(())
         }
-        ConfigCmd::Get { key } => {
+        ConfigCmd::Get { key: Some(key) } => {
             let cfg = CliConfig::load()?;
-            match key {
-                Some(k) => {
-                    let v = cfg.get(&k)?.unwrap_or_default();
-                    println!("{v}");
-                    Ok(())
-                }
-                None => print_config_list(&cfg, json),
-            }
+            let value = cfg.get(&key)?.unwrap_or_default();
+            println!("{value}");
+            Ok(())
         }
-        ConfigCmd::List => {
+        ConfigCmd::Get { key: None } | ConfigCmd::List => {
             let cfg = CliConfig::load()?;
-            print_config_list(&cfg, json)
+            let level = match read_level() {
+                Ok(level) => level,
+                Err(error) if error.kind() == std::io::ErrorKind::InvalidData => "(invalid)",
+                Err(error) => return Err(io_error(error)),
+            };
+            print_config_list(&cfg, json, level)
         }
         ConfigCmd::Path => {
             println!("{}", fluxdown_cli::config::config_path()?.display());
@@ -461,18 +504,17 @@ fn cmd_config(action: ConfigCmd, json: bool) -> Result<(), ConfigError> {
 }
 
 /// 打印全部配置项。`json` 时输出对象，否则每行 `key = value`（未设置显示 `(unset)`）。
-fn print_config_list(cfg: &CliConfig, json: bool) -> Result<(), ConfigError> {
+fn print_config_list(cfg: &CliConfig, json: bool, log_level: &str) -> Result<(), ConfigError> {
     let entries = cfg.entries();
     if json {
-        let map: serde_json::Map<String, serde_json::Value> = entries
-            .iter()
+        let mut map: serde_json::Map<String, serde_json::Value> = entries
+            .into_iter()
             .map(|(k, v)| {
-                let val = v
-                    .clone()
-                    .map_or(serde_json::Value::Null, serde_json::Value::String);
-                ((*k).to_string(), val)
+                let val = v.map_or(serde_json::Value::Null, serde_json::Value::String);
+                (k.to_owned(), val)
             })
             .collect();
+        map.insert(startup::KEY.to_owned(), log_level.into());
         println!("{}", serde_json::to_string_pretty(&map).unwrap_or_default());
     } else {
         for (k, v) in entries {
@@ -481,6 +523,7 @@ fn print_config_list(cfg: &CliConfig, json: bool) -> Result<(), ConfigError> {
                 None => println!("{k} = (unset)"),
             }
         }
+        println!("{} = {log_level}", startup::KEY);
     }
     Ok(())
 }

@@ -3545,6 +3545,7 @@ dependencies = [
  "windows 0.61.3",
  "windows-sys 0.59.0",
  "winreg 0.55.0",
+ "winresource",
  "x11rb",
  "zip",
 ]
@@ -3604,8 +3605,8 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "tracing-subscriber",
  "uuid",
+ "winresource",
 ]
 
 [[package]]
@@ -3632,6 +3633,7 @@ dependencies = [
  "futures-util",
  "hex 0.4.3",
  "hmac 0.12.1",
+ "html5ever 0.29.1",
  "http",
  "if-addrs",
  "image",
@@ -3798,6 +3800,9 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-tungstenite",
+ "tracing",
+ "tracing-log",
+ "tracing-subscriber",
  "windows 0.62.2",
  "winresource",
 ]

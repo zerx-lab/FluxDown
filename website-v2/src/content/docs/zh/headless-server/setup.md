@@ -50,7 +50,7 @@ cargo build --release -p fluxdown_agent --features web-ui   # 把 web/dist 嵌�
 
 ## 环境变量
 
-全部配置在启动时从环境变量一次性读取,没有配置文件。
+部署参数在启动时从环境变量读取；主机保存的日志级别除外。
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
@@ -69,7 +69,9 @@ cargo build --release -p fluxdown_agent --features web-ui   # 把 web/dist 嵌�
 | `FLUXDOWN_LINK_NAME` | `FluxDown Server` | 设备互联开启时,其它 FluxDown 客户端看到的本机名称。 |
 | `FLUXDOWN_LINK_ADVERTISE_ADDR` | 未设置(自动探测) | 覆盖本服务器在配对与设备信息交换时向其它 FluxDown 设备自报的可回连地址。逗号分隔的 `host[:port]` 或 `http(s)://` URL(缺省端口取实际监听端口)。在 Docker / NAT 后 / 多网卡主机上自动探测到的往往是对端连不上的内部地址,此时用它指定对外可达地址,例如 `192.168.1.5:8080`。 |
 | `FLUXDOWN_ANALYTICS` | 开 | 匿名统计开关(仅在带 App-Key 的构建中生效,官方构建带有)。设为假值可关闭。 |
-| `FLUXDOWN_LOG_LEVEL` | 未设置——`info` | 未设置 `RUST_LOG` 时的默认 `tracing` 日志级别(`error`/`warn`/`info`/`debug`/`trace`,大小写不敏感)。`RUST_LOG` 存在时始终优先——简单场景用 `FLUXDOWN_LOG_LEVEL` 一键调级,需要按模块精细控制再用 `RUST_LOG`。启动时读取一次,修改需重启生效。 |
+| `FLUXDOWN_LOG_LEVEL` | 未设置 | 启动覆盖值：`error` / `warn` / `info` / `debug` / `trace`（大小写不敏感）。有效的 `RUST_LOG` 指令优先。 |
+
+在 **设置 → 关于 → 日志** 选择主机日志级别，或编辑引擎数据目录下的 `logging.conf`（Docker 例如 `/data/logging.conf`）。`log_level` 支持 `auto`、`debug`、`info`、`warn`、`error`；`auto` 在开发构建使用 Debug，发布构建使用 Info。修改后重启 agent 和 daemon，刷新网页不生效。
 
 未设置 `FLUXDOWN_DATA_DIR` 时,数据目录探测规则与桌面客户端一致:
 

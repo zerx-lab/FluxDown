@@ -107,7 +107,7 @@ struct AppearancePage: View {
                 }
             }
 
-            Section(L("settingsGroupInterface")) {
+            Section {
                 // iOS 没有公开的「显示与亮度」深链；文字大小由系统（动态字体）接管，这里只做说明，不放无效按钮。
                 SettingsTileLabel(
                     title: L("mobileSystemTextSize"),
@@ -116,6 +116,16 @@ struct AppearancePage: View {
                     color: .gray
                 )
                 .settingsRow("appearance.textSize")
+
+                Picker(L("fileSizeUnits"), selection: fileSizeUnitsBinding) {
+                    Text(L("fileSizeUnitsLegacy")).tag(FileSizeUnits.legacy)
+                    Text(L("fileSizeUnitsIec")).tag(FileSizeUnits.iec)
+                }
+                .settingsRow("appearance.fileSizeUnits")
+            } header: {
+                Text(L("settingsGroupInterface"))
+            } footer: {
+                Text(L("fileSizeUnitsDesc"))
             }
         }
         .onAppear { syncCustomFromStore() }
@@ -134,6 +144,10 @@ struct AppearancePage: View {
             appearance.mode = newMode
             AppearanceSync.shared.modeChanged(newMode)
         })
+    }
+
+    private var fileSizeUnitsBinding: Binding<FileSizeUnits> {
+        Binding(get: { appearance.fileSizeUnits }, set: { container.setFileSizeUnits($0) })
     }
 
     private func selectPreset(_ id: String) {
@@ -245,6 +259,11 @@ extension AppearancePage {
                 id: "appearance.textSize", route: .appearance, title: L("mobileSystemTextSize"),
                 detail: L("mobileSystemTextSizeDesc"), breadcrumb: "\(name) › \(L("settingsGroupInterface"))",
                 symbol: "textformat.size"
+            ),
+            SettingsEntry(
+                id: "appearance.fileSizeUnits", route: .appearance, title: L("fileSizeUnits"),
+                detail: L("fileSizeUnitsDesc"), breadcrumb: "\(name) › \(L("settingsGroupInterface"))",
+                symbol: "internaldrive"
             ),
         ]
     }

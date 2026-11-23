@@ -43,6 +43,9 @@ image = { version = "0.25.10", default-features = false, features = ["png"] }
 fluxdown_ui_components = { version = "0.1.0", path = "../components" }
 mimalloc = "0.1.52"
 log = "0.4"
+tracing = "0.1"
+tracing-log = "0.2"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 fluxdown_logfile = { version = "0.1.0", path = "../../native/logfile" }
 base64 = "0.22"
 fluxdown_ui_plugin_ui = { version = "0.1.0", path = "../plugin_ui" }

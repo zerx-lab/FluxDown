@@ -95,7 +95,8 @@ extension TaskRuntimeDto {
                     downloadedBytes: $0.downloadedBytes,
                     active: $0.active
                 )
-            }
+            },
+            hlsFragments: hlsFragments.map { HlsFragmentProgress(written: $0.written, total: $0.total) }
         )
     }
 }

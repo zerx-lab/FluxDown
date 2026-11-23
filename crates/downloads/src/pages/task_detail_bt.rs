@@ -25,7 +25,7 @@ use gpui::{
     AnyElement, App, ClipboardItem, Context, Div, FontWeight, Hsla, InteractiveElement as _,
     IntoElement, ListAlignment, ListSizingBehavior, ListState, ParentElement, Pixels, SharedString,
     StatefulInteractiveElement as _, Styled, Window, canvas, div, list,
-    prelude::FluentBuilder as _, px,
+    prelude::FluentBuilder as _, px, relative,
 };
 use gpui_component::{
     Disableable as _, Icon, WindowExt as _,
@@ -268,6 +268,8 @@ pub(super) fn web_seed_state_key(state: &str) -> Option<&'static str> {
         "downloading" => Some("btWebSeedStateDownloading"),
         "backingOff" => Some("btWebSeedStateBackingOff"),
         "disabled" => Some("btWebSeedStateDisabled"),
+        "pending" => Some("btWebSeedStatePending"),
+        "rejected" => Some("btWebSeedStateRejected"),
         _ => None,
     }
 }
@@ -1885,9 +1887,12 @@ fn web_seeds_section(
     v_flex()
         .w_full()
         .flex_none()
+        // Reserve room for the tracker list even in a short bottom detail pane.
+        .max_h(relative(0.5))
         .gap(look.xs)
         .child(
             div()
+                .flex_none()
                 .text_size(look.sm_size)
                 .line_height(look.sm_line)
                 .font_weight(FontWeight::MEDIUM)
@@ -1895,10 +1900,11 @@ fn web_seeds_section(
                 .child(text.title.clone()),
         )
         .child(
-            table.child(
+            table.min_h_0().child(
                 v_flex()
                     .id("bt-web-seeds")
                     .w_full()
+                    .min_h_0()
                     .max_h(look.ext(WEB_SEEDS_MAX_HEIGHT))
                     .overflow_y_scroll()
                     .children(rows),
@@ -2510,7 +2516,9 @@ impl TaskDetailView {
             )
         });
 
-        let mut table = table_frame(&look).min_h_0();
+        let mut table = table_frame(&look)
+            .min_h_0()
+            .when(web_seeds.is_some(), |table| table.flex_1());
         if let Some(head) = tracker_header(&look, layout, stats_columns, &header, &item.meta) {
             table = table.child(head);
         }
