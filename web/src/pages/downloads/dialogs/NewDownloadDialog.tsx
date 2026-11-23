@@ -217,10 +217,10 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   const duplicateFileName = (count === 1 ? rename.trim() : '') || entries[0]?.fileName.trim() ||
     captures.find((capture) => capture.url === duplicateUrl)?.fileName.trim() || ''
   const fileCheck = useMemo(
-    () => duplicateUrl && duplicateTaskName === null && (duplicateFileName !== '' || isHttpUrl(duplicateUrl))
+    () => duplicateUrl && duplicateTaskName === null && (duplicateFileName !== '' || (count === 1 && isHttpUrl(duplicateUrl)))
       ? { url: duplicateUrl, fileName: duplicateFileName, defaultDownloadDir }
       : null,
-    [duplicateUrl, duplicateTaskName, duplicateFileName, defaultDownloadDir],
+    [duplicateUrl, duplicateTaskName, duplicateFileName, defaultDownloadDir, count],
   )
   const [fileMatch, setFileMatch] = useState<{ check: NonNullable<typeof fileCheck>; name: string } | null>(null)
   useEffect(() => {
