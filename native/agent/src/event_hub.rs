@@ -188,14 +188,15 @@ impl TrayRound {
         // A global cursor is safe only once the projection contains the result.
         let mut pending = std::mem::take(&mut self.pending_notices);
         pending.retain(|id, next| {
-            if snapshot
-                .task(id)
-                .is_some_and(|row| next.matches_row(row.status))
-            {
-                self.set(id, *next);
-                false
-            } else {
-                true
+            match snapshot.task(id) {
+                Some(row) if next.matches_row(row.status) => {
+                    self.set(id, *next);
+                    false
+                }
+                // Once a row exists, its live state supersedes a mismatched
+                // create/start notice. Terminal notices still need their row.
+                Some(_) if next.is_unfinished() => false,
+                _ => true,
             }
         });
         self.pending_notices = pending;
@@ -306,16 +307,12 @@ impl AgentEventHub {
             _ => return,
         };
         let mut state = lock_or_recover(&self.state);
-        if state
-            .snapshot
-            .daemon
-            .task(&task.id)
-            .is_some_and(|row| next.matches_row(row.status))
-        {
+        let status = state.snapshot.daemon.task(&task.id).map(|row| row.status);
+        if status.is_some_and(|status| next.matches_row(status)) {
             state.tray.pending_notices.remove(&task.id);
             state.tray.sequence = state.sequence;
             state.tray.set(&task.id, next);
-        } else {
+        } else if status.is_none() || !next.is_unfinished() {
             state.tray.pending_notices.insert(task.id.clone(), next);
         }
     }
@@ -413,6 +410,40 @@ mod tests {
     fn acknowledge_current(hub: &AgentEventHub) {
         let snapshot = hub.snapshot();
         hub.acknowledge_tray_downloads(&snapshot.epoch, snapshot.sequence);
+    }
+
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn tray_dot_discards_create_notices_superseded_by_running_rows() -> Result<(), serde_json::Error>
+    {
+        let hub = AgentEventHub::new(AgentSnapshot::default());
+        for (id, row_first) in [("early", false), ("late", true)] {
+            let row = DaemonEvent::TaskChanged(tray_task(id, 1)?);
+            if row_first {
+                hub.apply_daemon_event(row.clone());
+            }
+            hub.record_tray_result(&fluxdown_protocol::TaskNoticeDto {
+                delivery_id: String::new(),
+                event: "task.created".into(),
+                timestamp_ms: 0,
+                queue_id: String::new(),
+                queue_name: String::new(),
+                task: Some(fluxdown_protocol::TaskNoticeTaskDto {
+                    id: id.into(),
+                    ..Default::default()
+                }),
+            });
+            if !row_first {
+                hub.apply_daemon_event(row);
+            }
+            assert!(
+                !super::lock_or_recover(&hub.state)
+                    .tray
+                    .pending_notices
+                    .contains_key(id)
+            );
+        }
+        Ok(())
     }
 
     #[cfg(feature = "desktop")]

@@ -298,8 +298,9 @@ fn watch_tray_downloads(
                         if tray_downloads_visible(window, &shell, &session, cx)
                             && let Some(snapshot) = session.read(cx).latest()
                         {
-                            acknowledge_tray_downloads(&snapshot.epoch, snapshot.sequence, cx);
-                            last_sent.replace(Some((snapshot.epoch.clone(), snapshot.sequence)));
+                            let cursor = (snapshot.epoch.clone(), snapshot.sequence);
+                            last_sent.replace(Some(cursor.clone()));
+                            acknowledge_tray_downloads(cursor, last_sent, cx);
                         }
                     }) {
                         log::debug!("tray acknowledgement window released: {error:#}");
@@ -337,20 +338,45 @@ fn tray_downloads_visible(
         && session.read(cx).tray_downloads_ready()
 }
 
-fn acknowledge_tray_downloads(epoch: &str, sequence: u64, cx: &App) {
+type TrayCursor = (String, u64);
+
+fn forget_failed_tray_ack(last_sent: &mut Option<TrayCursor>, cursor: &TrayCursor) {
+    if last_sent.as_ref() == Some(cursor) {
+        *last_sent = None;
+    }
+}
+
+fn acknowledge_tray_downloads(
+    cursor: TrayCursor,
+    last_sent: Rc<std::cell::RefCell<Option<TrayCursor>>>,
+    cx: &App,
+) {
     use fluxdown_protocol::method::AGENT_PLATFORM_ACK_TRAY_DOWNLOADS;
 
     let client = Desktop::global(cx).client.clone();
-    let caller = client.clone();
-    let params = serde_json::json!({ "epoch": epoch, "sequence": sequence });
-    client.spawn_background(async move {
-        if let Err(error) = caller
+    let params = serde_json::json!({ "epoch": cursor.0, "sequence": cursor.1 });
+    cx.spawn(async move |_| {
+        if let Err(error) = client
             .call::<_, serde_json::Value>(AGENT_PLATFORM_ACK_TRAY_DOWNLOADS, Some(params))
             .await
         {
+            forget_failed_tray_ack(&mut last_sent.borrow_mut(), &cursor);
             log::debug!("failed to acknowledge tray downloads: {:?}", error.code);
         }
-    });
+    })
+    .detach();
+}
+
+#[cfg(test)]
+#[test]
+fn failed_tray_ack_allows_same_cursor_on_next_check() {
+    let old = ("epoch".to_owned(), 3);
+    let new = ("epoch".to_owned(), 4);
+    let mut last_sent = Some(new.clone());
+    forget_failed_tray_ack(&mut last_sent, &old);
+    assert_eq!(last_sent.as_ref(), Some(&new));
+    forget_failed_tray_ack(&mut last_sent, &new);
+    assert_eq!(last_sent, None);
 }
 
 /// 导入闸门挂起状态同步到下载页：挂起期间「全部开始」必须可点（它是唯一解除入口）。
