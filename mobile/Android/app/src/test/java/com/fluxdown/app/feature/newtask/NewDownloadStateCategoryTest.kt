@@ -213,6 +213,32 @@ class NewDownloadStateCategoryTest {
         assertEquals("/dl", requestOffered(form))
     }
 
+    @Test fun externalNoCategoryKeepsItsDirectoryAndDoesNotOverwriteRememberedMode() {
+        val form = NewDownloadState.create(
+            "", hostWithCategories(), ExternalDownload("https://x.test/movie.mp4", saveDir = "/custom"),
+            rememberedMode = "category:builtin_video",
+        )
+        fun assertExternalDestination() {
+            assertEquals("/custom", form.buildRequests(false, "", "").single().saveDir)
+            assertNull(requestOffered(form))
+            assertNull(form.rememberedMode())
+        }
+
+        form.selectMode(SaveDirMode.None)
+        assertExternalDestination()
+
+        form.selectMode(SaveDirMode.Category("builtin_video"))
+        assertEquals("/dl/Video", form.buildRequests(false, "", "").single().saveDir)
+        assertEquals("category:builtin_video", form.rememberedMode())
+        form.selectMode(SaveDirMode.None)
+        assertExternalDestination()
+
+        form.setSaveDirManually("/picked")
+        form.selectMode(SaveDirMode.None)
+        assertEquals("/picked", form.buildRequests(false, "", "").single().saveDir)
+        assertNull(form.rememberedMode())
+    }
+
     @Test fun adoptingPublicDefaultPreservesExplicitTaskFolder() {
         val state = form("https://example.com/file.txt")
         state.setSaveDirManually("/other")

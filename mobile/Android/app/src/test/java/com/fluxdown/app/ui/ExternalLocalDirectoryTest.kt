@@ -31,6 +31,27 @@ class ExternalLocalDirectoryTest {
         }
     }
 
+    @Test fun onlyTheResolvedDirectoryShownForConfirmationCanBePrepared() {
+        val parent = temporary.newFolder("parent").canonicalFile
+        val destination = File(parent, "download")
+        val alias = Files.createSymbolicLink(File(root, "alias").toPath(), parent.toPath()).resolve("download")
+        val policy = ExternalLocalDirectory(listOf(temporary.newFolder("private")))
+
+        val shown = checkNotNull(policy.forConfirmation(alias.toString()))
+        assertEquals(destination.path, shown)
+        assertFalse(destination.exists())
+        assertFalse(policy.prepareConfirmed(alias.toString()))
+        assertFalse(destination.exists())
+        assertTrue(policy.prepareConfirmed(shown))
+        assertTrue(destination.isDirectory)
+
+        val other = temporary.newFolder("other").canonicalFile
+        Files.move(parent.toPath(), File(root, "moved").toPath())
+        Files.createSymbolicLink(parent.toPath(), other.toPath())
+        assertFalse(policy.prepareConfirmed(shown))
+        assertFalse(File(other, "download").exists())
+    }
+
     @Test fun outsideRootAndSymlinkEscapesConfirmWithoutPreparingTheDirectory() {
         val root = temporary.newFolder("Download").canonicalFile
         val outside = temporary.newFolder("Download-other").canonicalFile

@@ -144,6 +144,16 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
     val haptics = FluxTheme.haptics
     val context = LocalContext.current
     val form = remember { NewDownloadState.create(route.prefill, container.store.state.value, route.external, route.targetId) }
+    val hostRef by container.host.collectAsStateWithLifecycle()
+    val requestedLocalDir = form.saveDir.takeIf { form.hasExternalSaveDir && hostRef is HostRef.Local }
+    var localConfirmation by remember(requestedLocalDir) { mutableStateOf<LocalDirectoryConfirmation?>(null) }
+    LaunchedEffect(requestedLocalDir) {
+        if (requestedLocalDir != null) {
+            val resolved = withContext(Dispatchers.IO) { externalLocalDirectory(context).forConfirmation(requestedLocalDir) }
+            localConfirmation = LocalDirectoryConfirmation(requestedLocalDir, resolved)
+        }
+    }
+    val needsDirectory = requestedLocalDir != null && localConfirmation?.path == null
     LaunchedEffect(route) {
         // 打开期间的后续唤起追加进同一表单（批量协议唤起逐条到达）
         route.external?.let(form::addExternal)
@@ -228,9 +238,9 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
             haptics.reject()
             return
         }
-        val saveDir = writableDownloadDirectory(context, container.host.value, form) ?: run {
+        val saveDir = writableDownloadDirectory(context, container.host.value, form, localConfirmation) ?: run {
             haptics.reject()
-            overlays.toast(context.str(R.string.mobileSaveDirNotWritable, "dir" to form.saveDir.trim()), FluxToastKind.Error)
+            overlays.toast(context.str(R.string.mobileSaveDirNotWritable, "dir" to (localConfirmation?.path ?: form.saveDir.trim())), FluxToastKind.Error)
             return
         }
         if (!checksumValid(form)) {
@@ -326,11 +336,13 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
         title = str(R.string.newDownload),
         header = { FluxSheetHeader(title = str(R.string.newDownload), onClose = ::requestClose) },
         footer = {
-            NewDownloadFooter(form, target, ::submit, onSubmitRemote = { target?.let(::submitRemote) })
+            NewDownloadFooter(form, target, needsDirectory, ::submit, onSubmitRemote = { target?.let(::submitRemote) })
         },
     ) {
         NewDownloadContent(
             form, targets, target,
+            requestedLocalDir = requestedLocalDir,
+            localConfirmation = localConfirmation,
             onOpenAdvanced = { advancedOpen = true },
             // 本机建了任务：记住分类模式、拉起前台服务；表单里没有待提交的链接时关闭（同 iOS `importTorrents`）
             onTorrentImported = {
@@ -381,11 +393,19 @@ private fun checksumHexValid(hex: String): Boolean {
 
 private fun checksumValid(form: NewDownloadState): Boolean = !form.single || checksumHexValid(form.advanced.checksumHex)
 
-private fun writableDownloadDirectory(context: Context, host: HostRef, form: NewDownloadState): String? {
+private data class LocalDirectoryConfirmation(val requested: String, val path: String?)
+
+private fun writableDownloadDirectory(
+    context: Context,
+    host: HostRef,
+    form: NewDownloadState,
+    confirmation: LocalDirectoryConfirmation?,
+): String? {
     val entered = form.saveDir.trim()
     if (host !is HostRef.Local) return entered
-    val path = if (form.hasExternalSaveDir) externalLocalDirectory(context).forConfirmation(entered) ?: return null else entered
-    return path.takeIf(::isLocalDirWritable)
+    if (!form.hasExternalSaveDir) return entered.takeIf(::isLocalDirWritable)
+    val path = confirmation?.takeIf { it.requested == form.saveDir }?.path ?: return null
+    return path.takeIf(externalLocalDirectory(context)::prepareConfirmed)
 }
 
 // ── N1 正文 ───────────────────────────────────────────────────────────────
@@ -395,6 +415,8 @@ private fun NewDownloadContent(
     form: NewDownloadState,
     targets: List<DispatchTarget>,
     target: DispatchTarget?,
+    requestedLocalDir: String?,
+    localConfirmation: LocalDirectoryConfirmation?,
     onOpenAdvanced: () -> Unit,
     onTorrentImported: () -> Unit,
 ) {
@@ -453,9 +475,9 @@ private fun NewDownloadContent(
             haptics.reject()
             return@rememberLauncherForActivityResult
         }
-        val saveDir = writableDownloadDirectory(context, container.host.value, form) ?: run {
+        val saveDir = writableDownloadDirectory(context, container.host.value, form, localConfirmation) ?: run {
             haptics.reject()
-            overlays.toast(context.str(R.string.mobileSaveDirNotWritable, "dir" to form.saveDir.trim()), FluxToastKind.Error)
+            overlays.toast(context.str(R.string.mobileSaveDirNotWritable, "dir" to (localConfirmation?.path ?: form.saveDir.trim())), FluxToastKind.Error)
             return@rememberLauncherForActivityResult
         }
         val queues = container.store.state.value.queues
@@ -565,7 +587,8 @@ private fun NewDownloadContent(
                 size = ButtonSize.Sm,
                 icon = FluxIcons.FileUp,
                 fullWidth = true,
-                enabled = !busy && !importingTorrent && target == null,
+                enabled = !busy && !importingTorrent && target == null &&
+                    (requestedLocalDir == null || localConfirmation?.path != null),
             )
             // 种子只能在当前主机建任务：「下载到」选了其他设备时禁用并说明（同 iOS `torrentButton(remote:)`）
             if (target != null) {
@@ -636,8 +659,9 @@ private fun NewDownloadContent(
         CategorySelect(form, enabled = !busy, remoteHost = remoteHost)
 
         // 保存目录
-        val saveDirShown = remember(form.saveDir, remoteHost) {
-            if (remoteHost) form.saveDir else com.fluxdown.app.ui.friendlyLocalPath(context, form.saveDir)
+        val displayedDir = if (requestedLocalDir == null) form.saveDir else localConfirmation?.path.orEmpty()
+        val saveDirShown = remember(displayedDir, remoteHost) {
+            if (remoteHost) displayedDir else com.fluxdown.app.ui.friendlyLocalPath(context, displayedDir)
         }
         FluxField(
             value = saveDirShown,
@@ -645,10 +669,14 @@ private fun NewDownloadContent(
             label = str(R.string.saveDir),
             mono = remoteHost,
             readOnly = !remoteHost,
-            error = if (form.saveDirValid) null else str(R.string.mobileSaveDirInvalid),
+            error = when {
+                localConfirmation != null && localConfirmation.path == null -> str(R.string.mobileLocalFolderReadFailed)
+                requestedLocalDir == null && !form.saveDirValid -> str(R.string.mobileSaveDirInvalid)
+                else -> null
+            },
             enabled = !busy,
             trailing = if (remoteHost) null else ({
-                FluxFieldAction(FluxIcons.FolderOpen, str(R.string.browse), onClick = { pickDirectory(form.saveDir) })
+                FluxFieldAction(FluxIcons.FolderOpen, str(R.string.browse), onClick = { pickDirectory(displayedDir) })
             }),
         )
 
@@ -844,6 +872,7 @@ private fun CategorySelect(form: NewDownloadState, enabled: Boolean, remoteHost:
     val matched = form.autoMatched()
     val auto = str(R.string.saveDirCategoryAuto)
     val none = str(R.string.saveDirCategoryNone)
+    val noneHint = if (form.hasExternalSaveDir) null else str(R.string.saveDirCategoryNoneDesc)
     val items = buildList {
         add(
             FluxMenuItem.Action(
@@ -859,7 +888,7 @@ private fun CategorySelect(form: NewDownloadState, enabled: Boolean, remoteHost:
                 label = none,
                 onClick = { form.selectMode(SaveDirMode.None) },
                 icon = FluxIcons.FolderOpen,
-                hint = str(R.string.saveDirCategoryNoneDesc),
+                hint = noneHint,
                 checked = mode == SaveDirMode.None,
             ),
         )
@@ -893,7 +922,7 @@ private fun CategorySelect(form: NewDownloadState, enabled: Boolean, remoteHost:
         label = str(R.string.saveDirCategory),
         hint = when (mode) {
             SaveDirMode.Auto -> str(R.string.saveDirCategoryAutoDesc)
-            SaveDirMode.None -> str(R.string.saveDirCategoryNoneDesc)
+            SaveDirMode.None -> noneHint
             // 所选分类的目录已显示在下方「保存目录」行
             is SaveDirMode.Category -> null
         },
@@ -1020,6 +1049,7 @@ private fun readText(context: Context, uri: Uri): String? = runCatching {
 private fun NewDownloadFooter(
     form: NewDownloadState,
     target: DispatchTarget?,
+    needsDirectory: Boolean,
     submit: (startPaused: Boolean, queueId: String) -> Unit,
     onSubmitRemote: () -> Unit,
 ) {
@@ -1076,7 +1106,7 @@ private fun NewDownloadFooter(
                     { submit(true, queueId) },
                     modifier = Modifier.weight(1f),
                     icon = FluxIcons.Clock,
-                    enabled = !form.submitting,
+                    enabled = !form.submitting && !needsDirectory,
                 )
                 FluxSplitButton(
                     label = startLabel,
@@ -1086,7 +1116,7 @@ private fun NewDownloadFooter(
                     },
                     modifier = Modifier.weight(1.4f),
                     icon = FluxIcons.ArrowDown,
-                    enabled = !form.submitting,
+                    enabled = !form.submitting && !needsDirectory,
                     menuLabel = moreLabel,
                     menuActions = a11y,
                 )

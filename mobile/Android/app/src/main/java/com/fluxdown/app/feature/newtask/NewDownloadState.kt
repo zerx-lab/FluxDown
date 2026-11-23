@@ -143,7 +143,6 @@ internal class NewDownloadState(
     private var lastWritten: String? = null
     private var manuallySelectedSaveDir = false
     val hasExternalSaveDir: Boolean get() = externalSaveDir != null
-    private var categoryModeSelected = false
 
     /** 分类选择模式；默认自动。 */
     var mode by mutableStateOf<SaveDirMode>(SaveDirMode.Auto)
@@ -230,7 +229,7 @@ internal class NewDownloadState(
             SaveDirMode.Auto -> Unit
             SaveDirMode.None -> {
                 saveDir = externalSaveDir ?: offeredSaveDir
-                lastWritten = offeredSaveDir.trim()
+                lastWritten = saveDir.trim()
                 manuallySelectedSaveDir = hasExternalSaveDir
             }
             is SaveDirMode.Category -> {
@@ -255,7 +254,7 @@ internal class NewDownloadState(
         return categoryOptions.firstOrNull { it.saveDir == dir }
     }
     fun rememberedMode(): String? {
-        if (hasExternalSaveDir && !categoryModeSelected) return null
+        if (hasExternalSaveDir && mode == SaveDirMode.None) return null
         return when (val selected = mode) {
             SaveDirMode.Auto -> "auto"
             SaveDirMode.None -> "none"
@@ -302,6 +301,7 @@ internal class NewDownloadState(
 
 
     fun selectMode(next: SaveDirMode) {
+        if (hasExternalSaveDir && mode == SaveDirMode.None && next == SaveDirMode.None) return
         when (next) {
             SaveDirMode.Auto -> {
                 manuallySelectedSaveDir = false
@@ -310,8 +310,9 @@ internal class NewDownloadState(
             }
             SaveDirMode.None -> {
                 mode = next
-                saveDir = offeredSaveDir
-                lastWritten = offeredSaveDir.trim()
+                saveDir = externalSaveDir ?: offeredSaveDir
+                lastWritten = saveDir.trim()
+                if (hasExternalSaveDir) manuallySelectedSaveDir = true
             }
             is SaveDirMode.Category -> {
                 val dir = categoryOptions.firstOrNull { it.id == next.id }?.saveDir ?: return
@@ -320,7 +321,6 @@ internal class NewDownloadState(
                 lastWritten = dir
             }
         }
-        categoryModeSelected = true
     }
 
     /** 收下一条外部请求：链接追加进文本框（已存在则忽略）；首条同时预填 Cookie / 来源页 / UA / 请求头。 */

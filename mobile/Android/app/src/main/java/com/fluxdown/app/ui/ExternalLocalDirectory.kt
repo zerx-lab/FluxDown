@@ -22,6 +22,10 @@ internal class ExternalLocalDirectory(
     fun forConfirmation(path: String): String? =
         resolve(path)?.takeUnless(::isPrivate)?.toString()
 
+    /** 提交时再检查已展示的真实路径；目录变动后不能静默跟到另一位置。 */
+    fun prepareConfirmed(path: String): Boolean =
+        forConfirmation(path) == path && isLocalDirWritable(path)
+
     fun forSilent(path: String, trustedRoots: Sequence<String>): SilentDestination {
         // 引擎可能在重启后按字符串路径打开目录；用户配置的共享目录不保证届时路径组件未被替换。
         // 静默只接受系统保护的路径，解析结果也必须与该路径的词法规范化结果一致。
