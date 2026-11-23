@@ -111,10 +111,16 @@ enum Stop {
     Cancelled,
     /// UI 侧已丢弃信号接收端。
     ReceiverGone,
-    /// 不可恢复错误。
-    Fatal(HostErrorDto),
+    /// 不可恢复错误；只在致命路径分配，避免放大实时同步的 Result。
+    Fatal(Box<HostErrorDto>),
     /// 首次连接 / 同步失败：由 `open_*` 作为错误返回，不进入重试。
-    FirstFailed(FluxError),
+    FirstFailed(String),
+}
+
+impl Stop {
+    fn fatal(error: HostErrorDto) -> Self {
+        Self::Fatal(Box::new(error))
+    }
 }
 
 /// 一次连接生命周期的结局。
@@ -171,21 +177,21 @@ impl Driver {
         match stop {
             Stop::Fatal(error) => {
                 if let Some(first) = self.first.take() {
-                    if first.send(Err(error.into())).is_err() {
+                    if first.send(Err((*error).into())).is_err() {
                         tracing::debug!("open caller went away before the fatal error");
                     }
                 } else if self
                     .signals
-                    .send(HostSignalDto::Fatal { error })
+                    .send(HostSignalDto::Fatal { error: *error })
                     .await
                     .is_err()
                 {
                     tracing::debug!("fatal signal dropped: receiver gone");
                 }
             }
-            Stop::FirstFailed(error) => {
+            Stop::FirstFailed(reason) => {
                 if let Some(first) = self.first.take()
-                    && first.send(Err(error)).is_err()
+                    && first.send(Err(FluxError::transport(reason))).is_err()
                 {
                     tracing::debug!("open caller went away before the failure");
                 }
@@ -203,11 +209,11 @@ impl Driver {
             }
             let established = match self.connect(state).await {
                 Err(stop) => return stop,
-                Ok(Err(ConnectFailure::Fatal(error))) => return Stop::Fatal(error),
+                Ok(Err(ConnectFailure::Fatal(error))) => return Stop::fatal(error),
                 Ok(Err(ConnectFailure::Retry(reason))) => {
                     tracing::warn!(%reason, "host connect failed");
                     if self.first.is_some() {
-                        return Stop::FirstFailed(FluxError::transport(reason));
+                        return Stop::FirstFailed(reason);
                     }
                     if let Err(stop) = self.backoff_sleep(state).await {
                         return stop;
@@ -226,7 +232,7 @@ impl Driver {
                     tracing::info!(%reason, immediate, "host session ended; reconnecting");
                     self.link.send_replace(LinkState::Connecting);
                     if self.first.is_some() {
-                        return Stop::FirstFailed(FluxError::transport(reason));
+                        return Stop::FirstFailed(reason);
                     }
                     self.mark_disconnected(state);
                     if alive >= self.timing.healthy_after {
@@ -312,7 +318,7 @@ impl Driver {
             mut events,
         } = established;
         if hello.role != ServiceRole::Agent || hello.protocol_version != PROTOCOL_VERSION {
-            return SessionEnd::Stop(Stop::Fatal(HostErrorDto::new(
+            return SessionEnd::Stop(Stop::fatal(HostErrorDto::new(
                 ErrorCodeDto::ProtocolIncompatible,
                 format!(
                     "host speaks protocol {} as {:?}; this app needs protocol {PROTOCOL_VERSION} as agent",
@@ -420,7 +426,7 @@ impl Driver {
                     ..
                 },
             )) => {
-                return SyncOutcome::End(SessionEnd::Stop(Stop::Fatal(error.into())));
+                return SyncOutcome::End(SessionEnd::Stop(Stop::fatal(error.into())));
             }
             Ok(Err(error)) => {
                 return SyncOutcome::End(SessionEnd::Reconnect {
@@ -633,7 +639,7 @@ impl Driver {
                         ..
                     },
                 )) => {
-                    return Err(LiveEnd::End(SessionEnd::Stop(Stop::Fatal(error.into()))));
+                    return Err(LiveEnd::End(SessionEnd::Stop(Stop::fatal(error.into()))));
                 }
                 Ok(Err(error)) => {
                     return Err(reconnect_end(
@@ -683,7 +689,7 @@ fn end_for_close(info: CloseInfo) -> SessionEnd {
             immediate: true,
             reason: "event gap".to_owned(),
         },
-        CloseInfo::ServiceQuit => SessionEnd::Stop(Stop::Fatal(HostErrorDto::new(
+        CloseInfo::ServiceQuit => SessionEnd::Stop(Stop::fatal(HostErrorDto::new(
             ErrorCodeDto::Unavailable,
             "host stopped (service-quit)",
         ))),
