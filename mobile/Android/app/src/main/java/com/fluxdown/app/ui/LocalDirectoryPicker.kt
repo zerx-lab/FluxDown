@@ -122,7 +122,10 @@ private fun normalizedOrNull(raw: String): String? {
  * 「选择此文件夹」前实际创建 / 写入 / 删除探针，确认可写才回调 [onPick]。
  */
 @Composable
-internal fun rememberLocalDirectoryPicker(onPick: (String) -> Unit): (String) -> Unit {
+internal fun rememberLocalDirectoryPicker(
+    externalDirectory: ExternalLocalDirectory? = null,
+    onPick: (String) -> Unit,
+): (String) -> Unit {
     val context = LocalContext.current
     val overlays = LocalFluxOverlays.current
     val haptics = FluxTheme.haptics
@@ -208,13 +211,17 @@ internal fun rememberLocalDirectoryPicker(onPick: (String) -> Unit): (String) ->
         visible = false
     }
 
+    fun checkedWritePath(path: String): String =
+        if (externalDirectory == null) path
+        else externalDirectory.forConfirmation(path) ?: throw IOException("Unsafe directory: $path")
+
     fun choose() {
         if (busy || path.isEmpty() || status != DirStatus.Ready) return
         val gen = ++ticket[0]
         val dir = path
         busy = true
         scope.launch {
-            val outcome = runFileIo(scope, WRITE_TIMEOUT_MS) { prepareLocalDirectory(dir) }
+            val outcome = runFileIo(scope, WRITE_TIMEOUT_MS) { prepareLocalDirectory(checkedWritePath(dir)) }
             if (gen != ticket[0]) return@launch
             busy = false
             when (outcome) {
@@ -240,7 +247,7 @@ internal fun rememberLocalDirectoryPicker(onPick: (String) -> Unit): (String) ->
         val gen = ++ticket[0]
         busy = true
         scope.launch {
-            val outcome = runFileIo(scope, WRITE_TIMEOUT_MS) { createChildDirectory(parent, name) }
+            val outcome = runFileIo(scope, WRITE_TIMEOUT_MS) { createChildDirectory(checkedWritePath(parent), name) }
             if (gen != ticket[0]) return@launch
             busy = false
             when (outcome) {

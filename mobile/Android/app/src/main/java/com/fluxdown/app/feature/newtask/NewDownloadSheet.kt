@@ -50,7 +50,9 @@ import com.fluxdown.app.shell.LocalAppContainer
 import com.fluxdown.app.shell.hostState
 import com.fluxdown.app.ui.TaskInfoRow
 import com.fluxdown.app.ui.defaultLocalSaveDir
+import com.fluxdown.app.ui.externalLocalDirectory
 import com.fluxdown.app.ui.fileCategory
+import com.fluxdown.app.ui.isLocalDirWritable
 import com.fluxdown.app.ui.label
 import com.fluxdown.app.ui.launchDocumentPicker
 import com.fluxdown.app.ui.rememberTaskInfoExport
@@ -196,7 +198,7 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
     fun rememberMode() {
         if (target == null) {
             val session = container.session
-            val mode = form.rememberedMode()
+            val mode = form.rememberedMode() ?: return
             container.appScope.launch {
                 try {
                     session.patchPreferences(
@@ -226,8 +228,7 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
             haptics.reject()
             return
         }
-        // 本机主机：目录不可写（分区存储外 / 拼错路径）在提交前拦住，避免引擎报 EPERM
-        if (container.host.value is com.fluxdown.core.model.HostRef.Local && !com.fluxdown.app.ui.isLocalDirWritable(form.saveDir)) {
+        val saveDir = writableDownloadDirectory(context, container.host.value, form) ?: run {
             haptics.reject()
             overlays.toast(context.str(R.string.mobileSaveDirNotWritable, "dir" to form.saveDir.trim()), FluxToastKind.Error)
             return
@@ -237,7 +238,7 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
             advancedOpen = true
             return
         }
-        val requests = form.buildRequests(startPaused, queueId, manualProxyUrl(state.config))
+        val requests = form.buildRequests(startPaused, queueId, manualProxyUrl(state.config), saveDir)
         val batches = groupImportBatches(requests)
         if (requests.size > ImportRules.CHUNK_SIZE) {
             // 多块导入：交给进程级导入中心，进度 / 取消在下载页顶部，关闭本 Sheet 不影响它；汇总提示由 ImportEffects 给出
@@ -380,6 +381,13 @@ private fun checksumHexValid(hex: String): Boolean {
 
 private fun checksumValid(form: NewDownloadState): Boolean = !form.single || checksumHexValid(form.advanced.checksumHex)
 
+private fun writableDownloadDirectory(context: Context, host: HostRef, form: NewDownloadState): String? {
+    val entered = form.saveDir.trim()
+    if (host !is HostRef.Local) return entered
+    val path = if (form.hasExternalSaveDir) externalLocalDirectory(context).forConfirmation(entered) ?: return null else entered
+    return path.takeIf(::isLocalDirWritable)
+}
+
 // ── N1 正文 ───────────────────────────────────────────────────────────────
 
 @Composable
@@ -445,8 +453,7 @@ private fun NewDownloadContent(
             haptics.reject()
             return@rememberLauncherForActivityResult
         }
-        // 本机主机：目录不可写在提交前拦住（同 `submit`）
-        if (container.host.value is HostRef.Local && !com.fluxdown.app.ui.isLocalDirWritable(form.saveDir)) {
+        val saveDir = writableDownloadDirectory(context, container.host.value, form) ?: run {
             haptics.reject()
             overlays.toast(context.str(R.string.mobileSaveDirNotWritable, "dir" to form.saveDir.trim()), FluxToastKind.Error)
             return@rememberLauncherForActivityResult
@@ -457,7 +464,7 @@ private fun NewDownloadContent(
         container.appScope.launch {
             val created = try {
                 TorrentImport.submit(
-                    context, container, overlays, taskActions::errorText, uris, form.saveDir, queueId, startPaused = false,
+                    context, container, overlays, taskActions::errorText, uris, saveDir, queueId, startPaused = false,
                 )
             } finally {
                 importingTorrent = false
@@ -470,7 +477,10 @@ private fun NewDownloadContent(
             }
         }
     }
-    val pickDirectory = rememberLocalDirectoryPicker { path ->
+    val externalDirectory = remember(context, form.hasExternalSaveDir) {
+        if (form.hasExternalSaveDir) externalLocalDirectory(context) else null
+    }
+    val pickDirectory = rememberLocalDirectoryPicker(externalDirectory) { path ->
         if (container.host.value is HostRef.Local && target == null && !form.submitting) {
             form.setSaveDirManually(path)
         }

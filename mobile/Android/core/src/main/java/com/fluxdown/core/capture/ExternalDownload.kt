@@ -124,15 +124,18 @@ object ExternalIntake {
         val params = UrlText.queryParameters(query)
         val url = params["url"]?.trim().orEmpty()
         if (url.isEmpty()) return null
+        val saveDir = (params["saveDir"] ?: params["dir"])?.trim()?.takeIf { it.isNotEmpty() }
+        val fileName = params["filename"].orEmpty()
         return normalize(
             text = url,
-            fileName = params["filename"].orEmpty(),
+            // 显式目录须是经校验的最终目录，不能由引擎再按文件名追加子目录。
+            fileName = if (saveDir != null) fileName.substringAfterLast('/').substringAfterLast('\\') else fileName,
             cookies = params["cookies"].orEmpty(),
             referrer = params["referrer"].orEmpty(),
             headers = decodeHeaders(params["headers"]),
         )
             ?.copy(
-                saveDir = (params["saveDir"] ?: params["dir"])?.trim()?.takeIf { it.isNotEmpty() },
+                saveDir = saveDir,
                 autoStart = params["autoStart"]?.let { it == "1" },
             )
     }
@@ -156,9 +159,11 @@ object ExternalIntake {
 }
 
 /**
- * 「免打扰下载」（偏好 `download.silent_download`）下外部请求直接建任务的参数，规则同 agent
- * `capture.rs::ExternalPolicy` for legacy links. An explicit directory or `autoStart=1` uses a fixed
- * destination (the supplied directory or the host default), without classification routing.
+ * 「免打扰下载」（偏好 `download.silent_download`）下外部请求直接建任务的参数。旧链接沿用 agent
+ * `capture.rs::ExternalPolicy`：优先使用启用记忆的上次保存目录，再用主机默认目录；开启免打扰自动分类时
+ * 以该目录作为 `offeredSaveDir` 交给 Rust 路由。`autoStart=1` 使用显式目录或主机默认目录，不走分类。
+ * 显式目录还须由 Android 入口校验。队列 / 分段取主机默认；[unattended] 取设备偏好
+ * `download.silent_skip_selection`（跳过 BT 文件 / 画质 / 变体二次选择）。
  */
 data class SilentCapture(val request: CreateTaskRequest) {
     val unattended: Boolean get() = request.unattended
@@ -168,13 +173,15 @@ data class SilentCapture(val request: CreateTaskRequest) {
         const val SKIP_SELECTION_PREF = "download.silent_skip_selection"
         const val AUTO_CATEGORY_PREF = "download.silent_auto_category"
         private const val REMEMBER_LAST_SAVE_DIR_PREF = "download.remember_last_save_dir"
-        private const val LAST_SAVE_DIR_PREF = "download.last_save_dir"
+        const val LAST_SAVE_DIR_PREF = "download.last_save_dir"
 
-        /** 免打扰关闭，或算不出任何保存目录（应退回确认弹层）时返回 null。 */
+        /** 不满足静默策略，或算不出保存目录（应退回确认弹层）时返回 null。 */
         fun plan(download: ExternalDownload, state: HostState): SilentCapture? {
             val prefs = state.preferences
-            if (!prefs.bool(SILENT_PREF, false) || download.autoStart == false) return null
-            val fixedDestination = download.saveDir != null || download.autoStart == true
+            if (!prefs.bool(SILENT_PREF, false) || download.autoStart == false ||
+                (download.saveDir != null && download.autoStart != true)
+            ) return null
+            val fixedDestination = download.autoStart == true
             val remembered = if (!fixedDestination && prefs.bool(REMEMBER_LAST_SAVE_DIR_PREF, false)) {
                 prefs.string(LAST_SAVE_DIR_PREF, "").trim()
             } else ""

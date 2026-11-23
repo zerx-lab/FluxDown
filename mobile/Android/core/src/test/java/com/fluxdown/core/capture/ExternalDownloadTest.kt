@@ -87,7 +87,7 @@ class ExternalDownloadTest {
     @Test fun protocolDirectoryAndAutoStartRespectUserPreference() {
         val link = "fluxdown://download?url=https%3A%2F%2Fx.test%2Fa.zip"
         val dir = "/storage/emulated/0/下载  📁"
-        val explicit = ExternalIntake.fromView("$link&dir=/ignored&saveDir=${enc(dir)}&autoStart=1")!!
+        val explicit = ExternalIntake.fromView("$link&dir=/ignored&saveDir=${enc(dir)}&autoStart=1&filename=sub%2Ffile.zip")!!
         val prefs = mapOf(
             SilentCapture.SILENT_PREF to true,
             "download.remember_last_save_dir" to true,
@@ -98,12 +98,26 @@ class ExternalDownloadTest {
         assertNull(SilentCapture.plan(explicit, state(emptyMap())))
         val planned = SilentCapture.plan(explicit, state(prefs))!!.request
         assertEquals(dir, planned.saveDir)
+        assertEquals("file.zip", planned.fileName)
         assertFalse(planned.startPaused)
         assertNull(planned.offeredSaveDir)
         val noDir = SilentCapture.plan(ExternalIntake.fromView("$link&autoStart=1")!!, state(prefs))!!.request
         assertEquals("/dl", noDir.saveDir)
         assertNull(noDir.offeredSaveDir)
         assertNull(SilentCapture.plan(ExternalIntake.fromView("$link&autoStart=0")!!, state(prefs)))
+        assertNull(SilentCapture.plan(ExternalIntake.fromView("$link&saveDir=${enc(dir)}")!!, state(prefs)))
+    }
+
+    @Test fun protocolIgnoresEmptyDirectoryAndConfirmsUnknownAutoStartValues() {
+        val link = "fluxdown://download?url=https%3A%2F%2Fx.test%2Fa.zip"
+        val prefs = mapOf(SilentCapture.SILENT_PREF to true)
+        val invalidStart = ExternalIntake.fromView("$link&autoStart=2&dir=/dl")!!
+        assertEquals(false, invalidStart.autoStart)
+        assertNull(SilentCapture.plan(invalidStart, state(prefs)))
+
+        val emptyDir = ExternalIntake.fromView("$link&saveDir=")!!
+        assertNull(emptyDir.saveDir)
+        assertEquals("/dl", SilentCapture.plan(emptyDir, state(prefs))!!.request.offeredSaveDir)
     }
 
     // ── 分享文本 ──

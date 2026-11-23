@@ -32,6 +32,11 @@ import java.io.IOException
 fun defaultLocalSaveDir(context: Context): File =
     context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: File(context.filesDir, "downloads")
 
+/** 两种内部数据根都包含各自的 files、cache、no_backup；不要调用会创建子目录的 getter。 */
+internal fun externalLocalDirectory(context: Context): ExternalLocalDirectory = ExternalLocalDirectory(
+    listOf(context.dataDir, context.createDeviceProtectedStorageContext().dataDir),
+)
+
 /**
  * 系统公共下载根目录（`/storage/emulated/0/Download`）。
  * 本机引擎按文件路径写入：Android 11+ 需要所有文件访问，Android 8–10 需要存储运行时权限。

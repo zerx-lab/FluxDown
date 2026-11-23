@@ -103,6 +103,7 @@ internal class NewDownloadState(
     private val initialTargetId: String? = null,
     categories: List<CustomCategoryDto> = emptyList(),
     rememberedMode: String = "auto",
+    private val externalSaveDir: String? = null,
 ) {
     var urlText by mutableStateOf(prefill)
     var saveDir by mutableStateOf(defaultSaveDir)
@@ -141,6 +142,8 @@ internal class NewDownloadState(
     /** 表单最近一次由程序写入目录框的值（自动跟随 / 切换模式）；null = 尚未写过。 */
     private var lastWritten: String? = null
     private var manuallySelectedSaveDir = false
+    val hasExternalSaveDir: Boolean get() = externalSaveDir != null
+    private var categoryModeSelected = false
 
     /** 分类选择模式；默认自动。 */
     var mode by mutableStateOf<SaveDirMode>(SaveDirMode.Auto)
@@ -222,12 +225,13 @@ internal class NewDownloadState(
 
     // 必须位于 categoryOptions 之后：Kotlin 按声明顺序初始化，提前读会拿到 null。
     init {
-        mode = restoreMode(rememberedMode, categoryOptions)
+        mode = if (hasExternalSaveDir) SaveDirMode.None else restoreMode(rememberedMode, categoryOptions)
         when (val restored = mode) {
             SaveDirMode.Auto -> Unit
             SaveDirMode.None -> {
-                saveDir = offeredSaveDir
+                saveDir = externalSaveDir ?: offeredSaveDir
                 lastWritten = offeredSaveDir.trim()
+                manuallySelectedSaveDir = hasExternalSaveDir
             }
             is SaveDirMode.Category -> {
                 val dir = categoryOptions.first { it.id == restored.id }.saveDir
@@ -250,10 +254,13 @@ internal class NewDownloadState(
         val dir = predictedDir() ?: return null
         return categoryOptions.firstOrNull { it.saveDir == dir }
     }
-    fun rememberedMode(): String = when (val selected = mode) {
-        SaveDirMode.Auto -> "auto"
-        SaveDirMode.None -> "none"
-        is SaveDirMode.Category -> "category:${selected.id}"
+    fun rememberedMode(): String? {
+        if (hasExternalSaveDir && !categoryModeSelected) return null
+        return when (val selected = mode) {
+            SaveDirMode.Auto -> "auto"
+            SaveDirMode.None -> "none"
+            is SaveDirMode.Category -> "category:${selected.id}"
+        }
     }
 
     /** 目录框未被手改：为空 / 等于最近一次程序写入值；尚未写过则等于 offered。 */
@@ -313,6 +320,7 @@ internal class NewDownloadState(
                 lastWritten = dir
             }
         }
+        categoryModeSelected = true
     }
 
     /** 收下一条外部请求：链接追加进文本框（已存在则忽略）；首条同时预填 Cookie / 来源页 / UA / 请求头。 */
@@ -342,7 +350,12 @@ internal class NewDownloadState(
     }
 
     /** 为每条链接构造请求。单条：重命名优先于 `out=`、面板校验值优先于 `checksum=`、附带 HTTP 认证。 */
-    fun buildRequests(startPaused: Boolean, queue: String, manualProxy: String): List<CreateTaskRequest> {
+    fun buildRequests(
+        startPaused: Boolean,
+        queue: String,
+        manualProxy: String,
+        resolvedSaveDir: String = saveDir.trim(),
+    ): List<CreateTaskRequest> {
         val list = entries
         val single = list.size == 1
         val adv = advanced
@@ -361,7 +374,7 @@ internal class NewDownloadState(
                     e.fileName.isNotEmpty() -> e.fileName
                     else -> external[e.url]?.fileName.orEmpty()
                 },
-                saveDir = saveDir.trim(),
+                saveDir = resolvedSaveDir,
                 segments = if (threadsApplicable) segments else 0,
                 queueId = queue,
                 startPaused = startPaused,
@@ -401,6 +414,7 @@ internal class NewDownloadState(
         /**
          * [external] 非空 = 外部唤起：链接与请求上下文按 [addExternal] 规则预填；保存目录由「自动」分类模式按文件名
          * 跟随（外部捕获命中的分类目录即其首次自动写入值）；自动模式提交时以不含分类的默认目录作 offeredSaveDir，交给 Rust 路由。
+         * 显式外部目录仅用于本次表单，不覆盖记忆的分类模式。
          */
         fun create(
             prefill: String,
@@ -420,11 +434,10 @@ internal class NewDownloadState(
                 initialTargetId = targetId,
                 categories = CustomCategoryDto.fromPreference(state.preferences[CustomCategoryDto.PREFERENCE_KEY]),
                 rememberedMode = rememberedMode,
+                externalSaveDir = external?.saveDir,
             ).also { form ->
                 external?.let(form::addExternal)
                 form.syncAuto()
-                val fixed = external?.saveDir ?: offered.takeIf { external?.autoStart == true && it.isNotEmpty() }
-                fixed?.let(form::setSaveDirManually)
             }
         }
     }

@@ -44,7 +44,9 @@ import com.fluxdown.app.nav.SheetRoute
 import com.fluxdown.app.service.DownloadServiceController
 import com.fluxdown.app.shell.FluxAppRoot
 import com.fluxdown.app.shell.LocalAppContainer
+import com.fluxdown.app.ui.ExternalLocalDirectory.SilentDestination
 import com.fluxdown.app.ui.defaultLocalSaveDir
+import com.fluxdown.app.ui.externalLocalDirectory
 import com.fluxdown.app.ui.isLocalDirWritable
 import com.fluxdown.core.capture.ExternalDownload
 import com.fluxdown.core.capture.ExternalIntake
@@ -52,6 +54,9 @@ import com.fluxdown.core.capture.SilentCapture
 import com.fluxdown.core.capture.TorrentFile
 import com.fluxdown.core.host.HostException
 import com.fluxdown.core.model.HostRef
+import com.fluxdown.core.protocol.CustomCategoryDto
+import com.fluxdown.core.protocol.HostSection
+import com.fluxdown.core.protocol.preferences
 import com.fluxdown.core.store.Connection
 import com.fluxdown.core.store.HostState
 import com.fluxdown.core.store.HostStore
@@ -105,8 +110,10 @@ internal suspend fun StateFlow<HostState>.awaitTorrentWrite(
     return null
 }
 
-private suspend fun awaitReady(store: HostStore): HostState =
-    withTimeoutOrNull(READY_TIMEOUT_MS) { store.state.awaitHostOutcome() } ?: store.state.value
+private suspend fun awaitReady(store: HostStore): HostState {
+    withTimeoutOrNull(READY_TIMEOUT_MS) { store.state.awaitHostOutcome() }
+    return store.state.value
+}
 
 /** Sheet 退场动画（`FluxMotion.snap` 弹簧）走完再结束任务，避免弹窗被直接截断。 */
 private const val SHEET_EXIT_MS = 250L
@@ -130,18 +137,16 @@ class ExternalDownloadActivity : ComponentActivity() {
 
     /** 按到达顺序串行处理（解析可能较重：长 Cookie / 请求头 JSON）。 */
     private val intents = Channel<Intent>(Channel.UNLIMITED)
+    private val confirmations = ExternalConfirmationQueue()
 
     private val torrents = ExternalTorrentQueue<PendingTorrent>(
         closeNow = ::finishAndRemoveTask,
         closeAfterToast = ::closeAfterTorrentToast,
         cancelClose = { closeJob?.cancel() },
-        hasOtherSheet = { navigator.sheet != null || confirmationClosing },
+        hasOtherSheet = { confirmations.hasOtherSheet(navigator.sheet != null) },
     )
     private var closeJob: Job? = null
-    private val pendingConfirmations = ArrayDeque<Confirmation>()
-    private var confirmationClosing = false
     private var unwritableDir by mutableStateOf<String?>(null)
-    private data class Confirmation(val request: ExternalDownload, val unwritableDir: String?)
 
     /** 免打扰建任务失败的原因：交给组合层 toast 后清空。 */
     private var silentFailure by mutableStateOf<HostException?>(null)
@@ -161,7 +166,7 @@ class ExternalDownloadActivity : ComponentActivity() {
                 val request = withContext(Dispatchers.Default) { parse(next) }
                 when {
                     request != null -> dispatch(container, request)
-                    !confirmationClosing && navigator.sheet == null -> torrents.closeIfIdle()
+                    else -> torrents.closeIfIdle()
                 }
             }
         }
@@ -175,7 +180,7 @@ class ExternalDownloadActivity : ComponentActivity() {
                     onFailureShown = { silentFailure = null },
                     onSubmitted = { keepLocalDownloadsAlive(container) },
                     onDismiss = {
-                        confirmationClosing = true
+                        confirmations.beginClosing()
                         navigator.closeSheet()
                     },
                     onClosed = ::advanceConfirmation,
@@ -210,51 +215,61 @@ class ExternalDownloadActivity : ComponentActivity() {
         super.onDestroy()
     }
 
-    /** 免打扰优先；否则打开弹窗，已打开时追加进当前表单。 */
+    /** 免打扰优先；否则打开表单，有独立目录的请求逐条确认。 */
     private suspend fun dispatch(container: AppContainer, request: ExternalDownload) {
         val state = awaitReady(container.store)
         val host = container.host.value
         val session = container.session
-        val plan = SilentCapture.plan(request, state)
+        val plan = SilentCapture.plan(request, state)?.request
         val local = host is HostRef.Local
-        val eligible = plan != null && !state.isReadOnly && torrents.pending.isEmpty() &&
-            (local || request.saveDir == null) &&
-            (request.saveDir != null || !state.needsPublicDownloadGuide(this, host))
-        val unwritable = eligible && plan != null && local &&
-            !withContext(Dispatchers.IO) { isLocalDirWritable(plan.request.saveDir) }
-        if (plan != null && eligible && !unwritable && torrents.pending.isEmpty() &&
-            container.session === session && container.host.value == host && !container.store.state.value.isReadOnly
+        val explicitDir = request.saveDir
+        var unwritableDir: String? = null
+        if (plan != null && !state.isReadOnly && torrents.pending.isEmpty() &&
+            (local || explicitDir == null) &&
+            (explicitDir != null || !state.needsPublicDownloadGuide(this, host))
         ) {
-            try {
-                session.createTask(plan.request)
-                keepLocalDownloadsAlive(container)
-                torrents.closeIfIdle()
-                return
-            } catch (e: HostException) {
-                Log.w(TAG, "silent download failed, falling back to the sheet: ${e.code} ${e.message}")
-                silentFailure = e
+            val silentRequest = when {
+                !local -> plan
+                explicitDir == null -> plan.takeIf { withContext(Dispatchers.IO) { isLocalDirWritable(it.saveDir) } }
+                else -> when (val destination = withContext(Dispatchers.IO) {
+                    externalLocalDirectory(this@ExternalDownloadActivity).forSilent(explicitDir, trustedDownloadRoots(state))
+                }) {
+                    SilentDestination.Confirm -> null
+                    SilentDestination.Unwritable -> {
+                        unwritableDir = explicitDir
+                        null
+                    }
+                    is SilentDestination.Ready -> if (destination.path == plan.saveDir) plan else plan.copy(saveDir = destination.path)
+                }
+            }
+            val latest = container.store.state.value
+            if (silentRequest != null && torrents.pending.isEmpty() &&
+                container.session === session && container.host.value == host && !latest.isReadOnly &&
+                (explicitDir == null || (state.config["default_save_dir"] == latest.config["default_save_dir"] &&
+                    state.sections[HostSection.agentPreferences] == latest.sections[HostSection.agentPreferences]))
+            ) {
+                try {
+                    session.createTask(silentRequest)
+                    keepLocalDownloadsAlive(container)
+                    torrents.closeIfIdle()
+                    return
+                } catch (e: HostException) {
+                    Log.w(TAG, "silent download failed, falling back to the sheet: ${e.code} ${e.message}")
+                    silentFailure = e
+                }
             }
         }
-        val current = navigator.sheet as? SheetRoute.NewDownload
-        val confirmation = Confirmation(request, request.saveDir?.takeIf { unwritable })
-        if (confirmationClosing || pendingConfirmations.isNotEmpty() ||
-            (current != null && (current.external?.saveDir != null || current.external?.autoStart == true ||
-                request.saveDir != null || request.autoStart == true))
-        ) {
-            pendingConfirmations.addLast(confirmation)
-        } else {
-            showConfirmation(confirmation)
-        }
+        val current = (navigator.sheet as? SheetRoute.NewDownload)?.external
+        confirmations.offer(current, ExternalConfirmation(request, unwritableDir))?.let(::showConfirmation)
     }
 
-    private fun showConfirmation(confirmation: Confirmation) {
+    private fun showConfirmation(confirmation: ExternalConfirmation) {
         unwritableDir = confirmation.unwritableDir
         navigator.openSheet(SheetRoute.NewDownload(external = confirmation.request))
     }
 
     private fun advanceConfirmation() {
-        confirmationClosing = false
-        val next = pendingConfirmations.removeFirstOrNull()
+        val next = confirmations.afterClosing()
         if (next != null) showConfirmation(next)
         else torrents.closeIfIdle()
     }
@@ -303,6 +318,45 @@ class ExternalDownloadActivity : ComponentActivity() {
 
 /** 待导入的种子；按引用区分（同一 URI 连续唤起两次也各处理一次）。 */
 private class PendingTorrent(val uri: Uri)
+
+private fun trustedDownloadRoots(state: HostState): Sequence<String> = sequence {
+    state.config["default_save_dir"]?.let { yield(it) }
+    val prefs = state.preferences
+    for (category in CustomCategoryDto.fromPreference(prefs[CustomCategoryDto.PREFERENCE_KEY])) {
+        if (!category.isAll && category.saveDir.isNotBlank()) yield(category.saveDir)
+    }
+    prefs.string(SilentCapture.LAST_SAVE_DIR_PREF, "").takeIf { it.isNotBlank() }?.let { yield(it) }
+}
+
+internal data class ExternalConfirmation(val request: ExternalDownload, val unwritableDir: String? = null)
+
+internal class ExternalConfirmationQueue {
+    private val pending = ArrayDeque<ExternalConfirmation>()
+    private var closing = false
+
+    fun hasOtherSheet(sheetOpen: Boolean): Boolean = sheetOpen || closing
+
+    fun offer(current: ExternalDownload?, incoming: ExternalConfirmation): ExternalConfirmation? {
+        val request = incoming.request
+        if (closing || pending.isNotEmpty() ||
+            (current != null && (current.saveDir != null || current.autoStart == true ||
+                request.saveDir != null || request.autoStart == true))
+        ) {
+            pending.addLast(incoming)
+            return null
+        }
+        return incoming
+    }
+
+    fun beginClosing() {
+        closing = true
+    }
+
+    fun afterClosing(): ExternalConfirmation? {
+        closing = false
+        return pending.removeFirstOrNull()
+    }
+}
 
 internal class ExternalTorrentQueue<T : Any>(
     private val closeNow: () -> Unit,
