@@ -1,4 +1,4 @@
-//! 定时关机 / 睡眠：跨 `downloads` / `app` 边界的最小共享契约。
+//! 定时关机 / 睡眠 / 退出：跨 `downloads` / `app` 边界的最小共享契约。
 //!
 //! 状态机与实际执行归 agent（`agent.power.*` / `PowerChanged`），app 侧 `power` 只做
 //! 投影与请求转发；本文件只定义状态栏渲染与请求发起所需的类型，避免 `downloads` 依赖 `app`。
@@ -9,7 +9,7 @@ use fluxdown_protocol::{PowerAction, PowerLowSpeedCondition};
 use serde::Deserialize as _;
 use serde_json::Value;
 
-/// 本机偏好：状态栏上次选中的电源操作。
+/// 本机偏好：状态栏上次选中的电源操作（设备本地，不进云同步）。
 pub(crate) const POWER_ACTION_PREF: &str = "download.power_action";
 pub(crate) const POWER_LOW_SPEED_KBPS_PREF: &str = "download.power_low_speed_kbps";
 pub(crate) const POWER_LOW_SPEED_MINUTES_PREF: &str = "download.power_low_speed_minutes";
@@ -26,6 +26,7 @@ pub(crate) fn power_action_pref_value(action: PowerAction) -> Value {
     let name = match action {
         PowerAction::Shutdown => "shutdown",
         PowerAction::Sleep => "sleep",
+        PowerAction::Quit => "quit",
     };
     Value::String(name.to_owned())
 }
@@ -72,7 +73,7 @@ mod tests {
 
     #[test]
     fn power_action_pref_round_trips_and_falls_back_to_shutdown() {
-        for action in [PowerAction::Shutdown, PowerAction::Sleep] {
+        for action in [PowerAction::Shutdown, PowerAction::Sleep, PowerAction::Quit] {
             let value = power_action_pref_value(action);
             assert_eq!(read_power_action(Some(&value)), action);
             assert_eq!(serde_json::to_value(action).ok(), Some(value));

@@ -188,6 +188,12 @@ object SettingsCatalog {
         daemon("proxy_port", text, ""),
         daemon("proxy_username", text, ""),
         daemon("proxy_password", text, ""),
+        daemon("proxy_protocol_http", text, ""),
+        daemon("proxy_protocol_ftp", text, ""),
+        daemon("proxy_protocol_hls", text, ""),
+        daemon("proxy_protocol_dash", text, ""),
+        daemon("proxy_protocol_bt", text, ""),
+        daemon("proxy_protocol_ed2k", text, ""),
         daemon("proxy_no_list", text, ""),
         daemon("proxy_rules", text, ""),
         // Webhook / 组件 / 日志
@@ -224,6 +230,8 @@ object SettingsCatalog {
         pref("download.silent_auto_category", bool, "true"),
         pref("download.silent_skip_selection", bool, "false"),
         pref("download.keep_awake", bool, "false"),
+        // 主机诊断（本机，不同步）
+        pref("diagnostics.log_level", choice(listOf("auto", "debug", "info", "warn", "error")), "auto"),
     )
 
     private val index: Map<String, SettingField> = (daemonFields + preferenceFields).associateBy { it.key }

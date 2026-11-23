@@ -36,10 +36,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fluxdown.app.R
 import com.fluxdown.app.i18n.fill
 import com.fluxdown.app.i18n.str
+import com.fluxdown.app.shell.LocalAppearance
 import com.fluxdown.app.shell.LocalAppContainer
 import com.fluxdown.app.shell.hostState
 import com.fluxdown.core.model.HostRef
 import com.fluxdown.core.protocol.SettingsCatalog
+import com.fluxdown.core.format.FileSizeUnits
 import com.fluxdown.core.protocol.SettingsForm
 import com.fluxdown.core.protocol.preferences
 import com.fluxdown.fluxui.chrome.FluxPill
@@ -256,6 +258,7 @@ internal fun GlassSectionScope.settingNumber(
     range: LongRange,
     default: Long,
     @StringRes unit: Int? = null,
+    unitLabel: String? = null,
     id: String = key,
 ) {
     if (!ctx.form.has(key)) return
@@ -267,7 +270,7 @@ internal fun GlassSectionScope.settingNumber(
                     value = ctx.form.long(key, default),
                     onValueChange = { ctx.editor.set(key, it.toString()) },
                     range = range,
-                    hint = unit?.let { str(it) },
+                    hint = unitLabel ?: unit?.let { str(it) },
                     enabled = !ctx.readOnly,
                     adjustedHint = { template.fill("n" to it) },
                 )
@@ -312,11 +315,14 @@ internal fun GlassSectionScope.settingText(
     mono: Boolean = true,
     secret: Boolean = false,
     multiline: Boolean = false,
+    detail: String? = null,
 ) {
     if (!ctx.form.has(key)) return
     row {
         SettingRowBox(ctx, id, key) {
-            FluxFieldRow(title = str(title), subtitle = desc?.let { str(it) }, cloud = ctx.synced(key)) {
+            val hint = desc?.let { str(it) }
+            val subtitle = if (hint != null && detail != null) "$hint · $detail" else hint ?: detail
+            FluxFieldRow(title = str(title), subtitle = subtitle, cloud = ctx.synced(key)) {
                 CommitTextField(
                     value = ctx.form.string(key),
                     onCommit = { ctx.editor.set(key, it) },
@@ -390,10 +396,12 @@ internal fun CommitTextField(
     }
 }
 
-internal enum class SpeedUnit(val label: String, val factor: Long) {
-    KB("KB/s", 1024L),
-    MB("MB/s", 1024L * 1024L),
-    GB("GB/s", 1024L * 1024L * 1024L),
+internal enum class SpeedUnit(private val power: Int, val factor: Long) {
+    KB(1, 1024L),
+    MB(2, 1024L * 1024L),
+    GB(3, 1024L * 1024L * 1024L);
+
+    fun label(units: FileSizeUnits): String = units.rateLabel(power)
 }
 
 /** 快捷档位：0 = 不限制，其余 (数值, 单位)。 */
@@ -437,6 +445,7 @@ internal fun SpeedLimitControl(
     name: String,
     openPicker: (PickerSpec) -> Unit,
 ) {
+    val units = LocalAppearance.current.fileSizeUnits
     var preferred by rememberSaveable(name) { mutableStateOf(SpeedUnit.MB) }
     val unit = effectiveUnit(bytes, preferred)
     var draft by remember(bytes, unit) { mutableStateOf(speedText(bytes, unit)) }
@@ -477,12 +486,12 @@ internal fun SpeedLimitControl(
             onFocusChange = { focused -> if (!focused) commit(draft, unit) },
         )
         FluxSelect(
-            value = unit.label,
+            value = unit.label(units),
             onClick = {
                 openPicker(
                     PickerSpec(
                         title = unitTitle,
-                        options = SpeedUnit.entries.map { SelectOption(it.name, it.label) },
+                        options = SpeedUnit.entries.map { SelectOption(it.name, it.label(units)) },
                         selected = unit.name,
                         onSelect = { id ->
                             val picked = SpeedUnit.valueOf(id)
@@ -494,7 +503,7 @@ internal fun SpeedLimitControl(
                 )
             },
             modifier = Modifier.width(120.dp),
-            placeholder = unit.label,
+            placeholder = unit.label(units),
             enabled = enabled,
         )
     }
@@ -505,7 +514,7 @@ internal fun SpeedLimitControl(
         for ((n, u) in SpeedPresets) {
             val value = n * u.factor
             FluxPill(
-                text = if (n == 0) unlimited else "$n ${u.label}",
+                text = if (n == 0) unlimited else "$n ${u.label(units)}",
                 selected = bytes == value,
                 onClick = {
                     if (enabled) {

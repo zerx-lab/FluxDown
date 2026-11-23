@@ -104,6 +104,16 @@ struct PreferencesProtocolTests {
         ])
     }
 
+    @Test func logLevelWritesOnlyLocalPreferences() throws {
+        let key = "diagnostics.log_level"
+        for level in ["auto", "debug", "info", "warn", "error"] {
+            let plan = try SettingsWritePlan.make([key: level]).get()
+            #expect(plan.localPreferences == [key: .string(level)])
+            #expect(plan.daemon.isEmpty && plan.syncedPreferences.isEmpty)
+        }
+        #expect(rejected(key, "trace"))
+    }
+
     @Test func mixedEditsSplitAcrossChannels() throws {
         // 「开启多 CDN 并关闭代理」：cdn_multi_enabled 同步，proxy_mode 仅 daemon。
         let plan = try SettingsWritePlan.make(["cdn_multi_enabled": "true", "proxy_mode": "none"]).get()

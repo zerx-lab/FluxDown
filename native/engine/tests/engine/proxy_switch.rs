@@ -435,6 +435,40 @@ fn assert_resumed_from_offsets(proxy: &FakeProxy) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn protocol_proxy_routes_start_and_resume_without_using_the_global_proxy() {
+    let global = FakeProxy::start().await;
+    let first = FakeProxy::start().await;
+    let second = FakeProxy::start().await;
+    let mut h = Harness::new("protocol", global.config()).await;
+    let config = |proxy: &FakeProxy| {
+        std::collections::HashMap::from([(
+            "proxy_protocol_http".to_owned(),
+            format!("http://127.0.0.1:{}", proxy.port),
+        )])
+    };
+    h.engine.manager.set_protocol_proxies(&config(&first));
+    let task_id = h.create("protocol.bin", String::new()).await;
+    h.wait_segment_progress(&task_id).await;
+    assert!(
+        first.origin_requests() > 0,
+        "protocol proxy handled the first connection"
+    );
+    assert_eq!(global.origin_requests(), 0);
+
+    h.engine.manager.pause_task(&task_id).await;
+    h.pump_done(&task_id).await;
+    h.engine.manager.set_protocol_proxies(&config(&second));
+    h.engine.manager.resume_task(&task_id).await;
+    wait_until("protocol proxy handled the resumed connection", || {
+        second.origin_requests() > 0
+    })
+    .await;
+    assert_resumed_from_offsets(&second);
+    assert_eq!(global.origin_requests(), 0);
+    h.finish(&[&task_id]).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn running_task_following_global_proxy_reconnects_through_new_proxy() {
     let old = FakeProxy::start().await;
     let new = FakeProxy::start().await;

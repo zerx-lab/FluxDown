@@ -185,6 +185,7 @@ export const home = defineMessages({
     app: {
       search: "Search tasks...",
       view: "View",
+      newTask: "New Task",
       newDownload: "New Download",
       status: "STATUS",
       queues: "QUEUES",
@@ -400,6 +401,7 @@ export const home = defineMessages({
     app: {
       search: "搜索任务...",
       view: "视图",
+      newTask: "新建任务",
       newDownload: "新建下载",
       status: "状态",
       queues: "队列",

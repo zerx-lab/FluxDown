@@ -4,6 +4,7 @@
 import catppuccinText from '@icon-packs/catppuccin.json?raw'
 import lucideText from '@icon-packs/lucide.json?raw'
 import materialText from '@icon-packs/material.json?raw'
+import thunderText from '@icon-packs/thunder.json?raw'
 import { defaultIcon, isPackRef, matchedIcon, parseIconPack } from './pack'
 import type { FileKind, IconPack, PackIcon } from './pack'
 
@@ -15,9 +16,9 @@ export const FALLBACK_PACK = 'builtin:lucide'
 const MAX_CHAIN = 8
 
 /** 设置页展示顺序（同 `BUILTIN_PACK_IDS`）。 */
-export const BUILTIN_PACK_IDS = [SYSTEM_PACK_ID, 'lucide', 'material', 'catppuccin'] as const
+export const BUILTIN_PACK_IDS = [SYSTEM_PACK_ID, 'lucide', 'material', 'catppuccin', 'thunder'] as const
 
-const BUILTIN_SOURCES: Record<string, string> = { lucide: lucideText, material: materialText, catppuccin: catppuccinText }
+const BUILTIN_SOURCES: Record<string, string> = { lucide: lucideText, material: materialText, catppuccin: catppuccinText, thunder: thunderText }
 
 const BUILTINS = new Map<string, IconPack>()
 for (const [id, text] of Object.entries(BUILTIN_SOURCES)) {

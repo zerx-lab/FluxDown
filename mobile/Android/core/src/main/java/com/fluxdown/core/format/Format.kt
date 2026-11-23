@@ -9,29 +9,61 @@ data class Measure(val value: String, val unit: String) {
     override fun toString(): String = "$value $unit"
 }
 
+enum class FileSizeUnits(
+    val wire: String,
+    private val labels: Array<String>,
+) {
+    Legacy("legacy", arrayOf("B", "KB", "MB", "GB", "TB")),
+    Iec("iec", arrayOf("B", "KiB", "MiB", "GiB", "TiB"));
+
+    private val rateLabels = Array(labels.size) { "${labels[it]}/s" }
+    internal val maxPower: Int get() = labels.lastIndex
+
+    fun byteLabel(power: Int): String = labels[power]
+    fun rateLabel(power: Int): String = rateLabels[power]
+
+    companion object {
+        fun of(value: String?): FileSizeUnits = entries.firstOrNull { it.wire == value } ?: Legacy
+    }
+}
+
 object Format {
-    private val UNITS = arrayOf("B", "KB", "MB", "GB", "TB")
+    @Volatile
+    var fileSizeUnits: FileSizeUnits = FileSizeUnits.Legacy
+        private set
+
+    fun setFileSizeUnits(units: FileSizeUnits) {
+        fileSizeUnits = units
+    }
 
     /** 1024 进制；≥100 不保留小数、≥10 保留 1 位、否则 2 位；B 不带小数；≤0 → "0 B"。 */
-    fun bytes(n: Long): Measure {
+    fun bytes(n: Long): Measure = bytes(n, fileSizeUnits)
+
+    fun bytes(n: Long, style: FileSizeUnits): Measure = measure(n, style, rate = false)
+
+    private fun measure(n: Long, style: FileSizeUnits, rate: Boolean): Measure {
         if (n <= 0) return Measure("0", "B")
         var v = n.toDouble()
         var i = 0
-        while (v >= 1024 && i < UNITS.lastIndex) {
+        while (v >= 1024 && i < style.maxPower) {
             v /= 1024
             i++
         }
-        if (i == 0) return Measure(n.toString(), "B")
+        val label = if (rate) style.rateLabel(i) else style.byteLabel(i)
+        if (i == 0) return Measure(n.toString(), label)
         val digits = when {
             v >= 100 -> 0
             v >= 10 -> 1
             else -> 2
         }
-        return Measure(String.format(Locale.ROOT, "%.${digits}f", v), UNITS[i])
+        return Measure(String.format(Locale.ROOT, "%.${digits}f", v), label)
     }
 
     /** 速度 >0 → "{bytes}/s"；否则 null（UI 显示「—」）。 */
-    fun speed(bps: Long): Measure? = if (bps > 0) bytes(bps).let { Measure(it.value, it.unit + "/s") } else null
+    fun speed(bps: Long): Measure? = speed(bps, fileSizeUnits)
+
+    fun speed(bps: Long, style: FileSizeUnits): Measure? =
+        if (bps > 0) measure(bps, style, rate = true) else null
 
     /** 速度仪表：空闲显示 0 B/s。 */
     fun speedOrZero(bps: Long): Measure = speed(bps) ?: Measure("0", "B/s")

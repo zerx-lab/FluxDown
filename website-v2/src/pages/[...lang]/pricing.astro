@@ -22,7 +22,6 @@ const serif = (s: string) => s.replace(/<em>(.*?)<\/em>/g, '<span class="serif">
       {t.hero.why}
       <ArrowRight size={15} aria-hidden="true" />
     </a>
-    <a class="btn btn-ghost" href={href("/pricing/vote", lang)}>{t.hero.vote}</a>
   </PageHeader>
 
   <section class="frame" aria-labelledby="plans-heading">
@@ -71,24 +70,6 @@ const serif = (s: string) => s.replace(/<em>(.*?)<\/em>/g, '<span class="serif">
         {t.notes.refund}
         <a class="link" href={`${href("/terms", lang)}#refunds`}>{t.notes.refundLink}</a>
       </p>
-    </div>
-    <div class="rule"></div>
-  </section>
-
-  <section class="frame" aria-labelledby="vote-cta-heading">
-    <div class="section-tight flex flex-col items-start justify-between gap-6 md:flex-row md:items-center">
-      <div class="flex max-w-[60ch] flex-col gap-3">
-        <span class="eyebrow">{t.voteCta.eyebrow}</span>
-        <h2 id="vote-cta-heading" class="h3">{t.voteCta.title}</h2>
-        <p class="text-sm leading-relaxed text-muted">{t.voteCta.desc}</p>
-      </div>
-      <div class="flex flex-wrap gap-3">
-        <a class="btn btn-primary" href={href("/pricing/vote", lang)}>
-          {t.voteCta.link}
-          <ArrowRight size={15} aria-hidden="true" />
-        </a>
-        <a class="btn btn-ticks" href={href("/pricing/why", lang)}>{t.voteCta.why}</a>
-      </div>
     </div>
     <div class="rule"></div>
   </section>

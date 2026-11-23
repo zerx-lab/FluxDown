@@ -457,8 +457,8 @@ export interface ShellStatusDto {
   globalShortcuts?: GlobalShortcutsStatusDto;
 }
 
-/** 定时电源操作：关机或睡眠。 */
-export type PowerAction = 'shutdown' | 'sleep';
+/** 定时完成动作：关机、睡眠或退出桌面应用。 */
+export type PowerAction = 'shutdown' | 'sleep' | 'quit';
 
 /** One-shot low-speed condition: 1..=1 GiB/s, continuously for 60..=86400 seconds. */
 export interface PowerLowSpeedCondition {
@@ -466,11 +466,11 @@ export interface PowerLowSpeedCondition {
   durationSecs: number;
 }
 
-/** 定时关机 / 睡眠状态。 */
+/** 定时电源动作状态。 */
 export interface PowerStatusDto {
   /** 已排定的延迟（秒）；null = 未启用。 */
   armedDelaySecs: number | null;
-  /** 全部任务结束（或排定时本就没有任务）、开始倒计时后的剩余秒数；等待任务完成阶段为 null。 */
+  /** 倒计时剩余秒数；等待触发条件（含 daemon 断连）或未启用时为 null。 */
   countdownRemainingSecs: number | null;
   /** 已排定的操作；未启用时为默认值（旧 agent 缺省 = shutdown）。 */
   action?: PowerAction;
@@ -579,8 +579,8 @@ export interface CaptureCreateGroupParams {
 }
 
 /**
- * `agent.capture.submitTorrentFile` 参数。`silent=true` 全选文件直接建任务；`silent=false`
- * 由 daemon 发 BT 文件选择请求。其余字段缺省时维持 daemon 默认目录 / 队列 / 立即开始。
+ * `agent.capture.submitTorrentFile` 参数。`silent=true` 且「免打扰下载」与「跳过二次选择」
+ * 偏好均开启时全选文件直接建任务；否则由 daemon 发 BT 文件选择请求。其余字段缺省时维持 daemon 默认目录 / 队列 / 立即开始。
  */
 export interface CaptureSubmitTorrentFileParams {
   path: string;

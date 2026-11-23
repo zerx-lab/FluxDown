@@ -74,7 +74,7 @@ pub(super) fn open(
                             Input::new(&content_kbps)
                                 .control(cx)
                                 .suffix(field_hint(
-                                    content_t.text("statusSpeedLimitKbs").to_owned(),
+                                    fluxdown_ui_components::size_units::rate_labels()[1],
                                     cx,
                                 ))
                                 .w_full(),

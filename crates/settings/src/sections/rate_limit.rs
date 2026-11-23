@@ -42,11 +42,12 @@ impl RateUnit {
         }
     }
 
-    const fn label(self) -> &'static str {
+    fn label(self) -> &'static str {
+        let [_, kb, mb, gb, ..] = *fluxdown_ui_components::size_units::rate_labels();
         match self {
-            Self::Kb => "KB/s",
-            Self::Mb => "MB/s",
-            Self::Gb => "GB/s",
+            Self::Kb => kb,
+            Self::Mb => mb,
+            Self::Gb => gb,
         }
     }
 
@@ -111,7 +112,7 @@ fn switch_target(bytes: i64, from: RateUnit, to: RateUnit) -> i64 {
 /// `key`：字节/秒 daemon 键；`unit_key`：会话内记住所选单位的 transient 键。
 pub(crate) fn control(ctx: &SectionContext, key: &'static str, unit_key: &'static str) -> Control {
     let store = ctx.store();
-    let options: Vec<(SharedString, SharedString)> = RateUnit::ALL
+    let options: Vec<_> = RateUnit::ALL
         .into_iter()
         .map(|unit| {
             (

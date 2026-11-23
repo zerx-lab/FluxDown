@@ -117,9 +117,18 @@ impl SectionContext<'_> {
     }
 
     pub(crate) fn daemon_input(&self, key: &'static str) -> Control {
+        self.daemon_text_input(key, false)
+    }
+
+    pub(crate) fn daemon_secret_input(&self, key: &'static str) -> Control {
+        self.daemon_text_input(key, true)
+    }
+
+    fn daemon_text_input(&self, key: &'static str, secret: bool) -> Control {
         let get = self.store();
         let set = self.store();
-        Control::input(
+        Control::text_input(
+            secret,
             move |cx: &App| SharedString::from(get.read(cx).daemon_str(key)),
             move |value: SharedString, cx: &mut App| {
                 set.update(cx, |store, cx| store.set_daemon(key, value.to_string(), cx));

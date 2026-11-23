@@ -130,13 +130,42 @@ impl InstanceLock {
     }
 }
 
-/// 锁与队列文件所在目录：与 agent 数据目录同级。
+/// 锁与队列文件所在目录：与 agent 数据目录同级。该目录不可访问时（例如 Windows 上目录 ACL 只授权
+/// 给重装系统前的旧账户 SID）改用 `local_service::local_fallback_dir` 的确定性回退目录：各桌面
+/// 实例推导出同一位置，单实例与激活转发照常工作，界面得以启动并展示 agent 报告的数据目录错误，
+/// 而不是静默退出。没有回退目录的平台仍用原目录（错误照常上报）。
 #[must_use]
 pub fn instance_dir(agent_token_path: &Path) -> PathBuf {
-    agent_token_path
+    let primary = agent_token_path
         .parent()
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| std::env::temp_dir().join("fluxdown"))
+        .unwrap_or_else(|| std::env::temp_dir().join("fluxdown"));
+    if let Err(error) = probe_instance_dir(&primary) {
+        if let Some(fallback) = fluxdown_protocol::local_service::local_fallback_dir(&primary) {
+            log::warn!(
+                "desktop instance directory {} is not usable ({error}); using {}",
+                primary.display(),
+                fallback.display()
+            );
+            return fallback;
+        }
+        log::warn!(
+            "desktop instance directory {} is not usable: {error}",
+            primary.display()
+        );
+    }
+    primary
+}
+
+/// 目录可建、锁文件可打开（不加锁）即可用。
+fn probe_instance_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(dir.join("desktop.lock"))
+        .map(drop)
 }
 
 #[cfg(test)]

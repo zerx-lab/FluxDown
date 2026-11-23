@@ -39,6 +39,7 @@ fn dash_runtime(task_id: &str, state: &ProgressState) -> TaskRuntime {
             })
             .collect(),
         source_bytes: None,
+        hls_fragments: None,
     }
 }
 
@@ -379,8 +380,9 @@ async fn run_ffmpeg_mux_step(
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
 
+    let started = std::time::Instant::now();
     let output_fut = cmd.output();
-    tokio::select! {
+    let result = tokio::select! {
         _ = cancel_token.cancelled() => {
             if let Err(error) = tokio::fs::remove_file(output).await
                 && error.kind() != std::io::ErrorKind::NotFound
@@ -402,7 +404,19 @@ async fn run_ffmpeg_mux_step(
                 }
             }
         }
-    }
+    };
+    tracing::info!(
+        separate_audio = audio.is_some(),
+        outcome = match &result {
+            Ok(output) if output.status.success() => "completed",
+            Ok(_) => "nonzero_exit",
+            Err(DownloadError::Cancelled) => "cancelled",
+            Err(_) => "process_error",
+        },
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "Media mux process finished"
+    );
+    result
 }
 
 /// ffmpeg 流复制（`-c copy`）封装 mp4，写到 `output`；独立音轨因编码不被 mp4 容器
@@ -465,11 +479,7 @@ pub(crate) async fn ffmpeg_copy_to_mp4(
             crate::logger::report_warning("dash-download", "remove_temporary_file", &error);
         }
 
-        log_info!(
-            "[dash] ffmpeg copy-muxing failed ({}); attempting AAC audio transcoding fallback for {}",
-            first_stderr.chars().take(200).collect::<String>(),
-            output.display()
-        );
+        tracing::debug!("Media copy mux codec incompatible; retrying with AAC");
 
         let aac_fallback_args = ["-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-f", "mp4"];
 
@@ -484,10 +494,7 @@ pub(crate) async fn ffmpeg_copy_to_mp4(
         .await?;
 
         if retry_result.status.success() {
-            log_info!(
-                "[dash] ffmpeg AAC transcoding fallback succeeded for {}",
-                output.display()
-            );
+            tracing::debug!("Media AAC mux fallback succeeded");
             return Ok(());
         }
 
@@ -577,7 +584,7 @@ async fn mux_audio_video(
 }
 
 async fn run_dash_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
-    log_info!("[dash-download] task {} starting, url={}", p.task_id, p.url);
+    tracing::info!(task_id = %p.task_id, resume = p.is_resume, "DASH task starting");
 
     p.db.update_task_status(&p.task_id, 5, "").await?;
     if p.progress_tx
@@ -619,7 +626,20 @@ async fn run_dash_download_inner(p: &DownloadParams) -> Result<i64, DownloadErro
     // 相对 BaseURL/SegmentTemplate 必须以清单的最终 URL(重定向后)为基准解析。
     let task_ctx = crate::intercept::ctx::task_ctx(p, crate::intercept::ProtocolKind::Dash);
     let notes = crate::intercept::ActivityNotes::of(p);
-    let (mpd, mpd_base_url, mpd_raw) = fetch_and_parse_mpd(p, &spec).await?;
+    let started = std::time::Instant::now();
+    let manifest = fetch_and_parse_mpd(p, &spec).await;
+    tracing::info!(
+        task_id = %p.task_id,
+        outcome = match &manifest {
+            Ok(_) => "parsed",
+            Err(DownloadError::Cancelled) => "cancelled",
+            Err(_) => "failed",
+        },
+        periods = manifest.as_ref().map_or(0, |(mpd, _, _)| mpd.periods.len()),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "DASH manifest lookup finished"
+    );
+    let (mpd, mpd_base_url, mpd_raw) = manifest?;
     // 直播清单只有当前时间窗的段,按 VOD 下载会静默产出几十秒的快照。
     if mpd
         .mpdtype
@@ -914,20 +934,13 @@ async fn run_dash_download_inner(p: &DownloadParams) -> Result<i64, DownloadErro
             Err(DownloadError::Cancelled) => {
                 return Err(DownloadError::Cancelled);
             }
-            Err(e) => {
+            Err(_) => {
                 // mux 失败（ffmpeg 未安装或失败）：音频保留为独立文件。
                 // 警告用户：需要 ffmpeg 才能合并，音频为独立文件。
-                log_info!(
-                    "[dash] task {} warning: muxing failed ({}). \
-                     需要 ffmpeg 才能合并音视频；音频已保存为独立文件: {}。\
-                     视频文件: {}",
-                    p.task_id,
-                    e,
-                    audio_path.display(),
-                    dest_path.display(),
-                );
+                tracing::warn!(task_id = %p.task_id, "DASH mux failed; keeping separate audio and video");
                 // Don't fail the download — both files are valid, just not merged
                 mux_succeeded = false;
+                record_audio_output(p, &audio_path).await?;
             }
         }
     }
@@ -1041,14 +1054,16 @@ async fn download_track_best_effort(
             // 与 HTTP 路径相同的三类"多段不可行"错误 → 清理多段残留（段行 +
             // 预分配临时文件）后回退单流；其余错误（取消/IO/磁盘满等）原样上抛
             // ——取消时段行与临时文件由 coordinated 路径【保留】以支持真续传。
-            Err(DownloadError::RangeNotSupported(status))
-            | Err(DownloadError::VersionChanged(status))
-            | Err(DownloadError::RangeMisaligned(status)) => {
+            Err(
+                error @ (DownloadError::RangeNotSupported(_)
+                | DownloadError::VersionChanged(_)
+                | DownloadError::RangeMisaligned(_)),
+            ) => {
                 log_info!(
                     "[dash-download] task {} track multi-segment aborted ({}) — \
                      falling back to single-stream",
                     p.task_id,
-                    status
+                    error
                 );
                 p.db.delete_segments(&p.task_id).await?;
                 let temp = PathBuf::from(format!("{}{}", dest_path.display(), TEMP_EXT));
@@ -1215,7 +1230,7 @@ async fn download_track_coordinated(
 ///   `create_new` 占名不覆盖同名旧文件；原名被占时 dedup 换名并把新文件名写回 DB
 ///   （完成信号随后上报）。覆盖授权（`p.overwrite`）或 `is_resume`（原名上的
 ///   文件是本任务续传遗留）时对原名删除旧文件后重试一次。
-/// - 音频轨是内部 sidecar（`build_audio_path`），归属本任务：替换遗留同名文件。
+/// - 音频轨使用视频的伴生名；全新下载排他占名，续传可替换本任务遗留文件。
 async fn finalize_track_rename(
     p: &DownloadParams,
     temp: &Path,
@@ -1230,12 +1245,14 @@ async fn finalize_track_rename(
             e
         ))
     };
-    if role == DashTrack::Audio {
+    if role == DashTrack::Audio && p.is_resume {
         match tokio::fs::remove_file(dest).await {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(rename_failed(e)),
         }
+    }
+    if role == DashTrack::Audio {
         crate::downloader::claim_rename(temp, dest)
             .await
             .map_err(rename_failed)?;
@@ -1254,7 +1271,7 @@ async fn finalize_track_rename(
             .await
             .map(|names| names.into_iter().map(|n| n.to_lowercase()).collect())
             .unwrap_or_default();
-    let chosen = crate::downloader::claim_final_name(
+    let chosen = crate::downloader::claim_output_name(
         temp,
         save_dir,
         name,
@@ -1264,6 +1281,7 @@ async fn finalize_track_rename(
             p.overwrite.clone()
         },
         &avoid,
+        !p.is_resume,
     )
     .await?;
     if chosen == name {
@@ -1295,12 +1313,7 @@ async fn run_track_pair_inner(
     spec: &std::sync::Arc<DownloadSpec>,
     audio_url: &str,
 ) -> Result<i64, DownloadError> {
-    log_info!(
-        "[dash-download] task {} track-pair mode: video={} audio={}",
-        p.task_id,
-        p.url,
-        audio_url
-    );
+    tracing::info!(task_id = %p.task_id, "DASH using direct audio/video tracks");
 
     // 持久化音频轨标记：插件惰性 resolve 产生的轨对在 create_task 时 audio_url
     // 为空，DB 无记录 → 删除路径的 sidecar 门控（load_audio_url().is_some()）
@@ -1360,9 +1373,17 @@ async fn run_track_pair_inner(
     // 失败 → None = 未知，UI 退化为只显示已下载字节，不阻塞下载）。
     // 探测成功本身就是服务器履行 Range 请求（206 + Content-Range）的硬证据，
     // 下方据此决定该轨能否走多段并发；失败（配额型端点等）自动保持单流。
+    let started = std::time::Instant::now();
     let video_probe = probe_track(p, spec, &p.url).await?;
     let audio_probe = probe_track(p, spec, audio_url).await?;
     let (video_len, audio_len) = (video_probe.len, audio_probe.len);
+    tracing::info!(
+        task_id = %p.task_id,
+        video_length_known = video_len.is_some(),
+        audio_length_known = audio_len.is_some(),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "DASH direct-track probes finished"
+    );
     let total_bytes = match (video_len, audio_len) {
         (Some(v), Some(a)) => v + a,
         _ => 0,
@@ -1404,15 +1425,15 @@ async fn run_track_pair_inner(
     // 视频轨）。探测失败（video_len 未知）绝不跳过——无法与 mux 产物/旧画质
     // 残留区分，宁可重下不可错拼。
     let video_temp = PathBuf::from(format!("{}{}", dest_path.display(), TEMP_EXT));
-    let video_done = match video_len {
-        Some(v) => {
+    let video_done = match (p.is_resume, video_len) {
+        (true, Some(v)) => {
             !tokio::fs::try_exists(&video_temp).await.unwrap_or(false)
                 && tokio::fs::metadata(&dest_path)
                     .await
                     .map(|m| m.len() as i64 == v)
                     .unwrap_or(false)
         }
-        None => false,
+        _ => false,
     };
 
     let (video_bytes, dest_path) = if video_done {
@@ -1478,15 +1499,15 @@ async fn run_track_pair_inner(
     // 音频轨 FS 真值跳过（与视频轨对称）：mux 阶段取消的任务 resume 时，
     // 音频轨已 rename 就位（段行已清），缺此判定会整轨重下（C4/D3）。
     let audio_temp = PathBuf::from(format!("{}{}", audio_path.display(), TEMP_EXT));
-    let audio_done = match audio_len {
-        Some(a) => {
+    let audio_done = match (p.is_resume, audio_len) {
+        (true, Some(a)) => {
             !tokio::fs::try_exists(&audio_temp).await.unwrap_or(false)
                 && tokio::fs::metadata(&audio_path)
                     .await
                     .map(|m| m.len() as i64 == a)
                     .unwrap_or(false)
         }
-        None => false,
+        _ => false,
     };
     let audio_bytes = if audio_done {
         let a = audio_len.unwrap_or(0);
@@ -1592,16 +1613,10 @@ async fn run_track_pair_inner(
                 }
             }
             Err(DownloadError::Cancelled) => return Err(DownloadError::Cancelled),
-            Err(e) => {
-                log_info!(
-                    "[dash] task {} warning: track-pair muxing failed ({}). \
-                     需要 ffmpeg 才能合并音视频；音频已保存为独立文件: {}。视频文件: {}",
-                    p.task_id,
-                    e,
-                    audio_path.display(),
-                    dest_path.display(),
-                );
+            Err(_) => {
+                tracing::warn!(task_id = %p.task_id, "DASH direct-track mux failed; keeping separate audio and video");
                 mux_succeeded = false;
+                record_audio_output(p, &audio_path).await?;
             }
         }
     }
@@ -1668,6 +1683,20 @@ pub(crate) fn build_audio_path(video_path: &Path) -> PathBuf {
         Some(parent) => parent.join(file_name),
         None => PathBuf::from(file_name),
     }
+}
+
+pub(crate) async fn record_audio_output(
+    p: &DownloadParams,
+    audio: &Path,
+) -> Result<(), DownloadError> {
+    let name = audio
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            DownloadError::Other(format!("invalid audio output: {}", audio.display()))
+        })?;
+    p.db.add_task_artifact(&p.task_id, name).await?;
+    Ok(())
 }
 
 /// `selectPeriod` 阶段：多 Period 且有插件声明时让插件选择要下载的 Period，
@@ -2739,6 +2768,7 @@ async fn download_track(
     // 避免泄漏。带检查点的轨道保留它:检查点只记录已完整落盘的段,续传时
     // 会截断到该偏移,丢弃半截数据。
     let temp_path = PathBuf::from(format!("{}{}", dest_path.display(), TEMP_EXT));
+    let started = std::time::Instant::now();
     let result = download_track_inner(
         p,
         spec,
@@ -2759,6 +2789,22 @@ async fn download_track(
     {
         crate::logger::report_warning("dash-download", "remove_temporary_file", &error);
     }
+    tracing::info!(
+        task_id = %p.task_id,
+        track = match role {
+            DashTrack::Video => "video",
+            DashTrack::Audio => "audio",
+        },
+        outcome = match &result {
+            Ok(_) => "completed",
+            Err(DownloadError::Cancelled) => "cancelled",
+            Err(_) => "failed",
+        },
+        media_segments = media_segs.len(),
+        track_bytes = result.as_ref().ok().map(|(bytes, _)| *bytes),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "DASH track transfer finished"
+    );
     result
 }
 
@@ -3003,7 +3049,7 @@ async fn download_segment_with_retry(
                         seg_idx, MAX_RETRIES, e
                     )));
                 }
-                log_info!(
+                tracing::debug!(
                     "[dash-download] task {} segment {} attempt {}/{} failed: {}",
                     ctx.task_id,
                     seg_idx,

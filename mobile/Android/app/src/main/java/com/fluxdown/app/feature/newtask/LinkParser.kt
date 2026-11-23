@@ -4,7 +4,7 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import com.fluxdown.core.model.TaskProtocol
 import java.net.URI
-import java.net.URLDecoder
+import java.nio.charset.CharacterCodingException
 
 /**
  * 「新建下载」的纯模型：链接解析与预设。规则与桌面端 `crates/downloads/src/model/new_download.rs`
@@ -107,7 +107,62 @@ internal fun protocolOf(url: String): TaskProtocol = when {
     else -> TaskProtocol.Http
 }
 
-private fun decode(s: String): String = runCatching { URLDecoder.decode(s.replace("+", "%2B"), "UTF-8") }.getOrDefault(s)
+private fun decode(s: String): String {
+    if ('%' !in s) return s
+    val bytes = try {
+        s.encodeToByteArray(throwOnInvalidSequence = true)
+    } catch (_: CharacterCodingException) {
+        return s // Do not rewrite unpaired UTF-16 surrogates before decoding escapes.
+    }
+    var read = 0
+    var written = 0
+    while (read < bytes.size) {
+        val byte = bytes[read++]
+        bytes[written++] = if (byte == '%'.code.toByte()) {
+            if (bytes.size - read < 2) return s
+            val high = bytes[read++].toInt().toChar().digitToIntOrNull(16) ?: return s
+            val low = bytes[read++].toInt().toChar().digitToIntOrNull(16) ?: return s
+            (high * 16 + low).toByte()
+        } else {
+            byte
+        }
+    }
+    return try {
+        bytes.decodeToString(endIndex = written, throwOnInvalidSequence = true)
+    } catch (_: CharacterCodingException) {
+        // Preserve the link's spelling rather than exporting replacement characters.
+        s
+    }
+}
+
+internal fun UrlEntry.batchExportSize(): Long? {
+    if (!url.startsWith("ed2k://|file|", ignoreCase = true)) return null
+    val fields = url.split('|', limit = 6)
+    if (fields.size < 5 || fields[2].isEmpty()) return null
+    val hash = fields[4]
+    if (hash.length != 32 || hash.any { it !in '0'..'9' && it !in 'a'..'f' && it !in 'A'..'F' }) return null
+    val size = fields[3].removePrefix("+")
+    if (size.any { it !in '0'..'9' }) return null
+    return size.toLongOrNull()?.takeIf {
+        it <= 0x40_0000_0000L && (it != 0L || hash.equals("31d6cfe0d16ae931b73c59d7e0c089c0", ignoreCase = true))
+    }
+}
+
+internal fun UrlEntry.batchExportName(): String {
+    if (fileName.isNotEmpty()) return fileName
+    if (url.startsWith("magnet:?", ignoreCase = true)) return magnetName(url).orEmpty()
+    if (url.startsWith("ed2k://", ignoreCase = true)) return ed2kName(url).orEmpty()
+    if (!url.startsWith("http://", ignoreCase = true) &&
+        !url.startsWith("https://", ignoreCase = true) &&
+        !url.startsWith("ftp://", ignoreCase = true)
+    ) return ""
+    val schemeEnd = url.indexOf("://")
+    // 字符串切分而非 java.net.URI：URL 含空格 / `|` / `{}` 时 URI 会抛异常，与 GPUI / Web / iOS 不一致。
+    val rest = url.substring(schemeEnd + 3).substringBefore('#').substringBefore('?')
+    val slash = rest.indexOf('/')
+    if (slash < 0) return ""
+    return decode(rest.substring(slash).substringAfterLast('/'))
+}
 
 /** 预览用的推断文件名：`out=` 优先；磁力取 `dn=`，eD2K 取 `|file|名称|`，其余取路径末段（取不到用主机名）。 */
 internal fun inferName(entry: UrlEntry): String {
@@ -115,7 +170,7 @@ internal fun inferName(entry: UrlEntry): String {
     val url = entry.url
     return when (protocolOf(url)) {
         TaskProtocol.Bt -> magnetName(url) ?: btihOf(url)?.let { "magnet:$it" } ?: url.take(40)
-        TaskProtocol.Ed2k -> url.split('|').getOrNull(2)?.takeIf { it.isNotBlank() }?.let(::decode) ?: url.take(40)
+        TaskProtocol.Ed2k -> ed2kName(url) ?: url.take(40)
         else -> {
             val uri = runCatching { URI(url.substringBefore('#')) }.getOrNull()
             val seg = uri?.rawPath?.trimEnd('/')?.substringAfterLast('/')?.takeIf { it.isNotEmpty() }
@@ -125,7 +180,12 @@ internal fun inferName(entry: UrlEntry): String {
 }
 
 private fun magnetName(url: String): String? =
-    url.substringAfter('?', "").split('&').firstOrNull { it.startsWith("dn=") }?.removePrefix("dn=")?.let(::decode)?.takeIf { it.isNotBlank() }
+    url.substringAfter('?', "").substringBefore('#').splitToSequence('&')
+        .firstOrNull { it.startsWith("dn=") }?.removePrefix("dn=")?.let(::decode)?.takeIf { it.isNotBlank() }
+
+private fun ed2kName(url: String): String? =
+    url.takeIf { it.startsWith("ed2k://|file|", ignoreCase = true) }
+        ?.split('|', limit = 4)?.getOrNull(2)?.let(::decode)?.takeIf { it.isNotBlank() }
 
 private fun btihOf(url: String): String? =
     Regex("btih:([A-Za-z0-9]+)", RegexOption.IGNORE_CASE).find(url)?.groupValues?.get(1)?.take(12)

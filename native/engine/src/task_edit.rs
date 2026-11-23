@@ -240,19 +240,32 @@ pub async fn snapshot(db: &Db, task_id: &str) -> Result<EditSnapshot, String> {
     })
 }
 
-pub(crate) fn inline_profile(
+pub(crate) fn protect_request_context(
     task: &TaskInfo,
-    cookies: String,
-    headers: HashMap<String, String>,
-) -> Result<auth::AuthProfile, String> {
-    let site = auth::site_key(&task.url).ok_or("credentials require an HTTP origin")?;
-    Ok(auth::AuthProfile {
-        auth_ref: format!("task-{}@fluxdown::{site}", task.task_id),
-        plugin_id: format!("task-{}@fluxdown", task.task_id),
+    cookies: &mut String,
+    headers: &mut HashMap<String, String>,
+) -> Option<auth::AuthProfile> {
+    let site = auth::site_key(&task.url)?;
+    let mut secrets = HashMap::new();
+    headers.retain(|name, value| {
+        if secret_header(name) {
+            secrets.insert(name.clone(), std::mem::take(value));
+            false
+        } else {
+            true
+        }
+    });
+    if cookies.is_empty() && secrets.is_empty() {
+        return None;
+    }
+    let plugin_id = format!("task-{}@fluxdown", task.task_id);
+    Some(auth::AuthProfile {
+        auth_ref: format!("{plugin_id}::{site}"),
+        plugin_id,
         site,
         kind: "headers".into(),
-        cookies,
-        headers,
+        cookies: std::mem::take(cookies),
+        headers: secrets,
         ..Default::default()
     })
 }
@@ -427,27 +440,13 @@ pub(crate) async fn prepare(db: &Db, patch: EditTask) -> Result<PreparedEdit, St
         || old_context.0 != cookies
         || old_context.1 != referrer
         || old_context.2 != headers;
-    let relocate = original.save_dir != updated.save_dir || original.file_name != updated.file_name;
-    let secrets: HashMap<_, _> = headers
-        .iter()
-        .filter(|(name, _)| secret_header(name))
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-    let profile = if (!cookies.is_empty() || !secrets.is_empty())
-        && auth::site_key(&original.url).is_some()
-    {
-        let profile = inline_profile(&updated, cookies.clone(), secrets)?;
-        updated
-            .properties
-            .credential_ref
-            .clone_from(&profile.auth_ref);
-        headers.retain(|name, _| !secret_header(name));
-        cookies.clear();
-        Some(profile)
-    } else {
-        updated.properties.credential_ref.clear();
-        None
-    };
+    let relocate = !original.file_clear_state.retains_path_only()
+        && (original.save_dir != updated.save_dir || original.file_name != updated.file_name);
+    let profile = protect_request_context(&updated, &mut cookies, &mut headers);
+    updated.properties.credential_ref = profile
+        .as_ref()
+        .map(|profile| profile.auth_ref.clone())
+        .unwrap_or_default();
     Ok(PreparedEdit {
         original,
         updated,
@@ -486,29 +485,38 @@ pub(crate) fn validate_proxy(value: &str) -> Result<(), String> {
 }
 
 impl Db {
-    pub(crate) async fn commit_task_edit(&self, edit: &PreparedEdit) -> Result<(), DbError> {
+    pub(crate) async fn commit_task_edit(
+        &self,
+        edit: &PreparedEdit,
+        moved: &[(std::path::PathBuf, std::path::PathBuf)],
+    ) -> Result<(), DbError> {
         let props = serde_json::to_string(&edit.updated.properties)
             .map_err(|_| DbError::InvalidConfig("task properties encoding failed".into()))?;
         let headers = serde_json::to_string(&edit.headers)
             .map_err(|_| DbError::InvalidConfig("task headers encoding failed".into()))?;
         let mut tx = self.pool().begin().await?;
-        let result = sqlx::query("UPDATE tasks SET name_inferred = CASE WHEN file_name <> $1 THEN 0 ELSE name_inferred END,
-            category_route = CASE WHEN save_dir <> $2 THEN '' ELSE category_route END,
-            file_name = $1, save_dir = $2, proxy_url = $3, segments = $4, edit_properties = $5,
+        // An unchanged field must not overwrite a name concurrently bound by the start prelude.
+        let result = sqlx::query("UPDATE tasks SET name_inferred = CASE WHEN $11 AND file_name <> $1 THEN 0 ELSE name_inferred END,
+            category_route = CASE WHEN $12 AND save_dir <> $2 THEN '' ELSE category_route END,
+            file_name = CASE WHEN $11 THEN $1 ELSE file_name END,
+            save_dir = CASE WHEN $12 THEN $2 ELSE save_dir END,
+            proxy_url = $3, segments = $4, edit_properties = $5,
             cookies = $6, referrer = $7, extra_headers = $8, exists_decision = '', bt_download_limit_bps = $9
             WHERE id = $10")
             .bind(&edit.updated.file_name).bind(&edit.updated.save_dir).bind(&edit.updated.proxy_url)
             .bind(edit.updated.segments).bind(props).bind(&edit.cookies).bind(&edit.referrer).bind(headers)
-            .bind(edit.updated.bt_download_limit_bps).bind(&edit.updated.task_id).execute(&mut *tx).await?;
+            .bind(edit.updated.bt_download_limit_bps).bind(&edit.updated.task_id)
+            .bind(edit.original.file_name != edit.updated.file_name)
+            .bind(edit.original.save_dir != edit.updated.save_dir)
+            .execute(&mut *tx).await?;
         if result.rows_affected() != 1 {
             return Err(sqlx::Error::RowNotFound.into());
         }
+        for (old, new) in moved {
+            Self::rename_registered_artifact(&mut tx, &edit.updated.task_id, old, new).await?;
+        }
         if let Some(profile) = &edit.profile {
-            let key = format!("plugin.{}.auth.{}", profile.plugin_id, profile.site);
-            let value = serde_json::to_string(profile)
-                .map_err(|_| DbError::InvalidConfig("task credentials encoding failed".into()))?;
-            sqlx::query("INSERT INTO config (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
-                .bind(key).bind(value).execute(&mut *tx).await?;
+            insert_inline_credential(&mut tx, profile).await?;
         } else if !edit.original.properties.credential_ref.is_empty()
             && let Some((id, site)) = edit.original.properties.credential_ref.split_once("::")
         {
@@ -520,6 +528,36 @@ impl Db {
         tx.commit().await?;
         Ok(())
     }
+}
+
+pub(crate) async fn insert_inline_credential(
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    profile: &auth::AuthProfile,
+) -> Result<(), DbError> {
+    let key = format!("plugin.{}.auth.{}", profile.plugin_id, profile.site);
+    let value = serde_json::to_string(profile)
+        .map_err(|_| DbError::InvalidConfig("task credentials encoding failed".into()))?;
+    sqlx::query("INSERT INTO config (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
+        .bind(key)
+        .bind(value)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+pub(crate) async fn delete_inline_credential(
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    properties: &str,
+) -> Result<(), DbError> {
+    let properties: TaskProperties = serde_json::from_str(properties)
+        .map_err(|_| DbError::InvalidConfig("invalid stored task properties".into()))?;
+    if let Some((id, site)) = properties.credential_ref.split_once("::") {
+        sqlx::query("DELETE FROM config WHERE key = $1")
+            .bind(format!("plugin.{id}.auth.{site}"))
+            .execute(&mut **tx)
+            .await?;
+    }
+    Ok(())
 }
 
 pub(crate) async fn load_properties(db: &Db, id: &str) -> Result<TaskProperties, DbError> {

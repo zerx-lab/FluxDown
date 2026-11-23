@@ -18,6 +18,7 @@ pub(super) fn edit_error(error: String) -> ActorError {
     match error.as_str() {
         "not-found" => ActorError::NotFound,
         "edit-conflict" | "edit-busy" | "target-exists" => ActorError::Conflict(error),
+        "file-clear-pending" => ActorError::TaskFileClearPending,
         value
             if value.starts_with("db:")
                 || value.starts_with("move")

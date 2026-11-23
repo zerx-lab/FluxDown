@@ -438,6 +438,13 @@ pub const DAEMON_CONFIG_FIELDS: &[DaemonConfigField] = &[
     field("proxy_username", DaemonConfigKind::Text, ""),
     field("proxy_password", DaemonConfigKind::Text, ""),
     field("proxy_no_list", DaemonConfigKind::Text, ""),
+    // 设备本地；空串保留历史出口，direct:// 强制直连，其余为协议独立代理 URL。
+    field("proxy_protocol_http", DaemonConfigKind::Text, ""),
+    field("proxy_protocol_ftp", DaemonConfigKind::Text, ""),
+    field("proxy_protocol_hls", DaemonConfigKind::Text, ""),
+    field("proxy_protocol_dash", DaemonConfigKind::Text, ""),
+    field("proxy_protocol_bt", DaemonConfigKind::Text, ""),
+    field("proxy_protocol_ed2k", DaemonConfigKind::Text, ""),
     // 站点代理规则：JSON 数组（顺序即优先级），模型见 `crate::proxy_rules`。
     field("proxy_rules", DaemonConfigKind::Text, ""),
     // ── Webhook ──

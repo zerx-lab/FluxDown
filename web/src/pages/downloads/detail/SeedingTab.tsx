@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { byteUnit, useFileSizeUnits } from '../../../lib/fileSizeUnits'
 import { useT } from '../../../i18n'
 import { rpc } from '../../../lib/rpc'
 import { Button, FormField, Input, Select, toast } from '../../../ui'
@@ -69,6 +70,7 @@ function LimitField({
 
 export function SeedingTab({ view }: { view: DownloadTaskView }) {
   const t = useT()
+  const fileSizeUnits = useFileSizeUnits()
   const dto = view.dto
   const [initial] = useState(() => ({
     ratio: loadSeedLimit('ratio', dto?.seedRatioLimitMilli),
@@ -118,7 +120,7 @@ export function SeedingTab({ view }: { view: DownloadTaskView }) {
   return (
     <div className="flex flex-col">
       <DetailRow label={t('seedingStatus')}>{t(statusKey)}</DetailRow>
-      <DetailRow label={t('uploadedTotal')}>{formatBytes(uploaded)}</DetailRow>
+      <DetailRow label={t('uploadedTotal')}>{formatBytes(uploaded, fileSizeUnits)}</DetailRow>
       <DetailRow label={t('seedRatio')}>{ratioLabel}</DetailRow>
       <DetailRow label={t('seedTime')}>{formatDuration(t, dto?.seedingTimeSecs ?? 0)}</DetailRow>
       <div className="my-3 h-px bg-hairline" />
@@ -128,7 +130,7 @@ export function SeedingTab({ view }: { view: DownloadTaskView }) {
         <LimitField t={t} label={t('btSeedPostRatioLimit')} kind="ratio" value={postRatio} onChange={setPostRatio} />
         <LimitField t={t} label={t('btSeedTimeLimit')} kind="minutes" value={seedTime} onChange={setSeedTime} />
         <LimitField t={t} label={t('btSeedInactiveTimeLimit')} kind="minutes" value={inactive} onChange={setInactive} />
-        <FormField label={t('btSeedUploadLimit')} hint={t('btSeedUploadLimitHint')}>
+        <FormField label={`${t('btSeedUploadLimit')} (${byteUnit(1, fileSizeUnits)}/s)`} hint={t('btSeedUploadLimitHint')}>
           <Input inputMode="numeric" value={upload} invalid={!isUploadValid(upload)} onChange={(e) => setUpload(e.target.value)} />
         </FormField>
         <div className="flex justify-end">

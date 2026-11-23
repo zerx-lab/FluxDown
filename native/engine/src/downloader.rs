@@ -1,5 +1,6 @@
 use std::error::Error as StdError;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -26,6 +27,19 @@ use crate::transfer_activity::{TaskRuntime, TaskSegment, TransferTracker};
 // Error
 // ---------------------------------------------------------------------------
 
+// Stored in error_message and used to suppress automatic retries for existing
+// tasks. Do not change this prefix without migrating those persisted messages.
+pub(crate) const RANGE_RESTART_FAILED_PREFIX: &str =
+    "full GET fallback failed; partial download kept, resume manually: ";
+
+#[derive(Error, Debug)]
+pub enum RangeRejection {
+    #[error("{0}")]
+    Http(reqwest::StatusCode),
+    #[error("{0}")]
+    Other(String),
+}
+
 #[derive(Error, Debug)]
 pub enum DownloadError {
     #[error("request failed: {0}")]
@@ -36,6 +50,8 @@ pub enum DownloadError {
     Db(#[from] crate::db::DbError),
     #[error("cancelled")]
     Cancelled,
+    #[error("{}", POST_ONLY_RESUME_MESSAGE)]
+    BrowserRequestRequired,
     #[error("checksum mismatch: {0}")]
     ChecksumMismatch(String),
     /// Server does not honour `Range` requests — returned the enclosed HTTP
@@ -43,7 +59,15 @@ pub enum DownloadError {
     /// Multi-segment assembly is impossible; the caller should fall back to
     /// single-stream mode.
     #[error("server does not support Range requests (returned {0} instead of 206 Partial Content)")]
-    RangeNotSupported(String),
+    RangeNotSupported(RangeRejection),
+    /// Retrying ignored Range requests exhausted all workers, but a durable
+    /// multi-segment checkpoint must not be discarded to try a full GET.
+    #[error(
+        "server ignored the remaining Range requests; configured Range window prevents a full GET; partial download kept"
+    )]
+    RangeResumeRejected { total_bytes: i64 },
+    #[error("{prefix}{0}", prefix = RANGE_RESTART_FAILED_PREFIX)]
+    RangeRestartFailed(#[source] Box<DownloadError>),
     /// 服务器在 probe 与分段/续传请求之间【更换了文件】：Range 响应的强
     /// validator（ETag）与已落盘版本不一致，或 Last-Modified 不一致且响应
     /// `Content-Range` 总大小与已知总大小【也】不一致（分段路径下起点还须
@@ -116,6 +140,10 @@ pub enum DownloadError {
     /// 重试遇到它都直接上抛。
     #[error("{0}")]
     PluginAbort(String),
+    /// A successful HTTP response returned a page instead of the requested file.
+    /// This is a response-format mismatch, not a transport failure.
+    #[error("{0}")]
+    UnexpectedHtml(String),
     #[error("{0}")]
     Other(String),
 }
@@ -274,6 +302,7 @@ pub struct FileInfo {
     /// `file_name` 的来源：只有 Content-Disposition（含 URL 查询里的 CD）才是权威名，
     /// 作为响应命名证据落库供完成期精修引擎推断的名字。
     pub name_source: crate::naming::NameSource,
+    pub(crate) html_attachment: bool,
     pub total_bytes: i64,
     pub supports_range: bool,
     /// MIME content type from the server (e.g. "text/html", "application/octet-stream").
@@ -301,6 +330,8 @@ pub struct ProgressUpdate {
     pub task_id: String,
     /// Observed active reads and byte-range geometry; absent when not sampled.
     pub runtime: Option<crate::transfer_activity::TaskRuntime>,
+    /// Cache `runtime` for the next terminal frame without publishing a status.
+    pub cache_runtime_only: bool,
     pub downloaded_bytes: i64,
     /// Restored/truncated counter before body reads. Unlike an ordinary lower
     /// progress sample, this explicitly resets host traffic measurement.
@@ -309,6 +340,8 @@ pub struct ProgressUpdate {
     /// `Some` 时测速与宿主流量统计都以它为准，`downloaded_bytes` 只表示进度：
     /// 先整段缓冲、再按序写盘的协议（HLS）落盘计数只能按段跳变，拿它测速会锯齿。
     pub transfer_bytes: Option<i64>,
+    /// Speculative replacement progress is visible but must never be persisted.
+    pub staged_download: bool,
     pub total_bytes: i64,
     pub status: i32,
     pub error_message: String,
@@ -1098,13 +1131,11 @@ pub(crate) fn validator_mismatch_is_fatal(
 /// The output stream uses `std::io::Error` because `reqwest::Error` is opaque
 /// and cannot be constructed from an `io::Error`.  Callers should convert via
 /// `DownloadError::Io` when consuming chunks.
-pub fn maybe_decompress_stream(
-    stream: impl futures_util::Stream<Item = Result<bytes::Bytes, reqwest::Error>>
-    + Unpin
-    + Send
-    + 'static,
+pub fn maybe_decompress_stream<'a>(
+    stream: impl futures_util::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Unpin + Send + 'a,
     encoding: Option<ContentEncoding>,
-) -> Box<dyn futures_util::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Unpin + Send> {
+) -> Box<dyn futures_util::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Unpin + Send + 'a>
+{
     // Map the incoming reqwest::Error stream to io::Error so every branch
     // has a uniform error type.
     let io_stream = stream.map(|result| result.map_err(std::io::Error::other));
@@ -1634,15 +1665,21 @@ fn is_bot_challenge(headers: &reqwest::header::HeaderMap) -> bool {
 /// 405 且只允许 POST 时追加 [`POST_ONLY_TAG`]。
 fn probe_status_desc(resp: &reqwest::Response) -> String {
     let status = resp.status().as_u16();
-    if is_bot_challenge(resp.headers()) {
-        format!("{status} {BOT_CHALLENGE_TAG}")
+    let tag = if is_bot_challenge(resp.headers()) {
+        BOT_CHALLENGE_TAG
     } else if resp.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED
         && allows_only_post(resp.headers())
     {
-        format!("{status} {POST_ONLY_TAG}")
+        POST_ONLY_TAG
     } else {
-        status.to_string()
+        ""
+    };
+    let mut desc = status.to_string();
+    if !tag.is_empty() {
+        desc.push(' ');
+        desc.push_str(tag);
     }
+    desc
 }
 
 /// `Allow` 头列出 POST 且不含 GET / HEAD（OneDrive 打包端点回 `Allow: OPTIONS, POST`）。
@@ -1800,6 +1837,9 @@ pub struct DownloadSpec {
     /// 单 GET 探测保留的首响应（一次性 URL 的唯一一次请求）；取一次即空，
     /// 随 spec 一并释放（取消 / 跳过 / 失败时连接随之关闭）。
     held_response: std::sync::Mutex<Option<reqwest::Response>>,
+    html_only: bool,
+    expects_html: bool,
+    accepts_html_attachment: bool,
 }
 
 #[derive(Debug)]
@@ -1844,6 +1884,9 @@ impl DownloadSpec {
             probe_skipped: false,
             saw_success: std::sync::atomic::AtomicBool::new(false),
             held_response: std::sync::Mutex::new(None),
+            html_only: false,
+            expects_html: false,
+            accepts_html_attachment: false,
         }
     }
 
@@ -2403,6 +2446,20 @@ pub(crate) fn download_error_chain_text(e: &DownloadError) -> String {
     format!("{e}{}", format_error_chain(StdError::source(e)))
 }
 
+fn download_terminal_error_message(error: &DownloadError) -> String {
+    // Display already includes the wrapped download error and its immediate
+    // source (e.g. reqwest's message). Append only the underlying causes.
+    let displayed_error = match error {
+        DownloadError::RangeRestartFailed(inner) => inner.as_ref(),
+        error => error,
+    };
+    let chain = format_error_chain(displayed_error.source().and_then(StdError::source));
+    crate::net_failure::append_tag(
+        format!("{error}{chain}"),
+        crate::net_failure::classify_download_error(error),
+    )
+}
+
 /// 探测请求的传输层失败描述：保留完整根因链（reqwest 的 Display 只有
 /// 「error sending request for url (…)」）。分类另由
 /// [`crate::net_failure::classify`] 给出，以标签形式追加在最终错误文案上。
@@ -2469,10 +2526,20 @@ async fn resolve_file_info_once(
     // 两路都没拿到任何 HTTP 响应（TLS 握手 EOF、连接重置、超时……）：这是链路
     // 抖动，不是服务器拒绝 HEAD / Range 的证据。
     let transport_only_failure = matches!(head_result, Some(Err(_))) && get_result.is_err();
-    // 两路都断在传输层时的类型化分类（GET 优先：Range 0-0 与数据连接同形）。
+    // GET 优先：Range 0-0 与数据连接同形。仅 HEAD 方法不受支持时，
+    // 其响应不能证明 GET 可达；还要用普通 GET 区分网络故障与 Range 限制。
     let transport_class = match (&head_result, &get_result) {
         (Some(Err(head)), Err(get)) => crate::net_failure::classify_download_error(get)
             .or_else(|| crate::net_failure::classify_download_error(head)),
+        (Some(Ok(head)), Err(get))
+            if matches!(
+                head.status(),
+                reqwest::StatusCode::METHOD_NOT_ALLOWED | reqwest::StatusCode::NOT_IMPLEMENTED
+            ) && !allows_only_post(head.headers())
+                && !is_bot_challenge(head.headers()) =>
+        {
+            crate::net_failure::classify_download_error(get)
+        }
         _ => None,
     };
 
@@ -2756,6 +2823,7 @@ async fn resolve_file_info_once(
     }
 
     Ok(FileInfo {
+        html_attachment: is_html_attachment(&headers, &file_name, name_source),
         file_name,
         name_source,
         total_bytes,
@@ -2796,9 +2864,8 @@ fn format_probe_failure(
 /// 兜底：前几轮交回重试循环退避重探——plain GET 恰好连上会让整个任务被判成
 /// 「不支持 Range」单连接下载，链路抖动不能换来这种降级。
 ///
-/// `prior_transport`：HEAD 与 ranged GET 是否都断在传输层（及其分类）。三路
-/// 全部没拿到任何 HTTP 响应时，最终错误才带传输失败标签——任何一路拿到
-/// 响应都说明链路可达，失败归服务器而非路径。
+/// `prior_transport`：ranged GET 断在传输层，且 HEAD 没有应答或仅表明不支持 HEAD。
+/// 普通 GET 也断在传输层时保留失败标签；普通 GET 有 HTTP 应答则服从其状态码。
 async fn resolve_file_info_plain_get_fallback(
     client: &Client,
     url: &str,
@@ -2906,6 +2973,7 @@ async fn resolve_file_info_plain_get_fallback(
     );
 
     Ok(FileInfo {
+        html_attachment: is_html_attachment(&headers, &file_name, name_source),
         file_name,
         name_source,
         total_bytes,
@@ -3014,6 +3082,7 @@ async fn resolve_file_info_held_once(
             header_text(reqwest::header::CONTENT_TYPE)
         );
         FileInfo {
+            html_attachment: is_html_attachment(headers, &resolved.name, resolved.source),
             file_name: resolved.name,
             name_source: resolved.source,
             total_bytes,
@@ -3088,12 +3157,209 @@ pub(crate) fn held_probe_applies(p: &DownloadParams) -> bool {
         && !crate::dash_downloader::is_dash_url(&p.url)
 }
 
-/// 文件名是否以 HTML 类扩展名结尾——用于 HTML 安全网判断"服务器返回 HTML
-/// 是否为用户期望"。空字符串视为不像 HTML：调用方有责任在到达此处前确保
-/// 文件名已经解析（run_download 中的 auto_name 空值检查 :1581 是兜底位置）。
+/// 文件名是否以 HTML 类扩展名结尾。
 pub(crate) fn filename_looks_like_html(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    lower.ends_with(".html") || lower.ends_with(".htm") || lower.ends_with(".xhtml")
+    name.rsplit_once('.').is_some_and(|(_, ext)| {
+        ["html", "htm", "xhtml"]
+            .into_iter()
+            .any(|candidate| ext.eq_ignore_ascii_case(candidate))
+    })
+}
+
+pub(crate) const UNEXPECTED_HTML_PREFIX: &str = "server returned HTML page (Content-Type: ";
+pub(crate) const HTML_RESPONSE_CHANGED_MESSAGE: &str =
+    "the server did not return a complete HTML page; nothing was saved";
+
+// Keep the diagnostic prefix for localization, but only successful-response
+// rejections (not 401/403 login pages) qualify for saving.
+pub(crate) fn can_save_html_failure(message: &str) -> bool {
+    message
+        .strip_prefix(UNEXPECTED_HTML_PREFIX)
+        .and_then(|details| details.split_once(") "))
+        .is_some_and(|(_, reason)| {
+            reason.starts_with("instead of the expected file")
+                || reason.starts_with("for a non-HTML download")
+        })
+}
+
+pub(crate) fn is_html_attachment(
+    headers: &reqwest::header::HeaderMap,
+    name: &str,
+    source: crate::naming::NameSource,
+) -> bool {
+    source == crate::naming::NameSource::Disposition
+        && filename_looks_like_html(name)
+        && headers
+            .get(reqwest::header::CONTENT_DISPOSITION)
+            .and_then(|value| value.as_bytes().split(|&byte| byte == b';').next())
+            .is_some_and(|kind| kind.trim_ascii().eq_ignore_ascii_case(b"attachment"))
+}
+
+fn html_mime(content_type: &str) -> Option<&'static str> {
+    let mime = content_type.split(';').next()?.trim();
+    ["text/html", "application/xhtml+xml"]
+        .into_iter()
+        .find(|candidate| mime.eq_ignore_ascii_case(candidate))
+}
+
+pub(crate) enum HtmlEvidence {
+    Mime(&'static str),
+    DispositionName,
+}
+
+impl HtmlEvidence {
+    fn content_type(&self) -> &'static str {
+        match self {
+            Self::Mime(mime) => mime,
+            Self::DispositionName => "non-HTML or missing",
+        }
+    }
+
+    fn detail(&self) -> &'static str {
+        match self {
+            Self::Mime(_) => "",
+            Self::DispositionName => " (HTML response filename)",
+        }
+    }
+}
+
+pub(crate) fn html_evidence(
+    content_type: &str,
+    response_name: &str,
+    source: crate::naming::NameSource,
+) -> Option<HtmlEvidence> {
+    html_mime(content_type)
+        .map(HtmlEvidence::Mime)
+        .or_else(|| html_disposition_evidence(response_name, source))
+}
+
+fn html_disposition_evidence(
+    name: &str,
+    source: crate::naming::NameSource,
+) -> Option<HtmlEvidence> {
+    (source == crate::naming::NameSource::Disposition && filename_looks_like_html(name))
+        .then_some(HtmlEvidence::DispositionName)
+}
+
+fn response_content_type(resp: &reqwest::Response) -> &str {
+    resp.headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+}
+
+// Recognize common HTML starts in the bounded decoded prefix when MIME is not HTML.
+fn has_html_signature(prefix: &[u8]) -> bool {
+    let prefix = prefix.strip_prefix(b"\xef\xbb\xbf").unwrap_or(prefix);
+    let mut prefix = prefix.trim_ascii_start();
+    if let Some(declaration) = prefix.strip_prefix(b"<?xml")
+        && declaration.first().is_some_and(u8::is_ascii_whitespace)
+    {
+        let Some(end) = declaration.windows(2).position(|window| window == b"?>") else {
+            return false;
+        };
+        prefix = declaration[end + 2..].trim_ascii_start();
+    }
+    while let Some(comment) = prefix.strip_prefix(b"<!--") {
+        let Some(end) = comment.windows(3).position(|window| window == b"-->") else {
+            return false;
+        };
+        prefix = comment[end + 3..].trim_ascii_start();
+    }
+    [
+        b"<!doctype html".as_slice(),
+        b"<html",
+        b"<head",
+        b"<body",
+        b"<title",
+        b"<meta",
+        b"<script",
+        b"<style",
+        b"<div",
+        b"<p",
+        b"<h1",
+        b"<h2",
+        b"<h3",
+        b"<h4",
+        b"<h5",
+        b"<h6",
+        b"<a",
+        b"<table",
+        b"<form",
+        b"<center",
+        b"<ul",
+        b"<ol",
+        b"<br",
+        b"<span",
+        b"<img",
+        b"<section",
+    ]
+    .into_iter()
+    .any(|tag| {
+        prefix
+            .get(..tag.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(tag))
+            && prefix.get(tag.len()..).is_some_and(|rest| {
+                rest.starts_with(b"/>")
+                    || rest
+                        .first()
+                        .is_some_and(|b| b.is_ascii_whitespace() || *b == b'>')
+            })
+    })
+}
+
+impl DownloadSpec {
+    fn check_html_response(
+        &self,
+        resp: &reqwest::Response,
+        url: &str,
+        method: &reqwest::Method,
+    ) -> Result<(), DownloadError> {
+        if self.html_only {
+            let status = resp.status();
+            if !status.is_success() || matches!(status.as_u16(), 204..=206) {
+                return Err(DownloadError::Other(HTML_RESPONSE_CHANGED_MESSAGE.into()));
+            }
+            return Ok(());
+        }
+        if let Some(evidence) = self.unexpected_html_evidence(resp, url) {
+            return Err(DownloadError::UnexpectedHtml(format!(
+                "{UNEXPECTED_HTML_PREFIX}{}) for a non-HTML download{} — \
+                 aborting to avoid corrupting saved file; {}",
+                evidence.content_type(),
+                evidence.detail(),
+                html_response_hint(url, Some(resp.url()), method)
+            )));
+        }
+        Ok(())
+    }
+
+    fn unexpected_html_evidence(
+        &self,
+        resp: &reqwest::Response,
+        url: &str,
+    ) -> Option<HtmlEvidence> {
+        if self.expects_html {
+            return None;
+        }
+        let mime = html_mime(response_content_type(resp)).map(HtmlEvidence::Mime);
+        if mime.is_some() && !self.accepts_html_attachment {
+            return mime;
+        }
+        if !resp
+            .headers()
+            .contains_key(reqwest::header::CONTENT_DISPOSITION)
+        {
+            return mime;
+        }
+        let name = extract_filename(resp.headers(), url, resp.url().as_str());
+        if self.accepts_html_attachment
+            && is_html_attachment(resp.headers(), &name.name, name.source)
+        {
+            return None;
+        }
+        mime.or_else(|| html_disposition_evidence(&name.name, name.source))
+    }
 }
 
 /// HTML 安全网文案的成因提示（接在「server returned HTML page …」之后）。
@@ -3173,9 +3439,20 @@ pub async fn dedup_filename(
     avoid: &std::collections::HashSet<String>,
     overwrite: &crate::file_exists::OverwritePolicy,
 ) -> String {
+    dedup_output_name(dir, name, Some(reserved), avoid, overwrite, false).await
+}
+
+pub(crate) async fn dedup_output_name(
+    dir: &Path,
+    name: &str,
+    reserved: Option<&std::collections::HashSet<PathBuf>>,
+    avoid: &std::collections::HashSet<String>,
+    overwrite: &crate::file_exists::OverwritePolicy,
+    companion_audio: bool,
+) -> String {
+    let reserved = reserved.cloned();
     let dir_owned = dir.to_path_buf();
     let name_owned = name.to_string();
-    let reserved = reserved.clone();
     let avoid = avoid.clone();
     let allow_overwrite = overwrite.permits(name);
     // 磁盘探测是同步 stat(重度冲突时退化为一次目录扫描),放进阻塞池,
@@ -3185,10 +3462,11 @@ pub async fn dedup_filename(
             &dir_owned,
             &name_owned,
             &DedupRules {
-                reserved: Some(&reserved),
+                reserved: reserved.as_ref(),
                 avoid: Some(&avoid),
                 allow_overwrite,
                 companion_mp4: false,
+                companion_audio,
             },
         )
     })
@@ -3227,6 +3505,8 @@ pub(crate) struct DedupRules<'a> {
     pub allow_overwrite: bool,
     /// HLS:成品是 `<stem>.mp4`,同 stem 的 `.mp4` 已存在同样算冲突。
     pub companion_mp4: bool,
+    /// A separate audio track and its temporary file must both be unoccupied.
+    pub companion_audio: bool,
 }
 
 /// `name` 的 `.mp4` 伴生名(同 stem)。
@@ -3295,6 +3575,14 @@ fn candidate_taken_by_probe(
         return Ok(true);
     }
     let final_path = dir.join(candidate);
+    if rules.companion_audio {
+        let audio = crate::dash_downloader::build_audio_path(&final_path);
+        let mut audio_temp = audio.as_os_str().to_os_string();
+        audio_temp.push(TEMP_EXT);
+        if entry_exists(Path::new(&audio_temp))? || entry_exists(&audio)? {
+            return Ok(true);
+        }
+    }
     let companion = rules
         .companion_mp4
         .then(|| dir.join(companion_mp4_name(candidate)));
@@ -3334,6 +3622,11 @@ fn candidate_taken_in_scan(
         || existing.contains(&folded)
         || existing.contains(&temp_name.to_lowercase())
         || (rules.companion_mp4 && existing.contains(&companion_mp4_name(candidate).to_lowercase()))
+        || (rules.companion_audio && {
+            let audio = crate::dash_downloader::build_audio_path(Path::new(&folded));
+            let audio = audio.to_string_lossy();
+            existing.contains(audio.as_ref()) || existing.contains(&format!("{audio}{TEMP_EXT}"))
+        })
 }
 
 /// 目录条目名集合(小写折叠)。目录不存在 = 空集。
@@ -3456,16 +3749,10 @@ pub(crate) fn dedup_name_by_probe(
 pub(crate) fn name_free_on_disk(
     dir: &Path,
     candidate: &str,
+    rules: &DedupRules<'_>,
     allow_overwrite: bool,
-    companion_mp4: bool,
 ) -> std::io::Result<bool> {
-    let rules = DedupRules {
-        reserved: None,
-        avoid: None,
-        allow_overwrite,
-        companion_mp4,
-    };
-    candidate_taken_by_probe(dir, candidate, &rules, allow_overwrite).map(|taken| !taken)
+    candidate_taken_by_probe(dir, candidate, rules, allow_overwrite).map(|taken| !taken)
 }
 
 /// 旧算法的参照实现(整目录 `read_dir`、条目名小写折叠、编号 1..=9999),仅供
@@ -3569,7 +3856,28 @@ pub(crate) async fn claim_final_name(
     overwrite: &crate::file_exists::OverwritePolicy,
     avoid: &std::collections::HashSet<String>,
 ) -> Result<String, DownloadError> {
+    claim_output_name(src, save_dir, name, overwrite, avoid, false).await
+}
+
+pub(crate) async fn claim_output_name(
+    src: &Path,
+    save_dir: &Path,
+    name: &str,
+    overwrite: &crate::file_exists::OverwritePolicy,
+    avoid: &std::collections::HashSet<String>,
+    companion_audio: bool,
+) -> Result<String, DownloadError> {
     let mut chosen = name.to_string();
+    if companion_audio {
+        let audio = crate::dash_downloader::build_audio_path(&save_dir.join(name));
+        match tokio::fs::symlink_metadata(&audio).await {
+            Ok(_) => {
+                chosen = dedup_output_name(save_dir, name, None, avoid, overwrite, true).await;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
     let mut overwrite_attempted = false;
     let mut attempt = 0u32;
     loop {
@@ -3595,12 +3903,13 @@ pub(crate) async fn claim_final_name(
                         continue;
                     }
                 }
-                chosen = dedup_filename(
+                chosen = dedup_output_name(
                     save_dir,
                     name,
-                    &std::collections::HashSet::new(),
+                    None,
                     avoid,
                     &crate::file_exists::OverwritePolicy::Never,
+                    companion_audio,
                 )
                 .await;
             }
@@ -3717,12 +4026,31 @@ pub(crate) async fn finalize_output(
     })
 }
 
-pub async fn run_download(mut params: DownloadParams) {
+pub async fn run_download(params: DownloadParams) {
+    run_download_mode(params, false).await;
+}
+
+pub(crate) async fn run_download_mode(mut params: DownloadParams, html_only: bool) {
     let task_id_log = params.task_id.clone();
     let preprobed = params.preprobed.take();
-    let result = match run_download_inner(&mut params, preprobed).await {
+    let mut range_restart = None;
+    let download = run_download_inner(&mut params, preprobed, html_only, &mut range_restart).await;
+    let download = if let Some(staged) = range_restart.take() {
+        if let Err(error) = clean_http_restart_staging(&staged.dir).await {
+            crate::logger::report_warning("http-download", "clean staging directory", &error);
+        }
+        download.map_err(range_restart_failed)
+    } else {
+        download
+    };
+    let result = match download {
         Ok((total, renamed)) => {
-            match finalize_output(&params, crate::intercept::ProtocolKind::Http).await {
+            let replaced = if html_only {
+                Ok(None)
+            } else {
+                finalize_output(&params, crate::intercept::ProtocolKind::Http).await
+            };
+            match replaced {
                 Ok(replaced) => {
                     let (total, renamed) = match replaced {
                         Some((name, size)) => (size, Some(name)),
@@ -3773,24 +4101,14 @@ pub async fn run_download(mut params: DownloadParams) {
             // pause / cancel already handled upstream — nothing to do
         }
         Err(e) => {
-            let msg = e.to_string();
-            // 追加完整错误链（root cause），方便排查网络/TLS 等底层错误。
-            // msg 已包含 reqwest 顶层描述，这里从 source 的 source 开始
-            // 避免重复打印同一层信息。
-            let chain = if let Some(src) = StdError::source(&e) {
-                format_error_chain(src.source())
-            } else {
-                String::new()
-            };
-            // 类型化传输失败标签：manager 的 Auto 换路 / 自动重试只认标签，
-            // 不再从（可能本地化的）OS 错误文本里猜关键词。
-            let full_msg = crate::net_failure::append_tag(
-                format!("{}{}", msg, chain),
-                crate::net_failure::classify_download_error(&e),
-            );
+            let full_msg = download_terminal_error_message(&e);
             // checksum 失败时所有字节均已下载完毕（只是校验未通过），需特殊处理进度。
             let is_checksum_fail = matches!(e, DownloadError::ChecksumMismatch(_));
-            crate::log_error!("[download] task {} error: {}", task_id_log, full_msg);
+            tracing::debug!(
+                task_id = %task_id_log,
+                transport_failure = ?crate::net_failure::classify_download_error(&e),
+                "HTTP transfer attempt failed"
+            );
             if let Err(db_error) = params
                 .db
                 .update_task_status(&params.task_id, 4, &full_msg)
@@ -4004,12 +4322,74 @@ async fn discard_segment_data(db: &Db, task_id: &str, path: &Path) -> Result<(),
     Ok(())
 }
 
+fn range_restart_failed(error: DownloadError) -> DownloadError {
+    match error {
+        DownloadError::Cancelled => error,
+        error => DownloadError::RangeRestartFailed(Box::new(error)),
+    }
+}
+
+/// Isolated, same-filesystem output for a speculative full restart. Until final
+/// rename, the original segment layout and partial file remain resumable.
+struct RangeRestart {
+    dir: PathBuf,
+    path: PathBuf,
+}
+
+impl RangeRestart {
+    async fn create(save_dir: &Path, task_id: &str) -> Result<Self, DownloadError> {
+        let dir = http_restart_dir(save_dir, task_id);
+        tokio::fs::create_dir(&dir).await?;
+        Ok(Self {
+            path: dir.join("download"),
+            dir,
+        })
+    }
+}
+
+fn http_restart_dir(save_dir: &Path, task_id: &str) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    let key = hex::encode(Sha256::digest(task_id.as_bytes()));
+    save_dir.join(format!(".fluxdown-restart-{key}"))
+}
+
+pub(crate) async fn clean_http_restart_for_task(save_dir: &Path, task_id: &str) {
+    let dir = http_restart_dir(save_dir, task_id);
+    if let Err(error) = clean_http_restart_staging(&dir).await {
+        tracing::warn!(task_id, path = %dir.display(), %error, "clean HTTP staging directory");
+    }
+}
+
+async fn clean_http_restart_staging(dir: &Path) -> std::io::Result<()> {
+    match tokio::fs::symlink_metadata(dir).await {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => {
+            return Err(std::io::Error::other(
+                "HTTP staging path is not a directory",
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    }
+    match tokio::fs::remove_file(dir.join("download")).await {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    match tokio::fs::remove_dir(dir).await {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    }
+}
+
 /// 返回 `(actual_total, finalize_renamed)`:`finalize_renamed` 仅当 finalize
 /// 阶段因目标名被占用而改名时为 `Some(新名)`,调用方须经完成信号上报
 /// (progress_reporter 对非空 file_name 锁存,空串 = 不变)。
 async fn run_download_inner(
     p: &mut DownloadParams,
     preprobed: Option<Result<PreprobedInfo, DownloadError>>,
+    html_only: bool,
+    range_restart: &mut Option<RangeRestart>,
 ) -> Result<(i64, Option<String>), DownloadError> {
     log_info!(
         "[download] task {} starting, url={}",
@@ -4137,6 +4517,7 @@ async fn run_download_inner(
             p.hint_file_size
         );
         FileInfo {
+            html_attachment: false,
             file_name: name,
             name_source: crate::naming::NameSource::Fallback,
             total_bytes: effective_size,
@@ -4260,39 +4641,39 @@ async fn run_download_inner(
     let connection_cap = probed_decision.max_connections.unwrap_or(p.connection_cap);
     // 单请求探测的响应终点（跟随重定向后），供下方 HTML 安全网点出被带去的页面。
     let probe_final_url = held_response.as_ref().map(|resp| resp.url().clone());
-    let spec_ref = std::sync::Arc::new(
-        DownloadSpec::new(applied_spec.unwrap_or_else(|| p.spec.clone()))
-            .with_connection_cap(connection_cap)
-            .with_probe_skipped(p.hint_file_size != 0)
-            .with_held_response(held_response)
-            .with_refresher(crate::intercept::Refresher::for_params(
-                p,
-                crate::intercept::ProtocolKind::Http,
-            )),
-    );
+    let mut spec = DownloadSpec::new(applied_spec.unwrap_or_else(|| p.spec.clone()))
+        .with_connection_cap(connection_cap)
+        .with_probe_skipped(p.hint_file_size != 0)
+        .with_held_response(held_response)
+        .with_refresher(crate::intercept::Refresher::for_params(
+            p,
+            crate::intercept::ProtocolKind::Http,
+        ));
+    spec.html_only = html_only;
+    if !html_only {
+        let inferred = p.file_name.is_empty() || p.db.get_task_naming_state(&p.task_id).await?.0;
+        spec.accepts_html_attachment = inferred;
+        spec.expects_html = if inferred {
+            // Only the requested URL, never a redirect or MIME-derived name,
+            // can establish HTML intent for an inferred target.
+            name_from_url(&p.url).is_some_and(|name| filename_looks_like_html(&name.name))
+        } else {
+            filename_looks_like_html(&p.file_name)
+        };
+    }
+    let spec_ref = std::sync::Arc::new(spec);
 
-    // Safety net (probe 阶段)：服务器在 probe 阶段返回 HTML 但用户期望二进制
-    // 文件——典型场景：Lanzou 等 CDN transit page、form-POST 端点用 GET 访问。
-    // 立即终止，避免落盘成 fake.zip 这类损坏文件。
-    //
-    // 第二道防线在 download_single 的 req.send() 后做实际响应的 Content-Type 检查
-    // （通过 build_request 发起，见 :2335 附近），覆盖 hint_file_size 旁路场景。
-    if !info.content_type.is_empty() {
-        let ct_lower = info.content_type.to_ascii_lowercase();
-        let mime = ct_lower.split(';').next().unwrap_or("").trim();
-        if mime == "text/html" || mime == "application/xhtml+xml" {
-            let expected = if p.file_name.is_empty() {
-                &info.file_name
-            } else {
-                &p.file_name
-            };
-            if !filename_looks_like_html(expected) {
-                return Err(DownloadError::Other(format!(
-                    "server returned HTML page (Content-Type: {mime}) instead of the expected file — {}",
-                    html_response_hint(&p.url, probe_final_url.as_ref(), &p.spec.method)
-                )));
-            }
-        }
+    // A hinted filename is not response evidence; hinted downloads are checked when data arrives.
+    if !(spec_ref.expects_html || spec_ref.accepts_html_attachment && info.html_attachment)
+        && p.hint_file_size == 0
+        && let Some(evidence) = html_evidence(&info.content_type, &info.file_name, info.name_source)
+    {
+        return Err(DownloadError::UnexpectedHtml(format!(
+            "{UNEXPECTED_HTML_PREFIX}{}) instead of the expected file{} — {}",
+            evidence.content_type(),
+            evidence.detail(),
+            html_response_hint(&p.url, probe_final_url.as_ref(), &p.spec.method)
+        )));
     }
 
     // 早期取消检查：probe 完成后、创建文件之前检测 pause/delete，
@@ -4337,6 +4718,7 @@ async fn run_download_inner(
     output::ensure_parent(&temp_path).await?;
     // Keep ownership through mode changes, stale-data cleanup, verification and final rename.
     let _temp_file_guard = TempFileGuard::acquire(&temp_path, &p.task_id).await?;
+    clean_http_restart_for_task(&save_dir, &p.task_id).await;
 
     // 换源结算（见 `Db::settle_source_change`）：`change_task_url` 后首次续传按零容差
     // 比对新链接大小与旧总大小。不一致 = 换成了另一个文件——旧前缀若沿用会与新文件
@@ -4565,6 +4947,7 @@ async fn run_download_inner(
     //     full body, corrupting the assembled output. Force single-stream
     //     for non-GET to make uupdump-style form-POST downloads safe.
     let use_segments = effective_supports_range
+        && !html_only
         && effective_total_bytes > 1_048_576
         && (segments > 1 || resume_has_segments)
         && p.spec.is_get_like();
@@ -4694,9 +5077,76 @@ async fn run_download_inner(
                 }
                 None
             }
-            Err(DownloadError::RangeNotSupported(status))
-            | Err(DownloadError::VersionChanged(status))
-            | Err(DownloadError::RangeMisaligned(status)) => {
+            Err(DownloadError::RangeResumeRejected { total_bytes })
+                if spec_ref.current().range_window_cap().is_none() =>
+            {
+                effective_total_bytes = total_bytes;
+                // 原断点仍占磁盘空间；暂存文件需要额外容纳一份完整响应。
+                if let Ok(required) = u64::try_from(effective_total_bytes)
+                    && let Some(available) =
+                        crate::disk_space::available_space_checked(save_dir.clone()).await
+                    && available < required.saturating_add(crate::disk_space::PRECHECK_MARGIN)
+                {
+                    return Err(range_restart_failed(DownloadError::Other(format!(
+                        "insufficient disk space for full GET: need {required} bytes plus margin, \
+                         have {available}; partial download kept"
+                    ))));
+                }
+                let staged = RangeRestart::create(&save_dir, &p.task_id)
+                    .await
+                    .map_err(range_restart_failed)?;
+                let staged = range_restart.insert(staged);
+                tracing::info!(task_id = %p.task_id, path = %staged.path.display(), "HTTP fallback staging file");
+                log_info!(
+                    "[download] task {} remaining Range requests returned 200; trying a full GET without discarding the checkpoint",
+                    p.task_id
+                );
+                if let Err(error) = crate::task_activity::record(
+                    &p.db,
+                    p.sink.as_ref(),
+                    &p.task_id,
+                    "fallback",
+                    "HTTP Range 续传失败，尝试普通 GET，保留原断点".to_string(),
+                    Some(1),
+                )
+                .await
+                {
+                    tracing::error!(task_id = %p.task_id, %error, "failed to persist HTTP fallback");
+                }
+                let result = download_single_once(
+                    &p.task_id,
+                    &p.url,
+                    &staged.path,
+                    effective_total_bytes,
+                    false,
+                    client,
+                    &p.db,
+                    &p.progress_tx,
+                    &p.cancel_token,
+                    &p.speed_limiter,
+                    &spec_ref,
+                    "",
+                    "",
+                    false,
+                    false,
+                    false,
+                )
+                .await?;
+                let len = tokio::fs::metadata(&staged.path).await?.len();
+                // Require the replacement to match the final size established by the coordinator.
+                if i64::try_from(len) != Ok(effective_total_bytes) {
+                    return Err(DownloadError::Other(format!(
+                        "received {len} bytes, expected {effective_total_bytes}"
+                    )));
+                }
+                actual_use_segments = false;
+                Some(result)
+            }
+            Err(
+                error @ (DownloadError::RangeNotSupported(_)
+                | DownloadError::VersionChanged(_)
+                | DownloadError::RangeMisaligned(_)),
+            ) => {
                 // 多段尝试中止，回退单流。三种触发：
                 //   • RangeNotSupported：服务器无视 Range（返回 200 全量），或对任何
                 //     带 Range 的请求直接回 4xx 且全程未服务过一个字节（coordinator
@@ -4706,23 +5156,14 @@ async fn run_download_inner(
                 //     与落盘版本不匹配，旧数据作废需重下。
                 //   • RangeMisaligned：服务器回 206 却发【从 0 的全量流】（Content-Range
                 //     起点不符，如 123 盘失效签名 URL）；已写入段数据是错位垃圾，必须清空。
-                // 注意：有已下数据的【瞬时 200】不会走到这里——coordinator 已在串行降级
-                // 路径就地完成下载，不返回这些错误，故此处 remove_file 只清理错位/作废/
-                // 全零的预分配数据，永不误删有效的多段进度（历史 0kb bug 已在 coordinator
-                // 侧消除）。
-                log_info!(
-                    "[download] task {} multi-segment aborted (server returned {}; no-Range or \
-                     mid-download file change) — clearing stale data, redownloading single-stream",
-                    p.task_id,
-                    status
-                );
+                // 深进度且 Range 持续收到 200 时走上面的独立临时文件，不清理有效断点。
                 actual_use_segments = false;
                 if let Err(e) = crate::task_activity::record(
                     &p.db,
                     p.sink.as_ref(),
                     &p.task_id,
                     "fallback",
-                    format!("HTTP 分段回退单流：{status}"),
+                    format!("HTTP 分段回退单流：{error}"),
                     Some(1),
                 )
                 .await
@@ -4733,6 +5174,7 @@ async fn run_download_inner(
                 //   • 真·无 Range：预分配文件全零、无有效数据；
                 //   • 版本变化：已完成段是【旧版本】字节，整体作废，必须删以重下新版本。
                 discard_segment_data(&p.db, &p.task_id, &temp_path).await?;
+                tracing::warn!(task_id = %p.task_id, "HTTP multi-segment transfer cleared stale progress and switched to one stream");
                 let result = download_single(
                     &p.task_id,
                     &p.url,
@@ -4748,7 +5190,6 @@ async fn run_download_inner(
                     &p.cancel_token,
                     &p.speed_limiter,
                     &spec_ref,
-                    &actual_name,
                     &resume_etag,
                     &resume_last_modified,
                     false,
@@ -4803,7 +5244,6 @@ async fn run_download_inner(
             &p.cancel_token,
             &p.speed_limiter,
             &spec_ref,
-            &actual_name,
             &resume_etag,
             &resume_last_modified,
             p.is_resume,
@@ -4814,6 +5254,11 @@ async fn run_download_inner(
             .saturating_sub(bytes_before);
         record_single_stream_rate(p, transferred, started.elapsed());
         Some(result)
+    };
+    let checkpoint_path = &temp_path;
+    let temp_path = match range_restart.as_ref() {
+        Some(staged) => &staged.path,
+        None => checkpoint_path,
     };
 
     // 单流解压场景：落盘字节是【解压后】大小，与 probe 的【压缩】
@@ -4972,7 +5417,7 @@ async fn run_download_inner(
         // 传输错误），此时残留一个完整大小、内容错误的临时文件毫无意义——既
         // 占用磁盘，又会让后续 resume 基于 existing_len 做出错误判断。删除它，
         // 让下次重试从干净状态开始。删除失败仅记日志，不掩盖原始 checksum 错误。
-        let verified = match verify_checksum(&temp_path, &p.checksum).await {
+        let verified = match verify_checksum(temp_path, &p.checksum).await {
             Ok(verified) => verified,
             Err(e) => {
                 if let Err(rm_err) = tokio::fs::remove_file(&temp_path).await {
@@ -5055,7 +5500,11 @@ async fn run_download_inner(
     // 完成期定名：引擎推断的名字（HEAD 被拒 / 无 Content-Disposition 时的 URL 占位、
     // 无扩展名、脚本端点名）按实际响应证据与文件头魔数精修；显式名只在缺类型扩展名
     // 时补扩展名，主名不改。精修名没有启动期预订，同样经下方原子占名环避让冲突。
-    let target_name = refine_completed_name(p, &temp_path, &actual_name).await;
+    let target_name = if html_only {
+        actual_name.clone()
+    } else {
+        refine_completed_name(p, temp_path, &actual_name).await
+    };
     let mut chosen = target_name.clone();
     let mut avoid: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut avoid_loaded = false;
@@ -5065,7 +5514,7 @@ async fn run_download_inner(
     let mut attempt = 0u32;
     loop {
         let dst = save_dir.join(&chosen);
-        match claim_rename(&temp_path, &dst).await {
+        match claim_rename(temp_path, &dst).await {
             Ok(()) => break,
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 attempt += 1;
@@ -5147,6 +5596,15 @@ async fn run_download_inner(
                     e
                 )));
             }
+        }
+    }
+    if range_restart.is_some() {
+        // The replacement is verified and renamed; the checkpoint path is still guarded.
+        if let Err(error) = discard_segment_data(&p.db, &p.task_id, checkpoint_path).await {
+            crate::logger::report_warning("http-download", "clean old HTTP checkpoint", &error);
+        }
+        if let Err(error) = p.db.update_task_progress(&p.task_id, actual_total).await {
+            crate::logger::report_warning("http-download", "persist completed restart", &error);
         }
     }
     let finalize_renamed = if chosen == actual_name {
@@ -5365,6 +5823,7 @@ fn single_runtime(task_id: &str, downloaded: i64, total: i64, active: bool) -> T
             Vec::new()
         },
         source_bytes: None,
+        hls_fragments: None,
     }
 }
 
@@ -5414,7 +5873,6 @@ async fn download_single(
     cancel_token: &CancellationToken,
     speed_limiter: &SpeedLimiter,
     spec: &DownloadSpec,
-    expected_filename: &str,
     expected_etag: &str,
     expected_last_modified: &str,
     is_resume: bool,
@@ -5445,11 +5903,11 @@ async fn download_single(
             cancel_token,
             speed_limiter,
             spec,
-            expected_filename,
             &etag_baseline,
             &last_modified_baseline,
             is_resume,
             clean_boundary,
+            true,
         )
         .await?;
         if result.latched_last_modified.is_some() {
@@ -5622,13 +6080,15 @@ fn single_body_error(
 
 async fn persist_single_progress(
     file: &mut tokio::io::BufWriter<File>,
-    db: &Db,
+    checkpoint: Option<&Db>,
     task_id: &str,
     downloaded: i64,
 ) -> Result<(), DownloadError> {
     file.flush().await?;
     file.get_ref().sync_data().await?;
-    db.update_task_progress(task_id, downloaded).await?;
+    if let Some(db) = checkpoint {
+        db.update_task_progress(task_id, downloaded).await?;
+    }
     Ok(())
 }
 
@@ -5645,7 +6105,6 @@ async fn download_single_once(
     cancel_token: &CancellationToken,
     speed_limiter: &SpeedLimiter,
     spec: &DownloadSpec,
-    expected_filename: &str,
     // 续传一致性校验：probe 阶段看到的文件版本标识。Range 206 返回后与响应
     // validator 做后验比对，避免发送可能作废一次性签名 URL 的 If-Range。
     expected_etag: &str,
@@ -5654,7 +6113,10 @@ async fn download_single_once(
     is_resume: bool,
     // 上一轮有界窗口干净 EOF 后的衔接请求：起点取实际文件末尾，不向下对齐。
     clean_boundary: bool,
+    // A staged full GET must not alter the validator or progress of the original file.
+    persist_checkpoint: bool,
 ) -> Result<SingleDownloadResult, DownloadError> {
+    let checkpoint = persist_checkpoint.then_some(db);
     let physical_existing_len = match tokio::fs::metadata(dest).await {
         Ok(metadata) => i64::try_from(metadata.len()).map_err(|_| {
             DownloadError::Other(format!(
@@ -5668,7 +6130,12 @@ async fn download_single_once(
 
     // 续传时临时文件已写满（收尾阶段被中断/失败）：无需任何网络请求，直接交给
     // 调用方的完整性检查与收尾，避免把数 GB 整文件从 0 重下。
-    if is_resume && !clean_boundary && total_bytes > 0 && physical_existing_len == total_bytes {
+    if !spec.html_only
+        && is_resume
+        && !clean_boundary
+        && total_bytes > 0
+        && physical_existing_len == total_bytes
+    {
         log_info!(
             "[download-single] task {} temp file already holds all {} bytes; skipping download",
             task_id,
@@ -5697,7 +6164,8 @@ async fn download_single_once(
     // 保留响应只出现在 fresh 运行（GET 类）或非 GET 请求上；后者从不按 Range 续传，即使
     // 任务以续传身份进入也必须消费它，否则同一表单会被再提交一次。
     let use_held = spec.has_held_response();
-    let want_resume = spec.current().is_get_like()
+    let want_resume = !spec.html_only
+        && spec.current().is_get_like()
         && supports_range
         && !use_held
         && physical_existing_len > 0
@@ -5802,6 +6270,15 @@ async fn download_single_once(
         refetched_full = true;
     }
     let mut resp = resp.error_for_status()?;
+    if !persist_checkpoint
+        && (resp.status() != reqwest::StatusCode::OK
+            || resp.headers().contains_key(reqwest::header::CONTENT_RANGE))
+    {
+        return Err(DownloadError::Other(format!(
+            "full GET after ignored Range returned an unexpected response ({}); partial download kept",
+            resp.status()
+        )));
+    }
 
     if want_resume && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT {
         let resp_etag = resp
@@ -5925,42 +6402,11 @@ async fn download_single_once(
         }
     }
 
-    // ---- Safety net: HTML response on a binary download ---------------------
-    //
-    // 兜底 hint_file_size > 0 旁路（行 1480-1536）跳过 probe 的场景：
-    // 当扩展端给出一次性 CDN URL 的 fileSize 提示时，downloader 跳过 probe
-    // 直接进入下载，但若 CDN 实际返回 HTML 错误页（token 已被消费、签名过期、
-    // 站点改用 form POST 等），会落盘成 fake.zip 这类损坏文件。
-    //
-    // 这里在 send 后第一时间检查 Content-Type——发现 text/html 但用户期望
-    // 二进制文件时立即终止下载，确保即使协议升级出问题也绝不再发生
-    // "HTML 当 zip 保存"的损坏。
-    {
-        let ct_raw = resp
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        let mime = ct_raw
-            .split(';')
-            .next()
-            .unwrap_or("")
-            .trim()
-            .to_ascii_lowercase();
-        if (mime == "text/html" || mime == "application/xhtml+xml")
-            && !filename_looks_like_html(expected_filename)
-        {
-            return Err(DownloadError::Other(format!(
-                "server returned HTML page (Content-Type: {mime}) for a non-HTML download — \
-                 aborting to avoid corrupting saved file; {}",
-                html_response_hint(
-                    spec.route_url(url).as_deref().unwrap_or(url),
-                    Some(resp.url()),
-                    &used.method,
-                )
-            )));
-        }
-    }
+    spec.check_html_response(
+        &resp,
+        spec.route_url(url).as_deref().unwrap_or(url),
+        &used.method,
+    )?;
 
     // 第一道闸：拒绝任何【无法完整还原】的响应压缩——必须在 detect_content_encoding
     // 解压分支之前判定。原因（BUG-HTTP-LAYERED-ENCODING-UNREACHABLE）：
@@ -5985,6 +6431,11 @@ async fn download_single_once(
     // as unknown for progress reporting and skip the final size integrity check.
     // 至此只可能是【单层】受支持编码（多层/未知已被上方闸拦下）。
     let encoding = detect_content_encoding(resp.headers());
+    if !persist_checkpoint && encoding.is_some() {
+        return Err(DownloadError::Other(
+            "full GET returned a compressed response despite requesting identity encoding".into(),
+        ));
+    }
     if encoding.is_some() {
         log_info!(
             "[download-single] task {} server returned Content-Encoding: {:?} — \
@@ -6062,7 +6513,7 @@ async fn download_single_once(
             .unwrap_or("")
             .to_string()
     });
-    if let Some(lm) = &latched_last_modified {
+    if persist_checkpoint && let Some(lm) = &latched_last_modified {
         let etag = resp
             .headers()
             .get(reqwest::header::ETAG)
@@ -6078,7 +6529,9 @@ async fn download_single_once(
     }
     // 实际 GET 响应的命名证据（hint 模式唯一能看到 Content-Disposition 的地方）；
     // 先写者胜，续传轮次重复调用无害。
-    record_response_naming(db, task_id, &resp).await;
+    if persist_checkpoint {
+        record_response_naming(db, task_id, &resp).await;
+    }
 
     // Capture the response's own Content-Length before consuming the body.
     // For resumed downloads (206), this is the *remaining* length, not total.
@@ -6105,7 +6558,9 @@ async fn download_single_once(
         downloaded = 0;
         file = tokio::io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, File::create(dest).await?);
         // Reset DB progress so the UI doesn't show stale values
-        db.update_task_progress(task_id, 0).await?;
+        if let Some(db) = checkpoint {
+            db.update_task_progress(task_id, 0).await?;
+        }
     }
 
     // 注：旧版本会从实际下载响应的 Content-Disposition 中提取"更好的文件名"，
@@ -6114,10 +6569,30 @@ async fn download_single_once(
     // downloader 内部不再变更文件名，避免与 manager 的 reserved_temp_paths
     // 协调断裂导致并发下载冲突（参见 PR #296 自我冲突回归 bug）。
 
-    // Wrap with decompression if needed.  The stream now yields
-    // Result<Bytes, io::Error> regardless of whether decompression is active.
+    // A filename can trigger the safety net, but cannot establish the replay's format.
+    let mut html_prefix = if spec.html_only && html_mime(response_content_type(&resp)).is_none() {
+        Some(([0u8; 512], 0usize))
+    } else {
+        None
+    };
+    // The stream yields Result<Bytes, io::Error> with or without decompression.
     let raw_stream = resp.bytes_stream();
-    let mut stream = maybe_decompress_stream(raw_stream, encoding);
+    let received = AtomicI64::new(0);
+    let staged = !persist_checkpoint;
+    let mut stream = if staged {
+        // Measure response bytes before decoding so discarded bytes still count.
+        maybe_decompress_stream(
+            raw_stream.inspect(|chunk| {
+                if let Ok(bytes) = chunk {
+                    received.fetch_add(bytes.len() as i64, Ordering::Relaxed);
+                }
+            }),
+            encoding,
+        )
+    } else {
+        maybe_decompress_stream(raw_stream, encoding)
+    };
+    let staged_bytes = || staged.then(|| received.load(Ordering::Relaxed));
 
     // When decompression is active, the probe's total_bytes is the *compressed*
     // size — the actual decompressed bytes written to disk will differ.
@@ -6138,6 +6613,8 @@ async fn download_single_once(
             task_id: task_id.to_owned(),
             downloaded_bytes: downloaded,
             download_baseline: Some(downloaded),
+            transfer_bytes: staged_bytes(),
+            staged_download: staged,
             total_bytes,
             status: 1,
             segment_details: single_segment_progress(downloaded, total_bytes, true),
@@ -6154,11 +6631,13 @@ async fn download_single_once(
     let mut last_report = std::time::Instant::now();
     let mut last_db_save = std::time::Instant::now();
 
-    loop {
+    let body_result = 'body: loop {
         tokio::select! {
             _ = cancel_token.cancelled() => {
-                persist_single_progress(&mut file, db, task_id, downloaded).await?;
-                return Err(DownloadError::Cancelled);
+                if persist_checkpoint {
+                    persist_single_progress(&mut file, checkpoint, task_id, downloaded).await?;
+                }
+                break 'body Err(DownloadError::Cancelled);
             }
             result = tokio::time::timeout(CHUNK_STALL_TIMEOUT, stream.next()) => {
                 // Unwrap the timeout layer first.  If no chunk arrived within
@@ -6169,10 +6648,12 @@ async fn download_single_once(
                 let chunk = match result {
                     Ok(c) => c,
                     Err(_) => {
-                        if let Err(cleanup_error) = persist_single_progress(&mut file, db, task_id, downloaded).await {
+                        if persist_checkpoint
+                            && let Err(cleanup_error) = persist_single_progress(&mut file, checkpoint, task_id, downloaded).await
+                        {
                             crate::logger::report_warning("http-download", "persist progress after stall", &cleanup_error);
                         }
-                        return Err(single_stall_error(
+                        break 'body Err(single_stall_error(
                             CHUNK_STALL_TIMEOUT.as_secs(),
                             body_start,
                             downloaded,
@@ -6182,6 +6663,17 @@ async fn download_single_once(
                 };
                 match chunk {
                     Some(Ok(bytes)) => {
+                        if let Some((prefix, len)) = &mut html_prefix {
+                            let count = bytes.len().min(prefix.len() - *len);
+                            prefix[*len..*len + count].copy_from_slice(&bytes[..count]);
+                            *len += count;
+                            if *len == prefix.len() {
+                                if !has_html_signature(prefix) {
+                                    break 'body Err(DownloadError::Other(HTML_RESPONSE_CHANGED_MESSAGE.into()));
+                                }
+                                html_prefix = None;
+                            }
+                        }
                         // --- Speed limiter: write in sub-chunks as tokens allow ---
                         // 令牌等待必须与取消竞速：低限速下一个 chunk 要等数秒，
                         // 期间暂停/删除不能被挡在 select 分支体外。
@@ -6191,16 +6683,19 @@ async fn download_single_once(
                             let remaining = (chunk_len - offset) as u64;
                             let allowed = tokio::select! {
                                 _ = cancel_token.cancelled() => {
-                                    file.flush().await?;
-                                    file.get_ref().sync_data().await?;
                                     downloaded += offset as i64;
-                                    db.update_task_progress(task_id, downloaded).await?;
-                                    return Err(DownloadError::Cancelled);
+                                    if persist_checkpoint {
+                                        persist_single_progress(&mut file, checkpoint, task_id, downloaded).await?;
+                                    }
+                                    break 'body Err(DownloadError::Cancelled);
                                 }
                                 allowed = speed_limiter.consume(remaining) => allowed,
                             };
                             let end = offset + allowed as usize;
-                            file.write_all(&bytes[offset..end]).await?;
+                            if let Err(error) = file.write_all(&bytes[offset..end]).await {
+                                downloaded += offset as i64;
+                                break 'body Err(error.into());
+                            }
                             offset = end;
                         }
                         let len = chunk_len as i64;
@@ -6212,6 +6707,8 @@ async fn download_single_once(
                                 .send(ProgressUpdate {
                                     task_id: task_id.to_string(),
                                     downloaded_bytes: downloaded,
+                                    transfer_bytes: staged_bytes(),
+                                    staged_download: staged,
                                     total_bytes,
                                     status: 1,
                                     error_message: String::new(),
@@ -6227,32 +6724,53 @@ async fn download_single_once(
                         }
 
                         // DB persistence — periodic save for crash recovery.
-                        if last_db_save.elapsed().as_secs() >= DB_SAVE_INTERVAL_SECS {
-                            persist_single_progress(&mut file, db, task_id, downloaded).await?;
+                        if persist_checkpoint && last_db_save.elapsed().as_secs() >= DB_SAVE_INTERVAL_SECS {
+                            persist_single_progress(&mut file, checkpoint, task_id, downloaded).await?;
                             last_db_save = std::time::Instant::now();
                         }
                     }
                     Some(Err(e)) => {
-                        let checkpoint = async {
-                            persist_single_progress(&mut file, db, task_id, downloaded).await?;
-                            Ok::<(), DownloadError>(())
-                        }.await;
-                        if let Err(cleanup_error) = checkpoint {
+                        if persist_checkpoint
+                            && let Err(cleanup_error) = persist_single_progress(&mut file, checkpoint, task_id, downloaded).await
+                        {
                             crate::logger::report_warning("http-download", "persist progress after read failure", &cleanup_error);
                         }
-                        return Err(single_body_error(e, downloaded, declared_end));
+                        let failure = staged.then(|| crate::net_failure::classify(&e)).flatten();
+                        let error = single_body_error(e, downloaded, declared_end);
+                        break 'body Err(match failure {
+                            Some(failure) => DownloadError::Other(crate::net_failure::append_tag(
+                                download_error_chain_text(&error),
+                                Some(failure),
+                            )),
+                            None => error,
+                        });
                     }
-                    None => break,
+                    None => break 'body Ok(()),
                 }
             }
         }
-    }
+    };
+    let staged_error = match body_result {
+        Ok(()) => None,
+        Err(error) if staged => Some(error),
+        Err(error) => return Err(error),
+    };
 
+    if spec.html_only
+        && (downloaded == 0
+            || html_prefix.is_some_and(|(prefix, len)| !has_html_signature(&prefix[..len])))
+    {
+        return Err(DownloadError::Other(HTML_RESPONSE_CHANGED_MESSAGE.into()));
+    }
     drop(reading);
+    // Send the final staged byte count even on failure or cancellation, before
+    // the terminal frame restores durable progress and its accounting baseline.
     if progress_tx
         .send(ProgressUpdate {
             task_id: task_id.to_owned(),
             downloaded_bytes: downloaded,
+            transfer_bytes: staged_bytes(),
+            staged_download: staged,
             total_bytes,
             status: 1,
             runtime: Some(single_runtime(task_id, downloaded, total_bytes, false)),
@@ -6264,7 +6782,10 @@ async fn download_single_once(
     {
         tracing::debug!("HTTP progress receiver closed");
     }
-    persist_single_progress(&mut file, db, task_id, downloaded).await?;
+    if let Some(error) = staged_error {
+        return Err(error);
+    }
+    persist_single_progress(&mut file, checkpoint, task_id, downloaded).await?;
     Ok(SingleDownloadResult {
         response_content_length,
         decompressed: encoding.is_some(),
@@ -6666,6 +7187,24 @@ mod tests {
             assert!(crate::auto_proxy::is_route_transport_error(&msg), "{msg}");
             assert!(crate::download_manager::is_retriable_error(&msg), "{msg}");
         }
+
+        let request = client.get(url).send().await.expect_err("closed port");
+        let cause = super::DownloadError::Request(request);
+        let cause_text = cause.to_string();
+        let error = super::range_restart_failed(cause);
+        let source = std::error::Error::source(&error).expect("wrapped download error");
+        let root_chain =
+            super::format_error_chain(source.source().expect("reqwest error").source());
+        assert!(!root_chain.is_empty());
+        let msg = super::download_terminal_error_message(&error);
+        assert!(msg.contains(&root_chain), "{msg}");
+        assert_eq!(msg.matches(&cause_text).count(), 1, "{msg}");
+        assert_eq!(
+            crate::net_failure::tag_of(&msg),
+            Some(crate::net_failure::NetFailure::Refused),
+            "{msg}"
+        );
+        assert!(!crate::download_manager::is_retriable_error(&msg), "{msg}");
     }
 
     // -----------------------------------------------------------------------
@@ -6689,6 +7228,56 @@ mod tests {
             None
         );
         assert_eq!(super::infer_origin_referrer("not-a-valid-url"), None);
+    }
+
+    #[test]
+    fn only_successful_html_failure_is_eligible_for_saving() {
+        for (message, expected) in [
+            (
+                "server returned HTML page (Content-Type: text/html) instead of the expected file — hint",
+                true,
+            ),
+            (
+                "server returned HTML page (Content-Type: non-HTML or missing) for a non-HTML download (HTML response filename) — hint",
+                true,
+            ),
+            (
+                "server returned HTML page (Content-Type: text/html) — HTTP 403 Forbidden",
+                false,
+            ),
+            ("request failed: HTTP 403 Forbidden", false),
+        ] {
+            assert_eq!(super::can_save_html_failure(message), expected, "{message}");
+        }
+    }
+
+    #[test]
+    fn replay_sniff_requires_html_after_prelude() {
+        for (body, expected) in [
+            (
+                b"\xef\xbb\xbf\n<!-- page --><H1>Shared file</H1>".as_slice(),
+                true,
+            ),
+            (b"<table><tr><td>Report</td></tr></table>", true),
+            (b"<a href=\"/file\">File</a>", true),
+            (b"<form action=\"/login\"></form>", true),
+            (b"<h2>Files</h2>", true),
+            (b"<ul><li>File</li></ul>", true),
+            (b"<ol><li>File</li></ol>", true),
+            (b"<br/>Continue", true),
+            (b"<span>Continue</span>", true),
+            (b"<img src=\"banner.png\" />", true),
+            (b"<section>Files</section>", true),
+            (b"<?xml version=\"1.0\"?><html>Page</html>", true),
+            (b"<?xml version=\"1.0\"?><svg></svg>", false),
+            (b"<!-- archive metadata -->PK\x03\x04", false),
+            (b"<!-- pending", false),
+            (b"<archive>Archive</archive>", false),
+            (b"<section-data>Export</section-data>", false),
+            (b"<table", false),
+        ] {
+            assert_eq!(super::has_html_signature(body), expected, "{body:?}");
+        }
     }
 
     /// HTML 安全网：被重定向到登录 / 错误页时点出终点（不带 query 里的令牌），且路径里
@@ -9709,7 +10298,6 @@ mod single_resume_tests {
             &CancellationToken::new(),
             &SpeedLimiter::new(0),
             &super::DownloadSpec::new(spec),
-            "f.bin",
             "",
             "",
             is_resume,
@@ -10680,7 +11268,7 @@ mod single_resume_tests {
         let mut writer = tokio::io::BufWriter::with_capacity(1024, file);
         writer.write_all(b"new").await.expect("buffer write");
         assert!(matches!(
-            super::persist_single_progress(&mut writer, &db, "checkpoint", 6).await,
+            super::persist_single_progress(&mut writer, Some(&db), "checkpoint", 6).await,
             Err(DownloadError::Io(_))
         ));
         assert_eq!(
@@ -10722,7 +11310,7 @@ mod single_resume_tests {
         let attempt = || {
             download_single(
                 "second", &url, &dest, 17, false, &client, &db, &NoopSink, &tx, &cancel, &limiter,
-                &spec, "f.bin", "", "", false,
+                &spec, "", "", false,
             )
         };
         assert!(matches!(
@@ -10735,7 +11323,7 @@ mod single_resume_tests {
         paused.cancel();
         let paused_result = download_single(
             "second", &url, &dest, 17, false, &client, &db, &NoopSink, &tx, &paused, &limiter,
-            &spec, "f.bin", "", "", false,
+            &spec, "", "", false,
         )
         .await;
         assert!(matches!(paused_result, Err(DownloadError::Cancelled)));

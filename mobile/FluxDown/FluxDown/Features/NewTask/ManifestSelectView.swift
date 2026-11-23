@@ -176,6 +176,7 @@ struct ManifestSelectView: View {
     @Environment(AppContainer.self) private var container
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var model: ManifestSelectModel
+    @State private var taskInfoExport: TaskInfoDocument?
 
     init(source: ManifestSource, base: ManifestBaseOptions, close: @escaping () -> Void) {
         _model = State(initialValue: ManifestSelectModel(source: source, base: base))
@@ -186,6 +187,9 @@ struct ManifestSelectView: View {
 
     var body: some View {
         readyList
+            .background {
+                Color.clear.taskInfoExporter($taskInfoExport)
+            }
             .navigationTitle(L("manifestDialogTitle"))
             .navigationBarTitleDisplayMode(.inline)
             .navigationBarBackButtonHidden(model.submitting)
@@ -304,6 +308,12 @@ struct ManifestSelectView: View {
                 }
                 .accessibilityLabel(L("manifestSelectAll"))
             }
+            Button(L("exportTaskInfoTxt"), systemImage: "square.and.arrow.down") {
+                taskInfoExport = TaskInfoDocument(model.selection.selectedExportRows().map {
+                    TaskInfoRow(name: $0.name, url: "", size: $0.size > 0 ? $0.size : nil)
+                })
+            }
+            .disabled(model.selection.count == 0 || model.submitting)
         }
     }
 

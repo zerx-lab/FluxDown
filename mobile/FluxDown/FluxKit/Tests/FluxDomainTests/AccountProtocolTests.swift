@@ -184,8 +184,12 @@ struct AccountProtocolTests {
         #expect(AccountRules.errorKey(HostError(.timeout, reason: "pairingTimeout"), context: .pairing) == "errReasonPairingTimeout")
         #expect(AccountRules.errorKey(HostError(.unauthorized, reason: "peerClockSkew"), context: .pairing) == "errReasonPeerClockSkew")
         #expect(AccountRules.errorKey(HostError(.invalidArgument), context: .pairing) == "localPairingAddressInvalid")
+        // 云端已没有该远程任务：按 reason 显示专用文案（新 host）；旧 host 只有 notFound，仍落通用文案。
+        #expect(AccountRules.errorKey(HostError(.notFound, reason: "remoteTaskGone")) == "errReasonRemoteTaskGone")
+        #expect(AccountRules.errorKey(forReason: "remoteTaskGone") == "errReasonRemoteTaskGone")
         #expect(AccountRules.errorKey(HostError(.timeout)) == "localServiceDisconnected")
         #expect(AccountRules.errorKey(HostError(.conflict)) == "localServiceConflict")
+        #expect(AccountRules.errorKey(HostError(.conflict, reason: "taskFileClearPending")) == "errReasonTaskFileClearPending")
         #expect(AccountRules.errorKey(HostError(.notFound)) == "localServiceInvalidArgument")
         // 同一 reason 在同步场景换文案；未映射的 reason 回退按码。
         let untrusted = HostError(.unauthorized, reason: "deviceUntrusted")

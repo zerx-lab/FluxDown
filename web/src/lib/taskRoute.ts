@@ -14,6 +14,8 @@ const EXACT_KEYS: Readonly<Record<string, string>> = {
   'global:pac': 'taskRouteGlobalPac',
   'task:proxy': 'taskRouteTaskProxy',
   'task:direct': 'taskRouteTaskDirect',
+  'protocol:direct': 'taskRouteProtocolDirect',
+  'protocol:proxy': 'taskRouteProtocolProxy',
   'bt:direct': 'taskRouteBtDirect',
   'bt:trackers:manual': 'taskRouteBtTrackersManual',
   'bt:trackers:system': 'taskRouteBtTrackersSystem',

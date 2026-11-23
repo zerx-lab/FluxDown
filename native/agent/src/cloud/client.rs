@@ -521,8 +521,8 @@ impl CloudClient {
             .await
     }
 
-    /// 调用方必须持有 `self.refresh` 锁。清空凭证、账号维度状态（同步水位 / 脏键按账号暂存、
-    /// 远程任务与接单绑定丢弃），先投影事件再报告落盘错误，保证 UI 与内存状态一致。
+    /// 调用方必须持有 `self.refresh` 锁。清空凭证、账号维度状态（同步水位 / 脏键与接单绑定按账号暂存、
+    /// 远程任务投影丢弃），先投影事件再报告落盘错误，保证 UI 与内存状态一致。
     /// `revoked` 为 `Some` 时先于 `SessionChanged(None)` 发布 `SessionRevoked`；`cause` 只进日志。
     async fn clear_session_locked(
         &self,
@@ -2596,6 +2596,8 @@ mod tests {
             assert!(state.sync.dirty_keys.is_empty());
             assert!(state.remote_bindings.is_empty());
             assert_eq!(state.sync_stash["u1"].revision, 33);
+            // 接单绑定随账号暂存：重新登录同一账号后本机仍认得自己执行的任务。
+            assert_eq!(state.sync_stash["u1"].remote_bindings["r1"], "t1");
         }
         let fluxdown_protocol::SnapshotBody::Agent(snapshot) = events.snapshot().body else {
             panic!("agent snapshot expected");

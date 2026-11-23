@@ -20,6 +20,7 @@ pub(crate) mod refresh_gate;
 pub(crate) mod row_order;
 pub(crate) mod save_dir_category;
 pub(crate) mod save_dir_history;
+pub(crate) mod series_title;
 pub(crate) mod shutdown;
 pub(crate) mod source_composition;
 pub(crate) mod speed_limit_recent;
@@ -325,7 +326,6 @@ pub(crate) struct DownloadTaskView {
     /// 小写扩展名（无点；空 = 无扩展名）：建行时算一次，分类匹配 / 系统图标键在渲染热路径
     /// 上不再逐次分配。
     pub(crate) file_extension: SharedString,
-    pub(crate) size: String,
     pub(crate) size_bytes: u64,
     pub(crate) downloaded_bytes: u64,
     pub(crate) speed_bytes_per_second: Option<u64>,
@@ -502,7 +502,6 @@ impl DownloadTaskView {
             name_fold: name.to_lowercase(),
             file_extension: file_extension(&name),
             name,
-            size: format_bytes(size_bytes),
             size_bytes,
             downloaded_bytes: downloaded,
             speed_bytes_per_second,
@@ -676,18 +675,7 @@ fn file_extension(name: &str) -> SharedString {
 }
 
 pub(crate) fn format_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
-    }
+    fluxdown_ui_components::size_units::format_bytes(bytes, 3)
 }
 
 #[cfg(test)]

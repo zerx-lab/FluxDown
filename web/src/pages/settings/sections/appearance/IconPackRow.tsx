@@ -14,6 +14,7 @@ const LABEL_KEYS: Record<string, string> = {
   lucide: 'fileIconPackLucide',
   material: 'fileIconPackMaterial',
   catppuccin: 'fileIconPackCatppuccin',
+  thunder: 'fileIconPackThunder',
 }
 
 /** 预览样例：视频、压缩包、文档、程序（同 GPUI `PREVIEW_FILES`）。 */

@@ -6,6 +6,7 @@ import androidx.compose.runtime.Composable
 import com.fluxdown.app.R
 import com.fluxdown.app.i18n.str
 import com.fluxdown.core.host.HostException
+import com.fluxdown.core.protocol.RemoteTaskRules
 import com.fluxdown.core.protocol.SyncStatusDto
 import com.fluxdown.core.protocol.AccountErrorContext
 import com.fluxdown.core.protocol.AccountRules
@@ -56,6 +57,7 @@ internal object AccountText {
         "errReasonLinkUnavailable" to R.string.errReasonLinkUnavailable,
         "errReasonTargetDeviceOffline" to R.string.errReasonTargetDeviceOffline,
         "errReasonTaskStateConflict" to R.string.errReasonTaskStateConflict,
+        "errReasonRemoteTaskGone" to R.string.errReasonRemoteTaskGone,
         "errReasonTaskDeviceMismatch" to R.string.errReasonTaskDeviceMismatch,
         "errReasonSaveDirUnavailable" to R.string.errReasonSaveDirUnavailable,
         "accountErrorValidation" to R.string.accountErrorValidation,
@@ -84,6 +86,9 @@ internal object AccountText {
     /** 账户场景错误文案：先按 `reason`（`ErrorReason` wire 名）、再按 `code` + [scene] 回退。 */
     fun error(context: Context, e: HostException, scene: AccountErrorContext = AccountErrorContext.General): String =
         context.getString(res(AccountRules.errorKey(e, scene)))
+
+    /** 远程任务命令失败文案：`remoteTaskGone` 与旧主机的裸 `notFound` 同为「云端已无此任务」，其余按 reason / code。 */
+    fun remoteError(context: Context, e: HostException): String = context.getString(res(RemoteTaskRules.errorKey(e)))
 
     /** 云同步失败 / 暂停原因（按 reason 本地化，未映射回退通用文案，不显示服务端诊断原文）。 */
     fun syncReason(context: Context, sync: SyncStatusDto): String = context.getString(res(SyncRules.reasonKey(sync)))

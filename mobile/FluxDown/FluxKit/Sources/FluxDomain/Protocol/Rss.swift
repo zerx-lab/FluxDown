@@ -259,6 +259,7 @@ public struct RssItemDto: Codable, Sendable, Hashable, Identifiable {
     /// 智能剧集归一键（空 = 未识别）。
     public var episodeKey: String
     public var reason: String
+    public var imageCount: Int
 
     public var id: String { sourceId + "\u{0}" + guid }
 
@@ -274,7 +275,8 @@ public struct RssItemDto: Codable, Sendable, Hashable, Identifiable {
         status: Int32 = 0,
         taskId: String = "",
         episodeKey: String = "",
-        reason: String = ""
+        reason: String = "",
+        imageCount: Int = 0
     ) {
         self.sourceId = sourceId
         self.guid = guid
@@ -288,6 +290,7 @@ public struct RssItemDto: Codable, Sendable, Hashable, Identifiable {
         self.taskId = taskId
         self.episodeKey = episodeKey
         self.reason = reason
+        self.imageCount = imageCount
     }
 
     public init(from decoder: any Decoder) throws {
@@ -304,7 +307,8 @@ public struct RssItemDto: Codable, Sendable, Hashable, Identifiable {
             status: try c.decodeIfPresent(Int32.self, forKey: .status) ?? 0,
             taskId: try c.decodeIfPresent(String.self, forKey: .taskId) ?? "",
             episodeKey: try c.decodeIfPresent(String.self, forKey: .episodeKey) ?? "",
-            reason: try c.decodeIfPresent(String.self, forKey: .reason) ?? ""
+            reason: try c.decodeIfPresent(String.self, forKey: .reason) ?? "",
+            imageCount: try c.decodeIfPresent(Int.self, forKey: .imageCount) ?? 0
         )
     }
 

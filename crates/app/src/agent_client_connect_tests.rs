@@ -269,3 +269,130 @@ async fn blocked_launch_is_reported_once_per_failure_period() {
         }]
     );
 }
+
+#[cfg(unix)]
+mod ipc {
+    use super::*;
+    use fluxdown_protocol::local_service::GATEWAY_IPC_SOCKET_FILE;
+    use tokio::net::UnixListener;
+
+    /// 没有显式 RPC 地址的配置（生产形态）：IPC 端点由 bearer 所在目录推导。
+    fn discovered(fixture: &Fixture) -> AgentClientConfig {
+        AgentClientConfig {
+            rpc_url: None,
+            bearer_path: fixture.0.join("agent.token"),
+        }
+    }
+
+    /// 一个确定无人监听的回环地址。
+    async fn dead_tcp_url() -> String {
+        let (listener, url) = bind().await;
+        drop(listener);
+        url
+    }
+
+    /// IPC 端点可用时优先经它握手：TCP 地址无人监听也不影响，结果来自 IPC 对端。
+    #[tokio::test]
+    async fn ipc_endpoint_is_preferred_over_loopback_tcp() {
+        // 目录名保持简短：Unix socket 路径有长度上限。
+        let fixture = Fixture::new("i1");
+        let listener =
+            UnixListener::bind(fixture.0.join(GATEWAY_IPC_SOCKET_FILE)).expect("bind ipc");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept client");
+            let _socket = tokio_tungstenite::accept_async(stream)
+                .await
+                .expect("complete the upgrade");
+            std::future::pending::<()>().await;
+        });
+        let url = dead_tcp_url().await;
+        let result = connect(
+            &discovered(&fixture),
+            &url,
+            Duration::from_secs(2),
+            Duration::from_millis(250),
+            true,
+        )
+        .await;
+        server.abort();
+        match result {
+            Err(ConnectError::Transient(reason)) => {
+                assert!(reason.contains("over local IPC"), "{reason}");
+            }
+            Err(other) => panic!(
+                "expected the IPC handshake outcome, got {}",
+                other.describe()
+            ),
+            Ok(_) => panic!("an unanswered hello cannot complete the handshake"),
+        }
+    }
+
+    /// IPC 对端拒绝 bearer（不是本数据目录的 agent）：同一轮改走回环 TCP。
+    #[tokio::test]
+    #[allow(
+        clippy::result_large_err,
+        reason = "tungstenite's handshake callback fixes the Err type to http::Response"
+    )]
+    async fn ipc_endpoint_rejecting_the_bearer_falls_back_to_tcp() {
+        let fixture = Fixture::new("i2");
+        let listener =
+            UnixListener::bind(fixture.0.join(GATEWAY_IPC_SOCKET_FILE)).expect("bind ipc");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept client");
+            let rejected =
+                tokio_tungstenite::accept_hdr_async(stream, |_: &Request, _: Response| {
+                    Err(unauthorized())
+                })
+                .await;
+            assert!(rejected.is_err());
+        });
+        let url = dead_tcp_url().await;
+        let result = connect(
+            &discovered(&fixture),
+            &url,
+            Duration::from_secs(2),
+            Duration::from_secs(2),
+            true,
+        )
+        .await;
+        server.await.expect("ipc peer");
+        assert!(
+            matches!(result, Err(ConnectError::Refused)),
+            "TCP outcome expected after the IPC 401"
+        );
+    }
+
+    /// 没有 IPC 端点（agent 未运行或旧版 agent）：直接走回环 TCP 流程。
+    #[tokio::test]
+    async fn missing_ipc_endpoint_uses_tcp() {
+        let fixture = Fixture::new("i3");
+        let url = dead_tcp_url().await;
+        let result = connect(
+            &discovered(&fixture),
+            &url,
+            Duration::from_secs(2),
+            Duration::from_secs(2),
+            true,
+        )
+        .await;
+        assert!(matches!(result, Err(ConnectError::Refused)));
+    }
+
+    /// 显式指定 RPC 地址（`FLUXDOWN_AGENT_URL`）时只连该地址，不碰 IPC 端点。
+    #[tokio::test]
+    async fn explicit_rpc_url_skips_the_ipc_endpoint() {
+        let fixture = Fixture::new("i4");
+        let _listener =
+            UnixListener::bind(fixture.0.join(GATEWAY_IPC_SOCKET_FILE)).expect("bind ipc");
+        let url = dead_tcp_url().await;
+        let result = connect(
+            &fixture.config(&url),
+            &url,
+            Duration::from_secs(2),
+            Duration::from_millis(250),
+            true,
+        )
+        .await;
+        assert!(matches!(result, Err(ConnectError::Refused)));
+    }
+}
