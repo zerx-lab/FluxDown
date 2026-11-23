@@ -1,7 +1,9 @@
 {
-  "presets": [0, 1, 7, 30],
+  "presets": [0, -1, 1, 7, 30],
   "customStart": 14,
   "mode": [
+    { "days": -1, "customFlag": false, "expect": "-1" },
+    { "days": -1, "customFlag": true, "expect": "-1" },
     { "days": 0, "customFlag": false, "expect": "0" },
     { "days": 1, "customFlag": false, "expect": "1" },
     { "days": 7, "customFlag": false, "expect": "7" },
@@ -12,6 +14,7 @@
     { "days": 0, "customFlag": true, "expect": "0" }
   ],
   "customTarget": [
+    { "current": -1, "max": 3650, "expect": 14 },
     { "current": 0, "max": 3650, "expect": 14 },
     { "current": 7, "max": 3650, "expect": 14 },
     { "current": 30, "max": 3650, "expect": 14 },

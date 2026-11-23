@@ -97,7 +97,7 @@ object SettingsCatalog {
         daemon("dedup_same_url", bool, "false"),
         daemon("file_exists_behavior", choice(fileExistsBehaviors), "rename"),
         daemon("file_missing_action", choice(fileMissingActions), "keep"),
-        daemon("completed_record_retention_days", int(0, 3650), "0"),
+        daemon("completed_record_retention_days", int(-1, 3650), "0"),
         daemon("idle_file_scan", bool, "false"),
         daemon("hash_after_download", bool, "false"),
         daemon("hash_algorithm", choice(hashAlgorithms), "sha256"),

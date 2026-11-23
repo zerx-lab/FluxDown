@@ -266,7 +266,7 @@ export const DAEMON_CONFIG_FIELDS: readonly DaemonConfigField[] = [
   bool('dedup_same_url', 'false'),
   oneOf('file_exists_behavior', 'rename', FILE_EXISTS_BEHAVIORS),
   oneOf('file_missing_action', 'keep', FILE_MISSING_ACTIONS),
-  int('completed_record_retention_days', '0', 0, 3650),
+  int('completed_record_retention_days', '0', -1, 3650),
   bool('idle_file_scan', 'false'),
   bool('hash_after_download', 'false'),
   oneOf('hash_algorithm', 'sha256', HASH_ALGORITHMS),

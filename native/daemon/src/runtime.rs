@@ -712,6 +712,10 @@ fn take_engine_receivers(engine: &mut Engine) -> Result<EngineReceivers, std::io
         .manager
         .take_missing_cleanup_rx()
         .ok_or_else(|| std::io::Error::other("missing cleanup receiver already taken"))?;
+    let retention_purge = engine
+        .manager
+        .take_retention_purge_rx()
+        .ok_or_else(|| std::io::Error::other("retention purge receiver already taken"))?;
     let file_hash = engine
         .manager
         .take_file_hash_rx()
@@ -753,6 +757,7 @@ fn take_engine_receivers(engine: &mut Engine) -> Result<EngineReceivers, std::io
         retry,
         plugin,
         missing_cleanup,
+        retention_purge,
         file_hash,
     })
 }
@@ -799,10 +804,13 @@ fn apply_manager_settings(engine: &mut Engine, config: &HashMap<String, String>)
     engine
         .manager
         .set_hash_after_download(hash_after_download(config));
-    engine.manager.set_completed_record_retention_days(
-        u32::try_from(i32_config(config, "completed_record_retention_days", 0).clamp(0, 3650))
-            .unwrap_or(0),
-    );
+    engine
+        .manager
+        .set_completed_record_retention_days(completed_record_retention_days(
+            config
+                .get("completed_record_retention_days")
+                .map(String::as_str),
+        ));
     #[cfg(feature = "bt")]
     engine
         .manager
@@ -842,6 +850,19 @@ fn i32_config(config: &HashMap<String, String>, key: &str, fallback: i32) -> i32
         .get(key)
         .and_then(|value| value.parse::<i32>().ok())
         .unwrap_or(fallback)
+}
+
+/// `completed_record_retention_days`：`-1` = 立即，`0` = 永不，`1..=3650` = 天数。
+/// 负值一律收成 `-1`，避免旧的 `clamp(0, 3650)` 把「立即」变成「从不」。
+pub(crate) fn completed_record_retention_days(value: Option<&str>) -> i32 {
+    let parsed = value
+        .and_then(|value| value.parse::<i32>().ok())
+        .unwrap_or(0);
+    if parsed < 0 {
+        -1
+    } else {
+        parsed.clamp(0, 3650)
+    }
 }
 
 fn u64_config(config: &HashMap<String, String>, key: &str, fallback: u64) -> u64 {
@@ -988,8 +1009,8 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::{
-        EndpointGuard, bind_control_plane, bootstrap_database, endpoint_file_path,
-        monitor_writer_lease, publish_endpoint_file,
+        EndpointGuard, bind_control_plane, bootstrap_database, completed_record_retention_days,
+        endpoint_file_path, monitor_writer_lease, publish_endpoint_file,
     };
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
@@ -1017,6 +1038,17 @@ mod tests {
             .expect_err("strict bind must fail");
         assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
         assert!(error.to_string().contains(&addr.to_string()), "{error}");
+    }
+
+    #[test]
+    fn retention_sentinel_stays_immediate_and_zero_stays_never() {
+        assert_eq!(completed_record_retention_days(Some("-1")), -1);
+        assert_eq!(completed_record_retention_days(Some("-9")), -1);
+        assert_eq!(completed_record_retention_days(Some("0")), 0);
+        assert_eq!(completed_record_retention_days(Some("7")), 7);
+        assert_eq!(completed_record_retention_days(Some("99999")), 3650);
+        assert_eq!(completed_record_retention_days(None), 0);
+        assert_eq!(completed_record_retention_days(Some("nope")), 0);
     }
 
     #[tokio::test]
