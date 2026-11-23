@@ -4,14 +4,14 @@ import { FolderOpen, Info, Package, RotateCw, ScrollText, Settings, Trash2 } fro
 import { useEffect, useRef, useState } from 'react'
 import { useT } from '../../../../i18n'
 import { copyText } from '../../../../lib/copy'
-import { METHOD, RpcError, call, rpc, uploadBlob, useDaemon } from '../../../../lib/rpc'
+import { METHOD, call, rpc, uploadBlob, useDaemon } from '../../../../lib/rpc'
 import type { DaemonSnapshot, InstalledPlugin, PluginArchiveRulesDto, PluginDto } from '../../../../lib/rpc'
 import { Badge, Button, Card, ConfirmFooter, Dialog, EmptyState, FormField, Input, InputWithAction, Switch, confirmDialog, toast } from '../../../../ui'
 import { hasPluginSettings } from '../../../plugins/contributions'
 import { BlockTitle, ExtLink, IconButton, ListCard, ListRow } from './common'
 import { detailFromPlugin } from './detail'
 import type { PluginDetail } from './detail'
-import { extensionErrorText } from './errors'
+import { extensionErrorText, pluginFailureText } from './errors'
 import { MarketSection } from './MarketSection'
 import { PrivateSection } from './PrivateSection'
 import { PluginAuditDialog } from './PluginAuditDialog'
@@ -152,9 +152,7 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
     }
   }
   const onInstallFailed = (error: unknown) => {
-    const detail = error instanceof RpcError ? error.data?.pluginDetail : undefined
-    const fallback = error instanceof RpcError ? extensionErrorText(t, error) : t('localServiceActionFailed')
-    setInstallError(t('pluginOpInstallFailed', { message: detail ?? fallback }))
+    setInstallError(t('pluginOpInstallFailed', { message: pluginFailureText(t, error) }))
     toast.error(t('pluginOpInstallFailed', { message: extensionErrorText(t, error) }))
   }
 
@@ -207,11 +205,9 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
         toast.success(t('pluginOpReloadSuccess'))
         if (result.missingComponents?.length) setMissing(result.missingComponents)
       } catch (error) {
-        const detail = error instanceof RpcError ? error.data?.pluginDetail : undefined
-        const fallback = error instanceof RpcError ? extensionErrorText(t, error) : t('localServiceActionFailed')
         setReloadErrors((current) => ({
           ...current,
-          [plugin.identity]: t('pluginOpReloadFailed', { message: detail ?? fallback }),
+          [plugin.identity]: t('pluginOpReloadFailed', { message: pluginFailureText(t, error) }),
         }))
         toast.error(t('pluginOpReloadFailed', { message: extensionErrorText(t, error) }))
       }

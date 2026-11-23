@@ -52,7 +52,7 @@ use crate::{
         market_action, market_needs_load, page_of, permissions_to_confirm, replaces_local_plugin,
         risk_of,
     },
-    ui,
+    plugin_detail_text, ui,
 };
 
 /// 市场列表每次展开的条数。
@@ -1431,7 +1431,8 @@ impl ExtensionsView {
                     let translator = this.translator.read(cx);
                     let detail = error
                         .plugin_detail
-                        .clone()
+                        .as_ref()
+                        .and_then(|detail| plugin_detail_text(translator, detail))
                         .unwrap_or_else(|| error_text(translator, error));
                     let message =
                         translator.text_with("pluginOpReloadFailed", &[("message", &detail)]);
@@ -1526,7 +1527,11 @@ impl ExtensionsView {
                 };
                 let message = translator.text_with(key, &[("message", &detail)]);
                 if op == PluginOp::Install {
-                    let detail = error.plugin_detail.as_deref().unwrap_or(&detail);
+                    let diagnostic = error
+                        .plugin_detail
+                        .as_ref()
+                        .and_then(|detail| plugin_detail_text(translator, detail));
+                    let detail = diagnostic.as_deref().unwrap_or(&detail);
                     self.plugins.install_error =
                         Some(translator.text_with(key, &[("message", detail)]));
                 }

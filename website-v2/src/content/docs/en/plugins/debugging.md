@@ -110,15 +110,15 @@ Three **consecutive** timeouts or out-of-memory errors in a resolver, an interce
 
 ## Install and validation errors
 
-These errors can occur during install, reload or `npm run validate`. On desktop and Web, install failures appear near the install controls and reload failures on the affected plugin row. Use **Copy error** to copy the redacted details. Some information, such as absolute paths, is omitted; see the daemon log for the original reason.
+On desktop and Web, install failures appear near the install controls and reload failures on the affected plugin row. **Copy error** copies the localized, redacted message shown there. It may include a manifest validation category, a package-relative file name, or a script line and column. It does not include raw exception text or absolute paths. For the original error, including the name of an unknown field, see the daemon diagnostics log; for local validation, run `npm run validate`.
 
-### Messages from the engine (and `npm run validate`)
+### Original engine messages in the daemon diagnostics log
 
-The engine reports these with the prefix `manifest 非法: ` (“manifest invalid:”). `npm run validate` and the SDK validator use the same rules and almost the same wording, without that prefix, and report every problem at once instead of stopping at the first. Where the wording differs, the table shows the engine's text.
+The table quotes the engine's original messages, not the desktop or Web text. Manifest errors in the log have the prefix `manifest 非法: ` (“manifest invalid:”). `npm run validate` and the SDK validator check the same manifest rules, use their own wording, and report every problem at once instead of stopping at the first.
 
 | Message | Cause | Fix |
 |---|---|---|
-| `JSON 解析失败: …` (“JSON parse failed”) | `manifest.json` is not valid JSON, has a wrong value type, or contains a field the engine does not know (the detail then reads `unknown field …`). | Fix the syntax; remove the unknown field — spelling and nesting are checked, see the [manifest reference](/docs/en/plugins/manifest/). With the SDK you get `manifest: 未知字段 <key>` (“unknown field”) instead. |
+| `JSON 解析失败: …` (“JSON parse failed”) | `manifest.json` is not valid JSON, has a wrong value type, or contains a field the engine does not know (the log then reads `unknown field …`). | Fix the syntax; remove the unknown field — spelling and nesting are checked, see the [manifest reference](/docs/en/plugins/manifest/). With the SDK you get `manifest: 未知字段 <key>` (“unknown field”) instead. |
 | `identity '…' 非法：须匹配 ^[a-z0-9_-]+@[a-z0-9_-]+$` | The identity is not `author@name` with lowercase letters, digits, `_`, `-`. | Rename, e.g. `me@my-plugin`. No dots, no uppercase. |
 | `name 不可为空` (“name must not be empty”) | Empty `name`. | Set it. |
 | `version '…' 非法：须为 MAJOR.MINOR.PATCH` | Not three dot-separated numbers. | Use `1.0.0`. The SDK and the plugin index are stricter: no `v` prefix, no suffix. |

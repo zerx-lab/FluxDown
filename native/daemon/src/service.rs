@@ -1279,7 +1279,7 @@ impl DaemonService {
                     .plugin_manager()?
                     .install_from_zip(bytes)
                     .await
-                    .map_err(|error| plugin_package_error("blobId", &error))?;
+                    .map_err(|error| plugin_package_error(Some("blobId"), &error))?;
                 self.blobs
                     .consume(&params.blob_id, BlobKind::Plugin)
                     .await
@@ -1297,7 +1297,7 @@ impl DaemonService {
                     .plugin_manager()?
                     .install_dev(std::path::Path::new(&request.dir_path))
                     .await
-                    .map_err(|error| plugin_package_error("dirPath", &error))?;
+                    .map_err(|error| plugin_package_error(Some("dirPath"), &error))?;
                 let missing_components = self.plugin_missing_components(&identity).await;
                 to_value(fluxdown_protocol::InstalledPlugin {
                     identity,
@@ -1308,7 +1308,7 @@ impl DaemonService {
             method::DAEMON_PLUGIN_RELOAD_DEV => {
                 let params = parse_params::<PluginIdentityParams>(params)?;
                 let result = self.plugin_manager()?.reload_dev(&params.identity).await;
-                result.map_err(|error| plugin_package_error("identity", &error))?;
+                result.map_err(|error| plugin_package_error(Some("identity"), &error))?;
                 let missing_components = self.plugin_missing_components(&params.identity).await;
                 to_value(fluxdown_protocol::InstalledPlugin {
                     identity: params.identity,
@@ -2959,61 +2959,73 @@ fn validate_queue_schedule(params: &QueueScheduleParams) -> Result<(), RpcErrorO
 /// 插件包 / 插件目录校验失败：记录完整原因，客户端按细分原因展示。
 #[cfg(feature = "plugins")]
 fn plugin_package_error(
-    field: &str,
+    field: Option<&str>,
     error: &fluxdown_engine::plugin::PluginError,
 ) -> RpcErrorObject {
-    let message = error.to_string();
-    fluxdown_engine::log_warn!("[plugin] 安装失败: {message}");
+    fluxdown_engine::log_warn!("[plugin] {error}");
     let mut data = RpcErrorData::new(ApplicationErrorCode::InvalidArgument, false)
         .with_reason(fluxdown_protocol::ErrorReason::PluginPackageInvalid);
-    data.field = Some(field.to_owned());
-    let detail = plugin_failure_detail(error);
-    data.plugin_detail = Some(detail.clone());
-    RpcErrorObject::application(detail, data)
+    data.field = field.map(str::to_owned);
+    data.plugin_detail = plugin_failure_detail(error);
+    RpcErrorObject::application("invalid plugin package", data)
 }
 
 #[cfg(feature = "plugins")]
-fn plugin_failure_detail(error: &fluxdown_engine::plugin::PluginError) -> String {
+fn plugin_failure_detail(
+    error: &fluxdown_engine::plugin::PluginError,
+) -> Option<fluxdown_protocol::PluginFailureDetail> {
     use fluxdown_engine::plugin::{PluginError, manifest::is_safe_relative_path};
+    use fluxdown_protocol::PluginFailureDetail as Detail;
 
-    // Do not forward exception text: validation evaluates plugin top-level JS,
-    // which can throw arbitrary strings. Only emit host-owned labels and fields.
-    match error {
+    let missing_file = |message: &str| {
+        let path = message.strip_prefix("包内缺少文件 '")?.strip_suffix('\'')?;
+        (path.len() <= 256 && !path.contains(['\'', ':', '?', '#']) && is_safe_relative_path(path))
+            .then(|| Detail::MissingFile {
+                path: path.to_owned(),
+            })
+    };
+
+    Some(match error {
         PluginError::CompileFailed(message) => {
-            let position = message.lines().find_map(|line| {
-                let (row, column) = line
-                    .trim()
-                    .strip_prefix("at eval_script:")?
-                    .split_once(':')?;
-                Some((row.parse::<u32>().ok()?, column.parse::<u32>().ok()?))
-            });
-            match position {
-                Some((row, column)) => format!("脚本编译失败（eval_script:{row}:{column}）"),
-                None => "脚本编译失败".to_owned(),
-            }
-        }
-        PluginError::LoadFailed(message) => {
-            if let Some(entry) = message
-                .strip_prefix("包内缺少文件 '")
-                .and_then(|suffix| suffix.strip_suffix('\''))
-                .filter(|entry| {
-                    entry.len() <= 256
-                        && !entry.contains(['\'', ':', '?', '#'])
-                        && is_safe_relative_path(entry)
+            // The exception can contain arbitrary plugin text. Export only numeric coordinates.
+            message
+                .lines()
+                .find_map(|line| {
+                    let (row, col) = line
+                        .trim()
+                        .strip_prefix("at eval_script:")?
+                        .split_once(':')?;
+                    Some(Detail::ScriptCompileFailedAt {
+                        line: row.parse().ok()?,
+                        column: col.parse().ok()?,
+                    })
                 })
-            {
-                format!("插件加载失败: 包内缺少文件 '{entry}'")
-            } else {
-                "插件加载失败，详情见诊断日志".to_owned()
+                .unwrap_or(Detail::ScriptCompileFailed)
+        }
+        PluginError::LoadFailed(message) => missing_file(message).unwrap_or(Detail::LoadFailed),
+        PluginError::ManifestInvalid(message) => {
+            // Manifest validation and archive/OS failures share this variant. Classify only
+            // known host templates and never echo their interpolated values or parser text.
+            match message.as_str() {
+                msg if msg.starts_with("读取 manifest") => Detail::ManifestUnreadable,
+                msg if msg.starts_with("JSON 解析失败: unknown field ") => {
+                    Detail::ManifestUnknownField
+                }
+                msg if msg.starts_with("JSON 解析失败: ") => Detail::ManifestJsonInvalid,
+                msg if msg.starts_with("identity '") => Detail::ManifestIdentityInvalid,
+                "name 不可为空" => Detail::ManifestNameMissing,
+                msg if msg.starts_with("version '") => Detail::ManifestVersionInvalid,
+                msg if msg.starts_with("minAppVersion '") => Detail::ManifestMinAppVersionInvalid,
+                msg if msg.starts_with("未知权限 '") => Detail::ManifestUnknownPermission,
+                "声明 auth.entry 时 permissions 必须包含 auth" => {
+                    Detail::ManifestAuthPermissionMissing
+                }
+                _ => return missing_file(message),
             }
         }
-        PluginError::ManifestInvalid(message) if message.starts_with("读取 manifest") => {
-            "无法读取 manifest.json，请检查插件目录或安装包".to_owned()
-        }
-        PluginError::ManifestInvalid(_) => "插件清单或安装包校验失败，详情见诊断日志".to_owned(),
-        PluginError::NotDevPlugin(_) => "只有开发模式插件支持重新加载".to_owned(),
-        _ => "插件校验失败，详情见诊断日志".to_owned(),
-    }
+        PluginError::NotDevPlugin(_) => Detail::NotDevPlugin,
+        _ => return None,
+    })
 }
 
 /// 市场索引 / 插件下载失败：按失败性质给出错误码与细分原因，并记录完整原因。
@@ -3062,11 +3074,7 @@ fn market_error(error: &fluxdown_engine::plugin::MarketError) -> RpcErrorObject 
             false,
             ErrorReason::PluginPackageTooLarge,
         ),
-        MarketError::Plugin(_) => (
-            ApplicationErrorCode::InvalidArgument,
-            false,
-            ErrorReason::PluginPackageInvalid,
-        ),
+        MarketError::Plugin(error) => return plugin_package_error(None, error),
         // 无细分原因：UI 正常路径不会走到（私有来源的插件不显示公开更新），退回「冲突」通用文案。
         MarketError::PrivateSource(_) => {
             let message = error.to_string();
@@ -3139,23 +3147,39 @@ mod tests {
     #[test]
     fn plugin_failure_details_keep_diagnosis_without_paths_or_credentials() {
         use fluxdown_engine::plugin::PluginError;
+        use fluxdown_protocol::{PluginFailureDetail as Detail, RpcErrorObject};
 
         let missing = PluginError::LoadFailed("包内缺少文件 'dist/入口.js'".to_owned());
-        let response = super::plugin_package_error("identity", &missing);
+        let response = super::plugin_package_error(Some("blobId"), &missing);
         assert_eq!(
-            response.data.and_then(|data| data.plugin_detail).as_deref(),
-            Some("插件加载失败: 包内缺少文件 'dist/入口.js'")
+            response.data.and_then(|data| data.plugin_detail),
+            Some(Detail::MissingFile {
+                path: "dist/入口.js".to_owned(),
+            })
         );
 
         let thrown = PluginError::CompileFailed(
             "unlabeled-secret\n    at eval_script:1:23\n/private/user folder/test.js".to_owned(),
         );
-        let response = super::plugin_package_error("identity", &thrown);
-        assert_eq!(response.message, "脚本编译失败（eval_script:1:23）");
+        let response = super::plugin_package_error(Some("identity"), &thrown);
+        let wire = serde_json::to_value(&response).expect("serialize plugin error");
         assert_eq!(
-            response.data.and_then(|data| data.plugin_detail).as_deref(),
-            Some("脚本编译失败（eval_script:1:23）")
+            wire,
+            json!({
+                "code": fluxdown_protocol::APPLICATION_ERROR_CODE,
+                "message": "invalid plugin package",
+                "data": {
+                    "code": "invalidArgument",
+                    "retryable": false,
+                    "field": "identity",
+                    "reason": "pluginPackageInvalid",
+                    "pluginDetail": { "kind": "scriptCompileFailedAt", "line": 1, "column": 23 }
+                }
+            })
         );
+        let decoded: RpcErrorObject =
+            serde_json::from_value(wire).expect("deserialize plugin error");
+        assert_eq!(decoded, response);
 
         for path in [
             "/private/user folder/test.js",
@@ -3163,9 +3187,55 @@ mod tests {
             r"\\nas\share\test.js",
         ] {
             let failed = PluginError::LoadFailed(format!("包内缺少文件 '{path}'"));
-            let response = super::plugin_package_error("identity", &failed);
-            assert_eq!(response.message, "插件加载失败，详情见诊断日志");
+            let response = super::plugin_package_error(Some("identity"), &failed);
+            assert_eq!(
+                response.data.and_then(|data| data.plugin_detail),
+                Some(Detail::LoadFailed)
+            );
         }
+    }
+
+    #[cfg(feature = "plugins")]
+    #[test]
+    fn manifest_validation_reports_categories_without_echoing_input() {
+        use fluxdown_engine::plugin::{MarketError, PluginError, PluginManifest};
+        use fluxdown_protocol::PluginFailureDetail as Detail;
+
+        let cases = [
+            ("{", Detail::ManifestJsonInvalid),
+            (r#"{"private-field": 1}"#, Detail::ManifestUnknownField),
+            (
+                r#"{"identity":"private-value","name":"Test","version":"1.0.0"}"#,
+                Detail::ManifestIdentityInvalid,
+            ),
+            (
+                r#"{"identity":"test@example","name":"Test","version":"private-value"}"#,
+                Detail::ManifestVersionInvalid,
+            ),
+            (
+                r#"{"identity":"test@example","name":"Test","version":"1.0.0","permissions":["private-value"]}"#,
+                Detail::ManifestUnknownPermission,
+            ),
+            (
+                r#"{"identity":"test@example","name":"Test","version":"1.0.0","auth":{"entry":"auth.js"}}"#,
+                Detail::ManifestAuthPermissionMissing,
+            ),
+        ];
+        for (input, expected) in cases {
+            let error = PluginManifest::parse(input.as_bytes())
+                .and_then(|manifest| manifest.validate())
+                .expect_err("invalid manifest");
+            let response = super::market_error(&MarketError::Plugin(error));
+            assert_eq!(response.message, "invalid plugin package");
+            let data = response.data.expect("application error data");
+            assert_eq!(data.field, None);
+            assert_eq!(data.plugin_detail, Some(expected));
+        }
+
+        let error = PluginError::ManifestInvalid("zip 打开失败: /private/package.zip".to_owned());
+        let response = super::plugin_package_error(Some("blobId"), &error);
+        assert_eq!(response.message, "invalid plugin package");
+        assert_eq!(response.data.and_then(|data| data.plugin_detail), None);
     }
 
     fn schedule(queue_id: &str, enabled: bool, start: &str, stop: &str) -> QueueScheduleParams {

@@ -39,3 +39,41 @@ export function extensionErrorText(t: TFunction, error: unknown): string {
       return t('localServiceActionFailed')
   }
 }
+
+/** Inline/copyable plugin diagnostics; do not expose generic JS exceptions or daemon messages. */
+export function pluginFailureText(t: TFunction, error: unknown): string {
+  if (!(error instanceof RpcError)) return t('localServiceActionFailed')
+  const detail = error.data?.pluginDetail
+  switch (detail?.kind) {
+    case 'manifestUnreadable':
+      return t('pluginDiagnosticManifestUnreadable')
+    case 'manifestUnknownField':
+      return t('pluginDiagnosticManifestUnknownField')
+    case 'manifestJsonInvalid':
+      return t('pluginDiagnosticManifestJsonInvalid')
+    case 'manifestIdentityInvalid':
+      return t('pluginDiagnosticManifestIdentityInvalid')
+    case 'manifestNameMissing':
+      return t('pluginDiagnosticManifestNameMissing')
+    case 'manifestVersionInvalid':
+      return t('pluginDiagnosticManifestVersionInvalid')
+    case 'manifestMinAppVersionInvalid':
+      return t('pluginDiagnosticManifestMinAppVersionInvalid')
+    case 'manifestUnknownPermission':
+      return t('pluginDiagnosticManifestUnknownPermission')
+    case 'manifestAuthPermissionMissing':
+      return t('pluginDiagnosticManifestAuthPermissionMissing')
+    case 'scriptCompileFailed':
+      return t('pluginDiagnosticScriptCompileFailed')
+    case 'scriptCompileFailedAt':
+      return t('pluginDiagnosticScriptCompileFailedAt', { line: detail.line, column: detail.column })
+    case 'missingFile':
+      return t('pluginDiagnosticMissingFile', { path: detail.path })
+    case 'loadFailed':
+      return t('pluginDiagnosticLoadFailed')
+    case 'notDevPlugin':
+      return t('pluginDiagnosticNotDevPlugin')
+    default:
+      return extensionErrorText(t, error)
+  }
+}

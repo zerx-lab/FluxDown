@@ -102,6 +102,24 @@ export type ErrorReason =
   | 'subscriptionConflict'
   | 'unknown';
 
+/** Safe plugin diagnostics mirrored from `fluxdown_protocol::PluginFailureDetail`. */
+export type PluginFailureDetail =
+  | { kind: 'manifestUnreadable' }
+  | { kind: 'manifestUnknownField' }
+  | { kind: 'manifestJsonInvalid' }
+  | { kind: 'manifestIdentityInvalid' }
+  | { kind: 'manifestNameMissing' }
+  | { kind: 'manifestVersionInvalid' }
+  | { kind: 'manifestMinAppVersionInvalid' }
+  | { kind: 'manifestUnknownPermission' }
+  | { kind: 'manifestAuthPermissionMissing' }
+  | { kind: 'scriptCompileFailed' }
+  | { kind: 'scriptCompileFailedAt'; line: number; column: number }
+  | { kind: 'missingFile'; path: string }
+  | { kind: 'loadFailed' }
+  | { kind: 'notDevPlugin' }
+  | { kind: 'unknown' }
+
 /** `error.data`：应用错误的机器可读详情。 */
 export interface RpcErrorData {
   code: ApplicationErrorCode;
@@ -111,7 +129,7 @@ export interface RpcErrorData {
   /** 乐观并发冲突时服务端当前版本（如 daemon.config.patch）。 */
   revision?: number;
   reason?: ErrorReason;
-  pluginDetail?: string;
+  pluginDetail?: PluginFailureDetail;
 }
 
 /** JSON-RPC 2.0 错误对象。`data` 仅应用错误（code = -32000）携带。 */
