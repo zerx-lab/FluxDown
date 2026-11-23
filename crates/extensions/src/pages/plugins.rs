@@ -78,7 +78,7 @@ pub(crate) type ConfirmedSets = (Vec<String>, Vec<String>);
 pub(crate) struct PluginsUi {
     /// 「开发模式」开关（会话内本地状态，默认关）：控制手动安装区（zip / 目录）是否渲染。
     pub dev_mode: bool,
-    /// Last install failure shown above the installation controls.
+    /// Last install or update failure shown above the installation controls.
     install_error: Option<String>,
     /// Last reload failure for each affected plugin row.
     reload_errors: HashMap<String, String>,
@@ -547,8 +547,11 @@ impl ExtensionsView {
     ) -> impl IntoElement {
         let error = error.to_owned();
         let id = identity.as_deref().unwrap_or("install");
+        let buttons = h_flex();
+        #[cfg(test)]
+        let buttons = buttons.debug_selector(|| format!("plugin-failure-buttons-{id}"));
         v_flex().child(ui::meta_text(error.clone(), frame)).child(
-            h_flex()
+            buttons
                 .child(
                     Button::new(SharedString::from(format!("copy-plugin-failure-{id}")))
                         .outline()
@@ -1532,7 +1535,7 @@ impl ExtensionsView {
                     PluginOp::Reload => "pluginOpReloadFailed",
                 };
                 let message = translator.text_with(key, &[("message", &detail)]);
-                if op == PluginOp::Install {
+                if matches!(op, PluginOp::Install | PluginOp::Update) {
                     let diagnostic = error
                         .plugin_detail
                         .as_ref()
@@ -2197,4 +2200,69 @@ fn row_description(
             .truncate()
             .tooltip(move |window, cx| tooltip_view(tooltip.clone(), window, cx)),
     )
+}
+
+#[cfg(all(test, debug_assertions))]
+#[allow(clippy::expect_used)]
+mod tests {
+    use std::sync::Arc;
+
+    use fluxdown_protocol::{ApplicationErrorCode, ErrorReason, PluginFailureDetail, RpcErrorData};
+    use fluxdown_ui_i18n::I18nCatalog;
+    use gpui::{AppContext as _, Modifiers, TestAppContext};
+
+    use super::{ExtensionsView, PluginOp, px};
+    use crate::{ExtensionsPort, PortFuture};
+
+    struct OfflinePort;
+
+    impl ExtensionsPort for OfflinePort {
+        fn call(&self, _: &'static str, _: serde_json::Value) -> PortFuture<serde_json::Value> {
+            Box::pin(async { Err(RpcErrorData::new(ApplicationErrorCode::Unavailable, false)) })
+        }
+    }
+
+    #[gpui::test]
+    fn market_update_failure_can_be_copied(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            fluxdown_ui_theme::init(cx);
+        });
+        let translator = I18nCatalog::load_embedded().expect("i18n").translator("en");
+        let (root, cx) = cx.add_window_view(|window, cx| {
+            let translator = cx.new(|_| translator);
+            let view = cx.new(|cx| ExtensionsView::new(translator, Arc::new(OfflinePort), cx));
+            gpui_component::Root::new(view, window, cx)
+        });
+        cx.update(|window, cx| {
+            let view = root
+                .read(cx)
+                .view()
+                .clone()
+                .downcast::<ExtensionsView>()
+                .expect("extensions view");
+            view.update(cx, |view, cx| {
+                let mut error = RpcErrorData::new(ApplicationErrorCode::InvalidArgument, false)
+                    .with_reason(ErrorReason::PluginPackageInvalid);
+                error.plugin_detail = Some(PluginFailureDetail::MissingFile {
+                    path: "dist/resolve.js".to_owned(),
+                });
+                view.finish_plugin_op(PluginOp::Update, Err(error), window, cx);
+                cx.notify();
+            });
+        });
+        cx.refresh().expect("draw update diagnostic");
+        let buttons = cx
+            .debug_bounds("plugin-failure-buttons-install")
+            .expect("update failure must render copy controls");
+        let mut copy = buttons.center();
+        copy.x = buttons.origin.x + px(24.);
+        cx.simulate_click(copy, Modifiers::default());
+        assert_eq!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some("Update failed: The plugin package is missing “dist/resolve.js”.")
+        );
+    }
 }

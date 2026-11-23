@@ -106,7 +106,10 @@ async fn reload_dev_applies_manifest_edits_and_keeps_registration_on_failure() {
         .await
         .expect("corrupt manifest");
     let err = pm.reload_dev(IDENTITY).await.expect_err("broken manifest");
-    assert!(matches!(err, PluginError::LoadFailed(_)), "got {err:?}");
+    assert!(
+        matches!(err, PluginError::ManifestInvalid(_)),
+        "got {err:?}"
+    );
     assert_eq!(version(&pm.list().await).unwrap().1, "Failed");
 
     write_manifest(&src, "1.2.0").await;

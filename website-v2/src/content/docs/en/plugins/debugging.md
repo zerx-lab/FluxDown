@@ -110,7 +110,7 @@ Three **consecutive** timeouts or out-of-memory errors in a resolver, an interce
 
 ## Install and validation errors
 
-On desktop and Web, install failures appear near the install controls and reload failures on the affected plugin row. **Copy error** copies the localized, redacted message shown there. It may include a manifest validation category, a package-relative file name, or a script line and column. It does not include raw exception text or absolute paths. For the original error, including the name of an unknown field, see the daemon diagnostics log; for local validation, run `npm run validate`.
+On desktop and Web, install and update failures appear near the install controls, and reload failures appear on the affected plugin row. **Copy error** copies the localized, redacted message shown there. It may include a manifest validation category, a package-relative file name, or a script line and column. It does not include raw exception text or absolute paths. For the original error, including the name of an unknown field, see the daemon diagnostics log; for local validation, run `npm run validate`.
 
 A successful installation clears the last install error. Reinstalling or uninstalling a plugin clears its previous reload error.
 

@@ -4,6 +4,7 @@
 //! install/uninstall/toggle 写（整表原子替换），resolve/hook match 读。**不用 arc-swap**
 //! （workspace 无此依赖且约束禁新增）。
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -328,12 +329,13 @@ pub struct PluginInfo {
 /// 但管理页仍需要看到它，才能展示原因并允许用户卸载或修复。
 #[derive(Debug, Clone)]
 struct FailedPlugin {
+    /// A failed dev copy keeps its registration identity, even if the manifest changed it.
     identity: String,
     /// 实际扫描到的插件目录。identity 可能来自非法 manifest，不能反向拼接路径。
     dir: Box<Path>,
     manifest: Option<Box<PluginManifest>>,
     dev_mode: bool,
-    error: String,
+    error: PluginError,
 }
 
 /// 插件管理器。
@@ -637,7 +639,9 @@ impl PluginManager {
                     dir: dir.to_path_buf().into_boxed_path(),
                     manifest: None,
                     dev_mode: dev,
-                    error: format!("读取 manifest.json 失败: {error}"),
+                    error: PluginError::ManifestInvalid(format!(
+                        "读取 manifest.json 失败: {error}"
+                    )),
                 };
                 log_info!("[plugin] 跳过 {dir:?}: {}", failure.error);
                 return Err(failure);
@@ -648,11 +652,11 @@ impl PluginManager {
                 if let Err(error) = manifest.validate() {
                     log_info!("[plugin] 跳过 {dir:?}: manifest 非法: {error}");
                     return Err(FailedPlugin {
-                        identity: manifest.identity.clone(),
+                        identity: identity_hint.unwrap_or(&manifest.identity).to_owned(),
                         dir: dir.to_path_buf().into_boxed_path(),
                         manifest: Some(Box::new(manifest)),
                         dev_mode: dev,
-                        error: error.to_string(),
+                        error,
                     });
                 }
                 manifest
@@ -664,7 +668,7 @@ impl PluginManager {
                     dir: dir.to_path_buf().into_boxed_path(),
                     manifest: None,
                     dev_mode: dev,
-                    error: error.to_string(),
+                    error,
                 });
             }
         };
@@ -682,11 +686,14 @@ impl PluginManager {
                 self.app_version
             );
             return Err(FailedPlugin {
-                identity: manifest.identity.clone(),
+                identity: identity_hint.unwrap_or(&manifest.identity).to_owned(),
                 dir: dir.to_path_buf().into_boxed_path(),
                 manifest: Some(Box::new(manifest)),
                 dev_mode: dev,
-                error: format!("需要 App ≥ {}，当前 {}", required_version, self.app_version),
+                error: PluginError::LoadFailed(format!(
+                    "需要 App ≥ {}，当前 {}",
+                    required_version, self.app_version
+                )),
             });
         }
 
@@ -789,14 +796,14 @@ impl PluginManager {
                 }
             }
         }
-        if let Err(e) = file_check {
-            log_info!("[plugin] 跳过 {}: {e}", manifest.identity);
+        if let Err(error) = file_check {
+            log_info!("[plugin] 跳过 {}: {error}", manifest.identity);
             return Err(FailedPlugin {
-                identity: manifest.identity.clone(),
+                identity: identity_hint.unwrap_or(&manifest.identity).to_owned(),
                 dir: dir.to_path_buf().into_boxed_path(),
-                manifest: Some(Box::new(manifest.clone())),
+                manifest: Some(Box::new(manifest)),
                 dev_mode: dev,
-                error: e.to_string(),
+                error,
             });
         }
 
@@ -814,10 +821,10 @@ impl PluginManager {
 
         // 入口脚本：dev 与非 dev 都在加载期读一遍——缺失或不可读直接判定加载失败并点名
         // 文件，而不是等到调用时才报「未提供 resolver」。非 dev 另存缓存；dev 每次调用重读。
-        let fail = |error: String| {
+        let fail = |error: PluginError| {
             log_info!("[plugin] 跳过 {}: {error}", manifest.identity);
             FailedPlugin {
-                identity: manifest.identity.clone(),
+                identity: identity_hint.unwrap_or(&manifest.identity).to_owned(),
                 dir: dir.to_path_buf().into_boxed_path(),
                 manifest: Some(Box::new(manifest.clone())),
                 dev_mode: dev,
@@ -860,7 +867,7 @@ impl PluginManager {
         if let Some(source) = archive_source.as_deref()
             && let Err(error) = self.runtime.check_compile(source)
         {
-            return Err(fail(format!("archive 脚本编译失败: {error}")));
+            return Err(fail(error));
         }
         let (
             resolver_cache,
@@ -1825,7 +1832,7 @@ impl PluginManager {
         if let Some(error) = self.dev_load_failure(identity).await {
             return Err(error);
         }
-        self.validate_loaded(identity).await
+        self.validate_loaded(identity, true).await
     }
 
     /// 本 identity 的 dev 登记对应的加载失败（忽略被 dev 顶替的已安装副本那条
@@ -1836,7 +1843,7 @@ impl PluginManager {
             .await
             .iter()
             .find(|p| p.identity == identity && p.dev_mode)
-            .map(|p| PluginError::LoadFailed(p.error.clone()))
+            .map(|p| p.error.clone())
     }
 
     /// 重新加载一个 dev 插件：重读 manifest 与全部入口源码并做与安装相同的
@@ -1867,7 +1874,7 @@ impl PluginManager {
         if let Some(error) = self.dev_load_failure(identity).await {
             return Err(error);
         }
-        self.validate_loaded(identity).await?;
+        self.validate_loaded(identity, true).await?;
         // 仅成功的重载替换了生效代码，失败不递增修订号。
         self.mark_code_replaced(identity).await;
         Ok(())
@@ -2009,7 +2016,7 @@ impl PluginManager {
             .await?;
         // 整表重载后做 compile / pattern 校验；失败由调用方回滚。
         self.load_all().await;
-        self.validate_loaded(identity).await
+        self.validate_loaded(identity, false).await
     }
 
     /// 安装（含 dev 安装）的启停写入规则，必须在加载新代码之前调用：
@@ -2041,9 +2048,23 @@ impl PluginManager {
     }
 
     /// 对当前快照中的插件做 compile / pattern 校验（不改任何状态）。
-    async fn validate_loaded(&self, identity: &str) -> Result<(), PluginError> {
+    async fn validate_loaded(&self, identity: &str, dev: bool) -> Result<(), PluginError> {
         let snapshot = self.plugins.read().await.clone();
         let Some(p) = snapshot.iter().find(|p| p.manifest.identity == identity) else {
+            // A package that failed the scan is absent from the loaded snapshot. Match its
+            // install directory, not another copy or a stale dev registration with the same ID.
+            if !dev {
+                let dir = self.root.join(identity);
+                if let Some(failed) = self
+                    .failed_plugins
+                    .read()
+                    .await
+                    .iter()
+                    .find(|p| !p.dev_mode && *p.dir == dir)
+                {
+                    return Err(failed.error.clone());
+                }
+            }
             return Err(PluginError::ManifestInvalid(
                 "安装后未能加载插件（校验失败或版本门槛不满足）".to_string(),
             ));
@@ -2722,7 +2743,10 @@ impl PluginManager {
                     .map(|r| r.match_decl.urls.clone())
                     .unwrap_or_default(),
                 load_status: PluginLoadStatus::Failed.as_str().to_string(),
-                load_error: truncate_load_error(&p.error),
+                load_error: truncate_load_error(match &p.error {
+                    PluginError::LoadFailed(message) => Cow::Borrowed(message),
+                    error => Cow::Owned(error.to_string()),
+                }),
                 contributions: super::manifest::ContributesDecl::default(),
                 view_icons: Vec::new(),
                 has_main: false,
@@ -2852,8 +2876,10 @@ fn dedup_plugins_by_identity(
                     dir: displaced.dir.clone().into_boxed_path(),
                     manifest: Some(Box::new(displaced.manifest.clone())),
                     dev_mode: displaced.dev,
-                    error: "identity 重复：与另一已加载插件冲突，可在此卸载清理残留目录/配置"
-                        .to_string(),
+                    error: PluginError::LoadFailed(
+                        "identity 重复：与另一已加载插件冲突，可在此卸载清理残留目录/配置"
+                            .to_owned(),
+                    ),
                 });
             }
             None => {
@@ -2871,16 +2897,18 @@ fn identity_from_dev_key(key: &str) -> &str {
 
 /// 读取 manifest 声明的入口脚本（相对插件目录）。未声明返回 `None`；缺失与不可读都
 /// 以点名该文件的消息报告，供加载期判定失败。
-async fn read_entry(dir: &Path, rel: Option<&str>) -> Result<Option<String>, String> {
+async fn read_entry(dir: &Path, rel: Option<&str>) -> Result<Option<String>, PluginError> {
     let Some(rel) = rel else {
         return Ok(None);
     };
     match tokio::fs::read_to_string(dir.join(rel)).await {
         Ok(source) => Ok(Some(source)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            Err(format!("包内缺少文件 '{rel}'"))
+            Err(PluginError::LoadFailed(format!("包内缺少文件 '{rel}'")))
         }
-        Err(error) => Err(format!("读取入口文件 '{rel}' 失败: {error}")),
+        Err(error) => Err(PluginError::LoadFailed(format!(
+            "读取入口文件 '{rel}' 失败: {error}"
+        ))),
     }
 }
 
@@ -2898,13 +2926,13 @@ fn failure_identity(dir: &Path, identity_hint: Option<&str>) -> String {
 /// `manifest.validate()` 的错误文本，会原样插值插件可控的 manifest 字符串
 /// （identity/version/icon 路径等，见 `manifest.rs` 的 `ManifestInvalid`
 /// 消息），未经任何长度上限就会随每次插件列表刷新原样进入 `PluginInfo` /
-/// REST `PluginDto` 并被客户端逐字渲染。截断只在这一处生效——
-/// `list()` 是 `FailedPlugin.error` 唯一的对外读出口。
+/// REST `PluginDto` 并被客户端逐字渲染。这里仅限制旧插件列表的展示文案；
+/// 安装 / 重载 RPC 另从类型化错误提取可安全公开的诊断。
 const MAX_LOAD_ERROR_LEN: usize = 1024;
 
-fn truncate_load_error(error: &str) -> String {
+fn truncate_load_error(error: Cow<'_, str>) -> String {
     if error.len() <= MAX_LOAD_ERROR_LEN {
-        return error.to_string();
+        return error.into_owned();
     }
     let mut end = MAX_LOAD_ERROR_LEN;
     while end > 0 && !error.is_char_boundary(end) {

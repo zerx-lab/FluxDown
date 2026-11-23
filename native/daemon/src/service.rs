@@ -4031,6 +4031,130 @@ mod plugin_consent_audit_tests {
             .await
     }
 
+    fn assert_plugin_diagnostic(error: fluxdown_protocol::RpcErrorObject, detail: Value) {
+        let wire = serde_json::to_value(error).unwrap();
+        assert_eq!(wire["message"], "invalid plugin package");
+        assert_eq!(wire["data"]["reason"], "pluginPackageInvalid");
+        assert_eq!(wire["data"]["pluginDetail"], detail);
+        assert!(!wire.to_string().contains("private-fixture-value"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plugin_dev_rpc_reports_underlying_load_failure() {
+        use fluxdown_protocol::method;
+
+        let f = fixture().await;
+        let src = f.base.join("src");
+        let path = src.join("manifest.json");
+        write_plugin(&src, &[]);
+        let manifest: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let mut missing = manifest.clone();
+        missing["main"] = json!({"entry": "dist/main.js"});
+        std::fs::write(&path, missing.to_string()).unwrap();
+        let missing_detail = json!({"kind": "missingFile", "path": "dist/main.js"});
+        let params = json!({"dirPath": src});
+        let error = call(&f, method::DAEMON_PLUGIN_INSTALL_DEV, params.clone())
+            .await
+            .unwrap_err();
+        assert_plugin_diagnostic(error, missing_detail.clone());
+
+        std::fs::write(&path, manifest.to_string()).unwrap();
+        call(&f, method::DAEMON_PLUGIN_INSTALL_DEV, params)
+            .await
+            .unwrap();
+
+        let mut invalid_identity = manifest.clone();
+        invalid_identity["identity"] = json!("private-fixture-value");
+        let mut invalid_version = manifest.clone();
+        invalid_version["version"] = json!("private-fixture-value");
+        let mut unknown_permission = manifest;
+        unknown_permission["permissions"] = json!(["private-fixture-value"]);
+        let reload = || {
+            call(
+                &f,
+                method::DAEMON_PLUGIN_RELOAD_DEV,
+                json!({"identity": ID}),
+            )
+        };
+        for (contents, detail) in [
+            (invalid_identity, json!({"kind": "manifestIdentityInvalid"})),
+            (invalid_version, json!({"kind": "manifestVersionInvalid"})),
+            (
+                unknown_permission,
+                json!({"kind": "manifestUnknownPermission"}),
+            ),
+            (missing, missing_detail),
+        ] {
+            std::fs::write(&path, contents.to_string()).unwrap();
+            let error = reload().await.unwrap_err();
+            assert_plugin_diagnostic(error, detail);
+            assert_eq!(plugin(&f).await["loadStatus"], "Failed");
+        }
+        std::fs::remove_file(path).unwrap();
+        let error = reload().await.unwrap_err();
+        assert_plugin_diagnostic(error, json!({"kind": "manifestUnreadable"}));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plugin_zip_rpc_reports_underlying_load_failure_and_rolls_back() {
+        use std::io::{Cursor, Write};
+
+        use fluxdown_protocol::method;
+        use zip::write::SimpleFileOptions;
+
+        use crate::blob_store::BlobKind;
+
+        let f = fixture().await;
+        let cases = [
+            (
+                json!({
+                    "identity": ID, "name": "Demo", "version": "1.0.0",
+                    "resolvers": [{"entry": "resolve.js", "match": {"urls": ["https://example.invalid/*"]}}],
+                }),
+                None,
+                json!({"kind": "missingFile", "path": "resolve.js"}),
+            ),
+            (
+                json!({
+                    "identity": ID, "name": "Demo", "version": "1.0.0",
+                    "permissions": ["archive"], "contributes": {"archive": "archive.js"},
+                }),
+                Some("const private-fixture-value = ;"),
+                json!({"kind": "scriptCompileFailedAt", "line": 1}),
+            ),
+        ];
+        for (manifest, archive_source, mut detail) in cases {
+            let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+            zip.start_file("manifest.json", SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(manifest.to_string().as_bytes()).unwrap();
+            if let Some(source) = archive_source {
+                zip.start_file("archive.js", SimpleFileOptions::default())
+                    .unwrap();
+                zip.write_all(source.as_bytes()).unwrap();
+            }
+            let bytes = zip.finish().unwrap().into_inner();
+            let id = f.service.blobs.put(BlobKind::Plugin, &bytes).await.unwrap();
+            let error = call(&f, method::DAEMON_PLUGIN_INSTALL, json!({"blobId": id}))
+                .await
+                .unwrap_err();
+            if archive_source.is_some() {
+                let wire = serde_json::to_value(&error).unwrap();
+                let column = wire["data"]["pluginDetail"]["column"].as_u64().unwrap();
+                assert!(column > 0);
+                detail["column"] = json!(column);
+            }
+            assert_plugin_diagnostic(error, detail);
+            assert!(!f.root.join(ID).exists());
+            assert_eq!(
+                call(&f, method::DAEMON_PLUGIN_LIST, json!({}))
+                    .await
+                    .unwrap(),
+                json!([])
+            );
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn plugin_conflicts_follow_install_and_enable_state_in_events_and_list() {
         use fluxdown_protocol::{DaemonEvent, ServiceEvent, method};
