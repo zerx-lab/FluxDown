@@ -296,8 +296,23 @@ async fn asks_once_then_remembers_site_default() {
     assert_eq!(selector.calls.load(Ordering::SeqCst), 1);
 
     // 删除站点默认后恢复询问。
-    pm.set_site_default("origin.test", None).await.unwrap();
+    pm.set_site_default("origin.test", None, &[]).await.unwrap();
     assert!(pm.route_resolver(PAGE_URL).await.unwrap().choice_pending);
+
+    // 插件页按 URL 模式冲突预置候选：尚无记录也能直接选定，之后不再询问。
+    let candidates = ["alpha@site".to_owned(), "beta@site".to_owned()];
+    assert!(
+        pm.set_site_default("origin.test", Some("gamma@site"), &candidates)
+            .await
+            .is_err(),
+        "chosen plugin must be one of the candidates"
+    );
+    pm.set_site_default("origin.test", Some("alpha@site"), &candidates)
+        .await
+        .unwrap();
+    let route = pm.route_resolver(PAGE_URL).await.unwrap();
+    assert_eq!(route.identity, "alpha@site");
+    assert!(!route.choice_pending);
     fx.cleanup().await;
 }
 
@@ -321,11 +336,11 @@ async fn unattended_uses_fallback_and_records_unconfirmed_choice() {
 
     // 用户在插件页确认后成为站点默认插件；只能选记录里的候选。
     assert!(
-        pm.set_site_default("origin.test", Some("gamma@site"))
+        pm.set_site_default("origin.test", Some("gamma@site"), &[])
             .await
             .is_err()
     );
-    pm.set_site_default("origin.test", Some("beta@site"))
+    pm.set_site_default("origin.test", Some("beta@site"), &[])
         .await
         .unwrap();
     let route = pm.route_resolver(PAGE_URL).await.unwrap();

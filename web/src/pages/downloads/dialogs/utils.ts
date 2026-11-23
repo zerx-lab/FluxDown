@@ -4,19 +4,18 @@ import { useEffect, useState } from 'react'
 import { LATER_QUEUE_ID, MAIN_QUEUE_ID, RpcError, errorMessage } from '../../../lib/rpc'
 import type { QueueDto } from '../../../lib/rpc'
 import type { TFunction } from '../../../i18n'
-
-const UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'] as const
+import { byteUnit, type FileSizeUnits } from '../../../lib/fileSizeUnits'
 
 /** 字节数 → `1.5 MB`；0 或负值显示 `0 B`。 */
-export function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+export function formatBytes(bytes: number, units?: FileSizeUnits): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return `0 ${byteUnit(0, units)}`
   let value = bytes
   let unit = 0
-  while (value >= 1024 && unit < UNITS.length - 1) {
+  while (value >= 1024 && unit < 5) {
     value /= 1024
     unit += 1
   }
-  return `${unit === 0 ? value : value.toFixed(value >= 100 ? 0 : 1)} ${UNITS[unit]}`
+  return `${unit === 0 ? value : value.toFixed(value >= 100 ? 0 : 1)} ${byteUnit(unit, units)}`
 }
 
 /** 队列显示名：内置队列本地化，自定义队列用用户命名。 */

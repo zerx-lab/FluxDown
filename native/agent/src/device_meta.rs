@@ -247,6 +247,7 @@ mod tests {
                 refresh_token: "refresh".to_owned(),
                 expires_at_unix: i64::MAX,
                 session: Some(session),
+                issuer: String::new(),
             }),
             ..AgentState::default()
         }));

@@ -118,7 +118,11 @@ pub async fn start_embedded(
     state.gateway.lan_active = false;
     let new_device = state.device_id.is_empty();
     if new_device {
-        state.device_id = uuid::Uuid::new_v4().to_string();
+        // 状态文件损坏被隔离时先找回旁路保存的身份，云端仍认得这台设备。
+        state.device_id = match store.load_device_id().await {
+            Some(saved) => saved,
+            None => uuid::Uuid::new_v4().to_string(),
+        };
     }
     finalize_device_identity(
         &mut state,
@@ -143,6 +147,7 @@ pub async fn start_embedded(
     let daemon = Arc::new(daemon);
 
     let availability = TrayAvailability::Unavailable(TrayUnavailableReason::NotBuilt);
+    crate::logging::seed_level_preference(&mut state, &engine_data_dir);
     let initial = AgentSnapshot {
         daemon_connected: false,
         session: state
@@ -161,8 +166,13 @@ pub async fn start_embedded(
     };
     let events = AgentEventHub::new(initial);
     let lifecycle = Arc::new(
-        Lifecycle::new(cancel.clone(), daemon.clone(), supervisor, engine_data_dir)
-            .with_shutdown_config(daemon_config.clone()),
+        Lifecycle::new(
+            cancel.clone(),
+            daemon.clone(),
+            supervisor,
+            engine_data_dir.clone(),
+        )
+        .with_shutdown_config(daemon_config.clone()),
     );
     let shell = ShellState::new(availability, daemon.clone(), events.clone());
     let power = Arc::new(PowerService::new(events.clone()));
@@ -302,6 +312,7 @@ pub async fn start_embedded(
     )
     // 与 headless 宿主相同的能力面：桌面平台集成与宿主诊断修复返回 Unsupported。
     .with_server_mode(true)
+    .with_logging_dir(engine_data_dir)
     // 只有同进程 App 能连到嵌入式网关：日志导出写入 App 自己给出的沙盒路径。
     .with_local_log_export();
     if let Some(link) = &link {

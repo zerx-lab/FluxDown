@@ -139,10 +139,11 @@ pub const DAEMON_CONFIG_FIELDS: &[DaemonConfigField] = &[
         DaemonConfigKind::Enum(FILE_MISSING_ACTIONS),
         "keep",
     ),
-    // 已完成任务记录保留天数：超期的「已完成」记录被自动清理（只删记录，不删文件）；0 = 永不。
+    // 已完成任务记录保留：超期的「已完成」记录被自动清理（只删记录，不删文件）。
+    // -1 = 下载成功后立刻清除，0 = 永不，1..=3650 = 天数。
     field(
         "completed_record_retention_days",
-        DaemonConfigKind::Integer { min: 0, max: 3650 },
+        DaemonConfigKind::Integer { min: -1, max: 3650 },
         "0",
     ),
     // 空闲（无活动/排队任务）时是否仍执行周期性文件跟踪扫描；默认关闭以免唤醒 NAS 硬盘。
@@ -438,6 +439,13 @@ pub const DAEMON_CONFIG_FIELDS: &[DaemonConfigField] = &[
     field("proxy_username", DaemonConfigKind::Text, ""),
     field("proxy_password", DaemonConfigKind::Text, ""),
     field("proxy_no_list", DaemonConfigKind::Text, ""),
+    // 设备本地；空串保留历史出口，direct:// 强制直连，其余为协议独立代理 URL。
+    field("proxy_protocol_http", DaemonConfigKind::Text, ""),
+    field("proxy_protocol_ftp", DaemonConfigKind::Text, ""),
+    field("proxy_protocol_hls", DaemonConfigKind::Text, ""),
+    field("proxy_protocol_dash", DaemonConfigKind::Text, ""),
+    field("proxy_protocol_bt", DaemonConfigKind::Text, ""),
+    field("proxy_protocol_ed2k", DaemonConfigKind::Text, ""),
     // 站点代理规则：JSON 数组（顺序即优先级），模型见 `crate::proxy_rules`。
     field("proxy_rules", DaemonConfigKind::Text, ""),
     // ── Webhook ──
@@ -633,6 +641,19 @@ mod tests {
             normalize_daemon_config_value(field.key, field.default)
                 .unwrap_or_else(|error| panic!("{}: {error}", field.key));
         }
+    }
+
+    #[test]
+    fn completed_record_retention_accepts_immediate_sentinel() {
+        assert_eq!(
+            normalize_daemon_config_value("completed_record_retention_days", "-1").as_deref(),
+            Ok("-1")
+        );
+        assert_eq!(
+            normalize_daemon_config_value("completed_record_retention_days", "0").as_deref(),
+            Ok("0")
+        );
+        assert!(normalize_daemon_config_value("completed_record_retention_days", "-2").is_err());
     }
 
     #[test]

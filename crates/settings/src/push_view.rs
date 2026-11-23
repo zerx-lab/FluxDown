@@ -236,6 +236,7 @@ impl Render for PushView {
                 let ctx = SectionContext {
                     store: &self.store,
                     translator: &translator,
+                    open_update_prompt: None,
                 };
                 // 云端关闭时没有可切换的目标，空态不显示「改用云端推送」。
                 let try_cloud: Option<WindowAction> = show_try_cloud(cloud_on).then(|| {

@@ -17,7 +17,8 @@ use crate::failure_notice::{
     FailedTask, FailureReceiver, NOTIFY_ON_FAIL_DEFAULT, NOTIFY_ON_FAIL_PREF, failure_text,
 };
 use crate::notification::{
-    NoticeText, Notifier, completion_path, completion_text, english_text, rss_auto_download_text,
+    NoticeText, Notifier, completion_path, completion_text, duplicate_torrent_text, english_text,
+    rss_auto_download_text,
 };
 
 /// 完成通知防抖：最后一次完成后静默这么久才合并发一条。
@@ -135,6 +136,7 @@ impl BackgroundEffects {
                     let frame = match &event {
                         Ok(frame) => {
                             self.notify_rss_auto_downloads(frame);
+                            self.notify_duplicate_torrent(frame);
                             Some(frame)
                         }
                         // 本接收端自己落后：丢了帧，任务表整表对账一次。
@@ -207,6 +209,72 @@ impl BackgroundEffects {
         _locale: Option<String>,
     ) -> Option<(String, String)> {
         rss_auto_download_text(titles, english_text)
+    }
+
+    /// BT 重复添加被拒时发一条系统通知，指出已有任务（受完成通知总开关约束）。
+    /// 引擎已删掉占位任务，不发通知用户只会看到「点了添加却什么都没发生」。
+    fn notify_duplicate_torrent(&mut self, frame: &EventFrame) {
+        let Some(WsServerMsg::DuplicateTorrent {
+            existing_task_id,
+            existing_name,
+            ..
+        }) = engine_message(frame)
+        else {
+            return;
+        };
+        let (enabled, locale, existing) = self.events.inspect(|snapshot| {
+            let existing = snapshot
+                .daemon
+                .task(existing_task_id)
+                .map(|task| (task.status == 3, task.file_name.clone()));
+            (
+                notify_on_complete(snapshot),
+                locale_preference(snapshot),
+                existing,
+            )
+        });
+        if !enabled {
+            return;
+        }
+        let (completed, snapshot_name) = existing.unwrap_or_default();
+        let name = if existing_name.trim().is_empty() {
+            snapshot_name
+        } else {
+            existing_name.clone()
+        };
+        let (title, body) = self.duplicate_torrent_notice(&name, completed, locale);
+        let notifier = Arc::clone(&self.notifier);
+        tokio::task::spawn_blocking(move || notifier.show(&title, &body));
+    }
+
+    #[cfg(feature = "desktop")]
+    fn duplicate_torrent_notice(
+        &mut self,
+        name: &str,
+        completed: bool,
+        locale: Option<String>,
+    ) -> (String, String) {
+        let Some(translator) = self.translator.as_mut() else {
+            return duplicate_torrent_text(name, completed, english_named_text);
+        };
+        translator.set_locale(&locale.unwrap_or_else(fluxdown_ui_i18n::system_locale));
+        let translator = &*translator;
+        duplicate_torrent_text(name, completed, |key, name| match name {
+            Some(name) => translator.text_with(key, &[("name", name)]),
+            None => translator.text(key).to_owned(),
+        })
+    }
+
+    /// headless 构建不带文案目录：固定英文。
+    #[cfg(not(feature = "desktop"))]
+    #[allow(clippy::unused_self)]
+    fn duplicate_torrent_notice(
+        &mut self,
+        name: &str,
+        completed: bool,
+        _locale: Option<String>,
+    ) -> (String, String) {
+        duplicate_torrent_text(name, completed, english_named_text)
     }
 
     /// 把防抖中的完成合并成一条系统通知发出（发送阻塞，放进 blocking 线程）。
@@ -349,14 +417,31 @@ async fn recv_failure(receiver: &mut Option<FailureReceiver>) -> Option<FailedTa
     }
 }
 
-/// 本帧若是带非空 `notify_titles` 的 RSS 条目变更，返回这些标题。
-fn rss_notify_titles(frame: &fluxdown_protocol::EventFrame) -> Option<&[String]> {
-    use fluxdown_protocol::{DaemonEvent, ServiceEvent, WsServerMsg};
+/// 英文基线文案并替换 `{name}`（无文案目录时的回退）。
+fn english_named_text(key: &str, name: Option<&str>) -> String {
+    let text = english_text(key, None);
+    match name {
+        Some(name) => text.replace("{name}", name),
+        None => text,
+    }
+}
+
+/// 帧里携带的引擎消息。hub 发布的帧包在 `Agent(Daemon(..))` 里；直连 daemon 的帧为
+/// `Daemon(..)`，两种都认。
+fn engine_message(frame: &EventFrame) -> Option<&WsServerMsg> {
     match &frame.event {
-        ServiceEvent::Daemon(DaemonEvent::Engine(WsServerMsg::RssItemsChanged {
-            notify_titles,
-            ..
-        })) if !notify_titles.is_empty() => Some(notify_titles),
+        ServiceEvent::Daemon(DaemonEvent::Engine(message))
+        | ServiceEvent::Agent(AgentEvent::Daemon(DaemonEvent::Engine(message))) => Some(message),
+        _ => None,
+    }
+}
+
+/// 本帧若是带非空 `notify_titles` 的 RSS 条目变更，返回这些标题。
+fn rss_notify_titles(frame: &EventFrame) -> Option<&[String]> {
+    match engine_message(frame) {
+        Some(WsServerMsg::RssItemsChanged { notify_titles, .. }) if !notify_titles.is_empty() => {
+            Some(notify_titles)
+        }
         _ => None,
     }
 }
@@ -662,7 +747,8 @@ mod tests {
     use super::{
         Change, CompletedFile, FailedTask, KEEP_AWAKE_DEFAULT, KEEP_AWAKE_PREF, NOTIFY_DEBOUNCE,
         NOTIFY_MAX_WAIT, PendingCompletions, PendingFailures, TaskTracker, change_for,
-        locale_preference, notify_on_complete, notify_on_failure, observe, preference_bool,
+        engine_message, locale_preference, notify_on_complete, notify_on_failure, observe,
+        preference_bool, rss_notify_titles,
     };
 
     #[test]
@@ -810,6 +896,28 @@ mod tests {
             previous: None,
             event: ServiceEvent::Agent(AgentEvent::Daemon(event)),
         }
+    }
+
+    /// hub 发布的帧包在 `Agent(Daemon(..))` 里：RSS 自动下载与重复种子通知都必须认得。
+    #[test]
+    fn hub_wrapped_engine_messages_reach_notifications() {
+        let rss = daemon_frame(DaemonEvent::Engine(WsServerMsg::RssItemsChanged {
+            source_id: "s".to_owned(),
+            items: Vec::new(),
+            notify_titles: vec!["Ep 1".to_owned()],
+        }));
+        assert_eq!(rss_notify_titles(&rss), Some(&["Ep 1".to_owned()][..]));
+
+        let duplicate = daemon_frame(DaemonEvent::Engine(WsServerMsg::DuplicateTorrent {
+            task_id: "new".to_owned(),
+            existing_task_id: "old".to_owned(),
+            existing_name: "Movie".to_owned(),
+        }));
+        assert!(matches!(
+            engine_message(&duplicate),
+            Some(WsServerMsg::DuplicateTorrent { existing_task_id, .. }) if existing_task_id == "old"
+        ));
+        assert!(engine_message(&progress_frame("a", 1, "")).is_some());
     }
 
     /// 按帧增量维护的镜像，在任何帧序列之后都与整表对账（旧实现的逐帧全表扫描）等价：

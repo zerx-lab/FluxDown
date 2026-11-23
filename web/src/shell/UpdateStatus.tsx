@@ -1,4 +1,5 @@
-// 应用内更新的全局呈现：内容区顶部横幅（可按版本忽略）+ 安装 / 重启中的全屏遮罩。
+// 应用内更新的全局呈现：移动端内容区顶部横幅（可按版本忽略；桌面由状态栏版本条目 `VersionControl` 承担）
+// + 安装 / 重启中的全屏遮罩。
 // 状态唯一来源是 `snapshot.update`；重启期间的 `restarting` 来自 rpc 连接层（关闭原因 service-restart），
 // 新版本握手成功后由连接层刷新页面（见 lib/rpc/reload.ts）。
 
@@ -11,22 +12,22 @@ import {
   bannerVisible,
   canCancel,
   canInstall,
+  ignoreVersion,
   manualLine,
   manualUrl,
-  readDismissedVersion,
   statusLine,
   updateLineText,
+  useIgnoredVersion,
   useUpdateStatus,
-  writeDismissedVersion,
 } from '../lib/update'
 import { Button, Icon, Spinner, toast } from '../ui'
 
-/** 有新版本时的全局横幅；Ready / Downloading / 手动升级三种形态。 */
+/** 有新版本时的移动端横幅；Ready / Downloading / 手动升级三种形态。 */
 export function UpdateBanner() {
   const t = useT()
   const status = useUpdateStatus()
   const connection = useConnection()
-  const [dismissed, setDismissed] = useState<string | null>(readDismissedVersion)
+  const dismissed = useIgnoredVersion()
   const [busy, setBusy] = useState(false)
   if (!status || !bannerVisible(status, dismissed)) return null
 
@@ -48,10 +49,7 @@ export function UpdateBanner() {
       setBusy(false)
     }
   }
-  const dismiss = () => {
-    writeDismissedVersion(status.latestVersion)
-    setDismissed(status.latestVersion)
-  }
+  const dismiss = () => ignoreVersion(status.latestVersion)
 
   return (
     <div role="status" className="flex shrink-0 items-center gap-2 border-b border-hairline bg-accent/10 px-3 py-1.5 text-xs text-foreground">

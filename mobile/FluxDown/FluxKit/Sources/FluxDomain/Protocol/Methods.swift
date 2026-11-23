@@ -51,6 +51,8 @@ public enum HostMethod {
     public static let daemonTaskSetBtLimits = "daemon.task.setBtLimits"
     /// 超级做种开关（`{taskId, enabled}`）：完成（做种）后才实际生效，可提前设置。
     public static let daemonTaskSetSuperSeeding = "daemon.task.setSuperSeeding"
+    /// 添加 BT HTTP 源（移动端无入口，仅保持方法表一一对应）。
+    public static let daemonTaskAddWebSeed = "daemon.task.addWebSeed"
     /// 立即向 tracker 重新汇报（`{taskId}`；移动端没有 Tracker 页，仅保持方法表一一对应）。
     public static let daemonTaskReannounce = "daemon.task.reannounce"
     public static let daemonTaskVerify = "daemon.task.verify"
@@ -97,8 +99,10 @@ public enum HostMethod {
     public static let daemonSiteAuthMatch = "daemon.siteAuth.match"
     public static let daemonRuntimeStats = "daemon.runtime.stats"
     public static let daemonFsList = "daemon.fs.list"
+    public static let daemonFsDefaultFileExists = "daemon.fs.defaultFileExists"
     public static let daemonRssListSources = "daemon.rss.listSources"
     public static let daemonRssGetItems = "daemon.rss.getItems"
+    public static let daemonRssGetImage = "daemon.rss.getImage"
     public static let daemonRssCreateSource = "daemon.rss.createSource"
     public static let daemonRssUpdateSource = "daemon.rss.updateSource"
     public static let daemonRssDeleteSource = "daemon.rss.deleteSource"
@@ -239,6 +243,9 @@ public enum HostMethod {
     public static let agentRemoteList = "agent.remote.list"
     public static let agentRemoteDispatch = "agent.remote.dispatch"
     public static let agentRemoteCommand = "agent.remote.command"
+    /// `RemoteCommandManyParams` → `RemoteCommandManyResult`：对同一动作批量下发（≤ `RemoteCommandManyParams.maxIds` 个任务 / 次）。
+    /// 主机需声明能力 `agent.remoteBatch`。
+    public static let agentRemoteCommandMany = "agent.remote.commandMany"
     /// 局域网直连（L1）：展示本机配对码并开始广播 → `LinkPairingCodeDto`。
     public static let agentLinkPairingCode = "agent.link.pairingCode"
     /// 停止展示配对码 / 停止配对广播。
@@ -292,6 +299,10 @@ public enum HostMethod {
     public static let agentPlatformSyncWindowIcons = "agent.platform.syncWindowIcons"
     /// 确认 Windows 托盘下载提示；移动端不使用。
     public static let agentPlatformAckTrayDownloads = "agent.platform.ackTrayDownloads"
+    /// 本机浏览器扩展安装状态；仅桌面，移动端不使用。
+    public static let agentPlatformBrowserExtensionStatus = "agent.platform.browserExtensionStatus"
+    /// 为本机浏览器安装 FluxDown 扩展；仅桌面，移动端不使用。
+    public static let agentPlatformInstallBrowserExtension = "agent.platform.installBrowserExtension"
     /// 由 agent 在本机播放一次提示音偏好值；仅桌面，移动端不使用。
     public static let agentSoundPreview = "agent.sound.preview"
     public static let agentCaptureSubmit = "agent.capture.submit"
@@ -348,6 +359,8 @@ public enum HostCapability {
     public static let agentAuth = "agent.auth"
     public static let agentSync = "agent.sync"
     public static let agentRemoteTasks = "agent.remoteTasks"
+    /// 支持 `agent.remote.commandMany` 与错误原因 `remoteTaskGone`（云端已无该远程任务，agent 已移除对应行）。
+    public static let agentRemoteBatch = "agent.remoteBatch"
     public static let agentBilling = "agent.billing"
     public static let agentReferrals = "agent.referrals"
     public static let agentDeviceLink = "agent.deviceLink"

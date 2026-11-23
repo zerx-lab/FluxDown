@@ -661,6 +661,11 @@ fn apply_preferences(values: &BTreeMap<String, serde_json::Value>, cx: &mut App)
         crate::app_icon::apply_preference(values, &client, cx);
     }
     apply_activity_bar_preferences(values, cx);
+    let mut refresh_windows = fluxdown_ui_components::size_units::apply(
+        values
+            .get(fluxdown_ui_components::size_units::PREF_KEY)
+            .and_then(serde_json::Value::as_str),
+    );
     if let Some(locale) = values
         .get("general.locale")
         .and_then(serde_json::Value::as_str)
@@ -678,11 +683,11 @@ fn apply_preferences(values: &BTreeMap<String, serde_json::Value>, cx: &mut App)
             }
             changed
         });
-        if locale_changed {
-            // gpui-component 自带文案读进程级静态 locale，不在被追踪的状态里；retained 渲染
-            // 下只有整窗刷新才能让没读 Translator 的库控件换成新语言。
-            cx.refresh_windows();
-        }
+        refresh_windows |= locale_changed;
+    }
+    if refresh_windows {
+        // Component locale and size formatting are process-wide, outside tracked render state.
+        cx.refresh_windows();
     }
     // 界面语言（含跟随系统）一变，汉字主字体与回退链随之更新；未变时为空操作。
     let preference = han_font_preference(translator.read(cx));
@@ -875,6 +880,55 @@ pub(crate) fn app_data_dir() -> std::path::PathBuf {
 /// agent 数据目录；诊断日志写在其下 `logs/`。
 pub(crate) fn agent_data_dir() -> std::path::PathBuf {
     DesktopPaths::from_env().agent_data_dir
+}
+
+/// Engine data root for host startup settings; mirrors the agent's daemon data directory.
+pub(crate) fn engine_data_dir() -> std::path::PathBuf {
+    use std::path::PathBuf;
+
+    if let Some(path) = env::var_os("FLUXDOWN_DATA_DIR") {
+        return PathBuf::from(path);
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(env::var_os("HOME").unwrap_or_else(|| ".".into()))
+                    .join(".local")
+                    .join("share")
+            })
+            .join("fluxdown")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        PathBuf::from(env::var_os("HOME").unwrap_or_else(|| ".".into()))
+            .join("Library")
+            .join("Application Support")
+            .join("fluxdown")
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let exe = env::current_exe().ok();
+        if let Some(path) = exe.as_deref().and_then(portable_data_dir_for_exe) {
+            return path;
+        }
+        env::var_os("LOCALAPPDATA")
+            .or_else(|| env::var_os("APPDATA"))
+            .map_or_else(
+                || {
+                    exe.as_deref()
+                        .and_then(Path::parent)
+                        .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+                },
+                |path| PathBuf::from(path).join("FluxDown"),
+            )
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        PathBuf::from(".")
+    }
 }
 
 fn agent_token_path() -> std::path::PathBuf {

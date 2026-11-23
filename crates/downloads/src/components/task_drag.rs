@@ -18,7 +18,7 @@ use gpui_component::{h_flex, table::TableState};
 
 use crate::{
     components::{file_icon::named_file_icon, task_table::DownloadTableDelegate},
-    model::RowKey,
+    model::{DownloadTaskView, RowKey},
     pages::downloads::DownloadView,
 };
 
@@ -95,6 +95,7 @@ fn probe_drag_entries(paths: Vec<PathBuf>) -> (Vec<(PathBuf, bool)>, bool) {
 }
 
 /// 窗口内拖拽时跟随光标的预览。
+#[derive(Clone)]
 pub(crate) struct TaskDragPreview {
     kind: FileKind,
     name_fold: SharedString,
@@ -103,6 +104,25 @@ pub(crate) struct TaskDragPreview {
     extra: usize,
     /// 按下点相对行原点的偏移：gpui 把预览原点放在「光标 − 偏移」，补回后预览贴着光标。
     click_offset: Point<Pixels>,
+}
+
+impl TaskDragPreview {
+    pub(crate) fn single(row: &DownloadTaskView) -> Self {
+        Self {
+            kind: row.kind,
+            name_fold: SharedString::from(row.name_fold.clone()),
+            name: SharedString::from(row.name.clone()),
+            extra: 0,
+            click_offset: Point::default(),
+        }
+    }
+
+    pub(crate) fn at_offset(&self, click_offset: Point<Pixels>) -> Self {
+        Self {
+            click_offset,
+            ..self.clone()
+        }
+    }
 }
 
 impl Render for TaskDragPreview {

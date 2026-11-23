@@ -76,7 +76,12 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphic
 # Win32_Storage_FileSystem = MoveFileExW。
 # 提权降级（platform/elevation.rs）：Win32_Security = GetTokenInformation(TokenElevationType)；
 # Win32_System_Ole / Win32_System_Variant = IShellWindows::FindWindowSW / IShellDispatch2::ShellExecute。
-windows = { version = "0.61.3", features = ["Data_Xml_Dom", "Foundation", "Media_Core", "Media_Playback", "UI_Notifications", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Ole", "Win32_System_Threading", "Win32_System_Variant", "Win32_UI_Controls", "Win32_UI_HiDpi", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+# 本机 IPC 管道权限（platform/pipe_security.rs）：Win32_Security = GetTokenInformation(TokenUser)；
+# Win32_Security_Authorization = ConvertSidToStringSidW / ConvertStringSecurityDescriptorToSecurityDescriptorW。
+windows = { version = "0.61.3", features = ["Data_Xml_Dom", "Foundation", "Media_Core", "Media_Playback", "UI_Notifications", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Ole", "Win32_System_Threading", "Win32_System_Variant", "Win32_UI_Controls", "Win32_UI_HiDpi", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource.workspace = true
 
 # notify-rust 仅用于 Linux D-Bus 通知（macOS / Windows 用原生通知；Android / iOS 不编译）。
 # x11rb（X11 XGrabKey + XInput2 原始键盘事件）与 ashpd（Wayland GlobalShortcuts portal）

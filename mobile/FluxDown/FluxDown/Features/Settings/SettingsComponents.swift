@@ -767,6 +767,7 @@ struct SettingsRateLimitRow: View {
     let item: SettingsItem
 
     @Environment(ConfigEditor.self) private var editor
+    @Environment(AppearanceStore.self) private var appearance
     @State private var preferred: SettingsRateUnit = .mb
     @State private var draft = ""
     @State private var warnTick = 0
@@ -798,21 +799,21 @@ struct SettingsRateLimitRow: View {
                         if clean != new { draft = clean }
                     }
                     .accessibilityLabel(title)
-                    .accessibilityValue(bytes == 0 ? unlimited : "\(draft) \(unit.label)")
+                    .accessibilityValue(bytes == 0 ? unlimited : "\(draft) \(unit.label(iec: appearance.fileSizeUnits == .iec))")
                 Menu {
                     Picker(L("mobileSpeedUnit"), selection: Binding(get: { unit }, set: { changeUnit($0) })) {
-                        ForEach(SettingsRateUnit.allCases) { Text($0.label).tag($0) }
+                        ForEach(SettingsRateUnit.allCases) { Text($0.label(iec: appearance.fileSizeUnits == .iec)).tag($0) }
                     }
                 } label: {
                     HStack(spacing: 4) {
-                        Text(unit.label).monospacedDigit()
+                        Text(unit.label(iec: appearance.fileSizeUnits == .iec)).monospacedDigit()
                         Image(systemName: "chevron.up.chevron.down").font(.caption2)
                     }
                     .frame(minHeight: 44)
                     .contentShape(.rect)
                 }
                 .accessibilityLabel(L("mobileSpeedUnit"))
-                .accessibilityValue(unit.label)
+                .accessibilityValue(unit.label(iec: appearance.fileSizeUnits == .iec))
                 Stepper(title, onIncrement: { nudge(up: true) }, onDecrement: { nudge(up: false) })
                     .labelsHidden()
                 Menu {
@@ -840,7 +841,7 @@ struct SettingsRateLimitRow: View {
     @ViewBuilder
     private func presetButton(_ amount: Int, _ chipUnit: SettingsRateUnit, unlimited: String) -> some View {
         let value = SettingsRateLimit.bytes(amount: amount, unit: chipUnit)
-        let label = amount == 0 ? unlimited : "\(amount) \(chipUnit.label)"
+        let label = amount == 0 ? unlimited : "\(amount) \(chipUnit.label(iec: appearance.fileSizeUnits == .iec))"
         let selected = bytes == value
         Button {
             if amount != 0 { preferred = chipUnit }

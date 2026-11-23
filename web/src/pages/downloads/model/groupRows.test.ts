@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import type { GroupDto, TaskDto } from '../../../lib/rpc'
 import { CategoryIndex, builtinDefaults } from './categories'
 import { SELECTION_ALL } from './filters'
-import { buildVisibleRows, dirCollapseKey, dominantCategory, groupRowsByDirectory, groupsMatchingQuery, keysInVisualSpan, selectGroupOnClick } from './groupRows'
+import { buildVisibleRows, contentBucket, dirCollapseKey, dominantCategory, groupRowsByDirectory, groupsMatchingQuery, keysInVisualSpan, selectGroupOnClick, selectedTaskViewsInOrder } from './groupRows'
 import type { BucketInfo, GroupFolderRow, VisibleRow, VisibleRowsInput } from './groupRows'
 import { RowEngine } from './rowEngine'
 import type { TaskRow } from './rowEngine'
@@ -88,6 +88,32 @@ const describeRow = (item: VisibleRow): string => {
 
 const keys = (rows: readonly VisibleRow[]) => rows.map(describeRow)
 
+declare const Bun: { file(path: URL): { json(): Promise<unknown> } }
+
+test('content grouping recognises the same series titles as desktop', async () => {
+  // Read the shared fixture only at test time: the Docker Web build does not include crates/.
+  const cases = (await Bun.file(new URL('../../../../../crates/downloads/tests/fixtures/series_title_cases.json', import.meta.url)).json()) as [string, string | null][]
+  for (const [fileName, title] of cases) {
+    expect(contentBucket(row(fileName, { fileName }).view)?.label ?? null).toBe(title)
+  }
+})
+
+test('content grouping collapses recognized episodes independently of save directories', () => {
+  const rows = [
+    row('one', { fileName: '节目.S01E01.mp4' }),
+    row('two', { fileName: '[字幕组] 节目 S02E103.mp4', saveDir: '/elsewhere' }),
+    row('movie', { fileName: 'Movie.mp4' }),
+    row('other', { fileName: 'Other.S01E02.mp4' }),
+    row('lookalike', { fileName: 'Document AAS01E02.mp4' }),
+  ]
+  const bucketOf: VisibleRowsInput['bucketOf'] = (view, members) => members === null ? contentBucket(view) : null
+  expect(keys(build(rows, [], { bucketOf }).rows)).toEqual([
+    '# Other', 'l:other', '# 节目', 'l:one', 'l:two', 'l:movie', 'l:lookalike',
+  ])
+  const collapsed = build(rows, [], { bucketOf, collapsedBuckets: new Set(['content:local:节目']) })
+  expect(collapsed.sequence()).toEqual(['l:other', 'l:movie', 'l:lookalike'])
+})
+
 describe('directory row integration', () => {
   test('directory headings wrap top-level tasks and collapse descendants without changing item identity', () => {
     const visible = build([row('b', { saveDir: '/d/B' }), row('a', { saveDir: '/d/A' })], []).rows
@@ -127,6 +153,16 @@ describe('merge position', () => {
     const built = build(rows, [group('pack', { name: 'm' })])
     // 代理名 "m" 排在 c.bin 之后、orphan.bin 之前；孤儿 groupId 与远程任务留在顶层。
     expect(keys(built.rows)).toEqual(['l:a', 'r:r1', 'l:c', 'g:pack', 'l:orphan', 'l:z'])
+    const selected = selectGroupOnClick(
+      { selected: new Set(['l:z', remote.key]), anchor: remote.key, multiSelect: true },
+      'pack', ['l:m1'], built.sequence(), { secondary: true, shift: false },
+    ).selected
+    expect(selectedTaskViewsInOrder(built.rows, rows, selected).map((view) => view.key))
+      .toEqual([remote.key, 'l:m1', 'l:z'])
+    const reversed = [...rows].reverse()
+    const reordered = build(reversed, [group('pack', { name: 'm' })], { compare: (a, b) => nameAsc(b, a) })
+    expect(selectedTaskViewsInOrder(reordered.rows, reversed, selected).map((view) => view.key))
+      .toEqual(['l:z', 'l:m1', remote.key])
     expect(built.visibleCount).toBe(6)
   })
 
@@ -211,6 +247,8 @@ describe('expansion and selection sequence', () => {
     expect(keys(built.rows)).toEqual(['# group', '# single', 'l:solo'])
     expect(built.rows[0]).toMatchObject({ count: 2, collapsed: true })
     expect(built.sequence()).toEqual(['l:solo'])
+    expect(selectedTaskViewsInOrder(built.rows, rows, new Set(['l:solo', 'l:deep'])).map((view) => view.key))
+      .toEqual(['l:solo', 'l:deep'])
   })
 
   test('type buckets can use the dominant member category for a group', () => {

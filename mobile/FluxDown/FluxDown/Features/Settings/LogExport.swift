@@ -217,8 +217,26 @@ struct LogsSection: View {
     @Environment(AppContainer.self) private var container
     @Environment(HostStore.self) private var store
     @Environment(ConfigEditor.self) private var editor
+    @Environment(AppearanceStore.self) private var appearance
 
     @State private var model = LogExportModel()
+
+    private static let levelItem = SettingsItem(
+        id: "logs.level", key: "diagnostics.log_level", titleKey: "diagnosticsLogLevel", detailKey: "diagnosticsLogLevelDesc"
+    )
+    private static let levelLabels = [
+        ("auto", "diagnosticsLogLevelAuto"),
+        ("debug", "diagnosticsLogLevelDebug"),
+        ("info", "diagnosticsLogLevelInfo"),
+        ("warn", "diagnosticsLogLevelWarn"),
+        ("error", "diagnosticsLogLevelError"),
+    ]
+
+    private static func supportsLogLevel(_ form: SettingsConfigForm) -> Bool {
+        // Do not treat the catalog default or an optimistic value as host support.
+        guard case let .string(level)? = form.prefs[levelItem.key] else { return false }
+        return levelLabels.contains { $0.0 == level }
+    }
 
     static let maxSizeItem = SettingsItem(
         id: "logs.maxSize", key: "log_max_size_mb", titleKey: "logMaxSize", detailKey: "logMaxSizeDesc"
@@ -228,8 +246,19 @@ struct LogsSection: View {
     var body: some View {
         let readOnly = store.state.isReadOnly
         Section {
+            if Self.supportsLogLevel(editor.form) {
+                ConfigPickerRow(
+                    item: Self.levelItem,
+                    options: Self.levelLabels.map { SettingsOption(id: $0.0, label: L($0.1)) },
+                    fallback: "auto"
+                )
+                .disabled(readOnly)
+            }
             if editor.form.has(Self.maxSizeItem.key) {
-                ConfigNumberRow(item: Self.maxSizeItem, range: 1 ... 1024, fallback: 10, unitHint: L("mobileLogSizeUnit"))
+                ConfigNumberRow(
+                    item: Self.maxSizeItem, range: 1 ... 1024, fallback: 10,
+                    unitHint: L("mobileLogSizeUnitLabel", ["unit": appearance.fileSizeUnits == .iec ? "MiB" : "MB"])
+                )
                     .disabled(readOnly)
             }
             if let size = model.sizeText {
@@ -269,6 +298,9 @@ struct LogsSection: View {
     /// 搜索索引（日志行）：由「诊断」页并入。
     static func searchEntries(_ ctx: SettingsSearchContext, route: SettingsRoute, breadcrumb: String) -> [SettingsEntry] {
         var entries: [SettingsEntry] = []
+        if supportsLogLevel(ctx.form) {
+            entries.append(SettingsEntry(item: levelItem, route: route, breadcrumb: breadcrumb, symbol: "text.page.badge.magnifyingglass"))
+        }
         if ctx.form.has(maxSizeItem.key) {
             entries.append(SettingsEntry(item: maxSizeItem, route: route, breadcrumb: breadcrumb, symbol: "text.page.badge.magnifyingglass"))
         }

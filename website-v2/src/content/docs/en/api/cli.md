@@ -168,7 +168,7 @@ fluxdown watch --interval 2    # refresh every 2 seconds (default 1)
 
 ### config
 
-`config` reads and writes a small local config file so you don't have to export environment variables every time (think `go env -w`). It never contacts a server. Valid keys are `url`, `token`, and `timeout`.
+`config` reads and writes local configuration so you don't have to export environment variables every time (think `go env -w`). It never contacts a server. Valid keys are `url`, `token`, `timeout`, and `log_level`.
 
 ```bash
 fluxdown config set token fxd_your_token_here   # persist the token
@@ -183,6 +183,8 @@ fluxdown config path             # print the config file location
 ```
 
 The file is `cli.toml` under the platform config directory (`%APPDATA%\zerx\fluxdown\config\` on Windows, `$XDG_CONFIG_HOME/fluxdown/` on Linux, `~/Library/Application Support/dev.zerx.fluxdown/` on macOS). The stored `token` is plain text; on Unix the file is created with `0600` permissions (owner-only). A value set here is overridden by an explicit `--flag` or the matching environment variable on any given invocation.
+
+`log_level` is stored separately in the engine data directory's `logging.conf`. If that file is malformed, `config list` and `config get` without a key show `log_level` as `(invalid)` in both text and JSON, while still listing the other keys. `config get log_level` reports the error; `config set log_level auto` repairs the file and restores the default.
 
 ## Exit codes
 

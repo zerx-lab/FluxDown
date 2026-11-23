@@ -10,7 +10,7 @@ use std::{
 use fluxdown_protocol::{InstalledPlugin, MarketEntryDto, PluginDto, PrivatePluginListDto};
 use fluxdown_ui_components::{
     BusyExt as _, BusyHold, ControlExt as _, FluxIcon, IconControlExt as _, card, form, form_field,
-    input_with_action, tabular_numbers, tooltip_view,
+    input_with_action, tabular_numbers, toast, tooltip_view,
 };
 use fluxdown_ui_theme::active_theme;
 use gpui::{
@@ -67,7 +67,7 @@ pub enum PluginOp {
     Install,
     Update,
     Uninstall,
-    SetEnabled,
+    SetEnabled(bool),
     Reload,
 }
 
@@ -252,6 +252,7 @@ impl ExtensionsView {
                     ),
             )
             .children(self.render_install_area(frame, cx))
+            .children(self.render_resolver_conflicts(frame, cx))
             .child(if installed.is_empty() {
                 ui::empty_state(
                     FluxIcon::Package,
@@ -468,7 +469,7 @@ impl ExtensionsView {
                     frame,
                 )
             }),
-            (plugin.disabled_reason == "ConsentRequired").then(|| {
+            (!load_failed && has_pending_consent(plugin)).then(|| {
                 ui::tone_pill(
                     translator.text("pluginDisabledConsentRequired").to_owned(),
                     frame.extended.colors.warning,
@@ -540,7 +541,7 @@ impl ExtensionsView {
         let busy = stale || self.plugins.busy.contains(&plugin.identity);
         let load_failed = plugin.load_status == "Failed";
         let detail_identity = identity.clone();
-        let consent_pending = has_pending_consent(plugin);
+        let consent_pending = !load_failed && has_pending_consent(plugin);
         h_flex()
             .flex_none()
             .pl(tokens.spacing.md)
@@ -710,7 +711,7 @@ impl ExtensionsView {
                             .set_plugin_enabled(identity.clone(), *checked);
                         this.run_plugin_op(
                             identity.clone(),
-                            PluginOp::SetEnabled,
+                            PluginOp::SetEnabled(*checked),
                             future,
                             window,
                             cx,
@@ -1374,6 +1375,9 @@ impl ExtensionsView {
                 this.plugins.busy.remove(&identity);
                 this.plugins.reloading.remove(&identity);
                 this.plugins.uninstalling.remove(&identity);
+                if op == PluginOp::SetEnabled(true) && result.is_ok() {
+                    this.notify_resolver_conflicts(identity, window, cx);
+                }
                 this.finish_plugin_op(op, result, window, cx);
                 cx.notify();
             }) else {
@@ -1414,18 +1418,13 @@ impl ExtensionsView {
                 } else {
                     "pluginOpInstallSuccess"
                 };
-                let message = translator.text(key).to_owned();
-                let installed = serde_json::from_value::<InstalledPlugin>(value).ok();
-                let missing = installed
-                    .as_ref()
-                    .map(|installed| installed.missing_components.clone())
-                    .unwrap_or_default();
-                if let Some(installed) = installed {
+                self.toast_success(translator.text(key).to_owned(), window, cx);
+                if let Ok(installed) = serde_json::from_value::<InstalledPlugin>(value) {
+                    self.notify_resolver_conflicts(installed.identity.clone(), window, cx);
                     self.track_consent(installed.identity);
-                }
-                self.toast_success(message, window, cx);
-                if !missing.is_empty() {
-                    self.show_missing_components(&missing, window, cx);
+                    if !installed.missing_components.is_empty() {
+                        self.show_missing_components(&installed.missing_components, window, cx);
+                    }
                 }
             }
             (PluginOp::Uninstall, Ok(_)) => {
@@ -1447,20 +1446,73 @@ impl ExtensionsView {
                     self.show_missing_components(&missing, window, cx);
                 }
             }
-            (PluginOp::SetEnabled, Ok(_)) => {}
+            (PluginOp::SetEnabled(_), Ok(_)) => {}
             (op, Err(error)) => {
                 let detail = error_text(translator, &error);
                 let key = match op {
                     PluginOp::Install => "pluginOpInstallFailed",
                     PluginOp::Update => "pluginOpUpdateFailed",
                     PluginOp::Uninstall => "pluginOpUninstallFailed",
-                    PluginOp::SetEnabled => "pluginOpEnabledFailed",
+                    PluginOp::SetEnabled(_) => "pluginOpEnabledFailed",
                     PluginOp::Reload => "pluginOpReloadFailed",
                 };
                 let message = translator.text_with(key, &[("message", &detail)]);
                 self.toast_error(message, window, cx);
             }
         }
+    }
+
+    fn notify_resolver_conflicts(
+        &self,
+        identity: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // The write has completed, but PluginsChanged and its RPC reply
+        // travel independently. Read the host rather than the rendered list.
+        let list = self.controller.list_plugins();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = list.await.and_then(|value| {
+                serde_json::from_value::<Vec<PluginDto>>(value).map_err(|_| {
+                    fluxdown_protocol::RpcErrorData::new(
+                        fluxdown_protocol::ApplicationErrorCode::Internal,
+                        false,
+                    )
+                })
+            });
+            let Ok(()) = this.update_in(cx, |this, window, cx| {
+                let translator = this.translator.read(cx);
+                match result {
+                    Ok(plugins) => {
+                        if let Some(message) = super::resolver_conflicts::conflict_notice(
+                            &plugins,
+                            &this.plugins.site_defaults.entries,
+                            &identity,
+                            translator,
+                        ) {
+                            let title =
+                                translator.text("pluginResolverConflictsHeading").to_owned();
+                            window.push_notification(
+                                toast::titled(toast::ToastTone::Warning, title, message),
+                                cx,
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        let detail = error_text(translator, &error);
+                        let message = translator.text_with(
+                            "pluginResolverUrlConflictsCheckFailed",
+                            &[("message", &detail)],
+                        );
+                        this.toast_error(message, window, cx);
+                    }
+                }
+            }) else {
+                // The extensions view or window closed before the host replied.
+                return;
+            };
+        })
+        .detach();
     }
 
     fn show_missing_components(

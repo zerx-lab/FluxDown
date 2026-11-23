@@ -91,7 +91,7 @@ pub struct PluginSiteDefaultDto {
 }
 
 /// `daemon.plugin.setSiteDefault`：`identity` 为 `None` 时删除该站点记录；否则把该站点
-/// 确认为使用 `identity`（必须是记录里的候选插件之一）。
+/// 确认为使用 `identity`（必须是记录里的候选插件之一，或 `candidates` 之一）。
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
@@ -99,6 +99,10 @@ pub struct PluginSetSiteDefaultParams {
     pub site: String,
     #[serde(default)]
     pub identity: Option<String>,
+    /// 尚无记录时（如插件页按 `resolverUrlConflicts` 预先选定）一并写入的候选插件；
+    /// 与已有记录的候选合并。旧客户端不发送，此时仍要求记录已存在。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidates: Vec<String>,
 }
 /// `daemon.plugin.archiveRules`：读取已验证包状态；`refresh` 请求显式刷新。
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -244,6 +248,10 @@ pub struct DaemonRuntimeStatsDto {
     /// 「完成后关机」「空闲退出」等联动必须把它们算作仍有工作。
     #[serde(default)]
     pub retry_pending_tasks: u32,
+    /// In-flight local verification / finalization jobs. Missing on older daemons:
+    /// consumers must not infer that it is safe to execute a low-speed power action.
+    #[serde(default)]
+    pub local_work_count: Option<u32>,
 }
 
 /// daemon 托管组件标识。
@@ -1021,6 +1029,7 @@ pub struct BtStatusDto {
 pub struct BtWebSeedDto {
     pub url: String,
     /// `idle` / `downloading` / `backingOff` / `disabled`。
+    /// `pending` = 已保存待挂载；`rejected` = 当前句柄未接受已保存的来源。
     pub state: String,
     /// 从它下载的字节。
     #[serde(default, skip_serializing_if = "is_zero_u64")]
@@ -1128,6 +1137,15 @@ pub struct SetTaskSuperSeedingParams {
     pub enabled: bool,
 }
 
+/// `daemon.task.addWebSeed` parameters.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddTaskWebSeedParams {
+    pub task_id: String,
+    /// Absolute HTTP or HTTPS resource or mirror root (BEP 19).
+    pub url: String,
+}
+
 /// `daemon.bt.portStatus` 结果：BT 监听端口与端口映射实况。
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -1135,7 +1153,7 @@ pub struct SetTaskSuperSeedingParams {
 pub struct BtPortStatusDto {
     /// BT 会话是否在运行（没有 BT 任务时会话不创建，也就没有映射）。
     pub running: bool,
-    /// 监听端口；未运行为 0。
+    /// 实际监听端口；0 表示未报告监听端口。
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub listen_port: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1942,11 +1960,15 @@ pub struct TaskDto {
     /// `torrent-file://local` 哨兵，客户端「复制链接」应优先取本字段。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub origin_url: String,
-    /// Auto 路由或站点规则标签（可追溯性）：Auto 为 `direct` /
+    /// 任务出口「链路」标签（可追溯性）：Auto 为 `direct` /
     /// `direct:sampled` / `direct:pinned` / `direct:failover` /
     /// `proxy:cached` / `proxy:sampled` / `proxy:failover`（代理类标签带
     /// 候选来源后缀 `:system`/`:manual`）；站点规则为 `rule:direct` /
-    /// `rule:system` / `rule:manual` / `rule:custom`；空串 = 非 Auto 且未命中规则。
+    /// `rule:system` / `rule:manual` / `rule:custom`；全局代理为 `global:direct` /
+    /// `global:bypass` / `global:manual` / `global:system` / `global:pac`；任务级代理为
+    /// `task:proxy` / `task:direct`；协议代理覆盖为 `protocol:direct` / `protocol:proxy`；
+    /// BT 会话为 `bt:direct` / `bt:trackers:{manual,system}` / `bt:all:{manual,system}`
+    ///（BT 协议代理覆盖生效时为 `protocol:proxy`）。空串 = 尚未启动过（或出口构建失败退回全局直连）。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub auto_route: String,
     /// Non-secret task overrides from the unified property editor.
@@ -2349,6 +2371,9 @@ pub struct PluginDto {
     /// manifest resolvers[0].match.urls（glob，语义见 url_glob_match）。
     #[serde(default)]
     pub resolver_urls: Vec<String>,
+    /// 已安装插件列表中的 resolver URL 重叠提示。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resolver_url_conflicts: Vec<PluginResolverUrlConflictDto>,
     /// `Loaded` / `Failed`；与 `enabled` 独立，手动禁用的插件仍可能已加载。
     #[serde(default = "default_plugin_load_status")]
     pub load_status: String,
@@ -2381,6 +2406,19 @@ pub struct PluginDto {
     /// （不受公开市场更新 / 撤回影响，由私有目录单独对账）。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct PluginResolverUrlConflictDto {
+    pub pattern: String,
+    pub other_identity: String,
+    pub other_pattern: String,
+    /// 重叠所在站点的站点键（同 `PluginSiteDefaultDto.site`），可据此设置站点默认插件；
+    /// 两侧主机都是通配或非层级 URL（`magnet:` 等）时为空，同插件重复声明恒为空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site: Option<String>,
 }
 
 /// 插件贡献点（镜像 `engine::plugin::ContributesDecl`）。
@@ -3510,6 +3548,10 @@ pub struct RssItemDto {
     pub guid: String,
     pub title: String,
     pub link: String,
+    /// Number of available description image thumbnails.
+    #[serde(default)]
+    #[cfg_attr(feature = "openapi", schema(default = 0))]
+    pub image_count: u8,
     /// enclosure 直链（空 = 回退 `link`）。
     pub enclosure_url: String,
     /// enclosure 声明大小（字节，0 = 未知）。
@@ -3762,8 +3804,8 @@ pub enum WsServerMsg {
     QueuesChanged { queues: Vec<QueueDto> },
     /// 单任务队列归属变化（move_task_to_queue 定向广播）。
     TaskQueueChanged { task_id: String, queue_id: String },
-    /// Auto 路由或站点规则标签的落定/变更（详情面板「链路」行）。
-    /// `route` wire 标签同 `TaskDto.autoRoute`；恒非空（空串 = 非 Auto 且未命中规则，不广播）。
+    /// 任务出口「链路」标签的落定/变更（详情面板「链路」行）。
+    /// `route` wire 标签同 `TaskDto.autoRoute`；恒非空（空串不广播）。
     TaskRouteChanged { task_id: String, route: String },
     /// 队列位置全量替换（首次发布 / 用户调整顺序导致整表重排）；按 `order` 升序。
     QueuePositionsChanged { positions: Vec<QueuePositionDto> },
@@ -4323,7 +4365,7 @@ pub struct ComponentFfmpegStatus {
     pub managed_version: String,
     /// 系统 PATH 中探测到的 ffmpeg 路径（无论是否生效；空 = 无）。
     pub system_path: String,
-    /// 当前平台是否提供托管安装（BtbN 构建）。`false` = macOS 等——Web UI 隐藏
+    /// 当前平台是否提供托管安装（FFmpeg-Builds 构建）。`false` = macOS 等——Web UI 隐藏
     /// 托管安装区块，只引导系统 PATH / 手动指定，避免反复弹「不支持安装」。
     pub managed_supported: bool,
 }

@@ -10,8 +10,10 @@
 use std::os::windows::process::CommandExt as _;
 use std::process::{Command, ExitStatus, Stdio};
 
+use fluxdown_protocol::browser_extension::BrowserKind;
 use fluxdown_protocol::shell_open::{
-    EXIT_NOT_FOUND, EXIT_OK, EXIT_UNSUPPORTED, OPEN_DIR_ARG, OPEN_TASK_ARG, REVEAL_TASK_ARG,
+    EXIT_NOT_FOUND, EXIT_OK, EXIT_OK_STORE_ONLY, EXIT_UNSUPPORTED, INSTALL_BROWSER_EXTENSION_ARG,
+    OPEN_DIR_ARG, OPEN_TASK_ARG, REVEAL_TASK_ARG,
 };
 use fluxdown_protocol::{ApplicationErrorCode, RpcErrorData, TaskDto, method};
 
@@ -46,7 +48,28 @@ pub(crate) async fn directory(path: String) -> Result<(), RpcErrorData> {
     run([OPEN_DIR_ARG.to_owned(), path]).await
 }
 
+/// 为浏览器安装 FluxDown 扩展（登记商店外部扩展并拉起浏览器）；结果同
+/// `agent.platform.installBrowserExtension` 的 `BrowserExtensionInstallResult`。
+pub(crate) async fn browser_extension(
+    browser: BrowserKind,
+) -> Result<serde_json::Value, RpcErrorData> {
+    let status = spawn_and_wait([
+        INSTALL_BROWSER_EXTENSION_ARG.to_owned(),
+        browser.as_str().to_owned(),
+    ])
+    .await?;
+    if status.code() == Some(EXIT_OK_STORE_ONLY) {
+        return Ok(serde_json::json!({ "externalRegistered": false }));
+    }
+    outcome(status)?;
+    Ok(serde_json::json!({ "externalRegistered": true }))
+}
+
 async fn run<const N: usize>(args: [String; N]) -> Result<(), RpcErrorData> {
+    outcome(spawn_and_wait(args).await?)
+}
+
+async fn spawn_and_wait<const N: usize>(args: [String; N]) -> Result<ExitStatus, RpcErrorData> {
     let program = crate::service_bootstrap::agent_executable().map_err(|error| {
         log::warn!("could not locate fluxdown-agent for shell open: {error}");
         RpcErrorData::new(ApplicationErrorCode::Unavailable, false)
@@ -72,14 +95,13 @@ async fn run<const N: usize>(args: [String; N]) -> Result<(), RpcErrorData> {
             log::warn!("could not start the shell-open waiter: {error}");
             RpcErrorData::new(ApplicationErrorCode::Internal, false)
         })?;
-    let status = exited
+    exited
         .await
         .map_err(|_| RpcErrorData::new(ApplicationErrorCode::Internal, false))?
         .map_err(|error| {
             log::warn!("could not spawn fluxdown-agent for shell open: {error}");
             RpcErrorData::new(ApplicationErrorCode::Unavailable, false)
-        })?;
-    outcome(status)
+        })
 }
 
 fn outcome(status: ExitStatus) -> Result<(), RpcErrorData> {

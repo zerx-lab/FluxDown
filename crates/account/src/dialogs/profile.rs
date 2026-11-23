@@ -1,6 +1,7 @@
 //! Session-bound nickname and one-time Origin ID editors.
 
 use fluxdown_protocol::{RpcErrorData, method};
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     BusyExt as _, ControlExt as _, check_row, dialog_title, field_error, field_hint, form,
     form_field,
@@ -15,7 +16,6 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
-    notification::Notification,
     v_flex,
 };
 
@@ -324,7 +324,7 @@ impl ProfileDialog {
                         ProfileField::Nickname => "accountNicknameEditSuccess",
                         ProfileField::OriginId => "accountOriginIdEditSuccess",
                     };
-                    window.push_notification(Notification::success(self.text(key, cx)), cx);
+                    window.push_notification(toast::success(self.text(key, cx)), cx);
                     self.close(window, cx);
                 }
                 Operation::Idle => unreachable!("only in-flight operations receive results"),

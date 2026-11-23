@@ -1,3 +1,4 @@
+import { fileKindOf } from '../../../lib/icon-pack/pack'
 import { flattenDirectories } from './directoryTree'
 import type { DirectoryItem, DirectoryKind } from './directoryTree'
 // 任务表可见行管线（纯函数）：在行引擎「排序 + 行顺序保持 + 侧栏筛选 + 搜索」之后，把任务组并成「文件夹行」、
@@ -15,6 +16,39 @@ export interface BucketInfo {
   key: string
   label: string
   order: number
+}
+
+// Keep in sync with desktop series_title; both run series_title_cases.json.
+const episodeMarker = /(?:[ ._[\]()-][Ss][0-9]{2}[Ee][0-9]{2,3}|第[0-9]{1,3}[话話集])(?:$|[ ._[\]()-])| - [0-9]{2,3}(?:[Vv][0-9]{1,2})?(?: +[Ee][Nn][Dd])?(?: *(?:\[[^\]]*\]|\([^)]*\)))*$/
+const subtitleExtension = /\.(?:ass|ssa|srt|vtt)$/i
+const subtitleLanguageSuffix = /\.[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8}){0,2}$/
+const subtitleFlags = /(?:\.(?:forced|default|sdh|cc|hi))+$/i
+
+function subtitleStem(stem: string): string {
+  const unflagged = stem.replace(subtitleFlags, '')
+  if (fileKindOf(unflagged) === 'video') return unflagged.slice(0, unflagged.lastIndexOf('.'))
+  const base = unflagged.replace(subtitleLanguageSuffix, '')
+  return base !== unflagged && fileKindOf(base) === 'video' ? base.slice(0, base.lastIndexOf('.')) : base
+}
+
+export function contentBucket(view: DownloadTaskView): BucketInfo | null {
+  const name = view.name.slice(Math.max(view.name.lastIndexOf('/'), view.name.lastIndexOf('\\')) + 1)
+    .replace(/^ *(?:\[[^\]]*\] *)*/, '')
+  let stem = name
+  if (name.includes(' - ')) {
+    if (subtitleExtension.test(name)) {
+      stem = subtitleStem(name.slice(0, name.lastIndexOf('.')))
+    } else if (/\.nfo$/i.test(name) || fileKindOf(name) === 'video') {
+      stem = name.slice(0, name.lastIndexOf('.'))
+    }
+  }
+  const match = episodeMarker.exec(stem)
+  if (match === null) return null
+  const label = stem.slice(0, match.index).replace(/^[ ._-]+|[ ._-]+$/g, '')
+  if (label === '') return null
+  const folded = label.toLowerCase()
+  const key = view.source === 'remote' ? `content:remote:${view.toDevice}\u0000${folded}` : `content:local:${folded}`
+  return { key, label, order: 0 }
 }
 
 /** 分组方式的桶标题行。 */
@@ -113,6 +147,26 @@ export function keysInVisualSpan(rows: readonly VisibleRow[], from: number, to: 
   return keys
 }
 
+export function selectedTaskViewsInOrder(
+  rows: readonly VisibleRow[],
+  sortedTasks: readonly TaskRow[],
+  selected: ReadonlySet<RowKey>,
+): DownloadTaskView[] {
+  const remaining = new Set(selected)
+  const result: DownloadTaskView[] = []
+  const add = (row: TaskRow) => {
+    if (remaining.delete(row.key)) result.push(row.view)
+  }
+  for (const row of rows) {
+    if (remaining.size === 0) break
+    if (row.type === 'task') add(row)
+    else if (row.type === 'group') row.orderedRows().forEach(add)
+  }
+  // Collapsing a bucket or directory does not clear its selection.
+  if (remaining.size > 0) for (const row of sortedTasks) add(row)
+  return result
+}
+
 export const groupRowKey = (groupId: string): string => `g:${groupId}`
 
 /** 目录折叠状态的集合键。 */
@@ -124,8 +178,8 @@ export interface VisibleRowsInput {
   groups: readonly GroupDto[]
   /** 当前排序比较器（与引擎同一个）。 */
   compare: (left: DownloadTaskView, right: DownloadTaskView) => number
-  /** null = 不分组。组行传入其通过成员的视图，供「类型」这种不能直接用代理视图的分桶使用。 */
-  bucketOf: ((view: DownloadTaskView, groupMembers: readonly DownloadTaskView[] | null) => BucketInfo) | null
+  /** Null callback disables grouping; a null result leaves that entity outside any named bucket. */
+  bucketOf: ((view: DownloadTaskView, groupMembers: readonly DownloadTaskView[] | null) => BucketInfo | null) | null
   /** 已折叠的桶键。 */
   collapsedBuckets: ReadonlySet<string>
   /** 运行期展开的组。 */
@@ -273,8 +327,13 @@ export function buildVisibleRows(input: VisibleRowsInput): VisibleRows {
     buckets.push({ info: null, entities, count: 0 })
   } else {
     const byKey = new Map<string, Bucket>()
+    const ungrouped: Entity[] = []
     for (const entity of entities) {
       const info = input.bucketOf(entity.view, membersOf.get(entity) ?? null)
+      if (info === null) {
+        ungrouped.push(entity)
+        continue
+      }
       let bucket = byKey.get(info.key)
       if (bucket === undefined) {
         bucket = { info, entities: [], count: 0 }
@@ -289,6 +348,7 @@ export function buildVisibleRows(input: VisibleRowsInput): VisibleRows {
       const right = b.info as BucketInfo
       return left.order - right.order || (left.label < right.label ? -1 : left.label > right.label ? 1 : 0)
     })
+    if (ungrouped.length > 0) buckets.push({ info: null, entities: ungrouped, count: 0 })
   }
 
   // 6. 展开：组行后紧跟 flatten 出的成员行 / 目录行。

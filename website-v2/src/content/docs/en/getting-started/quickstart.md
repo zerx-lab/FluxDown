@@ -22,7 +22,7 @@ Click **Advanced Options** to reveal per-task overrides that default to your glo
 
 | Field | What it does |
 |---|---|
-| **Task Proxy** | A proxy just for this task, e.g. `socks5://127.0.0.1:1080` or `http://host:port`. Leave empty to use the global proxy. Doesn't apply to BitTorrent downloads. |
+| **Task Proxy** | A proxy just for this task, e.g. `socks5://127.0.0.1:1080` or `http://host:port`. Leave empty to follow site rules and the protocol or global route. For BitTorrent and eD2K, use the protocol proxy in **Settings → Proxy** instead. |
 | **User-Agent** | Pick a preset (Chrome, Firefox, Edge, Safari) or type a custom string. |
 | **Cookie** | Raw `name=value; name2=value2` pairs, for downloads that require you to be logged in. |
 | **Hash Verification** | Pick an algorithm (MD5/SHA-1/SHA-256/SHA-512) and paste the expected hash. FluxDown verifies the file after download and flags a mismatch. Leave blank to skip. |

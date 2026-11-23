@@ -1,5 +1,6 @@
 //! Plugin-neutral manifest navigation, selection and group-request projection.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use fluxdown_protocol::{CreateGroupRequest, CreateTaskRequest, GroupItemRequest, PreviewItemDto};
@@ -405,6 +406,21 @@ impl ManifestSelection {
                 index: *index,
                 show_path,
             }));
+    }
+
+    pub(crate) fn selected_export_rows(&self) -> impl Iterator<Item = (Cow<'_, str>, u64)> {
+        self.items
+            .iter()
+            .zip(&self.sizes)
+            .filter(move |(item, _)| self.selected.contains(&item.id))
+            .map(|(item, &size)| {
+                let name = if item.path.is_empty() {
+                    Cow::Borrowed(item.name.as_str())
+                } else {
+                    Cow::Owned(format!("{}/{}", item.path, item.name))
+                };
+                (name, u64::try_from(size).unwrap_or_default())
+            })
     }
 
     pub(crate) fn group_items(&self) -> Vec<GroupItemRequest> {

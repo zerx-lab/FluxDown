@@ -11,8 +11,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use super::{
-    DownloadManager, SEEDING_STATUS_ACTIVE, SEEDING_STATUS_QUEUED, is_bt_url, is_magnet,
-    is_safe_file_name,
+    DownloadManager, ReseedStart, SEEDING_STATUS_ACTIVE, SEEDING_STATUS_QUEUED, is_bt_url,
+    is_magnet, is_safe_file_name,
 };
 use crate::bt_downloader::{self, BtHandle, SharedBtSession, TorrentSource};
 use crate::bt_move::{self, MoveError, MoveJournal};
@@ -698,10 +698,20 @@ impl DownloadManager {
                 }
                 self.emit_progress_from_db(task_id, 3, stopped.as_i32(), stopped.message(), 0)
                     .await;
+                // 停止原因已落库：进宽限后清理，立即模式不必等下一次完成或重扫。
+                self.hold_retention_grace([task_id]);
+                self.purge_after_seeding_stopped().await;
                 return;
             }
-            if let Some(bt) = self.bt_session.clone() {
-                self.spawn_reseed_from_disk(bt, &task).await;
+            if let Some(bt) = self.bt_session.clone()
+                && matches!(
+                    self.spawn_reseed_from_disk(bt, &task).await,
+                    ReseedStart::DecidedStop
+                )
+            {
+                // 没有种子字节，不再做种：同样进宽限后清理。
+                self.hold_retention_grace([task_id]);
+                self.purge_after_seeding_stopped().await;
             }
         } else if resume_after {
             self.resume_task_inner(task_id).await;

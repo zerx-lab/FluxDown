@@ -3,13 +3,14 @@
 // 每次进入子页 / 插件列表变化 / 每次变更后重新拉取。
 
 import { Check, Package, Trash2 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useT } from '../../../../i18n'
-import { RpcError, rpc, useDaemon } from '../../../../lib/rpc'
-import type { DaemonSnapshot, PluginDto, PluginSiteDefaultDto } from '../../../../lib/rpc'
+import { rpc, useDaemon } from '../../../../lib/rpc'
+import type { DaemonSnapshot, PluginDto } from '../../../../lib/rpc'
 import { Badge, Button, Card, EmptyState, Select, toast } from '../../../../ui'
 import { BlockTitle, IconButton } from './common'
 import { extensionErrorText } from './errors'
+import { useSiteDefaults } from './useSiteDefaults'
 
 const EMPTY_PLUGINS: PluginDto[] = []
 const selectPlugins = (daemon: DaemonSnapshot) => daemon.plugins
@@ -17,27 +18,9 @@ const selectPlugins = (daemon: DaemonSnapshot) => daemon.plugins
 export function SiteDefaultsTab({ stale, active }: { stale: boolean; active: boolean }) {
   const t = useT()
   const plugins = useDaemon(selectPlugins, EMPTY_PLUGINS)
-  const [entries, setEntries] = useState<readonly PluginSiteDefaultDto[]>([])
-  const [loaded, setLoaded] = useState(false)
+  const { entries, loaded, refresh } = useSiteDefaults(plugins, active)
   const [busySite, setBusySite] = useState<string | null>(null)
   const names = useMemo(() => new Map(plugins.map((plugin) => [plugin.identity, plugin.name])), [plugins])
-
-  // 与 GPUI 一致：成功读到（或 daemon 不支持插件）才算已加载；其余失败保持上一次列表、不显示空状态。
-  const refresh = useCallback(async () => {
-    try {
-      setEntries(await rpc.daemon.plugin.siteDefaults())
-      setLoaded(true)
-    } catch (error) {
-      if (error instanceof RpcError && error.appCode === 'unsupported') {
-        setEntries([])
-        setLoaded(true)
-      }
-    }
-  }, [])
-
-  useEffect(() => {
-    if (active) void refresh()
-  }, [refresh, plugins, active])
 
   const mutate = async (site: string, identity: string | null) => {
     if (busySite !== null) return

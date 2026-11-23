@@ -25,11 +25,14 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.fluxdown.app.actions.LocalFileAvailability
 import com.fluxdown.app.actions.LocalTaskActions
+import com.fluxdown.app.actions.rememberLocalFileAvailability
 import com.fluxdown.app.data.CardField
 import com.fluxdown.app.data.Density
 import com.fluxdown.app.nav.LocalNavigator
 import com.fluxdown.app.nav.Route
+import com.fluxdown.app.shell.LocalAppearance
 import com.fluxdown.app.ui.TaskVisualState
 import com.fluxdown.app.ui.fileCategory
 import com.fluxdown.app.ui.ringKind
@@ -78,25 +81,31 @@ private fun DrawScope.drawCardSegment(fill: Color, line: Color, first: Boolean, 
     }
 }
 
-/** [localHost] = false 时已完成行的主动作是进入任务详情（远端文件不在本机）。 */
-private fun ringLabelOf(t: RowText, v: TaskVisualState, localHost: Boolean): String = when (v) {
+internal enum class DownloadRowTap { ToggleSelection, TryOpenFile, Details }
+
+internal fun downloadRowTap(selecting: Boolean, file: LocalFileAvailability): DownloadRowTap = when {
+    selecting -> DownloadRowTap.ToggleSelection
+    file.canTryOpen -> DownloadRowTap.TryOpenFile
+    else -> DownloadRowTap.Details
+}
+
+private fun ringLabelOf(t: RowText, v: TaskVisualState, opensFile: Boolean): String = when (v) {
     TaskVisualState.Downloading, TaskVisualState.Pending, TaskVisualState.Queued,
     TaskVisualState.Preparing, TaskVisualState.Verifying,
     -> t.ringPause
     TaskVisualState.Paused -> t.ringResume
     TaskVisualState.Failed -> t.ringRetry
     TaskVisualState.Missing -> t.ringRedownload
-    TaskVisualState.Seeding -> t.ringSeeding
-    TaskVisualState.Completed -> if (localHost) t.ringOpen else t.openDetails
+    TaskVisualState.Seeding, TaskVisualState.Completed -> if (opensFile) t.ringOpen else t.openDetails
 }
 
-private fun primaryIconOf(v: TaskVisualState): ImageVector = when (v) {
+private fun primaryIconOf(v: TaskVisualState, opensFile: Boolean): ImageVector = when (v) {
     TaskVisualState.Downloading, TaskVisualState.Pending, TaskVisualState.Queued,
     TaskVisualState.Preparing, TaskVisualState.Verifying,
     -> FluxIcons.Pause
     TaskVisualState.Paused -> FluxIcons.Play
     TaskVisualState.Failed, TaskVisualState.Missing -> FluxIcons.RotateCw
-    TaskVisualState.Seeding, TaskVisualState.Completed -> FluxIcons.ExternalLink
+    TaskVisualState.Seeding, TaskVisualState.Completed -> if (opensFile) FluxIcons.ExternalLink else FluxIcons.Info
 }
 
 /**
@@ -127,8 +136,9 @@ internal fun DownloadRow(
 
     // 排队名次在组合里按稳定键二分取（只读 queueOrder 的可见排队行随顺序变化重组）；非排队行不读它。
     val queuePosition = if (item.visual == TaskVisualState.Queued) view.queueOrder.rank(id) else 0
-    val meta = remember(item, style.fields, colors, text, queuePosition) {
-        buildRowMeta(colors, text, item, style.fields, System.currentTimeMillis() / 1000, queuePosition)
+    val sizeUnits = LocalAppearance.current.fileSizeUnits
+    val meta = remember(item, style.fields, colors, text, queuePosition, sizeUnits) {
+        buildRowMeta(colors, text, item, style.fields, System.currentTimeMillis() / 1000, queuePosition, sizeUnits)
     }
 
     val selecting = nav.selecting
@@ -153,12 +163,14 @@ internal fun DownloadRow(
 
     val coords = remember { arrayOfNulls<LayoutCoordinates>(1) }
 
-    val localHost = view.localHost
-    val startActions = remember(item.visual, item.boosted, text, actions, localHost) {
+    val file by rememberLocalFileAvailability(item.task, view.localHost)
+    val opensFile = file == LocalFileAvailability.RegularFile
+    val tryOpenFile = file.canTryOpen
+    val startActions = remember(item.visual, item.boosted, text, actions, tryOpenFile) {
         buildList {
             add(
-                FluxSwipeAction(ringLabelOf(text, item.visual, localHost), primaryIconOf(item.visual), FluxSwipeTone.Accent) {
-                    actions.primary(latest.task)
+                FluxSwipeAction(ringLabelOf(text, item.visual, tryOpenFile), primaryIconOf(item.visual, tryOpenFile), FluxSwipeTone.Accent) {
+                    actions.primary(latest.task, tryOpenFile)
                 },
             )
             val st = item.task.status
@@ -179,8 +191,8 @@ internal fun DownloadRow(
     }
 
     val customActions = if (a11y) {
-        remember(item, text, actions, conflict) {
-            val menu = actions.menuItems(item.task, item.boosted) { nav.enterSelection(id) }
+        remember(item, text, actions, conflict, opensFile) {
+            val menu = actions.menuItems(item.task, item.boosted, opensFile) { nav.enterSelection(id) }
                 .filterIsInstance<FluxMenuItem.Action>()
                 .map { a -> CustomAccessibilityAction(a.label) { a.onClick(); true } }
             if (conflict) menu + CustomAccessibilityAction(text.conflictTooltip) { nav.reopenFileConflicts(); true } else menu
@@ -218,13 +230,15 @@ internal fun DownloadRow(
                     categoryColor = colors.category(item.category.fileCategory()),
                     ringKind = item.visual.ringKind(),
                     ringProgress = ringProgressOf(item),
-                    ringContentDescription = ringLabelOf(text, item.visual, localHost),
+                    ringContentDescription = if (selecting) text.select else ringLabelOf(text, item.visual, tryOpenFile),
                     onClick = {
-                        if (nav.selecting) {
-                            nav.toggleSelected(id)
-                            haptics.tick()
-                        } else {
-                            nav.push(Route.TaskDetail(id))
+                        when (downloadRowTap(nav.selecting, file)) {
+                            DownloadRowTap.ToggleSelection -> {
+                                nav.toggleSelected(id)
+                                haptics.tick()
+                            }
+                            DownloadRowTap.TryOpenFile -> actions.openOrShowDetails(latest.task)
+                            DownloadRowTap.Details -> nav.push(Route.TaskDetail(id))
                         }
                     },
                     onLongClick = {
@@ -240,10 +254,12 @@ internal fun DownloadRow(
                             nav.toggleSelected(id)
                         } else if (c != null && c.isAttached) {
                             val cur = latest
-                            overlays.showMenu(c.boundsInRoot(), actions.menuItems(cur.task, cur.boosted) { nav.enterSelection(id) })
+                            val anchor = c.boundsInRoot()
+                            val onSelect = { nav.enterSelection(id) }
+                            actions.showTaskMenu(anchor, cur.task, cur.boosted, file, onSelect)
                         }
                     },
-                    onRingClick = { actions.primary(latest.task) },
+                    onRingClick = { actions.primary(latest.task, tryOpenFile) },
                     onTileClick = {
                         if (nav.selecting) {
                             nav.toggleSelected(id)
@@ -259,7 +275,11 @@ internal fun DownloadRow(
                     selection = selection,
                     strikethrough = item.visual == TaskVisualState.Missing,
                     horizontalPadding = hPad,
-                    onClickLabel = text.openDetails,
+                    onClickLabel = when (downloadRowTap(selecting, file)) {
+                        DownloadRowTap.ToggleSelection -> text.select
+                        DownloadRowTap.TryOpenFile -> text.ringOpen
+                        DownloadRowTap.Details -> text.openDetails
+                    },
                     customActions = customActions,
                     badge = if (conflict) text.conflictPending else null,
                     onBadgeClick = if (conflict) openConflicts else null,
@@ -273,7 +293,7 @@ private fun ringProgressOf(item: TaskItem): Float? = when (item.visual) {
     TaskVisualState.Completed, TaskVisualState.Missing, TaskVisualState.Seeding,
     TaskVisualState.Preparing, TaskVisualState.Verifying,
     -> null
-    else -> item.task.progress
+    else -> item.progress
 }
 
 /** 详情栏当前任务底色（draw 阶段读取，不触发重组）+ 行间发丝线（历史区首行另画顶线）。 */

@@ -175,7 +175,7 @@ class AppUpdateController internal constructor(
 
     /** 没有任何应用能打开 APK（精简系统）：按安装失败回报。 */
     fun onInstallerUnavailable(detail: String) {
-        AppDiagnostics.event("update: no installer available: $detail")
+        AppDiagnostics.event("update: no installer available")
         scope.launch { reportFailure(UpdateFailure.Install, "no installer: $detail") }
     }
 
@@ -324,7 +324,7 @@ class AppUpdateController internal constructor(
                 _handoff.value = InstallHandoff(outcome.intent)
             }
             is InstallOutcome.Rejected -> {
-                AppDiagnostics.event("update: v$version rejected before install: ${outcome.failure} ${outcome.detail}")
+                AppDiagnostics.event("update: v$version rejected before install: ${outcome.failure}")
                 reportFailure(outcome.failure, outcome.detail)
             }
         }

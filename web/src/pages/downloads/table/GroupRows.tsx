@@ -13,6 +13,7 @@ import type { DirRow, DirectoryHeaderRow, GroupFolderRow } from '../model/groupR
 import { aggregateOf, anyActive, anyResumable, compressPath } from '../model/groupTree'
 import type { GroupAggregate } from '../model/groupTree'
 import type { TaskRow } from '../model/rowEngine'
+import { useFileSizeUnits, type FileSizeUnits } from '../../../lib/fileSizeUnits'
 import { formatBytes, formatDateTime, MAX_ETA_SECS, urlHost } from '../model/task'
 import type { DownloadTaskView, RowKey } from '../model/task'
 import type { ViewDensity } from '../model/viewPrefs'
@@ -151,7 +152,7 @@ function GroupNameCell({
   )
 }
 
-function renderGroupCell(props: GroupRowProps, column: LayoutColumn, aggregate: GroupAggregate) {
+function renderGroupCell(props: GroupRowProps, column: LayoutColumn, aggregate: GroupAggregate, units: FileSizeUnits) {
   const { t, row, density, queueName } = props
   const downloading = aggregate.state === 'downloading'
   switch (column.kind) {
@@ -171,7 +172,7 @@ function renderGroupCell(props: GroupRowProps, column: LayoutColumn, aggregate: 
       )
     }
     case 'size':
-      return aggregate.sizeBytes > 0 ? <Meta numeric>{formatBytes(aggregate.sizeBytes)}</Meta> : <TertiaryDash />
+      return aggregate.sizeBytes > 0 ? <Meta numeric>{formatBytes(aggregate.sizeBytes, units)}</Meta> : <TertiaryDash />
     case 'status':
       return (
         <div className="tabular flex min-w-0 flex-col justify-center text-xs">
@@ -184,7 +185,7 @@ function renderGroupCell(props: GroupRowProps, column: LayoutColumn, aggregate: 
         </div>
       )
     case 'speed':
-      return downloading && aggregate.speed > 0 ? <Meta numeric>{`${formatBytes(aggregate.speed)}/s`}</Meta> : <TertiaryDash />
+      return downloading && aggregate.speed > 0 ? <Meta numeric>{`${formatBytes(aggregate.speed, units)}/s`}</Meta> : <TertiaryDash />
     case 'eta':
       return downloading && aggregate.etaSeconds !== null && aggregate.etaSeconds <= MAX_ETA_SECS ? (
         <Meta numeric>{formatEta(t, aggregate.etaSeconds)}</Meta>
@@ -242,6 +243,7 @@ function GroupActions({ props, selected }: { props: GroupRowProps; selected: boo
 
 /** 任务组「文件夹行」。不做 memo：聚合随成员行内容每帧重读。 */
 export function GroupRowView(props: GroupRowProps) {
+  const units = useFileSizeUnits()
   const { row, columns, density, selected, multiSelect, onClick, onToggleSelected, onToggleExpanded, getMenu, onContext, labels } = props
   const twoLine = density !== 'compact'
   const aggregate = aggregateOf(viewsOf(row.members))
@@ -305,7 +307,7 @@ export function GroupRowView(props: GroupRowProps) {
             className={cn('relative min-w-0 shrink-0', twoLine ? 'py-1' : '')}
             style={{ ...cellStyle(column), paddingInline: CELL_PADDING_X }}
           >
-            {renderGroupCell(props, column, aggregate)}
+            {renderGroupCell(props, column, aggregate, units)}
           </div>
         ))}
         <div style={{ width: TRAILING_GUTTER }} className="shrink-0" />
@@ -325,6 +327,7 @@ interface DirRowProps {
 
 /** 组内目录分段行：单击切换该目录折叠；不可选、无右键菜单、不可拖。 */
 export function DirRowView({ t, row, columns, density, onToggle }: DirRowProps) {
+  const units = useFileSizeUnits()
   const twoLine = density !== 'compact'
   const label = compressPath(row.path)
   return (
@@ -365,7 +368,7 @@ export function DirRowView({ t, row, columns, density, onToggle }: DirRowProps) 
                 <span className="tabular ml-2 shrink-0 text-xs text-text-tertiary">{t('groupDirCount', { count: row.count })}</span>
               </div>
             ) : column.kind === 'size' ? (
-              row.sizeBytes > 0 ? <Meta numeric>{formatBytes(row.sizeBytes)}</Meta> : null
+              row.sizeBytes > 0 ? <Meta numeric>{formatBytes(row.sizeBytes, units)}</Meta> : null
             ) : null}
           </div>
         )

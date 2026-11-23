@@ -393,6 +393,44 @@ impl RssController {
         }
     }
 
+    /// Eligible bulk-download items are new or initial history rows with a usable link.
+    pub(crate) fn bulk_download_candidates<'a>(
+        &'a self,
+        query: &str,
+        oldest_first: bool,
+    ) -> impl Iterator<Item = &'a str> {
+        self.visible_indices(query, oldest_first)
+            .into_iter()
+            .filter_map(|index| self.items.get(index))
+            .filter(|item| self.is_bulk_download_candidate(item))
+            .map(|item| item.guid.as_str())
+    }
+
+    pub(crate) fn confirmed_bulk_download(
+        &self,
+        source_id: &str,
+        query: &str,
+        oldest_first: bool,
+        confirmed: &HashSet<String>,
+    ) -> Option<Vec<String>> {
+        if self.stale || self.loading || self.selected_source.as_deref() != Some(source_id) {
+            return None;
+        }
+        let current: Vec<_> = self.bulk_download_candidates(query, oldest_first).collect();
+        (current.len() == confirmed.len() && current.iter().all(|guid| confirmed.contains(*guid)))
+            .then(|| current.into_iter().map(str::to_owned).collect())
+    }
+
+    pub(crate) fn is_bulk_download_candidate(&self, item: &RssItemDto) -> bool {
+        self.selected_source.as_deref() == Some(item.source_id.as_str())
+            && matches!(item.status, 0 | 5)
+            && (!item.link.trim().is_empty() || !item.enclosure_url.trim().is_empty())
+            && (self.busy.is_empty()
+                || !self
+                    .busy
+                    .contains(&format!("{}\0{}", item.source_id, item.guid)))
+    }
+
     pub(crate) fn task_status(&self, item: &RssItemDto) -> Option<(i32, bool)> {
         (item.status == 1 && !item.task_id.is_empty())
             .then(|| self.tasks.get(&item.task_id).copied())
@@ -455,7 +493,7 @@ fn unavailable() -> PortFuture<serde_json::Value> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{collections::HashSet, sync::Arc};
 
     use fluxdown_protocol::{
         AgentEvent, AgentSnapshot, DaemonEvent, RssItemDto, RssSourceDto, ServiceEvent, TaskDto,
@@ -470,6 +508,15 @@ mod tests {
     impl RssPort for Port {
         fn call(&self, _: &'static str, _: serde_json::Value) -> PortFuture<serde_json::Value> {
             Box::pin(async { Ok(json!([])) })
+        }
+
+        fn image(&self, _: String, _: String, _: usize) -> PortFuture<Vec<u8>> {
+            Box::pin(async {
+                Err(fluxdown_protocol::RpcErrorData::new(
+                    fluxdown_protocol::ApplicationErrorCode::Unavailable,
+                    true,
+                ))
+            })
         }
     }
 
@@ -498,7 +545,95 @@ mod tests {
             task_id: task_id.into(),
             episode_key: String::new(),
             reason: String::new(),
+            image_count: 0,
         }
+    }
+
+    #[test]
+    fn bulk_download_includes_initial_history_but_not_duplicates_or_other_sources() {
+        let mut controller = RssController::new(Arc::new(Port));
+        controller.stale = false;
+        controller.selected_source = Some("a".into());
+        controller.items = [
+            ("a", "new", 0),
+            ("a", "history", 5),
+            ("a", "downloaded", 1),
+            ("a", "ignored", 2),
+            ("a", "filtered", 3),
+            ("a", "duplicate", 4),
+            ("a", "no-link", 5),
+            ("b", "other", 5),
+        ]
+        .into_iter()
+        .map(|(source, guid, status)| {
+            let mut row = item(source, guid, guid, 0, status, "");
+            if guid != "no-link" {
+                row.enclosure_url = format!("https://example.org/{guid}");
+            }
+            row
+        })
+        .collect();
+        assert_eq!(
+            controller
+                .bulk_download_candidates("", false)
+                .collect::<Vec<_>>(),
+            ["new", "history"]
+        );
+        assert!(controller.begin_action("a", "new"));
+        assert_eq!(
+            controller
+                .bulk_download_candidates("", false)
+                .collect::<Vec<_>>(),
+            ["history"]
+        );
+    }
+
+    #[test]
+    fn bulk_download_candidates_are_limited_to_search_and_current_eligibility() {
+        let mut controller = RssController::new(Arc::new(Port));
+        controller.stale = false;
+        controller.selected_source = Some("a".into());
+        controller.items = [
+            ("a", "match-new", "Match new", 0, true),
+            ("a", "match-history", "Match history", 5, true),
+            ("a", "hidden", "Hidden result", 0, true),
+            ("a", "no-link", "Match no link", 5, false),
+            ("a", "handled", "Match handled", 4, true),
+        ]
+        .into_iter()
+        .map(|(source, guid, title, status, has_link)| {
+            let mut row = item(source, guid, title, 0, status, "");
+            if has_link {
+                row.link = format!("https://example.org/{guid}");
+            }
+            row
+        })
+        .collect();
+        let confirmed: HashSet<_> = ["match-new".to_owned(), "match-history".to_owned()].into();
+        assert_eq!(
+            controller.confirmed_bulk_download("a", "match", true, &confirmed),
+            Some(vec!["match-new".to_owned(), "match-history".to_owned()])
+        );
+        assert!(controller.begin_action("a", "match-new"));
+        assert_eq!(
+            controller.confirmed_bulk_download("a", "match", false, &confirmed),
+            None
+        );
+        // A refresh might replace a candidate without changing the count.
+        controller.items[2].title = "Match replacement".to_owned();
+        assert_eq!(
+            controller.confirmed_bulk_download("a", "match", false, &confirmed),
+            None
+        );
+        assert!(controller.is_bulk_download_candidate(&controller.items[1]));
+        controller.items[1].status = 4;
+        assert!(!controller.is_bulk_download_candidate(&controller.items[1]));
+        assert_eq!(
+            controller
+                .bulk_download_candidates("", false)
+                .collect::<Vec<_>>(),
+            ["hidden"]
+        );
     }
 
     fn snapshot() -> Result<AgentSnapshot, serde_json::Error> {

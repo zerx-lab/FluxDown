@@ -7,6 +7,7 @@ pub(crate) mod about;
 pub(crate) mod api;
 mod app_icon;
 pub(crate) mod appearance;
+mod aria2_options;
 mod auto_quantity;
 pub(crate) mod bt;
 mod bt_guard;
@@ -50,10 +51,12 @@ use gpui_component::Icon;
 use crate::store::SettingsStore;
 use crate::ui::{Control, SettingsPage, SettingsRow, SettingsSection, SettingsTab, meta_text};
 
-/// 分区构建上下文：存储实体 + 当前语言的翻译快照。
+/// 分区构建上下文：存储实体 + 当前语言的翻译快照 + 宿主动作。
 pub(crate) struct SectionContext<'a> {
     pub store: &'a Entity<SettingsStore>,
     pub translator: &'a Translator,
+    /// 打开独立更新窗口；搜索索引等无宿主场景为 `None`。
+    pub open_update_prompt: Option<crate::version_button::VersionHostAction>,
 }
 
 impl SectionContext<'_> {
@@ -116,9 +119,18 @@ impl SectionContext<'_> {
     }
 
     pub(crate) fn daemon_input(&self, key: &'static str) -> Control {
+        self.daemon_text_input(key, false)
+    }
+
+    pub(crate) fn daemon_secret_input(&self, key: &'static str) -> Control {
+        self.daemon_text_input(key, true)
+    }
+
+    fn daemon_text_input(&self, key: &'static str, secret: bool) -> Control {
         let get = self.store();
         let set = self.store();
-        Control::input(
+        Control::text_input(
+            secret,
             move |cx: &App| SharedString::from(get.read(cx).daemon_str(key)),
             move |value: SharedString, cx: &mut App| {
                 set.update(cx, |store, cx| store.set_daemon(key, value.to_string(), cx));

@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test'
 import type { DownloadTaskView } from '../model/task'
 import { buildTaskMenu } from './menus'
 
-const view = { key: 'l:t1', source: 'local', taskId: 't1', state: 'completed', protocol: 'http', fileMissing: false, kind: 'other', url: 'https://e.com/a.zip' } as unknown as DownloadTaskView
+const view = { key: 'l:t1', source: 'local', taskId: 't1', state: 'completed', protocol: 'http', fileMissing: false, kind: 'other', url: 'https://e.com/a.zip', originUrl: '' } as unknown as DownloadTaskView
 const t = (key: string) => key
 
 describe('buildTaskMenu plugin commands', () => {
@@ -105,17 +105,17 @@ describe('buildTaskMenu BT operations', () => {
     ({ ...view, taskId, key: `l:${taskId}`, state: 'downloading', url: 'magnet:?xt=urn:btih:abc', btSequential: false, btFirstLastPiecesFirst: false, btSuperSeeding: false, ...patch }) as unknown as DownloadTaskView
   const keys = (views: DownloadTaskView[]) => build(views).map((entry) => entry.key)
 
-  test('single unfinished BT offers recheck, move, limits and super seeding in GPUI order', () => {
+  test('single unfinished BT offers recheck, move, limits, web seed and super seeding in GPUI order', () => {
     const all = keys([bt('a')])
     const at = all.indexOf('btForceRecheck')
     expect(at > all.indexOf('btPiecePicking')).toBe(true)
-    expect(all.slice(at, at + 4)).toEqual(['btForceRecheck', 'btMoveStorage', 'btTaskLimits', 'btSuperSeeding'])
+    expect(all.slice(at, at + 5)).toEqual(['btForceRecheck', 'btMoveStorage', 'btTaskLimits', 'btAddWebSeed', 'btSuperSeeding'])
   })
 
-  test('completed BT: no recheck, still move / limits / super seeding', () => {
+  test('completed BT: no recheck, still move / limits / web seed / super seeding', () => {
     const all = keys([bt('a', { state: 'completed' })])
     expect(all.includes('btForceRecheck')).toBe(false)
-    for (const key of ['btMoveStorage', 'btTaskLimits', 'btSuperSeeding']) expect(all.includes(key)).toBe(true)
+    for (const key of ['btMoveStorage', 'btTaskLimits', 'btAddWebSeed', 'btSuperSeeding']) expect(all.includes(key)).toBe(true)
   })
 
   test('super seeding check reflects all-on; mixed shows unchecked', () => {
@@ -129,7 +129,44 @@ describe('buildTaskMenu BT operations', () => {
   test('HTTP, remote or mixed selections hide BT operations', () => {
     for (const views of [[view], [bt('a', { source: 'remote' })], [bt('a'), view]]) {
       const all = keys(views)
-      for (const key of ['btForceRecheck', 'btMoveStorage', 'btTaskLimits', 'btSuperSeeding']) expect(all.includes(key)).toBe(false)
+      for (const key of ['btForceRecheck', 'btTaskLimits', 'btAddWebSeed', 'btSuperSeeding']) expect(all.includes(key)).toBe(false)
     }
+  })
+
+  test('multi-select of local torrents hides the single-task web seed action', () => {
+    expect(keys([bt('a'), bt('b')]).includes('btAddWebSeed')).toBe(false)
+  })
+
+  test('move is offered for any single local task, never for remote or multi-select', () => {
+    for (const views of [[view], [{ ...view, state: 'completed', url: 'ed2k://|file|a.iso|1|h|/' } as DownloadTaskView]]) {
+      expect(keys(views).includes('btMoveStorage')).toBe(true)
+    }
+    for (const views of [[bt('a', { source: 'remote' })], [bt('a'), view]]) {
+      expect(keys(views).includes('btMoveStorage')).toBe(false)
+    }
+  })
+})
+
+describe('buildTaskMenu seeding labels', () => {
+  const label = (views: DownloadTaskView[], key: string) =>
+    buildTaskMenu({ t, views, queues: [], queueName: (id: string) => id, showDetail: () => undefined }).find((entry) => entry.key === key)
+  const row = (taskId: string, patch: Partial<DownloadTaskView>) => ({ ...view, taskId, key: `l:${taskId}`, ...patch }) as unknown as DownloadTaskView
+  const seeding = row('s', { seedingStatus: 1 })
+  const stopped = row('x', { seedingStatus: 4 })
+  const paused = row('p', { state: 'paused' })
+  const downloading = row('d', { state: 'downloading' })
+  const plainDone = row('c', { seedingStatus: 0 })
+
+  test('only stopped seeds resume as "resume seeding"', () => {
+    expect(label([stopped], 'resume')).toMatchObject({ label: 'seedingResume' })
+    expect(label([stopped, plainDone, seeding], 'resume')).toMatchObject({ label: 'seedingResume' })
+    expect(label([stopped, paused], 'resume')).toMatchObject({ label: 'resume' })
+    expect(label([paused], 'resume')).toMatchObject({ label: 'resume' })
+  })
+
+  test('only live seeds pause as "stop seeding"', () => {
+    expect(label([seeding], 'pause')).toMatchObject({ label: 'btSeedStopSeeding' })
+    expect(label([seeding, stopped, plainDone], 'pause')).toMatchObject({ label: 'btSeedStopSeeding' })
+    expect(label([seeding, downloading], 'pause')).toMatchObject({ label: 'pause' })
   })
 })

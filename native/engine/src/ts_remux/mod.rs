@@ -1,19 +1,23 @@
 //! 流式 MPEG-TS → MP4 重封装（HLS 收尾在 ffmpeg 不可用 / 失败时的兜底）。
 //!
-//! 输出与 `ts2mp4::convert_ts_to_mp4`（0.3.2）逐字节一致（`tests.rs` 差分验证），
-//! 但不把整份 TS 与中间产物读进内存（整份转换的峰值约为文件体积的 6~7 倍）：
+//! 不把整份 TS 与中间产物读进内存（整份转换的峰值约为文件体积的 6~7 倍）：
 //!
-//! 1. 第一遍流式解复用，只统计样本大小与时间戳等元数据；
+//! 1. 第一遍流式解复用，只统计样本大小、逐样本时间戳与 AAC 参数；
 //! 2. 据此构建 `ftyp + moov + mdat 头`（moov 在前，便于边下边播）；
 //! 3. 第二遍再解复用，把视频样本与音频样本分别写到各自偏移（两个独立文件句柄）。
 //!
 //! 常驻内存只有读窗口、一帧数据与样本索引表，与文件体积无关；输出超过 32 位 MP4
 //! 盒字段可表示的 4GiB 时拒绝转换（调用方保留 `.ts`），不会写出损坏文件。
+//!
+//! 音轨按 ADTS 头的真实采样率 / 声道写出，时间线规则见 [`timing`]。
 
 mod demux;
 mod mp4;
 #[cfg(test)]
 mod tests;
+mod timing;
+
+pub(crate) use mp4::Mp4Summary;
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, ErrorKind, Read, Seek, SeekFrom, Write};
@@ -30,8 +34,13 @@ const WRITE_BUFFER: usize = 256 * 1024;
 
 /// 把 `src`（TS）重封装为 `dst`（MP4，已存在则截断）。阻塞 IO，须在阻塞线程调用。
 ///
-/// 失败时 `dst` 可能残留半成品，由调用方清理；取消返回 `ErrorKind::Interrupted`。
-pub(crate) fn remux_file(src: &Path, dst: &Path, cancel: &CancellationToken) -> io::Result<()> {
+/// 成功返回两条轨的时长摘要；失败时 `dst` 可能残留半成品，由调用方清理；
+/// 取消返回 `ErrorKind::Interrupted`。
+pub(crate) fn remux_file(
+    src: &Path,
+    dst: &Path,
+    cancel: &CancellationToken,
+) -> io::Result<Mp4Summary> {
     remux_with(|| File::open(src), dst, READ_CHUNK, cancel)
 }
 
@@ -40,7 +49,7 @@ fn remux_with<R: Read>(
     dst: &Path,
     chunk: usize,
     cancel: &CancellationToken,
-) -> io::Result<()> {
+) -> io::Result<Mp4Summary> {
     let mut sizes = SampleSizes::default();
     let meta = demux::demux(open()?, chunk, &mut sizes, cancel)?;
     if meta.video_stream_len == 0 {
@@ -50,7 +59,7 @@ fn remux_with<R: Read>(
         ));
     }
 
-    let header = mp4::build_header(&meta, &sizes.video, &sizes.audio)?;
+    let (header, summary) = mp4::build_header(&meta, &sizes.video, &sizes.audio)?;
     let header_len = header.len() as u64;
     let video_total: u64 = sizes.video.iter().map(|&size| u64::from(size)).sum();
     let audio_total: u64 = sizes.audio.iter().map(|&size| u64::from(size)).sum();
@@ -98,7 +107,7 @@ fn remux_with<R: Read>(
             format!("MP4 output is {written} bytes, expected {total}"),
         ));
     }
-    Ok(())
+    Ok(summary)
 }
 
 fn diverged() -> io::Error {

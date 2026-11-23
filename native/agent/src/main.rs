@@ -7,6 +7,15 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() -> fluxdown_agent::runtime::AgentResult {
+    #[cfg(windows)]
+    {
+        if let Some(result) = fluxdown_agent::update::windows_portable::run_worker() {
+            return result.map_err(Into::into);
+        }
+        if !fluxdown_agent::update::windows_portable::admit()? {
+            return Ok(());
+        }
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     // 桌面界面进程为前台打开文件 / 文件夹拉起的一次性进程：不初始化日志 / 运行时，执行后即退出。
     if let Some(code) = fluxdown_agent::platform::run_shell_open(&args) {
@@ -48,9 +57,14 @@ fn main() -> fluxdown_agent::runtime::AgentResult {
         run_restart_plan();
         return result;
     }
+    // AppImage uses --autostart to route AppRun to the agent, but an update must
+    // never take the login path that may open a minimized desktop.
     let autostart = args
         .iter()
-        .any(|arg| arg == fluxdown_agent::platform::AUTOSTART_ARG);
+        .any(|arg| arg == fluxdown_agent::platform::AUTOSTART_ARG)
+        && !args
+            .iter()
+            .any(|arg| arg == fluxdown_agent::update::restart::BACKGROUND_UPDATE_ARG);
     fluxdown_agent::logging::init_desktop();
     // 提权（UAC 完整令牌）的常驻 agent 建的管道浏览器中继打不开：交给未提权实例后退出。
     #[cfg(windows)]

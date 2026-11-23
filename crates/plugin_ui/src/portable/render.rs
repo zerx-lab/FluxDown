@@ -1509,18 +1509,24 @@ fn trim_decimal(value: f64, digits: usize) -> String {
 
 /// 1024 进制的字节数（`0 B`、`1.5 KB`、`2 GB`）。
 pub fn format_bytes(bytes: f64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     if !bytes.is_finite() || bytes < 0.0 {
         return String::new();
     }
     let mut value = bytes;
-    let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
+    let mut label = "B";
+    for next in fluxdown_ui_components::size_units::labels()
+        .iter()
+        .skip(1)
+        .take(4)
+    {
+        if value < 1024.0 {
+            break;
+        }
         value /= 1024.0;
-        unit += 1;
+        label = next;
     }
-    let digits = if unit == 0 { 0 } else { 1 };
-    format!("{} {}", trim_decimal(value, digits), UNITS[unit])
+    let digits = usize::from(label != "B");
+    format!("{} {label}", trim_decimal(value, digits))
 }
 
 pub fn format_speed(bytes_per_second: f64) -> String {

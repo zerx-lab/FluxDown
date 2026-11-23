@@ -61,6 +61,7 @@ fn ftp_runtime(
             })
             .collect(),
         source_bytes: None,
+        hls_fragments: None,
     }
 }
 
@@ -140,22 +141,6 @@ pub fn parse_ftp_url(url: &str) -> Result<FtpUrl, DownloadError> {
         password,
         path,
     })
-}
-
-/// 日志用：去掉 FTP URL 的 userinfo（含密码）。
-fn redact_ftp_url(url: &str) -> String {
-    let Some(rest) = url
-        .get(..6)
-        .filter(|p| p.eq_ignore_ascii_case("ftp://"))
-        .map(|_| &url[6..])
-    else {
-        return url.to_string();
-    };
-    let auth_end = rest.find('/').unwrap_or(rest.len());
-    match rest[..auth_end].rfind('@') {
-        Some(at) => format!("{}{}", &url[..6], &rest[at + 1..]),
-        None => url.to_string(),
-    }
 }
 
 /// 将单个十六进制字符（ASCII）转换为 0..=15 的 nibble 值。
@@ -540,6 +525,7 @@ fn resolve_ftp_info_sync(
     Ok(FileInfo {
         file_name,
         name_source: crate::naming::NameSource::UrlPath,
+        html_attachment: false,
         total_bytes,
         supports_range,
         content_type: String::new(),
@@ -981,11 +967,7 @@ async fn compute_ftp_segments(p: &DownloadParams, info: &FileInfo) -> i32 {
 }
 
 async fn run_ftp_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
-    log_info!(
-        "[ftp-download] task {} starting, url={}",
-        p.task_id,
-        redact_ftp_url(&p.url)
-    );
+    log_info!("[ftp-download] task {} starting", p.task_id);
 
     // Transition to status=5 (preparing) — probing FTP server, resolving file info
     p.db.update_task_status(&p.task_id, 5, "").await?;
@@ -1357,6 +1339,8 @@ async fn run_ftp_download_inner(p: &DownloadParams) -> Result<i64, DownloadError
 
     // When total_bytes is unknown (server didn't report size), read actual file
     // size so the completion signal carries accurate byte counts.
+    let _local_work = crate::transfer_activity::LocalWorkGuard::new(p.sink.clone());
+
     let actual_total = if info.total_bytes > 0 {
         info.total_bytes
     } else {
@@ -2614,18 +2598,6 @@ mod tests {
         assert!(parse_ftp_url("ftp://u%0D%0ASITE:p@h/f").is_err());
         assert!(parse_ftp_url("ftp://u:p%0Aq@h/f").is_err());
         assert!(parse_ftp_url("ftp://u:p@h/f%20g").is_ok());
-    }
-
-    #[test]
-    fn redact_ftp_url_strips_userinfo_only() {
-        assert_eq!(
-            super::redact_ftp_url("ftp://user:p@ss@host:21/dir/a@b.txt"),
-            "ftp://host:21/dir/a@b.txt"
-        );
-        assert_eq!(
-            super::redact_ftp_url("ftp://host/icon@2x.png"),
-            "ftp://host/icon@2x.png"
-        );
     }
 
     #[test]

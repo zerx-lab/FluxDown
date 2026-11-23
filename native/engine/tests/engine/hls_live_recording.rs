@@ -212,6 +212,12 @@ async fn hls_live_recording_runs_until_endlist() {
     let seen = Arc::clone(&statuses);
     let collector = tokio::spawn(async move {
         while let Some(update) = rx.recv().await {
+            if let Some(runtime) = update.runtime {
+                assert_eq!(
+                    runtime.hls_fragments, None,
+                    "live recordings have no fixed segment total"
+                );
+            }
             seen.lock()
                 .unwrap()
                 .push((update.status, update.total_bytes));

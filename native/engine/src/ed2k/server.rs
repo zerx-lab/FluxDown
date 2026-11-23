@@ -24,7 +24,6 @@ use crate::ed2k::proto::{
     SRV_TCPFLG_AUXPORT, SRV_TCPFLG_COMPRESSION, SRV_TCPFLG_LARGEFILES, SRV_TCPFLG_NEWTAGS,
     SRV_TCPFLG_UNICODE,
 };
-use crate::logger::{log_error, log_info};
 
 /// 单服务器连接+登录+找源的总超时。
 const SERVER_TIMEOUT: Duration = Duration::from_secs(8);
@@ -282,11 +281,11 @@ pub async fn find_sources(
             return Err(DownloadError::Cancelled);
         }
         if is_throttled(server) {
-            log_info!("[ed2k-server] {} 处于登录节流窗口，跳过", server);
+            tracing::debug!("eD2K server skipped during login cooldown");
             continue;
         }
         let Some((host, port)) = parse_server_addr(server) else {
-            log_error!("[ed2k-server] 服务器地址格式非法，跳过: {}", server);
+            tracing::debug!("invalid eD2K server address skipped");
             continue;
         };
 
@@ -301,7 +300,7 @@ pub async fn find_sources(
                 let mut peers = Vec::new();
                 for (id, peer_port) in sources {
                     if id < LOWID_THRESHOLD {
-                        log_info!("[ed2k-server] 源 id={:#x} 为 LowID，直连不可达，跳过", id);
+                        tracing::trace!("eD2K LowID source skipped");
                         continue;
                     }
                     if peer_port == 0 {
@@ -313,26 +312,21 @@ pub async fn find_sources(
                     });
                 }
                 if peers.is_empty() {
-                    log_info!("[ed2k-server] {} 返回 0 个可用 HighID 源", server);
+                    tracing::debug!("eD2K server returned no usable sources");
                     continue;
                 }
-                log_info!(
-                    "[ed2k-server] {} 返回 {} 个可用 HighID 源",
-                    server,
-                    peers.len()
+                tracing::debug!(
+                    sources = peers.len(),
+                    "eD2K server returned usable HighID sources"
                 );
                 return Ok(peers);
             }
-            Ok(Err(e)) => {
+            Ok(Err(_)) => {
                 mark_login(server);
-                log_info!("[ed2k-server] {} 查询失败，换下一个: {}", server, e);
+                tracing::debug!("eD2K server query failed; trying next");
             }
             Err(_) => {
-                log_info!(
-                    "[ed2k-server] {} 超时 {:?}，换下一个",
-                    server,
-                    SERVER_TIMEOUT
-                );
+                tracing::debug!(timeout = ?SERVER_TIMEOUT, "eD2K server query timed out; trying next");
             }
         }
     }
@@ -379,9 +373,7 @@ pub(crate) async fn read_until_id_change(stream: &mut TcpStream) -> Result<u32, 
             Ed2kMessage::Reject => {
                 return Err(DownloadError::Ed2k("server rejected login".into()));
             }
-            Ed2kMessage::ServerMessage(msg) => {
-                log_info!("[ed2k-server] MOTD: {}", msg.replace('\n', " "));
-            }
+            Ed2kMessage::ServerMessage(_) => tracing::trace!("eD2K server message received"),
             Ed2kMessage::ServerStatus | Ed2kMessage::Unknown(_) => {}
             _ => {}
         }

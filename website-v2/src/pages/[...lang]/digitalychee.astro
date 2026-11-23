@@ -1,0 +1,200 @@
+---
+import Layout from "@/layouts/Layout.astro";
+import { langStaticPaths, resolveLang } from "@/i18n/routing";
+import { partner } from "@/i18n/messages/partner";
+import { withBase } from "@/lib/base";
+
+export const getStaticPaths = langStaticPaths;
+const lang = resolveLang(Astro.params.lang);
+// 证书双语并列:当前语言为主行,另一语言为副行。
+const t = partner[lang];
+const alt = partner[lang === "zh" ? "en" : "zh"];
+const PRODUCTS = ["FluxDown"];
+const CHANNELS = [
+  { label: "lizhi.shop", url: "https://lizhi.shop/" },
+  { label: "digitalychee.taobao.com", url: "https://digitalychee.taobao.com/" },
+];
+const rows = [
+  { key: "statement", main: t.statement, sub: alt.statement },
+  { key: "products", main: t.productsLabel, sub: alt.productsLabel },
+  { key: "channels", main: t.channelsLabel, sub: alt.channelsLabel },
+] as const;
+---
+
+<Layout lang={lang} title={t.meta.title} description={t.meta.description}>
+  <section class="frame">
+    <div class="cells">
+      <div class="cell cert-wrap">
+        <figure class="fig cert" data-reveal>
+          <figcaption class="fig-bar"><span>fig. 01</span><span>{t.figCaption}</span></figcaption>
+
+          <div class="cert-body">
+            <a href="https://lizhi.io/store" target="_blank" rel="noopener" class="cert-logo">
+              <img src={withBase("/digitalychee.png")} alt={t.logoAlt} width="1024" height="512" />
+            </a>
+
+            <header class="cert-head">
+              <h1>{t.title}</h1>
+              <p class="sub">{alt.title}</p>
+            </header>
+
+            <dl class="cert-rows">
+              {
+                rows.map((r) => (
+                  <div class="cert-row">
+                    <dt>
+                      <span class="main">{r.main}</span>
+                      <span class="sub">{r.sub}</span>
+                    </dt>
+                    <dd>
+                      {r.key === "products" && (
+                        <ul class="pills">
+                          {PRODUCTS.map((p) => (
+                            <li class="pill">{p}</li>
+                          ))}
+                        </ul>
+                      )}
+                      {r.key === "channels" && (
+                        <ul class="pills">
+                          {CHANNELS.map((c) => (
+                            <li>
+                              <a class="pill pill-link" href={c.url} target="_blank" rel="noopener">
+                                {c.label}
+                                <span aria-hidden="true">↗</span>
+                              </a>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </dd>
+                  </div>
+                ))
+              }
+            </dl>
+
+            <footer class="cert-foot mono">
+              <span>{t.verify}</span>
+              <span class="url">fluxdown.com{lang === "zh" ? "/zh" : ""}/digitalychee</span>
+            </footer>
+          </div>
+        </figure>
+      </div>
+    </div>
+  </section>
+</Layout>
+
+<style>
+  .cert-wrap {
+    display: grid;
+    place-items: center;
+    padding-block: clamp(40px, 7vw, 88px);
+  }
+  .cert {
+    width: 100%;
+    max-width: 620px;
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .cert-body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 28px;
+    padding: clamp(28px, 5vw, 48px) clamp(20px, 5vw, 48px) 0;
+    background: var(--bg-elev);
+    text-align: center;
+  }
+  .cert-logo img {
+    display: block;
+    width: min(260px, 70vw);
+    height: auto;
+  }
+  .cert-head h1 {
+    margin: 0;
+    font-size: clamp(1.6rem, 3.4vw, 2rem);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--fg);
+  }
+  .sub {
+    display: block;
+    margin-top: 4px;
+    font-size: 13.5px;
+    color: var(--fg-subtle);
+  }
+  .cert-head .sub {
+    font-size: 15px;
+    letter-spacing: 0.02em;
+  }
+  .cert-rows {
+    width: 100%;
+    margin: 0;
+    border-top: 1px solid var(--line);
+  }
+  .cert-row {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    padding: 20px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .cert-row dt .main {
+    font-size: 15px;
+    color: var(--fg);
+  }
+  .cert-row dd {
+    margin: 0;
+  }
+  .cert-row dd:empty {
+    display: none;
+  }
+  .pills {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    border: 1px solid var(--line-strong);
+    border-radius: 999px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--fg);
+  }
+  .pill-link {
+    transition:
+      border-color 0.15s,
+      color 0.15s;
+  }
+  .pill-link span {
+    color: var(--fg-subtle);
+    font-size: 12px;
+  }
+  .pill-link:hover {
+    border-color: var(--accent-ink);
+    color: var(--accent-ink);
+  }
+  .cert-foot {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 6px 16px;
+    width: calc(100% + 2 * clamp(20px, 5vw, 48px));
+    padding: 14px clamp(20px, 5vw, 48px);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    color: var(--fg-subtle);
+    border-top: 1px dashed var(--line);
+  }
+  .cert-foot .url {
+    color: var(--accent-ink);
+  }
+</style>

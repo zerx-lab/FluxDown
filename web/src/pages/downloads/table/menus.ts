@@ -17,6 +17,7 @@ import {
   Magnet,
   FolderOpen,
   Gauge,
+  Globe,
   Pause,
   PanelRight,
   Pen,
@@ -43,6 +44,7 @@ import {
   confirmDeleteWithFiles,
   confirmIgnorePluginRetry,
   copySourceLink,
+  canCopyUrls,
   copyUrls,
   copyMagnet,
   exportTorrent,
@@ -84,13 +86,14 @@ import {
   canVerifyIntegrity,
   pieceOptionAllOn,
   pieceOrder,
+  singleLocalBt,
   superSeedingAllOn,
 } from '../model/taskEdit'
-import { canPause, canResumeSeeding } from '../model/task'
+import { canPause, canResumeSeeding, isSeeding } from '../model/task'
 import type { DownloadTaskView } from '../model/task'
 import { anyActive, anyResumable } from '../model/groupTree'
 import type { GroupCounts } from '../model/groupTree'
-import { openChangeSegments, openChangeUrl, openGroupDetail, openMoveStorage, openRename, openTaskEdit, openTaskLimits } from '../dialogs'
+import { openAddWebSeed, openChangeSegments, openChangeUrl, openGroupDetail, openMoveStorage, openRename, openTaskEdit, openTaskLimits } from '../dialogs'
 
 type Translate = (key: string, params?: Record<string, string | number>) => string
 
@@ -113,6 +116,23 @@ interface TaskMenuContext {
   selection?: SelectionEntries
   /** 插件贡献的任务右键命令（`taskMenu: true`），位于选择组与删除组之间。 */
   pluginCommands?: readonly PluginCommandRef[]
+}
+
+const resumeApplies = (view: DownloadTaskView): boolean =>
+  (view.state !== 'completed' ? view.state !== 'downloading' : canResumeSeeding(view)) && remoteCan(view, 'resume')
+
+const pauseApplies = (view: DownloadTaskView): boolean => canPause(view) && remoteCan(view, 'pause')
+
+/** 「继续」作用的任务全是可恢复做种的已完成任务：菜单项改称「继续做种」（对齐 GPUI `resume_targets_only_seeds`）。 */
+export function resumeTargetsOnlySeeds(views: readonly DownloadTaskView[]): boolean {
+  const targets = views.filter(resumeApplies)
+  return targets.length > 0 && targets.every((view) => view.state === 'completed' && canResumeSeeding(view))
+}
+
+/** 「暂停」作用的任务全是做种中 / 排队做种的任务：菜单项改称「停止做种」（对齐 GPUI `pause_targets_only_seeds`）。 */
+export function pauseTargetsOnlySeeds(views: readonly DownloadTaskView[]): boolean {
+  const targets = views.filter(pauseApplies)
+  return targets.length > 0 && targets.every(isSeeding)
 }
 
 /** 任务行右键菜单：多选时每一项都要求对全部选中任务成立（交集语义），resume/pause 例外。 */
@@ -138,11 +158,13 @@ export function buildTaskMenu({ t, views, queues, queueName, showDetail, selecti
   const only = views.length === 1 ? views[0] : undefined
   const allLocal = views.every((view) => view.source === 'local')
 
-  if (views.some((view) => (view.state !== 'completed' ? view.state !== 'downloading' : canResumeSeeding(view)) && remoteCan(view, 'resume'))) {
-    entries.push({ type: 'item', key: 'resume', label: t('resume'), icon: Play, onSelect: () => void resumeViews(views) })
+  if (views.some(resumeApplies)) {
+    const label = resumeTargetsOnlySeeds(views) ? t('seedingResume') : t('resume')
+    entries.push({ type: 'item', key: 'resume', label, icon: Play, onSelect: () => void resumeViews(views) })
   }
-  if (views.some((view) => canPause(view) && remoteCan(view, 'pause'))) {
-    entries.push({ type: 'item', key: 'pause', label: t('pause'), icon: Pause, onSelect: () => void pauseViews(views) })
+  if (views.some(pauseApplies)) {
+    const label = pauseTargetsOnlySeeds(views) ? t('btSeedStopSeeding') : t('pause')
+    entries.push({ type: 'item', key: 'pause', label, icon: Pause, onSelect: () => void pauseViews(views) })
   }
   if (only) {
     if (isPluginRetryError(only)) {
@@ -274,6 +296,9 @@ export function buildTaskMenu({ t, views, queues, queueName, showDetail, selecti
   if (only && canSetTaskLimits(views)) {
     entries.push({ type: 'item', key: 'btTaskLimits', label: t('btTaskLimits'), icon: Gauge, onSelect: () => openTaskLimits(only.taskId) })
   }
+  if (only && singleLocalBt(views)) {
+    entries.push({ type: 'item', key: 'btAddWebSeed', label: t('btAddWebSeed'), icon: Globe, onSelect: () => openAddWebSeed(only.taskId) })
+  }
   if (canSetSuperSeeding(views)) {
     const superOn = superSeedingAllOn(views)
     entries.push({
@@ -293,7 +318,9 @@ export function buildTaskMenu({ t, views, queues, queueName, showDetail, selecti
       onSelect: () => void redownloadViews(views),
     })
   }
-  entries.push({ type: 'item', key: 'copy-url', label: t('copyUrl'), icon: Copy, onSelect: () => copyUrls(views) })
+  if (canCopyUrls(views)) {
+    entries.push({ type: 'item', key: 'copy-url', label: t('copyUrl'), icon: Copy, onSelect: () => copyUrls(views) })
+  }
   if (only && canShareTorrent(views)) {
     entries.push({ type: 'item', key: 'copy-magnet', label: t('btCopyMagnet'), icon: Magnet, onSelect: () => void copyMagnet(only) })
     entries.push({ type: 'item', key: 'export-torrent', label: t('btExportTorrent'), icon: FileDown, onSelect: () => void exportTorrent(only) })

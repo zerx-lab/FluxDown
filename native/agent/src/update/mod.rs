@@ -17,10 +17,13 @@
 //! 下载 / 安装中不再重新检查；就绪时照常检查，但只有查到比就绪包更新的版本才取代它，
 //! 失败或同版本保留就绪状态——常驻不重启的机器也能跟上后续发布。
 
+mod automatic;
 mod download;
 pub(crate) mod install;
 mod release;
 pub mod restart;
+#[cfg(windows)]
+pub mod windows_portable;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -141,6 +144,15 @@ struct PendingRecord {
     /// 发起安装时的渠道：未完成时据此重新检查（旧记录缺省为空 → 回退偏好 / 稳定版）。
     #[serde(default)]
     channel: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    portable_failure: Option<PortableFailure>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PortableFailure {
+    detail: String,
+    rollback_incomplete: bool,
 }
 
 /// 一次检查的结果。
@@ -315,7 +327,9 @@ impl UpdateService {
     pub fn start(self: &Arc<Self>, cancel: CancellationToken, auto_check: bool) {
         let service = Arc::clone(self);
         tokio::spawn(async move {
-            if let Err(error) = tokio::task::spawn_blocking(install::cleanup_leftovers).await {
+            if !service.recovery_required().await
+                && let Err(error) = tokio::task::spawn_blocking(install::cleanup_leftovers).await
+            {
                 tracing::debug!(error = %error, "update leftover cleanup task failed");
             }
             #[cfg(target_os = "macos")]
@@ -380,6 +394,9 @@ impl UpdateService {
 
     /// 查询渠道最新版本；返回检查后的状态。
     pub async fn check(self: &Arc<Self>, channel: &str) -> Result<UpdateStatusDto, UpdateError> {
+        if self.recovery_required().await {
+            return Ok(self.status());
+        }
         self.check_inner(channel, false).await
     }
 
@@ -630,6 +647,9 @@ impl UpdateService {
 
     /// 一键更新：包未就绪时先下载（`installPending`），就绪后安装并重启。
     pub async fn install(self: &Arc<Self>) -> Result<UpdateStatusDto, UpdateError> {
+        if self.recovery_required().await {
+            return Err(UpdateError::Manual(UpdateManualReason::Unsupported));
+        }
         self.refresh_candidate().await?;
         self.begin(true)
     }
@@ -852,10 +872,14 @@ impl UpdateService {
     }
 
     fn spawn_install(self: &Arc<Self>, candidate: Candidate) {
-        tokio::spawn(Arc::clone(self).install_task(candidate));
+        tokio::spawn(Arc::clone(self).install_task(candidate, None));
     }
 
-    async fn install_task(self: Arc<Self>, candidate: Candidate) {
+    async fn install_task(
+        self: Arc<Self>,
+        candidate: Candidate,
+        automatic: Option<automatic::AutomaticInstall>,
+    ) {
         let dir = self.version_dir(&candidate.version);
         let package = dir.join(&candidate.asset_name);
         match &self.host {
@@ -867,8 +891,38 @@ impl UpdateService {
                     self.fail(UpdateFailure::Storage, format!("{error:#}"));
                     return;
                 }
+                if let Some(automatic) = &automatic
+                    && (automatic.cancel.is_cancelled()
+                        || !self.silent_update_allowed(&automatic.shell))
+                {
+                    self.remove_pending().await;
+                    self.mutate(|core| core.status.phase = UpdatePhase::Ready);
+                    return;
+                }
                 match install::apply(&self.target, &package, &work_dir).await {
                     Ok(plan) => {
+                        let plan = if let Some(automatic) = automatic {
+                            // The portable worker already holds the startup gate. If
+                            // staging raced with new activity, drop its commit pipe
+                            // and retry on a later idle tick rather than block launches.
+                            if self.target.kind
+                                == fluxdown_protocol::UpdateInstallKind::WindowsPortable
+                            {
+                                if automatic.cancel.is_cancelled()
+                                    || !self.background_idle(&automatic.shell)
+                                {
+                                    drop(plan);
+                                    self.remove_pending().await;
+                                    self.mutate(|core| core.status.phase = UpdatePhase::Ready);
+                                    return;
+                                }
+                            } else if !automatic.wait_for_idle(&self).await {
+                                return;
+                            }
+                            plan.in_background(automatic.restart)
+                        } else {
+                            plan
+                        };
                         restart::schedule(plan);
                         request_restart();
                     }
@@ -930,6 +984,7 @@ impl UpdateService {
             from_version: self.current_version.clone(),
             asset_name: candidate.asset_name.clone(),
             created_at_ms: now_ms(),
+            portable_failure: None,
             channel: self.lock().status.channel.clone(),
         };
         let bytes = serde_json::to_vec_pretty(&record).map_err(std::io::Error::other)?;
@@ -969,6 +1024,28 @@ impl UpdateService {
 
     // ------------------------------------------------------------------ 启动对账 / 周期
 
+    async fn recovery_required(&self) -> bool {
+        if self.target.kind != fluxdown_protocol::UpdateInstallKind::WindowsPortable {
+            return false;
+        }
+        match tokio::fs::read(self.updates_dir.join(PENDING_FILE)).await {
+            Ok(bytes) => match serde_json::from_slice::<PendingRecord>(&bytes) {
+                Ok(record) => record
+                    .portable_failure
+                    .is_some_and(|failure| failure.rollback_incomplete),
+                Err(error) => {
+                    tracing::warn!(%error, "cannot check portable update recovery state");
+                    true
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => {
+                tracing::warn!(%error, "cannot read portable update recovery state");
+                true
+            }
+        }
+    }
+
     /// 上次安装留下 `pending.json`：版本已是目标 → 成功、清理并返回该版本；否则报告未完成。
     pub async fn reconcile(&self) -> Option<String> {
         let pending = self.updates_dir.join(PENDING_FILE);
@@ -990,7 +1067,7 @@ impl UpdateService {
         };
         let installed = record.target_version.trim_start_matches('v')
             == self.current_version.trim_start_matches('v');
-        if installed {
+        if installed && record.portable_failure.is_none() {
             tracing::info!(version = %record.target_version, "update installed; cleaning update files");
             if let Err(error) = tokio::fs::remove_dir_all(&self.updates_dir).await {
                 tracing::debug!(error = %error, "cannot clean updates dir");
@@ -1002,21 +1079,35 @@ impl UpdateService {
             running = %self.current_version,
             "previous update did not complete"
         );
-        self.remove_pending().await;
+        if !record
+            .portable_failure
+            .as_ref()
+            .is_some_and(|failure| failure.rollback_incomplete)
+        {
+            self.remove_pending().await;
+        }
         self.mutate(|core| {
             if core.status.phase != UpdatePhase::Idle {
                 return;
             }
             core.status.phase = UpdatePhase::Failed;
-            core.status.has_update =
-                is_newer(&record.target_version, &self.current_version).unwrap_or(false);
+            core.status.has_update = record.portable_failure.is_some()
+                || is_newer(&record.target_version, &self.current_version).unwrap_or(false);
             core.status.latest_version = record.target_version.clone();
             core.status.channel = record.channel.clone();
-            core.status.failure = Some(UpdateFailure::InstallIncomplete);
-            core.status.error_detail = format!(
-                "running version {} after installing {}",
-                self.current_version, record.target_version
-            );
+            if let Some(failure) = record.portable_failure {
+                if failure.rollback_incomplete {
+                    core.status.manual_reason = Some(UpdateManualReason::Unsupported);
+                }
+                core.status.failure = Some(UpdateFailure::Install);
+                core.status.error_detail = failure.detail;
+            } else {
+                core.status.failure = Some(UpdateFailure::InstallIncomplete);
+                core.status.error_detail = format!(
+                    "running version {} after installing {}",
+                    self.current_version, record.target_version
+                );
+            }
         });
         None
     }
@@ -1052,6 +1143,9 @@ impl UpdateService {
             }
             due = now + CHECK_INTERVAL;
             if self.pref(PREF_AUTO_CHECK).and_then(|value| value.as_bool()) == Some(false) {
+                continue;
+            }
+            if self.recovery_required().await {
                 continue;
             }
             let channel = self
@@ -1638,6 +1732,7 @@ mod tests {
             asset_name: "a".to_owned(),
             created_at_ms: 1,
             channel: "frontier".to_owned(),
+            portable_failure: None,
         };
         std::fs::write(
             updates.join(PENDING_FILE),
@@ -1671,6 +1766,29 @@ mod tests {
         assert_eq!(status.channel, "frontier");
         assert!(status.has_update);
         assert!(!dir.join("updates").join(PENDING_FILE).exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn pending_replacement_failure_is_not_success_even_if_versions_match() {
+        let dir = temp_dir();
+        write_pending(&dir, "2.0.0");
+        let path = dir.join("updates").join(PENDING_FILE);
+        let mut record: PendingRecord =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        record.portable_failure = Some(PortableFailure {
+            detail: "move aside fluxdown_nmh.exe: sharing violation (os error 32)".to_owned(),
+            rollback_incomplete: true,
+        });
+        std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        let service = service(&dir, "2.0.0", "http://127.0.0.1:9", None);
+        assert_eq!(service.reconcile().await, None);
+        let status = service.status();
+        assert_eq!(status.phase, UpdatePhase::Failed);
+        assert_eq!(status.failure, Some(UpdateFailure::Install));
+        assert_eq!(status.manual_reason, Some(UpdateManualReason::Unsupported));
+        assert!(status.error_detail.contains("os error 32"));
+        assert!(path.is_file());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

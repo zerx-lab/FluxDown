@@ -1,3 +1,4 @@
+import { useByteFormatter } from '../../../lib/fileSizeUnits'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { ArrowDown, ArrowUp, Radio, RotateCw } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
@@ -219,6 +220,7 @@ function Header({ layout, t, sort, onSort }: { layout: Exclude<TrackerLayout, 'c
 
 /** HTTP 源（BEP 19 webseed）：数量很少，直接平铺；URL 中间省略，悬停看全文。 */
 function WebSeedsSection({ seeds, t }: { seeds: readonly BtWebSeedDto[]; t: Translate }) {
+  const fmtBytes = useByteFormatter(formatBytes)
   return (
     <section className="flex flex-col gap-1 pt-2" aria-label={t('btWebSeedsSection')}>
       <h3 className="text-xs font-medium text-text-tertiary">{t('btWebSeedsSection')}</h3>
@@ -239,7 +241,7 @@ function WebSeedsSection({ seeds, t }: { seeds: readonly BtWebSeedDto[]; t: Tran
               </span>
               <UrlText url={seed.url} title={`${t('btWebSeedUrl')}: ${seed.url}`} />
               <span title={t('btPeerDownloaded')} className="tabular ml-auto shrink-0 text-xs text-muted-foreground">
-                {formatBytes(seed.downloaded ?? 0)}
+                {fmtBytes(seed.downloaded ?? 0)}
               </span>
               <RowCopyButton label={t('btCopyTrackerUrl')} value={seed.url} doneKey="btTrackerUrlCopied" />
             </div>

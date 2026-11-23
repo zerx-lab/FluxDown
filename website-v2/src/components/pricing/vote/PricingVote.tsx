@@ -4,7 +4,7 @@ import type { Lang } from "@/i18n/config";
 import { pricingVote } from "@/i18n/messages/pricingVote";
 import { BrandIcon } from "@/components/icons/brand";
 import PollCard, { type Plan } from "./PollCard";
-import Discussion, { Avatar, type PollComment, type Viewer } from "./Discussion";
+import { Avatar, type PollComment, type Viewer } from "./Discussion";
 import { withBase } from "@/lib/base";
 
 interface PricingData {
@@ -164,22 +164,6 @@ export default function PricingVote({ lang, loginUrl, logoutUrl }: Props) {
           </>
         )}
       </div>
-
-      {data && (
-        <>
-          <div className="rule" />
-          <section className="section" aria-labelledby="discussion-heading">
-            <Discussion
-              lang={lang}
-              viewer={viewer}
-              comments={data.comments}
-              issueUrl={data.issueUrl}
-              loginUrl={loginUrl}
-              onPosted={(comment) => setData((prev) => (prev ? { ...prev, comments: [comment, ...prev.comments] } : prev))}
-            />
-          </section>
-        </>
-      )}
     </>
   );
 }

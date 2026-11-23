@@ -14,7 +14,14 @@ import { Modal } from "@/ui/components/Modal";
 import { showToast } from "@/ui/components/Toast";
 import { useT } from "@/ui/i18n";
 import { sendAction } from "@/utils/messaging";
-import { ERROR_LABEL, extensionDetailsUrl, STATE_LABEL, STATE_TONE, switchGuide } from "../lib/page-scripts";
+import {
+  ERROR_LABEL,
+  extensionDetailsUrl,
+  matchHosts,
+  STATE_LABEL,
+  STATE_TONE,
+  switchGuide,
+} from "../lib/page-scripts";
 import { ConfirmModal, PanelShell } from "../parts";
 import { logError } from "@/utils/error-log";
 
@@ -172,13 +179,72 @@ function SwitchGuide(): JSX.Element | null {
   );
 }
 
+/** 摘要里直接列出的站点个数；其余折成「等 N 个网站」，完整规则进详情弹窗。 */
+const SITES_PREVIEW = 2;
+
+function SitesSummary(props: { matches: string[] }): JSX.Element {
+  const t = useT();
+  const hosts = matchHosts(props.matches);
+  const shown = hosts.slice(0, SITES_PREVIEW).join(t("pageScripts.sitesSeparator"));
+  const text =
+    hosts.length > SITES_PREVIEW ? t("pageScripts.sitesSummary", { sites: shown, count: String(hosts.length) }) : shown;
+  return (
+    <div class="opt-ps-sites" title={hosts.join("\n")}>
+      {text}
+    </div>
+  );
+}
+
+function DetailModal(props: {
+  plugin: PageScriptPluginView;
+  scriptId: string;
+  onClose: () => void;
+  onViewSource: (plugin: PageScriptPluginView, scriptId: string) => void;
+}): JSX.Element | null {
+  const t = useT();
+  const script = props.plugin.scripts.find((item) => item.id === props.scriptId);
+  if (!script) return null;
+  return (
+    <Modal
+      title={script.title}
+      onClose={props.onClose}
+      width={560}
+      footer={
+        <>
+          {props.plugin.approved ? (
+            <Button onClick={() => props.onViewSource(props.plugin, script.id)}>{t("pageScripts.viewSource")}</Button>
+          ) : null}
+          <Button variant="primary" onClick={props.onClose}>
+            {t("ui.close")}
+          </Button>
+        </>
+      }
+    >
+      <dl class="opt-ps-detail">
+        <dt>{t("pageScripts.colWorld")}</dt>
+        <dd>{script.world === "main" ? t("pageScripts.worldMain") : t("pageScripts.worldIsolated")}</dd>
+        <dt>{t("pageScripts.matchRules", { count: String(script.matches.length) })}</dt>
+        <dd>
+          <ul class="opt-ps-matches opt-ps-matches-tall">
+            {script.matches.map((pattern) => (
+              <li key={pattern} class="opt-cell-mono">
+                {pattern}
+              </li>
+            ))}
+          </ul>
+        </dd>
+      </dl>
+    </Modal>
+  );
+}
+
 function PluginCard(props: {
   plugin: PageScriptPluginView;
   disabled: boolean;
   onEnable: (plugin: PageScriptPluginView) => void;
   onGrant: (plugin: PageScriptPluginView) => void;
   onDisable: (plugin: PageScriptPluginView) => void;
-  onViewSource: (plugin: PageScriptPluginView, scriptId: string) => void;
+  onDetails: (plugin: PageScriptPluginView, scriptId: string) => void;
 }): JSX.Element {
   const t = useT();
   const { plugin } = props;
@@ -222,12 +288,16 @@ function PluginCard(props: {
 
       {plugin.scripts.length > 0 ? (
         <div class="opt-table-wrap">
-          <table class="opt-table opt-table-compact">
+          <table class="opt-table opt-table-compact opt-ps-table">
+            <colgroup>
+              <col class="opt-ps-col-script" />
+              <col />
+              <col class="opt-ps-col-actions" />
+            </colgroup>
             <thead>
               <tr>
                 <th>{t("pageScripts.colScript")}</th>
                 <th>{t("pageScripts.colMatches")}</th>
-                <th>{t("pageScripts.colWorld")}</th>
                 <th />
               </tr>
             </thead>
@@ -238,18 +308,13 @@ function PluginCard(props: {
                     <div class="opt-rule-title">{script.title}</div>
                     <div class="opt-rule-id opt-cell-mono">{script.id}</div>
                   </td>
-                  <td class="opt-cell-mono opt-cell-wrap">
-                    {script.matches.map((pattern) => (
-                      <div key={pattern}>{pattern}</div>
-                    ))}
-                  </td>
-                  <td>{script.world === "main" ? t("pageScripts.worldMain") : t("pageScripts.worldIsolated")}</td>
                   <td>
-                    {plugin.approved ? (
-                      <Button size="sm" variant="ghost" onClick={() => props.onViewSource(plugin, script.id)}>
-                        {t("pageScripts.viewSource")}
-                      </Button>
-                    ) : null}
+                    <SitesSummary matches={script.matches} />
+                  </td>
+                  <td class="opt-col-actions">
+                    <Button size="sm" variant="ghost" onClick={() => props.onDetails(plugin, script.id)}>
+                      {t("pageScripts.details")}
+                    </Button>
                   </td>
                 </tr>
               ))}
@@ -267,6 +332,7 @@ export function PageScriptsPanel(): JSX.Element {
   const [enabling, setEnabling] = useState<PageScriptPluginView | null>(null);
   const [disabling, setDisabling] = useState<PageScriptPluginView | null>(null);
   const [source, setSource] = useState<{ plugin: PageScriptPluginView; scriptId: string } | null>(null);
+  const [detail, setDetail] = useState<{ plugin: PageScriptPluginView; scriptId: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
   const permissionMissing = status?.availability === "permission-missing";
@@ -369,7 +435,7 @@ export function PageScriptsPanel(): JSX.Element {
             onEnable={setEnabling}
             onGrant={grantPermission}
             onDisable={setDisabling}
-            onViewSource={(p, scriptId) => setSource({ plugin: p, scriptId })}
+            onDetails={(p, scriptId) => setDetail({ plugin: p, scriptId })}
           />
         ))
       )}
@@ -390,6 +456,17 @@ export function PageScriptsPanel(): JSX.Element {
           danger
           onConfirm={() => void confirmDisable(disabling)}
           onCancel={() => setDisabling(null)}
+        />
+      ) : null}
+      {detail ? (
+        <DetailModal
+          plugin={detail.plugin}
+          scriptId={detail.scriptId}
+          onClose={() => setDetail(null)}
+          onViewSource={(p, scriptId) => {
+            setDetail(null);
+            setSource({ plugin: p, scriptId });
+          }}
         />
       ) : null}
       {source ? (

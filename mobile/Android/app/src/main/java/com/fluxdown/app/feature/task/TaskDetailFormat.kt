@@ -82,15 +82,29 @@ internal fun durationText(totalSeconds: Long): String {
     return parts.joinToString(" ")
 }
 
-/** Auto 路由或站点规则 wire 标签 → 文案；未知值原样返回。 */
+/** 任务链路 wire 标签（Auto 路由、站点规则、全局 / 任务级代理与 BT 会话出口）→ 文案；未知值原样返回。 */
 @Composable
 internal fun routeLabel(route: String): String {
-    // `rule:system` / `rule:manual` 必须整串精确匹配，不能走下面的后缀拆分。
+    // 整串精确匹配必须先于后缀拆分，否则 `rule:system`、`bt:all:manual` 会被误拆。
     when (route) {
         "rule:direct" -> return str(R.string.taskRouteRuleDirect)
         "rule:system" -> return str(R.string.taskRouteRuleSystem)
         "rule:manual" -> return str(R.string.taskRouteRuleManual)
         "rule:custom" -> return str(R.string.taskRouteRuleCustom)
+        "global:direct" -> return str(R.string.taskRouteGlobalDirect)
+        "global:bypass" -> return str(R.string.taskRouteGlobalBypass)
+        "global:manual" -> return str(R.string.taskRouteGlobalManual)
+        "global:system" -> return str(R.string.taskRouteGlobalSystem)
+        "global:pac" -> return str(R.string.taskRouteGlobalPac)
+        "task:proxy" -> return str(R.string.taskRouteTaskProxy)
+        "task:direct" -> return str(R.string.taskRouteTaskDirect)
+        "protocol:direct" -> return str(R.string.taskRouteProtocolDirect)
+        "protocol:proxy" -> return str(R.string.taskRouteProtocolProxy)
+        "bt:direct" -> return str(R.string.taskRouteBtDirect)
+        "bt:trackers:manual" -> return str(R.string.taskRouteBtTrackersManual)
+        "bt:trackers:system" -> return str(R.string.taskRouteBtTrackersSystem)
+        "bt:all:manual" -> return str(R.string.taskRouteBtAllManual)
+        "bt:all:system" -> return str(R.string.taskRouteBtAllSystem)
     }
     var base = route
     var via: String? = null

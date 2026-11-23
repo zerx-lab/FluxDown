@@ -1,6 +1,7 @@
 // 应用内更新：UpdateStatusDto → 文案键与可用操作的纯判定（移植 GPUI `crates/settings/src/update_view.rs`）。
-// 「关于」页、全局横幅与重启遮罩共用，保证对同一份快照给出一致的文本与按钮；状态唯一来源是 agent。
+// 「关于」页、状态栏版本条目、移动端横幅与重启遮罩共用，保证对同一份快照给出一致的文本与按钮；状态唯一来源是 agent。
 
+import { useSyncExternalStore } from 'react'
 import type { TFunction } from '../i18n'
 import { useRpcSelector } from './rpc'
 import type { RpcState, UpdateFailure, UpdateInstallKind, UpdateManualReason, UpdateStatusDto } from './rpc'
@@ -62,7 +63,7 @@ export function manualReasonKey(reason: UpdateManualReason, kind: UpdateInstallK
 }
 
 /** 失败分类 → 文案键；缺省按未知失败。 */
-export function failureKey(failure: UpdateFailure | null | undefined): string {
+export function failureKey(failure: UpdateFailure | null | undefined, kind: UpdateInstallKind): string {
   switch (failure) {
     case 'network':
       return 'updateFailedNetwork'
@@ -71,7 +72,7 @@ export function failureKey(failure: UpdateFailure | null | undefined): string {
     case 'storage':
       return 'updateFailedStorage'
     case 'install':
-      return 'updateFailedInstall'
+      return kind === 'windowsPortable' ? 'updateFailedPortableInstall' : 'updateFailedInstall'
     case 'elevationCancelled':
       return 'updateFailedElevationCancelled'
     case 'installIncomplete':
@@ -81,6 +82,11 @@ export function failureKey(failure: UpdateFailure | null | undefined): string {
     case null:
       return 'updateFailedUnknown'
   }
+}
+
+export function portableRecovery(status: UpdateStatusDto): boolean {
+  return status.phase === 'failed' && status.installKind === 'windowsPortable'
+    && status.failure === 'install' && status.manualReason === 'unsupported'
 }
 
 /** 下载进度百分比（0–100）；大小未知时为 0。 */
@@ -108,12 +114,13 @@ export function statusLine(status: UpdateStatusDto): UpdateLine | null {
     case 'installing':
       return { key: 'updateInstalling' }
     case 'failed':
-      return { key: failureKey(status.failure) }
+      return { key: failureKey(status.failure, status.installKind) }
   }
 }
 
 /** 不可一键更新时的手动升级说明（仅在确有新版本时）。 */
 export function manualLine(status: UpdateStatusDto): UpdateLine | null {
+  if (portableRecovery(status)) return { key: 'updatePortableRecoveryHint' }
   if (!status.hasUpdate || !status.manualReason) return null
   return { key: manualReasonKey(status.manualReason, status.installKind) }
 }
@@ -144,15 +151,46 @@ export function manualUrl(status: UpdateStatusDto): string | null {
   return [status.downloadUrl, status.releasePageUrl].find((url) => url !== '') ?? null
 }
 
-/** 全局横幅：有新版本且未在安装时展示（安装中由全屏遮罩接管）。 */
+/** 全局横幅（移动端；桌面由状态栏版本条目承担）：有新版本且未在安装时展示（安装中由全屏遮罩接管）。 */
 export function bannerVisible(status: UpdateStatusDto, dismissedVersion: string | null): boolean {
   return status.hasUpdate && status.phase !== 'installing' && status.latestVersion !== '' && dismissedVersion !== status.latestVersion
 }
 
-/** 记录「已忽略横幅的版本」的 localStorage 键（按版本忽略，新版本发布后重新提示）。 */
+/** 状态栏版本条目的更新形态（镜像 GPUI `crates/settings/src/version_button.rs::update_badge`）；null = 只显示版本号。 */
+export type VersionBadge =
+  | { kind: 'available'; version: string; manual: boolean }
+  | { kind: 'downloading'; version: string; percent: number }
+  | { kind: 'installing'; version: string }
+  | { kind: 'ready'; version: string }
+  | { kind: 'failed'; version: string; failure: UpdateFailure | null }
+
+/**
+ * 更新状态 → 版本条目形态。没有新版本、后台检查失败（`hasUpdate` 为假）时为 null；
+ * 被忽略的版本只在仍未下载时不提示——已下载 / 安装中照常显示进度。周期复查（checking）沿用上一轮结果，不闪烁。
+ */
+export function versionBadge(status: UpdateStatusDto, ignoredVersion: string | null): VersionBadge | null {
+  if (!status.hasUpdate || status.latestVersion === '') return null
+  const version = status.latestVersion
+  if (status.phase === 'installing' || (status.phase === 'downloading' && status.installPending)) return { kind: 'installing', version }
+  switch (status.phase) {
+    case 'available':
+    case 'checking':
+      return ignoredVersion === version ? null : { kind: 'available', version, manual: status.manualReason != null }
+    case 'downloading':
+      return { kind: 'downloading', version, percent: downloadPercent(status) }
+    case 'ready':
+      return { kind: 'ready', version }
+    case 'failed':
+      return { kind: 'failed', version, failure: status.failure ?? null }
+    default:
+      return null
+  }
+}
+
+/** 记录「已忽略的版本」的 localStorage 键（按版本忽略，新版本发布后重新提示；移动端横幅与桌面版本条目共用）。 */
 export const UPDATE_BANNER_DISMISS_KEY = 'fluxdown.updateBannerDismissed'
 
-export function readDismissedVersion(): string | null {
+function readIgnoredVersion(): string | null {
   try {
     return localStorage.getItem(UPDATE_BANNER_DISMISS_KEY)
   } catch {
@@ -160,10 +198,34 @@ export function readDismissedVersion(): string | null {
   }
 }
 
-export function writeDismissedVersion(version: string): void {
+let ignoredVersion: string | null = readIgnoredVersion()
+const ignoredListeners = new Set<() => void>()
+
+function subscribeIgnored(listener: () => void): () => void {
+  ignoredListeners.add(listener)
+  return () => {
+    ignoredListeners.delete(listener)
+  }
+}
+
+/** 已忽略的版本（横幅 ×、版本条目「忽略此版本」共用，各处同步刷新）。 */
+export function useIgnoredVersion(): string | null {
+  return useSyncExternalStore(subscribeIgnored, () => ignoredVersion)
+}
+
+export function ignoreVersion(version: string): void {
+  ignoredVersion = version
   try {
     localStorage.setItem(UPDATE_BANNER_DISMISS_KEY, version)
   } catch {
-    // 存储不可用（隐私模式等）：本次会话内由组件状态忽略即可。
+    // 存储不可用（隐私模式等）：本次会话内仍按内存状态忽略。
   }
+  for (const listener of ignoredListeners) listener()
+}
+
+/** 当前版本条目形态（快照未就绪时 null）。 */
+export function useVersionBadge(): VersionBadge | null {
+  const status = useUpdateStatus()
+  const ignored = useIgnoredVersion()
+  return status ? versionBadge(status, ignored) : null
 }

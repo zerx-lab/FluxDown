@@ -36,6 +36,8 @@ pub fn manual_path_key(kind: ComponentKind) -> &'static str {
     }
 }
 
+pub(crate) const COMPONENT_MIRROR_KEY: &str = "component_mirror_base";
+
 fn component_kind_from_wire(name: &str) -> Option<ComponentKind> {
     COMPONENT_KINDS
         .into_iter()
@@ -110,6 +112,7 @@ pub struct ExtensionsController {
     components: Vec<ComponentStatusDto>,
     config_revision: u64,
     manual_paths: [String; 2],
+    component_mirror: String,
     stale: bool,
 }
 
@@ -121,6 +124,7 @@ impl ExtensionsController {
             components: Vec::new(),
             config_revision: 0,
             manual_paths: [String::new(), String::new()],
+            component_mirror: String::new(),
             stale: true,
         }
     }
@@ -239,6 +243,15 @@ impl ExtensionsController {
 
     pub fn apply_config(&mut self, config: &DaemonConfigSnapshot) {
         self.config_revision = config.revision;
+        let mirror = config
+            .values
+            .get(COMPONENT_MIRROR_KEY)
+            .map(String::as_str)
+            .unwrap_or_default();
+        if self.component_mirror != mirror {
+            self.component_mirror.clear();
+            self.component_mirror.push_str(mirror);
+        }
         for kind in COMPONENT_KINDS {
             let value = config
                 .values
@@ -290,6 +303,10 @@ impl ExtensionsController {
         &self.manual_paths[component_slot(kind)]
     }
 
+    pub(crate) fn component_mirror(&self) -> &str {
+        &self.component_mirror
+    }
+
     pub fn is_stale(&self) -> bool {
         self.stale
     }
@@ -307,6 +324,10 @@ impl ExtensionsController {
             return unavailable();
         }
         self.port.call(method, params)
+    }
+
+    pub(crate) fn list_plugins(&self) -> PortFuture<serde_json::Value> {
+        self.call(method::DAEMON_PLUGIN_LIST, serde_json::json!({}))
     }
 
     pub fn set_plugin_enabled(
@@ -377,15 +398,19 @@ impl ExtensionsController {
     }
 
     /// `identity = None` 删除该站点记录（之后重新询问）；否则确认 / 更改为该插件。
+    /// `candidates` 非空时与已有记录的候选合并写入，尚无记录也能选定。
     pub fn set_site_default(
         &self,
         site: String,
         identity: Option<String>,
+        candidates: Vec<String>,
     ) -> PortFuture<serde_json::Value> {
-        self.call(
-            method::DAEMON_PLUGIN_SET_SITE_DEFAULT,
-            serde_json::json!({ "site": site, "identity": identity }),
-        )
+        let params = if candidates.is_empty() {
+            serde_json::json!({ "site": site, "identity": identity })
+        } else {
+            serde_json::json!({ "site": site, "identity": identity, "candidates": candidates })
+        };
+        self.call(method::DAEMON_PLUGIN_SET_SITE_DEFAULT, params)
     }
 
     /// `version` = 用户确认权限时看到的版本；市场最新版本已变化时 daemon 拒绝安装。
@@ -455,11 +480,19 @@ impl ExtensionsController {
         kind: ComponentKind,
         path: String,
     ) -> PortFuture<serde_json::Value> {
+        self.set_component_config(manual_path_key(kind), path.trim())
+    }
+
+    pub(crate) fn set_component_config(
+        &self,
+        key: &str,
+        value: &str,
+    ) -> PortFuture<serde_json::Value> {
         self.call(
             method::DAEMON_CONFIG_PATCH,
             serde_json::json!({
                 "expectedRevision": self.config_revision,
-                "values": { manual_path_key(kind): path.trim() },
+                "values": { key: value },
             }),
         )
     }

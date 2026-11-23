@@ -38,6 +38,15 @@ pub fn service_hello(instance_id: impl Into<String>, capabilities: Vec<String>) 
     )
 }
 
+/// Active in-process Android engine log directory, including runtime fallback.
+#[cfg(target_os = "android")]
+pub fn active_android_log_dir() -> Option<&'static std::path::Path> {
+    fluxdown_engine::logger::active_android_log_dir()
+}
+
+#[cfg(target_os = "android")]
+pub use fluxdown_engine::logger::write_embedded_event as write_android_engine_event;
+
 #[cfg(test)]
 mod tests {
     use fluxdown_protocol::{PROTOCOL_VERSION, ServiceRole};

@@ -1,6 +1,7 @@
 // 设置 › BT › 防吸血：总开关与状态、今日统计、检测规则、客户端规则、阈值、处置、豁免、云名单、过滤文件订阅、证据上报。
 
 import { useState } from 'react'
+import { byteUnit, useFileSizeUnits } from '../../../../../lib/fileSizeUnits'
 import { useT } from '../../../../../i18n'
 import { cloudStatusKind, reportGate, reportSwitchDisabled } from '../../../../../lib/btGuard'
 import type { CloudStatusKind } from '../../../../../lib/btGuard'
@@ -75,6 +76,7 @@ function StatCell({ label, value }: { label: string; value: string }) {
 }
 
 function StatsSection({ data }: { data: BtGuardStateDto | null }) {
+  const units = useFileSizeUnits()
   const t = useT()
   if (data === null) return null
   const { stats, counts } = data
@@ -85,7 +87,7 @@ function StatsSection({ data }: { data: BtGuardStateDto | null }) {
           <StatCell label={t('btGuardStatObserved')} value={String(stats.todayObserved)} />
           <StatCell label={t('btGuardStatEnforced')} value={String(stats.todayEnforced)} />
           <StatCell label={t('btGuardStatBlocked')} value={String(stats.todayBlockedConnections)} />
-          <StatCell label={t('btGuardStatRefusedBytes')} value={formatBytes(stats.todayRefusedBytes)} />
+          <StatCell label={t('btGuardStatRefusedBytes')} value={formatBytes(stats.todayRefusedBytes, units)} />
         </div>
       </SettingsCustomRow>
       <SettingsCustomRow>
@@ -107,11 +109,12 @@ function RulesSection({ disabled }: { disabled: boolean }) {
 }
 
 function ThresholdsSection({ disabled }: { disabled: boolean }) {
+  const units = useFileSizeUnits()
   const t = useT()
   return (
     <SettingsSection title={t('btGuardSectionThresholds')}>
       <DaemonNumberRow configKey="bt_guard_excess_ratio_pct" titleKey="btGuardExcessRatio" descKey="btGuardExcessRatioDesc" unit={t('btGuardUnitPercent')} disabled={disabled} />
-      <DaemonNumberRow configKey="bt_guard_min_torrent_mib" titleKey="btGuardMinTorrent" descKey="btGuardMinTorrentDesc" unit={t('btGuardUnitMib')} disabled={disabled} />
+      <DaemonNumberRow configKey="bt_guard_min_torrent_mib" titleKey="btGuardMinTorrent" descKey="btGuardMinTorrentDesc" unit={byteUnit(2, units)} disabled={disabled} />
       <DaemonNumberRow configKey="bt_guard_rewind_tolerance_pct" titleKey="btGuardRewindTolerance" descKey="btGuardRewindToleranceDesc" unit={t('btGuardUnitPercent')} disabled={disabled} />
       <DaemonNumberRow configKey="bt_guard_ipv6_prefix" titleKey="btGuardIpv6Prefix" descKey="btGuardIpv6PrefixDesc" disabled={disabled} />
     </SettingsSection>
@@ -119,10 +122,11 @@ function ThresholdsSection({ disabled }: { disabled: boolean }) {
 }
 
 function ActionsSection({ disabled }: { disabled: boolean }) {
+  const units = useFileSizeUnits()
   const t = useT()
   return (
     <SettingsSection title={t('btGuardSectionActions')}>
-      <DaemonNumberRow configKey="bt_guard_throttle_kib" titleKey="btGuardThrottleKib" descKey="btGuardThrottleKibDesc" unit={t('btGuardUnitKibps')} disabled={disabled} />
+      <DaemonNumberRow configKey="bt_guard_throttle_kib" titleKey="btGuardThrottleKib" descKey="btGuardThrottleKibDesc" unit={`${byteUnit(1, units)}/s`} disabled={disabled} />
       <DaemonNumberRow configKey="bt_guard_ban_base_hours" titleKey="btGuardBanBaseHours" descKey="btGuardBanBaseHoursDesc" unit={t('timeUnitHours')} disabled={disabled} />
       <DaemonNumberRow configKey="bt_guard_ban_max_days" titleKey="btGuardBanMaxDays" unit={t('timeUnitDays')} disabled={disabled} />
       <DaemonEnumRow

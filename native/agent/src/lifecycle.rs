@@ -1,7 +1,7 @@
 //! agent 进程生命周期：完全退出（先关停 daemon，再退出 agent）与退出原因。
 //!
 //! 两种退出互不混淆：
-//! - **完全退出**（`system.shutdown`、托盘「退出」、非驻留模式闲置、系统注销）：停止监管
+//! - **完全退出**（`system.shutdown`、托盘「退出」、定时退出、非驻留模式闲置、系统注销）：停止监管
 //!   → 请求 daemon 优雅关停 → 等 daemon 释放进程租约 → 取消 agent；UI 连接以
 //!   [`CLOSE_REASON_SERVICE_QUIT`](fluxdown_protocol::CLOSE_REASON_SERVICE_QUIT) 关闭，
 //!   客户端据此停止重连与重拉。

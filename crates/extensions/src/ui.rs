@@ -4,11 +4,75 @@
 //! 标题 sm MEDIUM；说明 / 元信息 xs + 二级文字色；状态色只取扩展 token
 //! （成功 success、警示 warning、失败 destructive、进行中 primary）。
 
-use fluxdown_ui_theme::FluxThemeState;
-use gpui::{Div, FontWeight, Hsla, IntoElement, ParentElement, SharedString, Styled, div};
-use gpui_component::{Icon, IconNamed, h_flex};
+use std::rc::Rc;
+
+use fluxdown_ui_components::ControlExt as _;
+use fluxdown_ui_theme::{FluxThemeState, active_theme};
+use gpui::{
+    Anchor, App, Div, FontWeight, Hsla, IntoElement, ParentElement, SharedString, Styled, Window,
+    div,
+};
+use gpui_component::{
+    Icon, IconNamed,
+    button::Button,
+    h_flex,
+    menu::{DropdownMenu as _, PopupMenuItem},
+};
 
 use crate::pages::Frame;
+
+/// 扩展页下拉选择的按钮宽度（随字号缩放的基准值）：同屏多个选择框等宽对齐。
+const SELECT_WIDTH: f32 = 168.;
+/// 下拉菜单最多同时显示的选项数（超出滚动）。
+const SELECT_VISIBLE_OPTIONS: f32 = 8.;
+
+/// 下拉选择（同原生 select）：定宽按钮，展开的菜单与按钮等宽、右缘对齐，选项与按钮同高。
+/// `button` 由调用方设好 id / label / busy / disabled；`options` = （值，显示名），
+/// `current` 的选项带勾选。
+pub(crate) fn select_button(
+    button: Button,
+    options: Vec<(String, SharedString)>,
+    current: Option<String>,
+    on_select: impl Fn(String, &mut Window, &mut App) + 'static,
+    cx: &App,
+) -> impl IntoElement {
+    let theme = active_theme(cx);
+    let width = theme.text_extent(SELECT_WIDTH);
+    let height = theme.density().control;
+    let on_select = Rc::new(on_select);
+    button
+        .outline()
+        .dropdown_caret(true)
+        .control(cx)
+        .flex_none()
+        .w(width)
+        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+            options.iter().fold(
+                menu.min_w(width)
+                    .max_w(width)
+                    .scrollable(true)
+                    .max_h(height * SELECT_VISIBLE_OPTIONS),
+                |menu, (value, name)| {
+                    let name = name.clone();
+                    let value = value.clone();
+                    let on_select = on_select.clone();
+                    menu.item(
+                        PopupMenuItem::element(move |_, _| {
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .h(height)
+                                .flex()
+                                .items_center()
+                                .child(div().min_w_0().truncate().child(name.clone()))
+                        })
+                        .checked(current.as_deref() == Some(value.as_str()))
+                        .on_click(move |_, window, cx| on_select(value.clone(), window, cx)),
+                    )
+                },
+            )
+        })
+}
 
 /// 卡片内的结构分隔线（hairline，`stroke.thin` 粗）。
 pub(crate) fn divider(frame: Frame<'_>) -> Div {

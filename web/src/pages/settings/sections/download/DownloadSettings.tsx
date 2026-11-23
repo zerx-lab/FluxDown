@@ -37,6 +37,7 @@ import { AutoCountRow } from './AutoCountRow'
 import { RetentionRow } from './RetentionRow'
 import { CategoriesGroup } from './CategoriesGroup'
 
+import { Aria2OptionsEditor } from './Aria2OptionsEditor'
 const NO_QUEUES: readonly QueueDto[] = []
 const selectQueues = (daemon: { queues: readonly QueueDto[] }) => daemon.queues
 /** Radix Select 不允许空值项：用哨兵表示「默认队列」（`default_queue_id` = ''）。 */
@@ -45,18 +46,41 @@ const DEFAULT_QUEUE = '__default__'
 export function DownloadSettings() {
   const t = useT()
   const readOnly = useSettingsReadOnly()
-  return (
-    <SettingsPage title={t('settingsCatDownload')} description={t('settingsCatDownloadDesc')}>
-      <SaveLocationSection />
-      <BehaviorSection />
-      <ConnectionSection />
-      <RetrySection />
-      <SettingsSection title={t('settingsGroupAdvanced')}>
-        <UserAgentRow />
-      </SettingsSection>
-      <CategoriesGroup disabled={readOnly} />
-    </SettingsPage>
-  )
+  const tabs = [
+    {
+      id: 'general',
+      label: t('settingsTabGeneral'),
+      content: (
+        <>
+          <SaveLocationSection />
+          <BehaviorSection />
+        </>
+      ),
+    },
+    {
+      id: 'connection',
+      label: t('settingsTabConnection'),
+      content: (
+        <>
+          <ConnectionSection />
+          <RetrySection />
+        </>
+      ),
+    },
+    { id: 'files', label: t('settingsTabFiles'), content: <FilesSections /> },
+    {
+      id: 'advanced',
+      label: t('settingsGroupAdvanced'),
+      content: (
+        <SettingsSection title={t('settingsGroupAdvanced')}>
+          <UserAgentRow />
+          <Aria2OptionsEditor />
+        </SettingsSection>
+      ),
+    },
+    { id: 'categories', label: t('customCategories'), content: <CategoriesGroup disabled={readOnly} /> },
+  ]
+  return <SettingsPage title={t('settingsCatDownload')} description={t('settingsCatDownloadDesc')} tabs={tabs} />
 }
 
 function SaveLocationSection() {
@@ -76,27 +100,33 @@ function SaveLocationSection() {
       </SettingsRow>
       <DirPickerDialog open={picking} onOpenChange={setPicking} initialPath={dir} onPick={(path) => setDaemon('default_save_dir', path)} />
       <PrefSwitchRow prefKey="download.remember_last_save_dir" fallback={false} titleKey="rememberLastSaveDir" descKey="rememberLastSaveDirDesc" />
-      <PrefSwitchRow prefKey={SAVE_DIR_HISTORY_ENABLED_PREF} fallback titleKey="saveDirHistory" descKey="saveDirHistoryDesc" />
-      <ClearSaveDirHistoryRow />
+      <SaveDirHistoryRow />
     </SettingsSection>
   )
 }
 
-/** 清空新建下载的保存目录历史与分类目录记忆（设备本地偏好，写 null 移除）；两者都没有记录时按钮置灰。 */
-function ClearSaveDirHistoryRow() {
+/** 「记住历史保存路径」开关 + 有记录时才出现的「清空历史记录」（保存目录历史与分类目录记忆，写 null 移除）。 */
+function SaveDirHistoryRow() {
   const t = useT()
   const readOnly = useSettingsReadOnly()
+  const enabled = usePrefBoolean(SAVE_DIR_HISTORY_ENABLED_PREF, true)
   const historyEmpty = readSaveDirHistory(usePrefRaw(SAVE_DIR_HISTORY_PREF)).length === 0
   const categoryEmpty = Object.keys(readCategorySaveDirHistory(usePrefRaw(CATEGORY_SAVE_DIR_HISTORY_PREF))).length === 0
+  const title = t('saveDirHistory')
   const clear = () => {
     setPref(SAVE_DIR_HISTORY_PREF, null)
     setPref(CATEGORY_SAVE_DIR_HISTORY_PREF, null)
   }
   return (
-    <SettingsRow title={t('clearSaveDirHistory')} description={optionalText(t, 'clearSaveDirHistoryDesc')}>
-      <Button variant="outline" className="shrink-0" disabled={readOnly || (historyEmpty && categoryEmpty)} onClick={clear}>
-        {t('clearSaveDirHistoryAction')}
-      </Button>
+    <SettingsRow title={title} description={optionalText(t, 'saveDirHistoryDesc')}>
+      <div className="flex items-center gap-3">
+        {historyEmpty && categoryEmpty ? null : (
+          <Button variant="ghost" className="shrink-0" disabled={readOnly} onClick={clear}>
+            {t('clearSaveDirHistoryAction')}
+          </Button>
+        )}
+        <Switch checked={enabled} disabled={readOnly} aria-label={title} onCheckedChange={(next) => setPref(SAVE_DIR_HISTORY_ENABLED_PREF, next)} />
+      </div>
     </SettingsRow>
   )
 }
@@ -140,15 +170,27 @@ function BehaviorSection() {
           <PrefSwitchRow prefKey="download.silent_skip_selection" fallback={false} titleKey="silentSkipSelection" descKey="silentSkipSelectionDesc" />
         </>
       ) : null}
-      <DaemonSwitchRow configKey="use_server_time" titleKey="useServerTime" descKey="useServerTimeDesc" />
-      <DaemonEnumRow configKey="file_exists_behavior" titleKey="fileExistsBehavior" descKey="fileExistsBehaviorDesc" labelPrefix="fileExists" />
-      <DaemonEnumRow configKey="file_missing_action" titleKey="fileMissingAction" descKey="fileMissingActionDesc" labelPrefix="fileMissing" />
-      <RetentionRow />
-      <DaemonSwitchRow configKey="idle_file_scan" titleKey="idleFileScan" descKey="idleFileScanDesc" />
-      <DaemonSwitchRow configKey="hash_after_download" titleKey="hashAfterDownload" descKey="hashAfterDownloadDesc" />
-      <DaemonEnumRow configKey="hash_algorithm" titleKey="hashAlgorithm" descKey="hashAlgorithmDesc" labels={HASH_ALGORITHM_LABELS} />
       <DefaultQueueRow />
     </SettingsSection>
+  )
+}
+
+function FilesSections() {
+  const t = useT()
+  return (
+    <>
+      <SettingsSection title={t('settingsGroupFileHandling')}>
+        <DaemonEnumRow configKey="file_exists_behavior" titleKey="fileExistsBehavior" descKey="fileExistsBehaviorDesc" labelPrefix="fileExists" />
+        <DaemonSwitchRow configKey="use_server_time" titleKey="useServerTime" descKey="useServerTimeDesc" />
+        <DaemonSwitchRow configKey="hash_after_download" titleKey="hashAfterDownload" descKey="hashAfterDownloadDesc" />
+        <DaemonEnumRow configKey="hash_algorithm" titleKey="hashAlgorithm" descKey="hashAlgorithmDesc" labels={HASH_ALGORITHM_LABELS} />
+      </SettingsSection>
+      <SettingsSection title={t('settingsGroupTaskRecords')}>
+        <DaemonEnumRow configKey="file_missing_action" titleKey="fileMissingAction" descKey="fileMissingActionDesc" labelPrefix="fileMissing" />
+        <RetentionRow />
+        <DaemonSwitchRow configKey="idle_file_scan" titleKey="idleFileScan" descKey="idleFileScanDesc" />
+      </SettingsSection>
+    </>
   )
 }
 

@@ -19,6 +19,12 @@ fn main() {
     println!("cargo::rerun-if-changed=build.rs");
     println!("cargo::rerun-if-env-changed=FLUXDOWN_EMBED_WEBROOT");
     println!("cargo::rerun-if-env-changed=CARGO_FEATURE_WEB_UI");
+    println!("cargo::rerun-if-env-changed=FLUXDOWN_APP_VERSION");
+    println!("cargo::rerun-if-changed=../protocol/build/windows_version_info.rs");
+
+    // Windows PE 版本信息与 web-ui 无关：桌面安装包里的 agent 同样需要。
+    #[cfg(windows)]
+    embed_windows_version_info();
 
     // 未启用 `web-ui` 时 `web_assets` 模块不参与编译，无需扫描前端产物。
     if std::env::var_os("CARGO_FEATURE_WEB_UI").is_none() {
@@ -90,6 +96,23 @@ fn main() {
     }
     if let Err(e) = std::fs::write(&dest, &code) {
         panic!("failed to write {}: {e}", dest.display());
+    }
+}
+
+#[cfg(windows)]
+mod version_info {
+    include!("../protocol/build/windows_version_info.rs");
+}
+
+/// 写入 Explorer「文件版本 / 产品版本」读取的 `VS_VERSION_INFO`。
+#[cfg(windows)]
+fn embed_windows_version_info() {
+    let mut res = winresource::WindowsResource::new();
+    res.set_icon("../../assets/logo/windows/app_icon.ico");
+    version_info::apply_version_info(&mut res, "FluxDown Agent", "fluxdown-agent.exe");
+    res.set("InternalName", "fluxdown-agent");
+    if let Err(e) = res.compile() {
+        println!("cargo::warning=fluxdown-agent version resource failed: {e}");
     }
 }
 

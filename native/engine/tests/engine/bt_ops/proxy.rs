@@ -66,6 +66,35 @@ async fn tracker_and_peer_traffic_goes_through_the_manual_proxy() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn protocol_proxy_routes_bt_tracker_and_peers_independently() {
+    let tracker = Tracker::start().await;
+    let seeder = Seeder::start(&pack(), &tracker, None).await;
+    let proxy = Socks5::start().await;
+    let mut leech = Downloader::start_with(&tracker, |bt, global| {
+        global.mode = ProxyMode::None;
+        bt.proxy_enabled = false;
+        bt.proxy_peers = false;
+    })
+    .await;
+    let config = std::collections::HashMap::from([(
+        "proxy_protocol_bt".to_owned(),
+        format!("socks5://{}", proxy.addr),
+    )]);
+    if leech.engine.manager.set_protocol_proxies(&config) {
+        leech.engine.manager.invalidate_bt_session().await;
+    }
+    let id = leech.add(&seeder, &[], false).await;
+    let task = leech.wait_done(&id).await;
+    assert_eq!(task.status, 3, "download failed: {}", task.error_message);
+    assert_every_announce_was_tunnelled(&tracker, &proxy).await;
+    assert!(
+        proxy.tunnels_to(seeder.addr) >= 1,
+        "peer data uses the BT override"
+    );
+    leech.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn peers_connect_directly_when_only_trackers_are_proxied() {
     let tracker = Tracker::start().await;
     let seeder = Seeder::start(&pack(), &tracker, None).await;

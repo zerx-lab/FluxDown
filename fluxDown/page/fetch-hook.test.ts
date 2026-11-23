@@ -115,6 +115,53 @@ describe("wrapFetch 参数透传", () => {
     expect(seenThis).toBe(owner);
     expect(seenArgs).toEqual(["https://example.com/a", { method: "GET" }, "extra"]);
   });
+
+  /** MooTools 1.6 compat 的旧签名 bind（qBittorrent WebUI，#1148）。 */
+  function installMooToolsBind(): () => void {
+    const native = Function.prototype.bind;
+    Function.prototype.bind = function (this: (...a: unknown[]) => unknown, that: unknown, args?: unknown) {
+      const self = this;
+      // Array.convert：字符串包成单元素数组，其余参数丢弃
+      const bound = args == null ? null : Array.isArray(args) ? args : [args];
+      return function (this: unknown, ...rest: unknown[]) {
+        return self.apply(that, bound ?? rest);
+      };
+    } as typeof Function.prototype.bind;
+    return () => {
+      Function.prototype.bind = native;
+    };
+  }
+
+  async function postThrough(hooked: typeof fetch, calls: unknown[][]) {
+    const init = { method: "POST", body: new URLSearchParams({ hashes: "h", tags: "t" }) };
+    await hooked("api/v2/torrents/addTags", init);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual(["api/v2/torrents/addTags", init]);
+    expect(calls[0][1]).toBe(init);
+  }
+
+  test("包装后页面替换 bind：init 仍原样透传", async () => {
+    const calls: unknown[][] = [];
+    const { deps } = makeDeps({ sniffOn: () => false, mediaEventsOn: () => false });
+    const hooked = wrapFetch(legacyWrapper(calls), deps);
+    const restore = installMooToolsBind();
+    try {
+      await postThrough(hooked, calls);
+    } finally {
+      restore();
+    }
+  });
+
+  test("包装前 bind 已被替换（补注入）：退回闭包调用，init 仍原样透传", async () => {
+    const calls: unknown[][] = [];
+    const { deps } = makeDeps();
+    const restore = installMooToolsBind();
+    try {
+      await postThrough(wrapFetch(legacyWrapper(calls), deps), calls);
+    } finally {
+      restore();
+    }
+  });
 });
 
 describe("wrapFetch 旁路上报", () => {

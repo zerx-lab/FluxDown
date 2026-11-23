@@ -171,10 +171,13 @@ nonisolated enum DownloadsRow: Identifiable, Equatable {
     case task(TaskItem)
     case remote(RemoteRow)
 
+    /// 远程行 id 前缀（多选集合里用它区分本机 / 远程）。
+    static let remoteIdPrefix = "remote:"
+
     var id: String {
         switch self {
         case let .task(item): item.id
-        case let .remote(row): "remote:" + row.id
+        case let .remote(row): Self.remoteIdPrefix + row.id
         }
     }
 
@@ -207,7 +210,7 @@ nonisolated struct DownloadsSection: Identifiable, Equatable {
     let rows: [DownloadsRow]
 }
 
-/// 派生出的列表：分区 + 可见任务 id（全选范围，只含本机任务）+ 总任务数（区分「无任务」与「筛选后为空」）。
+/// 派生出的列表：分区 + 可见行 id（全选范围：本机任务 id 与 `remote:` 前缀的远程行 id）+ 总任务数（区分「无任务」与「筛选后为空」）。
 nonisolated struct DownloadsList: Equatable {
     let sections: [DownloadsSection]
     let visibleIds: [String]

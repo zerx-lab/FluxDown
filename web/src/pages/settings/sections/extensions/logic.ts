@@ -1,7 +1,8 @@
 // 扩展设置的纯逻辑（无 React / 别名依赖，可被 bun test 直接加载）。
 // 语义与 crates/extensions（plugin_settings.rs / plugins.rs / plugin_auth.rs / managed_components.rs）逐条对齐。
 
-import type { MarketEntryDto, PluginAuthResponse, PluginDto, PluginRisk, SettingFieldDto } from '../../../../lib/rpc/protocol'
+import { byteUnit, type FileSizeUnits } from '../../../../lib/fileSizeUnits'
+import type { MarketEntryDto, PluginAuthResponse, PluginDto, PluginRisk, PluginSiteDefaultDto, SettingFieldDto } from '../../../../lib/rpc/protocol'
 
 // ── 插件设置校验 ────────────────────────────────────────────
 
@@ -408,9 +409,13 @@ export function hostsToConfirm(entry: MarketEntryDto, installed: PluginDto | und
 /** 安装 / 更新成功后的授权处理：无待授权 → none；市场预确认与 pending 吻合 → grant；其余 → dialog。 */
 export type PostInstallConsent = 'none' | 'grant' | 'dialog'
 
+export function hasPendingConsent(plugin: PluginDto): boolean {
+  return (plugin.consentPending?.length ?? 0) > 0 || (plugin.consentPendingHosts?.length ?? 0) > 0
+}
+
 export function postInstallConsent(plugin: PluginDto, confirmed: ConsentSet | null): PostInstallConsent {
-  const pending: ConsentSet = { permissions: plugin.consentPending, networkHosts: plugin.consentPendingHosts }
-  if (pending.permissions.length === 0 && pending.networkHosts.length === 0) return 'none'
+  if (!hasPendingConsent(plugin)) return 'none'
+  const pending: ConsentSet = { permissions: plugin.consentPending ?? [], networkHosts: plugin.consentPendingHosts ?? [] }
   if (confirmed !== null && consentMatches(confirmed, pending)) return 'grant'
   return 'dialog'
 }
@@ -433,8 +438,120 @@ export function liveDialogPlugins(plugins: readonly PluginDto[], open: DialogIde
     detail: find(open.detail),
     settings: find(open.settings),
     auth: find(open.auth),
-    consent: consent !== null && postInstallConsent(consent, null) === 'none' ? null : consent,
+    consent: consent !== null && hasPendingConsent(consent) ? consent : null,
   }
+}
+
+export interface PairConflict {
+  owner: string
+  pattern: string
+  other: string
+  otherPattern: string
+  site?: string
+}
+
+export interface SiteConflict {
+  /** 站点键（同 `PluginSiteDefaultDto.site`）。 */
+  site: string
+  /** 能处理该站点链接的插件，按插件列表顺序。 */
+  plugins: string[]
+  /** 参与重叠的（插件，模式），去重。 */
+  patterns: { identity: string; pattern: string }[]
+}
+
+export interface ConflictReport {
+  sites: SiteConflict[]
+  unscoped: PairConflict[]
+  pending: PairConflict[]
+  duplicates: PairConflict[]
+}
+
+export type SiteResolution = { kind: 'confirmed' } | { kind: 'automatic'; identity: string } | { kind: 'unset' }
+
+/** 对照 GPUI `conflict_report`；`identity` 给定时只取与该插件相关的配对。 */
+export function conflictReport(plugins: readonly PluginDto[], identity?: string): ConflictReport {
+  const enabled = (id: string) => plugins.some((plugin) => plugin.enabled && plugin.identity === id)
+  const order = (id: string) => plugins.findIndex((plugin) => plugin.identity === id)
+  const report: ConflictReport = { sites: [], unscoped: [], pending: [], duplicates: [] }
+  for (const owner of plugins) {
+    for (const conflict of owner.resolverUrlConflicts ?? []) {
+      if (identity !== undefined && identity !== owner.identity && identity !== conflict.otherIdentity) continue
+      const pair: PairConflict = {
+        owner: owner.identity,
+        pattern: conflict.pattern,
+        other: conflict.otherIdentity,
+        otherPattern: conflict.otherPattern,
+        site: conflict.site,
+      }
+      if (pair.owner === pair.other) {
+        report.duplicates.push(pair)
+      } else if (!owner.enabled || !enabled(pair.other)) {
+        report.pending.push(pair)
+      } else if (pair.site !== undefined) {
+        let group = report.sites.find((item) => item.site === pair.site)
+        if (group === undefined) {
+          group = { site: pair.site, plugins: [], patterns: [] }
+          report.sites.push(group)
+        }
+        for (const [plugin, pattern] of [[pair.owner, pair.pattern], [pair.other, pair.otherPattern]] as const) {
+          if (!group.plugins.includes(plugin)) group.plugins.push(plugin)
+          if (!group.patterns.some((item) => item.identity === plugin && item.pattern === pattern)) {
+            group.patterns.push({ identity: plugin, pattern })
+          }
+        }
+      } else {
+        report.unscoped.push(pair)
+      }
+    }
+  }
+  for (const group of report.sites) {
+    group.plugins.sort((a, b) => order(a) - order(b))
+    group.patterns.sort((a, b) => order(a.identity) - order(b.identity))
+  }
+  report.sites.sort((a, b) => (a.site < b.site ? -1 : a.site > b.site ? 1 : 0))
+  return report
+}
+
+/** 对照站点默认记录判断该站点是否已处理；已确认的记录须覆盖全部冲突插件。 */
+export function siteResolution(conflict: SiteConflict, defaults: readonly PluginSiteDefaultDto[]): SiteResolution {
+  const entry = defaults.find((item) => item.site === conflict.site)
+  if (entry === undefined || !conflict.plugins.includes(entry.identity)) return { kind: 'unset' }
+  if (entry.automatic) return { kind: 'automatic', identity: entry.identity }
+  return conflict.plugins.every((plugin) => entry.candidates.includes(plugin)) ? { kind: 'confirmed' } : { kind: 'unset' }
+}
+
+export function pluginDisplayName(plugins: readonly PluginDto[], identity: string): string {
+  return plugins.find((plugin) => plugin.identity === identity)?.name ?? identity
+}
+
+/** 安装 / 启用成功后的提示；已确认的站点不再提示，无事项返回 null。 */
+export function conflictNotice(
+  plugins: readonly PluginDto[],
+  defaults: readonly PluginSiteDefaultDto[],
+  identity: string,
+  t: (key: string, params?: Record<string, string | number>) => string,
+): string | null {
+  const report = conflictReport(plugins, identity)
+  const join = t('pluginResolverConflictJoin')
+  const names = (ids: readonly string[]) => ids.map((id) => pluginDisplayName(plugins, id)).join(join)
+  const unique = (ids: string[]) => [...new Set(ids)]
+  const lines: string[] = []
+  const open = report.sites.filter((site) => siteResolution(site, defaults).kind !== 'confirmed')
+  if (open.length > 0) {
+    lines.push(
+      t('pluginResolverConflictNoticeSites', {
+        plugins: names(unique(open.flatMap((site) => site.plugins))),
+        sites: open.map((site) => site.site).join(join),
+      }),
+    )
+  }
+  if (report.unscoped.length > 0) {
+    lines.push(t('pluginResolverConflictNoticeAny', { plugins: names(unique(report.unscoped.flatMap((pair) => [pair.owner, pair.other]))) }))
+  }
+  if (report.pending.length > 0) {
+    lines.push(t('pluginResolverConflictNoticePending', { plugins: names(unique(report.pending.flatMap((pair) => [pair.owner, pair.other]))) }))
+  }
+  return lines.length > 0 ? lines.join('\n') : null
 }
 
 // ── 插件登录挑战 ────────────────────────────────────────────
@@ -524,17 +641,16 @@ export function safeHttpUrl(value: string): string | null {
 
 // ── 组件 ────────────────────────────────────────────────────
 
-/** 1024 进制的人类可读字节数（`0 B` / `1.5 KB` / `12.3 MB` / `1.0 GB`）。 */
-export function formatBytes(bytes: number): string {
-  const units = ['B', 'KB', 'MB', 'GB']
+/** 1024 进制的人类可读字节数；单位由设备本地显示偏好选择。 */
+export function formatBytes(bytes: number, units?: FileSizeUnits): string {
   const clamped = Math.max(0, bytes)
   let value = clamped
   let unit = 0
-  while (value >= 1024 && unit < units.length - 1) {
+  while (value >= 1024 && unit < 3) {
     value /= 1024
     unit += 1
   }
-  return unit === 0 ? `${Math.trunc(clamped)} B` : `${value.toFixed(1)} ${units[unit]}`
+  return unit === 0 ? `${Math.trunc(clamped)} ${byteUnit(unit, units)}` : `${value.toFixed(1)} ${byteUnit(unit, units)}`
 }
 
 export type MarketSort = 'default' | 'newest' | 'favorites'

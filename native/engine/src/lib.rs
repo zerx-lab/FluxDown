@@ -98,11 +98,13 @@ pub(crate) mod path_scheduler;
 #[cfg(feature = "plugins")]
 pub mod plugin;
 mod proc;
+pub mod protocol_proxy;
 pub mod proxy_config;
 /// 站点代理规则：规则模型、严格校验、逐请求匹配与「测试网址」解释。
 pub mod proxy_rules;
 /// 排队顺序的增量发布（稳定排序键 + 差异计算）。
 pub mod queue_order;
+pub mod raster;
 /// `ProxyMode::Auto` 各路径单连接速率的跨重启折扣先验。
 pub mod route_health;
 /// RSS 订阅自动下载（feed 轮询 → 规则过滤 → 建任务）。
@@ -338,6 +340,7 @@ impl Engine {
         // 播种内置队列（main 主队列 / later 稍后下载，幂等）并迁移存量
         // 空 queue_id 任务——必须先于宿主的 `manager.load_queues()`。
         db.seed_builtin_queues().await?;
+        download_manager::recover_pending_file_clears(&db).await?;
         // 组 GC：清理无成员的孤儿组行（重启后一次性清理；无事件——首次
         // send_all_groups 由宿主主动调用触发，此处不广播）。
         if let Err(error) = db.gc_empty_groups().await {
@@ -353,7 +356,6 @@ impl Engine {
             config.max_concurrent,
             data_dir.clone(),
         );
-        #[cfg_attr(not(feature = "plugins"), allow(unused_mut))]
         let mut manager = DownloadManager::new(
             db.clone(),
             DownloadManagerConfig {
@@ -370,6 +372,7 @@ impl Engine {
             sink.clone(),
             selector.clone(),
         )?;
+        manager.set_protocol_proxies(&db.get_all_config().await?);
         // 组装并注入插件管理器（feature 关时整块不编译，下载主链路零变化）。
         #[cfg(feature = "plugins")]
         {
