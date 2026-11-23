@@ -16,9 +16,11 @@ import { PrivateSection } from './PrivateSection'
 import { PluginAuditDialog } from './PluginAuditDialog'
 import { PluginAuthDialog } from './PluginAuthDialog'
 import { GrantConsentDialog, RiskBadge } from './PluginConsentDialog'
-import { PluginDetailDialog, ResolverUrlConflictCard } from './PluginDetailDialog'
+import { PluginDetailDialog } from './PluginDetailDialog'
+import { ResolverConflictCard } from './ResolverConflictCard'
+import { useSiteDefaults } from './useSiteDefaults'
 import { PluginSettingsDialog } from './PluginSettingsDialog'
-import { hasPendingConsent, liveDialogPlugins, postInstallConsent, resolverUrlConflictNotice, resolverUrlConflicts } from './logic'
+import { conflictNotice, hasPendingConsent, liveDialogPlugins, postInstallConsent } from './logic'
 import type { ConsentSet } from './logic'
 
 const EMPTY_PLUGINS: PluginDto[] = []
@@ -121,9 +123,13 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
   /** 操作发起时已安装的插件 identity（引擎在应答前就广播新插件表，应答后再看快照已分不出是安装还是更新）。 */
   const installedIdentities = (): ReadonlySet<string> => new Set(pluginsRef.current.map((item) => item.identity))
 
-  const showResolverConflicts = (latest: PluginDto[], identity: string) => {
-    const message = resolverUrlConflictNotice(latest, identity, t)
-    if (message !== null) toast.warning(message)
+  const siteDefaults = useSiteDefaults(plugins, active)
+
+  const showResolverConflicts = async (latest: PluginDto[], identity: string) => {
+    // 提示需对照最新站点默认；读取失败按「无记录」处理（宁可多提示）。
+    const defaults = await rpc.daemon.plugin.siteDefaults().catch(() => [])
+    const message = conflictNotice(latest, defaults, identity, t)
+    if (message !== null) toast.warning(`${t('pluginResolverConflictsHeading')}\n\n${message}`)
   }
 
   const readPluginsForConflictCheck = async () => {
@@ -159,7 +165,7 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
         setConsentIdentity(plugin.identity)
       }
     }
-    if (latest !== null) showResolverConflicts(latest, result.identity)
+    if (latest !== null) await showResolverConflicts(latest, result.identity)
   }
   const onInstallFailed = (error: unknown) => {
     toast.error(t('pluginOpInstallFailed', { message: extensionErrorText(t, error) }))
@@ -189,7 +195,7 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
       }
       if (enabled) {
         const latest = await readPluginsForConflictCheck()
-        if (latest !== null) showResolverConflicts(latest, plugin.identity)
+        if (latest !== null) await showResolverConflicts(latest, plugin.identity)
       }
     })
 
@@ -263,7 +269,6 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
       : zipPhase?.kind === 'installing'
         ? t('marketInstallingButton')
         : t('pluginInstallZipButton')
-  const conflicts = resolverUrlConflicts(plugins)
 
   return (
     <div className="flex w-full flex-col gap-4">
@@ -327,7 +332,14 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
         </Card>
       ) : null}
 
-      <ResolverUrlConflictCard conflicts={conflicts} />
+      <ResolverConflictCard
+        plugins={plugins}
+        defaults={siteDefaults.entries}
+        defaultsLoaded={siteDefaults.loaded}
+        devMode={devMode}
+        stale={stale}
+        onChanged={siteDefaults.refresh}
+      />
 
       {plugins.length === 0 ? (
         <EmptyState icon={Package} title={t('pluginsEmpty')} />
@@ -372,7 +384,6 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
 
       <PluginDetailDialog
         detail={shownDetail}
-        conflicts={shownDetail ? resolverUrlConflicts(plugins, shownDetail.identity) : []}
         onClose={() => setDetail(null)}
         onAudit={shownDetail && plugins.some((item) => item.identity === shownDetail.identity) ? (identity) => setAudit({ identity }) : undefined}
         archiveRules={archivePlugin?.contributions.archiveRules ? archiveStatus : null}

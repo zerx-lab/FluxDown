@@ -278,6 +278,8 @@ export interface PluginSetEnabledParams {
 export interface PluginSetSiteDefaultParams {
   site: string;
   identity: string | null;
+  /** 尚无记录时一并写入的候选插件（与已有记录合并）；插件页按 URL 模式冲突预先选定时发送。 */
+  candidates?: string[];
 }
 
 export interface PluginUpdateSettingsParams {

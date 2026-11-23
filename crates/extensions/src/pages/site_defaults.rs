@@ -8,15 +8,12 @@ use fluxdown_protocol::{ApplicationErrorCode, PluginDto, PluginSiteDefaultDto, R
 use fluxdown_ui_components::{BusyExt as _, ControlExt as _, FluxIcon};
 use fluxdown_ui_theme::active_theme;
 use gpui::{
-    Anchor, Context, IntoElement, ParentElement, SharedString, Styled, Window,
-    prelude::FluentBuilder as _, px,
+    Context, IntoElement, ParentElement, SharedString, Styled, Window, prelude::FluentBuilder as _,
 };
 use gpui_component::{
     Disableable as _,
     button::{Button, ButtonVariants as _},
-    h_flex,
-    menu::{DropdownMenu as _, PopupMenuItem},
-    v_flex,
+    h_flex, v_flex,
 };
 
 use super::{
@@ -120,11 +117,13 @@ impl ExtensionsView {
         self.plugins.site_defaults.requested = false;
     }
 
-    /// `identity = None` 移除该站点记录；`Some` 确认 / 更改默认插件。无论成败都重新读取。
-    fn set_site_default(
+    /// `identity = None` 移除该站点记录；`Some` 确认 / 更改默认插件。`candidates` 非空时
+    /// 一并写入候选（插件页冲突卡在尚无记录时预先选定）。无论成败都重新读取。
+    pub(crate) fn set_site_default(
         &mut self,
         site: String,
         identity: Option<String>,
+        candidates: Vec<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -135,7 +134,9 @@ impl ExtensionsView {
             self.plugins.site_defaults.removing.insert(site.clone());
         }
         cx.notify();
-        let future = self.controller.set_site_default(site.clone(), identity);
+        let future = self
+            .controller
+            .set_site_default(site.clone(), identity, candidates);
         cx.spawn_in(window, async move |this, cx| {
             let result = future.await;
 
@@ -245,48 +246,28 @@ impl ExtensionsView {
                 let site = entry.site.clone();
                 let current = entry.identity.clone();
                 let automatic = entry.automatic;
-                let picker = Button::new(("site-default-pick", index))
-                    .outline()
-                    .label(current_name)
-                    .dropdown_caret(true)
-                    .control(cx)
-                    .disabled(busy)
-                    .dropdown_menu_with_anchor(Anchor::TopRight, {
+                let picker = ui::select_button(
+                    Button::new(("site-default-pick", index))
+                        .label(current_name)
+                        .disabled(busy),
+                    options,
+                    Some(current.clone()),
+                    {
                         let view = view.clone();
                         let site = site.clone();
-                        move |menu, _, _| {
-                            options
-                                .iter()
-                                .fold(menu, |menu, (identity, name)| {
-                                    let view = view.clone();
-                                    let site = site.clone();
-                                    let target = identity.clone();
-                                    let selected = *identity == current;
-                                    menu.item(
-                                        PopupMenuItem::new(name.clone())
-                                            .checked(selected)
-                                            .on_click(move |_, window, cx| {
-                                                // 已确认的默认项再选一次是空操作；自动项选同一个等同于确认。
-                                                if selected && !automatic {
-                                                    return;
-                                                }
-                                                let site = site.clone();
-                                                let target = target.clone();
-                                                view.update(cx, |this, cx| {
-                                                    this.set_site_default(
-                                                        site,
-                                                        Some(target),
-                                                        window,
-                                                        cx,
-                                                    );
-                                                });
-                                            }),
-                                    )
-                                })
-                                .scrollable(true)
-                                .max_h(px(320.))
+                        move |target, window, cx| {
+                            // 已确认的默认项再选一次是空操作；自动项选同一个等同于确认。
+                            if target == current && !automatic {
+                                return;
+                            }
+                            let site = site.clone();
+                            view.update(cx, |this, cx| {
+                                this.set_site_default(site, Some(target), Vec::new(), window, cx);
+                            });
                         }
-                    });
+                    },
+                    cx,
+                );
                 list_row(frame)
                     .child(
                         v_flex()
@@ -331,6 +312,7 @@ impl ExtensionsView {
                                     this.set_site_default(
                                         site.clone(),
                                         Some(identity.clone()),
+                                        Vec::new(),
                                         window,
                                         cx,
                                     );
@@ -346,7 +328,7 @@ impl ExtensionsView {
                             .busy(removing)
                             .disabled(busy)
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.set_site_default(site.clone(), None, window, cx);
+                                this.set_site_default(site.clone(), None, Vec::new(), window, cx);
                             }))
                     })
                     .into_any_element()

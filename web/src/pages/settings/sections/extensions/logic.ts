@@ -2,7 +2,7 @@
 // 语义与 crates/extensions（plugin_settings.rs / plugins.rs / plugin_auth.rs / managed_components.rs）逐条对齐。
 
 import { byteUnit, type FileSizeUnits } from '../../../../lib/fileSizeUnits'
-import type { MarketEntryDto, PluginAuthResponse, PluginDto, PluginRisk, SettingFieldDto } from '../../../../lib/rpc/protocol'
+import type { MarketEntryDto, PluginAuthResponse, PluginDto, PluginRisk, PluginSiteDefaultDto, SettingFieldDto } from '../../../../lib/rpc/protocol'
 
 // ── 插件设置校验 ────────────────────────────────────────────
 
@@ -442,42 +442,116 @@ export function liveDialogPlugins(plugins: readonly PluginDto[], open: DialogIde
   }
 }
 
-type ResolverConflictHint = 'pluginResolverUrlConflictsHint' | 'pluginResolverUrlPendingHint' | 'pluginResolverUrlDuplicateHint'
-
-export type ResolverUrlConflict = NonNullable<PluginDto['resolverUrlConflicts']>[number] & {
-  identity: string
-  hint: ResolverConflictHint
+export interface PairConflict {
+  owner: string
+  pattern: string
+  other: string
+  otherPattern: string
+  site?: string
 }
 
-/** The host stores each overlap only on its first participant; match both identities. */
-export function resolverUrlConflicts(plugins: readonly PluginDto[], identity?: string): ResolverUrlConflict[] {
-  const enabled = new Set(plugins.filter((plugin) => plugin.enabled).map((plugin) => plugin.identity))
-  const conflicts: ResolverUrlConflict[] = []
-  for (const plugin of plugins) {
-    for (const conflict of plugin.resolverUrlConflicts ?? []) {
-      if (identity !== undefined && identity !== plugin.identity && identity !== conflict.otherIdentity) continue
-      const hint =
-        plugin.identity === conflict.otherIdentity
-          ? 'pluginResolverUrlDuplicateHint'
-          : plugin.enabled && enabled.has(conflict.otherIdentity)
-            ? 'pluginResolverUrlConflictsHint'
-            : 'pluginResolverUrlPendingHint'
-      conflicts.push({ identity: plugin.identity, ...conflict, hint })
+export interface SiteConflict {
+  /** 站点键（同 `PluginSiteDefaultDto.site`）。 */
+  site: string
+  /** 能处理该站点链接的插件，按插件列表顺序。 */
+  plugins: string[]
+  /** 参与重叠的（插件，模式），去重。 */
+  patterns: { identity: string; pattern: string }[]
+}
+
+export interface ConflictReport {
+  sites: SiteConflict[]
+  unscoped: PairConflict[]
+  pending: PairConflict[]
+  duplicates: PairConflict[]
+}
+
+export type SiteResolution = { kind: 'confirmed' } | { kind: 'automatic'; identity: string } | { kind: 'unset' }
+
+/** 对照 GPUI `conflict_report`；`identity` 给定时只取与该插件相关的配对。 */
+export function conflictReport(plugins: readonly PluginDto[], identity?: string): ConflictReport {
+  const enabled = (id: string) => plugins.some((plugin) => plugin.enabled && plugin.identity === id)
+  const order = (id: string) => plugins.findIndex((plugin) => plugin.identity === id)
+  const report: ConflictReport = { sites: [], unscoped: [], pending: [], duplicates: [] }
+  for (const owner of plugins) {
+    for (const conflict of owner.resolverUrlConflicts ?? []) {
+      if (identity !== undefined && identity !== owner.identity && identity !== conflict.otherIdentity) continue
+      const pair: PairConflict = {
+        owner: owner.identity,
+        pattern: conflict.pattern,
+        other: conflict.otherIdentity,
+        otherPattern: conflict.otherPattern,
+        site: conflict.site,
+      }
+      if (pair.owner === pair.other) {
+        report.duplicates.push(pair)
+      } else if (!owner.enabled || !enabled(pair.other)) {
+        report.pending.push(pair)
+      } else if (pair.site !== undefined) {
+        let group = report.sites.find((item) => item.site === pair.site)
+        if (group === undefined) {
+          group = { site: pair.site, plugins: [], patterns: [] }
+          report.sites.push(group)
+        }
+        for (const [plugin, pattern] of [[pair.owner, pair.pattern], [pair.other, pair.otherPattern]] as const) {
+          if (!group.plugins.includes(plugin)) group.plugins.push(plugin)
+          if (!group.patterns.some((item) => item.identity === plugin && item.pattern === pattern)) {
+            group.patterns.push({ identity: plugin, pattern })
+          }
+        }
+      } else {
+        report.unscoped.push(pair)
+      }
     }
   }
-  return conflicts
+  for (const group of report.sites) {
+    group.plugins.sort((a, b) => order(a) - order(b))
+    group.patterns.sort((a, b) => order(a.identity) - order(b.identity))
+  }
+  report.sites.sort((a, b) => (a.site < b.site ? -1 : a.site > b.site ? 1 : 0))
+  return report
 }
 
-export function resolverUrlConflictNotice(plugins: readonly PluginDto[], identity: string, t: (key: string) => string): string | null {
-  const conflicts = resolverUrlConflicts(plugins, identity)
-  if (conflicts.length === 0) return null
-  let activeHintShown = false
-  const pairs = conflicts.map(({ identity, pattern, otherIdentity, otherPattern, hint }) => {
-    const showHint = hint !== 'pluginResolverUrlConflictsHint' || !activeHintShown
-    activeHintShown ||= hint === 'pluginResolverUrlConflictsHint'
-    return `${showHint ? `${t(hint)}\n` : ''}${identity}: ${pattern}\n${otherIdentity}: ${otherPattern}`
-  })
-  return `${t('pluginResolverUrlConflictsTitle')}\n\n${pairs.join('\n\n')}`
+/** 对照站点默认记录判断该站点是否已处理；已确认的记录须覆盖全部冲突插件。 */
+export function siteResolution(conflict: SiteConflict, defaults: readonly PluginSiteDefaultDto[]): SiteResolution {
+  const entry = defaults.find((item) => item.site === conflict.site)
+  if (entry === undefined || !conflict.plugins.includes(entry.identity)) return { kind: 'unset' }
+  if (entry.automatic) return { kind: 'automatic', identity: entry.identity }
+  return conflict.plugins.every((plugin) => entry.candidates.includes(plugin)) ? { kind: 'confirmed' } : { kind: 'unset' }
+}
+
+export function pluginDisplayName(plugins: readonly PluginDto[], identity: string): string {
+  return plugins.find((plugin) => plugin.identity === identity)?.name ?? identity
+}
+
+/** 安装 / 启用成功后的提示；已确认的站点不再提示，无事项返回 null。 */
+export function conflictNotice(
+  plugins: readonly PluginDto[],
+  defaults: readonly PluginSiteDefaultDto[],
+  identity: string,
+  t: (key: string, params?: Record<string, string | number>) => string,
+): string | null {
+  const report = conflictReport(plugins, identity)
+  const join = t('pluginResolverConflictJoin')
+  const names = (ids: readonly string[]) => ids.map((id) => pluginDisplayName(plugins, id)).join(join)
+  const unique = (ids: string[]) => [...new Set(ids)]
+  const lines: string[] = []
+  const open = report.sites.filter((site) => siteResolution(site, defaults).kind !== 'confirmed')
+  if (open.length > 0) {
+    lines.push(
+      t('pluginResolverConflictNoticeSites', {
+        plugins: names(unique(open.flatMap((site) => site.plugins))),
+        sites: open.map((site) => site.site).join(join),
+      }),
+    )
+  }
+  if (report.unscoped.length > 0) {
+    lines.push(t('pluginResolverConflictNoticeAny', { plugins: names(unique(report.unscoped.flatMap((pair) => [pair.owner, pair.other]))) }))
+  }
+  if (report.pending.length > 0) {
+    lines.push(t('pluginResolverConflictNoticePending', { plugins: names(unique(report.pending.flatMap((pair) => [pair.owner, pair.other]))) }))
+  }
+  return lines.length > 0 ? lines.join('\n') : null
 }
 
 // ── 插件登录挑战 ────────────────────────────────────────────

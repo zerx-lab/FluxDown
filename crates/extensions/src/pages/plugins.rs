@@ -7,10 +7,7 @@ use std::{
     time::Instant,
 };
 
-use fluxdown_protocol::{
-    InstalledPlugin, MarketEntryDto, PluginDto, PrivatePluginListDto,
-    daemon::PluginResolverUrlConflictDto,
-};
+use fluxdown_protocol::{InstalledPlugin, MarketEntryDto, PluginDto, PrivatePluginListDto};
 use fluxdown_ui_components::{
     BusyExt as _, BusyHold, ControlExt as _, FluxIcon, IconControlExt as _, card, form, form_field,
     input_with_action, tabular_numbers, toast, tooltip_view,
@@ -255,7 +252,7 @@ impl ExtensionsView {
                     ),
             )
             .children(self.render_install_area(frame, cx))
-            .children(render_resolver_conflicts(plugins, frame, cx))
+            .children(self.render_resolver_conflicts(frame, cx))
             .child(if installed.is_empty() {
                 ui::empty_state(
                     FluxIcon::Package,
@@ -1487,12 +1484,14 @@ impl ExtensionsView {
                 let translator = this.translator.read(cx);
                 match result {
                     Ok(plugins) => {
-                        if let Some(message) =
-                            resolver_conflict_message(&plugins, &identity, translator)
-                        {
-                            let title = translator
-                                .text("pluginResolverUrlConflictsTitle")
-                                .to_owned();
+                        if let Some(message) = super::resolver_conflicts::conflict_notice(
+                            &plugins,
+                            &this.plugins.site_defaults.entries,
+                            &identity,
+                            translator,
+                        ) {
+                            let title =
+                                translator.text("pluginResolverConflictsHeading").to_owned();
                             window.push_notification(
                                 toast::titled(toast::ToastTone::Warning, title, message),
                                 cx,
@@ -2114,168 +2113,4 @@ fn row_description(
             .truncate()
             .tooltip(move |window, cx| tooltip_view(tooltip.clone(), window, cx)),
     )
-}
-
-fn resolver_url_conflicts<'a>(
-    plugins: &'a [PluginDto],
-    identity: Option<&'a str>,
-) -> impl Iterator<Item = (&'a PluginDto, &'a PluginResolverUrlConflictDto)> {
-    plugins.iter().flat_map(move |plugin| {
-        plugin
-            .resolver_url_conflicts
-            .iter()
-            .filter(move |conflict| {
-                identity.is_none_or(|id| id == plugin.identity || id == conflict.other_identity)
-            })
-            .map(move |conflict| (plugin, conflict))
-    })
-}
-
-fn resolver_conflict_hint(
-    plugins: &[PluginDto],
-    owner: &PluginDto,
-    conflict: &PluginResolverUrlConflictDto,
-) -> &'static str {
-    if owner.identity == conflict.other_identity {
-        "pluginResolverUrlDuplicateHint"
-    } else if !owner.enabled
-        || !plugins
-            .iter()
-            .any(|plugin| plugin.enabled && plugin.identity == conflict.other_identity)
-    {
-        "pluginResolverUrlPendingHint"
-    } else {
-        "pluginResolverUrlConflictsHint"
-    }
-}
-
-fn render_resolver_conflicts(
-    plugins: &[PluginDto],
-    frame: Frame<'_>,
-    cx: &Context<ExtensionsView>,
-) -> Option<Div> {
-    let mut entries = resolver_url_conflicts(plugins, None).peekable();
-    entries.peek()?;
-    let translator = frame.translator;
-    let mut active_hint_shown = false;
-    Some(
-        card(cx).w_full().child(
-            v_flex()
-                .gap(frame.tokens.spacing.sm)
-                .child(ui::tone_pill(
-                    translator
-                        .text("pluginResolverUrlConflictsTitle")
-                        .to_owned(),
-                    frame.extended.colors.warning,
-                    frame,
-                ))
-                .children(entries.map(|(owner, conflict)| {
-                    let hint = resolver_conflict_hint(plugins, owner, conflict);
-                    let show_hint = hint != "pluginResolverUrlConflictsHint" || !active_hint_shown;
-                    active_hint_shown |= hint == "pluginResolverUrlConflictsHint";
-                    v_flex()
-                        .when(show_hint, |row| row.child(translator.text(hint).to_owned()))
-                        .child(format!("{}: {}", owner.identity, conflict.pattern))
-                        .child(format!(
-                            "{}: {}",
-                            conflict.other_identity, conflict.other_pattern
-                        ))
-                })),
-        ),
-    )
-}
-
-fn resolver_conflict_message(
-    plugins: &[PluginDto],
-    identity: &str,
-    translator: &fluxdown_ui_i18n::Translator,
-) -> Option<String> {
-    let mut message = String::new();
-    let mut active_hint_shown = false;
-    for (owner, conflict) in resolver_url_conflicts(plugins, Some(identity)) {
-        if !message.is_empty() {
-            message.push_str("\n\n");
-        }
-        let hint = resolver_conflict_hint(plugins, owner, conflict);
-        if hint != "pluginResolverUrlConflictsHint" || !active_hint_shown {
-            message.push_str(translator.text(hint));
-            message.push('\n');
-        }
-        active_hint_shown |= hint == "pluginResolverUrlConflictsHint";
-        message.push_str(&owner.identity);
-        message.push_str(": ");
-        message.push_str(&conflict.pattern);
-        message.push('\n');
-        message.push_str(&conflict.other_identity);
-        message.push_str(": ");
-        message.push_str(&conflict.other_pattern);
-    }
-    (!message.is_empty()).then_some(message)
-}
-
-#[cfg(test)]
-mod resolver_conflict_tests {
-    use fluxdown_protocol::PluginDto;
-    use fluxdown_ui_i18n::I18nCatalog;
-    use serde_json::json;
-
-    use super::resolver_conflict_message;
-
-    #[test]
-    fn operation_notice_uses_the_latest_pair_even_when_owned_by_another_plugin() {
-        let mut plugins: Vec<PluginDto> = serde_json::from_value(json!([
-            {
-                "identity": "broad@test", "name": "Broad", "version": "1.0.0",
-                "enabled": true, "disabledReason": "None", "devMode": false,
-                "settings": [], "settingsValues": {},
-                "resolverUrlConflicts": [
-                    {
-                        "pattern": "magnet:*", "otherIdentity": "scoped@test",
-                        "otherPattern": "magnet:?xt=urn:btih:*"
-                    },
-                    {
-                        "pattern": "magnet:*", "otherIdentity": "other@test",
-                        "otherPattern": "magnet:?dn=*"
-                    }
-                ],
-            },
-            {
-                "identity": "other@test", "name": "Other", "version": "1.0.0",
-                "enabled": true, "disabledReason": "None", "devMode": false,
-                "settings": [], "settingsValues": {},
-            },
-            {
-                "identity": "scoped@test", "name": "Scoped", "version": "1.0.0",
-                "enabled": false, "disabledReason": "ConsentRequired", "devMode": false,
-                "settings": [], "settingsValues": {},
-            }
-        ]))
-        .unwrap();
-        let translator = I18nCatalog::load_embedded().unwrap().translator("en");
-        let patterns = "broad@test: magnet:*\nscoped@test: magnet:?xt=urn:btih:*";
-        let notice = resolver_conflict_message(&plugins, "scoped@test", &translator).unwrap();
-        assert_eq!(
-            notice,
-            format!(
-                "{}\n{patterns}",
-                translator.text("pluginResolverUrlPendingHint")
-            )
-        );
-
-        plugins[2].enabled = true;
-        plugins[2].disabled_reason = "None".into();
-        let notice = resolver_conflict_message(&plugins, "scoped@test", &translator).unwrap();
-        assert_eq!(
-            notice,
-            format!(
-                "{}\n{patterns}",
-                translator.text("pluginResolverUrlConflictsHint")
-            )
-        );
-
-        plugins[0]
-            .resolver_url_conflicts
-            .retain(|conflict| conflict.other_identity != "scoped@test");
-        assert!(resolver_conflict_message(&plugins, "scoped@test", &translator).is_none());
-    }
 }

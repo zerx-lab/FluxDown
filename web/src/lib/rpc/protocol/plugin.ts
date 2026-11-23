@@ -190,7 +190,8 @@ export interface PluginDto {
   subscriptionProviderIds: string[];
   /** manifest resolvers[0].match.urls（glob，供扩展判断页面是否可由插件解析）。 */
   resolverUrls: string[];
-  resolverUrlConflicts?: { pattern: string; otherIdentity: string; otherPattern: string }[];
+  /** resolver URL 重叠提示；`site` = 可设站点默认插件的站点键（主机无法确定时缺省）。 */
+  resolverUrlConflicts?: { pattern: string; otherIdentity: string; otherPattern: string; site?: string }[];
   /** `Loaded` / `Failed`；与 `enabled` 独立。 */
   loadStatus: string;
   /** 加载失败原因；成功为空。 */

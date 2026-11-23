@@ -91,7 +91,7 @@ pub struct PluginSiteDefaultDto {
 }
 
 /// `daemon.plugin.setSiteDefault`：`identity` 为 `None` 时删除该站点记录；否则把该站点
-/// 确认为使用 `identity`（必须是记录里的候选插件之一）。
+/// 确认为使用 `identity`（必须是记录里的候选插件之一，或 `candidates` 之一）。
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
@@ -99,6 +99,10 @@ pub struct PluginSetSiteDefaultParams {
     pub site: String,
     #[serde(default)]
     pub identity: Option<String>,
+    /// 尚无记录时（如插件页按 `resolverUrlConflicts` 预先选定）一并写入的候选插件；
+    /// 与已有记录的候选合并。旧客户端不发送，此时仍要求记录已存在。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidates: Vec<String>,
 }
 /// `daemon.plugin.archiveRules`：读取已验证包状态；`refresh` 请求显式刷新。
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -2411,6 +2415,10 @@ pub struct PluginResolverUrlConflictDto {
     pub pattern: String,
     pub other_identity: String,
     pub other_pattern: String,
+    /// 重叠所在站点的站点键（同 `PluginSiteDefaultDto.site`），可据此设置站点默认插件；
+    /// 两侧主机都是通配或非层级 URL（`magnet:` 等）时为空，同插件重复声明恒为空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site: Option<String>,
 }
 
 /// 插件贡献点（镜像 `engine::plugin::ContributesDecl`）。

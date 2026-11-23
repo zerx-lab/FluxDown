@@ -1601,7 +1601,7 @@ impl DaemonService {
             method::DAEMON_PLUGIN_SET_SITE_DEFAULT => {
                 let params = parse_params::<fluxdown_protocol::PluginSetSiteDefaultParams>(params)?;
                 self.plugin_manager()?
-                    .set_site_default(&params.site, params.identity.as_deref())
+                    .set_site_default(&params.site, params.identity.as_deref(), &params.candidates)
                     .await
                     .map_err(|error| match error {
                         fluxdown_engine::plugin::PluginError::InvalidSetting { key, message } => {
@@ -3865,7 +3865,8 @@ mod plugin_consent_audit_tests {
 
         const BROAD: &str = "broad@test";
         const SCOPED: &str = "scoped@test";
-        const BROAD_PATTERN: &str = "https://*/download";
+        // Host stars stay in the host: the broad pattern must also span the path.
+        const BROAD_PATTERN: &str = "https://*/*/download";
         const SCOPED_PATTERN: &str = "https://x.test/*/download";
         const UPDATED_PATTERN: &str = "https://x.test/new/*/download";
 
@@ -3995,6 +3996,7 @@ mod plugin_consent_audit_tests {
                         "pattern": BROAD_PATTERN,
                         "otherIdentity": SCOPED,
                         "otherPattern": pattern,
+                        "site": "x.test",
                     }])
                 );
             } else {

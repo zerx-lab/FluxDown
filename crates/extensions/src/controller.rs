@@ -398,15 +398,19 @@ impl ExtensionsController {
     }
 
     /// `identity = None` 删除该站点记录（之后重新询问）；否则确认 / 更改为该插件。
+    /// `candidates` 非空时与已有记录的候选合并写入，尚无记录也能选定。
     pub fn set_site_default(
         &self,
         site: String,
         identity: Option<String>,
+        candidates: Vec<String>,
     ) -> PortFuture<serde_json::Value> {
-        self.call(
-            method::DAEMON_PLUGIN_SET_SITE_DEFAULT,
-            serde_json::json!({ "site": site, "identity": identity }),
-        )
+        let params = if candidates.is_empty() {
+            serde_json::json!({ "site": site, "identity": identity })
+        } else {
+            serde_json::json!({ "site": site, "identity": identity, "candidates": candidates })
+        };
+        self.call(method::DAEMON_PLUGIN_SET_SITE_DEFAULT, params)
     }
 
     /// `version` = 用户确认权限时看到的版本；市场最新版本已变化时 daemon 拒绝安装。
