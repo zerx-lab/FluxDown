@@ -3236,6 +3236,27 @@ mod tests {
         let response = super::plugin_package_error(Some("blobId"), &error);
         assert_eq!(response.message, "invalid plugin package");
         assert_eq!(response.data.and_then(|data| data.plugin_detail), None);
+
+        for (error, expected) in [
+            (
+                PluginError::ManifestInvalid(
+                    "读取 manifest 失败: /private/manifest.json".to_owned(),
+                ),
+                Some(Detail::ManifestUnreadable),
+            ),
+            (
+                PluginError::NotDevPlugin("private-identity".to_owned()),
+                Some(Detail::NotDevPlugin),
+            ),
+            (
+                PluginError::Runtime("private-runtime-error".to_owned()),
+                None,
+            ),
+        ] {
+            let response = super::plugin_package_error(Some("identity"), &error);
+            assert_eq!(response.message, "invalid plugin package");
+            assert_eq!(response.data.and_then(|data| data.plugin_detail), expected);
+        }
     }
 
     fn schedule(queue_id: &str, enabled: bool, start: &str, stop: &str) -> QueueScheduleParams {

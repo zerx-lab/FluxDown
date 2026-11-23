@@ -112,6 +112,8 @@ Three **consecutive** timeouts or out-of-memory errors in a resolver, an interce
 
 On desktop and Web, install failures appear near the install controls and reload failures on the affected plugin row. **Copy error** copies the localized, redacted message shown there. It may include a manifest validation category, a package-relative file name, or a script line and column. It does not include raw exception text or absolute paths. For the original error, including the name of an unknown field, see the daemon diagnostics log; for local validation, run `npm run validate`.
 
+A successful installation clears the last install error. Reinstalling or uninstalling a plugin clears its previous reload error.
+
 ### Original engine messages in the daemon diagnostics log
 
 The table quotes the engine's original messages, not the desktop or Web text. Manifest errors in the log have the prefix `manifest 非法: ` (“manifest invalid:”). `npm run validate` and the SDK validator check the same manifest rules, use their own wording, and report every problem at once instead of stopping at the first.

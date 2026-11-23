@@ -78,7 +78,9 @@ pub(crate) type ConfirmedSets = (Vec<String>, Vec<String>);
 pub(crate) struct PluginsUi {
     /// 「开发模式」开关（会话内本地状态，默认关）：控制手动安装区（zip / 目录）是否渲染。
     pub dev_mode: bool,
+    /// Last install failure shown above the installation controls.
     install_error: Option<String>,
+    /// Last reload failure for each affected plugin row.
     reload_errors: HashMap<String, String>,
     pub dev_dir: String,
     pub installing_file: bool,
@@ -543,7 +545,7 @@ impl ExtensionsView {
         cx: &Context<Self>,
     ) -> impl IntoElement {
         let error = error.to_owned();
-        let id = identity.clone().unwrap_or_default();
+        let id = identity.as_deref().unwrap_or("install");
         v_flex().child(ui::meta_text(error.clone(), frame)).child(
             h_flex()
                 .child(
@@ -1438,6 +1440,9 @@ impl ExtensionsView {
                         translator.text_with("pluginOpReloadFailed", &[("message", &detail)]);
                     this.plugins.reload_errors.insert(identity.clone(), message);
                 }
+                if op == PluginOp::Uninstall && result.is_ok() {
+                    this.plugins.reload_errors.remove(&identity);
+                }
                 this.plugins.busy.remove(&identity);
                 this.plugins.reloading.remove(&identity);
                 this.plugins.uninstalling.remove(&identity);
@@ -1477,6 +1482,7 @@ impl ExtensionsView {
         let translator = self.translator.read(cx);
         match (op, result) {
             (op @ (PluginOp::Install | PluginOp::Update), Ok(value)) => {
+                self.plugins.install_error = None;
                 let key = if op == PluginOp::Update {
                     "pluginOpUpdateSuccess"
                 } else {
@@ -1489,6 +1495,7 @@ impl ExtensionsView {
                     .map(|installed| installed.missing_components.clone())
                     .unwrap_or_default();
                 if let Some(installed) = installed {
+                    self.plugins.reload_errors.remove(&installed.identity);
                     self.track_consent(installed.identity);
                 }
                 self.toast_success(message, window, cx);

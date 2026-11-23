@@ -124,11 +124,22 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
   /** 操作发起时已安装的插件 identity（引擎在应答前就广播新插件表，应答后再看快照已分不出是安装还是更新）。 */
   const installedIdentities = (): ReadonlySet<string> => new Set(pluginsRef.current.map((item) => item.identity))
 
+  const clearReloadError = (identity: string) => {
+    setReloadErrors((current) => {
+      if (!Object.hasOwn(current, identity)) return current
+      const next = { ...current }
+      delete next[identity]
+      return next
+    })
+  }
+
   /**
    * 安装 / 更新成功后的统一授权流程：待授权集合与用户安装前确认的集合吻合 → 直接授权，否则弹授权对话框。
    * `confirmed` 仅市场路径提供；`updating` = 操作发起时该插件已安装（提示文案用「已更新」）。
    */
   const onInstalled = async (result: InstalledPlugin, confirmed: ConsentSet | null = null, updating = false) => {
+    setInstallError(undefined)
+    clearReloadError(result.identity)
     toast.success(t(updating ? 'pluginOpUpdateSuccess' : 'pluginOpInstallSuccess'))
     if (result.missingComponents?.length) setMissing(result.missingComponents)
     let plugin: PluginDto | undefined
@@ -190,6 +201,7 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
     await withBusy(plugin.identity, async () => {
       try {
         await rpc.daemon.plugin.uninstall({ identity: plugin.identity })
+        clearReloadError(plugin.identity)
         toast.success(t('pluginOpUninstallSuccess'))
       } catch (error) {
         toast.error(t('pluginOpUninstallFailed', { message: extensionErrorText(t, error) }))
@@ -199,7 +211,7 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
 
   const reload = (plugin: PluginDto) =>
     withBusy(plugin.identity, async () => {
-      setReloadErrors((current) => ({ ...current, [plugin.identity]: undefined }))
+      clearReloadError(plugin.identity)
       try {
         const result = await rpc.daemon.plugin.reloadDev({ identity: plugin.identity })
         toast.success(t('pluginOpReloadSuccess'))
@@ -329,7 +341,7 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
               key={plugin.identity}
               plugin={plugin}
               reloadError={reloadErrors[plugin.identity]}
-              onCloseReloadError={() => setReloadErrors((current) => ({ ...current, [plugin.identity]: undefined }))}
+              onCloseReloadError={() => clearReloadError(plugin.identity)}
               disabled={stale || busy.has(plugin.identity)}
               onDetail={() => setDetail({ kind: 'installed', identity: plugin.identity })}
               onSettings={() => setSettingsIdentity(plugin.identity)}
