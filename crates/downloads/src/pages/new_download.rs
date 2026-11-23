@@ -5,11 +5,13 @@
 //! 未确认的捕获在窗口关闭时一并忽略。
 
 mod category;
+mod duplicate;
 mod hints;
 mod preview;
 mod probe;
 mod url_rule;
 
+use duplicate::DuplicateHint;
 use fluxdown_ui_components::toast;
 use hints::HintAutofill;
 use probe::LinkProbe;
@@ -346,6 +348,7 @@ pub struct NewDownloadView {
     hint_fill: HintAutofill,
     /// 链接预探测（#402）：文件名 / 大小提示，并把探测名预填进「文件名」输入框供编辑。
     probe: LinkProbe,
+    duplicate_hint: DuplicateHint,
     proxy_choice: ProxyChoice,
     custom_proxy: Entity<InputState>,
     ignore_tls_errors: bool,
@@ -384,6 +387,8 @@ pub struct NewDownloadView {
     category_predicted: Option<String>,
 }
 
+type DuplicateScope = fn(&App) -> Option<(&[fluxdown_protocol::TaskDto], &str)>;
+
 impl NewDownloadView {
     /// 创建表单并聚焦链接输入框。`port` 用于站点凭据匹配。
     pub fn new(
@@ -391,6 +396,7 @@ impl NewDownloadView {
         context: NewDownloadContext,
         port: Arc<dyn DownloadsPort>,
         on_submit: NewDownloadSubmit,
+        duplicate_scope: DuplicateScope,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -459,6 +465,7 @@ impl NewDownloadView {
             user_agent: Self::input(strings.user_agent_desc.clone(), window, cx),
             checksum: Self::input(strings.checksum_placeholder.clone(), window, cx),
             probe: LinkProbe::new(strings.rename_placeholder.clone()),
+            duplicate_hint: DuplicateHint::new(duplicate_scope),
             strings,
             translator: translator.clone(),
             preview_gate: crate::model::preview::PreviewGate::default(),
@@ -580,6 +587,7 @@ impl NewDownloadView {
             |this, _, event: &InputEvent, window, cx| {
                 if let InputEvent::Change = event {
                     this.sync_category(window, cx);
+                    this.sync_duplicate_hint(window, cx);
                 }
             },
         )
@@ -971,6 +979,7 @@ impl NewDownloadView {
         }
         self.target = target;
         self.refresh_remote_placeholder(window, cx);
+        self.sync_duplicate_hint(window, cx);
         cx.notify();
     }
 
@@ -997,6 +1006,7 @@ impl NewDownloadView {
         self.context.targets = targets;
         if self.target != DispatchTarget::Local && self.target_entry().is_none() {
             self.target = DispatchTarget::Local;
+            self.sync_duplicate_hint(window, cx);
         }
         self.refresh_remote_placeholder(window, cx);
         cx.notify();
@@ -1844,6 +1854,7 @@ impl NewDownloadView {
                 this.child(field_error(self.strings.no_valid_url.clone(), cx))
             })
             .children(self.render_probe_status(cx))
+            .children(self.render_duplicate_hint(cx))
             .when(!self.captures.is_empty() && !self.is_remote(), |this| {
                 this.child(field_hint(self.strings.capture_context_hint.clone(), cx))
             })

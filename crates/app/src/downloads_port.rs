@@ -667,6 +667,10 @@ impl AgentDownloadsPort {
                     method::DAEMON_LINK_PROBE,
                     serialize(fluxdown_protocol::LinkProbeParams { url })?,
                 ),
+                DownloadsCommand::DefaultFileExists { file_name } => (
+                    method::DAEMON_FS_DEFAULT_FILE_EXISTS,
+                    json!({ "fileName": file_name }),
+                ),
                 DownloadsCommand::RemoteDispatch(params) => {
                     (method::AGENT_REMOTE_DISPATCH, serialize(params)?)
                 }

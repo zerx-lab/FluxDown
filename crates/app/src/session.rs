@@ -86,6 +86,14 @@ impl AgentSession {
         self.latest.as_deref().and_then(agent_body)
     }
 
+    /// Live projection for checks that must not interpret a disconnected host's data as current.
+    pub(crate) fn current_agent_snapshot(&self) -> Option<&AgentSnapshot> {
+        if self.stale {
+            return None;
+        }
+        self.agent_snapshot()
+    }
+
     /// 任务表 / 队列位置表仍在分页载入：投影里的 `tasks` 只是占位，不是完整列表，调用方
     /// 不得据它推断「任务不存在 / 已删除 / 全部」。
     #[must_use]

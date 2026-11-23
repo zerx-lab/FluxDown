@@ -99,6 +99,7 @@ public enum HostMethod {
     public static let daemonSiteAuthMatch = "daemon.siteAuth.match"
     public static let daemonRuntimeStats = "daemon.runtime.stats"
     public static let daemonFsList = "daemon.fs.list"
+    public static let daemonFsDefaultFileExists = "daemon.fs.defaultFileExists"
     public static let daemonRssListSources = "daemon.rss.listSources"
     public static let daemonRssGetItems = "daemon.rss.getItems"
     public static let daemonRssGetImage = "daemon.rss.getImage"

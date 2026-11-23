@@ -756,6 +756,8 @@ pub(crate) struct NewDownloadStrings {
     probe_found: SharedString,
     probe_size_unknown: SharedString,
     pub(crate) probe_unavailable: SharedString,
+    duplicate_link: SharedString,
+    default_file_exists: SharedString,
     pub(crate) no_valid_url: SharedString,
     pub(crate) open_torrent: SharedString,
     pub(crate) select_torrent: SharedString,
@@ -862,6 +864,8 @@ impl NewDownloadStrings {
             probe_found: shared(translator.text("newDownloadProbeFound")),
             probe_size_unknown: shared(translator.text("newDownloadProbeSizeUnknown")),
             probe_unavailable: shared(translator.text("newDownloadProbeUnavailable")),
+            duplicate_link: shared(translator.text("newDownloadDuplicateLink")),
+            default_file_exists: shared(translator.text("newDownloadDefaultFileExists")),
             no_valid_url: shared(translator.text("newDownloadNoValidUrl")),
             open_torrent: shared(translator.text("openTorrentFile")),
             select_torrent: shared(translator.text("selectTorrentFile")),
@@ -1015,6 +1019,15 @@ impl NewDownloadStrings {
             format!("{file_name} · {size}")
         };
         SharedString::from(self.probe_found.replace("{info}", &info))
+    }
+
+    pub(crate) fn format_duplicate_hint(&self, name: &str, task_exists: bool) -> SharedString {
+        let template = if task_exists {
+            &self.duplicate_link
+        } else {
+            &self.default_file_exists
+        };
+        SharedString::from(template.replace("{name}", name))
     }
 
     /// `已导入 {count} 个链接`。

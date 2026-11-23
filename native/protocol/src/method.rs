@@ -138,6 +138,7 @@ pub const DAEMON_SITE_AUTH_CLEAR: &str = "daemon.siteAuth.clear";
 pub const DAEMON_SITE_AUTH_MATCH: &str = "daemon.siteAuth.match";
 pub const DAEMON_RUNTIME_STATS: &str = "daemon.runtime.stats";
 pub const DAEMON_FS_LIST: &str = "daemon.fs.list";
+pub const DAEMON_FS_DEFAULT_FILE_EXISTS: &str = "daemon.fs.defaultFileExists";
 
 pub const DAEMON_RSS_LIST_SOURCES: &str = "daemon.rss.listSources";
 pub const DAEMON_RSS_GET_ITEMS: &str = "daemon.rss.getItems";
@@ -565,6 +566,7 @@ pub const ALL_METHODS: &[&str] = &[
     DAEMON_SITE_AUTH_MATCH,
     DAEMON_RUNTIME_STATS,
     DAEMON_FS_LIST,
+    DAEMON_FS_DEFAULT_FILE_EXISTS,
     DAEMON_RSS_LIST_SOURCES,
     DAEMON_RSS_GET_ITEMS,
     DAEMON_RSS_GET_IMAGE,
@@ -792,6 +794,7 @@ pub const SLOW_DAEMON_METHODS: &[&str] = &[
     DAEMON_BT_GUARD_FILTER_SOURCES_REFRESH,
     DAEMON_BT_GUARD_CLOUD_APPLY,
     DAEMON_FS_LIST,
+    DAEMON_FS_DEFAULT_FILE_EXISTS,
     DAEMON_DIAGNOSTICS_PROBE,
     DAEMON_DIAGNOSTICS_FIX_COMPONENT,
     DAEMON_TASK_VERIFY,

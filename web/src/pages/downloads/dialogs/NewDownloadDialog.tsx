@@ -6,11 +6,11 @@
 // - 单条 http(s) 链接先 `daemon.group.resolvePreview` 探测插件多文件清单，命中则进入清单选择建任务组；
 // - 外部捕获（`agent.capture.*`）作为链接行并入表单，提交时经 `agent.capture.resolve` 确认，关闭时未确认的一并忽略。
 
-import { ChevronDown, ChevronRight, FileText, FolderOpen, Plus, Sprout, X } from 'lucide-react'
+import { ChevronDown, ChevronRight, FileText, FolderOpen, Plus, Sprout, TriangleAlert, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import { useT } from '../../../i18n'
-import { CUSTOM_CATEGORIES_PREF_KEY, LATER_QUEUE_ID, MAIN_QUEUE_ID, METHOD, RpcError, call, rpc, rpcStore, useAgent, useConfigValues, useConnection, useDaemon } from '../../../lib/rpc'
+import { CUSTOM_CATEGORIES_PREF_KEY, LATER_QUEUE_ID, MAIN_QUEUE_ID, METHOD, RpcError, call, rpc, rpcStore, useAgent, useConfigValues, useConnection, useDaemon, useTasksLoading } from '../../../lib/rpc'
 import { LAST_CATEGORY_MODE_PREF, autoFollowDir, categoryModeFromPreference, categoryModePreference, eligibleRoute, matchedCategory, modeDir, pickableCategories, routeBaseDir, routeFollows, routeFromCategories, routeSaveDir } from '../../../lib/categoryRoute'
 import type { CategoryPickMode } from '../../../lib/categoryRoute'
 import { categoriesFromPreference } from '../model/categories'
@@ -56,6 +56,7 @@ import { queueLabel } from './utils'
 /** resolvePreview 探测超时（对齐桌面端 90s）：超时 / 异常 / 空清单 / error 均静默回退直接建任务。 */
 const RESOLVE_PREVIEW_TIMEOUT_MS = 90_000
 const SITE_AUTH_LOOKUP_DEBOUNCE_MS = 250
+const DUPLICATE_FILE_CHECK_DEBOUNCE_MS = 250
 /** 失败原因最多渲染的行数（超出的只显示计数，避免上万行 DOM）。 */
 const MAX_FAILURE_ROWS = 50
 /** 链接输入框随内容自增高的上限（行）；超出后框内滚动。与 GPUI `URLS_MAX_ROWS` 一致。 */
@@ -203,6 +204,52 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   const busy = phase !== 'idle' || busyFiles
   const remoteDirCheck = target ? checkRemoteSaveDir(remoteSaveDir, target.pathStyle) : 'ok'
   const canSubmit = !busy && count > 0 && (target ? remoteDirCheck === 'ok' : saveDir.trim() !== '')
+
+  // Task matches take precedence, using the complete host table rather than the visible download rows.
+  const tasksLoading = useTasksLoading()
+  const duplicateUrl = localReady && !target && !tasksLoading ? entries[0]?.url : undefined
+  const duplicateTaskName = useDaemon((daemon) => {
+    if (duplicateUrl === undefined) return null
+    const task = daemon.tasks.find((item) => item.url === duplicateUrl || item.originUrl === duplicateUrl)
+    return task ? task.fileName || duplicateUrl : null
+  }, null)
+  const defaultDownloadDir = config.default_save_dir
+  const duplicateFileName = (count === 1 ? rename.trim() : '') || entries[0]?.fileName.trim() ||
+    captures.find((capture) => capture.url === duplicateUrl)?.fileName.trim() || ''
+  const fileCheck = useMemo(
+    () => duplicateUrl && duplicateTaskName === null && (duplicateFileName !== '' || (count === 1 && isHttpUrl(duplicateUrl)))
+      ? { url: duplicateUrl, fileName: duplicateFileName, defaultDownloadDir }
+      : null,
+    [duplicateUrl, duplicateTaskName, duplicateFileName, defaultDownloadDir, count],
+  )
+  const [fileMatch, setFileMatch] = useState<{ check: NonNullable<typeof fileCheck>; name: string } | null>(null)
+  useEffect(() => {
+    if (fileCheck === null) return
+    let cancelled = false
+    const check = async () => {
+      let name = fileCheck.fileName
+      if (name === '') {
+        const probe = await rpc.daemon.link.probe({ url: fileCheck.url })
+        if (cancelled || probe.verdict !== 'resource') return
+        name = probe.fileName
+      }
+      if (name !== '' && await rpc.daemon.fs.defaultFileExists({ fileName: name }) && !cancelled) {
+        setFileMatch({ check: fileCheck, name })
+      }
+    }
+    const timer = setTimeout(() => {
+      void check().catch(() => undefined)
+    }, DUPLICATE_FILE_CHECK_DEBOUNCE_MS)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [fileCheck])
+  const duplicateHint = duplicateTaskName !== null
+    ? t('newDownloadDuplicateLink', { name: duplicateTaskName })
+    : fileMatch && fileMatch.check === fileCheck
+      ? t('newDownloadDefaultFileExists', { name: fileMatch.name })
+      : null
 
   // ── 分类下拉：Auto 模式下目录框跟随识别出的文件名（规则见 `lib/categoryRoute.ts`）──
   const categoriesPref = useAgent((snapshot) => snapshot.preferences.values[CUSTOM_CATEGORIES_PREF_KEY], undefined)
@@ -822,6 +869,12 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
               className="font-mono text-xs"
             />
             {text.trim() !== '' && count === 0 ? <FieldError>{t('newDownloadNoValidUrl')}</FieldError> : null}
+            {duplicateHint ? (
+              <div role="status" className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/8 px-3 py-2 text-sm text-warning">
+                <Icon icon={TriangleAlert} size="md" className="shrink-0" />
+                <span className="min-w-0 whitespace-pre-wrap break-all">{duplicateHint}</span>
+              </div>
+            ) : null}
             {captures.length > 0 ? <FieldHint>{t('newDownloadCaptureContextHint')}</FieldHint> : null}
             {notice ? <FieldError className="break-all">{notice}</FieldError> : null}
             {failures.map((failure, index) => (
