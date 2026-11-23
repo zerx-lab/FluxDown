@@ -46,7 +46,8 @@ impl UpdateService {
                 () = tokio::time::sleep(interval) => {}
             }
             let ready = self.lock().status.phase == UpdatePhase::Ready;
-            let eligible = ready && self.silent_update_allowed(&shell);
+            let eligible =
+                ready && self.silent_update_allowed(&shell) && !self.recovery_required().await;
             if eligible && idle {
                 // Resolve the original executable BEFORE replacing it (Linux /proc/self/exe
                 // otherwise points at the renamed old binary).

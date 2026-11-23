@@ -34,7 +34,7 @@ use gpui_component::{
 
 use crate::store::SettingsStore;
 use crate::update_prompt::install_in_flight;
-use crate::update_view::{download_percent, failure_key, status_line};
+use crate::update_view::{download_percent, failure_key, portable_recovery, status_line};
 
 /// chrome 布局条目 id（与 Web `web/src/shell/chromeCatalog.ts` 一致）。
 pub const VERSION_WIDGET_ID: &str = "appVersion";
@@ -313,7 +313,11 @@ impl VersionButton {
             UpdateBadge::Failed { failure, .. } => (
                 Some(FluxIcon::TriangleAlert),
                 text("updateTitleFailed"),
-                text(failure_key(*failure)),
+                text(if portable_recovery(status) {
+                    "updatePortableRecoveryHint"
+                } else {
+                    failure_key(*failure, status.install_kind)
+                }),
             ),
         };
         (

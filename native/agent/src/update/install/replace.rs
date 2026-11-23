@@ -74,19 +74,38 @@ fn replace_files_with(
 ) -> Result<(), InstallError> {
     let mut files = Vec::new();
     collect_files(src_root, Path::new(""), &mut files)?;
+    #[cfg(windows)]
+    {
+        // Never remove the startup-gate marker, even between rename and copy.
+        let marker = Path::new("portable");
+        let is_marker = |file: &PathBuf| file.as_os_str().eq_ignore_ascii_case(marker.as_os_str());
+        if files.iter().any(is_marker)
+            && dest_dir
+                .join(marker)
+                .try_exists()
+                .map_err(InstallError::storage("inspect portable marker"))?
+        {
+            files.retain(|file| !is_marker(file));
+        }
+    }
     files.sort();
     let files = select(files, selection)?;
     let mut journal = Vec::new();
     for relative in &files {
-        if let Err(error) = replace_one(src_root, dest_dir, relative, copy, &mut journal) {
+        if let Err((operation, error)) =
+            replace_one(src_root, dest_dir, relative, copy, &mut journal)
+        {
             let failures = rollback(journal);
-            let mut context = format!("replace {}", relative.display());
-            if !failures.is_empty() {
+            let mut context = format!("{operation} {}", relative.display());
+            let rollback_incomplete = !failures.is_empty();
+            if rollback_incomplete {
                 context.push_str(&format!("; rollback incomplete: {}", failures.join("; ")));
             }
             return Err(InstallError::Replace {
                 context,
                 source: error,
+                #[cfg(windows)]
+                rollback_incomplete,
             });
         }
     }
@@ -124,14 +143,19 @@ fn collect_files(root: &Path, relative: &Path, out: &mut Vec<PathBuf>) -> Result
     let context = format!("read {}", dir.display());
     for entry in fs::read_dir(&dir).map_err(InstallError::storage(context.clone()))? {
         let entry = entry.map_err(InstallError::storage(context.clone()))?;
-        let child = relative.join(entry.file_name());
+        let name = entry.file_name();
+        let child = relative.join(&name);
         let file_type = entry
             .file_type()
             .map_err(InstallError::storage(context.clone()))?;
+        #[cfg(windows)]
+        let protected = name.eq_ignore_ascii_case(PROTECTED_DIR);
+        #[cfg(not(windows))]
+        let protected = name == PROTECTED_DIR;
+        if relative.as_os_str().is_empty() && protected {
+            continue;
+        }
         if file_type.is_dir() {
-            if relative.as_os_str().is_empty() && entry.file_name() == PROTECTED_DIR {
-                continue;
-            }
             collect_files(root, &child, out)?;
         } else if file_type.is_file() {
             out.push(child);
@@ -151,17 +175,17 @@ fn replace_one(
     relative: &Path,
     copy: &dyn Fn(&Path, &Path) -> io::Result<()>,
     journal: &mut Vec<Journal>,
-) -> io::Result<()> {
+) -> Result<(), (&'static str, io::Error)> {
     let from = src_root.join(relative);
     let to = dest_dir.join(relative);
     if let Some(parent) = to.parent() {
-        ensure_dir(parent, journal)?;
+        ensure_dir(parent, journal).map_err(|error| ("create parent for", error))?;
     }
     match fs::symlink_metadata(&to) {
         Ok(_) => {
             let aside = aside_path(&to);
-            remove_stale(&aside)?;
-            retry(|| fs::rename(&to, &aside))?;
+            remove_stale(&aside).map_err(|error| ("remove previous backup for", error))?;
+            retry(|| fs::rename(&to, &aside)).map_err(|error| ("move aside", error))?;
             journal.push(Journal::Renamed {
                 target: to.clone(),
                 aside,
@@ -170,9 +194,9 @@ fn replace_one(
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             journal.push(Journal::Created(to.clone()));
         }
-        Err(error) => return Err(error),
+        Err(error) => return Err(("inspect", error)),
     }
-    retry(|| copy(&from, &to))
+    retry(|| copy(&from, &to)).map_err(|error| ("copy", error))
 }
 
 fn aside_path(target: &Path) -> PathBuf {
@@ -320,11 +344,20 @@ mod tests {
         write(&src.join("lib").join("engine.dll"), "engine-new")?;
         write(&src.join("brand-new.txt"), "brand-new")?;
         // 包里即使带了 portable_data 也绝不能碰用户数据。
-        write(&src.join(PROTECTED_DIR).join("state.db"), "from-package")?;
+        let packaged_data = if cfg!(windows) {
+            "PORTABLE_DATA"
+        } else {
+            PROTECTED_DIR
+        };
+        write(&src.join(packaged_data).join("state.db"), "from-package")?;
+        #[cfg(windows)]
+        write(&src.join("PORTABLE"), "new marker")?;
         write(&dest.join("fluxdown-agent"), "agent-old")?;
         write(&dest.join("lib").join("engine.dll"), "engine-old")?;
         write(&dest.join("user-notes.txt"), "mine")?;
         write(&dest.join(PROTECTED_DIR).join("state.db"), "user-data")?;
+        #[cfg(windows)]
+        write(&dest.join("portable"), "existing marker")?;
 
         replace_files(
             &src,
@@ -339,6 +372,18 @@ mod tests {
         assert_eq!(read(&dest.join("lib").join("engine.dll"))?, "engine-new");
         assert_eq!(read(&dest.join("brand-new.txt"))?, "brand-new");
         assert_eq!(read(&dest.join("user-notes.txt"))?, "mine");
+        #[cfg(windows)]
+        {
+            assert_eq!(read(&dest.join("portable"))?, "existing marker");
+            let entries = fs::read_dir(&dest)?.collect::<io::Result<Vec<_>>>()?;
+            assert_eq!(
+                entries
+                    .iter()
+                    .filter(|entry| entry.file_name().eq_ignore_ascii_case("portable"))
+                    .count(),
+                1
+            );
+        }
         assert_eq!(
             read(&dest.join(PROTECTED_DIR).join("state.db"))?,
             "user-data"

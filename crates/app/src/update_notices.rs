@@ -42,7 +42,10 @@ pub(crate) fn check_now(cx: &mut App) {
                 }
                 Ok(status) if status.phase == UpdatePhase::Failed => Notice {
                     message: translator
-                        .text(update_view::failure_key(status.failure))
+                        .text(update_view::failure_key(
+                            status.failure,
+                            status.install_kind,
+                        ))
                         .to_owned(),
                     error: true,
                 },

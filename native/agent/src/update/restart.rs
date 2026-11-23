@@ -61,6 +61,12 @@ enum Action {
         log: PathBuf,
         background: bool,
     },
+    #[cfg(windows)]
+    Portable {
+        commit: std::process::ChildStdin,
+        desktop: PathBuf,
+        background: Option<Box<RestartPlan>>,
+    },
 }
 
 impl RestartPlan {
@@ -98,8 +104,31 @@ impl RestartPlan {
         }
     }
 
+    #[cfg(windows)]
+    pub(super) fn portable(commit: std::process::ChildStdin, desktop: PathBuf) -> Self {
+        Self {
+            action: Action::Portable {
+                commit,
+                desktop,
+                background: None,
+            },
+            server: false,
+        }
+    }
+
     pub(super) fn in_background(self, background_agent: Self) -> Self {
         match self.action {
+            #[cfg(windows)]
+            Action::Portable {
+                commit, desktop, ..
+            } => Self {
+                action: Action::Portable {
+                    commit,
+                    desktop,
+                    background: Some(Box::new(background_agent)),
+                },
+                server: false,
+            },
             #[cfg(windows)]
             Action::Installer { installer, log, .. } => Self {
                 action: Action::Installer {
@@ -137,6 +166,29 @@ impl RestartPlan {
                 log,
                 background,
             } => run_installer(&installer, &log, background),
+            #[cfg(windows)]
+            Action::Portable {
+                mut commit,
+                desktop,
+                background,
+            } => {
+                use super::windows_portable::CommitMode;
+                let mode = if background.is_some() {
+                    CommitMode::Background
+                } else {
+                    CommitMode::Desktop
+                };
+                if let Err(error) = std::io::Write::write_all(&mut commit, &[mode as u8]) {
+                    tracing::error!(%error, "portable update worker exited before taking over");
+                    if let Some(plan) = background {
+                        plan.run()?;
+                    } else {
+                        spawn_detached(&desktop, &[RELAUNCH_ARG.into()])?;
+                    }
+                    return Err(error);
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -184,9 +236,17 @@ pub(super) fn background_agent() -> std::io::Result<RestartPlan> {
     ))
 }
 
-/// 登记重启计划；agent 运行期完全结束后由 [`run_pending`] 执行。后登记的覆盖先登记的。
+/// 登记重启计划；agent 运行期结束后执行。便携更新已接管时，不允许普通重启覆盖它。
 pub(crate) fn schedule(plan: RestartPlan) {
-    *PENDING.lock().unwrap_or_else(PoisonError::into_inner) = Some(plan);
+    let mut pending = PENDING.lock().unwrap_or_else(PoisonError::into_inner);
+    #[cfg(windows)]
+    if matches!(
+        pending.as_ref().map(|plan| &plan.action),
+        Some(Action::Portable { .. })
+    ) {
+        return;
+    }
+    *pending = Some(plan);
 }
 
 /// 已登记的计划是否是 headless 服务器自身重启。
@@ -318,10 +378,31 @@ fn detach(command: &mut std::process::Command) {
 }
 
 #[cfg(windows)]
-fn detach(command: &mut std::process::Command) {
+pub(super) fn detach(command: &mut std::process::Command) {
     use std::os::windows::process::CommandExt;
 
     command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
+}
+
+#[cfg(windows)]
+pub(super) fn spawn_portable_worker(
+    command: &mut std::process::Command,
+) -> std::io::Result<std::process::Child> {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    const ERROR_ACCESS_DENIED: i32 = 5;
+    command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB);
+    match command.spawn() {
+        Err(error) if error.raw_os_error() == Some(ERROR_ACCESS_DENIED) => {
+            tracing::warn!(
+                "portable update worker could not break away from the Windows Job; retrying without breakaway"
+            );
+            detach(command);
+            command.spawn()
+        }
+        result => result,
+    }
 }
 
 #[cfg(not(any(unix, windows)))]

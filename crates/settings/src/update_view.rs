@@ -76,16 +76,26 @@ pub fn manual_reason_key(reason: UpdateManualReason, kind: UpdateInstallKind) ->
 
 /// 失败分类 → 文案键；缺省按未知失败。
 #[must_use]
-pub fn failure_key(failure: Option<UpdateFailure>) -> &'static str {
+pub fn failure_key(failure: Option<UpdateFailure>, kind: UpdateInstallKind) -> &'static str {
     match failure {
         Some(UpdateFailure::Network) => "updateFailedNetwork",
         Some(UpdateFailure::Verify) => "updateFailedVerify",
         Some(UpdateFailure::Storage) => "updateFailedStorage",
+        Some(UpdateFailure::Install) if kind == UpdateInstallKind::WindowsPortable => {
+            "updateFailedPortableInstall"
+        }
         Some(UpdateFailure::Install) => "updateFailedInstall",
         Some(UpdateFailure::ElevationCancelled) => "updateFailedElevationCancelled",
         Some(UpdateFailure::InstallIncomplete) => "updateFailedIncomplete",
         Some(UpdateFailure::Unknown) | None => "updateFailedUnknown",
     }
+}
+
+pub(crate) fn portable_recovery(status: &UpdateStatusDto) -> bool {
+    status.phase == UpdatePhase::Failed
+        && status.install_kind == UpdateInstallKind::WindowsPortable
+        && status.failure == Some(UpdateFailure::Install)
+        && status.manual_reason == Some(UpdateManualReason::Unsupported)
 }
 
 /// 下载进度百分比（0–100）；大小未知时为 0。
@@ -126,13 +136,19 @@ pub fn status_line(status: &UpdateStatusDto) -> Option<UpdateLine> {
         }),
         UpdatePhase::Ready => Some(UpdateLine::with_version("updateReadyToast", latest)),
         UpdatePhase::Installing => Some(UpdateLine::plain("updateInstalling")),
-        UpdatePhase::Failed => Some(UpdateLine::plain(failure_key(status.failure))),
+        UpdatePhase::Failed => Some(UpdateLine::plain(failure_key(
+            status.failure,
+            status.install_kind,
+        ))),
     }
 }
 
 /// 不可一键更新时的手动升级说明（仅在确有新版本时）。
 #[must_use]
 pub fn manual_line(status: &UpdateStatusDto) -> Option<UpdateLine> {
+    if portable_recovery(status) {
+        return Some(UpdateLine::plain("updatePortableRecoveryHint"));
+    }
     if !status.has_update {
         return None;
     }
@@ -264,7 +280,10 @@ mod tests {
             manual_reason_key(UpdateManualReason::Unknown, UpdateInstallKind::Docker),
             "updateManualUnsupported"
         );
-        assert_eq!(failure_key(None), "updateFailedUnknown");
+        assert_eq!(
+            failure_key(None, UpdateInstallKind::Docker),
+            "updateFailedUnknown"
+        );
     }
 
     #[test]
