@@ -307,6 +307,7 @@ impl Dirs {
     fn config(&self) -> LocalHostConfig {
         LocalHostConfig {
             data_dir: self.data().display().to_string(),
+            external_log_dir: None,
             save_dir: self.save().display().to_string(),
             platform: "test".to_owned(),
             device_name: None,

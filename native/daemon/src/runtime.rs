@@ -154,6 +154,9 @@ pub async fn run_with(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let data_dir =
         fluxdown_engine::data_dir::resolve_data_dir(process_config.data_dir_override.as_deref())?;
+    #[cfg(target_os = "android")]
+    fluxdown_engine::logger::init_android(&data_dir, process_config.log_dir_override.as_deref())?;
+    #[cfg(not(target_os = "android"))]
     fluxdown_engine::logger::init_with_dir(&data_dir)?;
 
     let _process_lease = match DaemonProcessLease::acquire(&data_dir)? {

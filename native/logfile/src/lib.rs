@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
-pub use sanitize::SANITIZE_PATTERNS;
+pub use sanitize::{ANDROID_DISK_URL_PATTERN, SANITIZE_PATTERNS};
 pub use time::utc_timestamp;
 
 use throttle::{Decision, Summary, Throttle};
@@ -77,6 +77,9 @@ pub struct LogFile {
     path: PathBuf,
     rotated_path: PathBuf,
     max_file_bytes: u64,
+    redact: Option<fn(&str) -> String>,
+    fallback_dir: Option<PathBuf>,
+    fallback: OnceLock<Box<LogFile>>,
     state: Mutex<State>,
 }
 
@@ -92,7 +95,7 @@ impl LogFile {
     ///
     /// `header` 是宿主提供的多行环境描述（版本、路径、关键环境变量……），每次轮转后重写。
     pub fn open(dir: &Path, stem: &str, header: String) -> io::Result<Self> {
-        Self::open_with_limit(dir, stem, header, MAX_FILE_BYTES)
+        Self::open_with_limit(dir, stem, header, MAX_FILE_BYTES, None, None)
     }
 
     fn open_with_limit(
@@ -100,6 +103,8 @@ impl LogFile {
         stem: &str,
         header: String,
         max_file_bytes: u64,
+        redact: Option<fn(&str) -> String>,
+        fallback_dir: Option<PathBuf>,
     ) -> io::Result<Self> {
         fs::create_dir_all(dir)?;
         let path = dir.join(format!("{stem}.log"));
@@ -118,10 +123,16 @@ impl LogFile {
             path,
             rotated_path,
             max_file_bytes,
+            redact,
+            fallback_dir,
+            fallback: OnceLock::new(),
             state: Mutex::new(State {
                 file: Some(file),
                 size,
-                header,
+                header: match redact {
+                    Some(redact) => redact(&header),
+                    None => header,
+                },
                 throttle: Throttle::new(),
             }),
         };
@@ -134,7 +145,9 @@ impl LogFile {
     /// 当前日志文件路径。
     #[must_use]
     pub fn path(&self) -> &Path {
-        &self.path
+        self.fallback
+            .get()
+            .map_or(self.path.as_path(), |log| log.path())
     }
 
     /// 写一条日志（受重复限流约束）。`text` 可含换行，续行缩进对齐。
@@ -208,14 +221,54 @@ impl LogFile {
     }
 
     fn write_line(&self, state: &mut State, level: Level, text: &str, suffix: Option<&str>) {
+        let sanitized;
+        let text = if let Some(redact) = self.redact {
+            sanitized = redact(text);
+            sanitized.as_str()
+        } else {
+            text
+        };
         let line = format_line(level, text, suffix, SystemTime::now());
-        if let Err(error) = self.append(state, line.as_bytes()) {
-            // 不调用宿主 logger：它会再次写入本文件。失败后句柄已禁用，只报一次。
+        if let Err(error) = self.append_or_fallback(state, line.as_bytes()) {
+            // 不调用宿主 logger：它会再次写入本文件。
             eprintln!(
                 "fluxdown_logfile: writing {} failed: {error}",
                 self.path.display()
             );
         }
+    }
+
+    fn append_or_fallback(&self, state: &mut State, bytes: &[u8]) -> io::Result<()> {
+        if let Some(log) = self.fallback.get() {
+            return log.append(&mut log.lock(), bytes);
+        }
+        let Some(dir) = self.fallback_dir.as_deref() else {
+            return self.append(state, bytes);
+        };
+        if state.file.is_some() {
+            match self.append(state, bytes) {
+                Ok(()) => return Ok(()),
+                Err(error) => eprintln!("fluxdown_logfile: external log write failed: {error}"),
+            }
+            state.file = None;
+        }
+        let stem = self
+            .path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "log file has no valid stem")
+            })?;
+        let log = Self::open_with_limit(
+            dir,
+            stem,
+            state.header.clone(),
+            self.max_file_bytes,
+            None,
+            None,
+        )?;
+        let log = self.fallback.get_or_init(|| Box::new(log));
+        log.append(&mut log.lock(), bytes)
     }
 
     fn append(&self, state: &mut State, bytes: &[u8]) -> io::Result<()> {
@@ -310,6 +363,28 @@ pub fn init_global(dir: &Path, stem: &str, header: String) -> io::Result<&'stati
     Ok(GLOBAL.get_or_init(|| log))
 }
 
+/// Open the process log with a redactor applied before file writes, including panic records.
+pub fn init_global_redacted(
+    dir: &Path,
+    stem: &str,
+    header: String,
+    redact: fn(&str) -> String,
+    fallback_dir: Option<&Path>,
+) -> io::Result<&'static LogFile> {
+    if let Some(existing) = GLOBAL.get() {
+        return Ok(existing);
+    }
+    let log = LogFile::open_with_limit(
+        dir,
+        stem,
+        header,
+        MAX_FILE_BYTES,
+        Some(redact),
+        fallback_dir.map(Path::to_path_buf),
+    )?;
+    Ok(GLOBAL.get_or_init(|| log))
+}
+
 /// 进程级日志文件（未初始化时为 `None`）。
 #[must_use]
 pub fn global() -> Option<&'static LogFile> {
@@ -394,10 +469,69 @@ mod tests {
     }
 
     #[test]
+    fn redacted_sink_persists_headers_events_and_panics_without_the_secret() -> io::Result<()> {
+        let dir = temp_dir("redacted");
+        let result = (|| {
+            let log = LogFile::open_with_limit(
+                &dir,
+                "agent",
+                "header secret".to_owned(),
+                2048,
+                Some(|text| text.replace("secret", "[REDACTED]")),
+                None,
+            )?;
+            log.log(Level::Info, "event secret");
+            log.write_panic("panic secret");
+            fs::read_to_string(log.path())
+        })();
+        fs::remove_dir_all(&dir)?;
+        let text = result?;
+        for line in ["header [REDACTED]", "event [REDACTED]", "panic [REDACTED]"] {
+            assert!(text.contains(line), "{text}");
+        }
+        assert!(!text.contains("secret"), "{text}");
+        Ok(())
+    }
+
+    #[test]
+    fn external_write_failure_preserves_redaction_and_switches_active_path() -> io::Result<()> {
+        let dir = temp_dir("fallback");
+        let private = dir.join("private");
+        let result = (|| {
+            let log = LogFile::open_with_limit(
+                &dir,
+                "agent",
+                String::new(),
+                2048,
+                Some(|text| text.replace("secret", "[REDACTED]")),
+                Some(private.clone()),
+            )?;
+            log.lock().file = Some(File::open(log.path())?);
+            log.write_panic("panic secret");
+            log.log(Level::Info, "continued secret");
+            Ok::<_, io::Error>((log.path().to_path_buf(), fs::read_to_string(log.path())?))
+        })();
+        fs::remove_dir_all(&dir)?;
+        let (active, text) = result?;
+        assert_eq!(active, private.join("agent.log"));
+        assert!(text.contains("panic [REDACTED]"), "{text}");
+        assert!(text.contains("continued [REDACTED]"), "{text}");
+        assert!(!text.contains("secret"), "{text}");
+        Ok(())
+    }
+
+    #[test]
     fn rotation_keeps_one_previous_file_and_rewrites_the_header() {
         let dir = temp_dir("rotate");
-        let log = LogFile::open_with_limit(&dir, "desktop", "  version: 1.2.3\n".to_owned(), 2048)
-            .unwrap_or_else(|error| panic!("open: {error}"));
+        let log = LogFile::open_with_limit(
+            &dir,
+            "desktop",
+            "  version: 1.2.3\n".to_owned(),
+            2048,
+            None,
+            None,
+        )
+        .unwrap_or_else(|error| panic!("open: {error}"));
         for index in 0..200 {
             log.log_unthrottled(Level::Info, &format!("line {index} {}", "x".repeat(40)));
         }
@@ -426,7 +560,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap_or_else(|error| panic!("create test directory: {error}"));
         fs::write(dir.join("agent.log"), vec![b'a'; 4096])
             .unwrap_or_else(|error| panic!("write test log: {error}"));
-        let log = LogFile::open_with_limit(&dir, "agent", String::new(), 1024)
+        let log = LogFile::open_with_limit(&dir, "agent", String::new(), 1024, None, None)
             .unwrap_or_else(|error| panic!("open: {error}"));
         log.log(Level::Warn, "fresh");
         assert_eq!(

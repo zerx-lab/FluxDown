@@ -19,10 +19,12 @@
 - `fluxdown-desktop` 与 `fluxdown-agent`（非 `--server`）：共用 `native/logfile`（`fluxdown_logfile`，零依赖），写 `<agent 数据目录>/logs/{desktop,agent}.log`。单文件 2MB 轮转为 `.log.1`（只留一份，每进程 ≤4MB）；每个文件开头有会话头（版本、exe、参数形态、平台、`SESSIONNAME`/显示协议、`GPUI_*`/`ZED_*` 原值、其余 `FLUXDOWN_*` 只记名字），轮转后重写；同一消息（数字归一）每 60s 只落 10 条，其余汇总成 `[suppressed N repeats over Ts]`；UTC 时间戳；panic 带回溯。
 - desktop 收 `log` 门面；有效 `RUST_LOG` 通过桥接支持 tracing 指令，否则 `fluxdown*` 与 `gpui*` 按启动级别输出，其他 target 至多收 Warn。另记窗口打开参数、GPU 规格、首帧耗时与 10s 超时、UI 心跳停摆和 agent 连接/退出。启动参数只记开关与位置参数个数，不记链接。
 - agent 收 `tracing`：有效 `RUST_LOG` 优先，否则第一方 target（含嵌入式引擎）按启动级别输出，其他 target 至多收 Warn。桌面监管器将 daemon stderr 追加到 `fluxdownd.stderr.log`（超 1MB 截断），将进程拉起、非零退出和崩溃循环记入 `agent.log`；`--server` 自身使用 stderr tracing。
-- 移动端本机主机（`native/mobile/src/local.rs`）在启动进程内 daemon **之前**调 `fluxdown_agent::logging::init_embedded`。引擎沿用已安装的全局订阅者，agent / daemon / engine 的 tracing 均写入 `agent.log`。进程级只初始化一次。
-- Doctor 的日志目录检查、「打开日志目录」、日志导出都指向 `<agent 数据目录>/logs`（`log_export::agent_log_dir`）。嵌入宿主（`start_embedded`）的 Doctor 不产出 `app_listener` / `local_server` / `disk_sleep`（`DiagnosticsService::for_embedded_host`：无 TCP 网关 / NMH IPC / 兼容 API，也无机械盘），网关虽是 server 模式但放行 `agent.diagnostics.exportLogs`（`GatewayService::with_local_log_export`：只有同进程 App 能连，目标是 App 沙盒路径）。
+- 移动端本机主机在启动 daemon 前安装进程级订阅者。Android 将 daemon / engine 事件转发到引擎日志；引擎写入端尚未初始化或不启用独立写入端时，事件写入 `agent.log`。
+- Android 在应用专属外部 `files/logs/diagnostics/` 下写 `android/app-events.log`、`agent/agent.log` 和 `engine/fluxdown_*.log`。写入失败回退独立脱敏内部目录；发布器按组件合并文件通知，从 Rust 查询实际写入目录，不跨目录按时间排序。不迁移 DB、设置或历史日志。
+- Android 取证入口是共享 `Documents/FluxDown/Logs/`：首次通过系统目录选择器持久授权。运行中后台发布有界文本；Java 未捕获异常时最多等待后台发布 1 秒。写完暂存文件后才轮换，强制终止时可读取最近完整的 `*.txt` 或 `*.previous.txt`。启动时清理旧私有目录中符合宿主、agent 和引擎日志命名规则的未脱敏文件，不清理当前日志目录或更新旧 Download 副本。
+- Doctor、日志路径查询和 ZIP 导出读取实际 agent 日志目录（默认 `<agent 数据目录>/logs`），引擎路径来自 daemon。嵌入宿主的 Doctor 省略 `app_listener` / `local_server` / `disk_sleep`；网关允许同进程 App 在沙盒内导出 ZIP。
 
-**导出脱敏的唯一规则源**：`native/logfile/src/sanitize.rs::SANITIZE_PATTERNS`，由 `fluxdown_logfile::SANITIZE_PATTERNS` 导出；引擎 `logger::{sanitize_log_str,sanitize_log_bytes}` 与 agent `log_export::sanitize_text` 各自编译同一规则并按表顺序套用，不再维护两份正则。覆盖 URL userinfo、Telegram bot 路径令牌、敏感 query、超长 query、Cookie / Authorization、代理凭据与 Linux / Windows 用户目录；非 UTF-8 按有损解码后脱敏。规则用于导出，不代表原始落盘日志已脱敏；agent 的配置快照导出另先按结构清掉秘密字段（`sanitize_json_export`）。
+**文本脱敏规则源**：`native/logfile/src/sanitize.rs`。引擎和 agent 用共享规则脱敏导出文本；Android 写盘还移除完整 HTTP(S)、FTP(S)、WebSocket（WS/WSS）、磁力和 eD2K 链接，避免保留链接携带的签名、文件名或哈希。下载启动日志不记录原始 URL。Android 宿主事件不记录异常消息。配置快照另用 `sanitize_json_export` 按结构清除秘密字段。
 
 ---
 

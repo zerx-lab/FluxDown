@@ -310,8 +310,9 @@ class AppContainer(context: Context) {
         throw e
     } catch (e: Exception) {
         Log.w(TAG, "open host ${ref.id} failed: ${e.message}")
-        AppDiagnostics.event("host open failed (${hostKind(ref)}): ${e.message}")
-        Result.failure(e.asHostException())
+        val error = e.asHostException()
+        AppDiagnostics.event("host open failed (${hostKind(ref)}): ${error.code}")
+        Result.failure(error)
     }
 
     private suspend fun open(ref: HostRef): HostSession = when (ref) {
@@ -426,7 +427,10 @@ class AppContainer(context: Context) {
             save.mkdirs()
             data.path to save.path
         }
-        return FluxBridge.openLocal(dataDir = dataDir, saveDir = saveDir, platform = PLATFORM, deviceName = systemDeviceName())
+        return FluxBridge.openLocal(
+            dataDir = dataDir, saveDir = saveDir, platform = PLATFORM, deviceName = systemDeviceName(),
+            externalLogDir = AppDiagnostics.externalLogRoot?.path,
+        )
     }
 
     /** 开一个本机独立会话跑 [block]，结束（含失败 / 取消）即关闭。 */
@@ -471,7 +475,7 @@ private fun connectionSummary(state: HostState): String {
         Connection.Connecting -> "connecting"
         Connection.Live -> "live"
         Connection.Stale -> "stale"
-        is Connection.Failed -> "failed ${c.error.code}: ${c.error.message}"
+        is Connection.Failed -> "failed ${c.error.code}"
     }
     return if (state.tasksLoading) "$connection, tasks loading (${state.taskTotal})" else connection
 }

@@ -512,9 +512,9 @@ object DownloadServiceController {
             ContextCompat.startForegroundService(context, Intent(context, DownloadService::class.java))
         } catch (e: IllegalStateException) {
             // 含 ForegroundServiceStartNotAllowedException（后台启动受限 / dataSync 时长耗尽）
-            AppDiagnostics.event("download service start refused ($reason): ${e.javaClass.simpleName}: ${e.message}")
+            AppDiagnostics.event("download service start refused ($reason): ${e.javaClass.simpleName}")
         } catch (e: SecurityException) {
-            AppDiagnostics.event("download service start denied ($reason): ${e.message}")
+            AppDiagnostics.event("download service start denied ($reason): ${e.javaClass.simpleName}")
         }
     }
 

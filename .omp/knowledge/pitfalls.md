@@ -250,6 +250,7 @@
 
 - **HLS 分片进度不是字节进度**：Android 列表、详情、前台通知有点播分片计数时用同一分片比例；字节 ETA 只留在详情「常规」的字节统计中，不与分片百分比同组显示。多任务通知只汇总同口径的进度，混合口径时用不确定态。直播、旧主机或尚未收到分片运行时状态时沿用字节口径 → `DownloadsDerive.kt::itemFor`、`TaskDetailModel.kt`、`TransferSummary.kt`。
 - **`repeatOnLifecycle` 的轮询块正常返回后不会在同一次 `STARTED` 内重启**：BT 监听状态遇到一次 RPC 超时不能退出轮询；保留旧快照，按原间隔重试，仅 `Unsupported` 停止，连接失效或换主机则清掉旧快照 → `mobile/Android/app/src/main/java/com/fluxdown/app/feature/settings/bt/BtPage.kt::BtPage`。
+- **Android 共享日志不能在内外目录间按修改时间选源**：时钟回拨后旧外部卷可盖过当前内部日志；每个组件以 Rust 写入端实际目录为准，文件通知仅用于触发刷新 → `SharedDiagnosticLogs::publishNative`、`FluxCore::android_log_directory`。
 - **前台服务停止必须用 `stopSelfResult(lastStartId)`，并在每次启动请求重新计时空闲宽限**：用 `stopSelf()` 会拆掉在途、尚未来得及 `startForeground` 的启动请求，系统以 `ForegroundServiceDidNotStartInTimeException` 杀整个进程；外部唤起建任务后也不能被旧计时停掉 → `mobile/Android/app/src/main/java/com/fluxdown/app/service/DownloadService.kt::stopIfIdle`。
 - **Android 逐任务通知与前台汇总不是同一生命周期**：逐任务通知可划掉，删除回调在当前服务实例内记录任务 ID，并撤下可能抢在回调前重发的通知；服务重建后不保留划除状态。AOSP 按包估算通知入队速率（默认 5 次/秒），每秒把汇总和多条卡片一起发仍会触发限速，且固定顺序会反复丢掉尾部更新。首次前台化立即发汇总；之后汇总至少间隔 1 秒，汇总和逐任务通知的相邻发布至少间隔 300 毫秒，当前轮无需等待新的进度事件即可发完。错峰期间发送前重新检查任务、划除和通道状态，空闲时取消未发更新。完成 / 失败 / 选择请求仍共享系统速率预算；未变化的通知只在已有刷新事件上每隔至少 5 秒对账一次，连续两次缺失才补发，不做空闲轮询 → `DownloadService.kt::refreshNotifications`、`showTaskNotifications`。
 - **Android 逐任务通知的清理和权限缓存分属进程与服务**：`FluxApplication.onCreate` 在任何服务发布前清理上一进程留下的 1002 / `fluxdown_task_progress` 卡片，本机空闲也执行；不碰汇总或完成通知。API 28+ 缓存应用与通道是否允许发布，应用或目标通道的系统广播、应用内运行时通知权限回调，以及服务启动请求使缓存失效。API 26–27 无开关广播，继续在进度刷新时重查。

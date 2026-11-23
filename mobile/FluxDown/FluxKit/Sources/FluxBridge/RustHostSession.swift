@@ -39,7 +39,7 @@ public enum FluxBridge {
     ) async throws(HostError) -> any FluxDomain.HostSession {
         let core = try instance()
         do {
-            let config = LocalHostConfig(dataDir: dataDir, saveDir: saveDir, platform: platform, deviceName: deviceName)
+            let config = LocalHostConfig(dataDir: dataDir, externalLogDir: nil, saveDir: saveDir, platform: platform, deviceName: deviceName)
             return RustHostSession(try await core.openLocal(config: config))
         } catch {
             throw hostError(error)

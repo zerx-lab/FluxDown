@@ -4,8 +4,11 @@ import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
-import com.fluxdown.core.format.Format
+import android.provider.DocumentsContract
 import android.util.Log
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import com.fluxdown.core.format.Format
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -26,6 +29,7 @@ import com.fluxdown.app.AppContainer
 import com.fluxdown.app.R
 import com.fluxdown.app.actions.LocalTaskActions
 import com.fluxdown.app.diag.AppDiagnostics
+import com.fluxdown.app.diag.SharedDiagnosticLogs
 import com.fluxdown.app.feature.settings.SettingRowBox
 import com.fluxdown.app.feature.settings.SettingsCtx
 import com.fluxdown.app.feature.settings.SettingsEntry
@@ -337,10 +341,37 @@ internal fun LogsSection(ctx: SettingsCtx, model: LogExportModel, scope: Corouti
     val state = hostState()
     val live by remember { derivedStateOf { state.value.connection == Connection.Live } }
     val exportedText = str(R.string.logExportSuccessNotice)
+    val context = LocalContext.current
+    val sharedLogStatus by AppDiagnostics.sharedLogStatus.collectAsStateWithLifecycle()
+    val localHost = hostRef is HostRef.Local
+    val folderError = str(R.string.androidSharedLogsFolderError)
+    val requestLogPermission = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            try {
+                if (!SharedDiagnosticLogs.isLogTree(uri)) throw SecurityException("wrong log directory")
+                context.contentResolver.takePersistableUriPermission(
+                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                )
+                AppDiagnostics.publishSharedLogs(reauthorized = true)
+            } catch (_: SecurityException) {
+                overlays.toast(folderError, FluxToastKind.Error)
+            }
+        }
+    }
 
     LaunchedEffect(hostRef, live) { model.refreshSize() }
 
-    val exportDesc = str(R.string.logExportDesc)
+    val exportDesc = buildString {
+        append(str(R.string.logExportDesc))
+        if (localHost) {
+            append('\n')
+            append(str(R.string.androidSharedLogsHint, "path" to SharedDiagnosticLogs.FOLDER))
+            if (sharedLogStatus == SharedDiagnosticLogs.Status.Unavailable) {
+                append('\n')
+                append(str(R.string.androidSharedLogsUnavailable))
+            }
+        }
+    }
     val sizeUnitHint = str(R.string.mobileLogSizeUnitLabel, "unit" to units.byteLabel(2))
     val footer = if (ctx.form.has("log_max_size_mb") && ctx.synced("log_max_size_mb")) {
         exportDesc + "\n" + str(R.string.settingsSyncLegend)
@@ -367,6 +398,23 @@ internal fun LogsSection(ctx: SettingsCtx, model: LogExportModel, scope: Corouti
                         value = Format.bytes(bytes, units).toString(),
                     )
                 }
+            }
+        }
+        if (localHost && sharedLogStatus != SharedDiagnosticLogs.Status.Available) {
+            row {
+                FluxActionRow(
+                    title = str(R.string.androidSharedLogsAllowStorage),
+                    onClick = {
+                        try {
+                            requestLogPermission.launch(
+                                DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", "primary:Documents"),
+                            )
+                        } catch (_: ActivityNotFoundException) {
+                            overlays.toast(folderError, FluxToastKind.Error)
+                        }
+                    },
+                    icon = FluxIcons.Folder,
+                )
             }
         }
         row {
