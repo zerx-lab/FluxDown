@@ -294,14 +294,16 @@ fn watch_tray_downloads(
                     .await;
                 pending.set(false);
                 cx.update(|cx| {
-                    let _ = handle.update(cx, |_, window, cx| {
+                    if let Err(error) = handle.update(cx, |_, window, cx| {
                         if tray_downloads_visible(window, &shell, &session, cx)
                             && let Some(snapshot) = session.read(cx).latest()
                         {
                             acknowledge_tray_downloads(&snapshot.epoch, snapshot.sequence, cx);
                             last_sent.replace(Some((snapshot.epoch.clone(), snapshot.sequence)));
                         }
-                    });
+                    }) {
+                        log::debug!("tray acknowledgement window released: {error:#}");
+                    }
                 });
             })
             .detach();
