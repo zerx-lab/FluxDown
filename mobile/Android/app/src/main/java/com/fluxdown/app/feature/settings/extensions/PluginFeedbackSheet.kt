@@ -16,12 +16,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fluxdown.app.R
 import com.fluxdown.app.feature.settings.appVersionName
 import com.fluxdown.app.feature.settings.openLink
 import com.fluxdown.app.i18n.str
 import com.fluxdown.app.shell.LocalAppContainer
 import com.fluxdown.core.host.HostException
+import com.fluxdown.core.model.HostRef
 import com.fluxdown.core.protocol.HostMethod
 import com.fluxdown.core.protocol.PluginDto
 import com.fluxdown.core.protocol.callJson
@@ -51,7 +53,10 @@ private data class ReviewedAudit(val counts: PluginFeedbackAudit?)
 internal fun PluginFeedbackSheet(sheet: PluginSheet.Feedback, visible: Boolean, plugin: PluginDto, onDismiss: () -> Unit) {
     val context = LocalContext.current
     val overlays = LocalFluxOverlays.current
-    val session = LocalAppContainer.current.session
+    val container = LocalAppContainer.current
+    val host by container.host.collectAsStateWithLifecycle()
+    val isLocal = host is HostRef.Local
+    val session = container.session
     val scope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
     val target = remember(plugin) { PluginFeedbackTarget.forPlugin(plugin) }
@@ -89,10 +94,10 @@ internal fun PluginFeedbackSheet(sheet: PluginSheet.Feedback, visible: Boolean, 
 
     val environment = if (includeDiagnostics && reviewedAudit != null) {
         val loadStatus = str(if (plugin.loadFailed) R.string.pluginLoadStatusFailed else R.string.pluginLoadStatusLoaded)
-        val platform = "Android API ${Build.VERSION.SDK_INT}; $loadStatus"
+        val status = if (isLocal) "Android API ${Build.VERSION.SDK_INT}; $loadStatus" else loadStatus
         val counts = reviewedAudit?.counts
         val summary = counts?.let { str(R.string.plugFeedbackAuditSummary, "error" to it.errors, "denied" to it.denied) }
-        summary?.let { "$platform; $it" }?.takeIf { it.length <= 300 } ?: platform
+        summary?.let { "$status; $it" }?.takeIf { it.length <= 300 } ?: status
     } else null
 
     val canSend = target != null && repository != null && !sending && issue == null &&
@@ -105,7 +110,7 @@ internal fun PluginFeedbackSheet(sheet: PluginSheet.Feedback, visible: Boolean, 
         focusManager.clearFocus()
         val report = PluginFeedbackReport(
             target, confirmedRepository, title.trim(), description.trim(), appVersion,
-            environment ?: "Android",
+            environment ?: if (isLocal) "Android" else null,
         )
         sending = true
         submission = null
@@ -163,6 +168,9 @@ internal fun PluginFeedbackSheet(sheet: PluginSheet.Feedback, visible: Boolean, 
                 if (issue != null) {
                     FluxBanner(str(R.string.plugFeedbackSent, "number" to issue), kind = FluxBannerKind.Success)
                 } else {
+                    if (target != null) {
+                        FluxText(str(R.string.plugFeedbackLookupNotice), style = FluxTheme.type.sm, color = FluxTheme.colors.inkMuted)
+                    }
                     val failure = submissionFailure ?: lookupFailure
                     if (failure != null) FeedbackFailureBanner(failure)
                     if (lookupFailure != null && lookupFailure != failure) FeedbackFailureBanner(lookupFailure)
@@ -178,7 +186,7 @@ internal fun PluginFeedbackSheet(sheet: PluginSheet.Feedback, visible: Boolean, 
                             onClick = { openLink(context, overlays, GENERAL_FEEDBACK_URL, noBrowser) })
                     }
                     if (target != null && repository != null) {
-                        FeedbackDestination(target, repository, appVersion)
+                        FeedbackDestination(target, repository, appVersion, isLocal)
                         FeedbackFields(title, { title = it }, description, { description = it }, enabled = !sending)
                         FeedbackDiagnostics(
                             includeDiagnostics, { includeDiagnostics = it }, environment,
@@ -242,14 +250,14 @@ private fun validFeedbackDraft(title: String, description: String): Boolean =
         description.length <= FEEDBACK_DESCRIPTION_LIMIT && description.isNotBlank()
 
 @Composable
-private fun FeedbackDestination(target: PluginFeedbackTarget, repository: String, appVersion: String) {
+private fun FeedbackDestination(target: PluginFeedbackTarget, repository: String, appVersion: String, isLocal: Boolean) {
     FluxBanner(str(R.string.plugFeedbackPublic), kind = FluxBannerKind.Warn)
     GlassSection {
         row { FluxKeyValue(str(R.string.plugFeedbackDestination), repository, mono = true) }
         row { FluxKeyValue(str(R.string.pluginDetailIdentity), target.identity, mono = true) }
         row { FluxKeyValue(str(R.string.plugFeedbackPluginVersion), target.version, mono = true) }
         row { FluxKeyValue(str(R.string.feedbackVersionLabel), appVersion, mono = true) }
-        row { FluxKeyValue(str(R.string.feedbackSysInfoSystem), "Android") }
+        if (isLocal) row { FluxKeyValue(str(R.string.feedbackSysInfoSystem), "Android") }
         row { FluxKeyValue(str(R.string.feedbackTypeLabel), str(R.string.feedbackTypeBug)) }
     }
 }

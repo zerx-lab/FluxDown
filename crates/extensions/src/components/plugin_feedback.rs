@@ -42,7 +42,7 @@ pub(super) fn open(
             busy: false,
             message: None,
             issue: None,
-            loaded: loaded == Some(true),
+            loaded,
             diagnostics: false,
             audit_pending: false,
             audit_counts: None,
@@ -81,7 +81,7 @@ struct Feedback {
     busy: bool,
     message: Option<&'static str>,
     issue: Option<u64>,
-    loaded: bool,
+    loaded: Option<bool>,
     diagnostics: bool,
     audit_pending: bool,
     audit_counts: Option<(usize, usize, usize)>,
@@ -159,7 +159,11 @@ impl Feedback {
     fn environment(&self) -> String {
         let os = std::env::consts::OS;
         if self.diagnostics {
-            let status = if self.loaded { "loaded" } else { "load failed" };
+            let status = if self.loaded == Some(true) {
+                "loaded"
+            } else {
+                "load failed"
+            };
             let arch = std::env::consts::ARCH;
             if let Some((total, errors, denied)) = self.audit_counts {
                 format!(
@@ -191,6 +195,16 @@ impl Feedback {
         }
         if description.is_empty() {
             self.message = Some("plugFeedbackDescription");
+            cx.notify();
+            return;
+        }
+        if subject.encode_utf16().take(201).count() > 200 {
+            self.message = Some("plugFeedbackTitleTooLong");
+            cx.notify();
+            return;
+        }
+        if description.encode_utf16().take(5001).count() > 5000 {
+            self.message = Some("plugFeedbackDescriptionTooLong");
             cx.notify();
             return;
         }
@@ -248,6 +262,11 @@ impl Render for Feedback {
                 self.translator
                     .text_with("plugFeedbackSent", &[("number", &issue.to_string())]),
             );
+        }
+        if self.loaded.is_some() {
+            body = body
+                .child(text("plugFeedbackLookupNotice"))
+                .child(text("plugFeedbackLookupDirect"));
         }
         if let Some(repository) = &self.repository {
             body = body

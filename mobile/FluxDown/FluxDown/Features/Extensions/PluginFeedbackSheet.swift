@@ -8,12 +8,13 @@ struct PluginFeedbackSheet: View {
     let allowsPluginReport: Bool
 
     @Environment(ExtensionsModel.self) private var model
+    @Environment(AppContainer.self) private var container
     @Environment(\.dismiss) private var dismiss
     @State private var route: Route = .loading
     @State private var title = ""
     @State private var description = ""
     @State private var includeDiagnostics = false
-    @State private var environment: String?
+    @State private var auditReviewed = false
     @State private var auditCounts: (error: Int, denied: Int)?
     @State private var submitting = false
     @State private var failure: PluginFeedbackHTTP.Failure?
@@ -28,18 +29,29 @@ struct PluginFeedbackSheet: View {
             && !version.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    private var isLocal: Bool {
+        if case .local = container.host { return true }
+        return false
+    }
+
+    private var diagnosticEnvironment: String? {
+        var fields: [String] = []
+        if isLocal {
+            let os = ProcessInfo.processInfo.operatingSystemVersion
+            fields.append("platform=iOS; osVersion=\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)")
+        }
+        if let auditCounts {
+            fields.append("auditErrors=\(auditCounts.error); auditDenied=\(auditCounts.denied)")
+        }
+        return fields.isEmpty ? nil : fields.joined(separator: "; ")
+    }
+
     private func loadDiagnostics() async {
-        guard includeDiagnostics, environment == nil else { return }
+        guard includeDiagnostics, !auditReviewed else { return }
         let counts = await model.feedbackAuditCounts(identity: identity)
         guard !Task.isCancelled else { return }
-        let os = ProcessInfo.processInfo.operatingSystemVersion
-        let platform = "platform=iOS; osVersion=\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)"
         auditCounts = counts
-        if let counts {
-            environment = "\(platform); auditErrors=\(counts.error); auditDenied=\(counts.denied)"
-        } else {
-            environment = platform
-        }
+        auditReviewed = true
     }
 
     var body: some View {
@@ -50,6 +62,9 @@ struct PluginFeedbackSheet: View {
                         Text(L("plugFeedbackSent", ["number": String(issueNumber)]))
                     }
                 } else {
+                    if canLookUp {
+                        Section { Text(L("plugFeedbackLookupNotice")) }
+                    }
                     routeSection
                     if let failure {
                         Section { Text(L(failure.messageKey)) }
@@ -104,7 +119,7 @@ struct PluginFeedbackSheet: View {
         let appVersion = SettingsAppVersion.current
         let titleValue = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let descriptionValue = description.trimmingCharacters(in: .whitespacesAndNewlines)
-        let reviewedEnvironment = includeDiagnostics ? environment : nil
+        let reviewedEnvironment = includeDiagnostics ? diagnosticEnvironment : nil
         Section {
             LabeledContent(L("feedbackTypeLabel"), value: L("feedbackTypeBug"))
             LabeledContent(L("pluginDetailIdentity")) {
@@ -114,7 +129,7 @@ struct PluginFeedbackSheet: View {
                 Text(verbatim: version).textSelection(.enabled)
             }
             LabeledContent(L("feedbackVersionLabel"), value: appVersion)
-            LabeledContent(L("feedbackSysInfoSystem"), value: "iOS")
+            if isLocal { LabeledContent(L("feedbackSysInfoSystem"), value: "iOS") }
             VStack(alignment: .leading) {
                 Text(L("feedbackTitleLabel"))
                 TextField(L("feedbackTitlePlaceholder"), text: $title)
@@ -131,15 +146,17 @@ struct PluginFeedbackSheet: View {
             Toggle(L("plugFeedbackDiagnostics"), isOn: Binding(
                 get: { includeDiagnostics },
                 set: { enabled in
-                    environment = nil
+                    auditReviewed = false
                     auditCounts = nil
                     includeDiagnostics = enabled
                 }
             ))
             .task(id: includeDiagnostics) { await loadDiagnostics() }
             if includeDiagnostics {
-                if let reviewedEnvironment {
-                    Text(verbatim: reviewedEnvironment).font(.footnote).textSelection(.enabled)
+                if auditReviewed {
+                    if let reviewedEnvironment {
+                        Text(verbatim: reviewedEnvironment).font(.footnote).textSelection(.enabled)
+                    }
                     if let auditCounts {
                         Text(L("plugFeedbackAuditSummary", [
                             "error": String(auditCounts.error), "denied": String(auditCounts.denied)
@@ -159,12 +176,13 @@ struct PluginFeedbackSheet: View {
                 guard !submitting else { return }
                 let report = PluginFeedbackHTTP.Report(
                     title: titleValue, description: descriptionValue, appVersion: appVersion,
-                    environment: reviewedEnvironment ?? "iOS", pluginIdentity: identity, pluginVersion: version, repository: repository
+                    environment: reviewedEnvironment ?? (isLocal ? "iOS" : nil),
+                    pluginIdentity: identity, pluginVersion: version, repository: repository
                 )
                 submitting = true
                 Task { await submit(report) }
             }
-            .disabled(submitting || (includeDiagnostics && reviewedEnvironment == nil)
+            .disabled(submitting || (includeDiagnostics && !auditReviewed)
                 || titleValue.isEmpty || titleValue.utf16.count > 200
                 || descriptionValue.isEmpty || descriptionValue.utf16.count > 5000)
         }

@@ -195,6 +195,7 @@ export function PluginFeedbackDialog({ plugin, onClose }: { plugin: FeedbackPlug
       )}
     >
       <div className="flex min-w-0 flex-col gap-4 pb-2">
+        {canLookUp ? <p className="text-sm text-muted-foreground">{t('plugFeedbackLookupNotice')}</p> : null}
         <dl className="grid gap-2 rounded-md border border-hairline px-3 py-2 text-sm">
           <Metadata label={t('plugFeedbackDestination')} value={route.kind === 'ready' ? route.repository : route.kind === 'loading' ? t('pluginCommonLoading') : undefined} />
           <Metadata label={t('pluginDetailIdentity')} value={plugin.identity} />
