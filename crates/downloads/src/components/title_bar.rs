@@ -1,4 +1,4 @@
-//! 下载页的顶栏内容：页面插槽 [`DownloadTitleBar`]（「新建任务」主按钮，外观可在布局编辑模式下切换），
+//! 下载页的顶栏内容：页面插槽 [`DownloadTitleBar`]（新建任务与清除已完成任务），
 //! 以及作为 chrome 布局条目摆放的搜索框 [`DownloadSearchBox`] 与「视图」选项菜单
 //! [`DownloadViewMenu`]（可在顶栏内移动、可隐藏，见 [`DownloadPageWidget`]）。
 //!
@@ -37,7 +37,7 @@ use crate::{
             DetailPlacement, HeaderAlign, SortDir, ViewDensity, ViewGroupBy, ViewPrefs, ViewSortKey,
         },
     },
-    pages::downloads::DownloadView,
+    pages::downloads::{DownloadView, PageCommand},
     strings::SEARCH_SHORTCUT_HINT,
 };
 
@@ -180,10 +180,22 @@ pub struct DownloadTitleBar {
 
 impl DownloadTitleBar {
     pub(crate) fn new(
-        view: WeakEntity<DownloadView>,
+        view: &Entity<DownloadView>,
         translator: Entity<Translator>,
         style: NewTaskButtonStyle,
+        cx: &mut Context<Self>,
     ) -> Self {
+        // render 读取 DownloadView 的控制器状态；插槽是独立实体，父视图 notify 不会重建它。
+        // 只在禁用态翻转时刷新，避免进度事件带来无谓重绘。
+        let mut last_disabled = None;
+        cx.observe(view, move |this, _, cx| {
+            let disabled = clear_finished_disabled(&this.view, cx);
+            if last_disabled.replace(disabled) != Some(disabled) {
+                cx.notify();
+            }
+        })
+        .detach();
+        let view = view.downgrade();
         Self {
             view,
             translator,
@@ -267,6 +279,14 @@ fn apply_new_task_button_style(
     };
 }
 
+/// 「清除已完成任务」是否禁用：视图已释放、任务表载入中或断线。
+fn clear_finished_disabled(view: &WeakEntity<DownloadView>, cx: &App) -> bool {
+    view.upgrade().is_none_or(|view| {
+        let controller = &view.read(cx).controller;
+        controller.tables_loading() || controller.is_stale()
+    })
+}
+
 impl Render for DownloadTitleBar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = active_theme(cx);
@@ -321,11 +341,40 @@ impl Render for DownloadTitleBar {
                 })
                 .into_any_element()
         };
+        let clear_finished = (!self.editing).then(|| {
+            let view = self.view.clone();
+            let disabled = clear_finished_disabled(&view, cx);
+            let label = self.text("menuClearFinished", cx);
+            interactive(
+                fluxdown_ui_components::toolbar_action_button(
+                    "download-clear-finished",
+                    label.clone(),
+                    Icon::new(FluxIcon::Trash2).size(theme.extended().icon.sm),
+                    false,
+                    disabled,
+                    cx,
+                )
+                .size(theme.density().toolbar_button)
+                .on_click(move |_, window, cx| {
+                    if let Some(view) = view.upgrade() {
+                        view.update(cx, |view, cx| {
+                            view.run_page_command(PageCommand::ClearFinished, window, cx);
+                        });
+                    }
+                }),
+            )
+            .id("download-clear-finished-tooltip")
+            .tooltip(move |window, cx| {
+                fluxdown_ui_components::tooltip_view(label.clone(), window, cx)
+            })
+        });
         h_flex()
             .h_full()
             .flex_none()
             .items_center()
+            .gap(tokens.spacing.sm)
             .child(interactive(content))
+            .children(clear_finished)
     }
 }
 
