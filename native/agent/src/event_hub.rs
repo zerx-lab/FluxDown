@@ -67,12 +67,6 @@ impl TrayTask {
             Self::Canceled => false,
         }
     }
-
-    fn cancel(&mut self) {
-        if self.is_unfinished() {
-            *self = Self::Canceled;
-        }
-    }
 }
 
 #[cfg(all(feature = "desktop", any(windows, test)))]
@@ -84,8 +78,6 @@ impl TrayRound {
         if next.is_unfinished() && !self.tasks.values().any(TrayTask::is_unfinished) {
             self.tasks.clear();
             self.terminal_rows.clear();
-            self.pending_notices
-                .retain(|_, notice| notice.next.is_unfinished());
             self.reconcile_failures = false;
         }
         if let Some(task) = self.tasks.get_mut(id) {
@@ -135,8 +127,11 @@ impl TrayRound {
     fn cancel(&mut self, id: &str) {
         self.pending_notices.remove(id);
         self.terminal_rows.remove(id);
-        if let Some(task) = self.tasks.get_mut(id) {
-            task.cancel();
+        if let Some(task) = self.tasks.get_mut(id)
+            && task.is_unfinished()
+        {
+            *task = TrayTask::Canceled;
+            self.mark_changed(TrayTask::Canceled);
         }
     }
 
@@ -182,6 +177,9 @@ impl TrayRound {
         }
         self.reconcile_failures = false;
         for (id, task) in &mut self.tasks {
+            if *task == TrayTask::Canceled {
+                continue;
+            }
             let status = snapshot.task(id).map(|row| row.status);
             if replaced && let Some(status @ (3 | 4)) = status {
                 self.terminal_rows
@@ -379,7 +377,13 @@ impl AgentEventHub {
         let mut state = lock_or_recover(&self.state);
         // Terminal notices can finish a member of this round, not enroll a
         // historical task whose terminal row is still in the daemon snapshot.
-        if !next.is_unfinished() && !state.tray.tasks.contains_key(&task.id) {
+        if !next.is_unfinished()
+            && !state
+                .tray
+                .tasks
+                .get(&task.id)
+                .is_some_and(|task| *task != TrayTask::Canceled)
+        {
             return;
         }
         let status = state.snapshot.daemon.task(&task.id).map(|row| row.status);
@@ -394,7 +398,7 @@ impl AgentEventHub {
                 .filter(|(row_status, _)| Some(*row_status) == status)
                 .map_or(state.sequence, |(_, sequence)| *sequence);
             state.tray.set(&task.id, next);
-        } else if status.is_none() || !next.is_unfinished() {
+        } else if next.is_unfinished() && status.is_none() {
             state.tray.pending_notices.insert(
                 task.id.clone(),
                 PendingTrayNotice {
@@ -445,12 +449,14 @@ impl AgentEventHub {
             || tray.tasks.values().any(TrayTask::is_unfinished)
         {
             Some(DownloadDot::Downloading)
-        } else if !tray.tasks.is_empty()
-            && tray.tasks.values().all(|task| *task == TrayTask::Completed)
-        {
-            Some(DownloadDot::Completed)
         } else {
-            None
+            let mut eligible = tray
+                .tasks
+                .values()
+                .filter(|&&task| task != TrayTask::Canceled);
+            (eligible.next() == Some(&TrayTask::Completed)
+                && eligible.all(|task| *task == TrayTask::Completed))
+            .then_some(DownloadDot::Completed)
         }
     }
 
@@ -561,7 +567,9 @@ mod tests {
         // The same task ID can join a new round by actually resuming.
         acknowledge_current(&hub);
         hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("old", 1)?));
+        hub.record_tray_result(&failed_notice("old"));
         hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("old", 4)?));
+        assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Downloading));
         hub.record_tray_result(&failed_notice("old"));
         assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Failed));
         Ok(())
@@ -641,38 +649,24 @@ mod tests {
     fn tray_dot_requires_a_successful_round_and_acknowledges_failure()
     -> Result<(), serde_json::Error> {
         use crate::shell::DownloadDot;
-        use fluxdown_protocol::{TaskNoticeDto, TaskNoticeTaskDto};
 
         let hub = AgentEventHub::new(AgentSnapshot {
             daemon_connected: true,
             ..AgentSnapshot::default()
         });
         let notice = |id: &str, event: &str| -> Result<(), serde_json::Error> {
-            hub.record_tray_result(&TaskNoticeDto {
-                delivery_id: String::new(),
-                event: event.to_owned(),
-                timestamp_ms: 0,
-                queue_id: String::new(),
-                queue_name: String::new(),
-                task: Some(TaskNoticeTaskDto {
-                    id: id.to_owned(),
-                    ..TaskNoticeTaskDto::default()
-                }),
-            });
-            if event == "task.failed" {
-                hub.publish(fluxdown_protocol::AgentEvent::DaemonConnectionChanged(true));
-                acknowledge_current(&hub);
+            if matches!(event, "task.completed" | "task.failed") {
+                let status = if event == "task.completed" { 3 } else { 4 };
+                hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task(id, status)?));
             }
-            let status = match event {
-                "task.started" => 1,
-                "task.created" => 0,
-                "task.completed" => 3,
-                "task.failed" => 4,
-                _ => unreachable!(),
-            };
-            hub.apply_daemon_event(fluxdown_protocol::DaemonEvent::TaskChanged(tray_task(
-                id, status,
-            )?));
+            hub.record_tray_result(&fluxdown_protocol::TaskNoticeDto {
+                event: event.to_owned(),
+                ..failed_notice(id)
+            });
+            if matches!(event, "task.started" | "task.created") {
+                let status = i32::from(event == "task.started");
+                hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task(id, status)?));
+            }
             Ok(())
         };
         notice("a", "task.started")?;
@@ -702,8 +696,16 @@ mod tests {
         notice("e", "task.started")?;
         notice("f", "task.created")?;
         notice("e", "task.completed")?;
+        acknowledge_current(&hub);
         hub.apply_daemon_event(DaemonEvent::TaskDeleted {
             task_id: "f".to_owned(),
+        });
+        assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Completed));
+
+        acknowledge_current(&hub);
+        notice("g", "task.started")?;
+        hub.apply_daemon_event(DaemonEvent::TaskDeleted {
+            task_id: "g".to_owned(),
         });
         assert_eq!(hub.tray_download_dot(), None);
         Ok(())
