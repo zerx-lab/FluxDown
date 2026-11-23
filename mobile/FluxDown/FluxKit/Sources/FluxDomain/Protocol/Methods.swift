@@ -297,6 +297,10 @@ public enum HostMethod {
     public static let agentPlatformAppIconImage = "agent.platform.appIconImage"
     /// 为桌面界面进程现有窗口补设应用图标；仅桌面，移动端不使用。
     public static let agentPlatformSyncWindowIcons = "agent.platform.syncWindowIcons"
+    /// 本机浏览器扩展安装状态；仅桌面，移动端不使用。
+    public static let agentPlatformBrowserExtensionStatus = "agent.platform.browserExtensionStatus"
+    /// 为本机浏览器安装 FluxDown 扩展；仅桌面，移动端不使用。
+    public static let agentPlatformInstallBrowserExtension = "agent.platform.installBrowserExtension"
     /// 由 agent 在本机播放一次提示音偏好值；仅桌面，移动端不使用。
     public static let agentSoundPreview = "agent.sound.preview"
     public static let agentCaptureSubmit = "agent.capture.submit"

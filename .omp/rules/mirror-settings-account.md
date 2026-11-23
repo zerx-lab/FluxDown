@@ -36,7 +36,7 @@ interruptMode: never
 
 → `web/src/lib/update.ts::versionBadge` + `web/src/lib/diagnosticInfo.ts`：逐条对齐（`update.test.ts` / `diagnosticInfo.test.ts` 与 Rust 测试为同一组用例）；诊断信息只含版本 / 渠道 / 协议 / 平台或安装形态 / 客户端 / 语言，不含路径、账户、设备名、地址。Android / iOS 无此条目
 
-## 更新说明展示规则（`crates/settings/src/sections/about.rs`：`localized_release_body` 按界面语言切段、`strip_version_heading` 去掉正文开头与标题重复的版本标题、`release_date` 取发布日期；标题统一为「v版本 + 发布日期」，关于页与新版本提醒窗口共用）
+## 更新说明展示规则（`crates/settings/src/sections/about.rs`：`localized_release_body` 按界面语言切段、`strip_version_heading` 去掉正文开头与标题重复的版本标题、`release_date` 取发布日期；标题统一为「v版本 + 发布日期」，由更新窗口展示，关于页只放「更新日志」入口按钮；Web 为关于页对话框）
 
 → `web/src/lib/releaseNotes.ts` + 原生 Android `mobile/Android/core/.../update/UpdateView.kt`（`localizedReleaseBody` / `stripVersionHeading` / `releaseDate`）逐条对齐，`releaseNotes.test.ts` / `UpdateViewTest` 与 Rust 测试为同一组用例；Web 不引入 Markdown 渲染器，`releaseNoteBlocks` 只拆标题 / 列表 / 段落
 

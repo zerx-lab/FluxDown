@@ -6,6 +6,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+use fluxdown_protocol::browser_extension::{
+    BrowserExtensionInstallResult, BrowserExtensionStatusDto, BrowserKind,
+};
 use fluxdown_protocol::{
     AgentEvent, AgentPreferencesDto, AgentSnapshot, ApplicationErrorCode,
     BtGuardFilterSourcesRefreshDto, BtGuardStateDto, BtPortStatusDto, ComponentStatusDto,
@@ -41,6 +44,10 @@ pub(crate) const DOCTOR_REPAIR_OUTCOME: &str = "doctor_repair_outcome";
 pub(crate) const PROXY_MANUAL_EXPANDED: &str = "proxy_manual_expanded";
 /// 只属于某个分类页的视图状态：切换分类时全部清除，下次进入恢复默认。
 const PAGE_VIEW_STATE: &[&str] = &[PROXY_MANUAL_EXPANDED];
+/// 关于页浏览器扩展状态的加载闸门 / 在途动作名。
+pub(crate) const BROWSER_EXTENSION_LOAD: &str = "browserExtensions";
+/// 浏览器扩展一键安装的在途动作名（按钮标签 = 浏览器线上取值）。
+pub(crate) const BROWSER_EXTENSION_INSTALL: &str = "browserExtensionInstall";
 
 /// 设置写回失败的 UI 可展示分类。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -144,6 +151,8 @@ pub struct SettingsStore {
 
     // ── 按需加载的动作结果 ──
     integration: Option<PlatformIntegrationDto>,
+    /// 本机浏览器与 FluxDown 扩展安装状态（关于页按需加载，安装后重新加载）。
+    browser_extensions: Option<BrowserExtensionStatusDto>,
     diagnostics: Option<DiagnosticsReportDto>,
     site_auth: Vec<SiteAuthEntryDto>,
     conn_policy: Option<ConnPolicySummaryDto>,
@@ -206,6 +215,7 @@ impl SettingsStore {
             conflict_retries: 0,
             mutations: mutation::DaemonMutations::default(),
             integration: None,
+            browser_extensions: None,
             diagnostics: None,
             site_auth: Vec::new(),
             conn_policy: None,
@@ -543,6 +553,10 @@ impl SettingsStore {
     #[must_use]
     pub fn integration(&self) -> Option<&PlatformIntegrationDto> {
         self.integration.as_ref()
+    }
+    #[must_use]
+    pub fn browser_extensions(&self) -> Option<&BrowserExtensionStatusDto> {
+        self.browser_extensions.as_ref()
     }
     #[must_use]
     pub fn diagnostics(&self) -> Option<&DiagnosticsReportDto> {
@@ -908,10 +922,18 @@ impl SettingsStore {
             }
             _ => None,
         };
-        let future = directory
-            .filter(|path| !path.trim().is_empty())
-            .and_then(|path| self.port.foreground_open_directory(path))
-            .unwrap_or_else(|| self.port.call(method, params));
+        let foreground = if method == method::AGENT_PLATFORM_INSTALL_BROWSER_EXTENSION {
+            params
+                .get("browser")
+                .and_then(Value::as_str)
+                .and_then(BrowserKind::parse)
+                .and_then(|browser| self.port.foreground_install_browser_extension(browser))
+        } else {
+            directory
+                .filter(|path| !path.trim().is_empty())
+                .and_then(|path| self.port.foreground_open_directory(path))
+        };
+        let future = foreground.unwrap_or_else(|| self.port.call(method, params));
         cx.spawn(async move |this, cx| {
             let result = future.await;
 
@@ -996,6 +1018,49 @@ impl SettingsStore {
         {
             self.integration = Some(dto);
         }
+    }
+
+    /// 关于页「浏览器扩展」：拉取本机浏览器与扩展安装状态。
+    pub fn load_browser_extensions(&mut self, cx: &mut Context<Self>) {
+        self.call_with(
+            BROWSER_EXTENSION_LOAD,
+            method::AGENT_PLATFORM_BROWSER_EXTENSION_STATUS,
+            json!({}),
+            cx,
+            |this, result, _| {
+                if let Ok(value) = result
+                    && let Ok(dto) = serde_json::from_value::<BrowserExtensionStatusDto>(value)
+                {
+                    this.browser_extensions = Some(dto);
+                }
+            },
+        );
+    }
+
+    /// 为 `browser` 安装 FluxDown 扩展：登记商店外部扩展（平台支持时）并在该浏览器打开安装页。
+    pub fn install_browser_extension(&mut self, browser: BrowserKind, cx: &mut Context<Self>) {
+        self.call_with(
+            BROWSER_EXTENSION_INSTALL,
+            method::AGENT_PLATFORM_INSTALL_BROWSER_EXTENSION,
+            json!({ "browser": browser }),
+            cx,
+            |this, result, cx| {
+                let Ok(value) = result else {
+                    return;
+                };
+                let registered = serde_json::from_value::<BrowserExtensionInstallResult>(value)
+                    .is_ok_and(|result| result.external_registered);
+                // 登记状态已变：放行重新加载（`call_with` 会清掉提示，故先发起再写提示）。
+                this.load_attempts.remove(BROWSER_EXTENSION_LOAD);
+                this.load_browser_extensions(cx);
+                this.last_notice = Some(if registered {
+                    "browserExtensionInstallRegistered"
+                } else {
+                    "browserExtensionInstallStoreOpened"
+                });
+            },
+        );
+        self.tag_busy(BROWSER_EXTENSION_INSTALL, browser.as_str());
     }
 
     pub fn run_diagnostics(&mut self, cx: &mut Context<Self>) {

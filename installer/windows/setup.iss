@@ -580,6 +580,14 @@ begin
     RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Microsoft\Edge\NativeMessagingHosts\com.fluxdown.nmh');
     RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Mozilla\NativeMessagingHosts\com.fluxdown.nmh');
 
+    { Browser extension external-install entries written at runtime when the
+      user clicks Settings > About > Install to Chrome/Edge
+      (native/agent/src/platform/browser_extension.rs). Removing them makes the
+      browser uninstall the FluxDown extension, matching the uninstall intent.
+      The extension IDs are FluxDown-specific, safe to remove unconditionally. }
+    RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Google\Chrome\Extensions\meleenglfggcmcajknpeeeiobnpfmahc');
+    RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Microsoft\Edge\Extensions\nglkkjbogjghekbhhcnccnpfedjbdhhd');
+
     { fluxdown:// / ed2k:// / magnet: URL protocol handlers — same gap as above. }
     RemoveProtocolHandler('fluxdown');
     RemoveProtocolHandler('ed2k');

@@ -15,6 +15,7 @@
 #[cfg(feature = "desktop")]
 pub(crate) mod app_icon;
 mod autostart;
+pub mod browser_extension;
 #[cfg(feature = "desktop")]
 mod clipboard_files;
 #[cfg(feature = "desktop")]
@@ -232,9 +233,10 @@ fn open_dir(dir: &Path) -> Result<(), PlatformError> {
 /// 不会落入常驻启动。
 #[must_use]
 pub fn run_shell_open(args: &[String]) -> Option<i32> {
+    use fluxdown_protocol::browser_extension::BrowserKind;
     use fluxdown_protocol::shell_open::{
-        EXIT_FAILED, EXIT_NOT_FOUND, EXIT_OK, EXIT_UNSUPPORTED, EXIT_USAGE, OPEN_DIR_ARG,
-        OPEN_TASK_ARG, REVEAL_TASK_ARG,
+        EXIT_FAILED, EXIT_NOT_FOUND, EXIT_OK, EXIT_OK_STORE_ONLY, EXIT_UNSUPPORTED, EXIT_USAGE,
+        INSTALL_BROWSER_EXTENSION_ARG, OPEN_DIR_ARG, OPEN_TASK_ARG, REVEAL_TASK_ARG,
     };
 
     let (flag, rest) = args.split_first()?;
@@ -244,7 +246,19 @@ pub fn run_shell_open(args: &[String]) -> Option<i32> {
             reveal_task_file(Path::new(save_dir), file_name)
         }
         (OPEN_DIR_ARG, [dir]) => open_dir(Path::new(dir)),
-        (OPEN_TASK_ARG | REVEAL_TASK_ARG | OPEN_DIR_ARG, _) => return Some(EXIT_USAGE),
+        (INSTALL_BROWSER_EXTENSION_ARG, [browser]) => {
+            let Some(kind) = BrowserKind::parse(browser) else {
+                return Some(EXIT_USAGE);
+            };
+            match browser_extension::install(kind) {
+                Ok(result) if result.external_registered => Ok(()),
+                Ok(_) => return Some(EXIT_OK_STORE_ONLY),
+                Err(error) => Err(error),
+            }
+        }
+        (OPEN_TASK_ARG | REVEAL_TASK_ARG | OPEN_DIR_ARG | INSTALL_BROWSER_EXTENSION_ARG, _) => {
+            return Some(EXIT_USAGE);
+        }
         _ => return None,
     };
     Some(match outcome {
@@ -1193,7 +1207,7 @@ mod tests {
     #[test]
     fn shell_open_mode_claims_only_its_own_flags() {
         use fluxdown_protocol::shell_open::{
-            EXIT_USAGE, OPEN_DIR_ARG, OPEN_TASK_ARG, REVEAL_TASK_ARG,
+            EXIT_USAGE, INSTALL_BROWSER_EXTENSION_ARG, OPEN_DIR_ARG, OPEN_TASK_ARG, REVEAL_TASK_ARG,
         };
         let args = |values: &[&str]| {
             values
@@ -1212,6 +1226,9 @@ mod tests {
             args(&[REVEAL_TASK_ARG, "dir"]),
             args(&[OPEN_DIR_ARG]),
             args(&[OPEN_DIR_ARG, "a", "b"]),
+            args(&[INSTALL_BROWSER_EXTENSION_ARG]),
+            args(&[INSTALL_BROWSER_EXTENSION_ARG, "safari"]),
+            args(&[INSTALL_BROWSER_EXTENSION_ARG, "chrome", "extra"]),
         ] {
             assert_eq!(
                 run_shell_open(&malformed),

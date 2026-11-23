@@ -715,6 +715,21 @@ impl GatewayService {
                 self.platform_app_icon_image(params).await
             }
             method::AGENT_PLATFORM_SYNC_WINDOW_ICONS => self.platform_sync_window_icons().await,
+            method::AGENT_PLATFORM_BROWSER_EXTENSION_STATUS => {
+                platform_blocking(|| Ok(crate::platform::browser_extension::status()))
+                    .await
+                    .and_then(to_value)
+            }
+            method::AGENT_PLATFORM_INSTALL_BROWSER_EXTENSION => {
+                let params = parse_params::<
+                    fluxdown_protocol::browser_extension::BrowserExtensionInstallParams,
+                >(request.params)?;
+                platform_blocking(move || {
+                    crate::platform::browser_extension::install(params.browser)
+                })
+                .await
+                .and_then(to_value)
+            }
             method::AGENT_SOUND_PREVIEW => {
                 let params =
                     parse_params::<fluxdown_protocol::sound::SoundPreviewParams>(request.params)?;
@@ -5125,6 +5140,8 @@ mod tests {
             fluxdown_protocol::method::AGENT_PLATFORM_INTEGRATION_GET,
             fluxdown_protocol::method::AGENT_PLATFORM_SET_AUTOSTART,
             fluxdown_protocol::method::AGENT_SOUND_PREVIEW,
+            fluxdown_protocol::method::AGENT_PLATFORM_BROWSER_EXTENSION_STATUS,
+            fluxdown_protocol::method::AGENT_PLATFORM_INSTALL_BROWSER_EXTENSION,
         ] {
             let response = harness.call(method_name, serde_json::json!({})).await;
             let RpcResponse::Failure(failure) = response else {

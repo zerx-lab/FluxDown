@@ -32,6 +32,7 @@ use crate::store::{SettingsErrorKind, SettingsStore};
 use crate::ui::{
     CONTENT_PADDING_LEFT, CONTENT_PADDING_RIGHT, SettingsPage, meta_text, page_heading,
 };
+use crate::version_button::VersionHostAction;
 
 /// 分类导航列宽（与下载侧栏默认宽一致）。
 const SIDEBAR_WIDTH: f32 = 200.;
@@ -72,8 +73,8 @@ pub(crate) enum ReferralPage {
     Shown(Option<AnyView>),
 }
 
-/// app 注入的外部内容：账户 / 推介页与扩展页由对应 capability 提供；活动栏开关由 app 的
-/// 活动栏注册表派生。
+/// app 注入的外部内容与宿主动作：账户 / 推介页与扩展页由对应 capability 提供；活动栏开关由
+/// app 的活动栏注册表派生。
 #[derive(Default)]
 pub struct SettingsContentSlots {
     pub account: Option<AnyView>,
@@ -82,6 +83,8 @@ pub struct SettingsContentSlots {
     pub referral: Option<VisibleSlot>,
     /// 「通用 → 活动栏」分区的开关行，按活动栏自上而下顺序。
     pub activity_bar: Vec<ActivityBarToggle>,
+    /// 打开独立的更新窗口（版本信息、更新日志与更新动作）；缺省时「关于」页不显示更新日志按钮。
+    pub open_update_prompt: Option<VersionHostAction>,
 }
 
 /// 活动栏可选入口的可见性开关：一个布尔偏好（缺省视为显示）+ 标题 / 描述文案键。
@@ -159,10 +162,12 @@ impl SettingsView {
         })
         .detach();
         // 站点凭据由新建任务等流程在窗口外写入且无事件推送：每次打开窗口重新加载一次。
-        // 系统集成状态上次失败的话，重新打开窗口也给一次重试机会。
+        // 系统集成状态上次失败的话，重新打开窗口也给一次重试机会。浏览器扩展可能已在浏览器里
+        // 启用 / 移除，同样重新检测（保留旧结果直到新结果到达）。
         store.update(cx, |store, _| {
             store.reset_load("siteAuth");
             store.reset_load("integration");
+            store.reset_load(crate::store::BROWSER_EXTENSION_LOAD);
         });
         let placeholder = translator.read(cx).text("settingsSearchHint").to_owned();
         let search = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
@@ -222,6 +227,7 @@ impl SettingsView {
         let ctx = SectionContext {
             store: &self.store,
             translator: &translator,
+            open_update_prompt: self.slots.open_update_prompt.clone(),
         };
         build_pages(
             &ctx,

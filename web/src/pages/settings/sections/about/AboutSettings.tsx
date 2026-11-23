@@ -9,15 +9,15 @@ import { diagnosticText } from '../../../../lib/diagnosticInfo'
 import { byteUnit, useFileSizeUnits } from '../../../../lib/fileSizeUnits'
 import { exportLogs, rpc, useRpcSelector } from '../../../../lib/rpc'
 import type { ReleaseNoteDto } from '../../../../lib/rpc'
-import { Button, toast } from '../../../../ui'
+import { Button, Dialog, toast } from '../../../../ui'
 import { rpcErrorText } from '../../../../lib/rpcErrorText'
 import { localizedReleaseBody, releaseDate, releaseNoteBlocks, stripVersionHeading } from '../../../../lib/releaseNotes'
 import { canCancel, canInstall, manualLine, manualUrl, statusLine, updateLineText, useUpdateStatus } from '../../../../lib/update'
-import { DaemonNumberRow, PrefDropdownRow, PrefSwitchRow, SettingsCustomRow, SettingsPage, SettingsRow, SettingsSection, useSettingsReadOnly, usePrefBoolean, usePrefString } from '../../kit'
+import { DaemonNumberRow, PrefDropdownRow, PrefSwitchRow, SettingsPage, SettingsRow, SettingsSection, useSettingsReadOnly, usePrefBoolean, usePrefString } from '../../kit'
 
-const CHROME_STORE = 'https://chromewebstore.google.com/search/FluxDown'
+const CHROME_STORE = 'https://chromewebstore.google.com/detail/fluxdown/meleenglfggcmcajknpeeeiobnpfmahc'
 const FIREFOX_STORE = 'https://addons.mozilla.org/firefox/addon/fluxdown/'
-const EDGE_STORE = 'https://microsoftedge.microsoft.com/addons/search/FluxDown'
+const EDGE_STORE = 'https://microsoftedge.microsoft.com/addons/detail/fluxdown/nglkkjbogjghekbhhcnccnpfedjbdhhd'
 const DONATE = 'https://fluxdown.com/sponsor'
 const WEBSITE = 'https://fluxdown.com'
 /** 服务端资产随统一的 `vX.Y.Z` release 发布（更早版本在 `server-v*` release）。 */
@@ -91,6 +91,7 @@ function UpdateRow() {
   const channel = usePrefString('general.update_channel', 'stable')
   const status = useUpdateStatus()
   const [busy, setBusy] = useState<'check' | 'install' | 'cancel' | null>(null)
+  const [notesOpen, setNotesOpen] = useState(false)
 
   const run = async (kind: 'check' | 'install' | 'cancel', action: () => Promise<unknown>) => {
     if (busy) return
@@ -109,6 +110,7 @@ function UpdateRow() {
   // 「检查中」由检查按钮的 loading 承担，状态行不再重复显示。
   const lines = status ? [checking ? null : statusLine(status), manualLine(status)].flatMap((line) => (line ? [updateLineText(t, line)] : [])) : []
   const url = status ? manualUrl(status) : null
+  const notes = status?.notes ?? []
 
   return (
     <>
@@ -120,6 +122,11 @@ function UpdateRow() {
             </span>
           ))}
           <div className="flex flex-wrap items-center gap-2 desktop:justify-end">
+            {notes.length > 0 ? (
+              <Button variant="ghost" onClick={() => setNotesOpen(true)}>
+                {t('viewReleaseNotes')}
+              </Button>
+            ) : null}
             {status && canCancel(status) ? (
               <Button loading={busy === 'cancel'} disabled={disabled || busy !== null} onClick={() => void run('cancel', () => rpc.agent.update.cancel())}>
                 {t('cancel')}
@@ -145,13 +152,14 @@ function UpdateRow() {
           </div>
         </div>
       </SettingsRow>
-      {status && status.notes.length > 0 ? (
-        <SettingsCustomRow className="flex flex-col gap-4">
-          {status.notes.slice(0, 10).map((note, index) => (
+      {/* 更新日志放进对话框滚动阅读（GPUI 为独立更新窗口），不在关于页里展开长列表。 */}
+      <Dialog open={notesOpen && notes.length > 0} onOpenChange={setNotesOpen} title={t('viewReleaseNotes')} size="lg">
+        <div className="flex flex-col gap-4 pb-2">
+          {notes.slice(0, 10).map((note, index) => (
             <ReleaseNote key={note.version} note={note} locale={locale} divided={index > 0} />
           ))}
-        </SettingsCustomRow>
-      ) : null}
+        </div>
+      </Dialog>
     </>
   )
 }

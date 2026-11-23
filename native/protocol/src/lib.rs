@@ -5,6 +5,7 @@
 pub mod agent;
 pub mod app_icon;
 pub mod aria2_options;
+pub mod browser_extension;
 pub mod capture_link;
 pub mod cloud_notify;
 pub mod coalesce;

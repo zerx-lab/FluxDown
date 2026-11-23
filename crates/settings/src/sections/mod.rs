@@ -51,10 +51,12 @@ use gpui_component::Icon;
 use crate::store::SettingsStore;
 use crate::ui::{Control, SettingsPage, SettingsRow, SettingsSection, SettingsTab, meta_text};
 
-/// 分区构建上下文：存储实体 + 当前语言的翻译快照。
+/// 分区构建上下文：存储实体 + 当前语言的翻译快照 + 宿主动作。
 pub(crate) struct SectionContext<'a> {
     pub store: &'a Entity<SettingsStore>,
     pub translator: &'a Translator,
+    /// 打开独立更新窗口；搜索索引等无宿主场景为 `None`。
+    pub open_update_prompt: Option<crate::version_button::VersionHostAction>,
 }
 
 impl SectionContext<'_> {
