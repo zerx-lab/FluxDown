@@ -257,23 +257,51 @@ fn watch_tray_downloads(
     window: &mut Window,
     cx: &mut App,
 ) {
+    let pending = Rc::new(std::cell::Cell::new(false));
+    let last_sent = Rc::new(std::cell::RefCell::new(None::<(String, u64)>));
     let check = {
         let shell = shell.clone();
         let session = session.clone();
-        let was_visible = std::cell::Cell::new(false);
-        Rc::new(move |window: &Window, cx: &App| {
-            let visible = window.is_window_active()
-                && shell.read(cx).active_route() == Some(&crate::activity::DOWNLOADS_ROUTE)
-                && session.read(cx).tray_downloads_ready();
-            let previously_visible = was_visible.replace(visible);
-            if visible
-                && !previously_visible
-                && let Some(snapshot) = session.read(cx).latest()
+        move |window: &Window, cx: &App| {
+            if !tray_downloads_visible(window, &shell, &session, cx)
+                || pending.get()
+                || session.read(cx).latest().is_none_or(|snapshot| {
+                    last_sent
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|(epoch, sequence)| {
+                            epoch == &snapshot.epoch && *sequence == snapshot.sequence
+                        })
+                })
             {
-                acknowledge_tray_downloads(&snapshot.epoch, snapshot.sequence, cx);
+                return;
             }
-        })
+            pending.set(true);
+            let pending = pending.clone();
+            let last_sent = last_sent.clone();
+            let shell = shell.clone();
+            let session = session.clone();
+            let handle = window.window_handle();
+            cx.spawn(async move |cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(1))
+                    .await;
+                pending.set(false);
+                cx.update(|cx| {
+                    let _ = handle.update(cx, |_, window, cx| {
+                        if tray_downloads_visible(window, &shell, &session, cx)
+                            && let Some(snapshot) = session.read(cx).latest()
+                        {
+                            acknowledge_tray_downloads(&snapshot.epoch, snapshot.sequence, cx);
+                            last_sent.replace(Some((snapshot.epoch.clone(), snapshot.sequence)));
+                        }
+                    });
+                });
+            })
+            .detach();
+        }
     };
+    let check = Rc::new(check);
     root.update(cx, |_, cx| {
         let activation = check.clone();
         cx.observe_window_activation(window, move |_, window, cx| activation(window, cx))
@@ -282,30 +310,23 @@ fn watch_tray_downloads(
         cx.observe_in(shell, window, move |_, _, window, cx| route(window, cx))
             .detach();
         let readiness = check.clone();
-        cx.subscribe_in(session, window, move |_, _, signal, window, cx| {
-            use crate::session::SessionSignal;
-            use fluxdown_protocol::{AgentEvent, DaemonEvent, ServiceEvent};
-
-            if match signal {
-                SessionSignal::Event(frame) => matches!(
-                    &frame.event,
-                    ServiceEvent::Agent(
-                        AgentEvent::DaemonConnectionChanged(_)
-                            | AgentEvent::DaemonSnapshotReplaced(_)
-                            | AgentEvent::Daemon(
-                                DaemonEvent::TablesReloading { .. }
-                                    | DaemonEvent::SnapshotReplaced(_)
-                            )
-                    )
-                ),
-                _ => true,
-            } {
-                readiness(window, cx);
-            }
+        cx.subscribe_in(session, window, move |_, _, _, window, cx| {
+            readiness(window, cx)
         })
         .detach();
         check(window, cx);
     });
+}
+
+fn tray_downloads_visible(
+    window: &Window,
+    shell: &gpui::Entity<ShellView>,
+    session: &gpui::Entity<crate::session::AgentSession>,
+    cx: &App,
+) -> bool {
+    window.is_window_active()
+        && shell.read(cx).active_route() == Some(&crate::activity::DOWNLOADS_ROUTE)
+        && session.read(cx).tray_downloads_ready()
 }
 
 fn acknowledge_tray_downloads(epoch: &str, sequence: u64, cx: &App) {

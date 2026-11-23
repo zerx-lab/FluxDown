@@ -26,6 +26,7 @@ struct AgentEventState {
 #[derive(Default)]
 struct TrayRound {
     tasks: std::collections::HashMap<String, TrayTask>,
+    pending_notices: std::collections::HashMap<String, TrayTask>,
     failure_sequence: u64,
     change_sequence: u64,
     acknowledged_sequence: u64,
@@ -47,6 +48,16 @@ enum TrayTask {
 impl TrayTask {
     fn is_unfinished(&self) -> bool {
         matches!(self, Self::Unfinished | Self::Running)
+    }
+
+    fn matches_row(self, status: i32) -> bool {
+        match self {
+            Self::Unfinished => matches!(status, 0 | 2),
+            Self::Running => matches!(status, 1 | 5),
+            Self::Completed => status == 3,
+            Self::Failed => status == 4,
+            Self::Canceled => false,
+        }
     }
 
     fn cancel(&mut self) {
@@ -99,6 +110,7 @@ impl TrayRound {
     }
 
     fn cancel(&mut self, id: &str) {
+        self.pending_notices.remove(id);
         if let Some(task) = self.tasks.get_mut(id) {
             task.cancel();
         }
@@ -173,6 +185,20 @@ impl TrayRound {
             }
             _ => {}
         }
+        // A global cursor is safe only once the projection contains the result.
+        let mut pending = std::mem::take(&mut self.pending_notices);
+        pending.retain(|id, next| {
+            if snapshot
+                .task(id)
+                .is_some_and(|row| next.matches_row(row.status))
+            {
+                self.set(id, *next);
+                false
+            } else {
+                true
+            }
+        });
+        self.pending_notices = pending;
     }
 }
 
@@ -280,25 +306,18 @@ impl AgentEventHub {
             _ => return,
         };
         let mut state = lock_or_recover(&self.state);
-        // A notice can arrive before its task row; an older visible snapshot must
-        // not acknowledge it. The corresponding task frame advances the cursor.
-        let visible = state
+        if state
             .snapshot
             .daemon
             .task(&task.id)
-            .is_some_and(|row| match next {
-                TrayTask::Unfinished => matches!(row.status, 0 | 2),
-                TrayTask::Running => matches!(row.status, 1 | 5),
-                TrayTask::Completed => row.status == 3,
-                TrayTask::Failed => row.status == 4,
-                TrayTask::Canceled => false,
-            });
-        state.tray.sequence = if visible {
-            state.sequence
+            .is_some_and(|row| next.matches_row(row.status))
+        {
+            state.tray.pending_notices.remove(&task.id);
+            state.tray.sequence = state.sequence;
+            state.tray.set(&task.id, next);
         } else {
-            state.sequence.saturating_add(1)
-        };
-        state.tray.set(&task.id, next);
+            state.tray.pending_notices.insert(task.id.clone(), next);
+        }
     }
 
     #[cfg(all(feature = "desktop", any(windows, test)))]
@@ -398,7 +417,8 @@ mod tests {
 
     #[cfg(feature = "desktop")]
     #[test]
-    fn tray_dot_requires_a_successful_round_and_acknowledges_failure() {
+    fn tray_dot_requires_a_successful_round_and_acknowledges_failure()
+    -> Result<(), serde_json::Error> {
         use crate::shell::DownloadDot;
         use fluxdown_protocol::{TaskNoticeDto, TaskNoticeTaskDto};
 
@@ -406,7 +426,7 @@ mod tests {
             daemon_connected: true,
             ..AgentSnapshot::default()
         });
-        let notice = |id: &str, event: &str| {
+        let notice = |id: &str, event: &str| -> Result<(), serde_json::Error> {
             hub.record_tray_result(&TaskNoticeDto {
                 delivery_id: String::new(),
                 event: event.to_owned(),
@@ -418,39 +438,54 @@ mod tests {
                     ..TaskNoticeTaskDto::default()
                 }),
             });
-            hub.publish(fluxdown_protocol::AgentEvent::DaemonConnectionChanged(true));
+            if event == "task.failed" {
+                hub.publish(fluxdown_protocol::AgentEvent::DaemonConnectionChanged(true));
+                acknowledge_current(&hub);
+            }
+            let status = match event {
+                "task.started" => 1,
+                "task.created" => 0,
+                "task.completed" => 3,
+                "task.failed" => 4,
+                _ => unreachable!(),
+            };
+            hub.apply_daemon_event(fluxdown_protocol::DaemonEvent::TaskChanged(tray_task(
+                id, status,
+            )?));
+            Ok(())
         };
-        notice("a", "task.started");
-        notice("b", "task.created");
+        notice("a", "task.started")?;
+        notice("b", "task.created")?;
         let before_failure = hub.snapshot();
-        notice("a", "task.failed");
+        notice("a", "task.failed")?;
         hub.acknowledge_tray_downloads(&before_failure.epoch, before_failure.sequence);
         assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Failed));
         acknowledge_current(&hub);
         assert_eq!(hub.tray_download_dot(), None);
-        notice("b", "task.completed");
+        notice("b", "task.completed")?;
         assert_eq!(hub.tray_download_dot(), None);
-        notice("c", "task.started");
-        notice("d", "task.created");
+        notice("c", "task.started")?;
+        notice("d", "task.created")?;
         assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Downloading));
         let seen = hub.snapshot();
         acknowledge_current(&hub);
         assert_eq!(hub.tray_download_dot(), None);
-        notice("c", "task.completed");
+        notice("c", "task.completed")?;
         assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Downloading));
-        notice("d", "task.completed");
+        notice("d", "task.completed")?;
         hub.acknowledge_tray_downloads(&seen.epoch, seen.sequence);
         assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Completed));
         acknowledge_current(&hub);
         assert_eq!(hub.tray_download_dot(), None);
 
-        notice("e", "task.started");
-        notice("f", "task.created");
-        notice("e", "task.completed");
+        notice("e", "task.started")?;
+        notice("f", "task.created")?;
+        notice("e", "task.completed")?;
         hub.apply_daemon_event(DaemonEvent::TaskDeleted {
             task_id: "f".to_owned(),
         });
         assert_eq!(hub.tray_download_dot(), None);
+        Ok(())
     }
 
     #[cfg(feature = "desktop")]
