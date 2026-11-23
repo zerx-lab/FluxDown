@@ -55,7 +55,8 @@ class PluginFeedbackApiTest {
         }
         val submitted = PluginFeedbackApi.decodeSubmission(201, """{"issueNumber":42}""")
         assertEquals(42L, (submitted as? PluginFeedbackResult.Ok)?.value)
-        assertEquals(PluginFeedbackResult.Failure.Failed, PluginFeedbackApi.decodeSubmission(201, """{"issueNumber":0}"""))
+        assertEquals(PluginFeedbackResult.Failure.Unconfirmed, PluginFeedbackApi.decodeSubmission(201, """{"issueNumber":0}"""))
+        assertEquals(PluginFeedbackResult.Failure.Unconfirmed, PluginFeedbackApi.decodeSubmission(502, null))
     }
 
     @Test

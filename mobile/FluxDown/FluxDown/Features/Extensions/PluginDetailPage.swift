@@ -32,6 +32,7 @@ struct PluginDetailPage: View {
             if let plugin {
                 PluginFeedbackSheet(
                     identity: plugin.identity, version: plugin.version,
+                    loadStatus: plugin.loadStatus,
                     allowsPluginReport: !plugin.devMode && plugin.source != "private"
                 )
                 .id([plugin.identity, plugin.version, String(plugin.devMode), plugin.source])

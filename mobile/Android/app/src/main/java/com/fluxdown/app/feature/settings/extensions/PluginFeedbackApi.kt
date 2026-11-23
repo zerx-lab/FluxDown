@@ -77,7 +77,7 @@ internal data class PluginFeedbackReport(
 
 internal sealed interface PluginFeedbackResult<out T> {
     class Ok<T>(val value: T) : PluginFeedbackResult<T>
-    enum class Failure : PluginFeedbackResult<Nothing> { Unavailable, RouteChanged, RateLimited, Failed }
+    enum class Failure : PluginFeedbackResult<Nothing> { Unavailable, RouteChanged, RateLimited, Failed, Unconfirmed }
 }
 
 internal object PluginFeedbackApi {
@@ -105,9 +105,10 @@ internal object PluginFeedbackApi {
     }
 
     internal fun decodeSubmission(status: Int, body: String?): PluginFeedbackResult<Long> {
+        if (status in 500..599) return PluginFeedbackResult.Failure.Unconfirmed
         if (status != 201) return failure(status)
         val number = Json.parseOrNull(body).longOrNull("issueNumber")
-        return if (number != null && number > 0) PluginFeedbackResult.Ok(number) else PluginFeedbackResult.Failure.Failed
+        return if (number != null && number > 0) PluginFeedbackResult.Ok(number) else PluginFeedbackResult.Failure.Unconfirmed
     }
 
     private fun failure(status: Int): PluginFeedbackResult.Failure = when (status) {
@@ -145,7 +146,7 @@ internal object PluginFeedbackApi {
                 connection.disconnect()
             }
         } catch (_: IOException) {
-            PluginFeedbackResult.Failure.Failed
+            if (body == null) PluginFeedbackResult.Failure.Failed else PluginFeedbackResult.Failure.Unconfirmed
         }
     }
 

@@ -36,7 +36,8 @@ export const prerender = false;
 const pluginFeedback = createPluginFeedback(PLUGIN_FEEDBACK_APP_ID, PLUGIN_FEEDBACK_PRIVATE_KEY_BASE64);
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
-const PRIVATE_BODY_MAX = 128 * 1024; // 30,000 characters of optional private logs plus metadata
+// Leave room for 30,000 log characters and 5,000 description characters even when JSON-escaped.
+const PRIVATE_BODY_MAX = 256 * 1024;
 const PLUGIN_BODY_MAX = 32 * 1024;
 
 interface Quota {
@@ -60,6 +61,21 @@ function takeQuota(quota: Quota, key: string, duration: number, perKey: number, 
   if (quota.total >= overall || count >= perKey) return false;
   quota.total++;
   quota.keys.set(key, count + 1);
+  return true;
+}
+
+function takePluginWriteQuota(ip: string, repository: string): boolean {
+  const start = Math.floor(Date.now() / HOUR) * HOUR;
+  if (pluginWrites.start !== start) {
+    pluginWrites.start = start;
+    pluginWrites.total = 0;
+    pluginWrites.keys.clear();
+  }
+  const authorRepo = repository.toLowerCase();
+  const limits = [[`ip:${ip}`, 4], [`repository:${authorRepo}`, 6], [`pair:${ip}/${authorRepo}`, 2]] as const;
+  if (pluginWrites.total >= 40 || limits.some(([key, limit]) => (pluginWrites.keys.get(key) ?? 0) >= limit)) return false;
+  pluginWrites.total++;
+  for (const [key] of limits) pluginWrites.keys.set(key, (pluginWrites.keys.get(key) ?? 0) + 1);
   return true;
 }
 
@@ -143,9 +159,10 @@ export const POST: APIRoute = async ({ request, url, clientAddress }) => {
   if (pluginCors && (identities.length !== 1 || !isPluginIdentity(queryIdentity))) {
     return feedbackError(400, "Invalid plugin identity", true);
   }
-  // Only the explicit public route gets CORS. Requiring JSON also prevents a browser
-  // from writing to the private route with a cross-origin simple POST.
-  if (request.headers.get("Content-Type")?.split(";", 1)[0].trim().toLowerCase() !== "application/json") {
+  const origin = request.headers.get("Origin");
+  const json = request.headers.get("Content-Type")?.split(";", 1)[0].trim().toLowerCase() === "application/json";
+  // Accept legacy JSON bodies from native clients without enabling cross-origin simple POSTs.
+  if (!json && (pluginCors || (origin !== null && origin !== url.origin))) {
     return feedbackError(415, "Expected application/json", pluginCors);
   }
   if (!takeQuota(feedbackPosts, ip, MINUTE, 3, 10_000)) {
@@ -175,6 +192,7 @@ export const POST: APIRoute = async ({ request, url, clientAddress }) => {
   }
 
   if (isPlugin) {
+    if (!json) return feedbackError(415, "Expected application/json", pluginCors);
     if (!isPluginIdentity(pluginIdentity) || !isFeedbackRepository(repository) ||
         (pluginCors && queryIdentity !== pluginIdentity)) {
       return feedbackError(400, "Expected a plugin identity and confirmed repository", pluginCors);
@@ -197,7 +215,7 @@ export const POST: APIRoute = async ({ request, url, clientAddress }) => {
     }
     try {
       const issueNumber = await pluginFeedback.submit(pluginIdentity, repository, issue, (authorizedRepository) =>
-        takeQuota(pluginWrites, authorizedRepository.toLowerCase(), HOUR, 6, 40));
+        takePluginWriteQuota(ip, authorizedRepository));
       return Response.json({ issueNumber }, {
         status: 201, headers: { "Cache-Control": "no-store", ...(pluginCors ? PLUGIN_CORS : {}) },
       });

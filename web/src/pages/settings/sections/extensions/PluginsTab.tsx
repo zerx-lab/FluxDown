@@ -360,7 +360,6 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
           identity: archivePlugin.identity,
           version: archivePlugin.version,
           localOnly: archivePlugin.source === 'private' || archivePlugin.devMode,
-          enabled: archivePlugin.enabled,
           loadStatus: archivePlugin.loadStatus === 'Loaded' || archivePlugin.loadStatus === 'Failed' ? archivePlugin.loadStatus : null,
         }) : undefined}
         archiveRules={archivePlugin?.contributions.archiveRules ? archiveStatus : null}

@@ -5,6 +5,7 @@ import SwiftUI
 struct PluginFeedbackSheet: View {
     let identity: String
     let version: String
+    let loadStatus: String
     let allowsPluginReport: Bool
 
     @Environment(ExtensionsModel.self) private var model
@@ -29,16 +30,22 @@ struct PluginFeedbackSheet: View {
             && !version.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var diagnosticEnvironment: String? {
+    private var diagnosticEnvironment: String {
         var fields: [String] = []
         if container.isLocalHost {
             let os = ProcessInfo.processInfo.operatingSystemVersion
             fields.append("platform=iOS; osVersion=\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)")
         }
-        if let auditCounts {
-            fields.append("auditErrors=\(auditCounts.error); auditDenied=\(auditCounts.denied)")
+        let status = switch loadStatus {
+        case "Loaded": "loaded"
+        case "Failed": "failed"
+        default: "unknown"
         }
-        return fields.isEmpty ? nil : fields.joined(separator: "; ")
+        fields.append("Plugin load: \(status)")
+        if let auditCounts {
+            fields.append("Recent audit: \(auditCounts.error) errors, \(auditCounts.denied) denied")
+        }
+        return fields.joined(separator: "; ")
     }
 
     private func loadDiagnostics() async {
@@ -152,12 +159,7 @@ struct PluginFeedbackSheet: View {
                     if let reviewedEnvironment {
                         Text(verbatim: reviewedEnvironment).font(.footnote).textSelection(.enabled)
                     }
-                    if let auditCounts {
-                        Text(L("plugFeedbackAuditSummary", [
-                            "error": String(auditCounts.error), "denied": String(auditCounts.denied)
-                        ]))
-                        .font(.footnote)
-                    } else {
+                    if auditCounts == nil {
                         Text(L("plugFeedbackAuditUnavailable")).font(.footnote)
                     }
                 } else {
@@ -211,7 +213,7 @@ struct PluginFeedbackSheet: View {
         } catch let error as PluginFeedbackHTTP.Failure {
             failure = error
         } catch {
-            failure = .failed
+            failure = .unconfirmed
         }
     }
 }

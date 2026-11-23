@@ -42,7 +42,7 @@ pub struct PluginDetail {
     pub page_scripts: Vec<PluginPageScriptDeclDto>,
     pub archive_rules: bool,
     pub enabled: bool,
-    loaded: bool,
+    feedback_load_status: &'static str,
     feedback_available: bool,
     pub stale: bool,
 }
@@ -57,7 +57,11 @@ impl PluginDetail {
             homepage: plugin.homepage.clone(),
             archive_rules: plugin.contributions.archive_rules,
             enabled: plugin.enabled,
-            loaded: plugin.load_status == "Loaded",
+            feedback_load_status: match plugin.load_status.as_str() {
+                "Loaded" => "loaded",
+                "Failed" => "failed",
+                _ => "unknown",
+            },
             feedback_available: plugin.source != "private"
                 && !plugin.dev_mode
                 && !plugin.version.is_empty(),
@@ -332,7 +336,7 @@ pub fn open_plugin_detail(
                                         form.detail.version.clone(),
                                         form.detail
                                             .feedback_available
-                                            .then_some(form.detail.loaded),
+                                            .then_some(form.detail.feedback_load_status),
                                         form.translator.clone(),
                                         port.clone(),
                                         window,

@@ -123,7 +123,9 @@ function unavailable(): PluginFeedbackFailure {
   return new PluginFeedbackFailure(404, "Plugin feedback is unavailable");
 }
 
-async function github(fetcher: FeedbackFetch, path: string, token: string, body?: unknown): Promise<unknown> {
+type GitHubOperation = "repository installation" | "installation token" | "repository metadata" | "create issue";
+
+async function github(fetcher: FeedbackFetch, operation: GitHubOperation, path: string, token: string, body?: unknown): Promise<unknown> {
   const res = await fetcher(`${GITHUB_API}${path}`, {
     method: body === undefined ? "GET" : "POST",
     redirect: "manual",
@@ -137,6 +139,7 @@ async function github(fetcher: FeedbackFetch, path: string, token: string, body?
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (!res.ok) {
+    console.warn("Plugin feedback GitHub request failed", operation, res.status);
     await res.body?.cancel();
     if (res.status === 429 || (res.status === 403 &&
         (res.headers.has("Retry-After") || res.headers.get("X-RateLimit-Remaining") === "0"))) {
@@ -144,7 +147,7 @@ async function github(fetcher: FeedbackFetch, path: string, token: string, body?
     }
     // Never follow a repository redirect (rename, transfer), or reuse another credential.
     if ((res.status >= 300 && res.status < 400) || [403, 404, 410, 451].includes(res.status) ||
-        (res.status === 422 && path.startsWith("/app/installations/"))) throw unavailable();
+        (res.status === 422 && operation === "installation token")) throw unavailable();
     throw new Error(`GitHub plugin feedback request failed: ${res.status}`);
   }
   return readFeedbackJson(res, 128 * 1024);
@@ -180,17 +183,23 @@ export function createPluginFeedback(appId?: string, privateKeyBase64?: string, 
     key ??= createPrivateKey(Buffer.from(privateKeyBase64, "base64"));
     const jwt = appJwt(appId, key);
     const repoPath = `/repos/${repository}`;
-    const installation = record(await github(fetcher, `${repoPath}/installation`, jwt));
+    const installation = record(await github(fetcher, "repository installation", `${repoPath}/installation`, jwt));
     const id = installation?.id;
-    if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0 || installation?.suspended_at) throw unavailable();
+    if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0 || installation?.suspended_at ||
+        record(installation?.permissions)?.issues !== "write") throw unavailable();
 
-    const access = record(await github(fetcher, `/app/installations/${id}/access_tokens`, jwt, {
+    const write = confirmedRepository !== undefined;
+    const access = record(await github(fetcher, "installation token", `/app/installations/${id}/access_tokens`, jwt, {
       repositories: [repository.split("/")[1]],
-      permissions: { issues: "write" },
+      permissions: write ? { issues: "write" } : { metadata: "read" },
     }));
-    if (typeof access?.token !== "string" || !access.token || record(access.permissions)?.issues !== "write") throw unavailable();
+    const permissions = record(access?.permissions);
+    if (typeof access?.token !== "string" || !access.token ||
+        (write ? permissions?.issues !== "write" : permissions?.metadata !== "read" || permissions.issues !== undefined)) {
+      throw unavailable();
+    }
 
-    const metadata = record(await github(fetcher, repoPath, access.token));
+    const metadata = record(await github(fetcher, "repository metadata", repoPath, access.token));
     if (!metadata || !isFeedbackRepository(metadata.full_name) || metadata.full_name.toLowerCase() !== repository.toLowerCase() ||
         metadata.private !== false || metadata.visibility !== "public" || metadata.has_issues !== true ||
         metadata.archived !== false || metadata.disabled !== false) throw unavailable();
@@ -207,7 +216,7 @@ export function createPluginFeedback(appId?: string, privateKeyBase64?: string, 
       if (!acceptWrite(destination.repository)) {
         throw new PluginFeedbackFailure(429, "Too many requests. Please try again later.");
       }
-      const result = record(await github(fetcher, `/repos/${destination.repository}/issues`, destination.token, issue));
+      const result = record(await github(fetcher, "create issue", `/repos/${destination.repository}/issues`, destination.token, issue));
       if (typeof result?.number !== "number" || !Number.isSafeInteger(result.number) || result.number <= 0) {
         throw new Error("GitHub returned an invalid plugin feedback issue number");
       }

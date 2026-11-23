@@ -23,9 +23,11 @@ function fixture() {
       case REGISTRY:
         return Response.json({ plugins: [{ id: IDENTITY, formerIds: [FORMER_ID], repo: REPO }] });
       case `${GITHUB}/repos/${REPO}/installation`:
-        return Response.json({ id: 735, suspended_at: null });
-      case `${GITHUB}/app/installations/735/access_tokens`:
-        return Response.json({ token: "scoped-token", permissions: { issues: "write" } }, { status: 201 });
+        return Response.json({ id: 735, suspended_at: null, permissions: { issues: "write" } });
+      case `${GITHUB}/app/installations/735/access_tokens`: {
+        const { permissions } = JSON.parse(String(init?.body));
+        return Response.json({ token: "scoped-token", permissions }, { status: 201 });
+      }
       case `${GITHUB}/repos/${REPO}`:
         return Response.json(metadata);
       case `${GITHUB}/repos/${REPO}/issues`:
@@ -50,8 +52,22 @@ test("GET resolves only the registry, not an arbitrary report destination, and l
   expect(JSON.parse(Buffer.from(claims, "base64url").toString())).toMatchObject({ iss: "2142" });
   expect(verify("RSA-SHA256", Buffer.from(`${header}.${claims}`), publicKey, Buffer.from(signature, "base64url"))).toBe(true);
   expect(calls[2].init?.method).toBe("POST");
-  expect(JSON.parse(String(calls[2].init?.body))).toEqual({ repositories: ["Plugin"], permissions: { issues: "write" } });
+  expect(JSON.parse(String(calls[2].init?.body))).toEqual({ repositories: ["Plugin"], permissions: { metadata: "read" } });
   expect(new Headers(calls[3].init?.headers).get("Authorization")).toBe("Bearer scoped-token");
+});
+
+test("preview requires installation write permission but rejects a write-capable preview token", async () => {
+  const { calls, overrides, feedback } = fixture();
+  const installation = `${GITHUB}/repos/${REPO}/installation`;
+  const token = `${GITHUB}/app/installations/735/access_tokens`;
+  overrides.set(installation, () => Response.json({ id: 735, permissions: { issues: "read" } }));
+  await expect(feedback.destination(IDENTITY)).rejects.toMatchObject({ status: 404 });
+  expect(calls.at(-1)?.url).toBe(installation);
+
+  overrides.delete(installation);
+  overrides.set(token, () => Response.json({ token: "unsafe", permissions: { metadata: "read", issues: "write" } }));
+  await expect(feedback.destination(IDENTITY)).rejects.toMatchObject({ status: 404 });
+  expect(calls.at(-1)?.url).toBe(token);
 });
 
 test("POST checks the registry again after preview; the confirmed repository never routes a write", async () => {
@@ -66,6 +82,8 @@ test("POST checks the registry again after preview; the confirmed repository nev
 test("POST writes only to the still-authorized repository, with a repository-scoped token", async () => {
   const { calls, feedback } = fixture();
   expect(await feedback.submit(IDENTITY, REPO.toLowerCase(), ISSUE, (repository) => repository === REPO)).toBe(27);
+  const mint = calls.find((call) => call.url.endsWith("/access_tokens"))!;
+  expect(JSON.parse(String(mint.init?.body))).toEqual({ repositories: ["Plugin"], permissions: { issues: "write" } });
   const write = calls.at(-1)!;
   expect(write.url).toBe(`${GITHUB}/repos/${REPO}/issues`);
   expect(write.init?.method).toBe("POST");

@@ -21,7 +21,7 @@ use crate::ExtensionsPort;
 pub(super) fn open(
     identity: String,
     version: String,
-    loaded: Option<bool>,
+    load_status: Option<&'static str>,
     translator: Translator,
     port: Arc<dyn ExtensionsPort>,
     window: &mut Window,
@@ -42,12 +42,12 @@ pub(super) fn open(
             busy: false,
             message: None,
             issue: None,
-            loaded,
+            load_status,
             diagnostics: false,
             audit_pending: false,
             audit_counts: None,
         };
-        if loaded.is_some() {
+        if load_status.is_some() {
             form.resolve(cx);
         } else {
             form.message = Some("plugFeedbackUnavailable");
@@ -81,10 +81,10 @@ struct Feedback {
     busy: bool,
     message: Option<&'static str>,
     issue: Option<u64>,
-    loaded: Option<bool>,
+    load_status: Option<&'static str>,
     diagnostics: bool,
     audit_pending: bool,
-    audit_counts: Option<(usize, usize, usize)>,
+    audit_counts: Option<(usize, usize)>,
 }
 
 impl Feedback {
@@ -132,11 +132,10 @@ impl Feedback {
                 let counts = future.await.ok().and_then(|value| {
                     let entries = value["entries"].as_array()?;
                     Some(entries.iter().take(20).fold(
-                        (0, 0, 0),
-                        |(total, errors, denied), entry| {
+                        (0, 0),
+                        |(errors, denied), entry| {
                             let outcome = entry["outcome"].as_str();
                             (
-                                total + 1,
                                 errors + usize::from(outcome == Some("error")),
                                 denied + usize::from(outcome == Some("denied")),
                             )
@@ -158,19 +157,14 @@ impl Feedback {
 
     fn environment(&self) -> String {
         let os = std::env::consts::OS;
-        if self.diagnostics {
-            let status = if self.loaded == Some(true) {
-                "loaded"
-            } else {
-                "load failed"
-            };
+        if let Some(status) = self.load_status.filter(|_| self.diagnostics) {
             let arch = std::env::consts::ARCH;
-            if let Some((total, errors, denied)) = self.audit_counts {
+            if let Some((errors, denied)) = self.audit_counts {
                 format!(
-                    "{os}; {arch}; plugin: {status}; recent audit ({total}): {errors} errors, {denied} denied"
+                    "{os}; {arch}; Plugin load: {status}; Recent audit: {errors} errors, {denied} denied"
                 )
             } else {
-                format!("{os}; {arch}; plugin: {status}")
+                format!("{os}; {arch}; Plugin load: {status}")
             }
         } else {
             os.to_owned()
@@ -232,6 +226,7 @@ impl Feedback {
                             Some(409) => "plugFeedbackRouteChanged",
                             Some(404) => "plugFeedbackUnavailable",
                             Some(429) => "feedbackRateLimited",
+                            None | Some(500..) => "plugFeedbackUnconfirmed",
                             _ => "plugFeedbackFailed",
                         },
                     );
@@ -263,7 +258,7 @@ impl Render for Feedback {
                     .text_with("plugFeedbackSent", &[("number", &issue.to_string())]),
             );
         }
-        if self.loaded.is_some() {
+        if self.load_status.is_some() {
             body = body
                 .child(text("plugFeedbackLookupNotice"))
                 .child(text("plugFeedbackLookupDirect"));

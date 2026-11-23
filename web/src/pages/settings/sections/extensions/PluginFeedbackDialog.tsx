@@ -13,12 +13,11 @@ export interface FeedbackPlugin {
   identity: string
   version: string
   localOnly: boolean
-  enabled: boolean
   loadStatus: 'Loaded' | 'Failed' | null
 }
 
 type Route = { kind: 'loading' | 'unavailable' | 'failed' | 'limited' } | { kind: 'ready'; repository: string }
-type SendStatus = 'idle' | 'sending' | 'failed' | 'limited' | 'changed' | { issueNumber: number }
+type SendStatus = 'idle' | 'sending' | 'failed' | 'unconfirmed' | 'limited' | 'changed' | { issueNumber: number }
 type AuditSummary = { error: number; denied: number } | 'loading' | 'unavailable'
 
 function parseRepository(value: unknown): string | null {
@@ -49,7 +48,6 @@ export function PluginFeedbackDialog({ plugin, onClose }: { plugin: FeedbackPlug
   const endpoint = `${WEBSITE}/api/feedback?pluginIdentity=${encodeURIComponent(plugin.identity)}`
   const [route, setRoute] = useState<Route>({ kind: canLookUp ? 'loading' : 'unavailable' })
   const [lookupAttempt, setLookupAttempt] = useState(0)
-  const [platform, setPlatform] = useState<string | null>(null)
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [includeDiagnostics, setIncludeDiagnostics] = useState(false)
@@ -90,21 +88,6 @@ export function PluginFeedbackDialog({ plugin, onClose }: { plugin: FeedbackPlug
   }, [canLookUp, endpoint, lookupAttempt])
 
   useEffect(() => {
-    if (!canLookUp) return
-    let active = true
-    // The browser is not the plugin host. The agent report uses its compiled OS/arch; /ping reports "server".
-    void rpc.agent.diagnostics.run().then((report) => {
-      const value = report.platform
-      if (active) {
-        setPlatform(/^(linux|windows|macos|freebsd|openbsd|netbsd|dragonfly|android|ios) (x86_64|x86|aarch64|arm|riscv64|loongarch64)$/.test(value) ? value : '')
-      }
-    }).catch(() => {
-      if (active) setPlatform('')
-    })
-    return () => { active = false }
-  }, [canLookUp])
-
-  useEffect(() => {
     if (!includeDiagnostics) return
     let active = true
     void rpc.daemon.plugin.auditList({ identity: plugin.identity, limit: AUDIT_LIMIT }).then(({ entries }) => {
@@ -121,15 +104,13 @@ export function PluginFeedbackDialog({ plugin, onClose }: { plugin: FeedbackPlug
   }, [includeDiagnostics, plugin.identity])
 
   // Attach only fixed status values and aggregate counts, never runtime logs, errors, settings, or paths.
-  const diagnostics = includeDiagnostics ? [
-    t(plugin.enabled ? 'pluginArchiveRulesEnabled' : 'pluginDisabledManual'),
-    plugin.loadStatus === 'Loaded' ? t('pluginLoadStatusLoaded') : plugin.loadStatus === 'Failed' ? t('pluginLoadStatusFailed') : '',
-    typeof audit === 'object' ? t('plugFeedbackAuditSummary', audit) : '',
-  ].filter(Boolean).join(' · ') : ''
-  const environment = [platform, diagnostics].filter(Boolean).join(' · ') || undefined
+  const environment = includeDiagnostics ? [
+    `Plugin load: ${plugin.loadStatus?.toLowerCase() ?? 'unknown'}`,
+    typeof audit === 'object' ? `Recent audit: ${audit.error} errors, ${audit.denied} denied` : '',
+  ].filter(Boolean).join('; ') : undefined
   const reportTitle = title.trim()
   const reportDescription = description.trim()
-  const canSend = route.kind === 'ready' && platform !== null && (!includeDiagnostics || audit !== 'loading') &&
+  const canSend = route.kind === 'ready' && (!includeDiagnostics || audit !== 'loading') &&
     reportTitle.length > 0 && reportTitle.length <= TITLE_LIMIT &&
     reportDescription.length > 0 && reportDescription.length <= DESCRIPTION_LIMIT
   const send = async () => {
@@ -162,10 +143,10 @@ export function PluginFeedbackDialog({ plugin, onClose }: { plugin: FeedbackPlug
       else if (res.status === 201) {
         const body = (await res.json()) as { issueNumber?: unknown } | null
         const issueNumber = body?.issueNumber
-        setStatus(typeof issueNumber === 'number' && Number.isSafeInteger(issueNumber) && issueNumber > 0 ? { issueNumber } : 'failed')
-      } else setStatus('failed')
+        setStatus(typeof issueNumber === 'number' && Number.isSafeInteger(issueNumber) && issueNumber > 0 ? { issueNumber } : 'unconfirmed')
+      } else setStatus(res.status >= 500 ? 'unconfirmed' : 'failed')
     } catch {
-      setStatus('failed')
+      setStatus('unconfirmed')
     } finally {
       window.clearTimeout(timer)
       sending.current = false
@@ -201,8 +182,7 @@ export function PluginFeedbackDialog({ plugin, onClose }: { plugin: FeedbackPlug
           <Metadata label={t('pluginDetailIdentity')} value={plugin.identity} />
           <Metadata label={t('feedbackVersionLabel')} value={appVersion} />
           <Metadata label={t('plugFeedbackPluginVersion')} value={pluginVersion} />
-          {canLookUp ? <Metadata label={t('feedbackSysInfoSystem')} value={platform === null ? t('pluginCommonLoading') : platform} /> : null}
-          {diagnostics ? <Metadata label={t('plugFeedbackDiagnostics')} value={diagnostics} /> : null}
+          {environment ? <Metadata label={t('plugFeedbackDiagnostics')} value={environment} /> : null}
         </dl>
         {sent !== null ? <p role="status" className="text-sm">{t('plugFeedbackSent', { number: sent })}</p> : (
           <>
@@ -229,6 +209,7 @@ export function PluginFeedbackDialog({ plugin, onClose }: { plugin: FeedbackPlug
             {route.kind === 'unavailable' ? <p role="status" className="text-sm">{t('plugFeedbackUnavailable')}</p> : null}
             {route.kind === 'limited' || status === 'limited' ? <p role="alert" className="text-sm text-destructive">{t('feedbackRateLimited')}</p> : null}
             {route.kind === 'failed' || status === 'failed' ? <p role="alert" className="text-sm text-destructive">{t('plugFeedbackFailed')}</p> : null}
+            {status === 'unconfirmed' ? <p role="alert" className="text-sm text-destructive">{t('plugFeedbackUnconfirmed')}</p> : null}
             {route.kind === 'failed' || route.kind === 'limited' ? (
               <Button variant="outline" className="self-start" onClick={() => {
                 setRoute({ kind: 'loading' })

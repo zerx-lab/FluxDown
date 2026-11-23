@@ -93,11 +93,15 @@ internal fun PluginFeedbackSheet(sheet: PluginSheet.Feedback, visible: Boolean, 
     }
 
     val environment = if (includeDiagnostics && reviewedAudit != null) {
-        val loadStatus = str(if (plugin.loadFailed) R.string.pluginLoadStatusFailed else R.string.pluginLoadStatusLoaded)
-        val status = if (isLocal) "Android API ${Build.VERSION.SDK_INT}; $loadStatus" else loadStatus
+        val loadStatus = when (plugin.loadStatus) {
+            "Loaded" -> "loaded"
+            "Failed" -> "failed"
+            else -> "unknown"
+        }
+        val status = "Plugin load: $loadStatus"
+        val platform = if (isLocal) "Android API ${Build.VERSION.SDK_INT}; $status" else status
         val counts = reviewedAudit?.counts
-        val summary = counts?.let { str(R.string.plugFeedbackAuditSummary, "error" to it.errors, "denied" to it.denied) }
-        summary?.let { "$status; $it" }?.takeIf { it.length <= 300 } ?: status
+        if (counts == null) platform else "$platform; Recent audit: ${counts.errors} errors, ${counts.denied} denied"
     } else null
 
     val canSend = target != null && repository != null && !sending && issue == null &&
@@ -269,6 +273,7 @@ private fun FeedbackFailureBanner(failure: PluginFeedbackResult.Failure) {
         PluginFeedbackResult.Failure.RouteChanged -> R.string.plugFeedbackRouteChanged
         PluginFeedbackResult.Failure.RateLimited -> R.string.feedbackRateLimited
         PluginFeedbackResult.Failure.Failed -> R.string.plugFeedbackFailed
+        PluginFeedbackResult.Failure.Unconfirmed -> R.string.plugFeedbackUnconfirmed
     }
     FluxBanner(str(text), kind = FluxBannerKind.Warn)
 }

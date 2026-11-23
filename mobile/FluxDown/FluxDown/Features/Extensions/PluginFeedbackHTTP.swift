@@ -6,7 +6,7 @@ nonisolated enum PluginFeedbackHTTP {
     static let fallback = URL(string: "https://fluxdown.com/feedback")!
 
     enum Failure: Error, Equatable {
-        case unavailable, routeChanged, rateLimited, failed
+        case unavailable, routeChanged, rateLimited, failed, unconfirmed
 
         var messageKey: String {
             switch self {
@@ -14,6 +14,7 @@ nonisolated enum PluginFeedbackHTTP {
             case .routeChanged: "plugFeedbackRouteChanged"
             case .rateLimited: "feedbackRateLimited"
             case .failed: "plugFeedbackFailed"
+            case .unconfirmed: "plugFeedbackUnconfirmed"
             }
         }
     }
@@ -41,7 +42,9 @@ nonisolated enum PluginFeedbackHTTP {
         guard let endpoint = url.url else { throw Failure.failed }
         let data = try await request(URLRequest(url: endpoint), expecting: 200)
         let route = try JSONDecoder().decode(Route.self, from: data)
-        guard !route.repository.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw Failure.failed }
+        guard route.repository.wholeMatch(of: /[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0-9_.-]{1,100}/) != nil,
+              !route.repository.hasSuffix("/."), !route.repository.hasSuffix("/..")
+        else { throw Failure.failed }
         return route.repository
     }
 
@@ -53,7 +56,7 @@ nonisolated enum PluginFeedbackHTTP {
         request.httpBody = try JSONEncoder().encode(report)
         let data = try await Self.request(request, expecting: 201)
         let receipt = try JSONDecoder().decode(Receipt.self, from: data)
-        guard receipt.issueNumber > 0 else { throw Failure.failed }
+        guard receipt.issueNumber > 0 else { throw Failure.unconfirmed }
         return receipt.issueNumber
     }
 
@@ -72,6 +75,7 @@ nonisolated enum PluginFeedbackHTTP {
         case 404: throw Failure.unavailable
         case 409 where status == 201: throw Failure.routeChanged
         case 429: throw Failure.rateLimited
+        case 500...599 where status == 201: throw Failure.unconfirmed
         default: throw Failure.failed
         }
     }
