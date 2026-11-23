@@ -115,6 +115,7 @@ On desktop and Web, install and update failures appear near the install controls
 A successful installation clears the last install error. Reinstalling or uninstalling a plugin clears its previous reload error.
 
 On Android and iOS, a failed install, update, or reload opens a diagnostic dialog. **Copy error** copies the same localized text shown in the dialog.
+On iOS, cancelling the file picker does not show an error. If the selected file is missing, inaccessible, or unreadable, the dialog shows what to check without including its local path.
 
 ### Original engine messages in the daemon diagnostics log
 

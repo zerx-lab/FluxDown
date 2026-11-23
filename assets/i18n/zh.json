@@ -2118,6 +2118,8 @@
   "pluginDiagnosticMissingFile": "插件包内缺少文件「{path}」。",
   "pluginDiagnosticLoadFailed": "无法加载插件，详情见诊断日志。",
   "pluginDiagnosticNotDevPlugin": "只有开发模式插件支持重新加载。",
+  "pluginImportFileNoPermission": "FluxDown 无权访问该插件文件。请检查文件的共享权限，或选择本地副本。",
+  "pluginImportFileUnreadable": "无法读取插件文件。请确认文件可在「文件」App 中打开，再重新选择。",
   "pluginErrorMarketVersionChanged": "市场中的插件已更新，请重新确认权限后再安装。",
   "pluginOpGenericFailed": "操作失败：{message}",
   "pluginDepsMissingTitle": "缺少基础组件",

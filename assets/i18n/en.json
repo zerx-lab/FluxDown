@@ -2118,6 +2118,8 @@
   "pluginDiagnosticMissingFile": "The plugin package is missing “{path}”.",
   "pluginDiagnosticLoadFailed": "Could not load the plugin. See the diagnostics log for details.",
   "pluginDiagnosticNotDevPlugin": "Only development plugins can be reloaded.",
+  "pluginImportFileNoPermission": "FluxDown cannot access the plugin file. Check its sharing permissions or select a local copy.",
+  "pluginImportFileUnreadable": "Could not read the plugin file. Make sure it is available in Files, then select it again.",
   "pluginErrorMarketVersionChanged": "The plugin was updated in the marketplace. Review its permissions and install again.",
   "pluginOpGenericFailed": "Operation failed: {message}",
   "pluginDepsMissingTitle": "Missing base components",

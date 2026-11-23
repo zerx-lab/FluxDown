@@ -79,8 +79,8 @@ private struct ExtensionsContent: View {
             case let .success(urls):
                 guard let url = urls.first else { return }
                 Task { await model.installFile(url) }
-            case .failure:
-                model.reportOperationFailure("pluginOpInstallFailed", HostError(.invalidArgument))
+            case let .failure(error):
+                model.reportPackageImportFailure(error)
             }
         }
         .sheet(item: $model.sheet) { sheet in

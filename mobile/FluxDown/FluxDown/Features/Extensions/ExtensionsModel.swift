@@ -102,6 +102,10 @@ final class ExtensionsModel {
         operationFailure = L(key, ["message": ExtensionErrorText.pluginFailure(error)])
     }
 
+    func reportPackageImportFailure(_ error: any Error) {
+        operationFailure = ExtensionErrorText.packageImportFailure(error)
+    }
+
     func requestPop() { popRequest += 1 }
 
     func goToComponents() {
@@ -223,9 +227,19 @@ final class ExtensionsModel {
         defer { installPhase = nil }
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let data: Data
+        do {
+            data = try Data(contentsOf: url, options: .mappedIfSafe)
+        } catch {
+            reportPackageImportFailure(error)
+            return
+        }
+        guard data.count <= Self.maxPackageBytes else {
+            reportOperationFailure("pluginOpInstallFailed", HostError(.invalidArgument, reason: "pluginPackageTooLarge"))
+            return
+        }
         let target = session
         do throws(HostError) {
-            let data = try Self.readPackage(url)
             let result = try await installRemote(data, target: target)
             operationFailure = nil
             toast(L("pluginOpInstallSuccess"), .success)
@@ -234,19 +248,6 @@ final class ExtensionsModel {
         } catch {
             reportOperationFailure("pluginOpInstallFailed", error)
         }
-    }
-
-    nonisolated private static func readPackage(_ url: URL) throws(HostError) -> Data {
-        let data: Data
-        do {
-            data = try Data(contentsOf: url, options: .mappedIfSafe)
-        } catch {
-            throw HostError(.invalidArgument, message: error.localizedDescription)
-        }
-        if data.count > maxPackageBytes {
-            throw HostError(.invalidArgument, reason: "pluginPackageTooLarge", message: "package exceeds 10 MiB")
-        }
-        return data
     }
 
     private func installRemote(_ data: Data, target: any HostSession) async throws(HostError) -> InstalledPlugin {
