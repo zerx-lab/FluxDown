@@ -180,10 +180,22 @@ pub struct DownloadTitleBar {
 
 impl DownloadTitleBar {
     pub(crate) fn new(
-        view: WeakEntity<DownloadView>,
+        view: &Entity<DownloadView>,
         translator: Entity<Translator>,
         style: NewTaskButtonStyle,
+        cx: &mut Context<Self>,
     ) -> Self {
+        // render 读取 DownloadView 的控制器状态；插槽是独立实体，父视图 notify 不会重建它。
+        // 只在禁用态翻转时刷新，避免进度事件带来无谓重绘。
+        let mut last_disabled = None;
+        cx.observe(view, move |this, _, cx| {
+            let disabled = clear_finished_disabled(&this.view, cx);
+            if last_disabled.replace(disabled) != Some(disabled) {
+                cx.notify();
+            }
+        })
+        .detach();
+        let view = view.downgrade();
         Self {
             view,
             translator,
@@ -267,6 +279,14 @@ fn apply_new_task_button_style(
     };
 }
 
+/// 「清除已完成任务」是否禁用：视图已释放、任务表载入中或断线。
+fn clear_finished_disabled(view: &WeakEntity<DownloadView>, cx: &App) -> bool {
+    view.upgrade().is_none_or(|view| {
+        let controller = &view.read(cx).controller;
+        controller.tables_loading() || controller.is_stale()
+    })
+}
+
 impl Render for DownloadTitleBar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = active_theme(cx);
@@ -323,10 +343,7 @@ impl Render for DownloadTitleBar {
         };
         let clear_finished = (!self.editing).then(|| {
             let view = self.view.clone();
-            let disabled = view.upgrade().is_none_or(|view| {
-                let controller = &view.read(cx).controller;
-                controller.tables_loading() || controller.is_stale()
-            });
+            let disabled = clear_finished_disabled(&view, cx);
             let label = self.text("menuClearFinished", cx);
             interactive(
                 fluxdown_ui_components::toolbar_action_button(
@@ -337,13 +354,11 @@ impl Render for DownloadTitleBar {
                     disabled,
                     cx,
                 )
-                .size(theme.density().status_control)
+                .size(theme.density().toolbar_button)
                 .on_click(move |_, window, cx| {
                     if let Some(view) = view.upgrade() {
                         view.update(cx, |view, cx| {
-                            if !view.controller.is_stale() {
-                                view.run_page_command(PageCommand::ClearFinished, window, cx);
-                            }
+                            view.run_page_command(PageCommand::ClearFinished, window, cx);
                         });
                     }
                 }),

@@ -531,12 +531,12 @@ impl DownloadView {
 
     /// 创建挂到 shell 统一顶栏的下载页插槽（「新建任务」主按钮）。
     pub fn new_title_bar(&mut self, cx: &mut Context<Self>) -> Entity<DownloadTitleBar> {
-        let view = cx.weak_entity();
+        let view = cx.entity();
         let translator = self.translator.clone();
         let stored = self.controller.preference(NEW_TASK_BUTTON_PREF);
         self.applied_new_task_button = stored.cloned();
         let style = NewTaskButtonStyle::from_value(stored);
-        let title_bar = cx.new(|_| DownloadTitleBar::new(view, translator, style));
+        let title_bar = cx.new(|cx| DownloadTitleBar::new(&view, translator, style, cx));
         self.title_bar = Some(title_bar.downgrade());
         title_bar
     }
@@ -2494,8 +2494,8 @@ impl DownloadView {
             PageCommand::PauseAll => self.execute_toolbar(ToolbarCommand::PauseAll, cx),
             PageCommand::ResumeAll => self.execute_toolbar(ToolbarCommand::ResumeAll, cx),
             PageCommand::ClearFinished => {
-                // 任务表分页载入期间「已完成」范围不完整，不能据占位表清理。
-                if self.controller.tables_loading() {
+                // 任务表分页载入期间「已完成」范围不完整，不能据占位表清理；断线时本地表已过期。
+                if self.controller.tables_loading() || self.controller.is_stale() {
                     return;
                 }
                 let commands: Vec<DownloadsCommand> = self
