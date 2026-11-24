@@ -3,7 +3,7 @@ title: 插件 API 参考
 description: 全部入口函数、flux.* 接口、JavaScript 运行环境、运行时限制，以及插件会遇到的错误信息。
 section: plugins
 order: 11
-sourceHash: "e3ba7672f6ce"
+sourceHash: "52650f0474a9"
 ---
 
 本页列出插件脚本能看到的一切：FluxDown 会调用的入口函数、注入的 `flux` 对象、JavaScript 运行环境、运行时限制，以及开发中会遇到的错误信息。这是一份参考手册；分步教程请看[你的第一个插件](/docs/zh/plugins/your-first-plugin/)、[TypeScript 项目](/docs/zh/plugins/typescript-project/)、[事件钩子指南](/docs/zh/plugins/hooks-guide/)、[账号登录指南](/docs/zh/plugins/auth-guide/)、[订阅源指南](/docs/zh/plugins/subscription-guide/)、[可移植界面指南](/docs/zh/plugins/ui-guide/)和[桌面原生界面指南](/docs/zh/plugins/desktop-ui-guide/)。
@@ -344,6 +344,8 @@ flux.ui.view("profile", {
 | `headers` | 无 | 可选的字符串请求头。 |
 | `authRef` | 无 | 可选的已保存凭据引用；需要 `auth` 权限。 |
 | `maxWidth`、`maxHeight` | 各 `512` | 1–2048 的整数。宿主保持宽高比且不会放大图片。 |
+| `circle` | `false` | 居中裁成正方形后以透明边缘遮罩为圆形。适合头像，仍遵守两个尺寸上限且不放大。 |
+| `cornerRadius` | `0` | 输出图片的圆角半径（整数像素），最多为短边的一半。`circle: true` 时忽略。 |
 | `cache` | `true` | `false` 跳过来源/选项结果复用；图片永不落盘，HTTP 响应始终为 `no-store`。相同输出仍共享引用，直到显式释放或会话关闭。 |
 
 输入格式根据内容识别，只接受 PNG、JPEG、WebP，不信任声明的 Content-Type。输入每边最多 8192 像素、总计最多 1600 万像素，解码内存最多 64 MiB；网络响应体最多 8 MiB，请求最多 10 秒。宿主输出净化后的静态 PNG 缩略图，最多 4 MiB，并以 `image/png` 提供。每个会话最多 128 个资源 / 16 MiB；全局图片资源最多 64 MiB。超过配额会明确报错，不会隐式驱逐引用。缓存的来源/选项结果保留五分钟，但返回引用直到显式释放或会话关闭前有效。视图会话关闭或插件卸载时，其图片资源会释放。以上限制由宿主强制执行。

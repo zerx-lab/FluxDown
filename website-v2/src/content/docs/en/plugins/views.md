@@ -316,7 +316,7 @@ Tones follow the active theme: `neutral` → `colors.foreground`, `accent` → `
 | Kind | Props (default) | Children |
 |---|---|---|
 | `stack` | `direction` (column), `gap` (sm), `align` (stretch), `justify` (start), `wrap` (false), `padding` (none), `grow` (false) | yes |
-| `scroll` | `maxHeight` number ≥ 0 (unlimited) | yes |
+| `scroll` | `maxHeight` number ≥ 0 (optional). For a root column `stack` with `grow: true`, omit `maxHeight` to let a child `scroll` fill the remaining vertical space while sibling controls stay outside the scroll area. | yes |
 | `card` | `title`, `padding` (md) | yes |
 | `section` | `title` **required**, `description` | yes |
 | `divider` | — | no |

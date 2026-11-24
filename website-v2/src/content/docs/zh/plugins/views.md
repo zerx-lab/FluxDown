@@ -3,7 +3,7 @@ title: 视图、命令与 UI API
 description: 可移植插件视图、命令与常驻 main 脚本的参考：节点、属性、事件、限制、生命周期与各客户端支持矩阵。
 section: plugins
 order: 12
-sourceHash: "ca37b02e03f1"
+sourceHash: "7719eb3f0fe3"
 ---
 
 本页是插件界面的参考资料：常驻的 **`main` 脚本**、`flux.ui` / `flux.commands` / `flux.rpc` / `flux.events` / `flux.timers` 这组 API、每种节点的属性、事件与限制，以及各客户端分别能显示什么。分步骤的教程见[用可移植视图构建界面](/docs/zh/plugins/ui-guide/)和[原生桌面界面](/docs/zh/plugins/desktop-ui-guide/)。
@@ -317,7 +317,7 @@ tone 跟随当前主题：`neutral` → `colors.foreground`，`accent` → `colo
 | 类型 | 属性（默认值） | 子节点 |
 |---|---|---|
 | `stack` | `direction`（column）、`gap`（sm）、`align`（stretch）、`justify`（start）、`wrap`（false）、`padding`（none）、`grow`（false） | 有 |
-| `scroll` | `maxHeight`，数字 ≥ 0（不限制） | 有 |
+| `scroll` | `maxHeight`，可选数字 ≥ 0。根节点是 `grow: true` 的纵向 `stack` 时，其子 `scroll` 不设 `maxHeight` 即占满剩余高度，同级控件不随列表滚动。 | 有 |
 | `card` | `title`、`padding`（md） | 有 |
 | `section` | `title` **必填**、`description` | 有 |
 | `divider` | — | 无 |

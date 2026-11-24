@@ -17,7 +17,7 @@ use fluxdown_ui_i18n::Translator;
 use gpui::{
     AnyElement, App, Context, Entity, Image, ImageFormat, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
-    div,
+    div, prelude::FluentBuilder as _,
 };
 use gpui_component::{
     Sizable as _,
@@ -739,12 +739,16 @@ impl PluginViewHost {
         };
         let session = self.session.clone().unwrap_or_default();
         let weak = cx.weak_entity();
+        let fill_available = tree.k == "stack"
+            && tree.p.get("direction").and_then(Value::as_str) != Some("row")
+            && tree.p.get("grow").and_then(Value::as_bool) == Some(true);
         let env = render::RenderEnv {
             host: &weak,
             session: &session,
             revision: self.revision,
             pending: &self.pending_inputs,
             images: &self.images,
+            fill_available,
         };
         let content = render::render_tree(tree, &env, window, cx);
         let spacing = fluxdown_ui_theme::active_theme(cx).tokens().spacing;
@@ -767,7 +771,15 @@ impl PluginViewHost {
             );
         }
         column
-            .child(div().w_full().min_w_0().child(content))
+            .child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .when(fill_available, |this| {
+                        this.flex().flex_col().flex_1().min_h_0()
+                    })
+                    .child(content),
+            )
             .into_any_element()
     }
 }

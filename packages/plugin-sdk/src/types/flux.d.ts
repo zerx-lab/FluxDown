@@ -20,6 +20,10 @@ export interface ImageLoadOptions {
   maxWidth?: number;
   /** Maximum output height, 1–2048; defaults to 512. */
   maxHeight?: number;
+  /** Center-crop to a square and mask to a circle. Defaults to false. */
+  circle?: boolean;
+  /** Rounded corner radius in output pixels; ignored when circle is true. Defaults to zero. */
+  cornerRadius?: number;
   /** Cache by source/options for five minutes; defaults to true. */
   cache?: boolean;
 }
