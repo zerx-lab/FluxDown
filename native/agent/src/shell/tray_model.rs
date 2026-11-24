@@ -43,6 +43,8 @@ pub(super) struct TrayPresenter {
     port: Option<Arc<dyn TrayPort>>,
     translator: Option<Translator>,
     last: Option<Inputs>,
+    #[cfg(windows)]
+    last_dot: Option<super::DownloadDot>,
     icons: IconStore,
     /// 当前选择对应的图标；选择变化时才重新读取 / 缩放图片。
     icon: Option<(AppIconChoice, TrayIconSource)>,
@@ -63,6 +65,8 @@ impl TrayPresenter {
             port,
             translator,
             last: None,
+            #[cfg(windows)]
+            last_dot: None,
             icons: IconStore::new(agent_data_dir.as_ref()),
             icon: None,
         }
@@ -73,6 +77,8 @@ impl TrayPresenter {
             port,
             translator,
             last,
+            #[cfg(windows)]
+            last_dot,
             icons,
             icon,
         } = self;
@@ -80,7 +86,12 @@ impl TrayPresenter {
             return;
         };
         let inputs = events.inspect(Inputs::read);
-        if last.as_ref() == Some(&inputs) {
+        #[cfg(windows)]
+        let download_dot = events.tray_download_dot();
+        let unchanged = last.as_ref() == Some(&inputs);
+        #[cfg(windows)]
+        let unchanged = unchanged && *last_dot == download_dot;
+        if unchanged {
             return;
         }
         let locale = inputs
@@ -90,6 +101,21 @@ impl TrayPresenter {
         translator.set_locale(&locale);
         let mut model = build(translator, &inputs, COUNTDOWN_IN_MENU);
         model.icon = cached_icon(icon, icons, &inputs.icon);
+        #[cfg(windows)]
+        {
+            model.download_dot = download_dot;
+            if let Some(dot) = download_dot {
+                use std::fmt::Write as _;
+                let label = match dot {
+                    super::DownloadDot::Downloading => "trayDownloadsInProgress",
+                    super::DownloadDot::Completed => "trayDownloadsCompleted",
+                    super::DownloadDot::Failed => "trayDownloadsFailed",
+                };
+                let result = write!(model.tooltip, " · {}", translator.text(label));
+                debug_assert!(result.is_ok());
+            }
+            *last_dot = download_dot;
+        }
         port.apply(&model);
         *last = Some(inputs);
     }
@@ -145,6 +171,8 @@ fn build(translator: &Translator, inputs: &Inputs, countdown_in_menu: bool) -> T
         tooltip,
         // 图标由 `TrayPresenter` 按应用图标偏好填入（需要读图片文件）。
         icon: TrayIconSource::Default,
+        #[cfg(windows)]
+        download_dot: None,
     }
 }
 

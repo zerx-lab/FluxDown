@@ -283,6 +283,8 @@ object HostMethod {
     const val agentPlatformAppIconImage = "agent.platform.appIconImage"
     /** 为桌面界面进程现有窗口补设应用图标；仅桌面，移动端不使用。 */
     const val agentPlatformSyncWindowIcons = "agent.platform.syncWindowIcons"
+    /** 确认 Windows 托盘下载提示；移动端不使用。 */
+    const val agentPlatformAckTrayDownloads = "agent.platform.ackTrayDownloads"
     /** 本机浏览器扩展安装状态；仅桌面，移动端不使用。 */
     const val agentPlatformBrowserExtensionStatus = "agent.platform.browserExtensionStatus"
     /** 为本机浏览器安装 FluxDown 扩展；仅桌面，移动端不使用。 */

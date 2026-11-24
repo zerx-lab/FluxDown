@@ -238,7 +238,11 @@ fn open_with(cx: &mut App, focus: bool) -> Option<WindowHandle<Root>> {
         }
         crate::plugin_contributions::attach_main_window(cx);
 
-        let root = cx.new(|cx| Root::new(shell, window, cx));
+        let root = cx.new(|cx| Root::new(shell.clone(), window, cx));
+        if cfg!(windows) {
+            let failures = downloads.update(cx, |view, cx| view.watch_visible_failed_tasks(cx));
+            watch_tray_downloads(&root, &shell, &session, &failures, window, cx);
+        }
         WindowRegistry::persist_bounds(RememberedWindow::Main, client, &root, window, cx);
         install_close_policy(window, cx);
         root
@@ -251,6 +255,203 @@ fn open_with(cx: &mut App, focus: bool) -> Option<WindowHandle<Root>> {
         cx.defer(crate::service_notices::replay_pending);
     }
     handle
+}
+
+fn watch_tray_downloads(
+    root: &gpui::Entity<Root>,
+    shell: &gpui::Entity<ShellView>,
+    session: &gpui::Entity<crate::session::AgentSession>,
+    failures: &gpui::Entity<Vec<String>>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let pending = Rc::new(std::cell::Cell::new(false));
+    let last_attempt = Rc::new(std::cell::RefCell::new(None));
+    let presentation = Rc::new(std::cell::Cell::new(0u64));
+    let check = {
+        let shell = shell.clone();
+        let session = session.clone();
+        let failures = failures.clone();
+        let presentation = presentation.clone();
+        move |window: &Window, cx: &App| {
+            if !tray_downloads_visible(window, &shell, &session, cx)
+                || pending.get()
+                || uncovered_tray_cursor(
+                    session.read(cx),
+                    &last_attempt.borrow(),
+                    presentation.get(),
+                )
+                .is_none()
+            {
+                return;
+            }
+            pending.set(true);
+            let pending = pending.clone();
+            let last_attempt = last_attempt.clone();
+            let shell = shell.clone();
+            let session = session.clone();
+            let failures = failures.clone();
+            let presentation = presentation.clone();
+            let handle = window.window_handle();
+            let client = Desktop::global(cx).client.clone();
+            cx.spawn(async move |cx| {
+                loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(1))
+                        .await;
+                    let cursor = cx.update(|cx| {
+                        match handle.update(cx, |_, window, cx| {
+                            if !tray_downloads_visible(window, &shell, &session, cx) {
+                                return None;
+                            }
+                            let revision = presentation.get();
+                            let (snapshot, relevant) = uncovered_tray_cursor(
+                                session.read(cx),
+                                &last_attempt.borrow(),
+                                revision,
+                            )?;
+                            let params = serde_json::json!({
+                                "epoch": snapshot.epoch,
+                                "sequence": snapshot.sequence,
+                                "seenFailures": failures.read(cx),
+                            });
+                            Some(((snapshot.epoch.clone(), relevant, revision), params))
+                        }) {
+                            Ok(cursor) => cursor,
+                            Err(error) => {
+                                log::debug!("tray acknowledgement window released: {error:#}");
+                                None
+                            }
+                        }
+                    });
+                    let Some((cursor, params)) = cursor else {
+                        break;
+                    };
+                    use fluxdown_protocol::method::AGENT_PLATFORM_ACK_TRAY_DOWNLOADS;
+                    let result = client
+                        .call::<_, serde_json::Value>(
+                            AGENT_PLATFORM_ACK_TRAY_DOWNLOADS,
+                            Some(params),
+                        )
+                        .await;
+                    if !complete_tray_ack(&mut last_attempt.borrow_mut(), cursor, result) {
+                        continue;
+                    }
+                    // Events received while the request was in flight did not schedule a timer.
+                    // Exit immediately if there are no newer relevant events.
+                    let covered = cx.update(|cx| {
+                        uncovered_tray_cursor(
+                            session.read(cx),
+                            &last_attempt.borrow(),
+                            presentation.get(),
+                        )
+                        .is_none()
+                    });
+                    if covered {
+                        break;
+                    }
+                }
+                pending.set(false);
+            })
+            .detach();
+        }
+    };
+    let check = Rc::new(check);
+    root.update(cx, |_, cx| {
+        let activation = check.clone();
+        cx.observe_window_activation(window, move |_, window, cx| activation(window, cx))
+            .detach();
+        let route = check.clone();
+        cx.observe_in(shell, window, move |_, _, window, cx| route(window, cx))
+            .detach();
+        let viewport = check.clone();
+        cx.observe_in(failures, window, move |_, _, window, cx| {
+            presentation.set(presentation.get().wrapping_add(1));
+            viewport(window, cx);
+        })
+        .detach();
+        let readiness = check.clone();
+        cx.subscribe_in(session, window, move |_, _, _, window, cx| {
+            readiness(window, cx)
+        })
+        .detach();
+        check(window, cx);
+    });
+}
+
+fn tray_downloads_visible(
+    window: &Window,
+    shell: &gpui::Entity<ShellView>,
+    session: &gpui::Entity<crate::session::AgentSession>,
+    cx: &App,
+) -> bool {
+    window.is_window_active()
+        && shell.read(cx).active_route() == Some(&crate::activity::DOWNLOADS_ROUTE)
+        && session.read(cx).tray_downloads_ready()
+}
+
+// Epoch, last relevant task event, and revision of the displayed failures.
+type TrayAckCursor = (String, u64, u64);
+
+fn uncovered_tray_cursor<'a>(
+    view: &'a crate::session::AgentSession,
+    last: &Option<TrayAckCursor>,
+    revision: u64,
+) -> Option<(&'a fluxdown_protocol::Snapshot, u64)> {
+    let snapshot = view.latest()?;
+    let relevant = view.tray_downloads_sequence();
+    (!tray_cursor_covered(last, &snapshot.epoch, relevant, revision))
+        .then_some((snapshot, relevant))
+}
+
+fn tray_cursor_covered(
+    last: &Option<TrayAckCursor>,
+    epoch: &str,
+    relevant: u64,
+    revision: u64,
+) -> bool {
+    last.as_ref().is_some_and(|(sent_epoch, sent, shown)| {
+        sent_epoch == epoch && *sent >= relevant && *shown == revision
+    })
+}
+
+fn complete_tray_ack(
+    last: &mut Option<TrayAckCursor>,
+    cursor: TrayAckCursor,
+    result: Result<serde_json::Value, fluxdown_protocol::RpcErrorData>,
+) -> bool {
+    if let Err(error) = result {
+        log::debug!("failed to acknowledge tray downloads: {:?}", error.code);
+        if error.retryable {
+            return false;
+        }
+    }
+    *last = Some(cursor);
+    true
+}
+
+#[cfg(test)]
+#[test]
+fn tray_ack_retries_without_waiting_for_a_new_cursor() {
+    use fluxdown_protocol::{ApplicationErrorCode, RpcErrorData};
+
+    let cursor = ("epoch".into(), 7, 1);
+    let mut last = None;
+    assert!(!complete_tray_ack(
+        &mut last,
+        cursor.clone(),
+        Err(RpcErrorData::new(ApplicationErrorCode::Internal, true)),
+    ));
+    assert!(!tray_cursor_covered(&last, "epoch", 7, 1));
+    assert!(complete_tray_ack(
+        &mut last,
+        cursor,
+        Ok(serde_json::json!({"ok": true})),
+    ));
+    assert!(tray_cursor_covered(&last, "epoch", 7, 1));
+    assert!(!tray_cursor_covered(&last, "epoch", 8, 1));
+    // Scrolling a failure into view must send a receipt even without a new daemon event.
+    assert!(!tray_cursor_covered(&last, "epoch", 7, 2));
 }
 
 /// 导入闸门挂起状态同步到下载页：挂起期间「全部开始」必须可点（它是唯一解除入口）。

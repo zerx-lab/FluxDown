@@ -66,7 +66,7 @@ fn title_bar_section(ctx: &SectionContext) -> SettingsSection {
 fn startup_section(ctx: &SectionContext, cx: &mut App) -> SettingsSection {
     // 托盘由 agent 承载：可用性在运行期探测（Linux 取决于 StatusNotifier 宿主与 appindicator）。
     let shell = ctx.store.read(cx).shell().clone();
-    SettingsSection::new()
+    let section = SettingsSection::new()
         .title(ctx.t("settingsGroupStartupTray"))
         .row(
             ctx.item(
@@ -91,7 +91,19 @@ fn startup_section(ctx: &SectionContext, cx: &mut App) -> SettingsSection {
                 ctx.pref_switch("start_minimized_to_tray", false),
             )
             .disabled(!shell.tray_available),
+        );
+    if cfg!(windows) {
+        section.row(
+            ctx.item(
+                "trayDownloadStatus",
+                Some("trayDownloadStatusDesc"),
+                ctx.pref_switch("desktop.tray_download_status", true),
+            )
+            .disabled(!shell.tray_available),
         )
+    } else {
+        section
+    }
 }
 
 /// 托盘不可用时用原因替换说明文案，告诉用户关闭窗口后会发生什么。
