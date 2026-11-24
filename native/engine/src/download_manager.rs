@@ -1204,7 +1204,8 @@ enum ChecksumPartial {
         path: PathBuf,
         hls_http_fallback: bool,
     },
-    Aborted {
+    /// Worker ended, but file identity has not been captured. Still reserved.
+    PendingIdentity {
         path: PathBuf,
         hls_http_fallback: bool,
     },
@@ -1249,48 +1250,28 @@ async fn open_checksum_partial(path: PathBuf) -> std::io::Result<Option<std::fs:
     .map_err(std::io::Error::other)?
 }
 
-async fn retain_checksum_partial(claim: &ChecksumClaim, path: &Path, hls_http_fallback: bool) {
-    let retained = match open_checksum_partial(path.to_owned()).await {
-        Ok(Some(file)) => ChecksumPartial::Retained {
-            path: path.to_owned(),
-            file: Arc::new(file),
-            hls_http_fallback,
-        },
-        _ => ChecksumPartial::Unclaimed,
-    };
-    let mut claim = claim.lock().unwrap_or_else(|error| error.into_inner());
-    if !matches!(*claim, ChecksumPartial::Aborted { .. }) {
-        *claim = retained;
-    }
-}
-
-/// Release an aborted worker's reservation without discarding identity needed
-/// after a failed unlink. If the file cannot be inspected yet (e.g. a Windows
-/// sharing violation), keep the reservation until a delete retry can inspect it.
-async fn finish_aborted_checksum_claim(
+/// Complete a worker's handoff, or retry a handoff that could not inspect the
+/// file. Keep the reservation until the identity is captured or the file is absent.
+async fn finish_checksum_claim(
     claim: &ChecksumClaim,
     reserved: &Mutex<HashSet<PathBuf>>,
-    timed_out: bool,
+    worker_ended: bool,
 ) -> std::io::Result<()> {
     let (path, hls_http_fallback) = {
         let mut claim = claim.lock().unwrap_or_else(|error| error.into_inner());
         match &*claim {
-            ChecksumPartial::Retained { path, .. } if timed_out => {
-                lock_reserved(reserved).remove(path);
-                return Ok(());
-            }
             ChecksumPartial::Reserved {
                 path,
                 hls_http_fallback,
-            } if timed_out => {
+            } if worker_ended => {
                 let (path, hls_http_fallback) = (path.clone(), *hls_http_fallback);
-                *claim = ChecksumPartial::Aborted {
+                *claim = ChecksumPartial::PendingIdentity {
                     path: path.clone(),
                     hls_http_fallback,
                 };
                 (path, hls_http_fallback)
             }
-            ChecksumPartial::Aborted {
+            ChecksumPartial::PendingIdentity {
                 path,
                 hls_http_fallback,
             } => (path.clone(), *hls_http_fallback),
@@ -1299,8 +1280,9 @@ async fn finish_aborted_checksum_claim(
     };
     let file = open_checksum_partial(path.clone()).await?;
     let mut claim = claim.lock().unwrap_or_else(|error| error.into_inner());
-    lock_reserved(reserved).remove(&path);
-    if matches!(*claim, ChecksumPartial::Aborted { .. }) {
+    if matches!(&*claim, ChecksumPartial::PendingIdentity { path: pending, .. } if *pending == path)
+    {
+        lock_reserved(reserved).remove(&path);
         *claim = match file {
             Some(file) => ChecksumPartial::Retained {
                 path,
@@ -1313,11 +1295,31 @@ async fn finish_aborted_checksum_claim(
     Ok(())
 }
 
+/// For checksum workers the claim owns the reservation through the identity
+/// handoff. Do not also send its path in TaskDone, which could release it twice
+/// or release it while the identity check still needs to be retried.
+async fn finish_worker_reservation(
+    claim: Option<&ChecksumClaim>,
+    reserved: &Mutex<HashSet<PathBuf>>,
+    path: Option<PathBuf>,
+) -> Option<PathBuf> {
+    let Some(claim) = claim.filter(|_| path.is_some()) else {
+        return path;
+    };
+    if let Err(error) = finish_checksum_claim(claim, reserved, true).await {
+        crate::logger::report_warning("download-manager", "retain partial identity", &error);
+    }
+    None
+}
+
 async fn check_checksum_partial(claim: &ChecksumClaim, path: &Path) -> std::io::Result<bool> {
     let file = {
         let claim = claim.lock().unwrap_or_else(|error| error.into_inner());
         match &*claim {
             ChecksumPartial::Reserved { path: reserved, .. } => return Ok(reserved == path),
+            ChecksumPartial::PendingIdentity { path: pending, .. } if pending == path => {
+                return Err(std::io::ErrorKind::WouldBlock.into());
+            }
             ChecksumPartial::Retained {
                 path: saved, file, ..
             } if saved == path => Arc::clone(file),
@@ -1721,7 +1723,7 @@ async fn run_delete_cleanup(job: DeleteCleanup) -> Result<(), downloader::Downlo
         .await?;
     }
     if let Some(claim) = &files.checksum_claim {
-        finish_aborted_checksum_claim(claim, &reserved, handle_timed_out).await?;
+        finish_checksum_claim(claim, &reserved, handle_timed_out).await?;
     }
     if files.cleanup_named_temps
         && let Some(claim) = &files.checksum_claim
@@ -2286,10 +2288,9 @@ async fn probe_start_meta(params: &mut DownloadParams) -> crate::meta_prober::Pr
 ///   6. dedup 改名时落库（预订已在锁内完成，兄弟任务经预订集合感知冲突，
 ///      不依赖 DB 中的名字）
 ///
-/// `Proceed` 携带预订的临时路径，经 `TaskDone.reserved_temp_path` 在
-/// `on_task_done` 释放；`Proceed(None)` = 名称最终仍未知（probe 失败），
-/// 下载器内部按响应头/URL 兜底命名，但不参与 dedup 协调（极端情况，正常
-/// 路径不会到此）。
+/// `Proceed` 携带预订的临时路径。校验任务在残片身份交接时释放预订，其余任务
+/// 经 `TaskDone.reserved_temp_path` 释放。`Proceed(None)` 表示最终仍无法确定文件名，
+/// 下载器内部按响应头/URL 兜底，不参与 dedup 协调。
 async fn finalize_start_file_name(
     params: &mut DownloadParams,
     reserved: &Arc<Mutex<HashSet<std::path::PathBuf>>>,
@@ -3004,7 +3005,7 @@ async fn run_http_family_task(run: HttpFamilyRun) {
         reserved_set,
         checksum_prelude,
         resume_reservation,
-        mut hls_http_fallback,
+        hls_http_fallback,
         done_tx,
         spawn_gen,
         resolver_patch,
@@ -3022,12 +3023,12 @@ async fn run_http_family_task(run: HttpFamilyRun) {
         && let Err(message) = prepare_request(&mut params, prelude.is_some(), resolver_patch).await
     {
         persist_task_failure(&task_id, message, &panic_db, &panic_progress_tx).await;
-        if let (Some(claim), Some(path)) = (&checksum_prelude, &resume_reservation) {
-            retain_checksum_partial(claim, path, hls_http_fallback).await;
-        }
+        let reservation =
+            finish_worker_reservation(checksum_prelude.as_ref(), &reserved_set, resume_reservation)
+                .await;
         send_task_done(
             &done_tx,
-            TaskDone::finished(task_id, spawn_gen, resume_reservation),
+            TaskDone::finished(task_id, spawn_gen, reservation),
         )
         .await;
         return;
@@ -3166,7 +3167,6 @@ async fn run_http_family_task(run: HttpFamilyRun) {
                                 if let Some(old_path) = reserved_temp_path.replace(path) {
                                     lock_reserved(&reserved_set).remove(&old_path);
                                 }
-                                hls_http_fallback = true;
                                 std::panic::AssertUnwindSafe(downloader::run_download(
                                     fallback_params,
                                 ))
@@ -3225,10 +3225,8 @@ async fn run_http_family_task(run: HttpFamilyRun) {
             if let Some(used) = &pac_proxy {
                 crate::pac_route::report_outcome(&panic_db, &task_id, used).await;
             }
-            if let (Some(claim), Some(path)) = (&checksum_prelude, &reserved_temp_path) {
-                retain_checksum_partial(claim, path, hls_http_fallback).await;
-            }
-            reserved_temp_path
+            finish_worker_reservation(checksum_prelude.as_ref(), &reserved_set, reserved_temp_path)
+                .await
         }
     };
     send_task_done(
@@ -12820,7 +12818,7 @@ impl DownloadManager {
             // off-actor，本函数 spawn 后立即返回——创建任务后的 AllTasks
             // 快照不再被 probe 的网络往返压后，probe 期间其余信号照常处理。
             // dedup+预订经共享互斥锁串行化，原子性等价于旧 actor 同步段；
-            // 预订仍经 TaskDone.reserved_temp_path 在 on_task_done 释放。
+            // 校验任务在残片身份交接后释放预订，其余任务经 TaskDone 释放。
             // ---------------------------------------------------------------
 
             // 构造完整 HTTP 请求事务规格——method/body 来自浏览器扩展，
@@ -13491,8 +13489,7 @@ impl DownloadManager {
             return;
         }
         if let Some(claim) = self.checksum_preludes.get(task_id)
-            && let Err(error) =
-                finish_aborted_checksum_claim(claim, &self.reserved_temp_paths, false).await
+            && let Err(error) = finish_checksum_claim(claim, &self.reserved_temp_paths, false).await
         {
             crate::logger::report_error(
                 "download-manager",
@@ -14660,7 +14657,7 @@ impl DownloadManager {
                 task.downloaded_bytes == 0
             } else if let Some(claim) = self.checksum_preludes.get(task_id) {
                 if let Err(error) =
-                    finish_aborted_checksum_claim(claim, &self.reserved_temp_paths, false).await
+                    finish_checksum_claim(claim, &self.reserved_temp_paths, false).await
                 {
                     persist_task_failure(&tid, error.to_string(), &self.db, &self.progress_tx)
                         .await;
@@ -15205,12 +15202,8 @@ impl DownloadManager {
             // Do not remove a sibling partial or schedule path-based cleanup merely
             // because the checksum prelude had a worker handle.
             if let Some(claim) = self.checksum_preludes.get(task_id)
-                && let Err(error) = finish_aborted_checksum_claim(
-                    claim,
-                    &self.reserved_temp_paths,
-                    handle_timed_out,
-                )
-                .await
+                && let Err(error) =
+                    finish_checksum_claim(claim, &self.reserved_temp_paths, handle_timed_out).await
             {
                 cleanup_error = Some(error.into());
             }

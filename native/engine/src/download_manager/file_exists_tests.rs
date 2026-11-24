@@ -615,110 +615,166 @@ async fn checksum_worker_timeout_keeps_candidate_and_foreign_partial() {
 #[cfg(any(unix, windows))]
 #[tokio::test]
 async fn checksum_delete_retries_an_owned_partial_after_timeout() {
-    async fn check(batch: bool) {
-        #[cfg(unix)]
-        use std::os::unix::fs::PermissionsExt as _;
+    tokio::join!(
+        check_delete_retry(false, false),
+        check_delete_retry(true, false)
+    );
+}
 
-        // On Unix, root can unlink from a read-only directory.
-        #[cfg(unix)]
-        // SAFETY: geteuid takes no arguments and has no memory preconditions.
-        if unsafe { libc::geteuid() } == 0 {
-            return;
-        }
+#[cfg(any(unix, windows))]
+#[tokio::test]
+async fn checksum_delete_retries_a_partial_unreadable_at_worker_exit() {
+    tokio::join!(
+        check_delete_retry(false, true),
+        check_delete_retry(true, true)
+    );
+}
 
-        let (selector, _answers) = FakeSelector::new(false);
-        let mut fx = fixture(
-            "checksum_delete_retry",
-            1,
-            selector,
-            FileExistsBehavior::Rename,
-        )
-        .await;
-        let mut spec = fx.spec("owned.bin");
-        spec.checksum = CHECKSUM.into();
-        spec.start_paused = true;
-        let id = fx.mgr.create_task(spec).await.expect("create paused");
-        let partial = format!("owned.bin{}", downloader::TEMP_EXT);
-        fx.write_existing(&partial, b"owned");
-        let path = fx.dir.join(partial);
-        lock_reserved(&fx.mgr.reserved_temp_paths).insert(path.clone());
-        fx.mgr.checksum_preludes.insert(
-            id.clone(),
-            Arc::new(Mutex::new(ChecksumPartial::Reserved {
-                path: path.clone(),
-                hls_http_fallback: false,
-            })),
-        );
-        fx.mgr.active_tasks.insert(
-            id.clone(),
-            ActiveTaskEntry {
-                token: CancellationToken::new(),
-                generation: 1,
-                handle: Some(tokio::spawn(std::future::pending())),
-                is_bt: false,
-                queue_id: String::new(),
-            },
-        );
+#[cfg(any(unix, windows))]
+async fn check_delete_retry(batch: bool, worker_exits: bool) {
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt as _;
 
-        #[cfg(unix)]
-        let original = {
-            let permissions = std::fs::metadata(&fx.dir)
-                .expect("fixture dir")
-                .permissions();
-            std::fs::set_permissions(
-                &fx.dir,
-                std::fs::Permissions::from_mode(permissions.mode() & !0o222),
-            )
-            .expect("deny unlink");
-            permissions
-        };
-        #[cfg(windows)]
-        let locked = {
-            use std::os::windows::fs::OpenOptionsExt as _;
-            use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
-            std::fs::OpenOptions::new()
-                .read(true)
-                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-                .open(&path)
-                .expect("deny delete sharing")
-        };
-
-        let first_failed = if batch {
-            fx.mgr
-                .delete_tasks_batch(std::slice::from_ref(&id), false)
-                .await
-                .is_ok_and(|outcome| outcome.deleted == 0 && outcome.failed == 1)
-        } else {
-            matches!(
-                fx.mgr.delete_task(&id, false).await,
-                Err(DeleteTaskError::Cleanup(_))
-            )
-        };
-        #[cfg(unix)]
-        std::fs::set_permissions(&fx.dir, original).expect("restore unlink permissions");
-        #[cfg(windows)]
-        drop(locked);
-
-        assert!(first_failed, "the blocked unlink must fail the deletion");
-        assert!(fx.db.load_task_by_id(&id).await.expect("load").is_some());
-        assert_eq!(std::fs::read(&path).expect("partial remains"), b"owned");
-        assert!(!lock_reserved(&fx.mgr.reserved_temp_paths).contains(&path));
-        if batch {
-            let outcome = fx
-                .mgr
-                .delete_tasks_batch(std::slice::from_ref(&id), false)
-                .await
-                .expect("retry batch delete");
-            assert_eq!((outcome.deleted, outcome.failed), (1, 0));
-        } else {
-            fx.mgr.delete_task(&id, false).await.expect("retry delete");
-        }
-        assert!(!path.exists(), "retry must remove the original partial");
-        assert!(fx.db.load_task_by_id(&id).await.expect("load").is_none());
-        fx.mgr.shutdown().await;
-        std::fs::remove_dir_all(&fx.dir).expect("cleanup");
+    // Unix root bypasses the permissions used to force the I/O failure.
+    #[cfg(unix)]
+    // SAFETY: geteuid takes no arguments and has no memory preconditions.
+    if unsafe { libc::geteuid() } == 0 {
+        return;
     }
-    tokio::join!(check(false), check(true));
+
+    let (selector, _answers) = FakeSelector::new(false);
+    let mut fx = fixture(
+        "checksum_delete_retry",
+        1,
+        selector,
+        FileExistsBehavior::Rename,
+    )
+    .await;
+    let mut spec = fx.spec("owned.bin");
+    spec.checksum = CHECKSUM.into();
+    spec.start_paused = true;
+    let id = fx.mgr.create_task(spec).await.expect("create paused");
+    let partial = format!("owned.bin{}", downloader::TEMP_EXT);
+    fx.write_existing(&partial, b"owned");
+    let path = fx.dir.join(partial);
+    lock_reserved(&fx.mgr.reserved_temp_paths).insert(path.clone());
+    let claim = Arc::new(Mutex::new(ChecksumPartial::Reserved {
+        path: path.clone(),
+        hls_http_fallback: false,
+    }));
+    fx.mgr
+        .checksum_preludes
+        .insert(id.clone(), Arc::clone(&claim));
+    let token = CancellationToken::new();
+    let handle = if worker_exits {
+        let cancel = token.clone();
+        let reserved = Arc::clone(&fx.mgr.reserved_temp_paths);
+        let done_tx = fx.mgr.done_tx.clone();
+        let id = id.clone();
+        let path = path.clone();
+        tokio::spawn(async move {
+            cancel.cancelled().await;
+            let reservation = finish_worker_reservation(Some(&claim), &reserved, Some(path)).await;
+            done_tx
+                .send(TaskDone::finished(id, 1, reservation))
+                .await
+                .expect("send completion");
+        })
+    } else {
+        tokio::spawn(std::future::pending())
+    };
+    fx.mgr.active_tasks.insert(
+        id.clone(),
+        ActiveTaskEntry {
+            token: token.clone(),
+            generation: 1,
+            handle: Some(handle),
+            is_bt: false,
+            queue_id: String::new(),
+        },
+    );
+
+    #[cfg(unix)]
+    let blocked_path = if worker_exits {
+        path.clone()
+    } else {
+        fx.dir.clone()
+    };
+    #[cfg(unix)]
+    let original = {
+        let permissions = std::fs::metadata(&blocked_path)
+            .expect("blocked path")
+            .permissions();
+        let denied = if worker_exits { 0o444 } else { 0o222 };
+        std::fs::set_permissions(
+            &blocked_path,
+            std::fs::Permissions::from_mode(permissions.mode() & !denied),
+        )
+        .expect("deny partial read or unlink");
+        permissions
+    };
+    #[cfg(windows)]
+    let locked = {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+        let sharing = if worker_exits {
+            0
+        } else {
+            FILE_SHARE_READ | FILE_SHARE_WRITE
+        };
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(sharing)
+            .open(&path)
+            .expect("deny partial read or unlink")
+    };
+
+    // Cover both orders: the manager processes TaskDone before deleting,
+    // or it joins the worker itself while processing the delete request.
+    if worker_exits && !batch {
+        token.cancel();
+        fx.pump_until("worker exited", |mgr| !mgr.active_tasks.contains_key(&id))
+            .await;
+    }
+    let first_failed = if batch {
+        fx.mgr
+            .delete_tasks_batch(std::slice::from_ref(&id), false)
+            .await
+            .is_ok_and(|outcome| outcome.deleted == 0 && outcome.failed == 1)
+    } else {
+        matches!(
+            fx.mgr.delete_task(&id, false).await,
+            Err(DeleteTaskError::Cleanup(_))
+        )
+    };
+    #[cfg(unix)]
+    std::fs::set_permissions(blocked_path, original).expect("restore test permissions");
+    #[cfg(windows)]
+    drop(locked);
+
+    assert!(first_failed, "inaccessible partial must fail the deletion");
+    assert!(fx.db.load_task_by_id(&id).await.expect("load").is_some());
+    assert_eq!(std::fs::read(&path).expect("partial remains"), b"owned");
+    assert_eq!(
+        lock_reserved(&fx.mgr.reserved_temp_paths).contains(&path),
+        worker_exits,
+        "only the unresolved identity should keep the reservation"
+    );
+    if batch {
+        let outcome = fx
+            .mgr
+            .delete_tasks_batch(std::slice::from_ref(&id), false)
+            .await
+            .expect("retry batch delete");
+        assert_eq!((outcome.deleted, outcome.failed), (1, 0));
+    } else {
+        fx.mgr.delete_task(&id, false).await.expect("retry delete");
+    }
+    assert!(!path.exists(), "retry must remove the original partial");
+    assert!(!lock_reserved(&fx.mgr.reserved_temp_paths).contains(&path));
+    assert!(fx.db.load_task_by_id(&id).await.expect("load").is_none());
+    fx.mgr.shutdown().await;
+    std::fs::remove_dir_all(&fx.dir).expect("cleanup");
 }
 
 #[tokio::test]
