@@ -1428,7 +1428,7 @@ impl DaemonService {
                     .plugin_manager()?
                     .install_from_zip(bytes)
                     .await
-                    .map_err(|error| plugin_package_error("blobId", &error))?;
+                    .map_err(|error| plugin_package_error(Some("blobId"), &error))?;
                 self.blobs
                     .consume(&params.blob_id, BlobKind::Plugin)
                     .await
@@ -1446,7 +1446,7 @@ impl DaemonService {
                     .plugin_manager()?
                     .install_dev(std::path::Path::new(&request.dir_path))
                     .await
-                    .map_err(|error| plugin_package_error("dirPath", &error))?;
+                    .map_err(|error| plugin_package_error(Some("dirPath"), &error))?;
                 let missing_components = self.plugin_missing_components(&identity).await;
                 to_value(fluxdown_protocol::InstalledPlugin {
                     identity,
@@ -1457,7 +1457,7 @@ impl DaemonService {
             method::DAEMON_PLUGIN_RELOAD_DEV => {
                 let params = parse_params::<PluginIdentityParams>(params)?;
                 let result = self.plugin_manager()?.reload_dev(&params.identity).await;
-                result.map_err(|error| plugin_package_error("identity", &error))?;
+                result.map_err(|error| plugin_package_error(Some("identity"), &error))?;
                 let missing_components = self.plugin_missing_components(&params.identity).await;
                 to_value(fluxdown_protocol::InstalledPlugin {
                     identity: params.identity,
@@ -3048,6 +3048,7 @@ fn actor_error(error: ActorCallError) -> RpcErrorObject {
                     retryable: false,
                     field: None,
                     revision: Some(current),
+                    plugin_detail: None,
                     reason: None,
                 },
             )
@@ -3111,6 +3112,7 @@ fn invalid_argument(field: &str, message: &str) -> RpcErrorObject {
             retryable: false,
             field: Some(field.to_owned()),
             revision: None,
+            plugin_detail: None,
             reason: None,
         },
     )
@@ -3140,15 +3142,16 @@ fn validate_queue_schedule(params: &QueueScheduleParams) -> Result<(), RpcErrorO
 /// 插件包 / 插件目录校验失败：记录完整原因，客户端按细分原因展示。
 #[cfg(feature = "plugins")]
 fn plugin_package_error(
-    field: &str,
+    field: Option<&str>,
     error: &fluxdown_engine::plugin::PluginError,
 ) -> RpcErrorObject {
-    let message = error.to_string();
-    fluxdown_engine::log_warn!("[plugin] 安装失败: {message}");
+    fluxdown_engine::log_warn!("[plugin] {error}");
     let mut data = RpcErrorData::new(ApplicationErrorCode::InvalidArgument, false)
         .with_reason(fluxdown_protocol::ErrorReason::PluginPackageInvalid);
-    data.field = Some(field.to_owned());
-    RpcErrorObject::application(message, data)
+    data.field = field.map(str::to_owned);
+    data.plugin_detail = fluxdown_engine::plugin::PluginFailureDiagnostic::from_error(error)
+        .map(fluxdown_engine_protocol::plugin_failure_detail_to_dto);
+    RpcErrorObject::application("invalid plugin package", data)
 }
 
 /// 市场索引 / 插件下载失败：按失败性质给出错误码与细分原因，并记录完整原因。
@@ -3197,11 +3200,7 @@ fn market_error(error: &fluxdown_engine::plugin::MarketError) -> RpcErrorObject 
             false,
             ErrorReason::PluginPackageTooLarge,
         ),
-        MarketError::Plugin(_) => (
-            ApplicationErrorCode::InvalidArgument,
-            false,
-            ErrorReason::PluginPackageInvalid,
-        ),
+        MarketError::Plugin(error) => return plugin_package_error(None, error),
         // 无细分原因：UI 正常路径不会走到（私有来源的插件不显示公开更新），退回「冲突」通用文案。
         MarketError::PrivateSource(_) => {
             let message = error.to_string();
@@ -3269,6 +3268,122 @@ mod tests {
         DaemonService, QueueScheduleParams, match_site_auth, validate_create_tasks,
         validate_queue_schedule, validate_queue_stop,
     };
+
+    #[cfg(feature = "plugins")]
+    #[test]
+    fn plugin_failure_details_keep_diagnosis_without_paths_or_credentials() {
+        use fluxdown_engine::plugin::PluginError;
+        use fluxdown_protocol::{PluginFailureDetail as Detail, RpcErrorObject};
+
+        let missing = PluginError::LoadFailed("包内缺少文件 'dist/入口.js'".to_owned());
+        let response = super::plugin_package_error(Some("blobId"), &missing);
+        assert_eq!(
+            response.data.and_then(|data| data.plugin_detail),
+            Some(Detail::MissingFile {
+                path: "dist/入口.js".to_owned(),
+            })
+        );
+
+        let thrown = PluginError::CompileFailed(
+            "unlabeled-secret\n    at eval_script:1:23\n/private/user folder/test.js".to_owned(),
+        );
+        let response = super::plugin_package_error(Some("identity"), &thrown);
+        let wire = serde_json::to_value(&response).expect("serialize plugin error");
+        assert_eq!(
+            wire,
+            json!({
+                "code": fluxdown_protocol::APPLICATION_ERROR_CODE,
+                "message": "invalid plugin package",
+                "data": {
+                    "code": "invalidArgument",
+                    "retryable": false,
+                    "field": "identity",
+                    "reason": "pluginPackageInvalid",
+                    "pluginDetail": { "kind": "scriptCompileFailedAt", "line": 1, "column": 23 }
+                }
+            })
+        );
+        let decoded: RpcErrorObject =
+            serde_json::from_value(wire).expect("deserialize plugin error");
+        assert_eq!(decoded, response);
+
+        for path in [
+            "/private/user folder/test.js",
+            r"C:\Users\test.js",
+            r"\\nas\share\test.js",
+        ] {
+            let failed = PluginError::LoadFailed(format!("包内缺少文件 '{path}'"));
+            let response = super::plugin_package_error(Some("identity"), &failed);
+            assert_eq!(
+                response.data.and_then(|data| data.plugin_detail),
+                Some(Detail::LoadFailed)
+            );
+        }
+    }
+
+    #[cfg(feature = "plugins")]
+    #[test]
+    fn manifest_validation_reports_categories_without_echoing_input() {
+        use fluxdown_engine::plugin::{MarketError, PluginError, PluginManifest};
+        use fluxdown_protocol::PluginFailureDetail as Detail;
+
+        let cases = [
+            ("{", Detail::ManifestJsonInvalid),
+            (r#"{"private-field": 1}"#, Detail::ManifestUnknownField),
+            (
+                r#"{"identity":"private-value","name":"Test","version":"1.0.0"}"#,
+                Detail::ManifestIdentityInvalid,
+            ),
+            (
+                r#"{"identity":"test@example","name":"Test","version":"private-value"}"#,
+                Detail::ManifestVersionInvalid,
+            ),
+            (
+                r#"{"identity":"test@example","name":"Test","version":"1.0.0","permissions":["private-value"]}"#,
+                Detail::ManifestUnknownPermission,
+            ),
+            (
+                r#"{"identity":"test@example","name":"Test","version":"1.0.0","auth":{"entry":"auth.js"}}"#,
+                Detail::ManifestAuthPermissionMissing,
+            ),
+        ];
+        for (input, expected) in cases {
+            let error = PluginManifest::parse(input.as_bytes())
+                .and_then(|manifest| manifest.validate())
+                .expect_err("invalid manifest");
+            let response = super::market_error(&MarketError::Plugin(error));
+            assert_eq!(response.message, "invalid plugin package");
+            let data = response.data.expect("application error data");
+            assert_eq!(data.field, None);
+            assert_eq!(data.plugin_detail, Some(expected));
+        }
+
+        let error = PluginError::ManifestInvalid("zip 打开失败: /private/package.zip".to_owned());
+        let response = super::plugin_package_error(Some("blobId"), &error);
+        assert_eq!(response.message, "invalid plugin package");
+        assert_eq!(response.data.and_then(|data| data.plugin_detail), None);
+
+        for (error, expected) in [
+            (
+                PluginError::ManifestInvalid(
+                    "读取 manifest 失败: /private/manifest.json".to_owned(),
+                ),
+                Some(Detail::ManifestUnreadable),
+            ),
+            (
+                PluginError::NotDevPlugin("private-identity".to_owned()),
+                Some(Detail::NotDevPlugin),
+            ),
+            (
+                PluginError::Runtime("private-runtime-error".to_owned()),
+                None,
+            ),
+        ] {
+            let response = super::plugin_package_error(Some("identity"), &error);
+            assert_eq!(response.message, "invalid plugin package");
+            assert_eq!(response.data.and_then(|data| data.plugin_detail), expected);
+        }
+    }
 
     fn schedule(queue_id: &str, enabled: bool, start: &str, stop: &str) -> QueueScheduleParams {
         QueueScheduleParams {
@@ -3864,6 +3979,211 @@ mod plugin_consent_audit_tests {
         f.service
             .call_inner("plugin-test", true, method, Some(params))
             .await
+    }
+
+    fn assert_plugin_diagnostic(error: fluxdown_protocol::RpcErrorObject, detail: Value) {
+        let wire = serde_json::to_value(error).unwrap();
+        assert_eq!(wire["message"], "invalid plugin package");
+        assert_eq!(wire["data"]["reason"], "pluginPackageInvalid");
+        assert_eq!(wire["data"]["pluginDetail"], detail);
+        assert!(!wire.to_string().contains("private-fixture-value"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plugin_dev_rpc_reports_underlying_load_failure() {
+        use fluxdown_protocol::method;
+
+        let f = fixture().await;
+        let src = f.base.join("src");
+        let path = src.join("manifest.json");
+        write_plugin(&src, &[]);
+        let manifest: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let mut missing = manifest.clone();
+        missing["main"] = json!({"entry": "dist/main.js"});
+        std::fs::write(&path, missing.to_string()).unwrap();
+        let missing_detail = json!({"kind": "missingFile", "path": "dist/main.js"});
+        let params = json!({"dirPath": src});
+        let error = call(&f, method::DAEMON_PLUGIN_INSTALL_DEV, params.clone())
+            .await
+            .unwrap_err();
+        assert_plugin_diagnostic(error, missing_detail.clone());
+
+        std::fs::write(&path, manifest.to_string()).unwrap();
+        call(&f, method::DAEMON_PLUGIN_INSTALL_DEV, params)
+            .await
+            .unwrap();
+
+        let mut invalid_identity = manifest.clone();
+        invalid_identity["identity"] = json!("private-fixture-value");
+        let mut invalid_version = manifest.clone();
+        invalid_version["version"] = json!("private-fixture-value");
+        let mut unknown_permission = manifest;
+        unknown_permission["permissions"] = json!(["private-fixture-value"]);
+        let reload = || {
+            call(
+                &f,
+                method::DAEMON_PLUGIN_RELOAD_DEV,
+                json!({"identity": ID}),
+            )
+        };
+        for (contents, detail) in [
+            (invalid_identity, json!({"kind": "manifestIdentityInvalid"})),
+            (invalid_version, json!({"kind": "manifestVersionInvalid"})),
+            (
+                unknown_permission,
+                json!({"kind": "manifestUnknownPermission"}),
+            ),
+            (missing, missing_detail),
+        ] {
+            std::fs::write(&path, contents.to_string()).unwrap();
+            let error = reload().await.unwrap_err();
+            assert_plugin_diagnostic(error, detail);
+            assert_eq!(plugin(&f).await["loadStatus"], "Failed");
+        }
+        std::fs::remove_file(path).unwrap();
+        let error = reload().await.unwrap_err();
+        assert_plugin_diagnostic(error, json!({"kind": "manifestUnreadable"}));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dev_reload_and_list_redact_the_same_manifest_error() {
+        use fluxdown_protocol::method;
+
+        let f = fixture().await;
+        let src = f.base.join("dev");
+        write_plugin(&src, &[]);
+        call(
+            &f,
+            method::DAEMON_PLUGIN_INSTALL_DEV,
+            json!({"dirPath": src}),
+        )
+        .await
+        .unwrap();
+
+        let path = src.join("manifest.json");
+        let mut manifest: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        manifest["private-fixture-value"] = json!(true);
+        std::fs::write(path, manifest.to_string()).unwrap();
+
+        let error = call(
+            &f,
+            method::DAEMON_PLUGIN_RELOAD_DEV,
+            json!({"identity": ID}),
+        )
+        .await
+        .unwrap_err();
+        let detail = json!({"kind": "manifestUnknownField"});
+        assert_plugin_diagnostic(error, detail.clone());
+
+        let list = call(&f, method::DAEMON_PLUGIN_LIST, json!({}))
+            .await
+            .unwrap();
+        let failed = list
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["identity"] == ID)
+            .unwrap();
+        assert_eq!(failed["loadStatus"], "Failed");
+        assert_eq!(failed["loadDetail"], detail);
+        assert!(
+            failed["loadError"]
+                .as_str()
+                .is_some_and(|text| !text.is_empty())
+        );
+        assert!(!list.to_string().contains("private-fixture-value"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plugin_zip_rpc_reports_underlying_load_failure_and_rolls_back() {
+        use std::io::{Cursor, Write};
+
+        use fluxdown_protocol::method;
+        use zip::write::SimpleFileOptions;
+
+        use crate::blob_store::BlobKind;
+
+        let f = fixture().await;
+        let cases = [
+            (
+                json!({
+                    "identity": ID, "name": "Demo", "version": "1.0.0",
+                    "resolvers": [{"entry": "resolve.js", "match": {"urls": ["https://example.invalid/*"]}}],
+                }),
+                None,
+                json!({"kind": "missingFile", "path": "resolve.js"}),
+            ),
+            (
+                json!({
+                    "identity": ID, "name": "Demo", "version": "1.0.0",
+                    "permissions": ["archive"], "contributes": {"archive": "archive.js"},
+                }),
+                Some(("archive.js", "const private-fixture-value = ;")),
+                json!({"kind": "scriptCompileFailedAt", "line": 1}),
+            ),
+            (
+                json!({
+                    "identity": ID, "name": "Demo", "version": "1.0.0",
+                    "resolvers": [{"entry": "resolve.js", "match": {"urls": ["https://example.invalid/*"]}}],
+                }),
+                Some(("resolve.js", "const private-fixture-value = ;")),
+                json!({"kind": "scriptCompileFailedAt", "line": 1}),
+            ),
+        ];
+        for dev in [false, true] {
+            if dev {
+                write_plugin(&f.root.join(ID), &[]);
+                std::fs::write(f.root.join(ID).join("previous.txt"), b"old package").unwrap();
+                let src = f.base.join("dev");
+                write_plugin(&src, &[]);
+                call(
+                    &f,
+                    method::DAEMON_PLUGIN_INSTALL_DEV,
+                    json!({"dirPath": src}),
+                )
+                .await
+                .unwrap();
+            }
+            for (manifest, script, detail) in &cases {
+                let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+                zip.start_file("manifest.json", SimpleFileOptions::default())
+                    .unwrap();
+                zip.write_all(manifest.to_string().as_bytes()).unwrap();
+                if let Some((entry, source)) = script {
+                    zip.start_file(*entry, SimpleFileOptions::default())
+                        .unwrap();
+                    zip.write_all(source.as_bytes()).unwrap();
+                }
+                let bytes = zip.finish().unwrap().into_inner();
+                let id = f.service.blobs.put(BlobKind::Plugin, &bytes).await.unwrap();
+                let error = call(&f, method::DAEMON_PLUGIN_INSTALL, json!({"blobId": id}))
+                    .await
+                    .unwrap_err();
+                let mut detail = detail.clone();
+                if script.is_some() {
+                    let wire = serde_json::to_value(&error).unwrap();
+                    let column = wire["data"]["pluginDetail"]["column"].as_u64().unwrap();
+                    assert!(column > 0);
+                    detail["column"] = json!(column);
+                }
+                assert_plugin_diagnostic(error, detail);
+                if dev {
+                    assert_eq!(
+                        std::fs::read(f.root.join(ID).join("previous.txt")).unwrap(),
+                        b"old package"
+                    );
+                    let remaining = plugin(&f).await;
+                    assert_eq!(remaining["devMode"], true);
+                    assert_eq!(remaining["loadStatus"], "Loaded");
+                } else {
+                    assert!(!f.root.join(ID).exists());
+                    let remaining = call(&f, method::DAEMON_PLUGIN_LIST, json!({}))
+                        .await
+                        .unwrap();
+                    assert_eq!(remaining, json!([]));
+                }
+            }
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

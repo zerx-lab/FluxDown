@@ -199,6 +199,34 @@ pub enum ErrorReason {
     Unknown,
 }
 
+/// Safe plugin diagnostics; clients localize the kind and interpolate only these arguments.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum PluginFailureDetail {
+    ManifestUnreadable,
+    ManifestUnknownField,
+    ManifestJsonInvalid,
+    ManifestIdentityInvalid,
+    ManifestNameMissing,
+    ManifestVersionInvalid,
+    ManifestMinAppVersionInvalid,
+    ManifestUnknownPermission,
+    ManifestAuthPermissionMissing,
+    ScriptCompileFailed,
+    ScriptCompileFailedAt {
+        line: u32,
+        column: u32,
+    },
+    MissingFile {
+        path: String,
+    },
+    LoadFailed,
+    NotDevPlugin,
+    #[serde(other)]
+    Unknown,
+}
+
 /// FluxDown 应用错误的机器可读详情。
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -212,6 +240,9 @@ pub struct RpcErrorData {
     pub revision: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<ErrorReason>,
+    /// Redacted plugin operation details for display and copying.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin_detail: Option<PluginFailureDetail>,
 }
 
 impl RpcErrorData {
@@ -224,6 +255,7 @@ impl RpcErrorData {
             field: None,
             revision: None,
             reason: None,
+            plugin_detail: None,
         }
     }
 

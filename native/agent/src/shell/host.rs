@@ -23,6 +23,8 @@ use tokio::sync::mpsc;
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
+#[cfg(windows)]
+use super::DownloadDot;
 #[cfg(not(target_os = "macos"))]
 use super::TrayIconSource;
 use super::{ShellHost, TrayAction, TrayAvailability, TrayModel, TrayPort};
@@ -561,7 +563,18 @@ impl TrayUi {
         #[cfg(not(target_os = "macos"))]
         {
             let previous = self.applied.as_ref().map(|applied| &applied.icon);
-            if previous.unwrap_or(&TrayIconSource::Default) != &model.icon {
+            let icon_changed = previous.unwrap_or(&TrayIconSource::Default) != &model.icon;
+            #[cfg(windows)]
+            let icon_changed = icon_changed
+                || self
+                    .applied
+                    .as_ref()
+                    .and_then(|applied| applied.download_dot)
+                    != model.download_dot;
+            if icon_changed {
+                #[cfg(windows)]
+                self.apply_icon(&model.icon, model.download_dot);
+                #[cfg(not(windows))]
                 self.apply_icon(&model.icon);
             }
         }
@@ -602,7 +615,7 @@ impl TrayUi {
 
     /// 切换托盘图标：自选图标直接换图；回到默认时按当前任务栏明暗（Windows）/ 内置图（Linux）还原。
     #[cfg(not(target_os = "macos"))]
-    fn apply_icon(&mut self, source: &TrayIconSource) {
+    fn apply_icon(&mut self, source: &TrayIconSource, #[cfg(windows)] dot: Option<DownloadDot>) {
         #[cfg(windows)]
         let dark = windows_theme::taskbar_is_dark();
         let bytes: &[u8] = match source {
@@ -618,7 +631,11 @@ impl TrayUi {
             #[cfg(not(windows))]
             TrayIconSource::Default => ICON_BYTES,
         };
-        match decode_icon(bytes) {
+        #[cfg(windows)]
+        let decoded = decode_icon_with_dot(bytes, dot);
+        #[cfg(not(windows))]
+        let decoded = decode_icon(bytes);
+        match decoded {
             Ok(icon) => match self.icon.set_icon(Some(icon)) {
                 Ok(()) => {
                     #[cfg(windows)]
@@ -642,19 +659,8 @@ impl TrayUi {
         if dark == self.dark_taskbar {
             return;
         }
-        let bytes = if dark {
-            DARK_TASKBAR_ICON_BYTES
-        } else {
-            LIGHT_TASKBAR_ICON_BYTES
-        };
-        match decode_icon(bytes) {
-            Ok(icon) => {
-                if self.icon.set_icon(Some(icon)).is_ok() {
-                    self.dark_taskbar = dark;
-                }
-            }
-            Err(error) => tracing::warn!(%error, "could not decode tray icon"),
-        }
+        let dot = self.applied.as_ref().and_then(|model| model.download_dot);
+        self.apply_icon(&TrayIconSource::Default, dot);
     }
 }
 
@@ -663,6 +669,52 @@ fn decode_icon(bytes: &[u8]) -> Result<Icon, String> {
         .map_err(|error| error.to_string())?
         .into_rgba8();
     let (width, height) = image.dimensions();
+    Icon::from_rgba(image.into_raw(), width, height).map_err(|error| error.to_string())
+}
+
+#[cfg(windows)]
+fn decode_icon_with_dot(bytes: &[u8], dot: Option<DownloadDot>) -> Result<Icon, String> {
+    let Some(dot) = dot else {
+        return decode_icon(bytes);
+    };
+    let mut image = image::load_from_memory_with_format(bytes, image::ImageFormat::Png)
+        .map_err(|error| error.to_string())?
+        .into_rgba8();
+    let color = match dot {
+        DownloadDot::Downloading => [250, 204, 21, 255],
+        DownloadDot::Completed => [34, 197, 94, 255],
+        DownloadDot::Failed => [239, 68, 68, 255],
+    };
+    let (width, height) = image.dimensions();
+    let radius = f64::from(width.min(height)) * 0.20;
+    let center_x = f64::from(width) - radius;
+    let center_y = f64::from(height) - radius;
+    let inner_radius = radius * 0.78;
+    let first_x = (center_x - radius - 1.0).max(0.0) as u32;
+    let first_y = (center_y - radius - 1.0).max(0.0) as u32;
+    for y in first_y..height {
+        for x in first_x..width {
+            let distance = (f64::from(x) + 0.5 - center_x).hypot(f64::from(y) + 0.5 - center_y);
+            let outer = (radius + 0.5 - distance).clamp(0.0, 1.0);
+            if outer == 0.0 {
+                continue;
+            }
+            let fill = (inner_radius + 0.5 - distance).clamp(0.0, outer);
+            let pixel = image.get_pixel_mut(x, y);
+            let base = (1.0 - outer) * f64::from(pixel[3]) / 255.0;
+            let alpha = base + outer;
+            for channel in 0..3 {
+                pixel[channel] = ((base * f64::from(pixel[channel])
+                    + (outer - fill) * 32.0
+                    + fill * f64::from(color[channel]))
+                    / alpha)
+                    .round() as u8;
+            }
+            pixel[3] = (alpha * 255.0).round() as u8;
+        }
+    }
+    // The tray-icon CreateIcon path accepts straight RGBA. Premultiplying here
+    // would darken translucent pixels when Windows draws the HICON.
     Icon::from_rgba(image.into_raw(), width, height).map_err(|error| error.to_string())
 }
 

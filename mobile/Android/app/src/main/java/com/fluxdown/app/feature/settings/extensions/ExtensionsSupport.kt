@@ -40,6 +40,7 @@ import com.fluxdown.app.i18n.str
 import com.fluxdown.app.shell.hostState
 import com.fluxdown.core.host.HostErrorCode
 import com.fluxdown.core.host.HostException
+import com.fluxdown.core.host.PluginDiagnostic
 import com.fluxdown.core.protocol.ComponentKind
 import com.fluxdown.core.protocol.ComponentStatusDto
 import com.fluxdown.core.protocol.HostSection
@@ -51,6 +52,8 @@ import com.fluxdown.core.protocol.QrEncoder
 import com.fluxdown.core.protocol.QrMatrix
 import com.fluxdown.fluxui.controls.FluxTag
 import com.fluxdown.fluxui.controls.Tone
+import com.fluxdown.fluxui.overlay.FluxDialogButton
+import com.fluxdown.fluxui.overlay.FluxDialogSpec
 import com.fluxdown.fluxui.overlay.FluxOverlayState
 import com.fluxdown.fluxui.overlay.FluxToastKind
 import com.fluxdown.fluxui.theme.FluxText
@@ -86,6 +89,23 @@ internal class ExtensionsEnv(val context: Context, private val overlays: FluxOve
     fun toast(text: String, kind: FluxToastKind) = overlays.toast(text, kind)
 
     fun error(e: HostException): String = extensionErrorText(context, e)
+
+    fun showPluginFailure(@StringRes operation: Int, error: HostException) {
+        val message = text(operation, "message" to pluginFailureText(context, error))
+        overlays.showDialog(
+            FluxDialogSpec(
+                title = text(R.string.statusError),
+                message = message,
+                buttons = listOf(
+                    FluxDialogButton(text(R.string.close)),
+                    FluxDialogButton(text(R.string.pluginLoadErrorCopy)) {
+                        context.copyPlainText(message)
+                        toast(text(R.string.pluginLoadErrorCopied), FluxToastKind.Success)
+                    },
+                ),
+            ),
+        )
+    }
 }
 
 @Composable
@@ -121,6 +141,41 @@ internal fun extensionErrorText(context: Context, e: HostException): String {
             else -> R.string.localServiceActionFailed
         },
     )
+}
+
+/** Only the structured diagnostic and localized reason/code fallback are safe to show or copy. */
+private fun pluginFailureText(context: Context, error: HostException): String =
+    pluginDiagnosticText(context, error.pluginDiagnostic) ?: extensionErrorText(context, error)
+
+internal fun pluginLoadFailureText(context: Context, plugin: PluginDto): String =
+    pluginDiagnosticText(context, plugin.loadDetail) ?: context.str(R.string.pluginDiagnosticLoadFailed)
+
+private fun pluginDiagnosticText(context: Context, detail: PluginDiagnostic?): String? {
+    if (detail == null) return null
+    return when (detail.kind) {
+        "manifestUnreadable" -> context.str(R.string.pluginDiagnosticManifestUnreadable)
+        "manifestUnknownField" -> context.str(R.string.pluginDiagnosticManifestUnknownField)
+        "manifestJsonInvalid" -> context.str(R.string.pluginDiagnosticManifestJsonInvalid)
+        "manifestIdentityInvalid" -> context.str(R.string.pluginDiagnosticManifestIdentityInvalid)
+        "manifestNameMissing" -> context.str(R.string.pluginDiagnosticManifestNameMissing)
+        "manifestVersionInvalid" -> context.str(R.string.pluginDiagnosticManifestVersionInvalid)
+        "manifestMinAppVersionInvalid" -> context.str(R.string.pluginDiagnosticManifestMinAppVersionInvalid)
+        "manifestUnknownPermission" -> context.str(R.string.pluginDiagnosticManifestUnknownPermission)
+        "manifestAuthPermissionMissing" -> context.str(R.string.pluginDiagnosticManifestAuthPermissionMissing)
+        "scriptCompileFailed" -> context.str(R.string.pluginDiagnosticScriptCompileFailed)
+        "scriptCompileFailedAt" -> {
+            val line = detail.line
+            val column = detail.column
+            if (line == null || column == null) context.str(R.string.pluginDiagnosticScriptCompileFailed)
+            else context.str(R.string.pluginDiagnosticScriptCompileFailedAt, "line" to line, "column" to column)
+        }
+        "missingFile" -> detail.path?.takeIf { it.isNotBlank() }?.let {
+            context.str(R.string.pluginDiagnosticMissingFile, "path" to it)
+        }
+        "loadFailed" -> context.str(R.string.pluginDiagnosticLoadFailed)
+        "notDevPlugin" -> context.str(R.string.pluginDiagnosticNotDevPlugin)
+        else -> null
+    }
 }
 
 // ───────────────────────────── 文案键映射 ─────────────────────────────

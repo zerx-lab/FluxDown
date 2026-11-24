@@ -715,6 +715,26 @@ impl GatewayService {
                 self.platform_app_icon_image(params).await
             }
             method::AGENT_PLATFORM_SYNC_WINDOW_ICONS => self.platform_sync_window_icons().await,
+            method::AGENT_PLATFORM_ACK_TRAY_DOWNLOADS => {
+                #[cfg(all(windows, feature = "desktop"))]
+                {
+                    #[derive(serde::Deserialize)]
+                    #[serde(rename_all = "camelCase")]
+                    struct SeenCursor {
+                        epoch: String,
+                        sequence: u64,
+                        #[serde(default)]
+                        seen_failures: Vec<String>,
+                    }
+                    let seen = parse_params::<SeenCursor>(request.params)?;
+                    self.events.acknowledge_tray_downloads(
+                        &seen.epoch,
+                        seen.sequence,
+                        &seen.seen_failures,
+                    );
+                }
+                Ok(serde_json::json!({ "ok": true }))
+            }
             method::AGENT_PLATFORM_BROWSER_EXTENSION_STATUS => {
                 platform_blocking(|| Ok(crate::platform::browser_extension::status()))
                     .await
@@ -1698,6 +1718,7 @@ fn invalid_field(field: &str) -> RpcErrorData {
         retryable: false,
         field: Some(field.to_owned()),
         revision: None,
+        plugin_detail: None,
         reason: None,
     }
 }

@@ -122,8 +122,9 @@ public struct PluginDto: Codable, Sendable, Hashable, Identifiable {
     public var subscriptionProviderIds: [String]
     /// `Loaded` / `Failed`；与 `enabled` 独立。
     public var loadStatus: String
-    /// 加载失败原因；成功为空。
+    /// Legacy wire fallback; clients render localized `loadDetail` instead.
     public var loadError: String
+    public var loadDetail: PluginDiagnostic?
     public var resolverUrlConflicts: [PluginResolverUrlConflict]
 
     public var id: String { identity }
@@ -146,6 +147,7 @@ public struct PluginDto: Codable, Sendable, Hashable, Identifiable {
         subscriptionProviderIds: [String] = [],
         loadStatus: String = "Loaded",
         loadError: String = "",
+        loadDetail: PluginDiagnostic? = nil,
         resolverUrlConflicts: [PluginResolverUrlConflict] = []
     ) {
         self.identity = identity
@@ -164,6 +166,7 @@ public struct PluginDto: Codable, Sendable, Hashable, Identifiable {
         self.subscriptionProviderIds = subscriptionProviderIds
         self.loadStatus = loadStatus
         self.loadError = loadError
+        self.loadDetail = loadDetail
         self.resolverUrlConflicts = resolverUrlConflicts
     }
 
@@ -185,6 +188,7 @@ public struct PluginDto: Codable, Sendable, Hashable, Identifiable {
         subscriptionProviderIds = try c.decodeIfPresent([String].self, forKey: .subscriptionProviderIds) ?? []
         loadStatus = try c.decodeIfPresent(String.self, forKey: .loadStatus) ?? "Loaded"
         loadError = try c.decodeIfPresent(String.self, forKey: .loadError) ?? ""
+        loadDetail = try? c.decodeIfPresent(PluginDiagnostic.self, forKey: .loadDetail)
         resolverUrlConflicts = try c.decodeIfPresent([PluginResolverUrlConflict].self, forKey: .resolverUrlConflicts) ?? []
     }
 }

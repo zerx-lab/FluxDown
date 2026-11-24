@@ -47,6 +47,7 @@ pub enum SessionSignal {
 pub struct AgentSession {
     _client: Arc<AgentClient>,
     latest: Option<Arc<Snapshot>>,
+    tray_downloads_sequence: u64,
     /// 连接当前不可用（事件帧不再并入快照）。
     stale: bool,
     /// 已向视图广播离线（宽限已过或不可恢复）。
@@ -65,6 +66,7 @@ impl AgentSession {
         let mut session = Self {
             _client: client,
             latest: None,
+            tray_downloads_sequence: 0,
             stale: true,
             offline_notified: false,
             offline_generation: 0,
@@ -102,6 +104,24 @@ impl AgentSession {
             .is_some_and(|body| body.daemon.tables_loading())
     }
 
+    pub(crate) fn tray_downloads_ready(&self) -> bool {
+        !self.stale
+            && self.agent_snapshot().is_some_and(|body| {
+                body.daemon_connected
+                    && !body.daemon.tables_loading()
+                    && body
+                        .preferences
+                        .values
+                        .get("desktop.tray_download_status")
+                        .and_then(serde_json::Value::as_bool)
+                        != Some(false)
+            })
+    }
+
+    pub(crate) fn tray_downloads_sequence(&self) -> u64 {
+        self.tray_downloads_sequence
+    }
+
     /// 已可呈现界面：拿到快照，或已确认离线（宽限已过 / 不可恢复），不必再等。
     #[must_use]
     pub fn is_settled(&self) -> bool {
@@ -117,6 +137,7 @@ impl AgentSession {
                         .submissions
                         .set_ready(agent_body(&snapshot).is_some_and(|body| body.daemon_connected));
                     let snapshot = Arc::new(*snapshot);
+                    self.tray_downloads_sequence = snapshot.sequence;
                     self.latest = Some(Arc::clone(&snapshot));
                     self.stale = false;
                     self.offline_notified = false;
@@ -124,12 +145,19 @@ impl AgentSession {
                     cx.emit(SessionSignal::Snapshot(snapshot));
                 }
                 AgentClientEvent::Event(mut frame) => {
+                    let tray_changed = cfg!(windows)
+                        && self
+                            .agent_snapshot()
+                            .is_some_and(|body| affects_tray_downloads(&body.daemon, &frame.event));
                     match self
                         .latest
                         .as_mut()
                         .map(|snapshot| apply_frame(Arc::make_mut(snapshot), &mut frame))
                     {
                         Some(Ok(true)) if !self.stale => {
+                            if tray_changed {
+                                self.tray_downloads_sequence = frame.sequence;
+                            }
                             match &frame.event {
                                 ServiceEvent::Agent(AgentEvent::DaemonConnectionChanged(ready)) => {
                                     self._client.submissions.set_ready(*ready);
@@ -281,6 +309,76 @@ pub fn attach<V: SessionConsumer>(session: &Entity<AgentSession>, view: &Entity<
     if offline {
         view.update(cx, |view, cx| view.mark_stale(cx));
     }
+}
+
+fn affects_tray_downloads(
+    daemon: &fluxdown_protocol::DaemonSnapshot,
+    event: &ServiceEvent,
+) -> bool {
+    use fluxdown_protocol::WsServerMsg;
+
+    match event {
+        ServiceEvent::Agent(
+            AgentEvent::DaemonConnectionChanged(_) | AgentEvent::DaemonSnapshotReplaced(_),
+        ) => true,
+        ServiceEvent::Agent(AgentEvent::Daemon(event)) => match event {
+            DaemonEvent::SnapshotReplaced(_)
+            | DaemonEvent::TablesReloading { .. }
+            | DaemonEvent::TaskChanged(_)
+            | DaemonEvent::TasksChanged(_)
+            | DaemonEvent::TaskDeleted { .. }
+            | DaemonEvent::TasksDeleted { .. } => true,
+            DaemonEvent::Engine(WsServerMsg::TaskProgress {
+                task_id,
+                status,
+                error_message,
+                ..
+            }) => daemon
+                .task(task_id)
+                .is_some_and(|row| row.status != *status || row.error_message != *error_message),
+            DaemonEvent::RuntimeStatsChanged(stats) => {
+                daemon.runtime_stats.retry_pending_tasks != 0 && stats.retry_pending_tasks == 0
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn tray_downloads_ignores_progress_without_a_status_change() -> Result<(), serde_json::Error> {
+    use fluxdown_protocol::{DaemonSnapshot, WsServerMsg};
+
+    let row = serde_json::from_value(serde_json::json!({
+        "taskId": "seen", "url": "https://example.com/file", "fileName": "file",
+        "saveDir": "/tmp", "status": 1, "downloadedBytes": 10,
+        "totalBytes": 100, "createdAt": "1",
+    }))?;
+    let mut daemon = DaemonSnapshot::default();
+    daemon.install_tasks(vec![row]);
+    let progress = |status| {
+        let event = DaemonEvent::Engine(WsServerMsg::TaskProgress {
+            task_id: "seen".into(),
+            status,
+            downloaded_bytes: 20,
+            total_bytes: 100,
+            speed: 10,
+            upload_speed: 0,
+            file_name: "file".into(),
+            save_dir: "/tmp".into(),
+            url: "https://example.com/file".into(),
+            error_message: String::new(),
+            uploaded_bytes: 0,
+            seeding_status: 0,
+            seeding_message: String::new(),
+            seeding_time_secs: 0,
+        });
+        ServiceEvent::Agent(AgentEvent::Daemon(event))
+    };
+    assert!(!affects_tray_downloads(&daemon, &progress(1)));
+    assert!(affects_tray_downloads(&daemon, &progress(3)));
+    Ok(())
 }
 
 /// 把帧并入同一 epoch 的快照：旧帧（含快照已覆盖的）不可倒灌，缺口不可静默跳过；合并帧的

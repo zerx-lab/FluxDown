@@ -287,6 +287,7 @@ export const METHOD = {
   AGENT_PLATFORM_SET_APP_ICON: 'agent.platform.setAppIcon',
   AGENT_PLATFORM_APP_ICON_IMAGE: 'agent.platform.appIconImage',
   AGENT_PLATFORM_SYNC_WINDOW_ICONS: 'agent.platform.syncWindowIcons',
+  AGENT_PLATFORM_ACK_TRAY_DOWNLOADS: 'agent.platform.ackTrayDownloads',
   /** 本机浏览器扩展安装状态与一键安装（仅 GPUI 使用；server 模式拒绝）。 */
   AGENT_PLATFORM_BROWSER_EXTENSION_STATUS: 'agent.platform.browserExtensionStatus',
   AGENT_PLATFORM_INSTALL_BROWSER_EXTENSION: 'agent.platform.installBrowserExtension',

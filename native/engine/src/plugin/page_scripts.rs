@@ -385,7 +385,7 @@ mod tests {
             subscription_provider_ids: Vec::new(),
             resolver_urls: Vec::new(),
             load_status: "Loaded".into(),
-            load_error: String::new(),
+            load_detail: None,
             contributions: ContributesDecl {
                 page_scripts: scripts,
                 ..ContributesDecl::default()

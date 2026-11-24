@@ -16,14 +16,6 @@ use fluxdown_engine::{Engine, EngineConfig, NoopSelection, NoopSink};
 
 const IDENTITY: &str = "tester@reload";
 
-fn uniq() -> String {
-    let n = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    format!("{}-{}", std::process::id(), n)
-}
-
 async fn make_engine(work: &Path) -> Engine {
     let cfg = EngineConfig {
         max_concurrent: 4,
@@ -68,7 +60,7 @@ const VALID_SCRIPT: &str =
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reload_dev_applies_manifest_edits_and_keeps_registration_on_failure() {
-    let work = std::env::temp_dir().join(format!("fluxdown-reload-dev-{}", uniq()));
+    let work = std::env::temp_dir().join(format!("fluxdown-reload-dev-{}", uuid::Uuid::new_v4()));
     let src = work.join("dev-src");
     tokio::fs::create_dir_all(&src).await.expect("mkdir");
     write_manifest(&src, "1.0.0").await;
@@ -106,7 +98,10 @@ async fn reload_dev_applies_manifest_edits_and_keeps_registration_on_failure() {
         .await
         .expect("corrupt manifest");
     let err = pm.reload_dev(IDENTITY).await.expect_err("broken manifest");
-    assert!(matches!(err, PluginError::LoadFailed(_)), "got {err:?}");
+    assert!(
+        matches!(err, PluginError::ManifestInvalid(_)),
+        "got {err:?}"
+    );
     assert_eq!(version(&pm.list().await).unwrap().1, "Failed");
 
     write_manifest(&src, "1.2.0").await;
@@ -132,7 +127,7 @@ async fn reload_dev_applies_manifest_edits_and_keeps_registration_on_failure() {
 /// 并点名文件，而不是等到调用时才报「未提供 resolver」。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dev_plugin_with_missing_entry_fails_to_load_naming_the_file() {
-    let work = std::env::temp_dir().join(format!("fluxdown-reload-dev-{}", uniq()));
+    let work = std::env::temp_dir().join(format!("fluxdown-reload-dev-{}", uuid::Uuid::new_v4()));
     let src = work.join("dev-src");
     tokio::fs::create_dir_all(&src).await.expect("mkdir");
     write_manifest(&src, "1.0.0").await;

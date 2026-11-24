@@ -7,7 +7,7 @@ order: 9
 
 This page is for the moment something does not work. It covers where to look, what each plugin state means, which action a given edit needs, and — most useful — the **error messages** with their causes.
 
-> **About the language of messages.** Most errors raised by FluxDown's plugin engine are in Chinese, and that is exactly what you see in the app and in logs. This page quotes them **verbatim** so you can search for them, and adds an English gloss in parentheses. Messages from the SDK command line are in English.
+> **About the language of messages.** Most errors in the FluxDown plugin engine's logs are in Chinese. This page quotes them **verbatim** so you can search for them, and adds an English gloss in parentheses. Messages from the SDK command line are in English.
 
 ## Quick checklist
 
@@ -110,15 +110,20 @@ Three **consecutive** timeouts or out-of-memory errors in a resolver, an interce
 
 ## Install and validation errors
 
-These appear when you install, reload or run `npm run validate`. The install dialog shows `Install failed: …` / `Plugin installation failed: …` followed by the message; the same text goes to the log.
+On desktop and Web, install and update failures appear near the install controls, and reload failures appear on the affected plugin row. Failed rows in the plugin list also show a localized, redacted diagnostic, including after a refresh. **Copy error** copies the localized operation failure shown in the app. Diagnostics may include a manifest validation category, a package-relative file name, or a script line and column. They do not include raw exception text or absolute paths. For the original error, including the name of an unknown field, see the daemon diagnostics log; for local validation, run `npm run validate`.
 
-### Messages from the engine (and `npm run validate`)
+A successful installation clears the last install error. Reinstalling or uninstalling a plugin clears its previous reload error.
 
-The engine reports these with the prefix `manifest 非法: ` (“manifest invalid:”). `npm run validate` and the SDK validator use the same rules and almost the same wording, without that prefix, and report every problem at once instead of stopping at the first. Where the wording differs, the table shows the engine's text.
+On Android and iOS, a failed install, update, or reload opens a diagnostic dialog. **Copy error** copies the same localized text shown in the dialog.
+On iOS, cancelling the file picker does not show an error. If the selected file is missing, inaccessible, or unreadable, the dialog shows what to check without including its local path.
+
+### Original engine messages in the daemon diagnostics log
+
+The table quotes the engine's original messages, not the desktop or Web text. Manifest errors in the log have the prefix `manifest 非法: ` (“manifest invalid:”). `npm run validate` and the SDK validator check the same manifest rules, use their own wording, and report every problem at once instead of stopping at the first.
 
 | Message | Cause | Fix |
 |---|---|---|
-| `JSON 解析失败: …` (“JSON parse failed”) | `manifest.json` is not valid JSON, has a wrong value type, or contains a field the engine does not know (the detail then reads `unknown field …`). | Fix the syntax; remove the unknown field — spelling and nesting are checked, see the [manifest reference](/docs/en/plugins/manifest/). With the SDK you get `manifest: 未知字段 <key>` (“unknown field”) instead. |
+| `JSON 解析失败: …` (“JSON parse failed”) | `manifest.json` is not valid JSON, has a wrong value type, or contains a field the engine does not know (the log then reads `unknown field …`). | Fix the syntax; remove the unknown field — spelling and nesting are checked, see the [manifest reference](/docs/en/plugins/manifest/). With the SDK you get `manifest: 未知字段 <key>` (“unknown field”) instead. |
 | `identity '…' 非法：须匹配 ^[a-z0-9_-]+@[a-z0-9_-]+$` | The identity is not `author@name` with lowercase letters, digits, `_`, `-`. | Rename, e.g. `me@my-plugin`. No dots, no uppercase. |
 | `name 不可为空` (“name must not be empty”) | Empty `name`. | Set it. |
 | `version '…' 非法：须为 MAJOR.MINOR.PATCH` | Not three dot-separated numbers. | Use `1.0.0`. The SDK and the plugin index are stricter: no `v` prefix, no suffix. |

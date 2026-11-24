@@ -80,7 +80,7 @@ private struct ExtensionsContent: View {
                 guard let url = urls.first else { return }
                 Task { await model.installFile(url) }
             case let .failure(error):
-                container.toasts.show(text: L("pluginOpInstallFailed", ["message": error.localizedDescription]), tone: .error)
+                model.reportPackageImportFailure(error)
             }
         }
         .sheet(item: $model.sheet) { sheet in
@@ -105,6 +105,18 @@ private struct ExtensionsContent: View {
             Button(L("pluginDepsGoToComponents")) { model.goToComponents() }
         } message: {
             Text(missingMessage)
+        }
+        .alert(L("pluginLoadErrorTitle"), isPresented: Binding(
+            get: { model.operationFailure != nil },
+            set: { if !$0 { model.operationFailure = nil } }
+        ), presenting: model.operationFailure) { message in
+            Button(L("pluginLoadErrorCopy")) {
+                ExtensionsClipboard.copy(message)
+                container.toasts.show(text: L("pluginLoadErrorCopied"), tone: .success)
+            }
+            Button(L("close"), role: .cancel) {}
+        } message: { message in
+            Text(verbatim: message)
         }
     }
 
@@ -198,6 +210,7 @@ private struct ExtensionsContent: View {
 
         Section {
             Button {
+                model.operationFailure = nil
                 importing = true
             } label: {
                 HStack {
@@ -254,9 +267,9 @@ private struct ExtensionsContent: View {
             Button(L("pluginReloadTooltip"), systemImage: FluxSymbol.retry) { Task { await model.reload(plugin) } }
                 .disabled(readOnly)
         }
-        if plugin.loadFailed, !plugin.loadError.isEmpty {
+        if plugin.loadFailed {
             Button(L("pluginLoadErrorCopy"), systemImage: FluxSymbol.copy) {
-                ExtensionsClipboard.copy(plugin.loadError)
+                ExtensionsClipboard.copy(ExtensionErrorText.pluginLoadFailure(plugin))
                 container.toasts.show(text: L("pluginLoadErrorCopied"), tone: .success)
             }
         }
@@ -356,8 +369,8 @@ struct PluginRow: View {
                         .lineLimit(2)
                 }
                 badges
-                if plugin.loadFailed, !plugin.loadError.isEmpty {
-                    Text(plugin.loadError)
+                if plugin.loadFailed {
+                    Text(ExtensionErrorText.pluginLoadFailure(plugin))
                         .font(.footnote)
                         .foregroundStyle(Color.fdStatusFailedText)
                         .lineLimit(2)
