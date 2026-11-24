@@ -655,10 +655,17 @@ impl DaemonService {
             }
             method::DAEMON_TASK_CLEAN_UNFINISHED => {
                 let params = parse_params::<DaemonTaskIdsParams>(params)?;
-                self.execute_unit(ActorOperation::CleanUnfinishedTasks {
-                    task_ids: params.task_ids,
-                })
-                .await
+                match self
+                    .actor
+                    .execute(ActorOperation::CleanUnfinishedTasks {
+                        task_ids: params.task_ids,
+                    })
+                    .await
+                {
+                    Ok(ActorResult::CleanedUnfinished(deleted)) => to_value(deleted),
+                    Ok(_) => Err(internal_error("unexpected actor result".to_owned())),
+                    Err(error) => Err(actor_error(error)),
+                }
             }
             method::DAEMON_QUEUE_LIST => {
                 to_value(self.events.inspect(|snapshot| snapshot.queues.clone()))

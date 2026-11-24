@@ -96,6 +96,7 @@ pub const DAEMON_TASK_RESUME_MANY: &str = "daemon.task.resumeMany";
 /// 批量删除（`{taskIds, deleteFiles}`）：语义同批量暂停。
 pub const DAEMON_TASK_DELETE_MANY: &str = "daemon.task.deleteMany";
 /// Delete paused or failed task records and owned partial data (`{taskIds}`).
+/// On success, returns the number of records removed, excluding skipped tasks.
 pub const DAEMON_TASK_CLEAN_UNFINISHED: &str = "daemon.task.cleanUnfinished";
 /// 批量建任务（`DaemonCreateTasksParams`）：整块一个事务、一次 `TasksChanged` 事件，
 /// 按 `batchId` 幂等；结果逐条对应（`DaemonCreateTasksResult`）。

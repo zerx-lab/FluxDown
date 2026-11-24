@@ -111,7 +111,7 @@ pub(crate) struct DeletionProgress {
 #[derive(Debug, Default)]
 pub(crate) struct DeletionReport {
     total: usize,
-    /// daemon 确认整块成功的任务数。
+    /// 成功回复确认已删除的任务数。
     acknowledged: usize,
     /// 回复了错误的块里的任务：daemon 可能已删掉其中一部分。
     failed_ids: Vec<String>,
@@ -139,7 +139,7 @@ impl DeletionReport {
         self.cancelled
     }
 
-    /// 汇总：被确认的整块算已删除；出错 / 不确定的块里的任务以 `is_gone` 判断是否已不在列表。
+    /// 汇总：成功回复使用已删除数；出错 / 不确定的块以 `is_gone` 核对。
     #[must_use]
     pub(crate) fn tally(&self, is_gone: impl Fn(&str) -> bool) -> DeletionTally {
         let count_gone = |ids: &[String]| ids.iter().filter(|id| is_gone(id)).count();
@@ -206,13 +206,24 @@ impl DeletionReport {
 /// 一块的最终结局。
 enum ChunkEnd {
     /// 拿到了回复（重发用尽的不确定错误也在此，由调用方判定是否中断）。
-    Replied(Result<(), RpcErrorData>),
+    Replied(Result<usize, RpcErrorData>),
     /// 被取消：收尾时间内拿到回复则带上，否则该块是否生效未知。
-    Cancelled(Option<Result<(), RpcErrorData>>),
+    Cancelled(Option<Result<usize, RpcErrorData>>),
 }
 
-fn acknowledged(result: Result<DownloadsResult, RpcErrorData>) -> Result<(), RpcErrorData> {
-    result.map(|_| ())
+fn acknowledged(
+    result: Result<DownloadsResult, RpcErrorData>,
+    mode: DeletionMode,
+    requested: usize,
+) -> Result<usize, RpcErrorData> {
+    match (mode, result?) {
+        (DeletionMode::Unfinished, DownloadsResult::CleanedUnfinished(deleted)) => Ok(deleted),
+        (DeletionMode::Unfinished, _) => Err(RpcErrorData::new(
+            fluxdown_protocol::ApplicationErrorCode::Internal,
+            false,
+        )),
+        _ => Ok(requested),
+    }
 }
 
 /// 删除一块；`Unavailable` 时按 [`retry_delay`] 退避后重发同一块（幂等）。
@@ -228,6 +239,7 @@ where
     S: Fn(Duration) -> SF,
     SF: Future<Output = ()>,
 {
+    let requested = task_ids.len();
     let mut retries = 0_u32;
     loop {
         let task_ids = task_ids.to_vec();
@@ -239,11 +251,15 @@ where
             DeletionMode::Unfinished => DownloadsCommand::CleanUnfinished { task_ids },
         });
         let result = match settle(&mut future, cancel, sleep).await {
-            Settled::Finished(result) => acknowledged(result),
-            Settled::Cancelled(settled) => return ChunkEnd::Cancelled(settled.map(acknowledged)),
+            Settled::Finished(result) => acknowledged(result, mode, requested),
+            Settled::Cancelled(settled) => {
+                return ChunkEnd::Cancelled(
+                    settled.map(|result| acknowledged(result, mode, requested)),
+                );
+            }
         };
         let Err(error) = result else {
-            return ChunkEnd::Replied(Ok(()));
+            return ChunkEnd::Replied(result);
         };
         let Some(delay) = retry_delay(&error, retries) else {
             return ChunkEnd::Replied(Err(error));
@@ -286,8 +302,8 @@ where
         }
         sent += chunk.len();
         let stop = match delete_chunk(chunk, mode, execute, sleep, cancel).await {
-            ChunkEnd::Replied(Ok(())) => {
-                report.acknowledged += chunk.len();
+            ChunkEnd::Replied(Ok(deleted)) => {
+                report.acknowledged += deleted;
                 replied += chunk.len();
                 false
             }
@@ -306,8 +322,8 @@ where
             ChunkEnd::Cancelled(settled) => {
                 report.cancelled = true;
                 match settled {
-                    Some(Ok(())) => {
-                        report.acknowledged += chunk.len();
+                    Some(Ok(deleted)) => {
+                        report.acknowledged += deleted;
                         replied += chunk.len();
                     }
                     Some(Err(error)) if !is_uncertain(&error) => {
@@ -428,6 +444,29 @@ mod tests {
             progress_log,
             sleeps.into_inner(),
         )
+    }
+
+    #[test]
+    fn unfinished_cleanup_counts_only_deleted_tasks_in_success_notice() -> Result<(), I18nError> {
+        let translator = I18nCatalog::load_embedded()?.translator("en");
+        let strings = DownloadStrings::from_translator(&translator);
+        let report = block_on(run_deletion(
+            &ids(3),
+            DeletionMode::Unfinished,
+            &|_| {
+                Box::pin(std::future::ready(Ok(DownloadsResult::CleanedUnfinished(
+                    2,
+                ))))
+            },
+            &|_| std::future::ready(()),
+            &CancelToken::default(),
+            &mut |_: &DeletionProgress| {},
+        ));
+        let tally = report.tally(|_| false);
+        let notice = report.notice(tally, &strings, &translator);
+        assert!(notice.ok);
+        assert_eq!(notice.message, strings.format_deleted_count(2));
+        Ok(())
     }
 
     #[test]

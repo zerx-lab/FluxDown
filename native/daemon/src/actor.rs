@@ -361,6 +361,7 @@ pub enum ActorOperation {
 /// actor 操作结果。
 pub enum ActorResult {
     Unit,
+    CleanedUnfinished(usize),
     Created(String),
     /// 与 `CreateTasks` 的 `items` 逐条同序的结果。
     CreatedMany(Vec<CreateTaskOutcome>),
@@ -1848,7 +1849,8 @@ async fn execute_operation(
         }
         ActorOperation::CleanUnfinishedTasks { task_ids } => {
             let ids = existing_task_ids(&engine.db, task_ids).await?;
-            batch_delete_result(engine.manager.delete_unfinished_tasks(&ids).await)?;
+            let deleted = batch_delete_result(engine.manager.delete_unfinished_tasks(&ids).await)?;
+            return Ok(ActorResult::CleanedUnfinished(deleted));
         }
         ActorOperation::ResumeAll => {
             engine.manager.resume_all_eligible().await;
@@ -2019,7 +2021,9 @@ async fn execute_operation(
         ActorOperation::DeleteGroup {
             group_id,
             delete_files,
-        } => batch_delete_result(engine.manager.delete_group(&group_id, delete_files).await)?,
+        } => {
+            batch_delete_result(engine.manager.delete_group(&group_id, delete_files).await)?;
+        }
         #[cfg(feature = "plugins")]
         ActorOperation::ResolvePreview { .. } => unreachable!("handled off actor"),
         ActorOperation::RssListSources => {
@@ -3608,9 +3612,9 @@ fn batch_delete_result(
         fluxdown_engine::download_manager::BatchDeleteOutcome,
         fluxdown_engine::db::DbError,
     >,
-) -> Result<(), ActorError> {
+) -> Result<usize, ActorError> {
     match result {
-        Ok(outcome) if outcome.failed == 0 => Ok(()),
+        Ok(outcome) if outcome.failed == 0 => Ok(outcome.deleted),
         Ok(outcome) => Err(ActorError::TaskFilesKept {
             in_use: outcome.files_in_use,
             message: format!(

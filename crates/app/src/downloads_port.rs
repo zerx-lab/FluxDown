@@ -488,10 +488,15 @@ impl AgentDownloadsPort {
                     method::DAEMON_TASK_DELETE_MANY,
                     json!({ "taskIds": task_ids, "deleteFiles": delete_files }),
                 ),
-                DownloadsCommand::CleanUnfinished { task_ids } => (
-                    method::DAEMON_TASK_CLEAN_UNFINISHED,
-                    json!({ "taskIds": task_ids }),
-                ),
+                DownloadsCommand::CleanUnfinished { task_ids } => {
+                    let deleted: usize = client
+                        .call(
+                            method::DAEMON_TASK_CLEAN_UNFINISHED,
+                            Some(json!({ "taskIds": task_ids })),
+                        )
+                        .await?;
+                    return Ok(DownloadsResult::CleanedUnfinished(deleted));
+                }
                 DownloadsCommand::PauseAll => (method::DAEMON_TASK_PAUSE_ALL, json!({})),
                 DownloadsCommand::ResumeAll => (method::DAEMON_TASK_RESUME_ALL, json!({})),
                 DownloadsCommand::IgnorePluginRetry { task_id } => (

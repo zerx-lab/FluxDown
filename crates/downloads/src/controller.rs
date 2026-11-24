@@ -394,6 +394,8 @@ impl DownloadsCommand {
 
 pub enum DownloadsResult {
     Unit,
+    /// 实际移除的未完成任务数，不含跳过项。
+    CleanedUnfinished(usize),
     Value(serde_json::Value),
     TaskEditInfo(Box<fluxdown_protocol::TaskEditSnapshot>),
     TaskActivity(TaskActivityPage),

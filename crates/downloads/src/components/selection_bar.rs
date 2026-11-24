@@ -699,7 +699,11 @@ mod tests {
         impl DownloadsPort for CleanupPort {
             fn execute(&self, command: DownloadsCommand) -> PortFuture<DownloadsResult> {
                 if let DownloadsCommand::CleanUnfinished { task_ids } = command {
+                    let deleted = task_ids.len();
                     self.0.lock().unwrap().push(task_ids);
+                    return Box::pin(
+                        async move { Ok(DownloadsResult::CleanedUnfinished(deleted)) },
+                    );
                 }
                 Box::pin(async { Ok(DownloadsResult::Unit) })
             }
