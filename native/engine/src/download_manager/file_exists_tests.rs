@@ -740,6 +740,86 @@ async fn checksum_task_does_not_reuse_or_remove_a_replaced_partial() {
 }
 
 #[tokio::test]
+async fn checksum_task_without_claim_or_checkpoint_preserves_same_name_partial() {
+    let (selector, _answers) = FakeSelector::new(false);
+    let mut fx = fixture("checksum_no_claim", 1, selector, FileExistsBehavior::Rename).await;
+    let (url, server) = checksum_fixture_server();
+    fx.base_url = url;
+
+    // Create paused task rows without running their downloaders, as after
+    // reloading a database without any in-process partial claims.
+    for name in ["resume", "restart", "delete", "batch"] {
+        let file_name = format!("{name}.bin");
+        let mut spec = fx.spec(&file_name);
+        spec.start_paused = true;
+        spec.checksum = CHECKSUM.into();
+        let id = fx.mgr.create_task(spec).await.expect("create paused");
+        let partial = format!("{file_name}{}", downloader::TEMP_EXT);
+        fx.write_existing(&partial, b"xyz");
+
+        match name {
+            "resume" | "restart" => {
+                if name == "resume" {
+                    fx.mgr.resume_task(&id).await;
+                } else {
+                    fx.mgr.restart_task(&id).await;
+                }
+                fx.pump_until_status(&id, 3).await;
+                let chosen = format!("{name} (1).bin");
+                assert_eq!(fx.name(&id).await, chosen);
+                assert_eq!(
+                    std::fs::read(fx.dir.join(chosen)).expect("new file"),
+                    b"abc"
+                );
+                fx.pump_until("worker retired", |mgr| !mgr.active_tasks.contains_key(&id))
+                    .await;
+            }
+            "delete" => fx.mgr.delete_task(&id, true).await.expect("delete"),
+            _ => {
+                let outcome = fx
+                    .mgr
+                    .delete_tasks_batch(std::slice::from_ref(&id), true)
+                    .await
+                    .expect("batch delete");
+                assert_eq!((outcome.deleted, outcome.failed), (1, 0));
+            }
+        }
+        assert_eq!(
+            std::fs::read(fx.dir.join(partial)).expect("preserved partial"),
+            b"xyz"
+        );
+    }
+
+    // A persisted segment plan still permits cleanup even with zero recorded bytes.
+    let mut spec = fx.spec("checkpoint.bin");
+    spec.start_paused = true;
+    spec.checksum = CHECKSUM.into();
+    let id = fx
+        .mgr
+        .create_task(spec)
+        .await
+        .expect("create checkpoint task");
+    fx.db
+        .insert_segments(&id, &[(0, 0, 2)])
+        .await
+        .expect("persist segment plan");
+    let partial = format!("checkpoint.bin{}", downloader::TEMP_EXT);
+    fx.write_existing(&partial, b"abc");
+    let outcome = fx
+        .mgr
+        .delete_tasks_batch(&[id], true)
+        .await
+        .expect("batch delete");
+    assert_eq!((outcome.deleted, outcome.failed), (1, 0));
+    assert!(!fx.dir.join(partial).exists());
+
+    server.abort();
+    assert!(server.await.expect_err("server aborted").is_cancelled());
+    fx.mgr.shutdown().await;
+    std::fs::remove_dir_all(&fx.dir).expect("cleanup");
+}
+
+#[tokio::test]
 async fn cancel_answer_pauses_and_resume_asks_again() {
     let (selector, answers) = FakeSelector::new(true);
     let mut fx = fixture("cancel", 1, selector.clone(), FileExistsBehavior::Ask).await;

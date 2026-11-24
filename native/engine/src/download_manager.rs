@@ -1262,7 +1262,21 @@ async fn checksum_partial_owned(claim: &ChecksumClaim, path: &Path) -> bool {
         .is_some_and(|current| crate::file_hash::same_file(&file, &current).unwrap_or(false))
 }
 
+async fn has_partial_checkpoint(db: &Db, task: &TaskInfo) -> bool {
+    if task.downloaded_bytes > 0 {
+        return true;
+    }
+    match db.has_task_segments(&task.task_id).await {
+        Ok(has_segments) => has_segments,
+        Err(error) => {
+            crate::logger::report_error("download-manager", "check partial checkpoint", &error);
+            false
+        }
+    }
+}
+
 async fn checksum_candidate_unclaimed(
+    db: &Db,
     task: &TaskInfo,
     adopted: bool,
     claim: Option<&ChecksumClaim>,
@@ -1274,7 +1288,7 @@ async fn checksum_candidate_unclaimed(
         return true;
     }
     let Some(claim) = claim else {
-        return false;
+        return !has_partial_checkpoint(db, task).await;
     };
     match checksum_temp_path(task) {
         Some(path) => !checksum_partial_owned(claim, &path).await,
@@ -8500,13 +8514,18 @@ impl DownloadManager {
         if task.status == 3 || task.downloaded_bytes != 0 {
             return false;
         }
-        match self.db.load_segments(&task.task_id).await {
-            Ok(rows) if rows.is_empty() => {}
-            Ok(_) => return false,
+        match self.db.has_task_segments(&task.task_id).await {
+            Ok(false) => {}
+            Ok(true) => return false,
             Err(error) => {
                 crate::logger::report_error("download-manager", "load segments", &error);
                 return false;
             }
+        }
+        // A checksum task without persisted progress cannot establish ownership
+        // from a same-name partial alone.
+        if !task.checksum.is_empty() {
+            return true;
         }
         if task.file_name.is_empty() {
             return true;
@@ -13397,6 +13416,7 @@ impl DownloadManager {
                 remove_file_retrying(task_id, &path, was_active).await;
             }
             let unclaimed = checksum_candidate_unclaimed(
+                &self.db,
                 &t,
                 adopted_existing,
                 self.checksum_preludes.get(task_id),
@@ -14589,6 +14609,9 @@ impl DownloadManager {
                     resume_reservation = Some(path);
                 }
                 resume_reservation.is_none()
+            } else if !task.checksum.is_empty() {
+                restart_missing
+                    || (task.status != 3 && !has_partial_checkpoint(&self.db, &task).await)
             } else {
                 self.never_started(&task, audio_url.is_some()).await
             };
@@ -14993,8 +15016,13 @@ impl DownloadManager {
             // Do not remove a sibling partial or schedule path-based cleanup merely
             // because the checksum prelude had a worker handle.
             let cleanup_named_temps = cleanup_named_temps
-                && !checksum_candidate_unclaimed(&t, adopted, self.checksum_preludes.get(task_id))
-                    .await;
+                && !checksum_candidate_unclaimed(
+                    &self.db,
+                    &t,
+                    adopted,
+                    self.checksum_preludes.get(task_id),
+                )
+                .await;
             let owns_final = task_owns_final_file(t.status) && !claimed_by_other && !adopted;
             let has_started = task_has_started(t.status, t.downloaded_bytes) && !adopted;
             // 若 handle 超时且文件名已知，记录信息以便后续延迟清理
@@ -15604,11 +15632,17 @@ impl DownloadManager {
             } else {
                 Vec::new()
             };
+            let checksum_claim = self.checksum_preludes.get(&task.task_id).cloned();
+            let can_clean_temps = task.checksum.is_empty()
+                || (!adopted
+                    && (checksum_claim.is_some()
+                        || task.downloaded_bytes > 0
+                        || facts.checksum_segment_tasks.contains(&task.task_id)));
             let files = DeleteFiles {
                 is_bt: is_bt_url(&task.url),
                 delete_files,
-                cleanup_named_temps: cleanup_named_temps && (task.checksum.is_empty() || !adopted),
-                checksum_claim: self.checksum_preludes.get(&task.task_id).cloned(),
+                cleanup_named_temps: cleanup_named_temps && can_clean_temps,
+                checksum_claim,
                 owns_final: task_owns_final_file(task.status) && !claimed && !adopted,
                 has_started: task_has_started(task.status, task.downloaded_bytes) && !adopted,
                 claimed_by_other: claimed,
