@@ -44,7 +44,7 @@ class PluginsTest {
           }],
           "settingsValues": {"quality": "hd"},
           "permissions": ["ffmpeg"], "authSupported": true, "subscriptionProviderIds": ["p"],
-          "loadStatus": "Failed", "loadError": "boom"
+          "loadStatus": "Failed", "loadError": "boom", "source": "private"
         }, {
           "identity": "min", "name": "Min", "version": "0.0.1", "enabled": false, "devMode": true,
           "disabledReason": "None", "settings": [], "settingsValues": {}
@@ -53,6 +53,7 @@ class PluginsTest {
         val plugins = PluginDto.listFromJson(Json.parse(json))
         assertEquals(2, plugins.size)
         assertTrue(plugins[0].loadFailed)
+        assertEquals("private", plugins[0].source)
         assertEquals("hd", plugins[0].settings[0].defaultValue)
         assertEquals("string", plugins[0].settings[0].settingType)
         assertEquals(1.0, plugins[0].settings[1].min)
@@ -63,6 +64,7 @@ class PluginsTest {
         // 缺省字段：loadStatus 默认 Loaded，其余集合为空。
         assertEquals("Loaded", plugins[1].loadStatus)
         assertFalse(plugins[1].loadFailed)
+        assertEquals("", plugins[1].source)
         assertTrue(plugins[1].permissions.isEmpty())
         assertFalse(plugins[1].authSupported)
         assertTrue(plugins[1].description.isEmpty())

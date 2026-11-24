@@ -31,6 +31,7 @@ services:
       - AFDIAN_USER_ID=${AFDIAN_USER_ID}
       - AFDIAN_TOKEN=${AFDIAN_TOKEN}
     env_file:
+      # 可选的 PLUGIN_FEEDBACK_APP_ID / PLUGIN_FEEDBACK_PRIVATE_KEY_BASE64 由运行期 .env 注入，不进镜像。
       - .env
     healthcheck:
       # busybox wget 会先解析 localhost 到 ::1，而 node 只监听 IPv4，必须用 127.0.0.1

@@ -157,6 +157,39 @@ pub struct AgentClient {
     pub(crate) submissions: Arc<crate::downloads_port::SubmissionGate>,
 }
 
+async fn request_plugin_feedback(
+    identity: &str,
+    report: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcErrorData> {
+    const URL: &str = "https://fluxdown.com/api/feedback";
+    static CLIENT: LazyLock<Result<reqwest::Client, reqwest::Error>> = LazyLock::new(|| {
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(30))
+            .build()
+    });
+    let client = CLIENT.as_ref().map_err(|_| unavailable_error())?;
+    let request = match report {
+        Some(body) => client
+            .post(URL)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(serde_json::to_vec(&body).map_err(|_| internal_error())?),
+        None => client.get(URL).query(&[("pluginIdentity", identity)]),
+    };
+    let mut response = request.send().await.map_err(|_| unavailable_error())?;
+    if !response.status().is_success() {
+        return Ok(serde_json::json!({ "status": response.status().as_u16() }));
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| unavailable_error())? {
+        if chunk.len() > 4096 - body.len() {
+            return Err(protocol_error());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&body).map_err(|_| protocol_error())
+}
+
 impl AgentClient {
     pub fn start(
         config: AgentClientConfig,
@@ -233,6 +266,22 @@ impl AgentClient {
     {
         self.runtime.spawn(future);
     }
+
+    pub(crate) fn plugin_feedback(
+        &self,
+        identity: String,
+        report: Option<serde_json::Value>,
+    ) -> AgentFuture<serde_json::Value> {
+        let (send, receive) = oneshot::channel();
+        self.runtime.spawn(async move {
+            let result = request_plugin_feedback(&identity, report).await;
+            if send.send(result).is_err() {
+                log::trace!("plugin feedback result receiver was dropped");
+            }
+        });
+        Box::pin(async move { receive.await.map_err(|_| unavailable_error())? })
+    }
+
     pub fn plugin_image(&self, session: String, id: String) -> AgentFuture<Vec<u8>> {
         let config = self.config.clone();
         let (send, receive) = oneshot::channel();

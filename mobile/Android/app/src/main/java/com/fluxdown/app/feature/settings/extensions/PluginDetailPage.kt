@@ -185,6 +185,14 @@ internal fun PluginDetailPage(pluginId: String) {
                             )
                         }
                     }
+                    row(hasIcon = true) {
+                        FluxListRow(
+                            title = str(R.string.plugFeedbackTitle),
+                            icon = FluxIcons.MessageCircle,
+                            chevron = true,
+                            onClick = { sheet = PluginSheet.Feedback(plugin.identity) },
+                        )
+                    }
                     if (plugin.devMode) {
                         row(hasIcon = true) {
                             FluxActionRow(
