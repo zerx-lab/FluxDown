@@ -3244,6 +3244,8 @@
   "webSetupSubmit": "Save and continue",
   "webSetupFailed": "Setup failed: {error}",
   "webSetupAlreadyDone": "Setup was already completed. Sign in instead.",
+  "webSetupBootstrapLabel": "Setup code",
+  "webSetupBootstrapHint": "Read setup-bootstrap in the agent data directory (Docker: /data/agent/setup-bootstrap). This is not the access key.",
   "webKeyBadChars": "Use printable ASCII characters only (no spaces).",
   "webKeyTooShort": "At least {min} characters.",
   "webKeyTooLong": "At most {max} characters.",

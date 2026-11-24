@@ -3244,6 +3244,8 @@
   "webSetupSubmit": "保存并继续",
   "webSetupFailed": "初始化失败：{error}",
   "webSetupAlreadyDone": "服务已完成初始化，请直接登录。",
+  "webSetupBootstrapLabel": "初始化口令",
+  "webSetupBootstrapHint": "从 agent 数据目录的 setup-bootstrap 文件读取（Docker 为 /data/agent/setup-bootstrap）。这不是访问密钥。",
   "webKeyBadChars": "只能使用可见 ASCII 字符（不含空格）。",
   "webKeyTooShort": "至少 {min} 位。",
   "webKeyTooLong": "至多 {max} 位。",

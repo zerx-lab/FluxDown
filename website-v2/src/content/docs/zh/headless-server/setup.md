@@ -3,7 +3,7 @@ title: 服务器部署
 description: 从源码构建并运行 headless FluxDown 服务器(fluxdown-agent --server + fluxdownd),了解全部环境变量并安全地对外暴露。
 section: headless-server
 order: 1
-sourceHash: "f2915bfc0e0e"
+sourceHash: "9eede27ee07e"
 ---
 
 headless 服务器 = `fluxdown-agent --server` 加上同级的 `fluxdownd` 下载守护进程:没有桌面界面、托盘或文件关联。它把同一套 Rust 引擎(HTTP/HTTPS、FTP、BitTorrent、HLS、DASH)通过编译进 `fluxdown-agent` 的 Web 界面和 JSON-RPC 端点(`/rpc`,与桌面客户端同一协议)暴露出来,因此你可以把它跑在 NAS、家庭服务器或 VPS 上,在浏览器里远程管理下载。发行版是**同一目录下的两个二进制**——`fluxdown-agent`(内嵌 Web 界面)与 `fluxdownd`。请把它们放在同一目录:agent 会把 `fluxdownd` 作为子进程拉起,并在收到 `SIGTERM`/`SIGINT` 时一并关停它。
@@ -92,9 +92,9 @@ FLUXDOWN_DATA_DIR=/srv/fluxdown/data \
 
 ## 首次运行:在 Web 界面设置访问密钥
 
-全新安装默认开启兼容 API 分组（接管、aria2、管理 API、MCP），CORS 默认关闭，监听地址只由 `FLUXDOWN_BIND` 决定。访问密钥未设置时，`/download`、`/download/batch` 与 `/jsonrpc`（POST/WS 升级）返回 HTTP 403（`setup required: set the access key first`），管理 API 与 MCP 同样拒绝空密钥；因此首次设置前不能使用 aria2 或脚本接管。Web 页面与首次设置接口仍可访问，`GET /api/v1/setup/status` 报告 `setupRequired`（启动就绪前可能返回 503）。headless 不会套用桌面 LAN/CORS 的自动补 token 策略。
+全新安装默认开启兼容 API 分组（接管、aria2、管理 API、MCP），CORS 默认关闭，监听地址只由 `FLUXDOWN_BIND` 决定。访问密钥未设置时，`/download`、`/download/batch` 与 `/jsonrpc`（POST/WS 升级）返回 HTTP 403（`setup required: set the access key first`），管理 API 与 MCP 同样拒绝空密钥；因此首次设置前不能使用 aria2 或脚本接管。Web 页面与 `GET /api/v1/setup/status` 仍可访问（启动就绪前可能返回 503）。headless 不会套用桌面 LAN/CORS 的自动补 token 策略。
 
-打开 `http://<server-ip>:17800/`。登录页会变成**初始化 FluxDown Server**向导(不是普通登录框):填写访问密钥并确认,可点按钮随机生成,可勾选「记住此设备」,保存后立即登录进主界面——无需重启服务器。
+打开 `http://<server-ip>:17800/`。登录页会变成**初始化 FluxDown Server**向导(不是普通登录框):先贴上 agent 数据目录里的一次性初始化口令(见下文),再填写访问密钥并确认,可点按钮随机生成,可勾选「记住此设备」,保存后立即登录进主界面——无需重启服务器。
 
 密钥规则(前后端一致):
 
@@ -107,11 +107,11 @@ FLUXDOWN_DATA_DIR=/srv/fluxdown/data \
 - 登录 Web 界面(见[Web 界面](/docs/zh/headless-server/web-ui/))。
 - 用 `Authorization: Bearer <token>` 鉴权管理 API 调用(见 [API 总览](/docs/zh/api/overview/))。
 
-采用这一流程(而不是「服务器生成 token 并只打印一次到 stderr」)是因为 NAS(群晖、QNAP、Unraid 等)用户往往看不到容器/套件的 stderr,一次性打印的密钥等于把人锁在门外。
+初始化口令写在文件里,是因为 NAS(群晖、QNAP、Unraid 等)用户往往看不到容器/套件的 stderr,只往 stderr 打一次密钥等于把人锁在门外。文件才是操作者通道;启动日志会额外打印一次路径和口令,看不到日志时以文件为准。
 
 ### 无人值守部署
 
-若要跳过向导(docker-compose、Kubernetes、CI),用 `FLUXDOWN_TOKEN` 预置密钥。仅当库中还没有密钥时才会采纳:
+若要跳过向导(docker-compose、Kubernetes、CI),用 `FLUXDOWN_TOKEN` 预置密钥。仅当库中还没有密钥时才会采纳,且不会生成初始化口令:
 
 ```bash
 FLUXDOWN_TOKEN='replace-with-strong-key-2026' ./fluxdown-agent --server
@@ -125,7 +125,7 @@ FLUXDOWN_TOKEN='replace-with-strong-key-2026' FLUXDOWN_TOKEN_FORCE=1 ./fluxdown-
 
 ### 安全提示
 
-初始化窗口是「谁先访问谁落定」的一次性窗口。在把服务器暴露到不可信网络之前,应先完成初始化,或用 `FLUXDOWN_TOKEN` 预置。
+向导不对网络开放。访问密钥仍为空且没有预置 `FLUXDOWN_TOKEN` 时,启动会把一次性初始化口令写入 `<数据目录>/agent/setup-bootstrap`(权限 `0600`),并在启动日志里打印一次路径和口令。`POST /api/v1/setup` 必须带上这个口令(JSON 字段 `bootstrap`,或请求头 `X-FluxDown-Bootstrap`)。口令正确才会设置密钥并删除该文件;口令错误不会改任何东西。若不能直接打开数据卷,在暴露端口前先从主机读取(Docker:`docker exec <容器> cat /data/agent/setup-bootstrap`)。用 `FLUXDOWN_TOKEN` 预置则可完全跳过这一步。
 
 ### 重置访问密钥
 

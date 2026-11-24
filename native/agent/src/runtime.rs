@@ -16,7 +16,7 @@ use crate::event_hub::AgentEventHub;
 use crate::gateway::{GatewayService, GatewayShell, load_or_create_bearer};
 use crate::lifecycle::Lifecycle;
 use crate::power::PowerService;
-use crate::server_mode::{ServerHandle, ServerHandleParts, ServerRuntime, TokenSeed};
+use crate::server_mode::{ServerHandle, ServerHandleParts, ServerRuntime, SetupGate, TokenSeed};
 use crate::shell::{ShellHost, ShellServices, ShellState};
 use crate::startup_failure::{StartupError, StartupReport};
 use crate::state::{AgentState, StateError, StateStore};
@@ -364,13 +364,19 @@ async fn run_agent(
         (config, switches, token)
     };
     let (ready_tx, ready_rx) = tokio::sync::watch::channel(false);
-    let bootstrap = server_config.map(|config| ServerBootstrap {
-        seed: TokenSeed {
-            preset: config.token.clone(),
-            force: config.token_force,
-        },
-        ready: ready_tx,
-    });
+    let setup_gate = server_config
+        .is_some()
+        .then(|| Arc::new(SetupGate::new(store.data_dir())));
+    let bootstrap = server_config
+        .zip(setup_gate.clone())
+        .map(|(config, setup_gate)| ServerBootstrap {
+            seed: TokenSeed {
+                preset: config.token.clone(),
+                force: config.token_force,
+            },
+            ready: ready_tx,
+            setup_gate,
+        });
     let readiness_task = tokio::spawn(await_daemon_ready(DaemonReadiness {
         daemon: daemon.clone(),
         state: shared_state.clone(),
@@ -570,6 +576,9 @@ async fn run_agent(
     }
     let server_handle = match server_config {
         Some(config) => {
+            let Some(setup_gate) = setup_gate.clone() else {
+                return Err(std::io::Error::other("server mode is missing its setup gate").into());
+            };
             crate::server_mode::log_web_ui(config);
             Some(Arc::new(ServerHandle::new(ServerHandleParts {
                 token: api_token.clone(),
@@ -584,6 +593,7 @@ async fn run_agent(
                 demo: config.effective_demo_url(bound).is_some(),
                 allow_local_platform: config.allow_local_platform,
                 link: Some(link.clone()),
+                setup_gate,
             })?))
         }
         None => None,
@@ -713,10 +723,11 @@ struct DaemonReadiness {
     link: Arc<crate::link::LinkService>,
 }
 
-/// server 模式在 daemon 就绪后的一次性引导：预置密钥策略 + 就绪信号。
+/// server 模式在 daemon 就绪后的一次性引导：预置密钥、首次设置引导码与就绪信号。
 struct ServerBootstrap {
     seed: TokenSeed,
     ready: tokio::sync::watch::Sender<bool>,
+    setup_gate: Arc<SetupGate>,
 }
 
 /// Gateway 已先行服务；这里等 daemon 首次就绪并完成一次性 legacy 迁移。迁移途中 daemon 断开
@@ -782,21 +793,24 @@ async fn await_daemon_ready(readiness: DaemonReadiness) -> AgentResult {
                 ));
             }
         }
-        let state = state.lock().await;
-        api_switches.update(
-            state.gateway.takeover_enabled,
-            state.gateway.jsonrpc_enabled,
-            state.gateway.api_enabled,
-            state.gateway.mcp_enabled,
-            state.gateway.cors_enabled,
-        );
-        api_token.set(state.gateway_user_token.clone());
-        // 令牌与开关都已就位：放行首次设置 / 状态接口（避免 setup 在迁移前落定、被迁移覆盖）。
-        if let Some(server) = &server
-            && server.ready.send(true).is_err()
-        {
-            // Gateway 已退出时没有 readiness 接收者，无须把正常关停当成引导失败。
-            tracing::debug!("server readiness receiver closed during shutdown");
+        let token_set = {
+            let state = state.lock().await;
+            api_switches.update(
+                state.gateway.takeover_enabled,
+                state.gateway.jsonrpc_enabled,
+                state.gateway.api_enabled,
+                state.gateway.mcp_enabled,
+                state.gateway.cors_enabled,
+            );
+            api_token.set(state.gateway_user_token.clone());
+            !state.gateway_user_token.trim().is_empty()
+        };
+        // 引导码必须在放行 setup 之前就位。写失败则不放行，避免退回匿名抢注。
+        if let Some(server) = &server {
+            server.setup_gate.prepare(token_set).await?;
+            if server.ready.send(true).is_err() {
+                tracing::debug!("server readiness receiver closed during shutdown");
+            }
         }
         Ok(())
     };
