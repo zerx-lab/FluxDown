@@ -40,6 +40,7 @@ import com.fluxdown.app.i18n.str
 import com.fluxdown.app.shell.hostState
 import com.fluxdown.core.host.HostErrorCode
 import com.fluxdown.core.host.HostException
+import com.fluxdown.core.host.PluginDiagnostic
 import com.fluxdown.core.protocol.ComponentKind
 import com.fluxdown.core.protocol.ComponentStatusDto
 import com.fluxdown.core.protocol.HostSection
@@ -143,8 +144,14 @@ internal fun extensionErrorText(context: Context, e: HostException): String {
 }
 
 /** Only the structured diagnostic and localized reason/code fallback are safe to show or copy. */
-private fun pluginFailureText(context: Context, error: HostException): String {
-    val detail = error.pluginDiagnostic ?: return extensionErrorText(context, error)
+private fun pluginFailureText(context: Context, error: HostException): String =
+    pluginDiagnosticText(context, error.pluginDiagnostic) ?: extensionErrorText(context, error)
+
+internal fun pluginLoadFailureText(context: Context, plugin: PluginDto): String =
+    pluginDiagnosticText(context, plugin.loadDetail) ?: context.str(R.string.pluginDiagnosticLoadFailed)
+
+private fun pluginDiagnosticText(context: Context, detail: PluginDiagnostic?): String? {
+    if (detail == null) return null
     return when (detail.kind) {
         "manifestUnreadable" -> context.str(R.string.pluginDiagnosticManifestUnreadable)
         "manifestUnknownField" -> context.str(R.string.pluginDiagnosticManifestUnknownField)
@@ -164,10 +171,10 @@ private fun pluginFailureText(context: Context, error: HostException): String {
         }
         "missingFile" -> detail.path?.takeIf { it.isNotBlank() }?.let {
             context.str(R.string.pluginDiagnosticMissingFile, "path" to it)
-        } ?: extensionErrorText(context, error)
+        }
         "loadFailed" -> context.str(R.string.pluginDiagnosticLoadFailed)
         "notDevPlugin" -> context.str(R.string.pluginDiagnosticNotDevPlugin)
-        else -> extensionErrorText(context, error)
+        else -> null
     }
 }
 

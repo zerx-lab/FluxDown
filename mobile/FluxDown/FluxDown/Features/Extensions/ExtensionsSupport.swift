@@ -54,7 +54,15 @@ enum ExtensionErrorText {
     }
 
     static func pluginFailure(_ error: HostError) -> String {
-        guard let detail = error.pluginDiagnostic else { return describe(error) }
+        pluginDiagnostic(error.pluginDiagnostic) ?? describe(error)
+    }
+
+    static func pluginLoadFailure(_ plugin: PluginDto) -> String {
+        pluginDiagnostic(plugin.loadDetail) ?? L("pluginDiagnosticLoadFailed")
+    }
+
+    private static func pluginDiagnostic(_ detail: PluginDiagnostic?) -> String? {
+        guard let detail else { return nil }
         switch detail.kind {
         case "manifestUnreadable": return L("pluginDiagnosticManifestUnreadable")
         case "manifestUnknownField": return L("pluginDiagnosticManifestUnknownField")
@@ -72,11 +80,11 @@ enum ExtensionErrorText {
             }
             return L("pluginDiagnosticScriptCompileFailedAt", ["line": line, "column": column])
         case "missingFile":
-            guard let path = detail.path, !path.isEmpty else { return describe(error) }
+            guard let path = detail.path, !path.isEmpty else { return nil }
             return L("pluginDiagnosticMissingFile", ["path": path])
         case "loadFailed": return L("pluginDiagnosticLoadFailed")
         case "notDevPlugin": return L("pluginDiagnosticNotDevPlugin")
-        default: return describe(error)
+        default: return nil
         }
     }
 

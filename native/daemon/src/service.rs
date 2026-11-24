@@ -3142,66 +3142,9 @@ fn plugin_package_error(
     let mut data = RpcErrorData::new(ApplicationErrorCode::InvalidArgument, false)
         .with_reason(fluxdown_protocol::ErrorReason::PluginPackageInvalid);
     data.field = field.map(str::to_owned);
-    data.plugin_detail = plugin_failure_detail(error);
+    data.plugin_detail = fluxdown_engine::plugin::PluginFailureDiagnostic::from_error(error)
+        .map(fluxdown_engine_protocol::plugin_failure_detail_to_dto);
     RpcErrorObject::application("invalid plugin package", data)
-}
-
-#[cfg(feature = "plugins")]
-fn plugin_failure_detail(
-    error: &fluxdown_engine::plugin::PluginError,
-) -> Option<fluxdown_protocol::PluginFailureDetail> {
-    use fluxdown_engine::plugin::{PluginError, manifest::is_safe_relative_path};
-    use fluxdown_protocol::PluginFailureDetail as Detail;
-
-    let missing_file = |message: &str| {
-        let path = message.strip_prefix("包内缺少文件 '")?.strip_suffix('\'')?;
-        (path.len() <= 256 && !path.contains(['\'', ':', '?', '#']) && is_safe_relative_path(path))
-            .then(|| Detail::MissingFile {
-                path: path.to_owned(),
-            })
-    };
-
-    Some(match error {
-        PluginError::CompileFailed(message) => {
-            // The exception can contain arbitrary plugin text. Export only numeric coordinates.
-            message
-                .lines()
-                .find_map(|line| {
-                    let (row, col) = line
-                        .trim()
-                        .strip_prefix("at eval_script:")?
-                        .split_once(':')?;
-                    Some(Detail::ScriptCompileFailedAt {
-                        line: row.parse().ok()?,
-                        column: col.parse().ok()?,
-                    })
-                })
-                .unwrap_or(Detail::ScriptCompileFailed)
-        }
-        PluginError::LoadFailed(message) => missing_file(message).unwrap_or(Detail::LoadFailed),
-        PluginError::ManifestInvalid(message) => {
-            // Manifest validation and archive/OS failures share this variant. Classify only
-            // known host templates and never echo their interpolated values or parser text.
-            match message.as_str() {
-                msg if msg.starts_with("读取 manifest") => Detail::ManifestUnreadable,
-                msg if msg.starts_with("JSON 解析失败: unknown field ") => {
-                    Detail::ManifestUnknownField
-                }
-                msg if msg.starts_with("JSON 解析失败: ") => Detail::ManifestJsonInvalid,
-                msg if msg.starts_with("identity '") => Detail::ManifestIdentityInvalid,
-                "name 不可为空" => Detail::ManifestNameMissing,
-                msg if msg.starts_with("version '") => Detail::ManifestVersionInvalid,
-                msg if msg.starts_with("minAppVersion '") => Detail::ManifestMinAppVersionInvalid,
-                msg if msg.starts_with("未知权限 '") => Detail::ManifestUnknownPermission,
-                "声明 auth.entry 时 permissions 必须包含 auth" => {
-                    Detail::ManifestAuthPermissionMissing
-                }
-                _ => return missing_file(message),
-            }
-        }
-        PluginError::NotDevPlugin(_) => Detail::NotDevPlugin,
-        _ => return None,
-    })
 }
 
 /// 市场索引 / 插件下载失败：按失败性质给出错误码与细分原因，并记录完整原因。
@@ -4093,6 +4036,45 @@ mod plugin_consent_audit_tests {
         std::fs::remove_file(path).unwrap();
         let error = reload().await.unwrap_err();
         assert_plugin_diagnostic(error, json!({"kind": "manifestUnreadable"}));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dev_reload_and_list_redact_the_same_manifest_error() {
+        use fluxdown_protocol::method;
+
+        let f = fixture().await;
+        let src = f.base.join("dev");
+        write_plugin(&src, &[]);
+        call(&f, method::DAEMON_PLUGIN_INSTALL_DEV, json!({"dirPath": src}))
+            .await
+            .unwrap();
+
+        let path = src.join("manifest.json");
+        let mut manifest: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        manifest["private-fixture-value"] = json!(true);
+        std::fs::write(path, manifest.to_string()).unwrap();
+
+        let error = call(&f, method::DAEMON_PLUGIN_RELOAD_DEV, json!({"identity": ID}))
+            .await
+            .unwrap_err();
+        let detail = json!({"kind": "manifestUnknownField"});
+        assert_plugin_diagnostic(error, detail.clone());
+
+        let list = call(&f, method::DAEMON_PLUGIN_LIST, json!({})).await.unwrap();
+        let failed = list
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["identity"] == ID)
+            .unwrap();
+        assert_eq!(failed["loadStatus"], "Failed");
+        assert_eq!(failed["loadDetail"], detail);
+        assert!(
+            failed["loadError"]
+                .as_str()
+                .is_some_and(|text| !text.is_empty())
+        );
+        assert!(!list.to_string().contains("private-fixture-value"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

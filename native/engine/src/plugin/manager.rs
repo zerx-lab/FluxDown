@@ -4,7 +4,6 @@
 //! install/uninstall/toggle 写（整表原子替换），resolve/hook match 读。**不用 arc-swap**
 //! （workspace 无此依赖且约束禁新增）。
 
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -23,6 +22,7 @@ use crate::subscription::{
 };
 
 use super::call_egress::{CallEgress, EgressOutcome, EgressPlan, PlanTask, plan_call, route_name};
+use super::diagnostic::PluginFailureDiagnostic;
 use super::manifest::{
     PERMISSION_AUTH, PERMISSION_FFMPEG, PERMISSION_YTDLP, PluginManifest, SettingField,
     SettingType, is_safe_relative_path, is_valid_identity,
@@ -299,8 +299,8 @@ pub struct PluginInfo {
     /// 加载状态：`Loaded` 表示已通过启动时的 manifest/源码加载，`Failed` 表示
     /// 目录仍存在但加载失败。与 `enabled` 分离：手动禁用的插件仍可能已加载。
     pub load_status: String,
-    /// 加载失败的可读原因；加载成功时为空。
-    pub load_error: String,
+    /// Safe loading diagnostic for a failed plugin; loaded plugins have none.
+    pub load_detail: Option<PluginFailureDiagnostic>,
     /// manifest 声明的贡献点（视图 / 命令 / 嗅探规则）；加载失败的插件为空。
     pub contributions: super::manifest::ContributesDecl,
     /// 视图图标 SVG 文本（view id → 内容）；加载失败的插件为空。
@@ -2663,7 +2663,7 @@ impl PluginManager {
                     .map(|r| r.match_decl.urls.clone())
                     .unwrap_or_default(),
                 load_status: PluginLoadStatus::Loaded.as_str().to_string(),
-                load_error: String::new(),
+                load_detail: None,
                 contributions: p.manifest.contributes.clone().unwrap_or_default(),
                 view_icons: p.view_icons.clone(),
                 has_main: p.manifest.main.is_some(),
@@ -2744,10 +2744,10 @@ impl PluginManager {
                     .map(|r| r.match_decl.urls.clone())
                     .unwrap_or_default(),
                 load_status: PluginLoadStatus::Failed.as_str().to_string(),
-                load_error: truncate_load_error(match &p.error {
-                    PluginError::LoadFailed(message) => Cow::Borrowed(message),
-                    error => Cow::Owned(error.to_string()),
-                }),
+                load_detail: Some(
+                    PluginFailureDiagnostic::from_error(&p.error)
+                        .unwrap_or(PluginFailureDiagnostic::LoadFailed),
+                ),
                 contributions: super::manifest::ContributesDecl::default(),
                 view_icons: Vec::new(),
                 has_main: false,
@@ -2921,27 +2921,6 @@ fn failure_identity(dir: &Path, identity_hint: Option<&str>) -> String {
                 .map(|name| name.to_string_lossy().into_owned())
         })
         .unwrap_or_else(|| "unknown".to_string())
-}
-
-/// `FailedPlugin.error` 的可读渲染上限（671#9）：来源之一是
-/// `manifest.validate()` 的错误文本，会原样插值插件可控的 manifest 字符串
-/// （identity/version/icon 路径等，见 `manifest.rs` 的 `ManifestInvalid`
-/// 消息），未经任何长度上限就会随每次插件列表刷新原样进入 `PluginInfo` /
-/// REST `PluginDto` 并被客户端逐字渲染。这里仅限制旧插件列表的展示文案；
-/// 安装 / 重载 RPC 另从类型化错误提取可安全公开的诊断。
-const MAX_LOAD_ERROR_LEN: usize = 1024;
-
-fn truncate_load_error(error: Cow<'_, str>) -> String {
-    if error.len() <= MAX_LOAD_ERROR_LEN {
-        return error.into_owned();
-    }
-    let mut end = MAX_LOAD_ERROR_LEN;
-    while end > 0 && !error.is_char_boundary(end) {
-        end -= 1;
-    }
-    let mut truncated = error[..end].to_string();
-    truncated.push('…');
-    truncated
 }
 
 /// 取字段生效值：config 存值 → manifest default → None。

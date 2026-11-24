@@ -3,7 +3,7 @@
 import type { TFunction } from '../../../../i18n'
 import { RpcError } from '../../../../lib/rpc'
 import { describeUploadError } from '../../../../lib/rpcErrorText'
-import type { ErrorReason } from '../../../../lib/rpc'
+import type { ErrorReason, PluginFailureDetail } from '../../../../lib/rpc'
 
 const REASON_KEYS: Partial<Record<ErrorReason, string>> = {
   marketUnreachable: 'pluginErrorMarketUnreachable',
@@ -43,7 +43,14 @@ export function extensionErrorText(t: TFunction, error: unknown): string {
 /** Inline/copyable plugin diagnostics; do not expose generic JS exceptions or daemon messages. */
 export function pluginFailureText(t: TFunction, error: unknown): string {
   if (!(error instanceof RpcError)) return t('localServiceActionFailed')
-  const detail = error.data?.pluginDetail
+  return pluginDetailText(t, error.data?.pluginDetail) ?? extensionErrorText(t, error)
+}
+
+export function pluginLoadFailureText(t: TFunction, detail?: PluginFailureDetail): string {
+  return pluginDetailText(t, detail) ?? t('pluginDiagnosticLoadFailed')
+}
+
+function pluginDetailText(t: TFunction, detail?: PluginFailureDetail): string | undefined {
   switch (detail?.kind) {
     case 'manifestUnreadable':
       return t('pluginDiagnosticManifestUnreadable')
@@ -74,6 +81,6 @@ export function pluginFailureText(t: TFunction, error: unknown): string {
     case 'notDevPlugin':
       return t('pluginDiagnosticNotDevPlugin')
     default:
-      return extensionErrorText(t, error)
+      return undefined
   }
 }

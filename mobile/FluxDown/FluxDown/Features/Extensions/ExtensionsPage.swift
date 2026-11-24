@@ -267,9 +267,9 @@ private struct ExtensionsContent: View {
             Button(L("pluginReloadTooltip"), systemImage: FluxSymbol.retry) { Task { await model.reload(plugin) } }
                 .disabled(readOnly)
         }
-        if plugin.loadFailed, !plugin.loadError.isEmpty {
+        if plugin.loadFailed {
             Button(L("pluginLoadErrorCopy"), systemImage: FluxSymbol.copy) {
-                ExtensionsClipboard.copy(plugin.loadError)
+                ExtensionsClipboard.copy(ExtensionErrorText.pluginLoadFailure(plugin))
                 container.toasts.show(text: L("pluginLoadErrorCopied"), tone: .success)
             }
         }
@@ -369,8 +369,8 @@ struct PluginRow: View {
                         .lineLimit(2)
                 }
                 badges
-                if plugin.loadFailed, !plugin.loadError.isEmpty {
-                    Text(plugin.loadError)
+                if plugin.loadFailed {
+                    Text(ExtensionErrorText.pluginLoadFailure(plugin))
                         .font(.footnote)
                         .foregroundStyle(Color.fdStatusFailedText)
                         .lineLimit(2)

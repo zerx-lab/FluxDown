@@ -30,6 +30,34 @@ struct PluginDiagnosticTextTests {
         #expect(!text.contains("private-path"))
     }
 
+    @Test func failedPluginUsesTheOperationDiagnosticLocalizer() {
+        let detail = PluginDiagnostic(kind: "scriptCompileFailedAt", line: 12, column: 3)
+        let plugin = PluginDto(
+            identity: "test", name: "Test", version: "1", loadStatus: "Failed",
+            loadError: "/private/raw-daemon-error", loadDetail: detail
+        )
+        let text = ExtensionErrorText.pluginLoadFailure(plugin)
+        #expect(text == ExtensionErrorText.pluginFailure(HostError(.invalidArgument, pluginDiagnostic: detail)))
+        #expect(!text.contains(plugin.loadError))
+    }
+
+    @Test func failedPluginNeverShowsLegacyOrUnknownDiagnosticText() {
+        for detail in [
+            nil,
+            PluginDiagnostic(kind: "futureDiagnostic", path: "private-path"),
+            PluginDiagnostic(kind: "missingFile"),
+        ] as [PluginDiagnostic?] {
+            let plugin = PluginDto(
+                identity: "test", name: "Test", version: "1", loadStatus: "Failed",
+                loadError: "/private/raw-daemon-error", loadDetail: detail
+            )
+            let text = ExtensionErrorText.pluginLoadFailure(plugin)
+            #expect(text == L("pluginDiagnosticLoadFailed"))
+            #expect(!text.contains(plugin.loadError))
+            #expect(!text.contains("private-path"))
+        }
+    }
+
     @Test(arguments: [
         (CocoaError.Code.fileReadNoPermission, "pluginImportFileNoPermission"),
         (.fileReadNoSuchFile, "mobileFileNotFound"),

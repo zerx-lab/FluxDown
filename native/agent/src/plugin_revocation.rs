@@ -216,6 +216,7 @@ mod tests {
             resolver_url_conflicts: Vec::new(),
             load_status: "Loaded".into(),
             load_error: String::new(),
+            load_detail: None,
             contributions: fluxdown_protocol::PluginContributionsDto::default(),
             risk: "standard".to_owned(),
             consent_pending: Vec::new(),

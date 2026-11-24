@@ -78,7 +78,7 @@ struct PluginDetailPage: View {
 
             if plugin.loadFailed {
                 Section {
-                    Text(plugin.loadError.isEmpty ? L("pluginLoadErrorTitle") : plugin.loadError)
+                    Text(ExtensionErrorText.pluginLoadFailure(plugin))
                         .font(.footnote)
                         .foregroundStyle(Color.fdStatusFailedText)
                         .textSelection(.enabled)
@@ -92,7 +92,6 @@ struct PluginDetailPage: View {
                     } label: {
                         Label(L("pluginLoadErrorCopy"), systemImage: FluxSymbol.copy)
                     }
-                    .disabled(plugin.loadError.isEmpty)
                 }
             }
 
@@ -153,7 +152,7 @@ struct PluginDetailPage: View {
     }
 
     private func copyError(_ plugin: PluginDto) {
-        ExtensionsClipboard.copy(plugin.loadError)
+        ExtensionsClipboard.copy(ExtensionErrorText.pluginLoadFailure(plugin))
         container.toasts.show(text: L("pluginLoadErrorCopied"), tone: .success)
     }
 }
@@ -227,7 +226,7 @@ struct PluginLoadErrorSheet: View {
         NavigationStack {
             List {
                 Section {
-                    Text(plugin.loadError.isEmpty ? "—" : plugin.loadError)
+                    Text(ExtensionErrorText.pluginLoadFailure(plugin))
                         .font(.fluxMono)
                         .textSelection(.enabled)
                 } header: {
@@ -240,10 +239,9 @@ struct PluginLoadErrorSheet: View {
                 ToolbarItem(placement: .cancellationAction) { Button(L("close")) { dismiss() } }
                 ToolbarItem(placement: .primaryAction) {
                     Button(L("pluginLoadErrorCopy"), systemImage: FluxSymbol.copy) {
-                        ExtensionsClipboard.copy(plugin.loadError)
+                        ExtensionsClipboard.copy(ExtensionErrorText.pluginLoadFailure(plugin))
                         container.toasts.show(text: L("pluginLoadErrorCopied"), tone: .success)
                     }
-                    .disabled(plugin.loadError.isEmpty)
                 }
             }
         }

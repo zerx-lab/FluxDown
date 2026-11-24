@@ -7,7 +7,7 @@ order: 9
 
 This page is for the moment something does not work. It covers where to look, what each plugin state means, which action a given edit needs, and — most useful — the **error messages** with their causes.
 
-> **About the language of messages.** Most errors raised by FluxDown's plugin engine are in Chinese, and that is exactly what you see in the app and in logs. This page quotes them **verbatim** so you can search for them, and adds an English gloss in parentheses. Messages from the SDK command line are in English.
+> **About the language of messages.** Most errors in the FluxDown plugin engine's logs are in Chinese. This page quotes them **verbatim** so you can search for them, and adds an English gloss in parentheses. Messages from the SDK command line are in English.
 
 ## Quick checklist
 
@@ -110,7 +110,7 @@ Three **consecutive** timeouts or out-of-memory errors in a resolver, an interce
 
 ## Install and validation errors
 
-On desktop and Web, install and update failures appear near the install controls, and reload failures appear on the affected plugin row. **Copy error** copies the localized, redacted message shown there. It may include a manifest validation category, a package-relative file name, or a script line and column. It does not include raw exception text or absolute paths. For the original error, including the name of an unknown field, see the daemon diagnostics log; for local validation, run `npm run validate`.
+On desktop and Web, install and update failures appear near the install controls, and reload failures appear on the affected plugin row. Failed rows in the plugin list also show a localized, redacted diagnostic, including after a refresh. **Copy error** copies the localized operation failure shown in the app. Diagnostics may include a manifest validation category, a package-relative file name, or a script line and column. They do not include raw exception text or absolute paths. For the original error, including the name of an unknown field, see the daemon diagnostics log; for local validation, run `npm run validate`.
 
 A successful installation clears the last install error. Reinstalling or uninstalling a plugin clears its previous reload error.
 

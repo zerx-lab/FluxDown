@@ -368,6 +368,7 @@ private fun FieldControl(
 @Composable
 private fun PluginLoadErrorSheet(visible: Boolean, plugin: PluginDto, onDismiss: () -> Unit) {
     val env = rememberExtensionsEnv()
+    val message = pluginLoadFailureText(env.context, plugin)
     FluxPortal {
         FluxSheet(
             visible = visible,
@@ -385,13 +386,12 @@ private fun PluginLoadErrorSheet(visible: Boolean, plugin: PluginDto, onDismiss:
                     FluxButton(
                         str(R.string.pluginLoadErrorCopy),
                         onClick = {
-                            env.context.copyPlainText(plugin.loadError)
+                            env.context.copyPlainText(message)
                             env.toast(env.text(R.string.pluginLoadErrorCopied), FluxToastKind.Success)
                         },
                         modifier = Modifier.weight(1f),
                         variant = ButtonVariant.Primary,
                         icon = FluxIcons.Copy,
-                        enabled = plugin.loadError.isNotEmpty(),
                     )
                 }
             },
@@ -400,7 +400,7 @@ private fun PluginLoadErrorSheet(visible: Boolean, plugin: PluginDto, onDismiss:
                 custom(padded = true) {
                     SelectionContainer {
                         FluxText(
-                            plugin.loadError.ifEmpty { "—" },
+                            message,
                             Modifier.fillMaxWidth(),
                             style = FluxTheme.type.mono,
                             color = FluxTheme.colors.ink,

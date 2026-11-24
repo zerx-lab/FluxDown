@@ -11,7 +11,7 @@ import { hasPluginSettings } from '../../../plugins/contributions'
 import { BlockTitle, ExtLink, IconButton, ListCard, ListRow } from './common'
 import { detailFromPlugin } from './detail'
 import type { PluginDetail } from './detail'
-import { extensionErrorText, pluginFailureText } from './errors'
+import { extensionErrorText, pluginFailureText, pluginLoadFailureText } from './errors'
 import { PluginFeedbackDialog } from './PluginFeedbackDialog'
 import type { FeedbackPlugin } from './PluginFeedbackDialog'
 import { MarketSection } from './MarketSection'
@@ -519,7 +519,7 @@ function PluginRow({
           </div>
           {plugin.homepage ? <ExtLink href={plugin.homepage} /> : null}
           {plugin.description ? <div className="line-clamp-2 break-words text-xs text-muted-foreground">{plugin.description}</div> : null}
-          {loadFailed && plugin.loadError ? <div className="break-words text-xs text-destructive">{plugin.loadError}</div> : null}
+          {loadFailed && <div className="break-words text-xs text-destructive">{pluginLoadFailureText(t, plugin.loadDetail)}</div>}
           {reloadError && <PluginFailure message={reloadError} onClose={onCloseReloadError} />}
         </>
       }

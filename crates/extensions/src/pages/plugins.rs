@@ -510,9 +510,13 @@ impl ExtensionsView {
                     row_description(("plugin-desc", index), &plugin.description, frame),
                     frame,
                 )
-                .when(load_failed && !plugin.load_error.is_empty(), |this| {
-                    let load_error = plugin.load_error.clone();
-                    let load_error_tooltip = plugin.load_error.clone();
+                .when(load_failed, |this| {
+                    let load_error = plugin
+                        .load_detail
+                        .as_ref()
+                        .and_then(|detail| plugin_detail_text(translator, detail))
+                        .unwrap_or_else(|| translator.text("pluginDiagnosticLoadFailed").to_owned());
+                    let load_error_tooltip = load_error.clone();
                     this.child(
                         ui::meta_text(load_error, frame)
                             .id(("plugin-load-error", index))

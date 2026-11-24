@@ -329,8 +329,8 @@ public enum HostErrorCode: String, Sendable, Hashable, CaseIterable {
     case unavailable, timeout, cancelled, unsupported, `internal`
 }
 
-/// Redacted arguments for localized plugin operation diagnostics.
-public struct PluginDiagnostic: Sendable, Hashable {
+/// Redacted arguments for localized plugin diagnostics.
+public struct PluginDiagnostic: Codable, Sendable, Hashable {
     public let kind: String
     public let path: String?
     public let line: UInt32?

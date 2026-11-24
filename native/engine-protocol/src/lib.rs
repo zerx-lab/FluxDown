@@ -623,6 +623,35 @@ pub fn setting_field_to_dto(
     }
 }
 
+/// Convert a redacted load or operation diagnostic to its wire representation.
+#[cfg(feature = "plugins")]
+#[must_use]
+pub fn plugin_failure_detail_to_dto(
+    diagnostic: fluxdown_engine::plugin::PluginFailureDiagnostic,
+) -> fluxdown_protocol::PluginFailureDetail {
+    use fluxdown_engine::plugin::PluginFailureDiagnostic as Diagnostic;
+    use fluxdown_protocol::PluginFailureDetail as Detail;
+
+    match diagnostic {
+        Diagnostic::ManifestUnreadable => Detail::ManifestUnreadable,
+        Diagnostic::ManifestUnknownField => Detail::ManifestUnknownField,
+        Diagnostic::ManifestJsonInvalid => Detail::ManifestJsonInvalid,
+        Diagnostic::ManifestIdentityInvalid => Detail::ManifestIdentityInvalid,
+        Diagnostic::ManifestNameMissing => Detail::ManifestNameMissing,
+        Diagnostic::ManifestVersionInvalid => Detail::ManifestVersionInvalid,
+        Diagnostic::ManifestMinAppVersionInvalid => Detail::ManifestMinAppVersionInvalid,
+        Diagnostic::ManifestUnknownPermission => Detail::ManifestUnknownPermission,
+        Diagnostic::ManifestAuthPermissionMissing => Detail::ManifestAuthPermissionMissing,
+        Diagnostic::ScriptCompileFailed => Detail::ScriptCompileFailed,
+        Diagnostic::ScriptCompileFailedAt { line, column } => {
+            Detail::ScriptCompileFailedAt { line, column }
+        }
+        Diagnostic::MissingFile { path } => Detail::MissingFile { path },
+        Diagnostic::LoadFailed => Detail::LoadFailed,
+        Diagnostic::NotDevPlugin => Detail::NotDevPlugin,
+    }
+}
+
 /// 将同一份插件快照转换为列表，并标出按完整 URL 匹配时重叠或重复的模式。
 #[cfg(feature = "plugins")]
 #[must_use]
@@ -660,7 +689,12 @@ fn plugin_info_to_dto(
         resolver_urls: plugin.resolver_urls,
         resolver_url_conflicts: Vec::new(),
         load_status: plugin.load_status,
-        load_error: plugin.load_error,
+        load_error: if plugin.load_detail.is_some() {
+            "Plugin failed to load. See daemon diagnostics.".to_owned()
+        } else {
+            String::new()
+        },
+        load_detail: plugin.load_detail.map(plugin_failure_detail_to_dto),
         contributions: plugin_contributions_to_dto(&plugin.contributions, plugin.view_icons),
         risk: plugin.risk.as_str().to_owned(),
         consent_pending: plugin.consent_pending,
