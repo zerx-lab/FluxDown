@@ -719,13 +719,19 @@ impl GatewayService {
                 #[cfg(all(windows, feature = "desktop"))]
                 {
                     #[derive(serde::Deserialize)]
+                    #[serde(rename_all = "camelCase")]
                     struct SeenCursor {
                         epoch: String,
                         sequence: u64,
+                        #[serde(default)]
+                        seen_failures: Vec<String>,
                     }
                     let seen = parse_params::<SeenCursor>(request.params)?;
-                    self.events
-                        .acknowledge_tray_downloads(&seen.epoch, seen.sequence);
+                    self.events.acknowledge_tray_downloads(
+                        &seen.epoch,
+                        seen.sequence,
+                        &seen.seen_failures,
+                    );
                 }
                 Ok(serde_json::json!({ "ok": true }))
             }

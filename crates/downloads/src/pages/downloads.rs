@@ -406,6 +406,24 @@ impl DownloadView {
         self.sidebar.clone()
     }
 
+    /// Observe the local failed task IDs in the last displayed table viewport.
+    ///
+    /// Starts tracking on demand. The entity starts empty and notifies observers
+    /// only when a painted viewport changes its list of failed task IDs.
+    ///
+    /// ```
+    /// # use fluxdown_ui_downloads::DownloadView;
+    /// # use gpui::{App, Entity};
+    /// fn track(view: &DownloadView, cx: &mut App) -> Entity<Vec<String>> {
+    ///     view.watch_visible_failed_tasks(cx)
+    /// }
+    /// ```
+    pub fn watch_visible_failed_tasks(&self, cx: &mut App) -> Entity<Vec<String>> {
+        self.table_state.update(cx, |table, cx| {
+            table.delegate_mut().watch_visible_failed_tasks(cx)
+        })
+    }
+
     /// 注入宿主入口（新建下载 / 任务窗口 / 队列管理…）。
     pub fn set_host_actions(&mut self, host: DownloadHostActions) {
         self.host = host;

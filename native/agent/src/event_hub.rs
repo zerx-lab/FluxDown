@@ -27,12 +27,47 @@ struct AgentEventState {
 struct TrayRound {
     tasks: std::collections::HashMap<String, TrayTask>,
     pending_notices: std::collections::HashMap<String, PendingTrayNotice>,
-    terminal_rows: std::collections::HashMap<String, (i32, u64)>,
-    failure_sequence: u64,
+    terminal_rows: std::collections::HashMap<String, TerminalTrayRow>,
+    // Count unread rows for the tray's polling path.
+    unread_failures: usize,
     change_sequence: u64,
     acknowledged_sequence: u64,
     sequence: u64,
     reconcile_failures: bool,
+}
+
+#[cfg(all(feature = "desktop", any(windows, test)))]
+struct TerminalTrayRow {
+    sequence: u64,
+    status: i32,
+    failure: FailureReceipt,
+}
+
+#[cfg(all(feature = "desktop", any(windows, test)))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FailureReceipt {
+    AwaitingNotice,
+    Unread,
+    Seen,
+}
+
+#[cfg(all(feature = "desktop", any(windows, test)))]
+impl TerminalTrayRow {
+    fn new(status: i32, sequence: u64) -> Self {
+        Self {
+            sequence,
+            status,
+            failure: FailureReceipt::AwaitingNotice,
+        }
+    }
+
+    fn confirm_failure(&mut self) -> bool {
+        if self.failure != FailureReceipt::AwaitingNotice {
+            return false;
+        }
+        self.failure = FailureReceipt::Unread;
+        true
+    }
 }
 
 #[cfg(all(feature = "desktop", any(windows, test)))]
@@ -77,7 +112,9 @@ impl TrayRound {
         }
         if next.is_unfinished() && !self.tasks.values().any(TrayTask::is_unfinished) {
             self.tasks.clear();
-            self.terminal_rows.clear();
+            // The failed row can stay hidden even after a new round starts.
+            self.terminal_rows
+                .retain(|_, row| row.failure == FailureReceipt::Unread);
             self.reconcile_failures = false;
         }
         if let Some(task) = self.tasks.get_mut(id) {
@@ -85,39 +122,73 @@ impl TrayRound {
         } else {
             self.tasks.insert(id.to_owned(), next);
         }
-        self.mark_changed(next);
+        self.change_sequence = self.change_sequence.max(self.sequence);
     }
 
-    fn mark_changed(&mut self, next: TrayTask) {
-        self.change_sequence = self.change_sequence.max(self.sequence);
-        if next == TrayTask::Failed {
-            self.failure_sequence = self.failure_sequence.max(self.sequence);
+    fn forget_terminal_row(&mut self, id: &str) {
+        if self
+            .terminal_rows
+            .remove(id)
+            .is_some_and(|row| row.failure == FailureReceipt::Unread)
+        {
+            self.unread_failures -= 1;
         }
     }
 
-    fn acknowledge(&mut self, sequence: u64) {
+    fn acknowledge(&mut self, sequence: u64, seen_failures: &[String]) {
         self.acknowledged_sequence = self.acknowledged_sequence.max(sequence);
+        for id in seen_failures {
+            let Some(row) = self.terminal_rows.get_mut(id) else {
+                continue;
+            };
+            if row.status != 4 || row.sequence > sequence {
+                continue;
+            }
+            if row.failure == FailureReceipt::Unread {
+                self.unread_failures -= 1;
+            }
+            // A rendered failed row can be acknowledged before its notice.
+            row.failure = FailureReceipt::Seen;
+            if !self.tasks.contains_key(id) {
+                self.terminal_rows.remove(id);
+            }
+        }
     }
 
     fn observe_status(&mut self, id: &str, status: i32, error: &str) {
         if matches!(status, 3 | 4) && error != "deleted" {
-            if let Some(terminal) = self.terminal_rows.get_mut(id) {
-                if terminal.0 != status {
-                    *terminal = (status, self.sequence);
+            if let Some(row) = self.terminal_rows.get_mut(id) {
+                if row.status != status {
+                    if row.failure == FailureReceipt::Unread {
+                        self.unread_failures -= 1;
+                    }
+                    if self.tasks.contains_key(id) {
+                        *row = TerminalTrayRow::new(status, self.sequence);
+                    } else {
+                        self.terminal_rows.remove(id);
+                    }
                 }
-            } else if self.tasks.contains_key(id) {
+            } else if self
+                .tasks
+                .get(id)
+                .is_some_and(|task| *task != TrayTask::Canceled)
+            {
                 self.terminal_rows
-                    .insert(id.to_owned(), (status, self.sequence));
+                    .insert(id.to_owned(), TerminalTrayRow::new(status, self.sequence));
             }
-        } else {
-            self.terminal_rows.remove(id);
+        } else if !self.terminal_rows.is_empty() {
+            self.forget_terminal_row(id);
         }
         match status {
             0 => self.set(id, TrayTask::Unfinished),
             1 | 5 => self.set(id, TrayTask::Running),
             4 if error == "deleted" => self.cancel(id),
             // A live status=4 may still be retried; defer red until the terminal notice.
-            2 | 4 if self.tasks.get(id) == Some(&TrayTask::Running) => {
+            2 | 4
+                if self.tasks.get(id).is_some_and(|task| {
+                    *task == TrayTask::Running || (status == 2 && *task == TrayTask::Failed)
+                }) =>
+            {
                 self.set(id, TrayTask::Unfinished);
             }
             _ => {}
@@ -126,12 +197,12 @@ impl TrayRound {
 
     fn cancel(&mut self, id: &str) {
         self.pending_notices.remove(id);
-        self.terminal_rows.remove(id);
+        self.forget_terminal_row(id);
         if let Some(task) = self.tasks.get_mut(id)
-            && task.is_unfinished()
+            && (task.is_unfinished() || *task == TrayTask::Failed)
         {
             *task = TrayTask::Canceled;
-            self.mark_changed(TrayTask::Canceled);
+            self.change_sequence = self.change_sequence.max(self.sequence);
         }
     }
 
@@ -166,7 +237,15 @@ impl TrayRound {
         }
         snapshot.ensure_task_index();
         if replaced {
-            self.terminal_rows.clear();
+            self.terminal_rows.retain(|id, terminal| {
+                let retained = snapshot.task(id).is_some_and(|row| {
+                    row.status == terminal.status && row.error_message != "deleted"
+                });
+                if !retained && terminal.failure == FailureReceipt::Unread {
+                    self.unread_failures -= 1;
+                }
+                retained
+            });
         }
         // Only live/queued work enters from the snapshot. A paused task counts only
         // if it was already in this round or later resumes.
@@ -180,13 +259,20 @@ impl TrayRound {
             if *task == TrayTask::Canceled {
                 continue;
             }
-            let status = snapshot.task(id).map(|row| row.status);
-            if replaced && let Some(status @ (3 | 4)) = status {
+            let status = snapshot
+                .task(id)
+                .filter(|row| row.status != 4 || row.error_message != "deleted")
+                .map(|row| row.status);
+            if let Some(status @ (3 | 4)) = status
+                && !self.terminal_rows.contains_key(id)
+            {
                 self.terminal_rows
-                    .insert(id.clone(), (status, self.sequence));
+                    .insert(id.clone(), TerminalTrayRow::new(status, self.sequence));
             }
             let next = match status {
-                Some(2) if task.is_unfinished() => TrayTask::Unfinished,
+                Some(2) if task.is_unfinished() || *task == TrayTask::Failed => {
+                    TrayTask::Unfinished
+                }
                 Some(3) => TrayTask::Completed,
                 Some(4) if *task == TrayTask::Failed => continue,
                 Some(4) if snapshot.runtime_stats.retry_pending_tasks == 0 => TrayTask::Failed,
@@ -195,15 +281,20 @@ impl TrayRound {
                     self.reconcile_failures = true;
                     continue;
                 }
-                None if task.is_unfinished() => TrayTask::Canceled,
+                None if task.is_unfinished() || *task == TrayTask::Failed => TrayTask::Canceled,
                 _ => continue,
             };
             if *task != next {
                 *task = next;
                 self.change_sequence = self.change_sequence.max(self.sequence);
-                if next == TrayTask::Failed {
-                    self.failure_sequence = self.failure_sequence.max(self.sequence);
-                }
+            }
+            if next == TrayTask::Failed
+                && self
+                    .terminal_rows
+                    .get_mut(id)
+                    .is_some_and(TerminalTrayRow::confirm_failure)
+            {
+                self.unread_failures += 1;
             }
         }
         if !replaced {
@@ -229,7 +320,8 @@ impl TrayRound {
 
         match event {
             AgentEvent::DaemonSnapshotReplaced(_)
-            | AgentEvent::Daemon(DaemonEvent::SnapshotReplaced(_)) => {
+            | AgentEvent::Daemon(DaemonEvent::SnapshotReplaced(_))
+            | AgentEvent::Daemon(DaemonEvent::Engine(WsServerMsg::TasksSnapshot { .. })) => {
                 self.reconcile(snapshot, true)
             }
             AgentEvent::Daemon(DaemonEvent::RuntimeStatsChanged(stats))
@@ -386,7 +478,12 @@ impl AgentEventHub {
         {
             return;
         }
-        let status = state.snapshot.daemon.task(&task.id).map(|row| row.status);
+        let status = state
+            .snapshot
+            .daemon
+            .task(&task.id)
+            .filter(|row| row.status != 4 || row.error_message != "deleted")
+            .map(|row| row.status);
         if status.is_some_and(|status| next.matches_row(status)) {
             state.tray.pending_notices.remove(&task.id);
             // A late terminal notice belongs to the frame that displayed
@@ -395,9 +492,26 @@ impl AgentEventHub {
                 .tray
                 .terminal_rows
                 .get(&task.id)
-                .filter(|(row_status, _)| Some(*row_status) == status)
-                .map_or(state.sequence, |(_, sequence)| *sequence);
+                .filter(|row| Some(row.status) == status)
+                .map_or(state.sequence, |row| row.sequence);
             state.tray.set(&task.id, next);
+            if next == TrayTask::Failed {
+                let tray = &mut state.tray;
+                let confirmed = if let Some(row) = tray.terminal_rows.get_mut(&task.id) {
+                    if row.status != 4 {
+                        *row = TerminalTrayRow::new(4, tray.sequence);
+                    }
+                    row.confirm_failure()
+                } else {
+                    let mut row = TerminalTrayRow::new(4, tray.sequence);
+                    let confirmed = row.confirm_failure();
+                    tray.terminal_rows.insert(task.id.clone(), row);
+                    confirmed
+                };
+                if confirmed {
+                    tray.unread_failures += 1;
+                }
+            }
         } else if next.is_unfinished() && status.is_none() {
             state.tray.pending_notices.insert(
                 task.id.clone(),
@@ -412,10 +526,15 @@ impl AgentEventHub {
     }
 
     #[cfg(all(feature = "desktop", any(windows, test)))]
-    pub(crate) fn acknowledge_tray_downloads(&self, epoch: &str, sequence: u64) {
+    pub(crate) fn acknowledge_tray_downloads(
+        &self,
+        epoch: &str,
+        sequence: u64,
+        seen_failures: &[String],
+    ) {
         let mut state = lock_or_recover(&self.state);
         if state.epoch == epoch && sequence <= state.sequence {
-            state.tray.acknowledge(sequence);
+            state.tray.acknowledge(sequence, seen_failures);
         }
     }
 
@@ -439,7 +558,7 @@ impl AgentEventHub {
         }
         let tray = &state.tray;
         let stats = &state.snapshot.daemon.runtime_stats;
-        if tray.failure_sequence > tray.acknowledged_sequence {
+        if tray.unread_failures > 0 {
             Some(DownloadDot::Failed)
         } else if tray.change_sequence <= tray.acknowledged_sequence {
             None
@@ -514,9 +633,10 @@ fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     #[cfg(feature = "desktop")]
-    fn acknowledge_current(hub: &AgentEventHub) {
+    fn acknowledge_current(hub: &AgentEventHub, seen: &[&str]) {
         let snapshot = hub.snapshot();
-        hub.acknowledge_tray_downloads(&snapshot.epoch, snapshot.sequence);
+        let failures: Vec<_> = seen.iter().map(|id| (*id).to_owned()).collect();
+        hub.acknowledge_tray_downloads(&snapshot.epoch, snapshot.sequence, &failures);
     }
 
     #[cfg(feature = "desktop")]
@@ -528,9 +648,113 @@ mod tests {
         });
         hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("a", 1)?));
         hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("a", 4)?));
-        acknowledge_current(&hub);
+        acknowledge_current(&hub, &["a"]);
         hub.publish(fluxdown_protocol::AgentEvent::DaemonConnectionChanged(true));
         hub.record_tray_result(&failed_notice("a"));
+        assert_eq!(hub.tray_download_dot(), None);
+        Ok(())
+    }
+
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn tray_dot_only_clears_failures_named_in_the_receipt() -> Result<(), serde_json::Error> {
+        use crate::shell::DownloadDot;
+
+        let hub = AgentEventHub::new(AgentSnapshot {
+            daemon_connected: true,
+            ..AgentSnapshot::default()
+        });
+        for id in ["visible", "hidden"] {
+            hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task(id, 1)?));
+        }
+        let failed = hub.apply_daemon_event(DaemonEvent::TasksChanged(vec![
+            tray_task("visible", 4)?,
+            tray_task("hidden", 4)?,
+        ]));
+        for id in ["visible", "hidden"] {
+            hub.record_tray_result(&failed_notice(id));
+        }
+        acknowledge_current(&hub, &["visible", "visible"]);
+        hub.record_tray_result(&failed_notice("visible"));
+        assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Failed));
+
+        hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("new", 1)?));
+        acknowledge_current(&hub, &[]);
+        assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Failed));
+        hub.acknowledge_tray_downloads("another epoch", failed.sequence, &["hidden".into()]);
+        assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Failed));
+        hub.acknowledge_tray_downloads(&failed.epoch, failed.sequence, &["hidden".into()]);
+        assert_eq!(hub.tray_download_dot(), None);
+        Ok(())
+    }
+
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn tray_dot_uses_the_failed_row_sequence_for_a_late_notice() -> Result<(), serde_json::Error> {
+        use crate::shell::DownloadDot;
+        use fluxdown_protocol::AgentEvent;
+
+        let hub = AgentEventHub::new(AgentSnapshot {
+            daemon_connected: true,
+            ..AgentSnapshot::default()
+        });
+        hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("a", 1)?));
+        let failed = hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("a", 4)?));
+        hub.publish(AgentEvent::DaemonConnectionChanged(true));
+        acknowledge_current(&hub, &[]);
+        assert_eq!(hub.tray_download_dot(), None);
+        hub.record_tray_result(&failed_notice("a"));
+        assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Failed));
+        hub.acknowledge_tray_downloads(&failed.epoch, failed.sequence, &["a".into()]);
+        assert_eq!(hub.tray_download_dot(), None);
+        Ok(())
+    }
+
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn tray_dot_discards_stale_receipts_after_retry_and_removes_missing_failures()
+    -> Result<(), serde_json::Error> {
+        use crate::shell::DownloadDot;
+
+        let hub = AgentEventHub::new(AgentSnapshot {
+            daemon_connected: true,
+            ..AgentSnapshot::default()
+        });
+        hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("a", 1)?));
+        let first_failure = hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("a", 4)?));
+        hub.record_tray_result(&failed_notice("a"));
+        assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Failed));
+        hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("a", 0)?));
+        assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Downloading));
+        hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("a", 4)?));
+        hub.acknowledge_tray_downloads(&first_failure.epoch, first_failure.sequence, &["a".into()]);
+        hub.record_tray_result(&failed_notice("a"));
+        assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Failed));
+
+        hub.apply_daemon_event(DaemonEvent::TaskDeleted {
+            task_id: "a".into(),
+        });
+        hub.record_tray_result(&failed_notice("a"));
+        assert_eq!(hub.tray_download_dot(), None);
+
+        hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("b", 1)?));
+        let failed = hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("b", 4)?));
+        hub.record_tray_result(&failed_notice("b"));
+        hub.replace_daemon_snapshot(DaemonSnapshot {
+            tasks: vec![tray_task("b", 4)?],
+            ..DaemonSnapshot::default()
+        });
+        assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Failed));
+        hub.acknowledge_tray_downloads(&failed.epoch, failed.sequence, &["b".into()]);
+        assert_eq!(hub.tray_download_dot(), None);
+
+        hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("c", 1)?));
+        hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("c", 4)?));
+        hub.record_tray_result(&failed_notice("c"));
+        assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Failed));
+        hub.apply_daemon_event(DaemonEvent::Engine(WsServerMsg::TasksSnapshot {
+            tasks: Vec::new(),
+        }));
         assert_eq!(hub.tray_download_dot(), None);
         Ok(())
     }
@@ -552,7 +776,7 @@ mod tests {
             ..DaemonSnapshot::default()
         });
         assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Failed));
-        acknowledge_current(&hub);
+        acknowledge_current(&hub, &["old"]);
 
         hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("new", 1)?));
         hub.record_tray_result(&failed_notice("old"));
@@ -565,7 +789,7 @@ mod tests {
         assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Completed));
 
         // The same task ID can join a new round by actually resuming.
-        acknowledge_current(&hub);
+        acknowledge_current(&hub, &[]);
         hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("old", 1)?));
         hub.record_tray_result(&failed_notice("old"));
         hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("old", 4)?));
@@ -673,9 +897,13 @@ mod tests {
         notice("b", "task.created")?;
         let before_failure = hub.snapshot();
         notice("a", "task.failed")?;
-        hub.acknowledge_tray_downloads(&before_failure.epoch, before_failure.sequence);
+        hub.acknowledge_tray_downloads(
+            &before_failure.epoch,
+            before_failure.sequence,
+            &["a".into()],
+        );
         assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Failed));
-        acknowledge_current(&hub);
+        acknowledge_current(&hub, &["a"]);
         assert_eq!(hub.tray_download_dot(), None);
         notice("b", "task.completed")?;
         assert_eq!(hub.tray_download_dot(), None);
@@ -683,26 +911,26 @@ mod tests {
         notice("d", "task.created")?;
         assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Downloading));
         let seen = hub.snapshot();
-        acknowledge_current(&hub);
+        acknowledge_current(&hub, &[]);
         assert_eq!(hub.tray_download_dot(), None);
         notice("c", "task.completed")?;
         assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Downloading));
         notice("d", "task.completed")?;
-        hub.acknowledge_tray_downloads(&seen.epoch, seen.sequence);
+        hub.acknowledge_tray_downloads(&seen.epoch, seen.sequence, &[]);
         assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Completed));
-        acknowledge_current(&hub);
+        acknowledge_current(&hub, &[]);
         assert_eq!(hub.tray_download_dot(), None);
 
         notice("e", "task.started")?;
         notice("f", "task.created")?;
         notice("e", "task.completed")?;
-        acknowledge_current(&hub);
+        acknowledge_current(&hub, &[]);
         hub.apply_daemon_event(DaemonEvent::TaskDeleted {
             task_id: "f".to_owned(),
         });
         assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Completed));
 
-        acknowledge_current(&hub);
+        acknowledge_current(&hub, &[]);
         notice("g", "task.started")?;
         hub.apply_daemon_event(DaemonEvent::TaskDeleted {
             task_id: "g".to_owned(),
@@ -725,7 +953,7 @@ mod tests {
             });
             hub.publish(AgentEvent::DaemonConnectionChanged(true));
             assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Downloading));
-            acknowledge_current(&hub);
+            acknowledge_current(&hub, &[]);
             hub.publish(AgentEvent::DaemonConnectionChanged(false));
             hub.replace_daemon_snapshot(DaemonSnapshot {
                 tasks: vec![tray_task("a", status)?],
@@ -755,15 +983,15 @@ mod tests {
             ..DaemonSnapshot::default()
         });
         assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Completed));
-        acknowledge_current(&hub);
+        acknowledge_current(&hub, &[]);
 
         hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("old", 1)?));
         assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Downloading));
         hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("old", 2)?));
-        acknowledge_current(&hub);
+        acknowledge_current(&hub, &[]);
         hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("old", 1)?));
         assert_eq!(hub.tray_download_dot(), Some(DownloadDot::Downloading));
-        acknowledge_current(&hub);
+        acknowledge_current(&hub, &[]);
         hub.apply_daemon_event(DaemonEvent::TaskChanged(tray_task("old", 1)?));
         assert_eq!(hub.tray_download_dot(), None);
 

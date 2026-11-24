@@ -421,7 +421,7 @@ pub const AGENT_PLATFORM_SET_APP_ICON: &str = "agent.platform.setAppIcon";
 pub const AGENT_PLATFORM_APP_ICON_IMAGE: &str = "agent.platform.appIconImage";
 /// `{}` → `{ "ok": true }`：为桌面界面进程现有窗口补设当前应用图标（Windows / X11；其余平台无操作）。
 pub const AGENT_PLATFORM_SYNC_WINDOW_ICONS: &str = "agent.platform.syncWindowIcons";
-/// `{epoch, sequence}` → `{ "ok": true }`：确认前台下载页已显示的托盘提示。
+/// `{epoch, sequence, seenFailures: [taskId, ...]}` → `{ "ok": true }`：仅确认列出的失败任务。
 pub const AGENT_PLATFORM_ACK_TRAY_DOWNLOADS: &str = "agent.platform.ackTrayDownloads";
 /// `{}` → `browser_extension::BrowserExtensionStatusDto`：本机 Chrome / Edge / Firefox 与 FluxDown 扩展的安装状态。
 pub const AGENT_PLATFORM_BROWSER_EXTENSION_STATUS: &str = "agent.platform.browserExtensionStatus";

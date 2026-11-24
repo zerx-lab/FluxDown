@@ -98,6 +98,7 @@ aria2c 风格。命令：ping/info/add(get)/list(ls)/status(stat)/pause/resume/r
 - agent 冷启动关键路径 = 进程启动 → 绑定 Gateway 端口 → 装配服务 → `gateway::serve`（首个快照不等 daemon）。装配期**不得**同步构建外网 `reqwest::Client`：每次构建都加载系统根证书（macOS 钥匙串，release 实测约 70ms/个），曾因云 ×2 / 统计 / 更新 / daemon blob 共 5 个客户端把 serve 推迟约 0.4s。外网客户端用 `http_client::LazyHttpClient`（首个请求时在阻塞线程池构建）；只连回环 daemon 的客户端（`capture::DaemonBlobClient`、server 模式 `DaemonHttp`）以 `tls_built_in_root_certs(false)` 跳过根证书。
 - 捕获清单确认（`agent/capture.rs`、`protocol/agent.rs`）：`agent.capture.preview` 只读合并捕获原 URL / Cookie / 请求头 / Referrer，走慢 daemon 通道，只返回清单元数据；`agent.capture.createGroup` 使用最终文件 / 规格选择，固定捕获原 URL，成功才删除事务，失败保留。事务创建期间拒绝同事务的再次建组或旧确认 / 忽略；agent 自持创建任务，UI 等待被取消不重复创建。HTTP Basic 显式填写覆盖捕获 Authorization，保存凭据只在建组成功后按原站点执行，失败不撤销已成功组。断线丢失 daemon 回执仍不具备跨重连 exactly-once 保证，不能把在途防重当作持久幂等。
 - Windows 托盘下载提示（`shell/tray_model.rs` → `shell/host.rs`）：同轮按红（未查看的失败）> 黄（有未完成任务）> 绿（至少一项成功，其他未取消任务也全部成功）取色，tooltip 同时提供文字。Windows 常规设置可关闭 `desktop.tray_download_status`，不影响托盘驻留。前台下载页按 1s 合并确认，纯字节进度不触发确认；可重试错误在页面仍就绪时按相同节拍重试。游标以页面已收到的任务状态为准，较新的提示不被旧游标清除。引擎先发布不可合并的终态任务行，再发布对应通知；托盘只用终态通知更新当前轮中状态匹配的任务，不把不匹配的终态留给后续尝试。重连先建任务索引，再对账；历史暂停任务恢复后才加入本轮。
+  `agent.platform.ackTrayDownloads` 随游标携带 `seenFailures`，只确认视口内展示的本地失败任务。侧栏筛选、搜索、折叠或滚动隐藏的失败保留红点；视口展示新的失败行时，即使任务游标未变也重新确认。
 ---
 
 ### 云设备在线通道
