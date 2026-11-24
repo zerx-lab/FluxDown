@@ -4125,6 +4125,8 @@ mod plugin_consent_audit_tests {
         ];
         for dev in [false, true] {
             if dev {
+                write_plugin(&f.root.join(ID), &[]);
+                std::fs::write(f.root.join(ID).join("previous.txt"), b"old package").unwrap();
                 let src = f.base.join("dev");
                 write_plugin(&src, &[]);
                 call(
@@ -4158,12 +4160,16 @@ mod plugin_consent_audit_tests {
                     detail["column"] = json!(column);
                 }
                 assert_plugin_diagnostic(error, detail);
-                assert!(!f.root.join(ID).exists());
                 if dev {
+                    assert_eq!(
+                        std::fs::read(f.root.join(ID).join("previous.txt")).unwrap(),
+                        b"old package"
+                    );
                     let remaining = plugin(&f).await;
                     assert_eq!(remaining["devMode"], true);
                     assert_eq!(remaining["loadStatus"], "Loaded");
                 } else {
+                    assert!(!f.root.join(ID).exists());
                     let remaining = call(&f, method::DAEMON_PLUGIN_LIST, json!({}))
                         .await
                         .unwrap();
