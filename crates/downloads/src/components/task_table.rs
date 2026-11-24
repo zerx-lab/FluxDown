@@ -1,7 +1,7 @@
 use std::{
     cell::{Cell, Ref, RefCell},
     cmp::Ordering,
-    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     rc::Rc,
     time::{Duration, Instant},
 };
@@ -13,11 +13,11 @@ use fluxdown_ui_components::{
 use fluxdown_ui_icon_pack::FileKind;
 use fluxdown_ui_theme::active_theme;
 use gpui::{
-    AnyElement, App, Bounds, ClickEvent, Context, Div, Edges, Entity, FocusHandle, FontWeight,
-    Hsla, InteractiveElement as _, IntoElement, Modifiers, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render, ScrollEvent,
-    ScrollStrategy, SharedString, Stateful, StatefulInteractiveElement as _, Styled, Task,
-    WeakEntity, Window, div, linear_color_stop, linear_gradient, prelude::FluentBuilder as _, px,
+    AnyElement, App, ClickEvent, Context, Div, Edges, Entity, FocusHandle, FontWeight, Hsla,
+    InteractiveElement as _, IntoElement, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement, Pixels, Point, Render, ScrollEvent, SharedString, Stateful,
+    StatefulInteractiveElement as _, Styled, Task, WeakEntity, Window, div, linear_color_stop,
+    linear_gradient, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     ElementExt as _, Icon, IconName, Sizable as _, Size, h_flex,
@@ -1055,7 +1055,7 @@ pub(crate) struct DownloadTableDelegate {
     multi_select: bool,
     /// 左键按住拖过任务行时的划选；`None` 表示没有进行中的手势。
     row_sweep: Option<RowSweep>,
-    sweep_bounds: Rc<Cell<Bounds<Pixels>>>,
+    sweep_bounds: Rc<Cell<gpui::Bounds<Pixels>>>,
     sweep_scroll: Option<Task<()>>,
     sweep_scroll_generation: u64,
     /// 这次左键是否按在文件拖出把手上。行在捕获阶段清掉，把手在捕获阶段置位，
@@ -1146,7 +1146,7 @@ impl DownloadTableDelegate {
             selection_anchor: None,
             multi_select: false,
             row_sweep: None,
-            sweep_bounds: Rc::new(Cell::new(Bounds::default())),
+            sweep_bounds: Rc::new(Cell::new(gpui::Bounds::default())),
             sweep_scroll: None,
             sweep_scroll_generation: 0,
             press_on_file_handle: false,
@@ -4346,7 +4346,7 @@ struct RowSweep {
     active: bool,
     last_ix: Option<usize>,
     members: HashMap<RowId, usize>,
-    anchors: BTreeMap<usize, RowId>,
+    anchors: std::collections::BTreeMap<usize, RowId>,
     visible_total: usize,
     tally: Option<SelectionTally>,
 }
@@ -4394,6 +4394,148 @@ fn sweep_past_slop(delta: Point<Pixels>) -> bool {
     let dx = f32::from(delta.x);
     let dy = f32::from(delta.y);
     dx * dx + dy * dy > 36.
+}
+
+/// The empty body below the final row is a sweep anchor just after that row.
+fn sweep_blank(delegate: &DownloadTableDelegate, position: Point<Pixels>, cx: &App) -> bool {
+    let bounds = delegate.sweep_bounds.get();
+    let height = delegate
+        .prefs
+        .density
+        .row_height(active_theme(cx).density());
+    !delegate.visible.is_empty()
+        && position.y
+            > bounds.origin.y + table_header_height(cx) + height * delegate.visible.len() as f32
+        && position.y < bounds.bottom() - Scrollbar::width()
+}
+
+fn release_table_sweep(
+    table: &Entity<TableState<DownloadTableDelegate>>,
+    event: &MouseUpEvent,
+    cx: &mut App,
+) {
+    if event.button == MouseButton::Left && table.read(cx).delegate().row_sweep.is_some() {
+        table.update(cx, |table, _| table.delegate_mut().finish_row_sweep());
+    }
+}
+
+fn track_table_sweep(
+    table: &Entity<TableState<DownloadTableDelegate>>,
+    event: &MouseMoveEvent,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let delegate = table.read(cx).delegate();
+    if delegate.row_sweep.is_none() {
+        return;
+    }
+    let blank = sweep_blank(delegate, event.position, cx);
+    if delegate.sweep_tracks_row(delegate.visible.len(), event)
+        && (event.pressed_button != Some(MouseButton::Left) || blank)
+    {
+        table.update(cx, |table, cx| {
+            let delegate = table.delegate_mut();
+            if delegate.drag_sweep_to(delegate.visible.len(), event) {
+                cx.notify();
+            }
+        });
+    }
+    if sweep_scroll_step(table.read(cx), event.position, cx).is_some()
+        && table.read(cx).delegate().sweep_scroll.is_none()
+    {
+        table.update(cx, |table, cx| start_sweep_scroll(table, window, cx));
+    }
+}
+
+fn start_sweep_scroll(
+    table: &mut TableState<DownloadTableDelegate>,
+    window: &mut Window,
+    cx: &mut Context<TableState<DownloadTableDelegate>>,
+) {
+    let delegate = table.delegate_mut();
+    delegate.sweep_scroll_generation = delegate.sweep_scroll_generation.wrapping_add(1);
+    let generation = delegate.sweep_scroll_generation;
+    delegate.sweep_scroll = Some(cx.spawn_in(window, async move |this, cx| {
+        loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(55))
+                .await;
+            match this.update_in(cx, |table, window, cx| {
+                if let Some((top, end)) = sweep_scroll_step(table, window.mouse_position(), cx) {
+                    table.delegate_mut().sweep_to(end);
+                    table.delegate().interaction_hold().note(Instant::now());
+                    // The new top row is usually already visible.
+                    table
+                        .vertical_scroll_handle
+                        .scroll_to_item_strict(top, gpui::ScrollStrategy::Top);
+                    cx.notify();
+                    true
+                } else {
+                    defer_sweep_scroll_reset(generation, window, cx);
+                    false
+                }
+            }) {
+                Ok(true) => {}
+                Ok(false) | Err(_) => break,
+            }
+        }
+    }));
+}
+
+fn defer_sweep_scroll_reset(
+    generation: u64,
+    window: &Window,
+    cx: &mut Context<TableState<DownloadTableDelegate>>,
+) {
+    let table = cx.entity();
+    window.defer(cx, move |_, cx| {
+        table.update(cx, |table, _| {
+            let delegate = table.delegate_mut();
+            // A new drag may already have started before this callback runs.
+            if delegate.sweep_scroll_generation == generation {
+                delegate.sweep_scroll = None;
+            }
+        });
+    });
+}
+
+fn sweep_scroll_step(
+    table: &TableState<DownloadTableDelegate>,
+    position: Point<Pixels>,
+    cx: &App,
+) -> Option<(usize, usize)> {
+    let delegate = table.delegate();
+    if !delegate
+        .row_sweep
+        .as_ref()
+        .is_some_and(|sweep| sweep.active)
+    {
+        return None;
+    }
+    let bounds = delegate.sweep_bounds.get();
+    let top = bounds.origin.y + table_header_height(cx);
+    let bottom = bounds.bottom() - Scrollbar::width();
+    let edge = active_theme(cx).density().control.min((bottom - top) / 3.);
+    if position.x < bounds.origin.x
+        || position.x >= bounds.right()
+        || position.y < top
+        || position.y >= bottom
+        || edge <= px(0.)
+    {
+        return None;
+    }
+    let rows = table.visible_range().rows();
+    if position.y < top + edge && rows.start > 0 {
+        let step = 1 + (3. * ((top + edge - position.y) / edge)) as usize;
+        let next = rows.start.saturating_sub(step);
+        Some((next, next))
+    } else if position.y >= bottom - edge && !rows.is_empty() && rows.end < delegate.visible.len() {
+        let step = 1 + (3. * ((position.y - (bottom - edge)) / edge)) as usize;
+        let last = delegate.visible.len() - 1;
+        Some((rows.start + step, (rows.end + step - 1).min(last)))
+    } else {
+        None
+    }
 }
 
 /// 单击选择时的修饰键语义：`toggle` = 平台次要键（macOS Cmd / 其他 Ctrl，运行期按 `App` 判定），
@@ -4853,148 +4995,6 @@ pub(crate) fn render_download_table(
                 });
             });
         })
-}
-
-/// The empty body below the final row is a sweep anchor just after that row.
-fn sweep_blank(delegate: &DownloadTableDelegate, position: Point<Pixels>, cx: &App) -> bool {
-    let bounds = delegate.sweep_bounds.get();
-    let height = delegate
-        .prefs
-        .density
-        .row_height(active_theme(cx).density());
-    !delegate.visible.is_empty()
-        && position.y
-            > bounds.origin.y + table_header_height(cx) + height * delegate.visible.len() as f32
-        && position.y < bounds.bottom() - Scrollbar::width()
-}
-
-fn release_table_sweep(
-    table: &Entity<TableState<DownloadTableDelegate>>,
-    event: &MouseUpEvent,
-    cx: &mut App,
-) {
-    if event.button == MouseButton::Left && table.read(cx).delegate().row_sweep.is_some() {
-        table.update(cx, |table, _| table.delegate_mut().finish_row_sweep());
-    }
-}
-
-fn track_table_sweep(
-    table: &Entity<TableState<DownloadTableDelegate>>,
-    event: &MouseMoveEvent,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    let delegate = table.read(cx).delegate();
-    if delegate.row_sweep.is_none() {
-        return;
-    }
-    let blank = sweep_blank(delegate, event.position, cx);
-    if delegate.sweep_tracks_row(delegate.visible.len(), event)
-        && (event.pressed_button != Some(MouseButton::Left) || blank)
-    {
-        table.update(cx, |table, cx| {
-            let delegate = table.delegate_mut();
-            if delegate.drag_sweep_to(delegate.visible.len(), event) {
-                cx.notify();
-            }
-        });
-    }
-    if sweep_scroll_step(table.read(cx), event.position, cx).is_some()
-        && table.read(cx).delegate().sweep_scroll.is_none()
-    {
-        table.update(cx, |table, cx| start_sweep_scroll(table, window, cx));
-    }
-}
-
-fn start_sweep_scroll(
-    table: &mut TableState<DownloadTableDelegate>,
-    window: &mut Window,
-    cx: &mut Context<TableState<DownloadTableDelegate>>,
-) {
-    let delegate = table.delegate_mut();
-    delegate.sweep_scroll_generation = delegate.sweep_scroll_generation.wrapping_add(1);
-    let generation = delegate.sweep_scroll_generation;
-    delegate.sweep_scroll = Some(cx.spawn_in(window, async move |this, cx| {
-        loop {
-            cx.background_executor()
-                .timer(Duration::from_millis(55))
-                .await;
-            match this.update_in(cx, |table, window, cx| {
-                if let Some((top, end)) = sweep_scroll_step(table, window.mouse_position(), cx) {
-                    table.delegate_mut().sweep_to(end);
-                    table.delegate().interaction_hold().note(Instant::now());
-                    // The new top row is usually already visible.
-                    table
-                        .vertical_scroll_handle
-                        .scroll_to_item_strict(top, ScrollStrategy::Top);
-                    cx.notify();
-                    true
-                } else {
-                    defer_sweep_scroll_reset(generation, window, cx);
-                    false
-                }
-            }) {
-                Ok(true) => {}
-                Ok(false) | Err(_) => break,
-            }
-        }
-    }));
-}
-
-fn defer_sweep_scroll_reset(
-    generation: u64,
-    window: &Window,
-    cx: &mut Context<TableState<DownloadTableDelegate>>,
-) {
-    let table = cx.entity();
-    window.defer(cx, move |_, cx| {
-        table.update(cx, |table, _| {
-            let delegate = table.delegate_mut();
-            // A new drag may already have started before this callback runs.
-            if delegate.sweep_scroll_generation == generation {
-                delegate.sweep_scroll = None;
-            }
-        });
-    });
-}
-
-fn sweep_scroll_step(
-    table: &TableState<DownloadTableDelegate>,
-    position: Point<Pixels>,
-    cx: &App,
-) -> Option<(usize, usize)> {
-    let delegate = table.delegate();
-    if !delegate
-        .row_sweep
-        .as_ref()
-        .is_some_and(|sweep| sweep.active)
-    {
-        return None;
-    }
-    let bounds = delegate.sweep_bounds.get();
-    let top = bounds.origin.y + table_header_height(cx);
-    let bottom = bounds.bottom() - Scrollbar::width();
-    let edge = active_theme(cx).density().control.min((bottom - top) / 3.);
-    if position.x < bounds.origin.x
-        || position.x >= bounds.right()
-        || position.y < top
-        || position.y >= bottom
-        || edge <= px(0.)
-    {
-        return None;
-    }
-    let rows = table.visible_range().rows();
-    if position.y < top + edge && rows.start > 0 {
-        let step = 1 + (3. * ((top + edge - position.y) / edge)) as usize;
-        let next = rows.start.saturating_sub(step);
-        Some((next, next))
-    } else if position.y >= bottom - edge && !rows.is_empty() && rows.end < delegate.visible.len() {
-        let step = 1 + (3. * ((position.y - (bottom - edge)) / edge)) as usize;
-        let last = delegate.visible.len() - 1;
-        Some((rows.start + step, (rows.end + step - 1).min(last)))
-    } else {
-        None
-    }
 }
 
 /// 表格指针事件监听：只记录活动时刻，不写表格 entity、不触发重绘。
