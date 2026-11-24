@@ -140,6 +140,11 @@ impl DaemonSnapshot {
             .and_then(|index| self.tasks.get(index))
     }
 
+    /// Prepare repeated task lookups after a snapshot clone or replacement.
+    pub fn ensure_task_index(&mut self) {
+        self.ensure_index();
+    }
+
     fn reindex_tasks(&mut self) {
         self.task_index.ids.clear();
         self.task_index.ids.reserve(self.tasks.len());

@@ -9174,20 +9174,17 @@ impl DownloadManager {
                 log_terminal_task_failure(&task, generation, retries);
             }
 
-            // 文件哈希：校验和校验通过时下载器已把哈希写进库，但完成只经进度帧发布（不含
-            // 该字段），在此补发完整任务行；没有记录且开启「下载完成后计算哈希」时排队计算。
-            // 放在插件 onDone 通知之后：onDone 可能移动 / 改写文件。
+            // 等插件 onDone 后再计算哈希：插件可能移动或改写文件。
             #[cfg(all(feature = "bt", feature = "plugins"))]
             let archive_pending = self.bt_archive_results.lock().await.contains_key(task_id);
             #[cfg(not(all(feature = "bt", feature = "plugins")))]
             let archive_pending = false;
-            if task.status == 3 {
-                if !task.file_hash.is_empty() {
-                    self.sink
-                        .emit(EngineEvent::TaskChanged(Box::new(task.clone())));
-                } else if !archive_pending && let Some(algorithm) = self.hash_after_download {
-                    self.spawn_auto_file_hash(task_id, algorithm).await;
-                }
+            if task.status == 3
+                && task.file_hash.is_empty()
+                && !archive_pending
+                && let Some(algorithm) = self.hash_after_download
+            {
+                self.spawn_auto_file_hash(task_id, algorithm).await;
             }
 
             // Webhook 语义生命周期事件——与插件通知平面同点位。`task.failed`
@@ -9202,6 +9199,10 @@ impl DownloadManager {
             };
             if let Some(kind) = webhook_kind {
                 let event = self.webhook_event_from_task(kind, &task);
+                // Publish the authoritative terminal row before its notice, in
+                // the same manager turn. Unlike progress, TaskChanged cannot
+                // be coalesced past the notice or a later attempt.
+                self.sink.emit(EngineEvent::TaskChanged(Box::new(task)));
                 self.emit_task_event(event);
             }
         }
@@ -23770,11 +23771,25 @@ mod tests {
                 phase: TaskDonePhase::Finished,
             })
             .await;
-            let notice = collected_notices(&sink)
-                .into_iter()
-                .find(|n| n.event == expected && n.task.as_ref().is_some_and(|t| t.id == task_id))
+            let events = sink.events();
+            let (index, notice) = events
+                .iter()
+                .enumerate()
+                .find_map(|(index, event)| match event {
+                    EngineEvent::TaskNotice(notice)
+                        if notice.event == expected
+                            && notice.task.as_ref().is_some_and(|t| t.id == task_id) =>
+                    {
+                        Some((index, notice))
+                    }
+                    _ => None,
+                })
                 .unwrap_or_else(|| panic!("{expected} notice for {task_id}"));
             assert_eq!(notice.task.as_ref().map(|t| t.status), Some(status));
+            assert!(events[..index].iter().any(|event| matches!(
+                event,
+                EngineEvent::TaskChanged(row) if row.task_id == task_id && row.status == status
+            )));
         }
     }
 

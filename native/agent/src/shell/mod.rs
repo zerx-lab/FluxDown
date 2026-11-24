@@ -70,6 +70,14 @@ pub enum TrayAction {
     SessionEnd,
 }
 
+#[cfg(all(feature = "desktop", any(windows, test)))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DownloadDot {
+    Downloading,
+    Completed,
+    Failed,
+}
+
 /// 托盘的完整展示状态；宿主按值比较后只应用变化部分。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TrayModel {
@@ -85,6 +93,8 @@ pub struct TrayModel {
     pub tooltip: String,
     /// 托盘图标（跟随应用图标设置；macOS 恒为 [`TrayIconSource::Default`] 单色模板图）。
     pub icon: TrayIconSource,
+    #[cfg(all(windows, feature = "desktop"))]
+    pub(crate) download_dot: Option<DownloadDot>,
 }
 
 /// 托盘图标来源：默认由宿主按平台 / 明暗选内置图；其余是已缩放好的 PNG。

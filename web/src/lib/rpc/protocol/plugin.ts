@@ -1,5 +1,7 @@
 // 插件与托管组件 DTO。
 
+import type { PluginFailureDetail } from './error';
+
 export interface SettingOptionDto {
   value: string;
   label: string;
@@ -194,8 +196,10 @@ export interface PluginDto {
   resolverUrlConflicts?: { pattern: string; otherIdentity: string; otherPattern: string; site?: string }[];
   /** `Loaded` / `Failed`；与 `enabled` 独立。 */
   loadStatus: string;
-  /** 加载失败原因；成功为空。 */
+  /** Legacy load failure fallback; do not display (older daemons may send raw errors). */
   loadError: string;
+  /** Safe structured detail for a failed load, if supplied by the daemon. */
+  loadDetail?: PluginFailureDetail;
   /** manifest `contributes`：视图 / 命令 / 嗅探规则。 */
   contributions: PluginContributionsDto;
   /** 风险等级（由权限推导）。 */

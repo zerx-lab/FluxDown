@@ -2,6 +2,7 @@ use std::{
     cell::{Cell, Ref, RefCell},
     cmp::Ordering,
     collections::{HashMap, HashSet, VecDeque},
+    ops::Range,
     rc::Rc,
     time::{Duration, Instant},
 };
@@ -14,11 +15,11 @@ use fluxdown_ui_components::{
 use fluxdown_ui_icon_pack::FileKind;
 use fluxdown_ui_theme::active_theme;
 use gpui::{
-    AnyElement, App, ClickEvent, Context, Div, Edges, Entity, FocusHandle, FontWeight, Hsla,
-    InteractiveElement as _, IntoElement, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ParentElement, Pixels, Point, Render, ScrollEvent, SharedString, Stateful,
-    StatefulInteractiveElement as _, Styled, Task, WeakEntity, Window, div, linear_color_stop,
-    linear_gradient, prelude::FluentBuilder as _, px,
+    AnyElement, App, AppContext as _, ClickEvent, Context, Div, Edges, Entity, FocusHandle,
+    FontWeight, Hsla, InteractiveElement as _, IntoElement, Modifiers, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render, ScrollEvent, SharedString,
+    Stateful, StatefulInteractiveElement as _, Styled, Task, WeakEntity, Window, div,
+    linear_color_stop, linear_gradient, prelude::FluentBuilder as _, px,
 };
 use gpui::{Bounds, ScrollStrategy};
 use gpui_component::{
@@ -1024,6 +1025,7 @@ pub(crate) struct DownloadTableDelegate {
     store: Rc<TaskStore>,
     categories: Rc<CategoryIndex>,
     visible: Vec<VisibleRow>,
+    visible_failed_tasks: Option<Entity<Vec<String>>>,
     seen_generation: u64,
     /// 上次重算时存储的结构计数；未变说明只有行内容变化，可沿用上次的行顺序。
     seen_structure: u64,
@@ -1127,6 +1129,7 @@ impl DownloadTableDelegate {
             store,
             categories: Rc::new(CategoryIndex::default()),
             visible: Vec::new(),
+            visible_failed_tasks: None,
             seen_generation: u64::MAX,
             seen_structure: u64::MAX,
             sorted_rows: Vec::new(),
@@ -1178,6 +1181,30 @@ impl DownloadTableDelegate {
             plugin_commands: Vec::new(),
             action_context: None,
         }
+    }
+
+    pub(crate) fn watch_visible_failed_tasks(&mut self, cx: &mut App) -> Entity<Vec<String>> {
+        self.visible_failed_tasks
+            .get_or_insert_with(|| cx.new(|_| Vec::new()))
+            .clone()
+    }
+
+    fn failed_local_rows(
+        &self,
+        range: Range<usize>,
+    ) -> impl Iterator<Item = Ref<'_, DownloadTaskView>> {
+        let end = range.end.min(self.visible.len());
+        self.visible[range.start.min(end)..end]
+            .iter()
+            .filter_map(move |row| match row {
+                VisibleRow::Task(id @ RowId::Local(_))
+                | VisibleRow::Member {
+                    id: id @ RowId::Local(_),
+                    ..
+                } => self.store.row(*id),
+                _ => None,
+            })
+            .filter(|task| task.state == TaskState::Failed)
     }
 
     pub(crate) fn set_strings(&mut self, strings: DownloadStrings) {
@@ -4834,11 +4861,22 @@ pub(crate) fn render_download_table(
             let width = f32::from(bounds.size.width);
             let text_scale = f32::from(active_theme(cx).text_extent(1.));
             let icon_base = f32::from(active_theme(cx).extended().icon.lg);
-            let delegate = observed.read(cx).delegate();
+            let table = observed.read(cx);
+            let delegate = table.delegate();
             let sync_width = delegate.viewport_needs_sync(width);
             let rescale =
                 delegate.text_scale_stale(text_scale) || delegate.icon_base_stale(icon_base);
             let arm_timer = delegate.needs_reorder_timer();
+            if let Some((watched, ids)) = visible_failed_tasks_change(table, window, cx) {
+                window.defer(cx, move |_, cx| {
+                    watched.update(cx, |current, cx| {
+                        if *current != ids {
+                            *current = ids;
+                            cx.notify();
+                        }
+                    });
+                });
+            }
             if !sync_width && !rescale && !arm_timer {
                 return;
             }
@@ -4855,6 +4893,53 @@ pub(crate) fn render_download_table(
                 });
             });
         })
+}
+
+fn visible_failed_tasks_change(
+    table: &TableState<DownloadTableDelegate>,
+    window: &Window,
+    cx: &App,
+) -> Option<(Entity<Vec<String>>, Vec<String>)> {
+    let delegate = table.delegate();
+    let watched = delegate.visible_failed_tasks.as_ref()?;
+    // Row slots can move in the store before the coalesced table refresh catches up.
+    if delegate.seen_generation != delegate.store.generation() {
+        return None;
+    }
+    // Retained scrolling can render only the missing rows. The delegate's visible-range
+    // callback receives that render range, so read the laid-out list's scroll geometry.
+    let rows = delegate.visible.len();
+    let range = if rows == 0 {
+        0..0
+    } else {
+        let scroll = table.vertical_scroll_handle.0.borrow();
+        let size = scroll.last_item_size?;
+        // All row kinds set the same explicit height in the delegate.
+        let row_height = delegate
+            .prefs
+            .density
+            .row_height(active_theme(cx).density())
+            .to_f64();
+        let height = size.item.height.to_f64();
+        if row_height <= 0. || height <= 0. {
+            0..0
+        } else {
+            let top = -window.pixel_snap(scroll.base_handle.offset().y).to_f64();
+            (top / row_height).floor() as usize..((top + height) / row_height).ceil() as usize
+        }
+    };
+    let mut current = watched.read(cx).iter();
+    let changed = delegate
+        .failed_local_rows(range.clone())
+        .any(|task| current.next().map(String::as_str) != Some(task.key.task_id()))
+        || current.next().is_some();
+    changed.then(|| {
+        let ids = delegate
+            .failed_local_rows(range)
+            .map(|task| task.key.task_id().to_owned())
+            .collect();
+        (watched.clone(), ids)
+    })
 }
 
 /// 表格指针事件监听：只记录活动时刻，不写表格 entity、不触发重绘。
@@ -5901,6 +5986,150 @@ mod tests {
         delegate.set_query("other.org");
         delegate.refresh_view();
         assert!(delegate.visible.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn failed_rows_follow_filter_search_and_group_expansion() -> Result<(), I18nError> {
+        let mut delegate = grouped_delegate()?;
+        let mut failed = delegate.store.local()[2].clone();
+        failed.state = TaskState::Failed;
+        delegate.store.set_local(2, failed);
+        delegate.refresh_view();
+
+        let ids = |delegate: &DownloadTableDelegate| -> Vec<String> {
+            delegate
+                .failed_local_rows(0..usize::MAX)
+                .map(|task| task.key.task_id().to_owned())
+                .collect()
+        };
+        assert!(ids(&delegate).is_empty());
+        delegate.toggle_group_expanded("g");
+        delegate.refresh_view();
+        assert_eq!(ids(&delegate), ["t2"]);
+
+        delegate.set_filter(TableFilter::Download(DownloadFilter::status(
+            DownloadStatusFilter::Completed,
+        )));
+        delegate.refresh_view();
+        assert!(ids(&delegate).is_empty());
+
+        delegate.set_filter(TableFilter::Download(DownloadFilter::status(
+            DownloadStatusFilter::Failed,
+        )));
+        delegate.set_query("f0.bin");
+        delegate.refresh_view();
+        assert!(ids(&delegate).is_empty());
+        delegate.set_query("f2.bin");
+        delegate.refresh_view();
+        assert_eq!(ids(&delegate), ["t2"]);
+
+        let remote =
+            serde_json::from_value::<fluxdown_protocol::RemoteTaskDto>(serde_json::json!({
+                "id": "remote-failed",
+                "toDevice": "dev-b",
+                "url": "https://example.com/f2.bin",
+                "status": "failed"
+            }))
+            .expect("failed remote task");
+        delegate
+            .store
+            .replace_remote(vec![DownloadTaskView::remote(&remote)]);
+        delegate.set_query("");
+        delegate.refresh_view();
+        assert!(
+            delegate
+                .visible
+                .iter()
+                .any(|row| matches!(row, VisibleRow::Task(crate::model::RowId::Remote(_))))
+        );
+        assert_eq!(ids(&delegate), ["t2"]);
+        Ok(())
+    }
+
+    #[test]
+    fn watched_failed_rows_follow_scroll_and_stationary_status_changes() -> Result<(), I18nError> {
+        use gpui::{
+            AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, ScrollDelta,
+            ScrollEvent, Styled as _, TestApp, Window, div, point, px,
+        };
+        use gpui_component::table::TableState;
+
+        struct Host {
+            table: Entity<TableState<DownloadTableDelegate>>,
+            failed: Entity<Vec<String>>,
+        }
+
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().flex().child(render_download_table(
+                    "failed-viewport-test-table",
+                    &self.table,
+                    cx,
+                ))
+            }
+        }
+
+        let mut statuses = [3; 80];
+        statuses[0] = 4;
+        statuses[79] = 4;
+        let mut delegate = delegate(&statuses)?;
+        delegate.set_prefs(ViewPrefs {
+            sort_key: ViewSortKey::Created,
+            sort_dir: SortDir::Desc,
+            ..ViewPrefs::default()
+        });
+        delegate.refresh_view();
+        let mut app = TestApp::new();
+        app.update(|cx| {
+            gpui_component::init(cx);
+            fluxdown_ui_theme::init(cx);
+        });
+        let mut win = app.open_window(move |window, cx| {
+            let failed = delegate.watch_visible_failed_tasks(cx);
+            let table = cx.new(|cx| {
+                TableState::new(delegate, window, cx)
+                    .row_selectable(false)
+                    .col_selectable(false)
+            });
+            Host { table, failed }
+        });
+        for _ in 0..3 {
+            win.draw();
+            app.run_until_parked();
+        }
+        win.read(|host, cx| assert_eq!(host.failed.read(cx), &["t0"]));
+
+        win.update(|host, _, cx| {
+            host.table
+                .update(cx, |table, cx| table.scroll_to_row(79, cx));
+        });
+        win.draw();
+        app.run_until_parked();
+        win.read(|host, cx| assert_eq!(host.failed.read(cx), &["t79"]));
+
+        win.update(|host, _, cx| {
+            host.table.update(cx, |table, cx| {
+                let delegate = table.delegate_mut();
+                let mut task = delegate.store.local()[79].clone();
+                task.state = TaskState::Completed;
+                delegate.store.set_local(79, task);
+                delegate.refresh_view();
+                cx.notify();
+            });
+        });
+        win.draw();
+        app.run_until_parked();
+        win.read(|host, cx| assert!(host.failed.read(cx).is_empty()));
+
+        win.simulate_event(ScrollEvent {
+            position: point(px(100.), px(100.)),
+            delta: ScrollDelta::Pixels(point(px(0.), px(10_000.))),
+            ..ScrollEvent::default()
+        });
+        win.draw();
+        app.run_until_parked();
+        win.read(|host, cx| assert_eq!(host.failed.read(cx), &["t0"]));
         Ok(())
     }
 

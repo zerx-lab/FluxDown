@@ -3607,6 +3607,7 @@ dependencies = [
  "tracing",
  "uuid",
  "winresource",
+ "zip",
 ]
 
 [[package]]

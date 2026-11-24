@@ -5,7 +5,8 @@
 
 use fluxdown_protocol::{
     ApplicationErrorCode, ErrorReason, INTERNAL_ERROR_CODE, INVALID_PARAMS_CODE,
-    INVALID_REQUEST_CODE, METHOD_NOT_FOUND_CODE, PARSE_ERROR_CODE, RpcErrorData, RpcErrorObject,
+    INVALID_REQUEST_CODE, METHOD_NOT_FOUND_CODE, PARSE_ERROR_CODE, PluginFailureDetail,
+    RpcErrorData, RpcErrorObject,
 };
 
 /// `ApplicationErrorCode`。
@@ -40,6 +41,47 @@ impl From<ApplicationErrorCode> for ErrorCodeDto {
     }
 }
 
+/// Redacted plugin operation diagnostic copied from the daemon's typed error.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct PluginDiagnosticDto {
+    pub kind: String,
+    pub path: Option<String>,
+    pub line: Option<u32>,
+    pub column: Option<u32>,
+}
+
+impl PluginDiagnosticDto {
+    fn from_detail(detail: PluginFailureDetail) -> Option<Self> {
+        use PluginFailureDetail as Detail;
+
+        let (kind, path, position) = match detail {
+            Detail::ManifestUnreadable => ("manifestUnreadable", None, None),
+            Detail::ManifestUnknownField => ("manifestUnknownField", None, None),
+            Detail::ManifestJsonInvalid => ("manifestJsonInvalid", None, None),
+            Detail::ManifestIdentityInvalid => ("manifestIdentityInvalid", None, None),
+            Detail::ManifestNameMissing => ("manifestNameMissing", None, None),
+            Detail::ManifestVersionInvalid => ("manifestVersionInvalid", None, None),
+            Detail::ManifestMinAppVersionInvalid => ("manifestMinAppVersionInvalid", None, None),
+            Detail::ManifestUnknownPermission => ("manifestUnknownPermission", None, None),
+            Detail::ManifestAuthPermissionMissing => ("manifestAuthPermissionMissing", None, None),
+            Detail::ScriptCompileFailed => ("scriptCompileFailed", None, None),
+            Detail::ScriptCompileFailedAt { line, column } => {
+                ("scriptCompileFailedAt", None, Some((line, column)))
+            }
+            Detail::MissingFile { path } => ("missingFile", Some(path), None),
+            Detail::LoadFailed => ("loadFailed", None, None),
+            Detail::NotDevPlugin => ("notDevPlugin", None, None),
+            Detail::Unknown => return None,
+        };
+        Some(Self {
+            kind: kind.to_owned(),
+            path,
+            line: position.map(|(line, _)| line),
+            column: position.map(|(_, column)| column),
+        })
+    }
+}
+
 /// 不可恢复的会话错误（协议不兼容、鉴权失败、主机退出等）。
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct HostErrorDto {
@@ -48,6 +90,7 @@ pub struct HostErrorDto {
     pub reason: Option<String>,
     pub retryable: bool,
     pub message: String,
+    pub plugin_diagnostic: Option<PluginDiagnosticDto>,
 }
 
 impl HostErrorDto {
@@ -57,6 +100,7 @@ impl HostErrorDto {
             reason: None,
             retryable: false,
             message: message.into(),
+            plugin_diagnostic: None,
         }
     }
 }
@@ -73,6 +117,7 @@ pub enum FluxError {
         retryable: bool,
         /// 人类可读说明（不叫 `message`：与 Kotlin `Throwable.message` 冲突）。
         detail: String,
+        plugin_diagnostic: Option<PluginDiagnosticDto>,
     },
     /// 连接 / IO 失败。
     #[error("transport error: {detail}")]
@@ -95,6 +140,7 @@ impl FluxError {
             reason: None,
             retryable: false,
             detail: detail.into(),
+            plugin_diagnostic: None,
         }
     }
 
@@ -123,6 +169,9 @@ impl From<RpcErrorObject> for FluxError {
                 reason: data.reason.and_then(reason_wire),
                 retryable: data.retryable,
                 detail: error.message,
+                plugin_diagnostic: data
+                    .plugin_detail
+                    .and_then(PluginDiagnosticDto::from_detail),
             };
         }
         // 没有应用错误详情的 JSON-RPC 协议级错误：按标准 code 归类。
@@ -146,17 +195,20 @@ impl From<FluxError> for HostErrorDto {
                 reason,
                 retryable,
                 detail,
+                plugin_diagnostic,
             } => Self {
                 code,
                 reason,
                 retryable,
                 message: detail,
+                plugin_diagnostic,
             },
             FluxError::Transport { detail } => Self {
                 code: ErrorCodeDto::Unavailable,
                 reason: None,
                 retryable: true,
                 message: detail,
+                plugin_diagnostic: None,
             },
             FluxError::Closed => Self::new(ErrorCodeDto::Cancelled, "session closed"),
         }
@@ -170,6 +222,7 @@ impl From<HostErrorDto> for FluxError {
             reason: error.reason,
             retryable: error.retryable,
             detail: error.message,
+            plugin_diagnostic: error.plugin_diagnostic,
         }
     }
 }
@@ -182,6 +235,9 @@ impl From<RpcErrorData> for HostErrorDto {
             reason: data.reason.and_then(reason_wire),
             retryable: data.retryable,
             message: data.field.unwrap_or_default(),
+            plugin_diagnostic: data
+                .plugin_detail
+                .and_then(PluginDiagnosticDto::from_detail),
         }
     }
 }
@@ -205,6 +261,32 @@ mod tests {
                 retryable: true,
                 ..
             } if reason == "targetDeviceOffline"
+        ));
+    }
+
+    #[test]
+    fn plugin_diagnostic_survives_rpc_and_session_error_conversion() {
+        use fluxdown_protocol::PluginFailureDetail;
+
+        use super::{HostErrorDto, PluginDiagnosticDto};
+
+        let mut data = RpcErrorData::new(ApplicationErrorCode::InvalidArgument, false)
+            .with_reason(ErrorReason::PluginPackageInvalid);
+        data.plugin_detail = Some(PluginFailureDetail::ScriptCompileFailedAt {
+            line: 8,
+            column: 13,
+        });
+        let error = FluxError::from(RpcErrorObject::application("invalid plugin package", data));
+        let dto = HostErrorDto::from(error);
+        assert_eq!(dto.message, "invalid plugin package");
+        assert!(matches!(
+            FluxError::from(dto),
+            FluxError::Rpc {
+                plugin_diagnostic: Some(PluginDiagnosticDto {
+                    kind, path: None, line: Some(8), column: Some(13)
+                }),
+                ..
+            } if kind == "scriptCompileFailedAt"
         ));
     }
 

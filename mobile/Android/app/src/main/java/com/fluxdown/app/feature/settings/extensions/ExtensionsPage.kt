@@ -445,8 +445,8 @@ private fun PluginRow(
             if (plugin.homepage.isNotEmpty()) FluxText(plugin.homepage, style = t.sm, color = c.inkMuted, maxLines = 1)
             if (plugin.description.isNotEmpty()) FluxText(plugin.description, style = t.sm, color = c.inkMuted, maxLines = 2)
             BadgeFlow(pluginBadges(plugin, update, yanked))
-            if (plugin.loadFailed && plugin.loadError.isNotEmpty()) {
-                FluxText(plugin.loadError, style = t.sm, color = c.coralText, maxLines = 2)
+            if (plugin.loadFailed) {
+                FluxText(pluginLoadFailureText(LocalContext.current, plugin), style = t.sm, color = c.coralText, maxLines = 2)
             }
         }
         FluxIcon(FluxIcons.ChevronRight, null, size = 18.dp, tint = c.inkFaint, modifier = Modifier.padding(top = 7.dp))
@@ -478,9 +478,9 @@ private fun showPluginActions(
     if (plugin.devMode && !readOnly) {
         actions += FluxDialogButton(env.text(R.string.pluginReloadTooltip)) { model.reload(env, plugin) }
     }
-    if (plugin.loadFailed && plugin.loadError.isNotEmpty()) {
+    if (plugin.loadFailed) {
         actions += FluxDialogButton(env.text(R.string.pluginLoadErrorCopy)) {
-            env.context.copyPlainText(plugin.loadError)
+            env.context.copyPlainText(pluginLoadFailureText(env.context, plugin))
             env.toast(env.text(R.string.pluginLoadErrorCopied), FluxToastKind.Success)
         }
     }

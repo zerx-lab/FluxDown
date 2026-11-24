@@ -108,7 +108,7 @@ internal fun PluginDetailPage(pluginId: String) {
                         custom(padded = true) {
                             SelectionContainer {
                                 FluxText(
-                                    plugin.loadError.ifEmpty { str(R.string.pluginLoadErrorTitle) },
+                                    pluginLoadFailureText(env.context, plugin),
                                     Modifier.fillMaxWidth(),
                                     style = FluxTheme.type.sm,
                                     color = FluxTheme.colors.coralText,
@@ -126,9 +126,8 @@ internal fun PluginDetailPage(pluginId: String) {
                             FluxActionRow(
                                 title = str(R.string.pluginLoadErrorCopy),
                                 icon = FluxIcons.Copy,
-                                enabled = plugin.loadError.isNotEmpty(),
                                 onClick = {
-                                    env.context.copyPlainText(plugin.loadError)
+                                    env.context.copyPlainText(pluginLoadFailureText(env.context, plugin))
                                     env.toast(env.text(R.string.pluginLoadErrorCopied), FluxToastKind.Success)
                                 },
                             )
