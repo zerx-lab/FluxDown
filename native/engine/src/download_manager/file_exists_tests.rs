@@ -650,7 +650,11 @@ async fn checksum_task_with_zero_recorded_bytes_cleans_its_own_partial() {
         let file = std::fs::File::open(&path).expect("open own partial");
         fx.mgr.checksum_preludes.insert(
             id.clone(),
-            Arc::new(Mutex::new(ChecksumPartial::Retained(path, Arc::new(file)))),
+            Arc::new(Mutex::new(ChecksumPartial::Retained {
+                path,
+                file: Arc::new(file),
+                hls_http_fallback: false,
+            })),
         );
         // Cancel the resume probe before it writes; the retained partial still belongs to us.
         fx.mgr.resume_task(&id).await;
@@ -703,10 +707,11 @@ async fn checksum_task_does_not_reuse_or_remove_a_replaced_partial() {
         let old = std::fs::File::open(&path).expect("open original partial");
         fx.mgr.checksum_preludes.insert(
             id.clone(),
-            Arc::new(Mutex::new(ChecksumPartial::Retained(
-                path.clone(),
-                Arc::new(old),
-            ))),
+            Arc::new(Mutex::new(ChecksumPartial::Retained {
+                path: path.clone(),
+                file: Arc::new(old),
+                hls_http_fallback: false,
+            })),
         );
         std::fs::rename(&path, fx.dir.join("old-partial")).expect("move original partial aside");
         fx.write_existing(&partial, b"xyz");
@@ -813,6 +818,156 @@ async fn checksum_task_without_claim_or_checkpoint_preserves_same_name_partial()
     assert_eq!((outcome.deleted, outcome.failed), (1, 0));
     assert!(!fx.dir.join(partial).exists());
 
+    server.abort();
+    assert!(server.await.expect_err("server aborted").is_cancelled());
+    fx.mgr.shutdown().await;
+    std::fs::remove_dir_all(&fx.dir).expect("cleanup");
+}
+
+#[tokio::test]
+async fn checksum_hls_fallback_resumes_the_http_partial() {
+    use sha2::{Digest as _, Sha256};
+    use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
+
+    const MIB: usize = 1024 * 1024;
+    const TOTAL: usize = 2 * MIB;
+    const PREFIX: usize = MIB + MIB / 2;
+    let body = vec![b'x'; TOTAL];
+    let checksum = format!("sha256={:x}", Sha256::digest(&body));
+    let (selector, _answers) = FakeSelector::new(false);
+    let mut fx = fixture(
+        "checksum_hls_fallback",
+        1,
+        selector,
+        FileExistsBehavior::Rename,
+    )
+    .await;
+    fx.write_existing("data.m3u8", b"sibling");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    fx.base_url = format!("http://{}", listener.local_addr().expect("address"));
+    let (ranges, mut requests) = mpsc::unbounded_channel();
+    let prefix_sent = Arc::new(tokio::sync::Notify::new());
+    let notify = Arc::clone(&prefix_sent);
+    let server = tokio::spawn(async move {
+        let mut plain_gets = 0;
+        while let Ok((socket, _)) = listener.accept().await {
+            let mut socket = BufReader::new(socket);
+            let mut line = String::new();
+            if socket.read_line(&mut line).await.expect("request") == 0 {
+                continue;
+            }
+            let head = line.starts_with("HEAD ");
+            let mut range = None;
+            loop {
+                line.clear();
+                if socket.read_line(&mut line).await.expect("header") == 0 || line == "\r\n" {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':')
+                    && name.eq_ignore_ascii_case("range")
+                {
+                    let (start, end) = value
+                        .trim()
+                        .strip_prefix("bytes=")
+                        .expect("bytes range")
+                        .split_once('-')
+                        .expect("range bounds");
+                    range = Some((
+                        start.parse::<usize>().expect("range start"),
+                        end.parse::<usize>().unwrap_or(TOTAL - 1),
+                    ));
+                }
+            }
+            let socket = socket.get_mut();
+            if let Some((start, end)) = range {
+                let len = end - start + 1;
+                let headers = format!(
+                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {len}\r\nContent-Range: bytes {start}-{end}/{TOTAL}\r\nConnection: close\r\n\r\n"
+                );
+                if start != 0 {
+                    ranges.send(start).expect("record resume offset");
+                }
+                // The competing metadata probe may cancel a 0-0 request.
+                if socket.write_all(headers.as_bytes()).await.is_ok()
+                    && let Err(error) = socket.write_all(&body[start..=end]).await
+                {
+                    tracing::debug!("test range response closed: {error}");
+                }
+            } else {
+                let headers = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {TOTAL}\r\nAccept-Ranges: bytes\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n"
+                );
+                if socket.write_all(headers.as_bytes()).await.is_err() || head {
+                    continue;
+                }
+                plain_gets += 1;
+                match plain_gets {
+                    1 => socket
+                        .write_all(&body)
+                        .await
+                        .expect("non-playlist response"),
+                    2 => {
+                        socket
+                            .write_all(&body[..PREFIX])
+                            .await
+                            .expect("initial prefix");
+                        notify.notify_one();
+                        // Do not finish the response; pausing the task closes this socket.
+                        assert!(socket.read_u8().await.is_err(), "paused socket must close");
+                    }
+                    _ => panic!("resume re-fetched the playlist or restarted at byte zero"),
+                }
+            }
+        }
+    });
+
+    let mut spec = fx.spec("data.m3u8");
+    spec.start_paused = true;
+    spec.segments = 1;
+    spec.checksum = checksum.clone();
+    let id = fx.mgr.create_task(spec).await.expect("create task");
+    fx.mgr.resume_task(&id).await;
+    let name = "data (1).m3u8";
+    let partial = fx.dir.join(format!("{name}{}", downloader::TEMP_EXT));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        prefix_sent.notified().await;
+        while !std::fs::metadata(&partial).is_ok_and(|metadata| metadata.len() >= MIB as u64) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("HTTP fallback wrote a resumable prefix");
+    fx.mgr.pause_task(&id).await;
+    fx.pump_until("fallback paused", |mgr| {
+        !mgr.pending_pauses.contains_key(&id)
+    })
+    .await;
+    assert_eq!(fx.status(&id).await, 2);
+
+    fx.mgr.resume_task(&id).await;
+    fx.pump_until_status(&id, 3).await;
+    assert_eq!(requests.try_recv().expect("positive Range offset"), MIB);
+    assert_eq!(fx.name(&id).await, name);
+    assert!(!partial.exists());
+    assert_eq!(
+        fx.db
+            .load_task_by_id(&id)
+            .await
+            .expect("load task")
+            .expect("task")
+            .file_hash,
+        checksum
+    );
+    assert_eq!(
+        std::fs::read(fx.dir.join("data.m3u8")).expect("sibling"),
+        b"sibling"
+    );
+    fx.pump_until("fallback retired", |mgr| {
+        !mgr.active_tasks.contains_key(&id)
+    })
+    .await;
     server.abort();
     assert!(server.await.expect_err("server aborted").is_cancelled());
     fx.mgr.shutdown().await;
