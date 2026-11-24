@@ -1,10 +1,11 @@
 use std::{
     cell::{Cell, Ref, RefCell},
     cmp::Ordering,
-    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     rc::Rc,
     time::{Duration, Instant},
 };
+use std::collections::BTreeMap;
 
 use fluxdown_protocol::{RemoteCommandAction, RemoteCommandParams, RemoteTaskStatus};
 use fluxdown_ui_components::{
@@ -13,12 +14,13 @@ use fluxdown_ui_components::{
 use fluxdown_ui_icon_pack::FileKind;
 use fluxdown_ui_theme::active_theme;
 use gpui::{
-    AnyElement, App, Bounds, ClickEvent, Context, Div, Edges, Entity, FocusHandle, FontWeight,
-    Hsla, InteractiveElement as _, IntoElement, Modifiers, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render, ScrollEvent,
-    ScrollStrategy, SharedString, Stateful, StatefulInteractiveElement as _, Styled, Task,
-    WeakEntity, Window, div, linear_color_stop, linear_gradient, prelude::FluentBuilder as _, px,
+    AnyElement, App, ClickEvent, Context, Div, Edges, Entity, FocusHandle, FontWeight, Hsla,
+    InteractiveElement as _, IntoElement, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement, Pixels, Point, Render, ScrollEvent, SharedString, Stateful,
+    StatefulInteractiveElement as _, Styled, Task, WeakEntity, Window, div, linear_color_stop,
+    linear_gradient, prelude::FluentBuilder as _, px,
 };
+use gpui::{Bounds, ScrollStrategy};
 use gpui_component::{
     ElementExt as _, Icon, IconName, Sizable as _, Size, h_flex,
     menu::{PopupMenu, PopupMenuItem},
@@ -4855,6 +4857,15 @@ pub(crate) fn render_download_table(
         })
 }
 
+/// 表格指针事件监听：只记录活动时刻，不写表格 entity、不触发重绘。
+fn note_pointer<E: 'static>(
+    table_state: &Entity<TableState<DownloadTableDelegate>>,
+    cx: &App,
+) -> impl Fn(&E, &mut Window, &mut App) + 'static {
+    let hold = table_state.read(cx).delegate().interaction_hold();
+    move |_, _, _| hold.note(Instant::now())
+}
+
 /// The empty body below the final row is a sweep anchor just after that row.
 fn sweep_blank(delegate: &DownloadTableDelegate, position: Point<Pixels>, cx: &App) -> bool {
     let bounds = delegate.sweep_bounds.get();
@@ -4995,15 +5006,6 @@ fn sweep_scroll_step(
     } else {
         None
     }
-}
-
-/// 表格指针事件监听：只记录活动时刻，不写表格 entity、不触发重绘。
-fn note_pointer<E: 'static>(
-    table_state: &Entity<TableState<DownloadTableDelegate>>,
-    cx: &App,
-) -> impl Fn(&E, &mut Window, &mut App) + 'static {
-    let hold = table_state.read(cx).delegate().interaction_hold();
-    move |_, _, _| hold.note(Instant::now())
 }
 
 /// 表格内左键按下即清除右键高亮行。
