@@ -407,14 +407,46 @@ async fn checksum_match_adopts_without_prompt_and_mismatch_cannot_skip() {
     assert!(fx.mgr.skip_adopted(&matched).await);
     assert_eq!(selector.asked_count(), 0);
 
+    let mut spec = fx.spec("restart.bin");
+    spec.checksum = CHECKSUM.into();
+    spec.start_paused = true;
+    let restart = fx.mgr.create_task(spec).await.expect("create restart");
+    fx.mgr
+        .checksum_preludes
+        .insert(restart.clone(), Arc::new(AtomicBool::new(true)));
+    let foreign_partial = format!("restart.bin{}", downloader::TEMP_EXT);
+    fx.write_existing(&foreign_partial, b"another task");
+    fx.mgr.restart_task(&restart).await;
+    assert_eq!(
+        std::fs::read(fx.dir.join(foreign_partial)).expect("foreign partial"),
+        b"another task"
+    );
+    fx.mgr.pause_task(&restart).await;
+
+    // A same-sized replacement has different identity even while the old file is open.
+    let candidate = fx.dir.join("match.bin");
+    let original = std::fs::File::open(&candidate).expect("open candidate");
+    let replacement = fx.dir.join("replacement.bin");
+    std::fs::write(&replacement, b"abd").expect("write replacement");
+    let replacement = std::fs::File::open(replacement).expect("open replacement");
+    assert!(!crate::file_hash::same_file(&original, &replacement).expect("compare identity"));
+    drop((original, replacement));
+
     let mut spec = fx.spec("mismatch.bin");
     spec.checksum = CHECKSUM.into();
+    spec.start_paused = true;
     let mismatch = fx.mgr.create_task(spec).await.expect("create mismatch");
+    fx.db
+        .set_exists_decision(&mismatch, ExistsDecision::Skip.as_db())
+        .await
+        .expect("persist skip");
+    fx.mgr.resume_task(&mismatch).await;
     fx.pump_until("mismatch prompts", |mgr| {
         parked(mgr, &mismatch) && selector.asked_count() == 1
     })
     .await;
     assert!(!selector.asked.lock().expect("asked")[0].allow_skip);
+    assert_eq!(fx.decision(&mismatch).await, ExistsDecision::Skip.as_db());
     answers.send(FileExistsChoice::Cancel).expect("cancel");
     fx.pump_until_status(&mismatch, 2).await;
 

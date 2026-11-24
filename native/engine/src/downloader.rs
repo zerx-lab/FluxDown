@@ -4236,7 +4236,7 @@ pub(crate) async fn verify_checksum(
     path: &Path,
     spec: &str,
     cancel: &CancellationToken,
-) -> Result<String, DownloadError> {
+) -> Result<(String, std::fs::File), DownloadError> {
     let normalized = normalize_checksum_spec(spec).map_err(DownloadError::Other)?;
     let (algo, expected_hex) = normalized.split_once('=').ok_or_else(|| {
         DownloadError::Other(format!(
@@ -4251,8 +4251,8 @@ pub(crate) async fn verify_checksum(
     })?;
     let path_owned = path.to_path_buf();
     let cancel = cancel.clone();
-    let actual_hex = tokio::task::spawn_blocking(move || {
-        crate::file_hash::hash_file(&path_owned, algorithm, || cancel.is_cancelled())
+    let (actual_hex, file) = tokio::task::spawn_blocking(move || {
+        crate::file_hash::hash_open_file(&path_owned, algorithm, || cancel.is_cancelled())
     })
     .await
     .map_err(|e| DownloadError::Other(format!("checksum thread panicked: {}", e)))?
@@ -4267,7 +4267,7 @@ pub(crate) async fn verify_checksum(
             expected_hex, actual_hex
         )));
     }
-    Ok(normalized)
+    Ok((normalized, file))
 }
 
 /// Run the segment advisor to compute the task's connection cap (Auto mode).
@@ -5422,7 +5422,7 @@ async fn run_download_inner(
         // 占用磁盘，又会让后续 resume 基于 existing_len 做出错误判断。删除它，
         // 让下次重试从干净状态开始。删除失败仅记日志，不掩盖原始 checksum 错误。
         let verified = match verify_checksum(temp_path, &p.checksum, &p.cancel_token).await {
-            Ok(verified) => verified,
+            Ok((verified, _)) => verified,
             Err(DownloadError::Cancelled) => return Err(DownloadError::Cancelled),
             Err(e) => {
                 if let Err(rm_err) = tokio::fs::remove_file(&temp_path).await {

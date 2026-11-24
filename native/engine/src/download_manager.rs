@@ -2287,6 +2287,7 @@ async fn finalize_start_file_name(
     // Overwrite authorizes the primary output, not an existing audio companion.
     // A manifest can declare separate audio even when audio_url is absent.
     let companion_audio = !ctx.html_only && (params.audio_url.is_some() || is_hls || is_dash);
+    let mut clear_skip = false;
     if !ctx.html_only
         && let Some(candidate) = task_target_path(&params.save_dir, &params.file_name)
     {
@@ -2334,15 +2335,26 @@ async fn finalize_start_file_name(
                     return StartPrelude::Cancelled;
                 }
                 match verified {
-                    Ok(checksum) => {
-                        let current = tokio::fs::metadata(&candidate).await;
-                        // A sibling can claim the name while hashing is off-thread.
+                    Ok((checksum, hashed_file)) => {
                         temp_conflict = existing_temp_conflict(&temp_path, reserved).await;
                         if params.cancel_token.is_cancelled() {
                             return StartPrelude::Cancelled;
                         }
+                        let path = candidate.clone();
+                        let current = tokio::task::spawn_blocking(move || {
+                            let current = std::fs::File::open(path)?;
+                            if crate::file_hash::same_file(&hashed_file, &current)? {
+                                current.metadata().map(Some)
+                            } else {
+                                Ok(None)
+                            }
+                        })
+                        .await;
+                        if params.cancel_token.is_cancelled() {
+                            return StartPrelude::Cancelled;
+                        }
                         match current {
-                            Ok(current)
+                            Ok(Ok(Some(current)))
                                 if !temp_conflict
                                     && current.is_file()
                                     && current.len() == metadata.len()
@@ -2355,10 +2367,15 @@ async fn finalize_start_file_name(
                                     checksum: Some(checksum),
                                 };
                             }
-                            Ok(_) => {}
-                            Err(error) => crate::logger::report_warning(
+                            Ok(Ok(_)) => {}
+                            Ok(Err(error)) => crate::logger::report_warning(
                                 "download-manager",
                                 "recheck existing file after checksum",
+                                &error,
+                            ),
+                            Err(error) => crate::logger::report_warning(
+                                "download-manager",
+                                "join existing file identity check",
                                 &error,
                             ),
                         }
@@ -2377,18 +2394,8 @@ async fn finalize_start_file_name(
             return StartPrelude::Cancelled;
         }
         if requires_checksum && decision == ExistsDecision::Skip {
-            // An unverified candidate (including a vanished file) cannot leave a skip
-            // decision on a subsequent download that publishes its own file.
-            decision = ExistsDecision::Rename;
-            if let Err(error) = params
-                .db
-                .set_exists_decision(&params.task_id, decision.as_db())
-                .await
-            {
-                return StartPrelude::Failed {
-                    error: error.into(),
-                };
-            }
+            decision = ExistsDecision::None;
+            clear_skip = true;
         }
         if let Some(metadata) = existing {
             let mut facts = crate::file_exists::ExistsFacts {
@@ -2568,6 +2575,17 @@ async fn finalize_start_file_name(
                 error: error.into(),
             };
         }
+    }
+    if params.cancel_token.is_cancelled() {
+        lock_reserved(reserved).remove(&temp);
+        return StartPrelude::Cancelled;
+    }
+    // A task taking its own output name must no longer be treated as an adoption.
+    if clear_skip && let Err(error) = params.db.set_exists_decision(&params.task_id, "").await {
+        lock_reserved(reserved).remove(&temp);
+        return StartPrelude::Failed {
+            error: error.into(),
+        };
     }
     StartPrelude::Proceed(Some(temp))
 }
@@ -13273,7 +13291,14 @@ impl DownloadManager {
             if task_owns_final_file(orig_status) && !adopted_existing {
                 remove_file_retrying(task_id, &path, was_active).await;
             }
-            remove_file_retrying(task_id, &temp_path, was_active).await;
+            let unclaimed = checksum_candidate_unclaimed(
+                &t,
+                adopted_existing,
+                self.checksum_preludes.get(task_id),
+            );
+            if !unclaimed {
+                remove_file_retrying(task_id, &temp_path, was_active).await;
+            }
             // DASH 音轨 sidecar（轨对任务的视频轨 URL 非 .mpd，需查库确认）
             // 与其临时文件一并清理，否则重下会复用上一轮的旧音轨。
             let has_audio_sidecar = dash_downloader::is_dash_url(&t.url)
@@ -13284,7 +13309,7 @@ impl DownloadManager {
                     .await
                     .unwrap_or_default()
                     .is_some();
-            if has_audio_sidecar {
+            if has_audio_sidecar && !unclaimed {
                 let audio_path = dash_downloader::build_audio_path(&path);
                 let audio_temp =
                     PathBuf::from(format!("{}{}", audio_path.display(), downloader::TEMP_EXT));
@@ -14441,7 +14466,10 @@ impl DownloadManager {
             let fresh = if html_only {
                 task.downloaded_bytes == 0
             } else {
-                self.never_started(&task, audio_url.is_some()).await
+                self.checksum_preludes
+                    .get(task_id)
+                    .is_some_and(|phase| phase.load(Ordering::Acquire))
+                    || self.never_started(&task, audio_url.is_some()).await
             };
             let decision = if html_only {
                 crate::file_exists::ExistsDecision::None
@@ -14547,11 +14575,10 @@ impl DownloadManager {
 
             let reserved_set = Arc::clone(&self.reserved_temp_paths);
             let checksum_prelude = if fresh && !params.checksum.is_empty() {
-                Some(Arc::clone(
-                    self.checksum_preludes
-                        .entry(task_id.to_owned())
-                        .or_insert_with(|| Arc::new(AtomicBool::new(true))),
-                ))
+                let phase = Arc::new(AtomicBool::new(true));
+                self.checksum_preludes
+                    .insert(task_id.to_owned(), Arc::clone(&phase));
+                Some(phase)
             } else {
                 None
             };
