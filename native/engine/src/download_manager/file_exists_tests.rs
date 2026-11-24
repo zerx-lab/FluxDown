@@ -411,9 +411,10 @@ async fn checksum_match_adopts_without_prompt_and_mismatch_cannot_skip() {
     spec.checksum = CHECKSUM.into();
     spec.start_paused = true;
     let restart = fx.mgr.create_task(spec).await.expect("create restart");
-    fx.mgr
-        .checksum_preludes
-        .insert(restart.clone(), Arc::new(AtomicBool::new(true)));
+    fx.mgr.checksum_preludes.insert(
+        restart.clone(),
+        Arc::new(Mutex::new(ChecksumPartial::Unclaimed)),
+    );
     let foreign_partial = format!("restart.bin{}", downloader::TEMP_EXT);
     fx.write_existing(&foreign_partial, b"another task");
     fx.mgr.restart_task(&restart).await;
@@ -554,7 +555,7 @@ async fn checksum_worker_timeout_keeps_candidate_and_foreign_partial() {
         // The read-only prelude is blocked, with no paths or bytes claimed by this task.
         fx.mgr
             .checksum_preludes
-            .insert(id.clone(), Arc::new(AtomicBool::new(true)));
+            .insert(id.clone(), Arc::new(Mutex::new(ChecksumPartial::Unclaimed)));
         fx.mgr.active_tasks.insert(
             id.clone(),
             ActiveTaskEntry {
@@ -642,14 +643,16 @@ async fn checksum_task_with_zero_recorded_bytes_cleans_its_own_partial() {
             .set_task_range_verified(&id, true)
             .await
             .expect("range state");
-        // A writer has claimed its name, but paused before any progress was saved.
-        fx.mgr
-            .checksum_preludes
-            .insert(id.clone(), Arc::new(AtomicBool::new(false)));
+        // The previous worker left a partial before any progress was saved.
         let partial = format!("own{}", downloader::TEMP_EXT);
         fx.write_existing(&partial, b"unreported bytes");
-        // Re-enter the fresh path (zero bytes, no segments), then cancel its
-        // stalled probe before it can claim a new name. Prior ownership survives.
+        let path = fx.dir.join(&partial);
+        let file = std::fs::File::open(&path).expect("open own partial");
+        fx.mgr.checksum_preludes.insert(
+            id.clone(),
+            Arc::new(Mutex::new(ChecksumPartial::Retained(path, Arc::new(file)))),
+        );
+        // Cancel the resume probe before it writes; the retained partial still belongs to us.
         fx.mgr.resume_task(&id).await;
         tokio::time::timeout(Duration::from_secs(5), accepted_rx)
             .await
@@ -677,6 +680,59 @@ async fn checksum_task_with_zero_recorded_bytes_cleans_its_own_partial() {
             "owned partial must be cleaned"
         );
         assert!(fx.db.load_task_by_id(&id).await.expect("load").is_none());
+        fx.mgr.shutdown().await;
+        std::fs::remove_dir_all(&fx.dir).expect("cleanup");
+    }
+    tokio::join!(check(false), check(true));
+}
+
+#[tokio::test]
+async fn checksum_task_does_not_reuse_or_remove_a_replaced_partial() {
+    async fn check(restart: bool) {
+        let (selector, _answers) = FakeSelector::new(false);
+        let mut fx = fixture("checksum_replaced", 1, selector, FileExistsBehavior::Rename).await;
+        let (url, server) = checksum_fixture_server();
+        fx.base_url = url;
+        let mut spec = fx.spec("shared.bin");
+        spec.start_paused = true;
+        spec.checksum = CHECKSUM.into();
+        let id = fx.mgr.create_task(spec).await.expect("create paused");
+        let partial = format!("shared.bin{}", downloader::TEMP_EXT);
+        let path = fx.dir.join(&partial);
+        fx.write_existing(&partial, b"abc");
+        let old = std::fs::File::open(&path).expect("open original partial");
+        fx.mgr.checksum_preludes.insert(
+            id.clone(),
+            Arc::new(Mutex::new(ChecksumPartial::Retained(
+                path.clone(),
+                Arc::new(old),
+            ))),
+        );
+        std::fs::rename(&path, fx.dir.join("old-partial")).expect("move original partial aside");
+        fx.write_existing(&partial, b"xyz");
+
+        if restart {
+            fx.mgr.restart_task(&id).await;
+        } else {
+            fx.mgr.resume_task(&id).await;
+        }
+        fx.pump_until_status(&id, 3).await;
+        assert_eq!(fx.name(&id).await, "shared (1).bin");
+        assert_eq!(std::fs::read(&path).expect("read sibling partial"), b"xyz");
+        assert_eq!(
+            std::fs::read(fx.dir.join("shared (1).bin")).expect("read new result"),
+            b"abc"
+        );
+        fx.pump_until("worker retired", |mgr| !mgr.active_tasks.contains_key(&id))
+            .await;
+        fx.mgr.delete_task(&id, true).await.expect("delete result");
+        assert!(!fx.dir.join("shared (1).bin").exists());
+        assert_eq!(
+            std::fs::read(&path).expect("preserve sibling partial"),
+            b"xyz"
+        );
+        server.abort();
+        assert!(server.await.expect_err("server aborted").is_cancelled());
         fx.mgr.shutdown().await;
         std::fs::remove_dir_all(&fx.dir).expect("cleanup");
     }
