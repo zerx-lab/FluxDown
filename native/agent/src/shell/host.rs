@@ -713,6 +713,8 @@ fn decode_icon_with_dot(bytes: &[u8], dot: Option<DownloadDot>) -> Result<Icon, 
             pixel[3] = (alpha * 255.0).round() as u8;
         }
     }
+    // The tray-icon CreateIcon path accepts straight RGBA. Premultiplying here
+    // would darken translucent pixels when Windows draws the HICON.
     Icon::from_rgba(image.into_raw(), width, height).map_err(|error| error.to_string())
 }
 
