@@ -9,7 +9,8 @@ mod ui;
 use std::{future::Future, pin::Pin, rc::Rc, sync::Arc};
 
 use fluxdown_protocol::{
-    AgentEvent, AgentSnapshot, ApplicationErrorCode, ErrorReason, RpcErrorData, ServiceEvent,
+    AgentEvent, AgentSnapshot, ApplicationErrorCode, ErrorReason, PluginFailureDetail,
+    RpcErrorData, ServiceEvent,
 };
 use fluxdown_ui_components::segmented_tabs;
 use fluxdown_ui_components::toast;
@@ -269,6 +270,36 @@ pub(crate) fn error_text(translator: &Translator, error: &RpcErrorData) -> Strin
         | ApplicationErrorCode::Internal => "localServiceActionFailed",
     });
     translator.text(key).to_owned()
+}
+
+fn plugin_detail_text(translator: &Translator, detail: &PluginFailureDetail) -> Option<String> {
+    use PluginFailureDetail as Detail;
+
+    let key = match detail {
+        Detail::ManifestUnreadable => "pluginDiagnosticManifestUnreadable",
+        Detail::ManifestUnknownField => "pluginDiagnosticManifestUnknownField",
+        Detail::ManifestJsonInvalid => "pluginDiagnosticManifestJsonInvalid",
+        Detail::ManifestIdentityInvalid => "pluginDiagnosticManifestIdentityInvalid",
+        Detail::ManifestNameMissing => "pluginDiagnosticManifestNameMissing",
+        Detail::ManifestVersionInvalid => "pluginDiagnosticManifestVersionInvalid",
+        Detail::ManifestMinAppVersionInvalid => "pluginDiagnosticManifestMinAppVersionInvalid",
+        Detail::ManifestUnknownPermission => "pluginDiagnosticManifestUnknownPermission",
+        Detail::ManifestAuthPermissionMissing => "pluginDiagnosticManifestAuthPermissionMissing",
+        Detail::ScriptCompileFailed => "pluginDiagnosticScriptCompileFailed",
+        Detail::ScriptCompileFailedAt { line, column } => {
+            return Some(translator.text_with(
+                "pluginDiagnosticScriptCompileFailedAt",
+                &[("line", &line.to_string()), ("column", &column.to_string())],
+            ));
+        }
+        Detail::MissingFile { path } => {
+            return Some(translator.text_with("pluginDiagnosticMissingFile", &[("path", path)]));
+        }
+        Detail::LoadFailed => "pluginDiagnosticLoadFailed",
+        Detail::NotDevPlugin => "pluginDiagnosticNotDevPlugin",
+        Detail::Unknown => return None,
+    };
+    Some(translator.text(key).to_owned())
 }
 
 impl Render for ExtensionsView {

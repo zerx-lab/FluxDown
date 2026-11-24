@@ -151,7 +151,7 @@ pub use daemon_config::{
 pub use error::{
     APPLICATION_ERROR_CODE, ApplicationErrorCode, ErrorReason, INTERNAL_ERROR_CODE,
     INVALID_PARAMS_CODE, INVALID_REQUEST_CODE, METHOD_NOT_FOUND_CODE, PARSE_ERROR_CODE,
-    RpcErrorData, RpcErrorObject,
+    PluginFailureDetail, RpcErrorData, RpcErrorObject,
 };
 pub use event::{
     AgentEvent, AgentSnapshot, DaemonEvent, DaemonSnapshot, EventFrame, FrameVerdict, ServiceEvent,

@@ -1,5 +1,6 @@
 package com.fluxdown.core.protocol
 
+import com.fluxdown.core.host.PluginDiagnostic
 import java.net.URI
 import java.net.URISyntaxException
 import java.util.Base64
@@ -91,8 +92,9 @@ data class PluginDto(
     val subscriptionProviderIds: List<String> = emptyList(),
     /** `Loaded` / `Failed`；与 [enabled] 独立。 */
     val loadStatus: String = "Loaded",
-    /** 加载失败原因；成功为空。 */
+    /** Legacy wire fallback; clients render localized [loadDetail] instead. */
     val loadError: String = "",
+    val loadDetail: PluginDiagnostic? = null,
     val resolverUrlConflicts: List<PluginResolverUrlConflict> = emptyList(),
 ) {
     val loadFailed: Boolean get() = loadStatus == "Failed"
@@ -117,6 +119,16 @@ data class PluginDto(
                 subscriptionProviderIds = v.strings("subscriptionProviderIds"),
                 loadStatus = v.str("loadStatus", "Loaded"),
                 loadError = v.str("loadError"),
+                loadDetail = v["loadDetail"].let { detail ->
+                    detail.strOrNull("kind")?.let { kind ->
+                        PluginDiagnostic(
+                            kind = kind,
+                            path = detail.strOrNull("path"),
+                            line = detail.longOrNull("line")?.takeIf { it in 0L..UInt.MAX_VALUE.toLong() }?.toUInt(),
+                            column = detail.longOrNull("column")?.takeIf { it in 0L..UInt.MAX_VALUE.toLong() }?.toUInt(),
+                        )
+                    }
+                },
                 resolverUrlConflicts = v.list("resolverUrlConflicts").mapNotNull { conflict ->
                     PluginResolverUrlConflict(
                         conflict.strOrNull("pattern") ?: return@mapNotNull null,

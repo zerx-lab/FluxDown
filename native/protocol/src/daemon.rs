@@ -2377,9 +2377,12 @@ pub struct PluginDto {
     /// `Loaded` / `Failed`；与 `enabled` 独立，手动禁用的插件仍可能已加载。
     #[serde(default = "default_plugin_load_status")]
     pub load_status: String,
-    /// 加载失败的可读原因；成功时为空。
+    /// Generic safe fallback for clients that do not understand `loadDetail`.
     #[serde(default)]
     pub load_error: String,
+    /// Redacted load failure category and safe arguments; omitted for loaded plugins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load_detail: Option<crate::PluginFailureDetail>,
     /// manifest `contributes`：视图 / 命令 / 嗅探规则贡献点。
     #[serde(default)]
     pub contributions: PluginContributionsDto,

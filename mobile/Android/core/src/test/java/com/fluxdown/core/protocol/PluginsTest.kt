@@ -1,5 +1,6 @@
 package com.fluxdown.core.protocol
 
+import com.fluxdown.core.host.PluginDiagnostic
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -44,7 +45,8 @@ class PluginsTest {
           }],
           "settingsValues": {"quality": "hd"},
           "permissions": ["ffmpeg"], "authSupported": true, "subscriptionProviderIds": ["p"],
-          "loadStatus": "Failed", "loadError": "boom", "source": "private"
+          "loadStatus": "Failed", "loadError": "boom", "source": "private",
+          "loadDetail": {"kind": "scriptCompileFailedAt", "line": 12, "column": 3}
         }, {
           "identity": "min", "name": "Min", "version": "0.0.1", "enabled": false, "devMode": true,
           "disabledReason": "None", "settings": [], "settingsValues": {}
@@ -54,6 +56,7 @@ class PluginsTest {
         assertEquals(2, plugins.size)
         assertTrue(plugins[0].loadFailed)
         assertEquals("private", plugins[0].source)
+        assertEquals(PluginDiagnostic("scriptCompileFailedAt", null, 12u, 3u), plugins[0].loadDetail)
         assertEquals("hd", plugins[0].settings[0].defaultValue)
         assertEquals("string", plugins[0].settings[0].settingType)
         assertEquals(1.0, plugins[0].settings[1].min)
@@ -64,10 +67,30 @@ class PluginsTest {
         // 缺省字段：loadStatus 默认 Loaded，其余集合为空。
         assertEquals("Loaded", plugins[1].loadStatus)
         assertFalse(plugins[1].loadFailed)
+        assertNull(plugins[1].loadDetail)
         assertEquals("", plugins[1].source)
         assertTrue(plugins[1].permissions.isEmpty())
         assertFalse(plugins[1].authSupported)
         assertTrue(plugins[1].description.isEmpty())
+    }
+
+    @Test
+    fun pluginLoadDetailToleratesOlderAndFutureDaemons() {
+        val base = """"identity":"x","name":"X","version":"1","enabled":true,"loadStatus":"Failed","loadError":"/private/raw-daemon-error""""
+        fun plugin(extra: String = "") = PluginDto.fromJson(Json.parse("{$base$extra}"))!!
+
+        assertTrue(plugin().loadFailed)
+        assertNull(plugin().loadDetail)
+        assertNull(plugin(""","loadDetail":null""").loadDetail)
+        assertNull(plugin(""","loadDetail":{}""").loadDetail)
+        assertEquals(
+            PluginDiagnostic("futureDiagnostic", "private-path", null, null),
+            plugin(""","loadDetail":{"kind":"futureDiagnostic","path":"private-path"}""").loadDetail,
+        )
+        assertEquals(
+            PluginDiagnostic("missingFile", "main.lua", null, null),
+            plugin(""","loadDetail":{"kind":"missingFile","path":"main.lua"}""").loadDetail,
+        )
     }
 
     @Test

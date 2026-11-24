@@ -12,6 +12,7 @@ import com.fluxdown.core.host.ImportProgress
 import com.fluxdown.core.host.ImportRetry
 import com.fluxdown.core.host.ImportSummary
 import com.fluxdown.core.host.ImportUpdate
+import com.fluxdown.core.host.PluginDiagnostic
 import com.fluxdown.core.model.BtFile
 import com.fluxdown.core.model.Category
 import com.fluxdown.core.model.CloudDevice
@@ -62,12 +63,15 @@ internal suspend inline fun <T> guarded(block: () -> T): T = try {
 }
 
 internal fun FluxException.toHost(): HostException = when (this) {
-    is FluxException.Rpc -> HostException(code.toCore(), reason, retryable, detail, this)
+    is FluxException.Rpc -> HostException(code.toCore(), reason, retryable, detail, this, pluginDiagnostic?.toCore())
     is FluxException.Transport -> HostException(HostErrorCode.Unavailable, null, true, detail, this)
     is FluxException.Closed -> HostException(HostErrorCode.Cancelled, null, false, "session closed", this)
 }
 
-internal fun HostErrorDto.toHost(): HostException = HostException(code.toCore(), reason, retryable, message)
+internal fun HostErrorDto.toHost(): HostException =
+    HostException(code.toCore(), reason, retryable, message, pluginDiagnostic = pluginDiagnostic?.toCore())
+
+private fun PluginDiagnosticDto.toCore() = PluginDiagnostic(kind, path, line, column)
 
 internal fun ErrorCodeDto.toCore(): HostErrorCode = when (this) {
     ErrorCodeDto.PROTOCOL_INCOMPATIBLE -> HostErrorCode.ProtocolIncompatible
@@ -466,7 +470,7 @@ internal fun ImportBatch.toDto() = ImportBatchDto(
 
 /** 单条拒绝没有文案（`message` 只带违规字段名）：空串按「无说明」处理，由 reason / code 兜底。 */
 internal fun HostErrorDto.toImportError(): HostException =
-    HostException(code.toCore(), reason, retryable, message.ifEmpty { null })
+    HostException(code.toCore(), reason, retryable, message.ifEmpty { null }, pluginDiagnostic = pluginDiagnostic?.toCore())
 
 internal fun ImportProgressDto.toCore() = ImportProgress(
     total = total.toInt(),

@@ -185,7 +185,7 @@ internal class ExtensionsModel(val container: AppContainer, val hostId: String) 
             env.toast(env.text(R.string.pluginOpReloadSuccess), FluxToastKind.Success)
             noteMissing(InstalledPlugin.fromJson(result))
         } catch (e: HostException) {
-            env.toast(env.text(R.string.pluginOpReloadFailed, "message" to env.error(e)), FluxToastKind.Error)
+            env.showPluginFailure(R.string.pluginOpReloadFailed, e)
         }
     }
 
@@ -263,7 +263,7 @@ internal class ExtensionsModel(val container: AppContainer, val hostId: String) 
                 noteResolverConflicts(target, result.identity)
                 noteMissing(result)
             } catch (e: HostException) {
-                env.toast(env.text(R.string.pluginOpInstallFailed, "message" to env.error(e)), FluxToastKind.Error)
+                env.showPluginFailure(R.string.pluginOpInstallFailed, e)
             } finally {
                 installPhase = null
             }
@@ -397,7 +397,7 @@ internal class ExtensionsModel(val container: AppContainer, val hostId: String) 
                     }
                 }
                 val res = if (request.isUpdate) R.string.pluginOpUpdateFailed else R.string.pluginOpInstallFailed
-                env.toast(env.text(res, "message" to env.error(e)), FluxToastKind.Error)
+                env.showPluginFailure(res, e)
             } finally {
                 marketPending = marketPending - entry.pluginId
             }

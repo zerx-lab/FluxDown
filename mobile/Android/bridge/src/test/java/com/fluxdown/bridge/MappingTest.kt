@@ -10,6 +10,7 @@ import com.fluxdown.core.host.ImportProgress
 import com.fluxdown.core.host.ImportRetry
 import com.fluxdown.core.host.ImportRules
 import com.fluxdown.core.host.ImportUpdate
+import com.fluxdown.core.host.PluginDiagnostic
 import com.fluxdown.core.model.BtFile
 import com.fluxdown.core.model.FileExistsAction
 import com.fluxdown.core.model.QueueOrderEntry
@@ -40,11 +41,19 @@ class MappingTest {
 
     @Test
     fun rpcExceptionKeepsReasonAndRetryable() {
-        val host = FluxException.Rpc(ErrorCodeDto.CONFLICT, "revisionConflict", true, "stale revision").toHost()
+        val host = FluxException.Rpc(ErrorCodeDto.CONFLICT, "revisionConflict", true, "stale revision", null).toHost()
         assertEquals(HostErrorCode.Conflict, host.code)
         assertEquals("revisionConflict", host.reason)
         assertTrue(host.retryable)
         assertEquals("stale revision", host.message)
+        assertNull(host.pluginDiagnostic)
+    }
+
+    @Test
+    fun rpcExceptionPreservesPluginCompileLocation() {
+        val diagnostic = PluginDiagnosticDto("scriptCompileFailedAt", null, 7u, 12u)
+        val host = FluxException.Rpc(ErrorCodeDto.INVALID_ARGUMENT, "pluginPackageInvalid", false, "raw detail", diagnostic).toHost()
+        assertEquals(PluginDiagnostic("scriptCompileFailedAt", null, 7u, 12u), host.pluginDiagnostic)
     }
 
     @Test
@@ -58,10 +67,12 @@ class MappingTest {
 
     @Test
     fun fatalSignalCarriesTheError() {
-        val signal = HostSignalDto.Fatal(HostErrorDto(ErrorCodeDto.UNAUTHORIZED, null, false, "bad key")).toCore()
+        val diagnostic = PluginDiagnosticDto("missingFile", "resolver.lua", null, null)
+        val signal = HostSignalDto.Fatal(HostErrorDto(ErrorCodeDto.UNAUTHORIZED, null, false, "bad key", diagnostic)).toCore()
         val error = (signal as HostSignal.Fatal).error
         assertEquals(HostErrorCode.Unauthorized, error.code)
         assertEquals("bad key", error.message)
+        assertEquals(PluginDiagnostic("missingFile", "resolver.lua", null, null), error.pluginDiagnostic)
         assertSame(HostSignal.Stale, HostSignalDto.Stale.toCore())
     }
 
@@ -293,7 +304,7 @@ class MappingTest {
 
     @Test
     fun importSummaryMapsFirstErrorWithoutEmptyMessage() {
-        val rejected = HostErrorDto(ErrorCodeDto.INVALID_ARGUMENT, "invalidChecksum", false, "")
+        val rejected = HostErrorDto(ErrorCodeDto.INVALID_ARGUMENT, "invalidChecksum", false, "", null)
         val summary = (
             ImportUpdateDto.Finished(ImportSummaryDto(300u, 299u, 1u, 0u, false, rejected, listOf(7u))).toCore(emptyList())
                 as ImportUpdate.Finished

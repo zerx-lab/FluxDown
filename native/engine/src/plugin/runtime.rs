@@ -349,7 +349,7 @@ pub enum PluginLogLevel {
 }
 
 /// 插件系统错误。`Overloaded`/`Timeout`/`MemoryLimitExceeded` 是 fail-closed 触发点。
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, Clone)]
 pub enum PluginError {
     #[error("manifest 非法: {0}")]
     ManifestInvalid(String),

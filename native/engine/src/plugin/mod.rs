@@ -36,6 +36,7 @@ pub mod consent;
 #[cfg(test)]
 mod consent_tests;
 pub mod dependencies;
+mod diagnostic;
 pub mod images;
 pub mod install;
 pub mod manager;
@@ -52,6 +53,7 @@ pub mod semver;
 mod setting_localization;
 pub mod sniff_pack;
 mod tool_path;
+pub use diagnostic::PluginFailureDiagnostic;
 pub use manager::routing;
 pub use manager::{
     DisabledReason, LoadedPlugin, PluginInfo, PluginLoadStatus, PluginManager, SOURCE_PRIVATE,
