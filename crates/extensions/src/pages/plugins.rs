@@ -2220,6 +2220,14 @@ mod tests {
         fn call(&self, _: &'static str, _: serde_json::Value) -> PortFuture<serde_json::Value> {
             Box::pin(async { Err(RpcErrorData::new(ApplicationErrorCode::Unavailable, false)) })
         }
+
+        fn feedback(
+            &self,
+            _: String,
+            _: Option<serde_json::Value>,
+        ) -> PortFuture<serde_json::Value> {
+            Box::pin(async { Err(RpcErrorData::new(ApplicationErrorCode::Unavailable, false)) })
+        }
     }
 
     #[gpui::test]
