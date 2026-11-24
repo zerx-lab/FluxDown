@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::{
     cell::{Cell, Ref, RefCell},
     cmp::Ordering,
@@ -6,7 +7,6 @@ use std::{
     rc::Rc,
     time::{Duration, Instant},
 };
-use std::collections::BTreeMap;
 
 use fluxdown_protocol::{RemoteCommandAction, RemoteCommandParams, RemoteTaskStatus};
 use fluxdown_ui_components::{
