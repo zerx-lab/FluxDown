@@ -131,6 +131,23 @@ async fn fixture(
     let dir = std::env::temp_dir().join(format!("fluxdown_exists_{tag}_{}", Uuid::new_v4()));
     std::fs::create_dir_all(&dir).expect("create fixture dir");
     let db = Db::connect("sqlite::memory:").await.expect("connect db");
+    let (mgr, done_rx) = fixture_manager(&db, &dir, max_concurrent, selector, behavior);
+    Fixture {
+        mgr,
+        db,
+        done_rx,
+        dir,
+        base_url: hang_server().await,
+    }
+}
+
+fn fixture_manager(
+    db: &Db,
+    dir: &Path,
+    max_concurrent: usize,
+    selector: Arc<dyn HostSelection>,
+    behavior: FileExistsBehavior,
+) -> (DownloadManager, mpsc::Receiver<TaskDone>) {
     let mut mgr = DownloadManager::new(
         db.clone(),
         DownloadManagerConfig {
@@ -150,13 +167,7 @@ async fn fixture(
     .expect("construct manager");
     mgr.set_file_exists_behavior(behavior);
     let done_rx = mgr.take_done_rx().expect("done receiver");
-    Fixture {
-        mgr,
-        db,
-        done_rx,
-        dir,
-        base_url: hang_server().await,
-    }
+    (mgr, done_rx)
 }
 
 impl Fixture {
@@ -601,6 +612,115 @@ async fn checksum_worker_timeout_keeps_candidate_and_foreign_partial() {
     tokio::join!(check(false), check(true));
 }
 
+#[cfg(any(unix, windows))]
+#[tokio::test]
+async fn checksum_delete_retries_an_owned_partial_after_timeout() {
+    async fn check(batch: bool) {
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt as _;
+
+        // On Unix, root can unlink from a read-only directory.
+        #[cfg(unix)]
+        // SAFETY: geteuid takes no arguments and has no memory preconditions.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+
+        let (selector, _answers) = FakeSelector::new(false);
+        let mut fx = fixture(
+            "checksum_delete_retry",
+            1,
+            selector,
+            FileExistsBehavior::Rename,
+        )
+        .await;
+        let mut spec = fx.spec("owned.bin");
+        spec.checksum = CHECKSUM.into();
+        spec.start_paused = true;
+        let id = fx.mgr.create_task(spec).await.expect("create paused");
+        let partial = format!("owned.bin{}", downloader::TEMP_EXT);
+        fx.write_existing(&partial, b"owned");
+        let path = fx.dir.join(partial);
+        lock_reserved(&fx.mgr.reserved_temp_paths).insert(path.clone());
+        fx.mgr.checksum_preludes.insert(
+            id.clone(),
+            Arc::new(Mutex::new(ChecksumPartial::Reserved {
+                path: path.clone(),
+                hls_http_fallback: false,
+            })),
+        );
+        fx.mgr.active_tasks.insert(
+            id.clone(),
+            ActiveTaskEntry {
+                token: CancellationToken::new(),
+                generation: 1,
+                handle: Some(tokio::spawn(std::future::pending())),
+                is_bt: false,
+                queue_id: String::new(),
+            },
+        );
+
+        #[cfg(unix)]
+        let original = {
+            let permissions = std::fs::metadata(&fx.dir)
+                .expect("fixture dir")
+                .permissions();
+            std::fs::set_permissions(
+                &fx.dir,
+                std::fs::Permissions::from_mode(permissions.mode() & !0o222),
+            )
+            .expect("deny unlink");
+            permissions
+        };
+        #[cfg(windows)]
+        let locked = {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+            std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                .open(&path)
+                .expect("deny delete sharing")
+        };
+
+        let first_failed = if batch {
+            fx.mgr
+                .delete_tasks_batch(std::slice::from_ref(&id), false)
+                .await
+                .is_ok_and(|outcome| outcome.deleted == 0 && outcome.failed == 1)
+        } else {
+            matches!(
+                fx.mgr.delete_task(&id, false).await,
+                Err(DeleteTaskError::Cleanup(_))
+            )
+        };
+        #[cfg(unix)]
+        std::fs::set_permissions(&fx.dir, original).expect("restore unlink permissions");
+        #[cfg(windows)]
+        drop(locked);
+
+        assert!(first_failed, "the blocked unlink must fail the deletion");
+        assert!(fx.db.load_task_by_id(&id).await.expect("load").is_some());
+        assert_eq!(std::fs::read(&path).expect("partial remains"), b"owned");
+        assert!(!lock_reserved(&fx.mgr.reserved_temp_paths).contains(&path));
+        if batch {
+            let outcome = fx
+                .mgr
+                .delete_tasks_batch(std::slice::from_ref(&id), false)
+                .await
+                .expect("retry batch delete");
+            assert_eq!((outcome.deleted, outcome.failed), (1, 0));
+        } else {
+            fx.mgr.delete_task(&id, false).await.expect("retry delete");
+        }
+        assert!(!path.exists(), "retry must remove the original partial");
+        assert!(fx.db.load_task_by_id(&id).await.expect("load").is_none());
+        fx.mgr.shutdown().await;
+        std::fs::remove_dir_all(&fx.dir).expect("cleanup");
+    }
+    tokio::join!(check(false), check(true));
+}
+
 #[tokio::test]
 async fn checksum_task_with_zero_recorded_bytes_cleans_its_own_partial() {
     async fn check(batch: bool) {
@@ -826,6 +946,15 @@ async fn checksum_task_without_claim_or_checkpoint_preserves_same_name_partial()
 
 #[tokio::test]
 async fn checksum_hls_fallback_resumes_the_http_partial() {
+    check_hls_fallback_resume(false).await;
+}
+
+#[tokio::test]
+async fn checksum_hls_fallback_resumes_after_manager_restart() {
+    check_hls_fallback_resume(true).await;
+}
+
+async fn check_hls_fallback_resume(restart: bool) {
     use sha2::{Digest as _, Sha256};
     use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
 
@@ -945,6 +1074,12 @@ async fn checksum_hls_fallback_resumes_the_http_partial() {
     })
     .await;
     assert_eq!(fx.status(&id).await, 2);
+    if restart {
+        fx.mgr.shutdown().await;
+        let (selector, _answers) = FakeSelector::new(false);
+        (fx.mgr, fx.done_rx) =
+            fixture_manager(&fx.db, &fx.dir, 1, selector, FileExistsBehavior::Rename);
+    }
 
     fx.mgr.resume_task(&id).await;
     fx.pump_until_status(&id, 3).await;

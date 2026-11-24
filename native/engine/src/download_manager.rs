@@ -1200,7 +1200,14 @@ fn task_has_started(status: i32, downloaded_bytes: i64) -> bool {
 /// object at that name is still the one left by their previous run.
 enum ChecksumPartial {
     Unclaimed,
-    Reserved(PathBuf),
+    Reserved {
+        path: PathBuf,
+        hls_http_fallback: bool,
+    },
+    Aborted {
+        path: PathBuf,
+        hls_http_fallback: bool,
+    },
     Retained {
         path: PathBuf,
         file: Arc<std::fs::File>,
@@ -1216,10 +1223,13 @@ fn checksum_temp_path(task: &TaskInfo) -> Option<PathBuf> {
     Some(path.into())
 }
 
-async fn open_checksum_partial(path: PathBuf) -> Option<std::fs::File> {
+async fn open_checksum_partial(path: PathBuf) -> std::io::Result<Option<std::fs::File>> {
     tokio::task::spawn_blocking(move || {
-        if !std::fs::symlink_metadata(&path).ok()?.is_file() {
-            return None;
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_file() => {}
+            Ok(_) => return Ok(None),
+            Err(error) if path_is_absent(&error) => return Ok(None),
+            Err(error) => return Err(error),
         }
         let mut options = std::fs::OpenOptions::new();
         options.read(true);
@@ -1228,48 +1238,100 @@ async fn open_checksum_partial(path: PathBuf) -> Option<std::fs::File> {
             &mut options,
             libc::O_NONBLOCK | libc::O_NOFOLLOW,
         );
-        let file = options.open(path).ok()?;
-        file.metadata().ok()?.is_file().then_some(file)
+        let file = match options.open(path) {
+            Ok(file) => file,
+            Err(error) if path_is_absent(&error) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        Ok(file.metadata()?.is_file().then_some(file))
     })
     .await
-    .ok()
-    .flatten()
+    .map_err(std::io::Error::other)?
 }
 
 async fn retain_checksum_partial(claim: &ChecksumClaim, path: &Path, hls_http_fallback: bool) {
     let retained = match open_checksum_partial(path.to_owned()).await {
-        Some(file) => ChecksumPartial::Retained {
+        Ok(Some(file)) => ChecksumPartial::Retained {
             path: path.to_owned(),
             file: Arc::new(file),
             hls_http_fallback,
         },
-        None => ChecksumPartial::Unclaimed,
+        _ => ChecksumPartial::Unclaimed,
     };
-    *claim.lock().unwrap_or_else(|error| error.into_inner()) = retained;
+    let mut claim = claim.lock().unwrap_or_else(|error| error.into_inner());
+    if !matches!(*claim, ChecksumPartial::Aborted { .. }) {
+        *claim = retained;
+    }
 }
 
-fn release_aborted_checksum_reservation(claim: &ChecksumClaim, reserved: &Mutex<HashSet<PathBuf>>) {
+/// Release an aborted worker's reservation without discarding identity needed
+/// after a failed unlink. If the file cannot be inspected yet (e.g. a Windows
+/// sharing violation), keep the reservation until a delete retry can inspect it.
+async fn finish_aborted_checksum_claim(
+    claim: &ChecksumClaim,
+    reserved: &Mutex<HashSet<PathBuf>>,
+    timed_out: bool,
+) -> std::io::Result<()> {
+    let (path, hls_http_fallback) = {
+        let mut claim = claim.lock().unwrap_or_else(|error| error.into_inner());
+        match &*claim {
+            ChecksumPartial::Retained { path, .. } if timed_out => {
+                lock_reserved(reserved).remove(path);
+                return Ok(());
+            }
+            ChecksumPartial::Reserved {
+                path,
+                hls_http_fallback,
+            } if timed_out => {
+                let (path, hls_http_fallback) = (path.clone(), *hls_http_fallback);
+                *claim = ChecksumPartial::Aborted {
+                    path: path.clone(),
+                    hls_http_fallback,
+                };
+                (path, hls_http_fallback)
+            }
+            ChecksumPartial::Aborted {
+                path,
+                hls_http_fallback,
+            } => (path.clone(), *hls_http_fallback),
+            _ => return Ok(()),
+        }
+    };
+    let file = open_checksum_partial(path.clone()).await?;
     let mut claim = claim.lock().unwrap_or_else(|error| error.into_inner());
-    if let ChecksumPartial::Reserved(path) | ChecksumPartial::Retained { path, .. } = &*claim {
-        lock_reserved(reserved).remove(path);
-        *claim = ChecksumPartial::Unclaimed;
+    lock_reserved(reserved).remove(&path);
+    if matches!(*claim, ChecksumPartial::Aborted { .. }) {
+        *claim = match file {
+            Some(file) => ChecksumPartial::Retained {
+                path,
+                file: Arc::new(file),
+                hls_http_fallback,
+            },
+            None => ChecksumPartial::Unclaimed,
+        };
+    }
+    Ok(())
+}
+
+async fn check_checksum_partial(claim: &ChecksumClaim, path: &Path) -> std::io::Result<bool> {
+    let file = {
+        let claim = claim.lock().unwrap_or_else(|error| error.into_inner());
+        match &*claim {
+            ChecksumPartial::Reserved { path: reserved, .. } => return Ok(reserved == path),
+            ChecksumPartial::Retained {
+                path: saved, file, ..
+            } if saved == path => Arc::clone(file),
+            _ => return Ok(false),
+        }
+    };
+    match open_checksum_partial(path.to_owned()).await? {
+        Some(current) => crate::file_hash::same_file(&file, &current),
+        None => Ok(false),
     }
 }
 
 async fn checksum_partial_owned(claim: &ChecksumClaim, path: &Path) -> bool {
-    let file = {
-        let claim = claim.lock().unwrap_or_else(|error| error.into_inner());
-        match &*claim {
-            ChecksumPartial::Reserved(reserved) => return reserved == path,
-            ChecksumPartial::Retained {
-                path: saved, file, ..
-            } if saved == path => Arc::clone(file),
-            _ => return false,
-        }
-    };
-    open_checksum_partial(path.to_owned())
-        .await
-        .is_some_and(|current| crate::file_hash::same_file(&file, &current).unwrap_or(false))
+    check_checksum_partial(claim, path).await.unwrap_or(false)
 }
 
 async fn has_partial_checkpoint(db: &Db, task: &TaskInfo) -> bool {
@@ -1290,19 +1352,19 @@ async fn checksum_candidate_unclaimed(
     task: &TaskInfo,
     adopted: bool,
     claim: Option<&ChecksumClaim>,
-) -> bool {
+) -> std::io::Result<bool> {
     if task.checksum.is_empty() {
-        return false;
+        return Ok(false);
     }
     if adopted {
-        return true;
+        return Ok(true);
     }
     let Some(claim) = claim else {
-        return !has_partial_checkpoint(db, task).await;
+        return Ok(!has_partial_checkpoint(db, task).await);
     };
     match checksum_temp_path(task) {
-        Some(path) => !checksum_partial_owned(claim, &path).await,
-        None => true,
+        Some(path) => Ok(!check_checksum_partial(claim, &path).await?),
+        None => Ok(true),
     }
 }
 
@@ -1658,6 +1720,9 @@ async fn run_delete_cleanup(job: DeleteCleanup) -> Result<(), downloader::Downlo
         )
         .await?;
     }
+    if let Some(claim) = &files.checksum_claim {
+        finish_aborted_checksum_claim(claim, &reserved, handle_timed_out).await?;
+    }
     if files.cleanup_named_temps
         && let Some(claim) = &files.checksum_claim
     {
@@ -1665,7 +1730,7 @@ async fn run_delete_cleanup(job: DeleteCleanup) -> Result<(), downloader::Downlo
             .join(&files.file_name)
             .into_os_string();
         path.push(downloader::TEMP_EXT);
-        files.cleanup_named_temps = checksum_partial_owned(claim, Path::new(&path)).await;
+        files.cleanup_named_temps = check_checksum_partial(claim, Path::new(&path)).await?;
     }
     let result = {
         let _permit = file_permits.acquire().await.map_err(|error| {
@@ -1684,9 +1749,10 @@ async fn run_delete_cleanup(job: DeleteCleanup) -> Result<(), downloader::Downlo
         }
     };
     // F010：下载未按时退出时可能仍在写盘，延迟二次清理兜底孤立文件，与单任务路径一致。
-    if handle_timed_out && let Some(claim) = &files.checksum_claim {
-        release_aborted_checksum_reservation(claim, &reserved);
-    } else if handle_timed_out && (files.is_bt || files.cleanup_named_temps) {
+    if handle_timed_out
+        && files.checksum_claim.is_none()
+        && (files.is_bt || files.cleanup_named_temps)
+    {
         let deferred_delete_files = if files.is_bt {
             files.delete_files && files.owns_final
         } else {
@@ -3072,7 +3138,10 @@ async fn run_http_family_task(run: HttpFamilyRun) {
             let mut reserved_temp_path = reserved_temp_path.or(resume_reservation);
             if let (Some(claim), Some(path)) = (&checksum_prelude, &reserved_temp_path) {
                 *claim.lock().unwrap_or_else(|error| error.into_inner()) =
-                    ChecksumPartial::Reserved(path.clone());
+                    ChecksumPartial::Reserved {
+                        path: path.clone(),
+                        hls_http_fallback,
+                    };
             }
             let result = if use_ftp {
                 std::panic::AssertUnwindSafe(ftp_downloader::run_ftp_download(params))
@@ -3089,7 +3158,10 @@ async fn run_http_family_task(run: HttpFamilyRun) {
                             Ok(path) => {
                                 if let Some(claim) = &checksum_prelude {
                                     *claim.lock().unwrap_or_else(|error| error.into_inner()) =
-                                        ChecksumPartial::Reserved(path.clone());
+                                        ChecksumPartial::Reserved {
+                                            path: path.clone(),
+                                            hls_http_fallback: true,
+                                        };
                                 }
                                 if let Some(old_path) = reserved_temp_path.replace(path) {
                                     lock_reserved(&reserved_set).remove(&old_path);
@@ -13418,6 +13490,17 @@ impl DownloadManager {
             self.resume_task(task_id).await;
             return;
         }
+        if let Some(claim) = self.checksum_preludes.get(task_id)
+            && let Err(error) =
+                finish_aborted_checksum_claim(claim, &self.reserved_temp_paths, false).await
+        {
+            crate::logger::report_error(
+                "download-manager",
+                "inspect partial before restart",
+                &error,
+            );
+            return;
+        }
         // 在途哈希读的是即将被删除的上一次产物：立即停止并作废其结果。
         self.file_hash_jobs.cancel(task_id);
 
@@ -13467,7 +13550,8 @@ impl DownloadManager {
                 adopted_existing,
                 self.checksum_preludes.get(task_id),
             )
-            .await;
+            .await
+            .unwrap_or(true);
             if !unclaimed {
                 remove_file_retrying(task_id, &temp_path, was_active).await;
             }
@@ -14575,6 +14659,14 @@ impl DownloadManager {
             let fresh = if html_only {
                 task.downloaded_bytes == 0
             } else if let Some(claim) = self.checksum_preludes.get(task_id) {
+                if let Err(error) =
+                    finish_aborted_checksum_claim(claim, &self.reserved_temp_paths, false).await
+                {
+                    persist_task_failure(&tid, error.to_string(), &self.db, &self.progress_tx)
+                        .await;
+                    send_task_done(&done_tx, TaskDone::finished(tid, spawn_gen, None)).await;
+                    return;
+                }
                 if !restart_missing
                     && let Some(path) = checksum_temp_path(&task)
                     && checksum_partial_owned(claim, &path).await
@@ -14588,7 +14680,10 @@ impl DownloadManager {
                             ..
                         }
                     );
-                    *claim = ChecksumPartial::Reserved(path.clone());
+                    *claim = ChecksumPartial::Reserved {
+                        path: path.clone(),
+                        hls_http_fallback,
+                    };
                     resume_reservation = Some(path);
                 }
                 resume_reservation.is_none()
@@ -14598,6 +14693,36 @@ impl DownloadManager {
             } else {
                 self.never_started(&task, audio_url.is_some()).await
             };
+            // HTTP fallbacks keep their playlist extension on disk; genuine HLS
+            // downloads use a video name and their own checkpoint.
+            if use_hls
+                && !fresh
+                && !restart_missing
+                && task.status != 3
+                && !self.checksum_preludes.contains_key(task_id)
+                && !task.checksum.is_empty()
+                && hls_downloader::is_hls_url(&task.file_name)
+                && let Some(path) = checksum_temp_path(&task)
+            {
+                match self.db.get_config(&format!("hls_resume_{task_id}")).await {
+                    Ok(None) if lock_reserved(&self.reserved_temp_paths).insert(path.clone()) => {
+                        hls_http_fallback = true;
+                        resume_reservation = Some(path);
+                    }
+                    Ok(Some(_)) => {}
+                    result => {
+                        let message = match result {
+                            Err(error) => error.to_string(),
+                            Ok(_) => {
+                                format!("HTTP fallback partial is reserved: {}", path.display())
+                            }
+                        };
+                        persist_task_failure(&tid, message, &self.db, &self.progress_tx).await;
+                        send_task_done(&done_tx, TaskDone::finished(tid, spawn_gen, None)).await;
+                        return;
+                    }
+                }
+            }
 
             // 普通 HTTP 续传已持久化文件大小、分段进度与原始 validator。
             // 已知大小时直接从真实缺口发 Range 请求，避免 HEAD / Range 0-0 /
@@ -14776,8 +14901,18 @@ impl DownloadManager {
                 self.checksum_preludes
                     .insert(task_id.to_owned(), Arc::clone(&claim));
                 Some(claim)
+            } else if let Some(claim) = self.checksum_preludes.get(task_id) {
+                Some(Arc::clone(claim))
+            } else if let Some(path) = &resume_reservation {
+                let claim = Arc::new(Mutex::new(ChecksumPartial::Reserved {
+                    path: path.clone(),
+                    hls_http_fallback,
+                }));
+                self.checksum_preludes
+                    .insert(task_id.to_owned(), Arc::clone(&claim));
+                Some(claim)
             } else {
-                self.checksum_preludes.get(task_id).cloned()
+                None
             };
             tokio::spawn(
                 run_http_family_task(HttpFamilyRun {
@@ -15069,14 +15204,34 @@ impl DownloadManager {
             let adopted = self.skip_adopted(task_id).await;
             // Do not remove a sibling partial or schedule path-based cleanup merely
             // because the checksum prelude had a worker handle.
-            let cleanup_named_temps = cleanup_named_temps
-                && !checksum_candidate_unclaimed(
+            if let Some(claim) = self.checksum_preludes.get(task_id)
+                && let Err(error) = finish_aborted_checksum_claim(
+                    claim,
+                    &self.reserved_temp_paths,
+                    handle_timed_out,
+                )
+                .await
+            {
+                cleanup_error = Some(error.into());
+            }
+            let cleanup_named_temps = if cleanup_named_temps && cleanup_error.is_none() {
+                match checksum_candidate_unclaimed(
                     &self.db,
                     &t,
                     adopted,
                     self.checksum_preludes.get(task_id),
                 )
-                .await;
+                .await
+                {
+                    Ok(unclaimed) => !unclaimed,
+                    Err(error) => {
+                        cleanup_error = Some(error.into());
+                        false
+                    }
+                }
+            } else {
+                false
+            };
             let owns_final = task_owns_final_file(t.status) && !claimed_by_other && !adopted;
             let has_started = task_has_started(t.status, t.downloaded_bytes) && !adopted;
             // 若 handle 超时且文件名已知，记录信息以便后续延迟清理
@@ -15310,9 +15465,6 @@ impl DownloadManager {
                 if cleanup_error.is_none() {
                     cleanup_error = Some(e.into());
                 }
-            }
-            if handle_timed_out && let Some(claim) = self.checksum_preludes.get(task_id) {
-                release_aborted_checksum_reservation(claim, &self.reserved_temp_paths);
             }
         }
 
