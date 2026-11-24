@@ -7,7 +7,7 @@ use fluxdown_ui_settings::{
     UPDATE_PROMPT_WINDOW_HEIGHT, UPDATE_PROMPT_WINDOW_WIDTH, UpdatePromptEvent, UpdatePromptView,
 };
 use fluxdown_ui_shell::{AuxiliaryWindowView, auxiliary_window_options};
-use gpui::{App, AppContext as _, Bounds, WindowBounds, WindowKind, px, size};
+use gpui::{App, AppContext as _, WindowBounds, WindowKind, px, size};
 use gpui_component::Root;
 
 use crate::{
@@ -17,7 +17,7 @@ use crate::{
 
 const TITLE_KEY: &str = "softwareUpdate";
 
-/// 打开（或置前）提醒窗口，居中主窗口所在显示器（无主窗口时为主显示器）。
+/// 打开（或置前）提醒窗口，居中主窗口当前边界（无主窗口时为主显示器）。
 pub fn open(cx: &mut App) {
     let desktop = Desktop::global(cx);
     let translator = desktop.translator.clone();
@@ -28,14 +28,16 @@ pub fn open(cx: &mut App) {
     options.window_min_size = None;
     options.kind = WindowKind::Floating;
     options.is_resizable = false;
-    options.window_bounds = Some(WindowBounds::Windowed(Bounds::centered(
-        display_id,
+    let (display_id, bounds) = WindowRegistry::place_following_main(
         size(
             px(UPDATE_PROMPT_WINDOW_WIDTH),
             px(UPDATE_PROMPT_WINDOW_HEIGHT),
         ),
+        display_id,
         cx,
-    )));
+    );
+    options.display_id = display_id;
+    options.window_bounds = Some(WindowBounds::Windowed(bounds));
 
     WindowRegistry::open_or_focus(cx, WindowKey::UpdatePrompt, options, move |window, cx| {
         let view = cx.new(|cx| UpdatePromptView::new(translator.clone(), store, cx));

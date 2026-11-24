@@ -1,18 +1,21 @@
 //! 窗口边界记忆。
 //!
 //! - 主窗口 / 设置窗口 / 进度与完成窗口记「位置 + 尺寸 + 最大化 + 所在显示器」。
-//!   其余可调尺寸的辅助窗口只记尺寸，位置仍按各自规则居中（新建下载 / BT 选择跟随主窗口
-//!   所在显示器）。同类窗口共用一条记录：所有任务详情窗口共享一份尺寸。
+//!   其余可调尺寸的辅助窗口只记尺寸。有主窗口锚点时居中到主窗口最近一次有效边界，
+//!   而不是显示器的 `visible_bounds`（X11 那是整块虚拟桌面，中央会落在已断电的外接输出上）。
+//!   同类窗口共用一条记录：所有任务详情窗口共享一份尺寸。
 //! - gpui 的窗口坐标以「打开时 `display_id` 指定的显示器（缺省主显示器）」为基准解释：macOS
 //!   是相对该显示器的局部坐标，Windows / X11 是全局坐标。位置因此必须连同显示器 UUID（跨重启
 //!   稳定；`DisplayId` 不稳定）一起记录，恢复时传回 `display_id`，并只对那台显示器校验可见性。
+//!   X11 的 UUID 恒为全零，不是可用身份：不写入、匹配失败，也不保留绝对坐标。缺字段的旧记录
+//!   仍按主屏坐标解释。
 //! - 只在边界真实变化时写入：gpui 每次窗口激活 / 失焦都会触发边界观察。
 //! - 写设备本地偏好（`sync:false`），同键 500ms 防抖；退出时强制落盘在途值。
 
-use std::{collections::HashMap, rc::Rc, sync::Arc, time::Duration};
+use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::Arc, time::Duration};
 
 use gpui::{
-    App, Bounds, Context, Entity, Pixels, PlatformDisplay, Size, Window, WindowBounds,
+    App, Bounds, Context, DisplayId, Entity, Pixels, PlatformDisplay, Size, Window, WindowBounds,
     WindowOptions, point, px, size,
 };
 use serde_json::{Value, json};
@@ -24,6 +27,13 @@ const PERSIST_DEBOUNCE: Duration = Duration::from_millis(500);
 /// 持久化记录的合理边长范围（逻辑像素），不是显示器工作区或最小窗口尺寸。
 const MIN_EDGE: f32 = 100.;
 const MAX_EDGE: f32 = 20_000.;
+/// Linux 客户端装饰阴影。观察者挂上时 `client_inset` 可能尚未上报，Cinnamon 仍按这个值
+/// 把 `_GTK_FRAME_EXTENTS` 加进 X 窗口，每轴大约扩大两倍。
+const LINUX_CLIENT_INSET: f32 = 20.;
+/// 帧范围膨胀与请求尺寸的允许误差（逻辑像素）。
+const FRAME_EXTENT_TOLERANCE: f32 = 1.;
+/// 已落盘尺寸任一边超过默认值的这个倍数，视为帧范围反复计入后的污染记录。
+const POLLUTED_SIZE_FACTOR: f32 = 2.;
 
 /// 需要记忆边界的窗口类别。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,6 +67,14 @@ impl RememberedWindow {
     }
 }
 
+/// 主窗口最近一次有效边界。只记尺寸的窗口和跟随主窗口的对话框用它居中，
+/// 避免在主窗口自己的 update 里再 `handle.update`（那时窗口已被借走）。
+#[derive(Clone, Copy)]
+struct MainAnchor {
+    bounds: Bounds<Pixels>,
+    display_id: Option<DisplayId>,
+}
+
 /// 注册表持有的边界状态（按偏好键）。
 #[derive(Default)]
 pub(super) struct BoundsMemory {
@@ -64,6 +82,8 @@ pub(super) struct BoundsMemory {
     latest: HashMap<&'static str, Value>,
     /// 尚未落盘的边界（退出时强制写）。
     pending: HashMap<&'static str, Value>,
+    /// 主窗口最近一次有效边界。关窗后保留，对话框仍能落到那块输出上。
+    main_anchor: Option<MainAnchor>,
 }
 
 impl BoundsMemory {
@@ -76,8 +96,9 @@ impl WindowRegistry {
     /// 按记忆填写 `options.window_bounds`；无记录或记录失效时以 `default_size` 居中。
     ///
     /// 无记录时尊重 `options.display_id`；记位置的窗口优先回到记录所在的显示器。
-    /// 旧记录无 UUID 时仍按主显示器解释；记录屏断开则回调用方选择的屏或主屏。
-    /// 尺寸与最小尺寸均受目标显示器可用工作区约束，整个窗口始终可达。
+    /// 旧记录无 UUID 时仍按主显示器解释；全零 UUID 与显式 null 不是身份，不保留绝对坐标。
+    /// 记录屏断开则回调用方选择的屏或主屏。只记尺寸的窗口有主窗口锚点时，以锚点为居中区域。
+    /// 尺寸与最小尺寸均受目标区域约束，整个窗口始终可达。
     pub fn restore_bounds(
         which: RememberedWindow,
         options: &mut WindowOptions,
@@ -85,50 +106,65 @@ impl WindowRegistry {
         cx: &App,
     ) {
         let key = which.pref_key();
-        let stored = cx
-            .global::<Self>()
-            .bounds
-            .borrow()
-            .latest
-            .get(key)
-            .cloned()
-            .or_else(|| Desktop::pref(cx, key));
+        let (stored_latest, anchor) = {
+            let memory = cx.global::<Self>().bounds.borrow();
+            let anchor = if which.remembers_position() {
+                None
+            } else {
+                memory.main_anchor
+            };
+            (memory.latest.get(key).cloned(), anchor)
+        };
+        let stored = stored_latest.or_else(|| Desktop::pref(cx, key));
         let frame = which
             .remembers_position()
             .then(|| stored.as_ref().and_then(parse_frame))
             .flatten();
-        let remembered = frame
-            .as_ref()
-            .and_then(|frame| frame.display.as_deref())
-            .and_then(|uuid| {
-                cx.displays()
-                    .into_iter()
-                    .find(|display| display_uuid(display.as_ref()).as_deref() == Some(uuid))
-            });
+        let remembered = frame.as_ref().and_then(|frame| match &frame.display {
+            StoredDisplay::Known(uuid) => cx
+                .displays()
+                .into_iter()
+                .find(|display| display_uuid(display.as_ref()).as_deref() == Some(uuid.as_str())),
+            StoredDisplay::Legacy | StoredDisplay::Unavailable => None,
+        });
         let preferred = options.display_id.and_then(|id| cx.find_display(id));
         let (display, keep_position) =
             select_display(frame.as_ref(), remembered, preferred, cx.primary_display());
+        let wanted = if let Some(frame) = frame.as_ref() {
+            frame.bounds.size
+        } else if which.remembers_position() {
+            default_size
+        } else {
+            stored
+                .as_ref()
+                .and_then(parse_size)
+                .map(|size| remembered_size(size, default_size))
+                .unwrap_or(default_size)
+        };
+        let (area, display_id) = if let Some(anchor) = anchor {
+            (
+                Some(anchor.bounds),
+                anchor
+                    .display_id
+                    .or_else(|| display.as_ref().map(|display| display.id()))
+                    .or(options.display_id),
+            )
+        } else if let Some(display) = display.as_ref() {
+            (Some(display.visible_bounds()), Some(display.id()))
+        } else {
+            (None, None)
+        };
         // 不保留失效 DisplayId；窗口创建和几何计算必须使用同一台显示器。
-        options.display_id = display.as_ref().map(|display| display.id());
-        let wanted = frame.as_ref().map_or_else(
-            || {
-                if which.remembers_position() {
-                    default_size
-                } else {
-                    stored.as_ref().and_then(parse_size).unwrap_or(default_size)
-                }
-            },
-            |frame| frame.bounds.size,
-        );
-        let bounds = match display {
-            Some(display) => restore_in_area(
+        options.display_id = display_id;
+        let bounds = match area {
+            Some(area) => restore_in_area(
                 options,
                 wanted,
                 frame
                     .as_ref()
                     .filter(|_| keep_position)
                     .map(|frame| frame.bounds),
-                display.visible_bounds(),
+                area,
             ),
             None => Bounds::centered(None, wanted, cx),
         };
@@ -137,6 +173,26 @@ impl WindowRegistry {
             bounds,
             frame.as_ref().is_some_and(|frame| frame.maximized),
         ));
+    }
+
+    /// 有主窗口锚点时，把 `size` 居中到主窗口当前边界内，并返回该窗口的显示器。
+    ///
+    /// 没有锚点时回退到 `fallback_display`（缺省主显示器）的可见区域。X11 上那块区域是
+    /// 整块虚拟桌面，只在主窗口尚未出现过时使用。
+    pub fn place_following_main(
+        size: Size<Pixels>,
+        fallback_display: Option<DisplayId>,
+        cx: &App,
+    ) -> (Option<DisplayId>, Bounds<Pixels>) {
+        if let Some(anchor) = cx.global::<Self>().bounds.borrow().main_anchor {
+            let display_id = anchor.display_id.or(fallback_display);
+            (display_id, centered_in_area(size, anchor.bounds, None))
+        } else {
+            (
+                fallback_display,
+                Bounds::centered(fallback_display, size, cx),
+            )
+        }
     }
 
     /// 在根视图上挂窗口边界观察：边界真实变化后防抖写入设备本地偏好。
@@ -149,9 +205,14 @@ impl WindowRegistry {
     ) {
         let key = which.pref_key();
         let memory = Rc::clone(&cx.global::<Self>().bounds);
+        note_main_anchor(which, window, cx, &memory);
         let mut last = capture(which, window, cx);
+        let mut observed_size = (!which.remembers_position())
+            .then(|| parse_size(&last))
+            .flatten();
         root.update(cx, |_, cx: &mut Context<V>| {
             cx.observe_window_bounds(window, move |_, window, cx| {
+                note_main_anchor(which, window, cx, &memory);
                 let value = capture(which, window, cx);
                 if value == last {
                     return;
@@ -162,6 +223,21 @@ impl WindowRegistry {
                 if !is_restorable(which, &value) {
                     log::debug!("ignored unrestorable window bounds {key}: {value}");
                     return;
+                }
+                if !which.remembers_position()
+                    && let Some(next) = parse_size(&value)
+                {
+                    if observed_size.is_some_and(|previous| {
+                        is_frame_extent_inflation(previous, next, client_inset_px(window))
+                    }) {
+                        // 合成器把阴影加进 X 窗口后，ConfigureNotify 比上次大约每轴大 2×inset。
+                        // 更新观察基线以免下一步再被当成新尺寸落盘，但不写偏好。
+                        log::debug!("ignored frame-extent size inflation {key}: {value}");
+                        last = value;
+                        observed_size = Some(next);
+                        return;
+                    }
+                    observed_size = Some(next);
                 }
                 last = value.clone();
                 {
@@ -200,30 +276,39 @@ impl WindowRegistry {
     }
 }
 
+/// 落盘的显示器身份。
+#[derive(Debug, PartialEq)]
+enum StoredDisplay {
+    /// 旧记录没有 `display` 字段，沿用主屏坐标语义。
+    Legacy,
+    /// 平台报了身份但不可用（X11 全零 UUID，或显式 null）。不保留绝对坐标。
+    Unavailable,
+    Known(String),
+}
+
 /// 记录的窗口位置。
 #[derive(Debug, PartialEq)]
 struct StoredFrame {
     bounds: Bounds<Pixels>,
     maximized: bool,
-    /// 所在显示器 UUID；旧记录没有，按主显示器解释。
-    display: Option<String>,
+    display: StoredDisplay,
 }
 
 /// 返回目标显示器与是否仍可解释旧位置。无 UUID 的旧记录沿用主屏坐标语义；
-/// 有 UUID 但屏幕已断开时，旧坐标不能套用到调用方选择的新屏幕上。
+/// 全零 UUID 不是身份，不保留绝对坐标。有 UUID 但屏幕已断开时，旧坐标不能套用到新屏幕上。
 fn select_display<T>(
     frame: Option<&StoredFrame>,
     remembered: Option<T>,
     preferred: Option<T>,
     primary: Option<T>,
 ) -> (Option<T>, bool) {
-    match frame {
-        Some(frame) if frame.display.is_none() => (primary, true),
-        Some(_) => match remembered {
+    match frame.map(|frame| &frame.display) {
+        Some(StoredDisplay::Legacy) => (primary, true),
+        Some(StoredDisplay::Known(_)) => match remembered {
             Some(display) => (Some(display), true),
             None => (preferred.or(primary), false),
         },
-        None => (preferred.or(primary), false),
+        Some(StoredDisplay::Unavailable) | None => (preferred.or(primary), false),
     }
 }
 
@@ -303,7 +388,20 @@ fn fit_bounds(
 }
 
 fn display_uuid(display: &dyn PlatformDisplay) -> Option<String> {
-    display.uuid().ok().map(|uuid| uuid.to_string())
+    let text = display.uuid().ok()?.to_string();
+    (!is_nil_display_uuid(&text)).then_some(text)
+}
+
+fn is_nil_display_uuid(value: &str) -> bool {
+    let mut seen_zero = false;
+    for character in value.chars() {
+        match character {
+            '0' => seen_zero = true,
+            '-' => {}
+            _ => return false,
+        }
+    }
+    seen_zero
 }
 
 /// Windows 上最小化时 `window_bounds()` 按还原矩形报告 `Windowed`，
@@ -324,10 +422,24 @@ fn capture(which: RememberedWindow, window: &Window, cx: &App) -> Value {
     if !which.remembers_position() {
         return size_value(rect.size);
     }
-    let display = window
-        .display(cx)
-        .and_then(|display| display_uuid(display.as_ref()));
-    frame_value(rect, maximized, display.as_deref())
+    frame_value(rect, maximized, &captured_display(window, cx))
+}
+
+fn captured_display(window: &Window, cx: &App) -> StoredDisplay {
+    let Some(display) = window.display(cx) else {
+        return StoredDisplay::Legacy;
+    };
+    match display.uuid() {
+        Ok(uuid) => {
+            let text = uuid.to_string();
+            if is_nil_display_uuid(&text) {
+                StoredDisplay::Unavailable
+            } else {
+                StoredDisplay::Known(text)
+            }
+        }
+        Err(_) => StoredDisplay::Legacy,
+    }
 }
 
 /// 记录能否被 [`WindowRegistry::restore_bounds`] 读回；与恢复共用同一套校验。
@@ -343,7 +455,7 @@ fn size_value(size: Size<Pixels>) -> Value {
     json!({ "w": f64::from(size.width), "h": f64::from(size.height) })
 }
 
-fn frame_value(rect: Bounds<Pixels>, maximized: bool, display: Option<&str>) -> Value {
+fn frame_value(rect: Bounds<Pixels>, maximized: bool, display: &StoredDisplay) -> Value {
     let mut value = json!({
         "x": f64::from(rect.origin.x),
         "y": f64::from(rect.origin.y),
@@ -351,8 +463,16 @@ fn frame_value(rect: Bounds<Pixels>, maximized: bool, display: Option<&str>) -> 
         "h": f64::from(rect.size.height),
         "maximized": maximized,
     });
-    if let (Some(display), Some(object)) = (display, value.as_object_mut()) {
-        object.insert("display".to_owned(), Value::from(display));
+    if let Some(object) = value.as_object_mut() {
+        match display {
+            StoredDisplay::Legacy => {}
+            StoredDisplay::Unavailable => {
+                object.insert("display".to_owned(), Value::Null);
+            }
+            StoredDisplay::Known(uuid) => {
+                object.insert("display".to_owned(), Value::from(uuid.clone()));
+            }
+        }
     }
     value
 }
@@ -387,22 +507,82 @@ fn parse_frame(value: &Value) -> Option<StoredFrame> {
             .get("maximized")
             .and_then(Value::as_bool)
             .unwrap_or(false),
-        display: value
-            .get("display")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
+        display: parse_display(value),
     })
+}
+
+fn parse_display(value: &Value) -> StoredDisplay {
+    match value.get("display") {
+        None => StoredDisplay::Legacy,
+        Some(Value::Null) => StoredDisplay::Unavailable,
+        Some(Value::String(text)) if is_nil_display_uuid(text) => StoredDisplay::Unavailable,
+        Some(Value::String(text)) => StoredDisplay::Known(text.clone()),
+        Some(_) => StoredDisplay::Legacy,
+    }
+}
+
+fn note_main_anchor(
+    which: RememberedWindow,
+    window: &Window,
+    cx: &App,
+    memory: &RefCell<BoundsMemory>,
+) {
+    if which != RememberedWindow::Main {
+        return;
+    }
+    let bounds = window.bounds();
+    if f32::from(bounds.size.width) < MIN_EDGE || f32::from(bounds.size.height) < MIN_EDGE {
+        return;
+    }
+    memory.borrow_mut().main_anchor = Some(MainAnchor {
+        bounds,
+        display_id: window.display(cx).map(|display| display.id()),
+    });
+}
+
+fn client_inset_px(window: &Window) -> f32 {
+    let reported = window.client_inset().map(f32::from).unwrap_or(0.);
+    if reported > 0. {
+        reported
+    } else if cfg!(target_os = "linux") {
+        LINUX_CLIENT_INSET
+    } else {
+        0.
+    }
+}
+
+/// 合成器把客户端阴影加进窗口后，相对上次观察大约每轴 +2×inset。只拒绝这一步，
+/// 任意其它增量视为用户拖拽。
+fn is_frame_extent_inflation(previous: Size<Pixels>, next: Size<Pixels>, inset: f32) -> bool {
+    let step = inset * 2.;
+    if step < 1. {
+        return false;
+    }
+    near(f32::from(next.width) - f32::from(previous.width), step)
+        && near(f32::from(next.height) - f32::from(previous.height), step)
+}
+
+fn near(actual: f32, expected: f32) -> bool {
+    (actual - expected).abs() <= FRAME_EXTENT_TOLERANCE
+}
+
+/// 任一边超过默认值 [`POLLUTED_SIZE_FACTOR`] 倍时回退默认尺寸。用户主动拉大到两倍以内仍保留。
+fn remembered_size(stored: Size<Pixels>, default_size: Size<Pixels>) -> Size<Pixels> {
+    let polluted = f32::from(stored.width) > f32::from(default_size.width) * POLLUTED_SIZE_FACTOR
+        || f32::from(stored.height) > f32::from(default_size.height) * POLLUTED_SIZE_FACTOR;
+    if polluted { default_size } else { stored }
 }
 
 #[cfg(test)]
 mod tests {
     use gpui::{Bounds, WindowBounds, WindowOptions, point, px, size};
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use super::{
-        RememberedWindow, StoredFrame, centered_in_area, fit_bounds, fit_size, frame_value,
-        is_restorable, parse_frame, parse_size, resolve_maximized, restore_in_area,
-        restored_window_bounds, select_display, size_value,
+        RememberedWindow, StoredDisplay, StoredFrame, centered_in_area, fit_bounds, fit_size,
+        frame_value, is_frame_extent_inflation, is_restorable, parse_frame, parse_size,
+        remembered_size, resolve_maximized, restore_in_area, restored_window_bounds,
+        select_display, size_value,
     };
 
     #[test]
@@ -522,7 +702,7 @@ mod tests {
         let saved = StoredFrame {
             bounds: rect(20., 30., 600., 360.),
             maximized: false,
-            display: Some("saved-screen".into()),
+            display: StoredDisplay::Known("saved-screen".into()),
         };
         assert_eq!(
             select_display(Some(&saved), Some(2), Some(3), Some(1)),
@@ -542,7 +722,7 @@ mod tests {
             (None, false)
         );
         let legacy = StoredFrame {
-            display: None,
+            display: StoredDisplay::Legacy,
             ..saved
         };
         assert_eq!(
@@ -589,13 +769,17 @@ mod tests {
 
     #[test]
     fn frame_round_trips_with_display_and_maximized_flag() {
-        let value = frame_value(rect(-1800., 20., 900., 600.), true, Some("display-a"));
+        let value = frame_value(
+            rect(-1800., 20., 900., 600.),
+            true,
+            &StoredDisplay::Known("display-a".into()),
+        );
         assert_eq!(
             parse_frame(&value),
             Some(StoredFrame {
                 bounds: rect(-1800., 20., 900., 600.),
                 maximized: true,
-                display: Some("display-a".to_owned()),
+                display: StoredDisplay::Known("display-a".to_owned()),
             })
         );
         // 旧记录没有显示器字段。
@@ -605,7 +789,7 @@ mod tests {
             Some(StoredFrame {
                 bounds: rect(10., 20., 800., 600.),
                 maximized: false,
-                display: None,
+                display: StoredDisplay::Legacy,
             })
         );
     }
@@ -628,7 +812,7 @@ mod tests {
         for degenerate in [rect(0., 0., 0., 0.), rect(8., 0., -16., -39.)] {
             assert!(!is_restorable(
                 RememberedWindow::Main,
-                &frame_value(degenerate, false, Some("display-a"))
+                &frame_value(degenerate, false, &StoredDisplay::Known("display-a".into()))
             ));
             assert!(!is_restorable(
                 RememberedWindow::TaskDetail,
@@ -638,7 +822,7 @@ mod tests {
         let resized = rect(120., 80., 900., 560.);
         assert!(is_restorable(
             RememberedWindow::Settings,
-            &frame_value(resized, true, None)
+            &frame_value(resized, true, &StoredDisplay::Legacy)
         ));
         assert!(is_restorable(
             RememberedWindow::NewDownload,
@@ -662,5 +846,118 @@ mod tests {
             fit_size(size(px(800.), px(600.)), area, None),
             size(px(800.), px(600.))
         );
+    }
+
+    #[test]
+    fn nil_display_uuid_drops_position_unlike_a_legacy_record() {
+        let nil = "00000000-0000-0000-0000-000000000000";
+        let value = json!({
+            "x": 0.0,
+            "y": 0.0,
+            "w": 1920.0,
+            "h": 1040.0,
+            "maximized": true,
+            "display": nil,
+        });
+        let frame = parse_frame(&value).expect("nil uuid frame");
+        assert_eq!(frame.display, StoredDisplay::Unavailable);
+        assert!(frame.maximized);
+        // 全零 UUID 匹配失败：remembered 显示器不被采用，也不保留绝对坐标。
+        assert_eq!(
+            select_display(Some(&frame), Some(9), Some(3), Some(1)),
+            (Some(3), false)
+        );
+        let written = frame_value(
+            rect(0., 0., 1920., 1040.),
+            true,
+            &StoredDisplay::Unavailable,
+        );
+        assert!(written.get("display").is_some_and(Value::is_null));
+        assert!(!written.to_string().contains(nil));
+        assert_eq!(
+            parse_frame(&written).expect("null display frame").display,
+            StoredDisplay::Unavailable
+        );
+        let legacy = parse_frame(&json!({"x": 0.0, "y": 0.0, "w": 1920.0, "h": 1040.0}))
+            .expect("legacy frame");
+        assert_eq!(legacy.display, StoredDisplay::Legacy);
+        assert_eq!(
+            select_display(Some(&legacy), None, Some(3), Some(1)),
+            (Some(1), true)
+        );
+    }
+
+    #[test]
+    fn frame_extent_growth_is_not_persisted() {
+        let start = size(px(640.), px(530.));
+        let grown = |steps: f32| size(px(640. + 40. * steps), px(530. + 40. * steps));
+        assert_eq!(
+            persisted_after_observations(start, &[grown(1.), grown(2.)], 20.),
+            start
+        );
+        let resized = size(px(800.), px(620.));
+        assert_eq!(
+            persisted_after_observations(start, &[resized], 20.),
+            resized
+        );
+        // 忽略一次膨胀后，用户再拖到任意尺寸仍然落盘。
+        assert_eq!(
+            persisted_after_observations(start, &[grown(1.), resized], 20.),
+            resized
+        );
+        assert!(!is_frame_extent_inflation(start, grown(2.), 20.));
+    }
+
+    fn persisted_after_observations(
+        start: gpui::Size<gpui::Pixels>,
+        steps: &[gpui::Size<gpui::Pixels>],
+        inset: f32,
+    ) -> gpui::Size<gpui::Pixels> {
+        let mut saved = start;
+        let mut observed = start;
+        for &next in steps {
+            if !is_frame_extent_inflation(observed, next, inset) {
+                saved = next;
+            }
+            observed = next;
+        }
+        saved
+    }
+
+    #[test]
+    fn polluted_size_only_record_restores_the_default() {
+        let default = size(px(640.), px(530.));
+        assert_eq!(
+            remembered_size(size(px(1960.), px(1080.)), default),
+            default
+        );
+        assert_eq!(remembered_size(size(px(700.), px(1200.)), default), default);
+        assert_eq!(
+            remembered_size(size(px(800.), px(600.)), default),
+            size(px(800.), px(600.))
+        );
+        // 恰好两倍仍视为用户尺寸。
+        assert_eq!(
+            remembered_size(size(px(1280.), px(1060.)), default),
+            size(px(1280.), px(1060.))
+        );
+    }
+
+    #[test]
+    fn size_only_window_centers_inside_the_main_window_not_the_virtual_desktop() {
+        let desktop = rect(0., 0., 3840., 1080.);
+        let main = rect(1920., 40., 1280., 800.);
+        let wanted = size(px(640.), px(530.));
+        let mut options = WindowOptions::default();
+        let placed = restore_in_area(&mut options, wanted, None, main);
+        let on_desktop = centered_in_area(wanted, desktop, None);
+        assert!(f32::from(placed.origin.x) >= f32::from(main.origin.x));
+        assert!(
+            f32::from(placed.origin.x) + f32::from(placed.size.width)
+                <= f32::from(main.origin.x) + f32::from(main.size.width)
+        );
+        assert!(f32::from(placed.origin.y) >= f32::from(main.origin.y));
+        assert!(f32::from(on_desktop.origin.x) < f32::from(main.origin.x));
+        assert_ne!(placed.origin, on_desktop.origin);
     }
 }

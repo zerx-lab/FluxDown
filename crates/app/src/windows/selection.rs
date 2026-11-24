@@ -10,7 +10,7 @@ use fluxdown_protocol::{
 };
 use fluxdown_ui_downloads::{SelectionPlan, SelectionView};
 use fluxdown_ui_shell::{AuxiliaryWindowView, auxiliary_window_options};
-use gpui::{App, AppContext as _, Bounds, WindowBounds, WindowKind, px, size};
+use gpui::{App, AppContext as _, WindowBounds, WindowKind, px, size};
 use gpui_component::Root;
 
 use crate::{
@@ -143,11 +143,10 @@ fn open(cx: &mut App, request: SelectionRequestDto) {
     if is_bt {
         WindowRegistry::restore_bounds(RememberedWindow::BtSelection, &mut options, BT_SIZE, cx);
     } else {
-        options.window_bounds = Some(WindowBounds::Windowed(Bounds::centered(
-            display_id,
-            window_size,
-            cx,
-        )));
+        let (display_id, bounds) =
+            WindowRegistry::place_following_main(window_size, display_id, cx);
+        options.display_id = display_id;
+        options.window_bounds = Some(WindowBounds::Windowed(bounds));
     }
 
     let opened = WindowRegistry::open_or_focus(cx, key, options, move |window, cx| {
