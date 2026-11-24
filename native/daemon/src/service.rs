@@ -4045,22 +4045,32 @@ mod plugin_consent_audit_tests {
         let f = fixture().await;
         let src = f.base.join("dev");
         write_plugin(&src, &[]);
-        call(&f, method::DAEMON_PLUGIN_INSTALL_DEV, json!({"dirPath": src}))
-            .await
-            .unwrap();
+        call(
+            &f,
+            method::DAEMON_PLUGIN_INSTALL_DEV,
+            json!({"dirPath": src}),
+        )
+        .await
+        .unwrap();
 
         let path = src.join("manifest.json");
         let mut manifest: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         manifest["private-fixture-value"] = json!(true);
         std::fs::write(path, manifest.to_string()).unwrap();
 
-        let error = call(&f, method::DAEMON_PLUGIN_RELOAD_DEV, json!({"identity": ID}))
-            .await
-            .unwrap_err();
+        let error = call(
+            &f,
+            method::DAEMON_PLUGIN_RELOAD_DEV,
+            json!({"identity": ID}),
+        )
+        .await
+        .unwrap_err();
         let detail = json!({"kind": "manifestUnknownField"});
         assert_plugin_diagnostic(error, detail.clone());
 
-        let list = call(&f, method::DAEMON_PLUGIN_LIST, json!({})).await.unwrap();
+        let list = call(&f, method::DAEMON_PLUGIN_LIST, json!({}))
+            .await
+            .unwrap();
         let failed = list
             .as_array()
             .unwrap()

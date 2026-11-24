@@ -515,7 +515,9 @@ impl ExtensionsView {
                         .load_detail
                         .as_ref()
                         .and_then(|detail| plugin_detail_text(translator, detail))
-                        .unwrap_or_else(|| translator.text("pluginDiagnosticLoadFailed").to_owned());
+                        .unwrap_or_else(|| {
+                            translator.text("pluginDiagnosticLoadFailed").to_owned()
+                        });
                     let load_error_tooltip = load_error.clone();
                     this.child(
                         ui::meta_text(load_error, frame)
