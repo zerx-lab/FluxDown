@@ -25,6 +25,7 @@ export function PluginDetailDialog({
   detail,
   onClose,
   onAudit,
+  onFeedback,
   archiveRules,
   archiveDisabled = true,
   archiveBusy = false,
@@ -35,6 +36,8 @@ export function PluginDetailDialog({
   onClose: () => void
   /** 已安装插件才提供：打开该插件的审计记录。 */
   onAudit?: (identity: string) => void
+  /** 仅已安装插件提供反馈入口。 */
+  onFeedback?: () => void
   archiveRules?: PluginArchiveRulesDto | null
   archiveDisabled?: boolean
   archiveBusy?: boolean
@@ -56,10 +59,19 @@ export function PluginDetailDialog({
           onCancel={onClose}
           onOk={onClose}
           extra={
-            shown && onAudit ? (
-              <Button variant="outline" onClick={() => onAudit(shown.identity)}>
-                {t('pluginAuditOpenForPlugin')}
-              </Button>
+            shown && (onAudit || onFeedback) ? (
+              <div className="flex flex-wrap gap-2">
+                {onAudit ? (
+                  <Button variant="outline" onClick={() => onAudit(shown.identity)}>
+                    {t('pluginAuditOpenForPlugin')}
+                  </Button>
+                ) : null}
+                {onFeedback ? (
+                  <Button variant="outline" onClick={onFeedback}>
+                    {t('plugFeedbackTitle')}
+                  </Button>
+                ) : null}
+              </div>
             ) : undefined
           }
         />

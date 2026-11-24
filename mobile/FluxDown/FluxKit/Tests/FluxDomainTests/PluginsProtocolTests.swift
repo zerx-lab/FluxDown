@@ -25,7 +25,7 @@ struct PluginsProtocolTests {
           }],
           "settingsValues": {"quality": "hd"},
           "permissions": ["ffmpeg"], "authSupported": true, "subscriptionProviderIds": ["p"],
-          "loadStatus": "Failed", "loadError": "boom"
+          "loadStatus": "Failed", "loadError": "boom", "source": "private"
         }, {
           "identity": "min", "name": "Min", "version": "0.0.1", "enabled": false, "devMode": true,
           "disabledReason": "None", "settings": [], "settingsValues": {}
@@ -39,9 +39,11 @@ struct PluginsProtocolTests {
         #expect(plugins[0].settings[1].min == 1 && plugins[0].settings[1].max == 10)
         #expect(plugins[0].settings[1].options.isEmpty)
         #expect(plugins[0].disabledReason == "CircuitBreaker")
+        #expect(plugins[0].source == "private")
         // 缺省字段：loadStatus 默认 Loaded，其余集合为空。
         #expect(plugins[1].loadStatus == "Loaded" && !plugins[1].loadFailed)
         #expect(plugins[1].permissions.isEmpty && !plugins[1].authSupported && plugins[1].description.isEmpty)
+        #expect(plugins[1].source.isEmpty)
     }
 
     @Test func authAndMarketAndInstalledDecode() throws {

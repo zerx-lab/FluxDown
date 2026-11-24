@@ -59,13 +59,14 @@ import com.fluxdown.fluxui.theme.FluxTheme
 import kotlinx.coroutines.launch
 
 /**
- * 设置表单 / 登录 / 加载错误详情 Sheet 的路由：每次打开是一个新实例（刻意不用 data class，
+ * 设置表单 / 登录 / 加载错误详情 / 反馈 Sheet 的路由：每次打开是一个新实例（刻意不用 data class，
  * 以实例同一性区分「再次打开」），由页面持有、[PluginSheetHost] 呈现；按 identity 读取最新插件。
  */
 internal sealed class PluginSheet(val identity: String) {
     class Settings(identity: String) : PluginSheet(identity)
     class Auth(identity: String) : PluginSheet(identity)
     class LoadError(identity: String) : PluginSheet(identity)
+    class Feedback(identity: String) : PluginSheet(identity)
 }
 
 @Composable
@@ -79,6 +80,7 @@ internal fun PluginSheetHost(sheet: PluginSheet?, plugins: List<PluginDto>, onDi
         is PluginSheet.Settings -> PluginSettingsSheet(shown, visible = sheet === shown, plugin = plugin, onDismiss = onDismiss)
         is PluginSheet.Auth -> PluginAuthSheet(shown, visible = sheet === shown, plugin = plugin, onDismiss = onDismiss)
         is PluginSheet.LoadError -> PluginLoadErrorSheet(visible = sheet === shown, plugin = plugin, onDismiss = onDismiss)
+        is PluginSheet.Feedback -> PluginFeedbackSheet(shown, visible = sheet === shown, plugin = plugin, onDismiss = onDismiss)
     }
 }
 

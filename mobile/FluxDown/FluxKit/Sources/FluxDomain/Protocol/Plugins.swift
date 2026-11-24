@@ -108,6 +108,8 @@ public struct PluginDto: Codable, Sendable, Hashable, Identifiable {
     public var homepage: String
     public var enabled: Bool
     public var devMode: Bool
+    /// Empty for public/local/legacy installs; `private` for FluxCloud private installs.
+    public var source: String
     /// `None` / `Manual` / `CircuitBreaker`。
     public var disabledReason: String
     public var settings: [PluginSettingField]
@@ -135,6 +137,7 @@ public struct PluginDto: Codable, Sendable, Hashable, Identifiable {
         homepage: String = "",
         enabled: Bool = true,
         devMode: Bool = false,
+        source: String = "",
         disabledReason: String = "None",
         settings: [PluginSettingField] = [],
         settingsValues: [String: String] = [:],
@@ -152,6 +155,7 @@ public struct PluginDto: Codable, Sendable, Hashable, Identifiable {
         self.homepage = homepage
         self.enabled = enabled
         self.devMode = devMode
+        self.source = source
         self.disabledReason = disabledReason
         self.settings = settings
         self.settingsValues = settingsValues
@@ -172,6 +176,7 @@ public struct PluginDto: Codable, Sendable, Hashable, Identifiable {
         homepage = try c.decodeIfPresent(String.self, forKey: .homepage) ?? ""
         enabled = try c.decode(Bool.self, forKey: .enabled)
         devMode = try c.decodeIfPresent(Bool.self, forKey: .devMode) ?? false
+        source = try c.decodeIfPresent(String.self, forKey: .source) ?? ""
         disabledReason = try c.decodeIfPresent(String.self, forKey: .disabledReason) ?? "None"
         settings = try c.decodeIfPresent([PluginSettingField].self, forKey: .settings) ?? []
         settingsValues = try c.decodeIfPresent([String: String].self, forKey: .settingsValues) ?? [:]
