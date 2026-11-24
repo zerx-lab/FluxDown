@@ -13370,7 +13370,7 @@ impl DownloadManager {
         }
 
         let ids = [task.task_id];
-        let mut plans = self.plan_batch_deletion(&ids, true).await?;
+        let mut plans = self.plan_batch_deletion(&ids, true, false).await?;
         let mut files = plans.remove(task_id).ok_or_else(unavailable)?;
         if !files.owns_final {
             return Err(unavailable());
@@ -15054,6 +15054,33 @@ impl DownloadManager {
         task_ids: &[String],
         delete_files: bool,
     ) -> Result<BatchDeleteOutcome, crate::db::DbError> {
+        self.delete_task_batch_impl(task_ids, delete_files, false).await
+    }
+
+    pub async fn delete_unfinished_tasks(
+        &mut self,
+        task_ids: &[String],
+    ) -> Result<BatchDeleteOutcome, crate::db::DbError> {
+        let mut eligible = Vec::new();
+        for task in self.db.load_tasks_by_ids(task_ids).await? {
+            if matches!(task.status, 2 | 4)
+                && !self.active_tasks.contains_key(&task.task_id)
+                && !self.pending_pauses.contains_key(&task.task_id)
+            {
+                eligible.push(task.task_id);
+            }
+        }
+        let mut outcome = self.delete_task_batch_impl(&eligible, false, true).await?;
+        outcome.failed += task_ids.len() - eligible.len();
+        Ok(outcome)
+    }
+
+    async fn delete_task_batch_impl(
+        &mut self,
+        task_ids: &[String],
+        delete_files: bool,
+        unfinished_only: bool,
+    ) -> Result<BatchDeleteOutcome, crate::db::DbError> {
         // 数据搬移中的任务不删（文件正分散在新旧两处），按删除失败计。
         let moving = task_ids
             .iter()
@@ -15082,7 +15109,9 @@ impl DownloadManager {
             delete_files
         );
         // 预读成功后才动运行态：读库失败不会留下「已取消却未删除」的任务。
-        let mut plans = self.plan_batch_deletion(task_ids, delete_files).await?;
+        let mut plans = self
+            .plan_batch_deletion(task_ids, delete_files, unfinished_only)
+            .await?;
         // 任务行删除后就查不到组归属：先登记组成员目录，删除成功后清理留空的组目录。
         let group_dirs = if delete_files {
             self.group_dir_targets(task_ids).await
@@ -15258,6 +15287,7 @@ impl DownloadManager {
         &self,
         task_ids: &[String],
         delete_files: bool,
+        unfinished_only: bool,
     ) -> Result<HashMap<String, DeleteFiles>, crate::db::DbError> {
         let tasks = self.db.load_tasks_by_ids(task_ids).await?;
         let mut save_dirs: Vec<String> = tasks.iter().map(|task| task.save_dir.clone()).collect();
@@ -15288,6 +15318,21 @@ impl DownloadManager {
             // 最终产物认领判定（详见 task_owns_final_file）：未完成任务的 file_name
             // 可能是未 dedup 的原始名，指向早前同名任务留下的成品。
             let claimed = delete_files && claimed_by_other(&task.save_dir, &task.file_name);
+            let cleanup_named_temps = if unfinished_only && cleanup_named_temps {
+                let temp_name = format!("{}{}", task.file_name, downloader::TEMP_EXT);
+                let other_claim = [&task.file_name, &temp_name].into_iter().any(|name| {
+                    facts.file_owners
+                        .get(&(task.save_dir.clone(), name.clone()))
+                        .is_some_and(|owners| owners.iter().any(|id| id != &task.task_id))
+                });
+                let reserved = lock_reserved(&self.reserved_temp_paths)
+                    .contains(&Path::new(&task.save_dir).join(temp_name));
+                !adopted && is_safe_file_name(&task.file_name) && !other_claim && !reserved
+                    && (task.downloaded_bytes > 0
+                        || !self.db.load_segments(&task.task_id).await?.is_empty())
+            } else {
+                cleanup_named_temps
+            };
             let artifacts = if delete_files {
                 facts
                     .artifacts
@@ -15309,9 +15354,11 @@ impl DownloadManager {
                 owns_final: task_owns_final_file(task.status) && !claimed && !adopted,
                 has_started: task_has_started(task.status, task.downloaded_bytes) && !adopted,
                 claimed_by_other: claimed,
-                has_audio_sidecar: dash_downloader::is_dash_url(&task.url)
-                    || hls_downloader::is_hls_url(&task.url)
-                    || facts.has_audio_url.contains(&task.task_id),
+                // The baseline cannot prove ownership of a derived audio name.
+                has_audio_sidecar: !unfinished_only
+                    && (dash_downloader::is_dash_url(&task.url)
+                        || hls_downloader::is_hls_url(&task.url)
+                        || facts.has_audio_url.contains(&task.task_id)),
                 artifacts,
                 save_dir: task.save_dir,
                 file_name: task.file_name,

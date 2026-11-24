@@ -184,6 +184,9 @@ pub enum ActorOperation {
         task_ids: Vec<String>,
         delete_files: bool,
     },
+    CleanUnfinishedTasks {
+        task_ids: Vec<String>,
+    },
     SetTaskSeedLimits {
         task_id: String,
         ratio_limit_milli: i64,
@@ -1842,6 +1845,10 @@ async fn execute_operation(
             let ids = existing_task_ids(&engine.db, task_ids).await?;
             // 删除事实由 delete_tasks_batch 经 TasksDeleted 发布：大批量删除不再逐块推全量快照。
             batch_delete_result(engine.manager.delete_tasks_batch(&ids, delete_files).await)?;
+        }
+        ActorOperation::CleanUnfinishedTasks { task_ids } => {
+            let ids = existing_task_ids(&engine.db, task_ids).await?;
+            batch_delete_result(engine.manager.delete_unfinished_tasks(&ids).await)?;
         }
         ActorOperation::ResumeAll => {
             engine.manager.resume_all_eligible().await;

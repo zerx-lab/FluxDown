@@ -133,7 +133,8 @@ pub(crate) fn run() -> Result<RunOutcome, AppError> {
     let message = ActivateMessage {
         urls: launch.urls.clone(),
         files: launch.torrent_files.clone(),
-        activate: launch.activate_existing || !launch.capture_only,
+        activate: launch.activate_existing
+            || (!launch.capture_only && launch.progress_task.is_none()),
         settings: launch.settings,
         new_download: launch.new_download,
         progress_task: launch.progress_task.clone(),
@@ -422,6 +423,14 @@ pub(crate) fn run() -> Result<RunOutcome, AppError> {
             // 开机自启且托盘不可见（agent 判定没有其它入口时才拉起）：会话就绪后开最小化主窗口，
             // 新窗口不抢焦点。
             after_session_settled(cx, open_main_minimized);
+        } else if launch.progress_task.is_some() && !launch.activate_existing {
+            // A background launch still needs a main window in non-resident mode, but must not
+            // activate the app. An explicit reveal arriving while we connect takes precedence.
+            after_session_settled(cx, |cx| {
+                if !crate::windows::WindowRegistry::is_open(cx, &crate::windows::WindowKey::Main) {
+                    crate::windows::main::open_unfocused(cx);
+                }
+            });
         } else if launch.is_plain() {
             // 普通启动：本进程冷启动了服务时按「启动时最小化到托盘」决定；agent 早已驻留时
             // 这是用户在打开应用，直接开窗。

@@ -345,3 +345,72 @@ async fn delete_files_removes_hls_audio_sidecar_and_checkpoints() {
         eprintln!("best-effort test directory cleanup: {error}");
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unfinished_cleanup_keeps_outputs_and_rejects_active_and_completed_tasks() {
+    let work = std::env::temp_dir().join(format!("fluxdown-unfinished-{}", uniq()));
+    tokio::fs::create_dir_all(&work).await.expect("mkdir");
+    let save_dir = work.to_string_lossy().into_owned();
+    let mut engine = make_engine(&work).await;
+    let mut ids = Vec::new();
+    for (name, status) in [
+        ("paused", 2),
+        ("failed", 4),
+        ("completed", 3),
+        ("active", 1),
+    ] {
+        let id = create_later_task(&mut engine, &save_dir, name).await;
+        engine
+            .db
+            .update_task_status(&id, status, "")
+            .await
+            .expect("status");
+        engine
+            .db
+            .insert_segments(&id, &[(0, 0, 2)])
+            .await
+            .expect("checkpoint");
+        tokio::fs::write(work.join(name), FOREIGN_CONTENT)
+            .await
+            .expect("output");
+        tokio::fs::write(work.join(format!("{name}.fdownloading")), b"partial")
+            .await
+            .expect("partial");
+        ids.push(id);
+    }
+    let outcome = engine
+        .manager
+        .delete_unfinished_tasks(&ids)
+        .await
+        .expect("cleanup");
+    assert_eq!((outcome.deleted, outcome.failed), (2, 2));
+    for ((name, removed), id) in [
+        ("paused", true),
+        ("failed", true),
+        ("completed", false),
+        ("active", false),
+    ]
+    .into_iter()
+    .zip(&ids)
+    {
+        assert_eq!(
+            engine
+                .db
+                .load_task_by_id(id)
+                .await
+                .expect("record")
+                .is_none(),
+            removed
+        );
+        assert_eq!(work.join(format!("{name}.fdownloading")).exists(), !removed);
+        assert_eq!(
+            tokio::fs::read(work.join(name)).await.expect("output"),
+            FOREIGN_CONTENT
+        );
+    }
+    engine.manager.shutdown().await;
+    drop(engine);
+    tokio::fs::remove_dir_all(&work)
+        .await
+        .expect("cleanup fixture");
+}

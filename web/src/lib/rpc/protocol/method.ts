@@ -66,6 +66,7 @@ export const METHOD = {
   DAEMON_TASK_PAUSE_MANY: 'daemon.task.pauseMany',
   DAEMON_TASK_RESUME_MANY: 'daemon.task.resumeMany',
   DAEMON_TASK_DELETE_MANY: 'daemon.task.deleteMany',
+  DAEMON_TASK_CLEAN_UNFINISHED: 'daemon.task.cleanUnfinished',
 
   DAEMON_QUEUE_LIST: 'daemon.queue.list',
   DAEMON_QUEUE_CREATE: 'daemon.queue.create',

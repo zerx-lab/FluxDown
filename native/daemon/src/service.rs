@@ -653,6 +653,13 @@ impl DaemonService {
                 })
                 .await
             }
+            method::DAEMON_TASK_CLEAN_UNFINISHED => {
+                let params = parse_params::<DaemonTaskIdsParams>(params)?;
+                self.execute_unit(ActorOperation::CleanUnfinishedTasks {
+                    task_ids: params.task_ids,
+                })
+                .await
+            }
             method::DAEMON_QUEUE_LIST => {
                 to_value(self.events.inspect(|snapshot| snapshot.queues.clone()))
             }

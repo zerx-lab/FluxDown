@@ -2,12 +2,9 @@
 //! 标题随进度与导航刷新，可调整大小、可最小化；共用设备本地的尺寸、位置与显示器记忆。
 //! 开关时机由 [`crate::progress_windows`] 与 [`crate::completion_windows`] 决定。
 //!
-//! 层级：界面常是后台应用（下载由浏览器捕获 / 静默建成时浏览器在前台），只在本应用内排序
-//! 的窗口会压在浏览器下面。
-//! - 进度窗口（用户刚开始的下载）：连同应用一起置前（`bring_to_front`）。
-//! - 后台完成窗口：不抢焦点，macOS / Windows 用 `WindowKind::PopUp` 浮在所有应用之上
-//!   （macOS 为不激活应用的浮动面板，Windows 为 `WS_EX_TOPMOST`）；Linux X11 的 PopUp 是
-//!   不受窗口管理器管理的 override-redirect（不能拖动），这里保持普通窗口并请求注意。
+//! - macOS：自动进度面板不激活应用，但允许点按激活；完成窗口保持非激活。
+//! - Windows：仅完成窗口使用 `WindowKind::PopUp`（`WS_EX_TOPMOST`）。
+//! - Linux X11：PopUp 是不能拖动的 override-redirect 窗口；保持普通窗口，完成时请求注意。
 
 use std::{cell::RefCell, rc::Rc, sync::Arc, time::Duration};
 
@@ -32,16 +29,38 @@ use crate::{
 /// 打开文件 / 文件夹后等待对方接管前台的上限，从点击起算。
 const HANDOFF_CLOSE_TIMEOUT: Duration = Duration::from_millis(1500);
 
-/// 打开（或置前）任务的进度窗口。`activate = false` 时不抢焦点（后台完成弹窗）。
-pub fn open(cx: &mut App, task_id: String, activate: bool) {
-    // The root owns the view; manual progress callers do not retain another handle.
-    drop(open_window(
-        cx,
-        WindowKey::Progress(task_id.clone()),
-        task_id,
-        activate,
-        None,
-    ));
+/// Show task progress without activating the app.
+pub(crate) fn open_automatic(cx: &mut App, task_id: String) {
+    let key = WindowKey::Progress(task_id.clone());
+    if !WindowRegistry::is_open(cx, &key) {
+        #[cfg(target_os = "macos")]
+        let prior_windows = objc2::MainThreadMarker::new().map(|main| {
+            let app = objc2_app_kit::NSApplication::sharedApplication(main);
+            let windows = app.windows();
+            (app, windows)
+        });
+        let progress = open_window(cx, key, task_id, None);
+        #[cfg(target_os = "macos")]
+        if progress.is_some()
+            && let Some((app, before)) = prior_windows
+        {
+            let after = app.windows();
+            let mut added = after.iter().filter(|window| {
+                !before.iter().any(|old| std::ptr::eq(&*old, &**window))
+            });
+            // Synchronous creation should add exactly one window. If that is
+            // ambiguous, don't change the ordering of an unrelated window.
+            if let Some(window) = added.next()
+                && added.next().is_none()
+                && let Ok(panel) = window.downcast::<objc2_app_kit::NSPanel>()
+            {
+                panel.setBecomesKeyOnlyIfNeeded(false);
+                panel.setHidesOnDeactivate(false);
+                panel.orderFrontRegardless();
+            }
+        }
+        drop(progress);
+    }
 }
 
 /// 自动完成复用原有进度窗口，不激活应用，也不聚焦已存在的完成窗口。
@@ -54,20 +73,13 @@ pub(crate) fn open_completion(
         return None;
     }
     let first = task_ids.first()?.clone();
-    open_window(
-        cx,
-        WindowKey::Completion,
-        first,
-        false,
-        Some((task_ids, total)),
-    )
+    open_window(cx, WindowKey::Completion, first, Some((task_ids, total)))
 }
 
 fn open_window(
     cx: &mut App,
     key: WindowKey,
     task_id: String,
-    activate: bool,
     completed: Option<(Vec<String>, usize)>,
 ) -> Option<Entity<ProgressWindowView>> {
     let desktop = Desktop::global(cx);
@@ -88,8 +100,10 @@ fn open_window(
     options.is_resizable = true;
     options.is_minimizable = true;
     WindowRegistry::restore_bounds(RememberedWindow::Progress, &mut options, min_size, cx);
-    options.focus = activate;
-    if !activate && cfg!(any(target_os = "macos", target_os = "windows")) {
+    options.focus = false;
+    if cfg!(target_os = "macos") && completed.is_none() {
+        options.kind = WindowKind::Floating;
+    } else if completed.is_some() && cfg!(any(target_os = "macos", target_os = "windows")) {
         options.kind = WindowKind::PopUp;
     }
 
@@ -155,20 +169,12 @@ fn open_window(
         opened_view = Some(view);
         root
     });
-    let handle = opened
-        .map(Into::into)
-        .or_else(|| WindowRegistry::handle(cx, &key));
-    if let Some(handle) = handle
-        && let Err(error) = handle.update(cx, |_, window, cx| {
-            if activate {
-                crate::windows::bring_to_front(window, cx);
-            } else {
-                #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-                window.request_attention();
-            }
-        })
+    if cfg!(any(target_os = "linux", target_os = "freebsd"))
+        && completion
+        && let Some(handle) = opened
+        && let Err(error) = handle.update(cx, |_, window, _| window.request_attention())
     {
-        log::debug!("view or window released before lifecycle update: {error:#}");
+        log::debug!("completion window released before requesting attention: {error:#}");
     }
     opened_view
 }
