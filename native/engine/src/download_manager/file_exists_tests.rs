@@ -590,7 +590,7 @@ async fn checksum_task_with_zero_recorded_bytes_cleans_its_own_partial() {
             use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
             let (mut socket, _) = listener.accept().await.expect("accept");
             let mut request = [0; 4096];
-            socket.read(&mut request).await.expect("request");
+            assert!(socket.read(&mut request).await.expect("request") > 0);
             accepted_tx.send(()).expect("accepted");
             release_rx.await.expect("release");
             if let Err(error) = socket
