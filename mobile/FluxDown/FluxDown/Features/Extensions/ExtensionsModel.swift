@@ -115,13 +115,13 @@ final class ExtensionsModel {
 
     // MARK: 已安装插件
 
-    private struct FeedbackAuditParams: Encodable, Sendable {
+    nonisolated private struct FeedbackAuditParams: Encodable, Sendable {
         let identity: String
         let limit: Int
     }
 
-    private struct FeedbackAuditPage: Decodable, Sendable {
-        struct Entry: Decodable, Sendable { let outcome: String }
+    nonisolated private struct FeedbackAuditPage: Decodable, Sendable {
+        nonisolated struct Entry: Decodable, Sendable { let outcome: String }
         let entries: [Entry]
     }
 
