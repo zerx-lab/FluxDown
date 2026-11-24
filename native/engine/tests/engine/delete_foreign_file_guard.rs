@@ -383,7 +383,10 @@ async fn unfinished_cleanup_keeps_outputs_and_rejects_active_and_completed_tasks
         .delete_unfinished_tasks(&ids)
         .await
         .expect("cleanup");
-    assert_eq!((outcome.deleted, outcome.failed), (2, 2));
+    assert_eq!(
+        (outcome.deleted, outcome.failed, outcome.skipped),
+        (2, 0, 2)
+    );
     for ((name, removed), id) in [
         ("paused", true),
         ("failed", true),

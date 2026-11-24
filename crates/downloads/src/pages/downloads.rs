@@ -1887,7 +1887,7 @@ impl DownloadView {
         } else {
             self.strings.group_delete.clone()
         };
-        let description = self.strings.group_delete_description(&name, delete_files);
+        let description = self.strings.delete_task_description(&name, delete_files);
         let ok_label = self.strings.delete.clone();
         let cancel_label = self.strings.cancel.clone();
         let this = cx.weak_entity();

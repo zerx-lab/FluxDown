@@ -1431,6 +1431,8 @@ pub struct BatchDeleteOutcome {
     pub deleted: usize,
     /// 文件清理失败而保留的任务数。
     pub failed: usize,
+    /// 未满足未完成任务清理条件而跳过的任务数。
+    pub skipped: usize,
     /// 保留的任务里至少有一个是因为文件正被其他程序占用。
     pub files_in_use: bool,
 }
@@ -15054,7 +15056,8 @@ impl DownloadManager {
         task_ids: &[String],
         delete_files: bool,
     ) -> Result<BatchDeleteOutcome, crate::db::DbError> {
-        self.delete_task_batch_impl(task_ids, delete_files, false).await
+        self.delete_task_batch_impl(task_ids, delete_files, false)
+            .await
     }
 
     pub async fn delete_unfinished_tasks(
@@ -15071,7 +15074,7 @@ impl DownloadManager {
             }
         }
         let mut outcome = self.delete_task_batch_impl(&eligible, false, true).await?;
-        outcome.failed += task_ids.len() - eligible.len();
+        outcome.skipped = task_ids.len() - eligible.len();
         Ok(outcome)
     }
 
@@ -15243,6 +15246,7 @@ impl DownloadManager {
             let outcome = BatchDeleteOutcome {
                 deleted: deleted.len(),
                 failed,
+                skipped: 0,
                 files_in_use,
             };
             // 经 reporter 发出：排在这些任务已入队的进度帧之后，并顺带清理其内部状态表。
@@ -15269,6 +15273,7 @@ impl DownloadManager {
         Ok(BatchDeleteOutcome {
             deleted: 0,
             failed,
+            skipped: 0,
             files_in_use,
         })
     }
@@ -15321,13 +15326,17 @@ impl DownloadManager {
             let cleanup_named_temps = if unfinished_only && cleanup_named_temps {
                 let temp_name = format!("{}{}", task.file_name, downloader::TEMP_EXT);
                 let other_claim = [&task.file_name, &temp_name].into_iter().any(|name| {
-                    facts.file_owners
+                    facts
+                        .file_owners
                         .get(&(task.save_dir.clone(), name.clone()))
                         .is_some_and(|owners| owners.iter().any(|id| id != &task.task_id))
                 });
                 let reserved = lock_reserved(&self.reserved_temp_paths)
                     .contains(&Path::new(&task.save_dir).join(temp_name));
-                !adopted && is_safe_file_name(&task.file_name) && !other_claim && !reserved
+                !adopted
+                    && is_safe_file_name(&task.file_name)
+                    && !other_claim
+                    && !reserved
                     && (task.downloaded_bytes > 0
                         || !self.db.load_segments(&task.task_id).await?.is_empty())
             } else {
@@ -24066,6 +24075,7 @@ mod tests {
             BatchDeleteOutcome {
                 deleted: 1,
                 failed: 1,
+                skipped: 0,
                 files_in_use: false,
             }
         );
@@ -24204,6 +24214,7 @@ mod tests {
                 BatchDeleteOutcome {
                     deleted: 1,
                     failed: 0,
+                    skipped: 0,
                     files_in_use: false,
                 },
                 "{id} delete_files={delete_files}"

@@ -45,9 +45,9 @@ pub(crate) fn open_automatic(cx: &mut App, task_id: String) {
             && let Some((app, before)) = prior_windows
         {
             let after = app.windows();
-            let mut added = after.iter().filter(|window| {
-                !before.iter().any(|old| std::ptr::eq(&*old, &**window))
-            });
+            let mut added = after
+                .iter()
+                .filter(|window| !before.iter().any(|old| std::ptr::eq(&*old, &**window)));
             // Synchronous creation should add exactly one window. If that is
             // ambiguous, don't change the ordering of an unrelated window.
             if let Some(window) = added.next()

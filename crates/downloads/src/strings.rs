@@ -186,7 +186,6 @@ pub(crate) struct DownloadStrings {
     pub(crate) group_copy_source_link: SharedString,
     pub(crate) group_delete: SharedString,
     pub(crate) group_delete_with_files: SharedString,
-    group_delete_confirm_keep_file: SharedString,
     pub(crate) open_group_in_window: SharedString,
     group_items_count: SharedString,
     group_done_count: SharedString,
@@ -395,9 +394,6 @@ impl DownloadStrings {
             group_copy_source_link: shared(translator.text("groupCopySourceLink")),
             group_delete: shared(translator.text("groupDelete")),
             group_delete_with_files: shared(translator.text("groupDeleteWithFiles")),
-            group_delete_confirm_keep_file: shared(
-                translator.text("groupDeleteConfirmDescKeepFile"),
-            ),
             open_group_in_window: shared(translator.text("openGroupInWindowAction")),
             group_items_count: shared(translator.text("groupItemsCount")),
             group_done_count: shared(translator.text("groupDoneCount")),
@@ -480,21 +476,6 @@ impl DownloadStrings {
             &self.delete_confirm_keep_file
         };
         SharedString::from(template.replace("{fileName}", name))
-    }
-
-    pub(crate) fn group_delete_description(
-        &self,
-        group_name: &str,
-        delete_files: bool,
-    ) -> SharedString {
-        if delete_files {
-            self.delete_task_description(group_name, true)
-        } else {
-            SharedString::from(
-                self.group_delete_confirm_keep_file
-                    .replace("{fileName}", group_name),
-            )
-        }
     }
 
     /// 组计数行各段（调用方以 ` · ` 连接）：总数恒在，其余为 0 的段省略；剩余时间只在
