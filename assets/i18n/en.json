@@ -913,7 +913,7 @@
   "useServerTime": "Use Server File Time",
   "useServerTimeDesc": "Set the modified time of completed files to the server-provided original time (HTTP Last-Modified / FTP MDTM) instead of the download completion time. Applies to HTTP/HTTPS and FTP files and to merged audio/video track pairs; HLS/DASH segmented streams, BT and eD2k have no server file time and are not affected",
   "fileExistsBehavior": "When file exists",
-  "fileExistsBehaviorDesc": "Rename with a numeric suffix, overwrite the old file, skip the download, or ask each time. Asking needs an open FluxDown window; unattended downloads (RSS, remote dispatch, silent downloads that skip dialogs) and hosts with no window open fall back to auto rename",
+  "fileExistsBehaviorDesc": "Rename with a numeric suffix, overwrite, skip, or ask. When supported, a supplied checksum can verify a matching file before skipping. Without a checksum, choosing Skip uses the name only. Asking requires an open FluxDown window; unattended downloads fall back to renaming.",
   "fileExistsRename": "Auto rename",
   "fileExistsOverwrite": "Overwrite",
   "fileExistsAsk": "Ask every time",

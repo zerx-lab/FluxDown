@@ -346,6 +346,311 @@ async fn skip_answer_adopts_existing_file_and_survives_restart_and_delete() {
     );
 }
 
+fn checksum_fixture_server() -> (String, tokio::task::JoinHandle<()>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind checksum server");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking listener");
+    let address = listener.local_addr().expect("checksum server address");
+    let listener = tokio::net::TcpListener::from_std(listener).expect("register listener");
+    let server = tokio::spawn(async move {
+        use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+
+        while let Ok((socket, _)) = listener.accept().await {
+            let mut socket = BufReader::new(socket);
+            let mut line = String::new();
+            let head = match socket.read_line(&mut line).await {
+                Ok(0) | Err(_) => continue,
+                Ok(_) => line.starts_with("HEAD "),
+            };
+            loop {
+                line.clear();
+                match socket.read_line(&mut line).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) if line == "\r\n" => break,
+                    Ok(_) => {}
+                }
+            }
+            let response: &[u8] = if head {
+                b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\n"
+            } else {
+                b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc"
+            };
+            if let Err(error) = socket.get_mut().write_all(response).await {
+                tracing::debug!("checksum fixture connection closed: {error}");
+            }
+        }
+    });
+    (format!("http://{address}"), server)
+}
+
+const CHECKSUM: &str = "sha256=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+#[tokio::test]
+async fn checksum_match_adopts_without_prompt_and_mismatch_cannot_skip() {
+    let (selector, answers) = FakeSelector::new(true);
+    let mut fx = fixture("checksum", 1, selector.clone(), FileExistsBehavior::Ask).await;
+    fx.write_existing("match.bin", b"abc");
+    fx.write_existing("mismatch.bin", b"abd");
+
+    let mut spec = fx.spec("match.bin");
+    spec.checksum = CHECKSUM.into();
+    let matched = fx.mgr.create_task(spec).await.expect("create match");
+    fx.pump_until_status(&matched, 3).await;
+    let task = fx
+        .db
+        .load_task_by_id(&matched)
+        .await
+        .expect("load")
+        .expect("task");
+    assert_eq!(task.file_hash, CHECKSUM);
+    assert!(fx.mgr.skip_adopted(&matched).await);
+    assert_eq!(selector.asked_count(), 0);
+
+    let mut spec = fx.spec("mismatch.bin");
+    spec.checksum = CHECKSUM.into();
+    let mismatch = fx.mgr.create_task(spec).await.expect("create mismatch");
+    fx.pump_until("mismatch prompts", |mgr| {
+        parked(mgr, &mismatch) && selector.asked_count() == 1
+    })
+    .await;
+    assert!(!selector.asked.lock().expect("asked")[0].allow_skip);
+    answers.send(FileExistsChoice::Cancel).expect("cancel");
+    fx.pump_until_status(&mismatch, 2).await;
+
+    let partial = format!("match.bin{}", downloader::TEMP_EXT);
+    fx.write_existing(&partial, b"sibling data");
+    fx.mgr
+        .delete_task(&matched, true)
+        .await
+        .expect("delete adoption");
+    assert_eq!(
+        std::fs::read(fx.dir.join("match.bin")).expect("candidate"),
+        b"abc"
+    );
+    assert_eq!(
+        std::fs::read(fx.dir.join(partial)).expect("sibling partial"),
+        b"sibling data"
+    );
+    std::fs::remove_dir_all(&fx.dir).expect("cleanup");
+}
+
+#[tokio::test]
+async fn matching_checksum_does_not_override_rename_or_overwrite() {
+    let (selector, _) = FakeSelector::new(true);
+    let mut fx = fixture("checksum_policies", 1, selector, FileExistsBehavior::Rename).await;
+    let (url, server) = checksum_fixture_server();
+    fx.base_url = url;
+    for (behavior, name, expected) in [
+        (FileExistsBehavior::Rename, "rename.bin", "rename (1).bin"),
+        (
+            FileExistsBehavior::Overwrite,
+            "overwrite.bin",
+            "overwrite.bin",
+        ),
+    ] {
+        fx.mgr.set_file_exists_behavior(behavior);
+        fx.write_existing(name, b"abc");
+        let mut spec = fx.spec(name);
+        spec.checksum = CHECKSUM.into();
+        let id = fx.mgr.create_task(spec).await.expect("create");
+        fx.pump_until_status(&id, 3).await;
+        assert_eq!(fx.name(&id).await, expected);
+        assert!(!fx.mgr.skip_adopted(&id).await);
+        assert_eq!(
+            std::fs::read(fx.dir.join(expected)).expect("written file"),
+            b"abc"
+        );
+    }
+    server.abort();
+    assert!(server.await.expect_err("server aborted").is_cancelled());
+    std::fs::remove_dir_all(&fx.dir).expect("cleanup");
+}
+
+#[tokio::test]
+async fn checksum_redownload_does_not_adopt_the_replacement_file() {
+    let (selector, _) = FakeSelector::new(false);
+    let mut fx = fixture("checksum_redownload", 1, selector, FileExistsBehavior::Skip).await;
+    let (url, server) = checksum_fixture_server();
+    fx.base_url = url;
+    fx.write_existing("match.bin", b"abc");
+    let mut spec = fx.spec("match.bin");
+    spec.checksum = CHECKSUM.into();
+    let id = fx.mgr.create_task(spec).await.expect("create");
+    fx.pump_until_status(&id, 3).await;
+    fx.pump_until("adopted task retired", |mgr| {
+        !mgr.active_tasks.contains_key(&id)
+    })
+    .await;
+    std::fs::remove_file(fx.dir.join("match.bin")).expect("remove adopted file");
+    assert!(
+        fx.db
+            .update_task_file_missing(&id, true)
+            .await
+            .expect("mark missing")
+    );
+    fx.write_existing("match.bin", b"abc");
+    fx.mgr
+        .restart_missing_task_file(&id)
+        .await
+        .expect("restart");
+    fx.pump_until_status(&id, 3).await;
+    assert_eq!(fx.name(&id).await, "match (1).bin");
+    assert!(!fx.mgr.skip_adopted(&id).await);
+    assert_eq!(
+        std::fs::read(fx.dir.join("match.bin")).expect("replacement"),
+        b"abc"
+    );
+    server.abort();
+    assert!(server.await.expect_err("server aborted").is_cancelled());
+    std::fs::remove_dir_all(&fx.dir).expect("cleanup");
+}
+
+#[tokio::test]
+async fn checksum_worker_timeout_keeps_candidate_and_foreign_partial() {
+    async fn check(batch: bool) {
+        let (selector, _answers) = FakeSelector::new(false);
+        let mut fx = fixture("checksum_timeout", 1, selector, FileExistsBehavior::Skip).await;
+        let mut spec = fx.spec("candidate.bin");
+        spec.start_paused = true;
+        spec.checksum = CHECKSUM.into();
+        let id = fx.mgr.create_task(spec).await.expect("create");
+        fx.db
+            .update_task_status(&id, 5, "")
+            .await
+            .expect("preparing");
+        // The read-only prelude is blocked, with no paths or bytes claimed by this task.
+        fx.mgr
+            .checksum_preludes
+            .insert(id.clone(), Arc::new(AtomicBool::new(true)));
+        fx.mgr.active_tasks.insert(
+            id.clone(),
+            ActiveTaskEntry {
+                token: CancellationToken::new(),
+                generation: 1,
+                handle: Some(tokio::spawn(std::future::pending())),
+                is_bt: false,
+                queue_id: String::new(),
+            },
+        );
+        let partial = format!("candidate.bin{}", downloader::TEMP_EXT);
+        fx.write_existing("candidate.bin", b"abc");
+        fx.write_existing(&partial, b"sibling data");
+        let reserved = fx.dir.join(&partial);
+        lock_reserved(&fx.mgr.reserved_temp_paths).insert(reserved.clone());
+        if batch {
+            let outcome = fx
+                .mgr
+                .delete_tasks_batch(std::slice::from_ref(&id), true)
+                .await
+                .expect("batch delete");
+            assert_eq!(outcome.deleted, 1);
+        } else {
+            fx.mgr.delete_task(&id, true).await.expect("delete");
+        }
+        assert_eq!(
+            std::fs::read(&reserved).expect("sibling partial"),
+            b"sibling data"
+        );
+        assert!(lock_reserved(&fx.mgr.reserved_temp_paths).contains(&reserved));
+        // The baseline schedules a second name-based sweep two seconds after timeout.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert_eq!(
+            std::fs::read(fx.dir.join("candidate.bin")).expect("candidate"),
+            b"abc"
+        );
+        assert_eq!(
+            std::fs::read(&reserved).expect("sibling partial"),
+            b"sibling data"
+        );
+        std::fs::remove_dir_all(&fx.dir).expect("cleanup");
+    }
+    tokio::join!(check(false), check(true));
+}
+
+#[tokio::test]
+async fn checksum_task_with_zero_recorded_bytes_cleans_its_own_partial() {
+    async fn check(batch: bool) {
+        let (selector, _answers) = FakeSelector::new(false);
+        let mut fx = fixture(
+            "checksum_zero_bytes",
+            1,
+            selector,
+            FileExistsBehavior::Rename,
+        )
+        .await;
+        // Keep the metadata request inside the startup prelude under test control.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        fx.base_url = format!("http://{}", listener.local_addr().expect("address"));
+        let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut request = [0; 4096];
+            socket.read(&mut request).await.expect("request");
+            accepted_tx.send(()).expect("accepted");
+            release_rx.await.expect("release");
+            if let Err(error) = socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc")
+                .await
+            {
+                tracing::debug!("cancelled probe closed: {error}");
+            }
+        });
+        let mut spec = fx.spec("own");
+        spec.start_paused = true;
+        spec.checksum = CHECKSUM.into();
+        let id = fx.mgr.create_task(spec).await.expect("create");
+        // Avoid a creation-time background probe, but enable the resumed prelude's
+        // missing-extension probe before it can claim its output name.
+        fx.db
+            .set_task_range_verified(&id, true)
+            .await
+            .expect("range state");
+        // A writer has claimed its name, but paused before any progress was saved.
+        fx.mgr
+            .checksum_preludes
+            .insert(id.clone(), Arc::new(AtomicBool::new(false)));
+        let partial = format!("own{}", downloader::TEMP_EXT);
+        fx.write_existing(&partial, b"unreported bytes");
+        // Re-enter the fresh path (zero bytes, no segments), then cancel its
+        // stalled probe before it can claim a new name. Prior ownership survives.
+        fx.mgr.resume_task(&id).await;
+        tokio::time::timeout(Duration::from_secs(5), accepted_rx)
+            .await
+            .expect("probe connected")
+            .expect("accepted");
+        fx.mgr.pause_task(&id).await;
+        release_tx.send(()).expect("release probe");
+        fx.pump_until("retry stopped", |mgr| {
+            !mgr.active_tasks.contains_key(&id) && !mgr.pending_pauses.contains_key(&id)
+        })
+        .await;
+        server.await.expect("server stopped");
+        if batch {
+            let outcome = fx
+                .mgr
+                .delete_tasks_batch(std::slice::from_ref(&id), false)
+                .await
+                .expect("batch delete");
+            assert_eq!((outcome.deleted, outcome.failed), (1, 0));
+        } else {
+            fx.mgr.delete_task(&id, false).await.expect("delete");
+        }
+        assert!(
+            !fx.dir.join(&partial).exists(),
+            "owned partial must be cleaned"
+        );
+        assert!(fx.db.load_task_by_id(&id).await.expect("load").is_none());
+        fx.mgr.shutdown().await;
+        std::fs::remove_dir_all(&fx.dir).expect("cleanup");
+    }
+    tokio::join!(check(false), check(true));
+}
+
 #[tokio::test]
 async fn cancel_answer_pauses_and_resume_asks_again() {
     let (selector, answers) = FakeSelector::new(true);
