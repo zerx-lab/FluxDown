@@ -1,6 +1,10 @@
 package com.fluxdown.app.feature.newtask
 
+import com.fluxdown.core.capture.ExternalDownload
 import com.fluxdown.core.protocol.CustomCategoryDto
+import com.fluxdown.core.protocol.HostSection
+import com.fluxdown.core.protocol.jsonObject
+import com.fluxdown.core.store.HostState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -26,6 +30,14 @@ class NewDownloadStateCategoryTest {
         defaultSegments = 0,
         categories = categories,
     ).also { it.syncAuto() }
+
+    private fun hostWithCategories() = HostState(
+        config = mapOf("default_save_dir" to "/dl"),
+        sections = mapOf(HostSection.agentPreferences to jsonObject(
+            "revision" to 1,
+            "values" to mapOf(CustomCategoryDto.PREFERENCE_KEY to CustomCategoryDto.preferenceValue(categories)),
+        ).toJson()),
+    )
 
     private fun requestOffered(form: NewDownloadState) =
         form.buildRequests(startPaused = false, queue = "", manualProxy = "").single().offeredSaveDir
@@ -172,6 +184,59 @@ class NewDownloadStateCategoryTest {
         state.rename = "unclassified.txt"
         state.syncAuto()
         assertEquals("/public/Download", state.saveDir)
+    }
+
+    @Test fun externalAutoStartFallbackKeepsAutomaticCategoryRoutingWithoutDirectoryOverride() {
+        val form = NewDownloadState.create(
+            "", hostWithCategories(), ExternalDownload("https://x.test/movie.mp4", autoStart = true),
+        )
+
+        assertEquals(SaveDirMode.Auto, form.mode)
+        assertEquals("/dl/Video", form.saveDir)
+        assertEquals("/dl", requestOffered(form))
+    }
+
+    @Test fun externalDirectoryOverridesRememberedCategoryOnlyForCurrentForm() {
+        val form = NewDownloadState.create(
+            "", hostWithCategories(), ExternalDownload("https://x.test/movie.mp4", saveDir = "/custom"),
+            rememberedMode = "category:builtin_video",
+        )
+
+        assertEquals(SaveDirMode.None, form.mode)
+        assertEquals("/custom", form.buildRequests(false, "", "").single().saveDir)
+        assertNull(requestOffered(form))
+        assertNull(form.rememberedMode())
+
+        form.selectMode(SaveDirMode.Auto)
+        assertEquals("auto", form.rememberedMode())
+        assertEquals("/dl/Video", form.saveDir)
+        assertEquals("/dl", requestOffered(form))
+    }
+
+    @Test fun externalNoCategoryKeepsItsDirectoryAndDoesNotOverwriteRememberedMode() {
+        val form = NewDownloadState.create(
+            "", hostWithCategories(), ExternalDownload("https://x.test/movie.mp4", saveDir = "/custom"),
+            rememberedMode = "category:builtin_video",
+        )
+        fun assertExternalDestination() {
+            assertEquals("/custom", form.buildRequests(false, "", "").single().saveDir)
+            assertNull(requestOffered(form))
+            assertNull(form.rememberedMode())
+        }
+
+        form.selectMode(SaveDirMode.None)
+        assertExternalDestination()
+
+        form.selectMode(SaveDirMode.Category("builtin_video"))
+        assertEquals("/dl/Video", form.buildRequests(false, "", "").single().saveDir)
+        assertEquals("category:builtin_video", form.rememberedMode())
+        form.selectMode(SaveDirMode.None)
+        assertExternalDestination()
+
+        form.setSaveDirManually("/picked")
+        form.selectMode(SaveDirMode.None)
+        assertEquals("/picked", form.buildRequests(false, "", "").single().saveDir)
+        assertNull(form.rememberedMode())
     }
 
     @Test fun adoptingPublicDefaultPreservesExplicitTaskFolder() {
