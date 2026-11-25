@@ -10,11 +10,14 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.derivedStateOf
@@ -222,7 +225,7 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
         }
     }
     fun submit(startPaused: Boolean, queueId: String) {
-        if (form.submitting) return
+        if (form.submitting || form.rangeLimitExceeded) return
         val state = container.store.state.value
         if (state.isReadOnly) {
             haptics.reject()
@@ -284,7 +287,7 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
 
     /** 「下载到」其他设备：逐条下发链接 / 文件名 / 保存目录；全部成功关闭，有失败时只把失败的链接留在文本框里。 */
     fun submitRemote(target: DispatchTarget) {
-        if (form.submitting) return
+        if (form.submitting || form.rangeLimitExceeded) return
         if (container.store.state.value.isReadOnly) {
             haptics.reject()
             overlays.toast(s.readOnly, FluxToastKind.Error, FluxIcons.WifiOff)
@@ -461,8 +464,7 @@ private fun NewDownloadContent(
                 haptics.reject()
                 overlays.toast(importNone, FluxToastKind.Warn)
             } else {
-                val (merged, added) = appendEntries(form.urlText, found)
-                form.urlText = merged
+                val added = form.addImported(found)
                 overlays.toast(importFound.fill("count" to added), FluxToastKind.Success, FluxIcons.FileText)
             }
         }
@@ -470,7 +472,7 @@ private fun NewDownloadContent(
     var importingTorrent by remember { mutableStateOf(false) }
     val taskActions = LocalTaskActions.current
     val torrentLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris: List<Uri> ->
-        if (uris.isEmpty() || importingTorrent || form.submitting) return@rememberLauncherForActivityResult
+        if (uris.isEmpty() || importingTorrent || form.submitting || form.rangeLimitExceeded) return@rememberLauncherForActivityResult
         if (!form.saveDirValid) {
             haptics.reject()
             return@rememberLauncherForActivityResult
@@ -545,6 +547,7 @@ private fun NewDownloadContent(
                 mono = true,
                 singleLine = false,
                 rows = 5,
+                maxRows = 5,
                 // 多行批量链接框不能用 KeyboardType.Uri：小米 / 搜狗 / 百度等输入法对 URI 变体固定给「前往」键，
                 // 无视 TYPE_TEXT_FLAG_MULTI_LINE，回车换不了行（#1010）。Text + Default 才稳定出换行键。
                 keyboardOptions = KeyboardOptions(
@@ -554,6 +557,7 @@ private fun NewDownloadContent(
                     imeAction = ImeAction.Default,
                 ),
                 error = when {
+                    form.rangeLimitExceeded -> str(R.string.urlRangeLimit)
                     hasText && noEntries -> str(R.string.newDownloadNoValidUrl)
                     !hasText && form.showEmptyError -> str(R.string.mobileEnterUrl)
                     else -> null
@@ -573,6 +577,12 @@ private fun NewDownloadContent(
                     })
                 },
             )
+            FluxText(
+                str(R.string.urlRangeHint),
+                style = type.sm,
+                color = c.inkFaint,
+                modifier = Modifier.padding(horizontal = 6.dp),
+            )
             FluxButton(
                 str(R.string.importTxtFile),
                 { launchDocumentPicker(overlays, noFilePicker) { importLauncher.launch(arrayOf("text/*", "application/octet-stream")) } },
@@ -587,7 +597,7 @@ private fun NewDownloadContent(
                 size = ButtonSize.Sm,
                 icon = FluxIcons.FileUp,
                 fullWidth = true,
-                enabled = !busy && !importingTorrent && target == null &&
+                enabled = !busy && !form.rangeLimitExceeded && !importingTorrent && target == null &&
                     (requestedLocalDir == null || localConfirmation?.path != null),
             )
             // 种子只能在当前主机建任务：「下载到」选了其他设备时禁用并说明（同 iOS `torrentButton(remote:)`）
@@ -601,9 +611,10 @@ private fun NewDownloadContent(
             }
         }
 
-        // 预览：前 3 条
+        // 范围预览只展示实际生成的首尾链接；没有范围时仍预览前 3 条。
         if (form.entries.isNotEmpty()) {
-            val shown = form.entries.take(3)
+            val hasRanges = form.hasUrlRanges
+            val shown = if (hasRanges) form.rangePreview else form.entries.take(3)
             val index = remember(categories) { CategoryIndex(categories) }
             GlassSection {
                 shown.forEach { e ->
@@ -613,9 +624,26 @@ private fun NewDownloadContent(
                         val cat = index.categoryOf(name, e.url).fileCategory()
                         FluxListRow(
                             title = name,
-                            subtitle = hostOrNull(e.url) ?: proto.previewTag(),
+                            modifier = if (hasRanges) Modifier.heightIn(max = 96.dp) else Modifier,
+                            subtitle = if (hasRanges) e.url else hostOrNull(e.url) ?: proto.previewTag(),
                             leading = { FileTile(fileTileIcon(cat, proto == TaskProtocol.Bt), c.category(cat), size = FileTileSize.Sm) },
                             trailing = { FluxTag(proto.previewTag()) },
+                            onClick = if (hasRanges) ({
+                                overlays.showDialog(
+                                    FluxDialogSpec(
+                                        title = context.str(R.string.downloadUrl),
+                                        buttons = listOf(FluxDialogButton(context.str(R.string.confirm))),
+                                        body = {
+                                            FluxText(
+                                                e.url,
+                                                modifier = Modifier.heightIn(max = 160.dp).verticalScroll(rememberScrollState()),
+                                                style = type.monoS,
+                                                color = c.inkMuted,
+                                            )
+                                        },
+                                    ),
+                                )
+                            }) else null,
                         )
                     }
                 }
@@ -629,9 +657,9 @@ private fun NewDownloadContent(
                     enabled = !busy,
                 )
             }
-            if (form.entries.size > 3) {
+            if (form.entries.size > shown.size) {
                 FluxText(
-                    str(R.string.mobileNewDownloadPreviewMore, "n" to (form.entries.size - 3)),
+                    str(R.string.mobileNewDownloadPreviewMore, "n" to (form.entries.size - shown.size)),
                     style = type.monoS,
                     color = c.inkFaint,
                     modifier = Modifier.padding(horizontal = 6.dp),
@@ -1061,6 +1089,7 @@ private fun NewDownloadFooter(
     val count = form.entries.size
     val selected = queues.firstOrNull { it.queueId == form.queueId } ?: queues.firstOrNull()
     val startLabel = if (count > 1) str(R.string.startBatchDownload, "count" to count) else str(R.string.startDownload)
+    val submitEnabled = !form.submitting && !form.rangeLimitExceeded
     if (target != null) {
         // 下发只有「立即开始」：没有队列，也没有稍后下载（同 iOS / GPUI）
         FluxSheetFooter {
@@ -1070,7 +1099,7 @@ private fun NewDownloadFooter(
                 modifier = Modifier.weight(1f),
                 variant = ButtonVariant.Primary,
                 icon = FluxIcons.ArrowDown,
-                enabled = !form.submitting,
+                enabled = submitEnabled,
                 loading = form.submitting,
             )
         }
@@ -1106,7 +1135,7 @@ private fun NewDownloadFooter(
                     { submit(true, queueId) },
                     modifier = Modifier.weight(1f),
                     icon = FluxIcons.Clock,
-                    enabled = !form.submitting && !needsDirectory,
+                    enabled = submitEnabled && !needsDirectory,
                 )
                 FluxSplitButton(
                     label = startLabel,
@@ -1116,7 +1145,7 @@ private fun NewDownloadFooter(
                     },
                     modifier = Modifier.weight(1.4f),
                     icon = FluxIcons.ArrowDown,
-                    enabled = !form.submitting && !needsDirectory,
+                    enabled = submitEnabled && !needsDirectory,
                     menuLabel = moreLabel,
                     menuActions = a11y,
                 )

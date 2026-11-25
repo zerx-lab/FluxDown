@@ -3,6 +3,7 @@ package com.fluxdown.app.feature.newtask
 import android.net.Uri
 import android.provider.DocumentsContract
 import com.fluxdown.core.model.TaskProtocol
+import java.math.BigInteger
 import java.net.URI
 import java.nio.charset.CharacterCodingException
 
@@ -21,13 +22,21 @@ internal data class UrlEntry(val url: String, val fileName: String = "", val che
  * - 含 `magnet:?` / `ed2k://` 时从该位置截取到行尾；
  * - 其余行：[loose] = true（TXT 导入）取行内首个 `http(s)/ftp` 链接并去尾部标点，否则要求链接位于行首。
  */
-internal fun parseEntries(text: String, loose: Boolean = false): List<UrlEntry> {
-    val entries = ArrayList<UrlEntry>()
+internal fun parseEntries(text: String, loose: Boolean = false): List<UrlEntry> = buildList {
+    forEachEntry(text, loose) { entry, _ -> add(entry) }
+}
+
+private inline fun forEachEntry(text: String, loose: Boolean, emit: (UrlEntry, fromCommand: Boolean) -> Unit) {
     var current: UrlEntry? = null
-    for (line in text.split('\n')) {
+    var currentFromCommand = false
+    var continuation = false
+    for (line in text.splitToSequence('\n')) {
+        val trimmed = line.trim()
+        val fromCommand = continuation
+        continuation = !loose && hasCommandContinuation(trimmed) &&
+            (fromCommand || !line.first().isWhitespace() && startsAria2Command(trimmed))
         if (line.startsWith(' ') || line.startsWith('\t')) {
             val entry = current ?: continue
-            val trimmed = line.trim()
             current = when {
                 trimmed.startsWith("out=") -> entry.copy(fileName = trimmed.removePrefix("out="))
                 trimmed.startsWith("checksum=") -> entry.copy(checksum = trimmed.removePrefix("checksum="))
@@ -35,20 +44,117 @@ internal fun parseEntries(text: String, loose: Boolean = false): List<UrlEntry> 
             }
             continue
         }
-        val trimmed = line.trim()
         if (trimmed.isEmpty() || trimmed.startsWith('#')) continue
-        current?.let { entries += it }
+        current?.let { emit(it, currentFromCommand) }
+        currentFromCommand = fromCommand
         val magnet = trimmed.indexOf("magnet:?", ignoreCase = true)
         val ed2k = trimmed.indexOf("ed2k://", ignoreCase = true)
         current = when {
             magnet >= 0 -> UrlEntry(trimmed.substring(magnet))
             ed2k >= 0 -> UrlEntry(trimmed.substring(ed2k))
-            loose -> findHttpUrl(trimmed)?.trimEnd { it in ".,;:!?()[]{}" }?.takeIf { it.isNotEmpty() }?.let { UrlEntry(it) }
+            loose -> findHttpUrl(trimmed)?.let { UrlEntry(trimImportedUrl(it)) }
             else -> leadingHttpUrl(trimmed)?.let { UrlEntry(it) }
         }
     }
-    current?.let { entries += it }
-    return entries
+    current?.let { emit(it, currentFromCommand) }
+}
+
+private const val MaxUrlRangeEntries = 1000
+private val FilenameRange = Regex("\\[([0-9]+)-([0-9]+)]")
+
+/** Same shell continuation markers and executable spellings as the desktop aria2c parser. */
+private fun hasCommandContinuation(line: String): Boolean {
+    val marker = line.lastOrNull() ?: return false
+    if (marker != '\\' && marker != '^') return false
+    var i = line.lastIndex
+    while (i >= 0 && line[i] == marker) i--
+    return (line.lastIndex - i) % 2 != 0
+}
+
+private fun startsAria2Command(line: String): Boolean {
+    val first = line.first()
+    val start = if (first == '"' || first == '\'') 1 else 0
+    val end = if (start == 1) {
+        val close = line.indexOf(first, start)
+        if (close < 0 || (close < line.lastIndex && !line[close + 1].isWhitespace())) return false
+        close
+    } else {
+        line.indexOfFirst(Char::isWhitespace).let { if (it < 0) line.length else it }
+    }
+    if (line.indexOf("://", start) in start until end) return false
+    val nameStart = maxOf(start - 1, line.lastIndexOf('/', end - 1), line.lastIndexOf('\\', end - 1)) + 1
+    val name = line.substring(nameStart, end)
+    return name.equals("aria2c", ignoreCase = true) || name.equals("aria2c.exe", ignoreCase = true)
+}
+
+internal data class ManualEntries(
+    val entries: List<UrlEntry>,
+    val generatedCount: Int = 0,
+    val rangeLimitExceeded: Boolean = false,
+    val rangePreview: List<UrlEntry> = emptyList(),
+)
+
+/** Expand one numeric range per manually entered HTTP(S) filename, counting before deduplication. */
+internal fun parseManualEntries(text: String, literalUrls: Set<String> = emptySet()): ManualEntries {
+    val entries = LinkedHashMap<String, UrlEntry>()
+    var firstGenerated: UrlEntry? = null
+    var lastGenerated: UrlEntry? = null
+    var generated = 0
+    forEachEntry(text, loose = false) { entry, fromCommand ->
+        val range = if (fromCommand || entry.url in literalUrls) null else filenameRange(entry.url)
+        if (range == null) {
+            entries.putIfAbsent(entry.url, entry)
+            return@forEachEntry
+        }
+        val startDigits = range.groupValues[1]
+        val start = BigInteger(startDigits)
+        val end = BigInteger(range.groupValues[2])
+        if (end < start) {
+            entries.putIfAbsent(entry.url, entry)
+            return@forEachEntry
+        }
+        val count = end - start + BigInteger.ONE
+        if (count > BigInteger.valueOf((MaxUrlRangeEntries - generated).toLong())) {
+            return ManualEntries(emptyList(), rangeLimitExceeded = true)
+        }
+        val size = count.toInt()
+        var number = start
+        repeat(size) { offset ->
+            val url = entry.url.replaceRange(range.range, number.toString().padStart(startDigits.length, '0'))
+            // A singleton keeps its per-entry options; a batch must not clone them.
+            val item = if (size == 1) entry.copy(url = url) else UrlEntry(url)
+            val submitted = entries.putIfAbsent(url, item) ?: item
+            if (firstGenerated == null) firstGenerated = submitted
+            lastGenerated = submitted
+            if (offset + 1 < size) number += BigInteger.ONE
+        }
+        generated += size
+    }
+    val first = firstGenerated
+    val last = lastGenerated
+    val preview = when {
+        first == null || last == null -> emptyList()
+        first.url == last.url -> listOf(first)
+        else -> listOf(first, last)
+    }
+    return ManualEntries(entries.values.toList(), generated, rangePreview = preview)
+}
+
+private fun filenameRange(url: String): MatchResult? {
+    val schemeLength = when {
+        url.startsWith("https://", ignoreCase = true) -> 8
+        url.startsWith("http://", ignoreCase = true) -> 7
+        else -> return null
+    }
+    val pathEnd = url.indexOfFirst { it == '?' || it == '#' }.let { if (it < 0) url.length else it }
+    val pathStart = url.indexOf('/', schemeLength)
+    if (pathStart <= schemeLength || pathStart >= pathEnd) return null
+    val filenameStart = url.lastIndexOf('/', pathEnd - 1) + 1
+    val open = url.indexOf('[', filenameStart)
+    if (open < 0 || open >= pathEnd || url.indexOf('[', open + 1) in 0 until pathEnd) return null
+    val close = url.indexOf(']', filenameStart)
+    if (close < open || close >= pathEnd || url.indexOf(']', close + 1) in 0 until pathEnd) return null
+    return FilenameRange.matchAt(url, open)?.takeIf { it.range.last == close }
 }
 
 private val Schemes = arrayOf("https://", "http://", "ftp://")
@@ -72,6 +178,27 @@ private fun findHttpUrl(line: String): String? {
     return null
 }
 
+/** Remove surrounding TXT punctuation without removing a balanced closing bracket from the URL. */
+private fun trimImportedUrl(url: String): String {
+    var end = url.length
+    while (end > 0 && url[end - 1] in ".,;:!?()[]{}") end--
+    if (end == url.length) return url
+    var depth = 0
+    val firstOpen = url.indexOf('[')
+    if (firstOpen >= 0) {
+        for (i in firstOpen until url.length) {
+            when (url[i]) {
+                '[' -> depth++
+                ']' -> if (depth > 0) {
+                    depth--
+                    end = maxOf(end, i + 1)
+                }
+            }
+        }
+    }
+    return url.substring(0, end)
+}
+
 /** 按 URL 去重（保留首条）。 */
 internal fun List<UrlEntry>.dedupe(): List<UrlEntry> {
     val seen = HashSet<String>()
@@ -85,16 +212,17 @@ internal fun UrlEntry.toText(): String = buildString {
     if (checksum.isNotEmpty()) append("\n  checksum=").append(checksum)
 }
 
-/** 把条目追加到现有文本末尾（按 URL 去重，已有文本逐字保留）。返回新文本与实际追加数。 */
-internal fun appendEntries(existing: String, entries: List<UrlEntry>): Pair<String, Int> {
+/** Append distinct URLs and return exactly the entries added (the original text is retained). */
+internal fun appendEntries(existing: String, entries: List<UrlEntry>): Pair<String, List<UrlEntry>> {
     val seen = parseEntries(existing).mapTo(HashSet()) { it.url }
-    var text = existing.trimEnd()
-    var added = 0
-    for (e in entries) {
-        if (!seen.add(e.url)) continue
-        if (text.isNotEmpty()) text += "\n"
-        text += e.toText()
-        added++
+    val added = entries.filter { seen.add(it.url) }
+    if (added.isEmpty()) return existing to added
+    val text = buildString {
+        append(existing)
+        for (entry in added) {
+            if (isNotEmpty() && last() != '\n') append('\n')
+            append(entry.toText())
+        }
     }
     return text to added
 }

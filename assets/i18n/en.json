@@ -493,6 +493,8 @@
   "batchUrlPlaceholder": "One URL per line, e.g.:\nhttps://example.com/file1.zip\nhttps://example.com/file2.zip\nmagnet:?xt=urn:btih:...",
   "batchUrlPlaceholderGeneric": "One URL per line, e.g.:\nhttps://example.com/file1.zip\nhttps://example.com/file2.zip",
   "urlCount": "{count} URLs",
+  "urlRangeHint": "For numbered files, type a range in the filename: https://example.com/comic/[001-215].webp",
+  "urlRangeLimit": "These ranges generate more than 1,000 links. Shorten them before submitting.",
   "newDownloadUrlPlaceholder": "Paste or type links, one per line",
   "startBatchDownload": "Download {count} files",
   "importTxtFile": "Import TXT file",

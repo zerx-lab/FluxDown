@@ -493,6 +493,8 @@
   "batchUrlPlaceholder": "每行一个链接，例如：\nhttps://example.com/file1.zip\nhttps://example.com/file2.zip\nmagnet:?xt=urn:btih:...",
   "batchUrlPlaceholderGeneric": "每行一个链接，例如：\nhttps://example.com/file1.zip\nhttps://example.com/file2.zip",
   "urlCount": "{count} 个链接",
+  "urlRangeHint": "连续编号的文件可在文件名中手写范围，例如 https://example.com/comic/[001-215].webp",
+  "urlRangeLimit": "这些范围合计超过 1000 个链接，请缩小范围后再提交。",
   "newDownloadUrlPlaceholder": "粘贴或输入下载链接，每行一个",
   "startBatchDownload": "下载 {count} 个文件",
   "importTxtFile": "导入 TXT 文件",
