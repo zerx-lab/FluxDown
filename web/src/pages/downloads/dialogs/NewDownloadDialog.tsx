@@ -33,7 +33,7 @@ import type { FillTracking, RequestHints } from './aria2c'
 import { IMPORT_CHUNK_SIZE, importNotice, runImport } from './importRunner'
 import type { ImportProgress } from './importRunner'
 import { SplitButton } from './SplitButton'
-import { capturesShown, closeNewDownload, openSeedLocal } from './store'
+import { capturesShown, closeNewDownload, openNewDownload, openSeedLocal } from './store'
 import type { NewDownloadSession } from './store'
 import { isTorrentFile, submitTorrentFiles } from './torrents'
 import { SaveDirCombo } from './SaveDirCombo'
@@ -795,6 +795,14 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
         onOpenChange={(open) => !open && !busy && closeNewDownload()}
         size="lg"
         modalLocked={phase === 'submitting'}
+        onDropFiles={(files) => {
+          const torrentFiles = files.filter(isTorrentFile)
+          if (torrentFiles.length > 0) {
+            openNewDownload({ torrentFiles })
+          } else if (files.length > 0) {
+            toast.info(t('unsupportedTorrentDropHint'))
+          }
+        }}
         title={t('newDownload')}
         description={t('batchDownloadDesc')}
         footer={

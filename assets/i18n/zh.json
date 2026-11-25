@@ -97,6 +97,7 @@
   "taskWindowPinOnTop": "始终置顶",
   "unsupportedDropHint": "不支持此文件类型，请拖入 .torrent 文件，或包含链接的 .txt/.url/.list 文件。",
   "unsupportedDropHintGeneric": "不支持此文件类型，请拖入包含链接的 .txt/.url/.list 文件。",
+  "unsupportedTorrentDropHint": "请在此拖入 .torrent 文件。",
   "taskCreatedToast": "已添加到下载列表。",
   "importProgress": "正在添加 {done} / {total}",
   "importRetrying": "连接中断，{seconds} 秒后重试（{attempt}/{max}）",
