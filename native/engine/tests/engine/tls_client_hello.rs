@@ -141,8 +141,9 @@ async fn handshake_eof_retries_with_cbc_before_sending_post() {
             const ECDHE_RSA_AES256_CBC_SHA384: [u8; 2] = [0xc0, 0x28];
             let offers_cbc = |hello: &[u8]| {
                 cipher_suites(hello)
-                    .chunks_exact(2)
-                    .any(|suite| suite == ECDHE_RSA_AES256_CBC_SHA384)
+                    .as_chunks::<2>()
+                    .0
+                    .contains(&ECDHE_RSA_AES256_CBC_SHA384)
             };
             assert!(!offers_cbc(&initial));
             assert!(offers_cbc(&fallback));
