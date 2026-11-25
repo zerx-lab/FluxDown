@@ -172,6 +172,33 @@
   padding-right: env(safe-area-inset-right, 0px);
 }
 
+/* 只有纵向 grow 根 stack 才标记 data-fill-view；普通插件视图保留宿主原来的滚动方式。 */
+@layer utilities {
+  .view-viewport:has([data-fill-view]) {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .plugin-view-host:has(> [data-fill-view]) {
+    flex: 1;
+    overflow: auto;
+  }
+  /* 桌面弹窗原本只有 max-height；给弹性视图确定高度，仍由弹窗自己的上限裁定。 */
+  .view-dialog:has([data-fill-view]) {
+    height: 100dvh;
+  }
+  .view-scroll-fill {
+    flex: 1 1 0%;
+  }
+  /* 内容按自然高度排布；否则带 overflow 的列表项可以被压扁而不产生滚动。 */
+  [data-fill-view] > .view-scroll-fill {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-auto-rows: max-content;
+    align-content: start;
+  }
+}
+
 /* MiSans（复用桌面端字体资源，assets/fonts → web/public/fonts）；缺失时回退系统字体。 */
 @font-face {
   font-family: 'MiSans';

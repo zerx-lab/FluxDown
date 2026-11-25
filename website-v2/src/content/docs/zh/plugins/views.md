@@ -322,6 +322,8 @@ tone 跟随当前主题：`neutral` → `colors.foreground`，`accent` → `colo
 | `section` | `title` **必填**、`description` | 有 |
 | `divider` | — | 无 |
 
+Web 端的活动页、任务详情标签页，以及插件的设置和登录对话框都支持这一滚动布局。根节点不是 `grow: true` 的纵向 `stack` 时，宿主保留原有的滚动方式。
+
 ### 内容
 
 | 类型 | 属性（默认值） | 说明 |

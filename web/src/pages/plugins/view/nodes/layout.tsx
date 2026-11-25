@@ -30,24 +30,26 @@ function spacing(name: string, fallback: string): string {
 
 export function StackNode({ node, children }: { node: ViewNode; children: ReactNode }) {
   const p = node.p
+  const row = str(p, 'direction', 'column') === 'row'
+  const grow = bool(p, 'grow')
   const style: CSSProperties = {
     display: 'flex',
-    flexDirection: str(p, 'direction', 'column') === 'row' ? 'row' : 'column',
+    flexDirection: row ? 'row' : 'column',
     gap: spacing(str(p, 'gap', 'sm'), 'sm'),
     alignItems: ALIGN[str(p, 'align', 'stretch')],
     justifyContent: JUSTIFY[str(p, 'justify', 'start')],
     flexWrap: bool(p, 'wrap') ? 'wrap' : 'nowrap',
     padding: spacing(str(p, 'padding', 'none'), 'none'),
     minWidth: 0,
-    ...(bool(p, 'grow') ? { flex: '1 1 0%', minHeight: 0 } : null),
+    ...(grow ? { flex: '1 1 0%', minHeight: 0 } : null),
   }
-  return <div style={style}>{children}</div>
+  return <div data-fill-view={node.id === 'root' && grow && !row ? '' : undefined} style={style}>{children}</div>
 }
 
 export function ScrollNode({ node, children }: { node: ViewNode; children: ReactNode }) {
   const maxHeight = num(node.p, 'maxHeight')
   return (
-    <div className="flex min-h-0 flex-col overflow-auto" style={maxHeight === undefined ? { flex: '1 1 0%' } : { maxHeight }}>
+    <div className={cn('flex min-h-0 flex-col overflow-auto', maxHeight === undefined && 'view-scroll-fill')} style={{ maxHeight }}>
       {children}
     </div>
   )

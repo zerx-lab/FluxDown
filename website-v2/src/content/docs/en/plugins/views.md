@@ -321,6 +321,8 @@ Tones follow the active theme: `neutral` → `colors.foreground`, `accent` → `
 | `section` | `title` **required**, `description` | yes |
 | `divider` | — | no |
 
+On the Web, this scroll layout works in activity pages, task-detail tabs, and plugin settings and login dialogs. Without a growing root column, each host keeps its usual scrolling behavior.
+
 ### Content
 
 | Kind | Props (default) | Notes |
