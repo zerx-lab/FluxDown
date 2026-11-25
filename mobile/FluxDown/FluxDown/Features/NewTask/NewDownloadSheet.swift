@@ -881,6 +881,11 @@ private struct NewDownloadContent: View {
     /// 全部成功关闭表单；有失败时只把失败的链接留在文本框里，成功的不会被重复下发。
     private func submitRemote(_ target: DispatchTarget) {
         guard !form.submitting, form.probe == nil else { return }
+        guard container.host.id == hostID else {
+            reject()
+            container.toasts.show(text: L("mobileDownloadDraftHostChanged"), tone: .warning)
+            return
+        }
         if state.isReadOnly {
             reject()
             container.toasts.show(text: L("localServiceDisconnected"), tone: .error, systemImage: FluxSymbol.offline)

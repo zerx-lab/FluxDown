@@ -293,6 +293,11 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
     /** 「下载到」其他设备：逐条下发链接 / 文件名 / 保存目录；全部成功关闭，有失败时只把失败的链接留在文本框里。 */
     fun submitRemote(target: DispatchTarget) {
         if (form.submitting) return
+        if (container.host.value.id != draftHostId) {
+            haptics.reject()
+            overlays.toast(context.str(R.string.mobileDownloadDraftHostChanged), FluxToastKind.Error)
+            return
+        }
         if (container.store.state.value.isReadOnly) {
             haptics.reject()
             overlays.toast(s.readOnly, FluxToastKind.Error, FluxIcons.WifiOff)
