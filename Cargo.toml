@@ -6,6 +6,7 @@
 [workspace]
 resolver = "3"
 members = ["native/*", "crates/*", "scripts/desktop-dev"]
+exclude = ["third_party/reqwest"]
 
 [workspace.package]
 edition = "2024"
@@ -67,6 +68,8 @@ librqbit-utp = { git = "https://github.com/zerx-lab/librqbit-utp", rev = "f6d509
 # 上游 0.7.0 在 iOS 上编译失败（Apple 平台只放行 macOS 的按索引绑定），补丁见源码内 `FluxDown 补丁` 注释；
 # 上游修复发布后删除本条与 third_party/ 副本。
 librqbit-dualstack-sockets = { path = "third_party/librqbit-dualstack-sockets" }
+# TLS 1.2 CBC 的连接级兼容：保留 reqwest 的 DNS/代理/连接池，仅下载 client 显式开启。
+reqwest = { path = "third_party/reqwest" }
 
 [profile.dev]
 codegen-units = 16

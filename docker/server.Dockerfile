@@ -27,7 +27,7 @@ COPY website-v2/src/lib/gpui-theme/ /src/website-v2/src/lib/gpui-theme/
 RUN bun run build
 
 # ── Stage 2a: Rust 源码与工具链（server 构建与 server-check 共用，COPY 清单只此一份）──
-# Linux 侧全 rustls（无 openssl），SQLite 由 sqlx 捆绑编译（cc 交叉工具链），无额外系统依赖。
+# SQLite 和 TLS 兼容用的 OpenSSL 由 Cargo 静态构建；OpenSSL Configure 需要 Perl。
 # CI 构建 `--target server-check`（cargo check，无代码生成）在合入时暴露构建上下文缺失：
 # workspace 成员、[patch] 目录、include_bytes! 资源、build.rs 读取的文件。
 FROM --platform=$BUILDPLATFORM rust:1-bookworm AS server-src
@@ -37,6 +37,8 @@ WORKDIR /src
 ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
     CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
     AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar
+RUN apt-get update && apt-get install -y --no-install-recommends perl \
+    && rm -rf /var/lib/apt/lists/*
 RUN case "$TARGETARCH" in \
       amd64) echo x86_64-unknown-linux-gnu > /rust-target ;; \
       arm64) echo aarch64-unknown-linux-gnu > /rust-target \
@@ -52,7 +54,7 @@ COPY .cargo/ .cargo/
 COPY native/ native/
 COPY crates/ crates/
 COPY scripts/desktop-dev/ scripts/desktop-dev/
-# 根 Cargo.toml 的 [patch.crates-io] 指向 third_party/librqbit-dualstack-sockets。
+# Cargo workspace shares its patches across all hosts.
 COPY third_party/ third_party/
 # notification.rs 在 Linux 上 include_bytes! 应用图标。
 COPY assets/logo/ assets/logo/

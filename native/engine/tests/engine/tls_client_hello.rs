@@ -27,16 +27,23 @@ async fn capture_client_hello(client: reqwest::Client) -> Vec<u8> {
     });
 
     let (mut stream, _) = listener.accept().await.unwrap();
+    let body = read_client_hello(&mut stream).await;
+    // No listener remains for a compatibility connection after the first EOF.
+    drop(listener);
+    drop(stream);
+
+    let outcome = request.await.unwrap();
+    assert!(outcome.is_err(), "服务端未完成握手，请求必须失败");
+    body
+}
+
+async fn read_client_hello(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
     let mut header = [0u8; 5];
     stream.read_exact(&mut header).await.unwrap();
     assert_eq!(header[0], 0x16, "首条记录必须是握手记录");
     let len = usize::from(u16::from_be_bytes([header[3], header[4]]));
     let mut body = vec![0u8; len];
     stream.read_exact(&mut body).await.unwrap();
-    drop(stream);
-
-    let outcome = request.await.unwrap();
-    assert!(outcome.is_err(), "服务端未完成握手，请求必须失败");
     body
 }
 
@@ -111,6 +118,40 @@ fn cipher_suites(handshake: &[u8]) -> Vec<u8> {
     at += 1 + usize::from(handshake[at]);
     let len = usize::from(u16::from_be_bytes([handshake[at], handshake[at + 1]]));
     handshake[at + 2..at + 2 + len].to_vec()
+}
+
+#[tokio::test]
+async fn handshake_eof_retries_with_cbc_before_sending_post() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let client = fluxdown_engine::downloader::build_client(&ProxyConfig::default(), "").unwrap();
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let request = client
+            .post(format!("https://{address}/"))
+            .body("must not be sent before TLS")
+            .send();
+        let server = async {
+            let (mut modern, _) = listener.accept().await.unwrap();
+            let initial = read_client_hello(&mut modern).await;
+            drop(modern);
+            let (mut legacy, _) = listener.accept().await.unwrap();
+            let fallback = read_client_hello(&mut legacy).await;
+            drop(listener);
+            drop(legacy);
+            const ECDHE_RSA_AES256_CBC_SHA384: [u8; 2] = [0xc0, 0x28];
+            let offers_cbc = |hello: &[u8]| {
+                cipher_suites(hello)
+                    .chunks_exact(2)
+                    .any(|suite| suite == ECDHE_RSA_AES256_CBC_SHA384)
+            };
+            assert!(!offers_cbc(&initial));
+            assert!(offers_cbc(&fallback));
+        };
+        tokio::join!(request, server).0
+    })
+    .await
+    .unwrap();
+    assert!(outcome.unwrap_err().is_connect());
 }
 
 /// 下载 client 走进程共享的 rustls 配置（根证书库全进程一份），它发出的 ClientHello 必须与
