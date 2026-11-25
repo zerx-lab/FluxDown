@@ -221,10 +221,11 @@ class AppContainer(context: Context) {
     /**
      * 切换主机。打开失败时保持原主机不变并返回失败（[HostException]）。
      * 切到本机以外时本机引擎继续在进程内运行（由前台服务保活）。
+     * 切换与保存归应用容器；界面销毁只取消对结果的等待。
      */
-    suspend fun switchHost(ref: HostRef, remember: Boolean = true): Result<Unit> {
+    suspend fun switchHost(ref: HostRef, remember: Boolean = true): Result<Unit> = appScope.async {
         supersedeHostRestore()
-        return switchLock.withLock {
+        switchLock.withLock {
             val result = if (ref.id == _host.value.id && session !is UnavailableSession) {
                 Result.success(Unit)
             } else {
@@ -239,7 +240,7 @@ class AppContainer(context: Context) {
             }
             result
         }
-    }
+    }.await()
 
     /**
      * 保存远端主机：先真实连接并拿到首个快照（鉴权 / 协议 / 可达性），通过后加密保存凭据。
