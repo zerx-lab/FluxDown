@@ -184,6 +184,9 @@ pub enum ActorOperation {
         task_ids: Vec<String>,
         delete_files: bool,
     },
+    CleanUnfinishedTasks {
+        task_ids: Vec<String>,
+    },
     SetTaskSeedLimits {
         task_id: String,
         ratio_limit_milli: i64,
@@ -358,6 +361,7 @@ pub enum ActorOperation {
 /// actor 操作结果。
 pub enum ActorResult {
     Unit,
+    CleanedUnfinished(usize),
     Created(String),
     /// 与 `CreateTasks` 的 `items` 逐条同序的结果。
     CreatedMany(Vec<CreateTaskOutcome>),
@@ -1843,6 +1847,11 @@ async fn execute_operation(
             // 删除事实由 delete_tasks_batch 经 TasksDeleted 发布：大批量删除不再逐块推全量快照。
             batch_delete_result(engine.manager.delete_tasks_batch(&ids, delete_files).await)?;
         }
+        ActorOperation::CleanUnfinishedTasks { task_ids } => {
+            let ids = existing_task_ids(&engine.db, task_ids).await?;
+            let deleted = batch_delete_result(engine.manager.delete_unfinished_tasks(&ids).await)?;
+            return Ok(ActorResult::CleanedUnfinished(deleted));
+        }
         ActorOperation::ResumeAll => {
             engine.manager.resume_all_eligible().await;
         }
@@ -2012,7 +2021,9 @@ async fn execute_operation(
         ActorOperation::DeleteGroup {
             group_id,
             delete_files,
-        } => batch_delete_result(engine.manager.delete_group(&group_id, delete_files).await)?,
+        } => {
+            batch_delete_result(engine.manager.delete_group(&group_id, delete_files).await)?;
+        }
         #[cfg(feature = "plugins")]
         ActorOperation::ResolvePreview { .. } => unreachable!("handled off actor"),
         ActorOperation::RssListSources => {
@@ -3601,9 +3612,9 @@ fn batch_delete_result(
         fluxdown_engine::download_manager::BatchDeleteOutcome,
         fluxdown_engine::db::DbError,
     >,
-) -> Result<(), ActorError> {
+) -> Result<usize, ActorError> {
     match result {
-        Ok(outcome) if outcome.failed == 0 => Ok(()),
+        Ok(outcome) if outcome.failed == 0 => Ok(outcome.deleted),
         Ok(outcome) => Err(ActorError::TaskFilesKept {
             in_use: outcome.files_in_use,
             message: format!(

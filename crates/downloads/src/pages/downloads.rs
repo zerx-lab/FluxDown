@@ -18,6 +18,7 @@ use crate::{
         TogglePauseSelected,
     },
     components::{
+        selection_bar::TaskCleanup,
         task_table::{
             DownloadTableDelegate, SelectModifiers, SelectionSummary, TableFilter, ToolbarCommand,
             piece_picking_order_targets, piece_picking_toggle_target, spawn_midnight_refresh,
@@ -769,10 +770,7 @@ impl DownloadView {
             cx.notify();
             return;
         }
-        let DeletionRequest {
-            task_ids,
-            delete_files,
-        } = request;
+        let DeletionRequest { task_ids, mode } = request;
         // 已在另一批删除中的任务不重复提交。
         let task_ids = self.table_state.update(cx, |table, cx| {
             let fresh = table.delegate_mut().begin_delete(task_ids);
@@ -805,7 +803,7 @@ impl DownloadView {
             let mut progress_cx = cx.clone();
             let report = run_deletion(
                 &task_ids,
-                delete_files,
+                mode,
                 &move |command| port.execute(command),
                 &move |delay| timer.timer(delay),
                 &cancel,
@@ -1888,20 +1886,11 @@ impl DownloadView {
         window.push_notification(toast::success(self.strings.url_copied.clone()), cx);
     }
 
-    pub(crate) fn group_delete(&mut self, group_id: String, cx: &mut Context<Self>) {
-        self.execute_commands(
-            vec![DownloadsCommand::GroupDelete {
-                group_id,
-                delete_files: false,
-            }],
-            cx,
-        );
-    }
-
-    /// 「删除组及文件」二次确认。
-    pub(crate) fn confirm_group_delete_with_files(
+    /// 删除组记录或同时清理文件，均需确认。
+    pub(crate) fn confirm_group_delete(
         &mut self,
         group_id: String,
+        delete_files: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1911,8 +1900,12 @@ impl DownloadView {
             .iter()
             .find(|group| group.id == group_id)
             .map_or_else(|| group_id.clone(), |group| group.meta.name.clone());
-        let title = self.strings.group_delete_with_files.clone();
-        let description = self.strings.group_delete_with_files_description(&name);
+        let title = if delete_files {
+            self.strings.group_delete_with_files.clone()
+        } else {
+            self.strings.group_delete.clone()
+        };
+        let description = self.strings.delete_task_description(&name, delete_files);
         let ok_label = self.strings.delete.clone();
         let cancel_label = self.strings.cancel.clone();
         let this = cx.weak_entity();
@@ -1935,7 +1928,7 @@ impl DownloadView {
                         this.execute_commands(
                             vec![DownloadsCommand::GroupDelete {
                                 group_id,
-                                delete_files: true,
+                                delete_files,
                             }],
                             cx,
                         );
@@ -2061,8 +2054,13 @@ impl DownloadView {
         self.execute_toolbar(action, cx);
     }
 
-    fn on_delete_selected(&mut self, _: &DeleteSelected, _: &mut Window, cx: &mut Context<Self>) {
-        self.execute_toolbar(ToolbarCommand::Delete, cx);
+    fn on_delete_selected(
+        &mut self,
+        _: &DeleteSelected,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.confirm_delete_selected(false, window, cx);
     }
 
     fn on_clear_selected_task_file(
@@ -2128,39 +2126,42 @@ impl DownloadView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.delete_selected_with_files(window, cx);
+        self.confirm_delete_selected(true, window, cx);
     }
 
-    /// 对当前选中集合发起「删除任务和文件」（带二次确认）；空选择为 no-op。
-    pub(crate) fn delete_selected_with_files(
+    /// 按打开对话框时的选择删除；确认时不重新读取选区。
+    pub(crate) fn confirm_delete_selected(
         &mut self,
+        delete_files: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let selected = self.table_state.read(cx).delegate().selected_keys();
+        let mut selected = self.table_state.read(cx).delegate().selected_keys();
+        if !delete_files {
+            let store = self.controller.store();
+            selected.retain(|key| {
+                task_menu_facts_for(store, key).is_some_and(|facts| facts.controllable)
+            });
+        }
         if selected.is_empty() {
             return;
         }
-        self.confirm_delete_with_files(selected, window, cx);
-    }
-
-    /// 「删除任务及文件」二次确认。
-    pub(crate) fn confirm_delete_with_files(
-        &mut self,
-        keys: Vec<RowKey>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let title = self.strings.delete_task_and_file.clone();
-        let description = self
-            .strings
-            .delete_with_files_description(&keys, self.controller.store());
+        let title = if delete_files {
+            self.strings.delete_task_and_file.clone()
+        } else {
+            self.strings.delete_task.clone()
+        };
+        let description = self.strings.delete_selection_description(
+            &selected,
+            self.controller.store(),
+            delete_files,
+        );
         let ok_label = self.strings.delete.clone();
         let cancel_label = self.strings.cancel.clone();
         let this = cx.weak_entity();
         window.open_alert_dialog(cx, move |dialog, _, cx| {
             let this = this.clone();
-            let keys = keys.clone();
+            let keys = selected.clone();
             dialog
                 .title(fluxdown_ui_components::dialog_title(title.clone(), cx))
                 .description(description.clone())
@@ -2173,7 +2174,7 @@ impl DownloadView {
                 .on_ok(move |_, _, cx| {
                     // 页面释放后没有提交命令，不能让确认框报告成功。
                     this.update(cx, |this, cx| {
-                        let commands = this.delete_commands(&keys, true);
+                        let commands = this.delete_commands(&keys, delete_files);
                         this.execute_commands(commands, cx);
                     })
                     .is_ok()
@@ -2512,22 +2513,7 @@ impl DownloadView {
             PageCommand::PauseAll => self.execute_toolbar(ToolbarCommand::PauseAll, cx),
             PageCommand::ResumeAll => self.execute_toolbar(ToolbarCommand::ResumeAll, cx),
             PageCommand::ClearFinished => {
-                // 任务表分页载入期间「已完成」范围不完整，不能据占位表清理；断线时本地表已过期。
-                if self.controller.tables_loading() || self.controller.is_stale() {
-                    return;
-                }
-                let commands: Vec<DownloadsCommand> = self
-                    .controller
-                    .store()
-                    .local()
-                    .iter()
-                    .filter(|row| row.state == TaskState::Completed)
-                    .map(|row| DownloadsCommand::Delete {
-                        task_id: row.key.task_id().to_owned(),
-                        delete_files: false,
-                    })
-                    .collect();
-                self.execute_commands(commands, cx);
+                self.confirm_task_cleanup(TaskCleanup::Finished, window, cx);
             }
             PageCommand::SelectAll => self.table_state.update(cx, |table, cx| {
                 table.delegate_mut().select_all_tasks();

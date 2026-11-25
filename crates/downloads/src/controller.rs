@@ -235,6 +235,9 @@ pub enum DownloadsCommand {
         task_ids: Vec<String>,
         delete_files: bool,
     },
+    CleanUnfinished {
+        task_ids: Vec<String>,
+    },
     PauseAll,
     ResumeAll,
     /// 插件重试挂起 → 忽略并按普通任务继续。
@@ -391,6 +394,8 @@ impl DownloadsCommand {
 
 pub enum DownloadsResult {
     Unit,
+    /// 实际移除的未完成任务数，不含跳过项。
+    CleanedUnfinished(usize),
     Value(serde_json::Value),
     TaskEditInfo(Box<fluxdown_protocol::TaskEditSnapshot>),
     TaskActivity(TaskActivityPage),

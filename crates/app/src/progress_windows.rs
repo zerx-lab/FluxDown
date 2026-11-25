@@ -579,7 +579,7 @@ fn observe(task_id: &str, status: i32, cx: &mut App) {
             let can_open = open.len() < MAX_AUTOMATIC_PROGRESS_WINDOWS;
             cx.global_mut::<ProgressWindows>().automatic_windows = open;
             if can_open {
-                crate::windows::progress::open(cx, task_id.to_owned(), true);
+                crate::windows::progress::open_automatic(cx, task_id.to_owned());
                 if WindowRegistry::is_open(cx, &key) {
                     cx.global_mut::<ProgressWindows>()
                         .automatic_windows
