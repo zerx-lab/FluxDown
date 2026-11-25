@@ -32,6 +32,7 @@ import {
   downloadUrls,
   handoffPage,
 } from "./downloads";
+import { cancelledSelection, chooseManualTarget } from "./manual-target";
 import { showBrowserDownload } from "./browser-downloads";
 import { getCapabilities } from "./host";
 import { isInterceptActive, markPreempted } from "./intercept";
@@ -404,17 +405,29 @@ const handlers: { [A in MessageAction]: Handler<A> } = {
   async downloadCandidate(req, sender) {
     const tabId = await resolveTabId(sender, req.tabId);
     if (tabId === undefined) return { success: false, message: "No tab" };
-    return downloadCandidate(tabId, req.candidateId, req.variantId, req.channel);
+    const channel = await chooseManualTarget(req.channel);
+    if (channel === null) return cancelledSelection();
+    return downloadCandidate(tabId, req.candidateId, req.variantId, channel);
   },
 
   async downloadResources(req, sender) {
     const tabId = await resolveTabId(sender, req.tabId);
     if (tabId === undefined) return { success: false, message: "No tab" };
-    return downloadResources(tabId, req.resourceIds, req.channel);
+    const channel = await chooseManualTarget(req.channel);
+    if (channel === null) return cancelledSelection();
+    return downloadResources(tabId, req.resourceIds, channel);
   },
 
   async downloadUrls(req, sender) {
-    return downloadUrls(req.urls, req.referrer, await resolveTabId(sender, req.tabId), req.channel);
+    const tabId = await resolveTabId(sender, req.tabId);
+    const channel = await chooseManualTarget(req.channel);
+    if (channel === null) return cancelledSelection();
+    return downloadUrls(req.urls, req.referrer, tabId, channel);
+  },
+
+  async interceptMagnet(req, sender) {
+    if (typeof req.url !== "string" || !/^magnet:/i.test(req.url)) return { success: false };
+    return downloadUrls([req.url], req.referrer, await resolveTabId(sender), undefined);
   },
 
   async handoffPage(req) {

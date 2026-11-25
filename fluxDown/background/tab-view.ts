@@ -7,6 +7,7 @@ import type { HostCapabilities, TabView } from "./protocol";
 import { sawNetworkRequest } from "./request-cache";
 import { getEngine } from "./rules-store";
 import { getCachedProfiles, getCachedSettings } from "./settings-cache";
+import { loadManualServers } from "@/utils/manual-servers";
 import { loadServiceWorkerScopes } from "./sw-scopes";
 import {
   getElements,
@@ -56,7 +57,7 @@ function capabilitiesWithin(budgetMs: number): Promise<HostCapabilities | null> 
 /** `withHandoff: false`：不探测桌面端能力（徽标刷新、下载取候选等不需要 handoff 的路径）；handoff 填占位值。 */
 export async function buildTabView(tabId: number, opts: { withHandoff?: boolean } = {}): Promise<TabView> {
   const withHandoff = opts.withHandoff ?? true;
-  const [settings, profiles, caps, remoteMode, tab, , serviceWorkerScopes] = await Promise.all([
+  const [settings, profiles, caps, remoteMode, tab, , serviceWorkerScopes, manual] = await Promise.all([
     getCachedSettings(),
     getCachedProfiles(),
     withHandoff ? capabilitiesWithin(HANDOFF_PROBE_BUDGET_MS) : Promise.resolve(null),
@@ -65,6 +66,7 @@ export async function buildTabView(tabId: number, opts: { withHandoff?: boolean 
     // SW 被本次请求唤醒时，会话快照恢复尚未完成；先等它，否则返回空视图（浮钮随之消失）。
     whenRestored(),
     loadServiceWorkerScopes(),
+    withHandoff ? loadManualServers() : undefined,
   ]);
   const engine = getEngine();
   const resources = getResources(tabId);
@@ -89,7 +91,9 @@ export async function buildTabView(tabId: number, opts: { withHandoff?: boolean 
     retiredElements: getRetiredElements(tabId),
     engine,
     showLowConfidence: settings.showLowConfidence,
-    handoff: caps ? handoffFor({ remoteMode, caps, pageUrl }) : { kind: "unavailable", reason: "disconnected" },
+    handoff: manual?.enabled && /^https?:\/\//i.test(pageUrl)
+      ? { kind: "choose-target" }
+      : caps ? handoffFor({ remoteMode, caps, pageUrl }) : { kind: "unavailable", reason: "disconnected" },
     site,
     probe: probeStateOf(tabId),
     lateFrames: lateHookFrames(tabId),

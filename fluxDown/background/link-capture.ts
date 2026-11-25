@@ -4,9 +4,9 @@
 import { browser } from "wxt/browser";
 import { LinkCaptureRegistry } from "@/utils/link-capture";
 import { hasDownloadsApi } from "@/utils/platform";
-import type { SendChannel } from "./protocol";
+import type { DispatchTarget } from "@/utils/download-dispatch";
 
-export const linkCapture = new LinkCaptureRegistry<SendChannel>({
+export const linkCapture = new LinkCaptureRegistry<DispatchTarget>({
   download: (url) => browser.downloads.download({ url }),
   cancel: (downloadId) => browser.downloads.cancel(downloadId),
   erase: (downloadId) => browser.downloads.erase({ id: downloadId }),

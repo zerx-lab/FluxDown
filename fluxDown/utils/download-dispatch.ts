@@ -171,13 +171,17 @@ function effectiveMode(cfg: RoutingConfig): RemoteMode {
 
 /** 显式指定通道时（UI 的「发到本机 / 发到远程」）绕过 remoteMode 路由。 */
 export type DispatchChannel = "local" | "remote";
+export type DispatchTarget = DispatchChannel | RemoteServerConfig;
 
 export async function sendDownloadRequest(
   request: DownloadRequest,
-  channel?: DispatchChannel,
+  channel?: DispatchTarget,
 ): Promise<ApiResponse> {
   if (channel === "local") {
     return stamp(await localSend(request), "local");
+  }
+  if (typeof channel === "object") {
+    return stamp(await remoteSendDownloadRequest(request, channel), "remote");
   }
   if (channel === "remote") {
     const remote = remoteConfigOf(await getRoutingSettings());
@@ -324,10 +328,13 @@ async function remoteSendBatchPreservingAudio(
 
 export async function sendBatchDownloadRequest(
   items: BatchDownloadItem[],
-  channel?: DispatchChannel,
+  channel?: DispatchTarget,
 ): Promise<ApiResponse> {
   if (channel === "local") {
     return stamp(await localSendBatch(items), "local");
+  }
+  if (typeof channel === "object") {
+    return stamp(await remoteSendBatchPreservingAudio(items, channel), "remote");
   }
   if (channel === "remote") {
     const remote = remoteConfigOf(await getRoutingSettings());

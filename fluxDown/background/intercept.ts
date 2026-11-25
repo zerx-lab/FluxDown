@@ -33,7 +33,7 @@ import type { DownloadItemInfo } from "@/utils/settings";
 import { hasActiveBypass, isAppKnownDown } from "./breaker";
 import { linkCapture } from "./link-capture";
 import { sleep } from "./notify";
-import type { SendChannel } from "./protocol";
+import type { DispatchTarget } from "@/utils/download-dispatch";
 import { sawNetworkRequest } from "./request-cache";
 import { fallbackAfterSendFailure, sendToFluxDown } from "./sender";
 import { getCachedProfiles, getCachedSettings, peekCachedProfiles, peekCachedSettings } from "./settings-cache";
@@ -626,7 +626,7 @@ const handleDeterminingFilename: DeterminingFilenameListener = (
   const interceptAfterCancellation = async (
     itemInfo: DownloadItemInfo,
     referrer: string | undefined,
-    manual?: { channel?: SendChannel },
+    manual?: { channel?: DispatchTarget },
   ) => {
     let cancellationSucceeded = false;
     let cleanFilename: string | undefined;

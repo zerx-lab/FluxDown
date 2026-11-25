@@ -4,6 +4,7 @@
 import { browser } from "wxt/browser";
 import type { Browser } from "wxt/browser";
 import { sendBatchDownloadRequest, warmupNativeHost } from "@/utils/download-dispatch";
+import type { DispatchTarget } from "@/utils/download-dispatch";
 import { extractCleanFilename } from "@/utils/filename";
 import { t } from "@/utils/i18n";
 import { candidateFilename, defaultCandidateVariant } from "@/utils/media-candidates";
@@ -11,7 +12,8 @@ import type { BatchDownloadItem } from "@/utils/native-messaging";
 import { isAndroidPlatform } from "@/utils/platform";
 import { getCachedSettings } from "./settings-cache";
 import { notify, sleep } from "./notify";
-import type { SendChannel, SendResult } from "./protocol";
+import type { SendResult } from "./protocol";
+import { cancelledSelection, chooseManualTarget } from "./manual-target";
 import { extractAuthFromCache, requestHeaderCache, withBrowserUserAgent } from "./request-cache";
 import {
   describeSendError,
@@ -41,7 +43,7 @@ export async function downloadCandidate(
   tabId: number,
   candidateId: string,
   variantId: string | undefined,
-  channel: SendChannel | undefined,
+  channel: DispatchTarget | undefined,
 ): Promise<SendResult> {
   const view = await buildTabView(tabId, { withHandoff: false });
   const row = allRows(view).find((r) => r.candidate.id === candidateId);
@@ -104,7 +106,9 @@ export async function downloadPlayingMedia(): Promise<void> {
     notify(t("shortcut.downloadTitle"), hint);
     return;
   }
-  const result = await downloadCandidate(tab.id, row.candidate.id, row.playingVariantId ?? undefined, undefined);
+  const channel = await chooseManualTarget();
+  if (channel === null) return;
+  const result = await downloadCandidate(tab.id, row.candidate.id, row.playingVariantId ?? undefined, channel);
   if (!result.success) notify(t("shortcut.downloadTitle"), result.message ?? t("notify.sendFailed"));
 }
 
@@ -124,7 +128,7 @@ interface BatchInput {
 async function sendBatch(
   rawItems: BatchInput[],
   tabId: number | undefined,
-  channel: SendChannel | undefined,
+  channel: DispatchTarget | undefined,
   pageHost: string | undefined,
 ): Promise<SendResult> {
   // 相同视频轨 + 音频轨只允许创建一个任务；不同清晰度/编码的 URL 保留。
@@ -159,7 +163,7 @@ async function sendBatch(
   }
 
   // 预热 NMH：App 冷启动与下方逐项 cookie 收集（各 500ms 上限）并行
-  warmupNativeHost();
+  if (!channel || channel === "local") warmupNativeHost();
   const tabResources = tabId !== undefined && tabId >= 0 ? getResources(tabId) : [];
 
   const batchItems: BatchDownloadItem[] = await Promise.all(
@@ -226,7 +230,7 @@ async function sendBatch(
 export async function downloadResources(
   tabId: number,
   resourceIds: string[],
-  channel: SendChannel | undefined,
+  channel: DispatchTarget | undefined,
 ): Promise<SendResult> {
   const wanted = new Set(resourceIds);
   const resources = getResources(tabId).filter((r) => wanted.has(r.id));
@@ -287,7 +291,7 @@ export async function downloadUrls(
   urls: string[],
   referrer: string | undefined,
   tabId: number | undefined,
-  channel: SendChannel | undefined,
+  channel: DispatchTarget | undefined,
 ): Promise<SendResult> {
   const unique = [...new Set(urls.map((u) => u.trim()).filter(Boolean))];
   if (unique.length === 0) return { success: false, message: "No items" };
@@ -333,8 +337,15 @@ export async function handoffPage(tabId: number): Promise<SendResult> {
     }
   }
   if (!pageUrl) return { success: false, message: "No page url" };
-  const result = await sendToFluxDown({ url: pageUrl, referrer: pageUrl, fileSize: 0 });
-  return { success: result.success, message: result.message, channel: result.channel, taskId: createdTaskId(result.data) };
+  const channel = await chooseManualTarget();
+  if (channel === null) return cancelledSelection();
+  const result = await sendToFluxDown({ url: pageUrl, referrer: pageUrl, fileSize: 0, channel });
+  return {
+    success: result.success,
+    message: result.message,
+    channel: result.channel,
+    taskId: result.channel === "local" ? createdTaskId(result.data) : undefined,
+  };
 }
 
 /** 本机 `download` 应答的 `data`：直接建任务时为 `{ taskId }`，进确认框时为 `{ transactionIds }`。 */

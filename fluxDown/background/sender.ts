@@ -5,12 +5,13 @@ import { browser } from "wxt/browser";
 import type { Browser } from "wxt/browser";
 import { profileFor } from "@/utils/site-profiles";
 import { sendBatchDownloadRequest, sendDownloadRequest, warmupNativeHost, isUnreachableFailure } from "@/utils/download-dispatch";
+import type { DispatchTarget } from "@/utils/download-dispatch";
 import type { DownloadRequest } from "@/utils/native-messaging";
 import { extractCleanFilename } from "@/utils/filename";
 import { t } from "@/utils/i18n";
 import { allowBypass, claimAppDownNotice, markAppDown, markAppUp, probeAppReachable } from "./breaker";
 import { notify } from "./notify";
-import type { SendChannel, SendResult } from "./protocol";
+import type { SendResult } from "./protocol";
 import { extractAuthFromCache, requestHeaderCache, requestRecordCache, withBrowserUserAgent } from "./request-cache";
 import { lookupRequestRecord } from "./request-record";
 import type { CapturedBody } from "./request-record";
@@ -48,7 +49,7 @@ export interface SendInput {
   /** 离散音视频轨对的音频轨 URL；非空 = 视频轨 + 音频轨配对，引擎分别下载后 mux。 */
   audioUrl?: string;
   /** 显式通道（绕过 remoteMode 路由）。 */
-  channel?: SendChannel;
+  channel?: DispatchTarget;
   /** 发送来源：`intercept` = 浏览器下载拦截（仅此来源才跟踪桌面端取消并可能回退浏览器下载）；缺省为用户手动发送。 */
   origin?: "intercept";
   /** 页面 host：用于查站点配置（保存目录）；缺省取 referrer / URL 的 host。 */
@@ -160,7 +161,7 @@ async function deliverToFluxDown(input: SendInput): Promise<SendOutcome> {
 
   // === 预热 NMH 链路（fire-and-forget） ===
   // App 冷启动 ~0.7-1s，下方 cookie/认证收集最多 ~500ms。先发 warmup 让两者并行。
-  warmupNativeHost();
+  if (!channel || channel === "local") warmupNativeHost();
 
   // === 提取认证信息（Cookie / Authorization 等） ===
   // 策略 1：从 webRequest 缓存获取（最可靠 — 浏览器真正发出的请求头）。
@@ -400,7 +401,7 @@ export async function fallbackAfterSendFailure(
   url: string,
   filename?: string,
   silent = false,
-  channel?: SendChannel,
+  channel?: DispatchTarget,
 ): Promise<void> {
   const rejection = rejectedSends.get(url);
   rejectedSends.delete(url);

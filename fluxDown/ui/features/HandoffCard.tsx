@@ -81,7 +81,7 @@ export function HandoffCard(props: { handoff: HandoffState; tabId: number }): JS
       const res = await sendAction<"handoffPage">({ action: "handoffPage", tabId: props.tabId });
       if (res?.success) {
         if (res.taskId) setResolving(res.taskId);
-        else showToast(t("handoff.sent"), "success");
+        else showToast(t(res.channel === "remote" ? "notify.downloadSent" : "handoff.sent"), "success");
       } else showToast(res?.message || t("list.sendFailed"), "error");
     } catch {
       showToast(t("list.sendFailed"), "error");
@@ -92,6 +92,9 @@ export function HandoffCard(props: { handoff: HandoffState; tabId: number }): JS
 
   let text: string;
   switch (h.kind) {
+    case "choose-target":
+      text = t("remote.manualHint");
+      break;
     case "unavailable":
       text = t(`handoff.unavailable.${h.reason}`);
       break;
@@ -107,13 +110,13 @@ export function HandoffCard(props: { handoff: HandoffState; tabId: number }): JS
   }
 
   // 交给桌面解析依赖 NMH；Android 无桌面 App，也不探测完成前先隐藏
-  if (!desktopApp) return null;
+  if (!desktopApp && h.kind !== "choose-target") return null;
 
   return (
     <div class={`fd-handoff fd-handoff-${h.kind}`}>
       <Icon name="external" size={16} />
       <div class="fd-handoff-text">
-        <div class="fd-handoff-title">{t("handoff.title")}</div>
+        <div class="fd-handoff-title">{t(h.kind === "choose-target" ? "contextMenu.sendPageToFluxDown" : "handoff.title")}</div>
         <div class="fd-handoff-desc">{text}</div>
         {resolving ? (
           <div class="fd-progress fd-handoff-progress">
@@ -121,9 +124,9 @@ export function HandoffCard(props: { handoff: HandoffState; tabId: number }): JS
           </div>
         ) : null}
       </div>
-      {h.kind === "match" ? (
+      {h.kind === "match" || h.kind === "choose-target" ? (
         <Button size="sm" variant="primary" disabled={busy || resolving !== null} onClick={() => void send()}>
-          {resolving ? t("handoff.resolvingButton") : t("handoff.button")}
+          {resolving ? t("handoff.resolvingButton") : t(h.kind === "choose-target" ? "remote.manualChoose" : "handoff.button")}
         </Button>
       ) : null}
     </div>

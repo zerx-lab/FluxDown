@@ -92,6 +92,7 @@ export interface ResourceRow {
 }
 
 export type HandoffState =
+  | { kind: "choose-target" }
   | { kind: "unavailable"; reason: "disconnected" | "remote-mode" | "old-app" | "plugins-unsupported" }
   | { kind: "no-match"; installed: number }
   | { kind: "disabled"; identity: string; name: string }
@@ -357,6 +358,7 @@ export interface MessageMap {
     req: { urls: string[]; referrer?: string; tabId?: number; channel?: SendChannel };
     res: SendResult;
   };
+  interceptMagnet: { req: { url: string; referrer: string }; res: SendResult };
   handoffPage: { req: { tabId: number }; res: SendResult };
   clearResources: { req: { tabId?: number }; res: { ok: boolean } };
   collectLinks: { req: { tabId: number }; res: { links: ClassifiedLink[] } };
