@@ -13,13 +13,18 @@ export interface ManualServers {
   servers: ManualServer[];
 }
 
-export async function loadManualServers(): Promise<ManualServers> {
-  const stored = (await browser.storage.local.get(MANUAL_SERVERS_KEY))[MANUAL_SERVERS_KEY] as ManualServers | undefined;
-  return stored ?? { enabled: false, servers: [] };
+export type ManualServerChange =
+  | { kind: "toggle"; enabled: boolean }
+  | { kind: "add"; server: ManualServer }
+  | { kind: "edit"; server: ManualServer }
+  | { kind: "remove"; id: string };
+
+export function readManualServers(value: unknown): ManualServers {
+  return (value as ManualServers | undefined) ?? { enabled: false, servers: [] };
 }
 
-export async function saveManualServers(settings: ManualServers): Promise<void> {
-  await browser.storage.local.set({ [MANUAL_SERVERS_KEY]: settings });
+export async function loadManualServers(): Promise<ManualServers> {
+  return readManualServers((await browser.storage.local.get(MANUAL_SERVERS_KEY))[MANUAL_SERVERS_KEY]);
 }
 
 export function manualServerUrl(input: string): string | undefined {

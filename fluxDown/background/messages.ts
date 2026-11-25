@@ -24,6 +24,7 @@ import { parseDashJson } from "@/utils/dash-manifest";
 import { normalizeHlsPlaylist } from "@/utils/hls-playlist";
 import { buildMediaCandidates } from "@/utils/media-candidates";
 import { buildResourceDebugLog } from "@/utils/resource-debug-log";
+import { loadManualServers, MANUAL_SERVERS_KEY } from "@/utils/manual-servers";
 import { profileFor } from "@/utils/site-profiles";
 import { armBypassClick, hasActiveBypass, isAppKnownDown, markAppUp, setBypassKeyHeld } from "./breaker";
 import {
@@ -35,6 +36,7 @@ import {
   handoffPage,
 } from "./downloads";
 import { CANCELLED_SELECTION } from "./manual-batches";
+import { createManualServerWriter } from "./manual-server-writes";
 import { chooseManualTarget } from "./manual-target";
 import { showBrowserDownload } from "./browser-downloads";
 import { getCapabilities } from "./host";
@@ -188,6 +190,10 @@ async function collectFrameLinks(tabId: number, frameId: number): Promise<PageLi
   }
   return [];
 }
+
+const updateManualServers = createManualServerWriter(loadManualServers, (settings) =>
+  browser.storage.local.set({ [MANUAL_SERVERS_KEY]: settings }),
+);
 
 const handlers: { [A in MessageAction]: Handler<A> } = {
   async getPageConfig(req, sender) {
@@ -585,6 +591,11 @@ const handlers: { [A in MessageAction]: Handler<A> } = {
       ),
       key,
     });
+  },
+
+  async updateManualServers(req, sender) {
+    if (!isExtensionPage(sender)) return { ok: false };
+    return { ok: await updateManualServers(req.change) };
   },
 
   // 页面脚本管理：只接受扩展页（选项页 / popup），网页上下文的内容脚本消息一律拒绝。

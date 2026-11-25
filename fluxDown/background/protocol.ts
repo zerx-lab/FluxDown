@@ -16,6 +16,7 @@ import type { RulesListItem } from "./rule-view";
 import type { DashManifest } from "@/utils/dash-manifest";
 import type { HlsPlaylistInfo } from "@/utils/hls-playlist";
 import type { MediaCandidate } from "@/utils/media-candidates";
+import type { ManualServerChange } from "@/utils/manual-servers";
 import type { ResourceDebugLog } from "@/utils/resource-debug-log";
 import type {
   DetectedResource,
@@ -381,6 +382,8 @@ export interface MessageMap {
   /** 规则全文（列表只带精简字段）；不存在或被隐藏（发布构建的内置规则）时为 null。 */
   ruleGet: { req: { id: string }; res: SniffRuleV1 | null };
   rulesSyncStatus: { req: Record<never, never>; res: RuleSyncStatus };
+  /** 命名服务器配置变更，只接受扩展页发来的消息。 */
+  updateManualServers: { req: { change: ManualServerChange }; res: { ok: boolean } };
   /**
    * 页面脚本状态。`refresh`：none = 只读缓存；stale = 缓存超过 1 分钟才同步；force = 立即同步（选项页打开 / 手动重新检查）。
    * 只接受扩展页发来的消息。
