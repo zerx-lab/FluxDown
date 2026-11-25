@@ -48,6 +48,11 @@ GPUI 与 Web 的设置 → 下载 → 高级提供 Aria2 风格参数编辑器�
 - 任务表划选（`task_table.rs`）：非文件名拖出区域支持连续划选与边缘自动滚动，滚动任务按代际回收，避免旧 defer 清掉新一轮划选。
 - GPUI 多任务删除（`crates/downloads/src/deletion.rs` 纯逻辑 + `pages/downloads.rs::start_deletion`）：所有删除入口最终都经 `execute_commands`，其中 ≥2 个本地 `Delete` 按 `delete_files` 聚合后改走分块路径（单任务与远程删除保持原路径）。按 256 个一块顺序 `daemon.task.deleteMany`：`Unavailable` 同块退避重发（幂等），重发用尽或 `Timeout` 放弃剩余块，其它错误只记该块失败并继续；取消在块边界生效、在途块给 3s 收尾。确认后选区清空、待删行立即变淡且不可再选 / 操作，超过一块显示与导入同款的进度条（「正在删除 X / N」+ 取消）；结束时多任务弹「已删除 N 个任务」/「已取消删除」通知，有失败写入页面错误条（未确认块按任务是否仍在列表计数）。控制器整批消费 `TasksDeleted`，并把单任务的 `status=4, "deleted"` 哨兵当删除处理（不再把行闪成失败）。
 - `downloads` / `settings` / `account` / `rss` / `extensions`：各自拥有视图模型、controller 与 capability-local port；只消费 `fluxdown_protocol` DTO。
+- 新建下载（GPUI / Web / Android）：链接框高度固定，长链接换行或粘贴多条链接时在框内滚动。手动在 HTTP(S) 链接的文件名中写一处 `[起-止]`，如 `https://example.com/comic/[001-215].webp`。包含首尾，按起点位数保留前导零；普通数字文件名不推断。表单预览展开结果，多行模板合计最多生成 1000 条，超限不提交。
+  限额按去重前的展开次数计算；提交按 URL 保留第一条及其选项。导入与捕获链接仅在原 URL 仍在表单时保留字面标记；修改或删除后重新输入按手动链接解析。Web 新建下载的对话框和遮罩都接收本机种子拖放；超限时暂存，解除超限且目标为本机时提交，关闭对话框则取消暂存。选择远端时不接收新拖入的种子。
+  Web 下发到其他设备时逐条等待响应并显示进度；取消后等待在途请求结束，不再发送后续项，失败和未发送的链接留在表单中。表单忙碌时拒绝新拖入的种子，并提示稍后重新拖入。
+  提交期间链接框只读。Web 新建下载和「做种本机文件」表单由应用外壳挂载；切换路由时保留当前表单草稿、本机导入和远端下发状态，从新建下载进入做种无需切回下载页。
+  Web 的任务选择和文件冲突确认也由应用外壳挂载；在其他页面提交多文件种子时可直接选择文件，切换路由不重置尚未提交的选择。
 - 新建下载的通用插件清单（`downloads/pages/new_download/preview.rs` → `pages/manifest*.rs`，纯模型 `model/manifest.rs`）：本机单个 GET 链接先只读预解析；有清单才在原窗口切换文件选择，空结果 / 失败沿用原单任务路径。取消预解析及返回表单不建任务，代际隔离拒绝迟到回调；建组失败留在清单重试。默认全选插件返回的全部文件，不按平台 / 剧集 / 文件名推断或合并；只有 `item.variants` 非空时提供规格下拉，显式选择才提交 `<itemId>@<variantId>`，插件默认仍提交原 `itemId`。搜索、扩展名筛选、目录三态和导航、有效大小统计、保存目录 / 队列 / 立即或稍后沿用现有清单语义。外部捕获走 agent 私有上下文的只读预解析与成功后消费的建组 RPC，浏览器请求秘密不进入清单 DTO；多链接、远程下发、POST / body / 独立音轨及静默链路不强行切入此交互流程。
 - 组件管理（GPUI `extensions/pages/managed_components.rs`）：FFmpeg / yt-dlp 手动路径输入框按桌面目标平台选择示例，Windows 使用盘符路径与 `.exe`，macOS / Linux 使用各自的 POSIX 路径；示例不改写已配置的组件路径。
 - 插件登录（GPUI `extensions/components/plugin_auth*.rs`，Web `settings/sections/extensions/PluginAuthDialog.tsx`）：普通文本经 `components::qr_image`（`components/src/qr.rs`，唯一 `qrcodegen` 依赖方，`QrPalette::MONOCHROME` 白底黑码）本地编码，支持的 base64 图片 data URL 优先；四模块 quiet zone，按挑战内容缓存，不在 2s poll 中重复编码。pending 省略挑战保留上一帧，挑战替换/清除不展示旧图，编码失败仍可复制完整原文；pending/success 消息为普通提示，仅 error 使用错误样式。

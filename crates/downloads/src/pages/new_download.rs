@@ -18,7 +18,7 @@ use probe::LinkProbe;
 
 use std::{
     cell::Cell,
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     rc::Rc,
     sync::Arc,
     time::Duration,
@@ -45,8 +45,8 @@ use crate::{
             ProxyChoice, SubfolderError, THREAD_PRESETS, ThreadChoice, UA_PRESET_CUSTOM,
             UA_PRESET_DEFAULT, UA_PRESETS, UrlEntry, append_entries, build_requests, capture_entry,
             captured_referrer, check_subfolder, checksum_spec, compose_request, custom_segments,
-            detect_ua_preset, manual_proxy_url, parse_entries, parse_input, suggested_subfolder,
-            ua_preset_keys, ua_preset_value,
+            detect_ua_preset, manual_proxy_url, parse_entries, parse_manual_input,
+            retain_literal_urls, suggested_subfolder, ua_preset_keys, ua_preset_value,
         },
         save_dir_category::{
             CategoryMode, NewDownloadCategory, category_mode_preference, category_options,
@@ -56,6 +56,7 @@ use crate::{
             CategorySaveDirHistory, read_category_save_dir_history, read_save_dir_history,
             record_category_save_dir, record_save_dir, save_dir_choices,
         },
+        url_range::UrlRangeExpansion,
     },
     strings::NewDownloadStrings,
     submission::{
@@ -68,6 +69,7 @@ use fluxdown_protocol::{
 use fluxdown_ui_components::{
     ControlExt as _, FluxIcon, IconControlExt as _, check_row, field_error, field_hint,
     field_label, form, form_field, form_gap, form_row, input_with_action, option_group, option_row,
+    tooltip_view,
 };
 use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_theme::active_theme;
@@ -98,8 +100,6 @@ const HEADER_NAME_WIDTH: f32 = 168.;
 const SITE_AUTH_LOOKUP_DEBOUNCE: Duration = Duration::from_millis(250);
 /// 保存目录历史下拉的最大高度（超出滚动）。
 const SAVE_DIR_MENU_MAX_HEIGHT: f32 = 320.;
-/// 链接输入框随内容自增高的上限（行，含软换行）；默认一行，超出后框内滚动。与 Web 同值。
-const URLS_MAX_ROWS: usize = 10;
 
 /// 队列下拉候选（显示名由表单按内置队列本地化）。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -331,6 +331,9 @@ pub struct NewDownloadView {
     on_submit: NewDownloadSubmit,
     urls: Entity<TextareaState>,
     entries: Vec<UrlEntry>,
+    ranges: UrlRangeExpansion,
+    /// 可能被误识别成模板的外部链接（捕获、TXT 或拖入），只按字面提交。
+    literal_urls: HashSet<String>,
     /// 尚未确认 / 忽略的外部捕获；按 URL 与链接行对应。
     captures: Vec<PendingCaptureDto>,
     save_dir: Entity<InputState>,
@@ -403,7 +406,6 @@ impl NewDownloadView {
         let strings = NewDownloadStrings::from_translator(translator.read(cx));
         let urls = cx.new(|cx| {
             TextareaState::new(window, cx)
-                .auto_grow(1, URLS_MAX_ROWS)
                 .default_value(context.initial_urls.join("\n"))
                 .placeholder(strings.url_placeholder.clone())
         });
@@ -453,6 +455,12 @@ impl NewDownloadView {
             context.initial_category_mode.as_deref(),
             &context.category_options,
         );
+        let literal_urls = context
+            .initial_urls
+            .iter()
+            .filter(|url| url.contains('['))
+            .cloned()
+            .collect();
         let mut this = Self {
             threads: ThreadChoice::from_segments(context.segments),
             rename,
@@ -476,6 +484,8 @@ impl NewDownloadView {
             on_submit,
             urls,
             entries: Vec::new(),
+            ranges: UrlRangeExpansion::default(),
+            literal_urls,
             captures: Vec::new(),
             save_dir,
             use_subfolder: false,
@@ -662,8 +672,11 @@ impl NewDownloadView {
     }
 
     fn refresh_entries(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let parsed = parse_input(&self.urls.read(cx).value(), false);
+        let value = self.urls.read(cx).value();
+        retain_literal_urls(&value, &mut self.literal_urls);
+        let parsed = parse_manual_input(&value, &self.literal_urls);
         self.entries = parsed.entries;
+        self.ranges = parsed.ranges;
         self.sync_site_auth(window, cx);
         self.sync_referrer(&parsed.hints.referrer, window, cx);
         self.sync_hints(parsed.hints, window, cx);
@@ -712,11 +725,19 @@ impl NewDownloadView {
             self.save_dir
                 .update(cx, |input, cx| input.set_value(save_dir, window, cx));
         }
+        // 已存在的同 URL 行也将用于确认这一捕获。
+        self.literal_urls.extend(
+            fresh
+                .iter()
+                .filter(|capture| capture.url.contains('['))
+                .map(|capture| capture.url.clone()),
+        );
         let text = append_entries(
             &current,
             fresh
                 .iter()
                 .map(|capture| capture_entry(&capture.url, &capture.file_name)),
+            &mut self.literal_urls,
         );
         self.urls
             .update(cx, |input, cx| input.set_value(text, window, cx));
@@ -733,6 +754,7 @@ impl NewDownloadView {
                 url,
                 ..UrlEntry::default()
             }),
+            &mut self.literal_urls,
         );
         if text == current.trim_end() {
             return;
@@ -941,6 +963,7 @@ impl NewDownloadView {
             || self.preview_gate.is_active()
             || self.manifest.is_some()
             || self.entries.is_empty()
+            || self.ranges.limit_exceeded
         {
             return false;
         }
@@ -1381,7 +1404,7 @@ impl NewDownloadView {
     }
 
     fn pick_torrent_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.picking {
+        if self.picking || self.ranges.limit_exceeded {
             return;
         }
         self.picking = true;
@@ -1404,7 +1427,7 @@ impl NewDownloadView {
             let Ok(()) = this.update_in(cx, |this, window, cx| {
                 this.picking = false;
                 cx.notify();
-                if paths.is_empty() {
+                if paths.is_empty() || this.ranges.limit_exceeded {
                     return;
                 }
                 let options = TorrentFileOptions {
@@ -1480,7 +1503,11 @@ impl NewDownloadView {
                     return;
                 }
                 let count = imported.len();
-                let merged = append_entries(&this.urls.read(cx).value(), imported);
+                let merged = append_entries(
+                    &this.urls.read(cx).value(),
+                    imported,
+                    &mut this.literal_urls,
+                );
                 this.urls
                     .update(cx, |input, cx| input.set_value(merged, window, cx));
                 this.refresh_entries(window, cx);
@@ -1826,17 +1853,9 @@ impl NewDownloadView {
 
     /// 链接：标签行右侧显示已识别条数；多行输入下方是种子 / 文本导入入口。
     fn render_urls(&self, cx: &mut Context<Self>) -> Div {
-        let theme = active_theme(cx);
-        let spacing = theme.tokens().spacing;
+        let spacing = active_theme(cx).tokens().spacing;
         let count = self.entries.len();
         let has_text = !self.urls.read(cx).value().trim().is_empty();
-        let url_box = {
-            let tokens = theme.tokens();
-            Textarea::new(&self.urls)
-                .w_full()
-                .text_size(tokens.typography.sm.size)
-                .line_height(tokens.typography.sm.line_height)
-        };
         v_flex()
             .w_full()
             .gap(spacing.xs + spacing.xxs)
@@ -1849,10 +1868,37 @@ impl NewDownloadView {
                         this.child(field_hint(self.strings.format_url_count(count), cx))
                     }),
             )
-            .child(url_box)
-            .when(has_text && count == 0, |this| {
-                this.child(field_error(self.strings.no_valid_url.clone(), cx))
+            .child(Self::textarea(&self.urls, px(72.), 3., cx))
+            .child(field_hint(self.strings.url_range_hint.clone(), cx))
+            .when(self.ranges.limit_exceeded, |this| {
+                this.child(field_error(self.strings.url_range_limit.clone(), cx))
             })
+            .children(self.ranges.preview.map(|(first, last)| {
+                v_flex().w_full().min_w_0().children(
+                    std::iter::once(first)
+                        .chain((last != first).then_some(last))
+                        .enumerate()
+                        .filter_map(|(position, index)| {
+                            let url = SharedString::from(self.entries.get(index)?.url.clone());
+                            Some(
+                                field_hint(url.clone(), cx)
+                                    .w_full()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis_middle()
+                                    .id(("url-range-preview", position))
+                                    .tooltip(move |window, cx| {
+                                        tooltip_view(url.clone(), window, cx)
+                                    }),
+                            )
+                        }),
+                )
+            }))
+            .when(
+                has_text && count == 0 && !self.ranges.limit_exceeded,
+                |this| this.child(field_error(self.strings.no_valid_url.clone(), cx)),
+            )
             .children(self.render_probe_status(cx))
             .children(self.render_duplicate_hint(cx))
             .when(!self.captures.is_empty() && !self.is_remote(), |this| {
@@ -1867,7 +1913,9 @@ impl NewDownloadView {
                             .icon(FluxIcon::FolderOpen)
                             .label(self.strings.open_torrent.clone())
                             .control(cx)
-                            .disabled(self.picking || self.is_remote())
+                            .disabled(
+                                self.picking || self.is_remote() || self.ranges.limit_exceeded,
+                            )
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                 this.pick_torrent_files(window, cx);
                             })),

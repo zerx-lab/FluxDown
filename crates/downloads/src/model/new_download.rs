@@ -8,6 +8,7 @@ use fluxdown_protocol::{CreateTaskItem, CreateTaskRequest, MAX_TASK_SEGMENTS, Pe
 
 use super::aria2c::{RequestHints, join_continuations, parse_command};
 use super::series_title::series_title;
+use super::url_range::{UrlRangeExpansion, parse_decimal_bounds};
 
 /// 一条解析出的下载条目（aria2 风格：URL + 可选 `out=` / `checksum=` 选项行）。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -225,17 +226,33 @@ pub(crate) struct ParsedInput {
     pub(crate) entries: Vec<UrlEntry>,
     /// 第一条产出了条目的 aria2c 命令的头部信息（其余命令的不采用）；没有时为空。
     pub(crate) hints: RequestHints,
+    pub(crate) ranges: UrlRangeExpansion,
 }
 
 /// 解析规则见 [`parse_entries`]。行首为 `aria2c` 的命令（先合并其续行）按 shell 规则切词，
 /// 提取链接 / `-o` / `--checksum`（#299，详见 [`crate::model::aria2c`]），头部信息随结果
 /// 返回；其余行的行为不变。
 pub(crate) fn parse_input(text: &str, loose: bool) -> ParsedInput {
+    parse_input_impl(text, loose, None)
+}
+
+/// 只展开手动输入的链接行；外部导入和 aria2c 命令里的链接保持字面值。
+pub(crate) fn parse_manual_input(text: &str, literal_urls: &HashSet<String>) -> ParsedInput {
+    parse_input_impl(text, false, Some(literal_urls))
+}
+
+fn parse_input_impl(
+    text: &str,
+    loose: bool,
+    literal_urls: Option<&HashSet<String>>,
+) -> ParsedInput {
     let visible = strip_invisible(text);
     let text = join_continuations(&visible);
     let mut entries = Vec::new();
     let mut hints: Option<RequestHints> = None;
     let mut current: Option<UrlEntry> = None;
+    let mut current_manual = false;
+    let mut ranges = UrlRangeExpansion::default();
     for line in text.split('\n') {
         if (line.starts_with(' ') || line.starts_with('\t')) && !starts_with_link(line.trim()) {
             let Some(entry) = current.as_mut() else {
@@ -254,8 +271,12 @@ pub(crate) fn parse_input(text: &str, loose: bool) -> ParsedInput {
             continue;
         }
         if let Some(entry) = current.take() {
-            entries.push(entry);
+            ranges.push(&mut entries, entry, current_manual);
+            if ranges.limit_exceeded {
+                break;
+            }
         }
+        current_manual = false;
         if let Some(command) = parse_command(trimmed) {
             let mut produced = command.entries;
             if !produced.is_empty() && hints.is_none() {
@@ -279,14 +300,19 @@ pub(crate) fn parse_input(text: &str, loose: bool) -> ParsedInput {
             }
         } else if let Some(url) = leading_manual_url(trimmed) {
             current = Some(UrlEntry::with_url(url));
+            current_manual = literal_urls.is_some_and(|urls| !urls.contains(url));
         }
     }
     if let Some(entry) = current {
-        entries.push(entry);
+        ranges.push(&mut entries, entry, current_manual);
+    }
+    if literal_urls.is_some() {
+        ranges.deduplicate(&mut entries);
     }
     ParsedInput {
         entries,
         hints: hints.unwrap_or_default(),
+        ranges,
     }
 }
 
@@ -357,12 +383,21 @@ fn find_url(line: &str) -> Option<&str> {
 
 /// 去掉 URL 末尾常见标点（TXT 文本中 URL 后可能跟随句号 / 逗号等）。
 fn trim_url_tail(url: &str) -> &str {
-    url.trim_end_matches(|c: char| ".,;:!?()[]{}".contains(c))
+    let trimmed = url.trim_end_matches(|c: char| ".,;:!?()[]{}".contains(c));
+    // 数字范围的闭括号属于链接，而不是链接之后的正文标点。
+    if url.as_bytes().get(trimmed.len()) == Some(&b']')
+        && trimmed
+            .rsplit_once('[')
+            .is_some_and(|(_, bounds)| parse_decimal_bounds(bounds).is_some())
+    {
+        return url.get(..trimmed.len() + 1).unwrap_or(trimmed);
+    }
+    trimmed
 }
 
 /// 条目 → aria2 风格文本（含 `out=` / `checksum=` 选项行）。
-pub(crate) fn entry_to_text(entry: &UrlEntry) -> String {
-    let mut text = entry.url.clone();
+fn push_entry_text(text: &mut String, entry: &UrlEntry) {
+    text.push_str(&entry.url);
     if !entry.file_name.is_empty() {
         text.push_str("\n  out=");
         text.push_str(&entry.file_name);
@@ -371,14 +406,13 @@ pub(crate) fn entry_to_text(entry: &UrlEntry) -> String {
         text.push_str("\n  checksum=");
         text.push_str(&entry.checksum);
     }
-    text
 }
 
-/// 把条目追加到现有文本末尾：原文逐字保留（含注释 / 尚未输完的行 / aria2c 命令），已存在
-/// 的 URL 跳过。用于外部捕获与 TXT 导入陆续进入正在编辑的表单。
+/// 追加外部条目并记住新加入的潜在模板：已有文本原样保留，重复 URL 跳过。
 pub(crate) fn append_entries(
     existing_text: &str,
     entries: impl IntoIterator<Item = UrlEntry>,
+    literal_urls: &mut HashSet<String>,
 ) -> String {
     let mut seen = parse_entries(existing_text, false)
         .into_iter()
@@ -386,15 +420,31 @@ pub(crate) fn append_entries(
         .collect::<HashSet<_>>();
     let mut text = existing_text.trim_end().to_owned();
     for entry in entries {
-        if !seen.insert(entry.url.clone()) {
+        if seen.contains(&entry.url) {
             continue;
         }
         if !text.is_empty() {
             text.push('\n');
         }
-        text.push_str(&entry_to_text(&entry));
+        push_entry_text(&mut text, &entry);
+        if entry.url.contains('[') && !literal_urls.contains(&entry.url) {
+            literal_urls.insert(entry.url.clone());
+        }
+        seen.insert(entry.url);
     }
     text
+}
+
+/// 删除了外部链接行后，再手动输入同一链接时允许展开。
+pub(crate) fn retain_literal_urls(text: &str, literal_urls: &mut HashSet<String>) {
+    if literal_urls.is_empty() {
+        return;
+    }
+    let present: HashSet<_> = parse_entries(text, false)
+        .into_iter()
+        .map(|entry| entry.url)
+        .collect();
+    literal_urls.retain(|url| present.contains(url));
 }
 
 /// 强制直连哨兵值。
@@ -716,7 +766,7 @@ pub(crate) fn build_requests(entries: &[UrlEntry], options: &DraftOptions) -> Bu
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::{BTreeMap, HashMap, HashSet};
 
     use fluxdown_protocol::PendingCaptureDto;
 
@@ -933,6 +983,7 @@ mod tests {
                     ..UrlEntry::default()
                 },
             ],
+            &mut HashSet::new(),
         );
         assert_eq!(
             text,
@@ -945,7 +996,8 @@ mod tests {
                 [UrlEntry {
                     url: "https://c.example/x".to_owned(),
                     ..UrlEntry::default()
-                }]
+                }],
+                &mut HashSet::new(),
             ),
             "https://c.example/x"
         );
@@ -1112,6 +1164,7 @@ mod tests {
                     checksum: "md5=ff".to_owned(),
                 },
             ],
+            &mut HashSet::new(),
         );
         assert_eq!(
             merged,
@@ -1133,7 +1186,7 @@ mod tests {
                 ..UrlEntry::default()
             },
         ];
-        let text = append_entries(existing, imported);
+        let text = append_entries(existing, imported, &mut HashSet::new());
         assert_eq!(text, format!("{existing}\nhttps://b.example/b.zip"));
         let parsed = parse_input(&text, false);
         assert_eq!(parsed.hints.cookie, "sid=abc");

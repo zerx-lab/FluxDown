@@ -1,7 +1,7 @@
 import * as RadixDialog from '@radix-ui/react-dialog'
 import { X } from 'lucide-react'
 import { useRef } from 'react'
-import type { ReactNode } from 'react'
+import type { DragEvent, ReactNode } from 'react'
 import { useT } from '../i18n'
 import { cn } from '../lib/cn'
 import { Button } from './Button'
@@ -32,6 +32,8 @@ export interface DialogProps {
   /** 点遮罩不关闭（Esc / 关闭按钮 / 取消仍可关闭）；用于填写验证码等误触代价高的表单。 */
   persistent?: boolean
   className?: string
+  /** 接收内容和遮罩上的外部文件；文本拖放保留浏览器默认行为。 */
+  onDropFiles?: (files: File[]) => void
 }
 
 /**
@@ -51,15 +53,30 @@ function pressedInside(content: HTMLElement | null, event: { detail: { originalE
  * 对话框：桌面居中（`components.dialog.radius`），移动端（<=820px）全屏——
  * 顶部标题栏带关闭按钮，底栏吸底并避开安全区。标题栏 15/20 半粗（GPUI `dialog_title`）。
  */
-export function Dialog({ open, onOpenChange, title, description, footer, size = 'md', children, modalLocked, persistent, className }: DialogProps) {
+export function Dialog({ open, onOpenChange, title, description, footer, size = 'md', children, modalLocked, persistent, className, onDropFiles }: DialogProps) {
   const t = useT()
   const mobile = useIsMobile()
   const contentRef = useRef<HTMLDivElement>(null)
+  const fileDrop = onDropFiles && {
+    onDragOver(event: DragEvent<HTMLDivElement>) {
+      if (event.dataTransfer.types.includes('Files')) event.preventDefault()
+    },
+    onDrop(event: DragEvent<HTMLDivElement>) {
+      if (!event.dataTransfer.types.includes('Files')) return
+      event.preventDefault()
+      event.stopPropagation()
+      onDropFiles(Array.from(event.dataTransfer.files))
+    },
+  }
   return (
     <RadixDialog.Root open={open} onOpenChange={onOpenChange}>
       <RadixDialog.Portal>
-        <RadixDialog.Overlay className="animate-fx-fade data-[state=closed]:animate-fx-fade-out fixed inset-0 z-40 bg-black/40" />
+        <RadixDialog.Overlay
+          {...fileDrop}
+          className="animate-fx-fade data-[state=closed]:animate-fx-fade-out fixed inset-0 z-40 bg-black/40"
+        />
         <RadixDialog.Content
+          {...fileDrop}
           ref={contentRef}
           onPointerDownOutside={(event) => pressedInside(contentRef.current, event) && event.preventDefault()}
           onInteractOutside={(event) => (modalLocked || persistent) && event.preventDefault()}
