@@ -770,6 +770,10 @@ impl BansPanel {
             .py(tokens.spacing.xs)
             .border_b_1()
             .border_color(extended.colors.hairline)
+            .when(index + 1 == self.items.len(), |row| {
+                let radius = theme.components().card_radius - extended.stroke.thin;
+                row.rounded_b(radius.max(gpui::Pixels::ZERO))
+            })
             .hover(|style| style.bg(extended.colors.row_hover))
             .text_size(tokens.typography.sm.size)
             .line_height(tokens.typography.sm.line_height)
@@ -926,12 +930,12 @@ impl BansPanel {
             return empty_state(FluxIcon::Shield, self.t(key), SharedString::default(), cx)
                 .into_any_element();
         }
+        let theme = active_theme(cx);
         let mut table = card(cx)
             .flex()
             .flex_col()
             .w_full()
-            .min_w(active_theme(cx).text_extent(MIN_TABLE_WIDTH))
-            .overflow_hidden();
+            .min_w(theme.text_extent(MIN_TABLE_WIDTH));
         table = table.child(self.header(cx));
         for (index, item) in self.items.iter().enumerate() {
             table = table.child(self.entry_row(index, item, cx));

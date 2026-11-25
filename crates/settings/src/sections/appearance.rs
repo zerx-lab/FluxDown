@@ -359,7 +359,6 @@ fn theme_card(
         .border_1()
         .border_color(preview.border)
         .bg(preview.background)
-        .overflow_hidden()
         .child(
             v_flex()
                 .w(px(THEME_PREVIEW_SIDEBAR_WIDTH))
@@ -367,6 +366,7 @@ fn theme_card(
                 .items_center()
                 .justify_center()
                 .gap(px(THEME_PREVIEW_BAR_HEIGHT))
+                .rounded_l((tokens.radius.md - px(1.)).max(px(0.)))
                 .bg(preview.surface)
                 .child(bar(px(16.).into(), preview.primary))
                 .child(bar(px(16.).into(), preview.muted_foreground.opacity(0.35)))

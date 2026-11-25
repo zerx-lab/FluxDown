@@ -590,7 +590,6 @@ fn meter_row(
                 .h(px(4.))
                 .rounded_full()
                 .bg(tokens.colors.muted)
-                .overflow_hidden()
                 .child(
                     div()
                         .h_full()
@@ -1408,7 +1407,8 @@ fn log_section(page: &CloudPage, window: &mut Window, cx: &mut App) -> Div {
                 .into_any_element()
         }
     } else {
-        let mut list = card(cx).w_full().flex().flex_col().overflow_hidden();
+        let radius = (theme.components().card_radius - theme.extended().stroke.thin).max(px(0.));
+        let mut list = card(cx).w_full().flex().flex_col();
         for (index, delivery) in deliveries.iter().enumerate() {
             let (status_key, tone) = delivery_status(&delivery.status);
             let target_color = match tone {
@@ -1480,6 +1480,8 @@ fn log_section(page: &CloudPage, window: &mut Window, cx: &mut App) -> Div {
                     .when(index > 0, |row| {
                         row.border_t_1().border_color(extended.hairline)
                     })
+                    .when(index == 0, |row| row.rounded_t(radius))
+                    .when(index + 1 == deliveries.len(), |row| row.rounded_b(radius))
                     .hover(move |style| style.bg(extended.row_hover))
                     .child(dot)
                     .child(

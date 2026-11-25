@@ -651,7 +651,9 @@ impl CloudChannelDialog {
         let removable = can_remove(&self.recipients);
         let can_add = can_add_more(&self.recipients);
 
-        let mut list = card(cx).w_full().flex().flex_col().overflow_hidden();
+        let radius =
+            (theme.components().card_radius - theme.extended().stroke.thin).max(gpui::px(0.));
+        let mut list = card(cx).w_full().flex().flex_col();
         for (index, address) in self.recipients.iter().enumerate() {
             let (badge_key, badge_color) = match recipient_badge(address, &account_email) {
                 RecipientBadge::Account => ("cloudNotifyEmailUseAccount", tokens.colors.foreground),
@@ -669,6 +671,10 @@ impl CloudChannelDialog {
                     .py(tokens.spacing.xs)
                     .when(index > 0, |row| {
                         row.border_t_1().border_color(extended.hairline)
+                    })
+                    .when(index == 0, |row| row.rounded_t(radius))
+                    .when(index + 1 == self.recipients.len(), |row| {
+                        row.rounded_b(radius)
                     })
                     .hover(move |style| style.bg(extended.row_hover))
                     .child(
@@ -985,10 +991,8 @@ impl CloudChannelDialog {
                 let qr = qr.clone().map(|image| {
                     div()
                         .flex_none()
-                        .rounded(tokens.radius.md)
                         .border_1()
                         .border_color(hairline)
-                        .overflow_hidden()
                         .child(img(image).size(qr_size))
                 });
                 panel = panel.child(
