@@ -148,6 +148,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   const [progress, setProgress] = useState<ImportProgress | null>(null)
   const [cancelling, setCancelling] = useState(false)
   const importAbort = useRef<AbortController | null>(null)
+  const remoteAbort = useRef<AbortController | null>(null)
   const [manifest, setManifest] = useState<{ preview: ResolvePreviewResponse; sourceUrl: string; base: ManifestBaseOptions } | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [busyFiles, setBusyFiles] = useState(false)
@@ -364,8 +365,8 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   )
 
   useEffect(() => () => {
-    const active = importAbort.current
-    importAbort.current = null
+    const active = remoteAbort.current
+    remoteAbort.current = null
     active?.abort()
   }, [])
 
@@ -526,7 +527,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
     const renamed = entries.length === 1 ? rename.trim() : ''
     const route = dispatchRoute(remote)
     const controller = new AbortController()
-    importAbort.current = controller
+    remoteAbort.current = controller
     setCancelling(false)
     setProgress({ total: entries.length, done: 0, failed: 0, retry: null })
     const summary = await dispatchSequentially(entries, (entry) => {
@@ -535,10 +536,10 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
         ? rpc.agent.remote.dispatch(remoteDispatchParams(remote.id, input, remoteSaveDir))
         : rpc.agent.link.dispatch(linkDispatchParams(route.fingerprint, input, remoteSaveDir))
     }, controller.signal, (done, failed) => {
-      if (importAbort.current === controller) setProgress({ total: entries.length, done, failed, retry: null })
+      if (remoteAbort.current === controller) setProgress({ total: entries.length, done, failed, retry: null })
     })
-    if (importAbort.current !== controller) return
-    importAbort.current = null
+    if (remoteAbort.current !== controller) return
+    remoteAbort.current = null
     setProgress(null)
     if (summary.unsent.length > 0) {
       setNotice(t('importCancelled', { added: summary.ok.toLocaleString(), total: entries.length.toLocaleString() }))
@@ -795,7 +796,8 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
 
   const cancelImport = () => {
     setCancelling(true)
-    importAbort.current?.abort()
+    const active = remoteAbort.current ?? importAbort.current
+    active?.abort()
   }
   const progressLabel = !progress
     ? ''
@@ -915,6 +917,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
               id="new-download-urls"
               rows={3}
               value={text}
+              readOnly={phase === 'submitting'}
               spellCheck={false}
               autoFocus
               placeholder={t('newDownloadUrlPlaceholder')}

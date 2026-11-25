@@ -94,7 +94,7 @@ private fun hasCommandContinuation(line: String): Boolean {
 }
 
 private fun startsAria2Command(line: String): Boolean {
-    val first = line.first()
+    val first = line.firstOrNull() ?: return false
     val start = if (first == '"' || first == '\'') 1 else 0
     val end = if (start == 1) {
         val close = line.indexOf(first, start)

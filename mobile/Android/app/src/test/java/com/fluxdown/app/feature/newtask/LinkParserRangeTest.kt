@@ -170,6 +170,16 @@ class LinkParserRangeTest {
         )
     }
 
+    @Test fun ignoresStandaloneContinuationMarkersWithoutConsumingTheNextManualRange() {
+        for (marker in listOf('\\', '^')) {
+            val parsed = parseManualEntries("$marker\nhttps://example.com/[01-02].zip")
+            assertEquals(
+                listOf(UrlEntry("https://example.com/01.zip"), UrlEntry("https://example.com/02.zip")),
+                parsed.entries,
+            )
+        }
+    }
+
     @Test fun preservesWindowsCommandContinuationButNotAnEscapedMarkerOrUrlPath() {
         val template = "https://example.com/[01-02].zip"
         val windows = parseManualEntries("\"C:\\Program Files\\aria2\\aria2c.exe\" ^\n$template")
