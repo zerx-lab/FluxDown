@@ -28,7 +28,9 @@ export function QuickDownload(props: { onSent?: () => void; channel?: "remote" }
     setBusy(true);
     try {
       const res = await sendAction<"downloadUrls">({ action: "downloadUrls", urls: [value], channel: props.channel });
-      if (res?.success) {
+      if (res?.cancelled) {
+        showToast(t("remote.manualCancelled"));
+      } else if (res?.success) {
         showToast(t("popup.quickDownload.sent"), "success");
         setUrl("");
         props.onSent?.();

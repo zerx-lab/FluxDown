@@ -28,11 +28,14 @@ import { profileFor } from "@/utils/site-profiles";
 import { armBypassClick, hasActiveBypass, isAppKnownDown, markAppUp, setBypassKeyHeld } from "./breaker";
 import {
   downloadCandidate,
+  downloadInterceptedMagnet,
+  downloadManualUrls,
   downloadResources,
-  downloadUrls,
+  downloadSelection,
   handoffPage,
 } from "./downloads";
-import { cancelledSelection, chooseManualTarget } from "./manual-target";
+import { CANCELLED_SELECTION } from "./manual-batches";
+import { chooseManualTarget } from "./manual-target";
 import { showBrowserDownload } from "./browser-downloads";
 import { getCapabilities } from "./host";
 import { isInterceptActive, markPreempted } from "./intercept";
@@ -406,7 +409,7 @@ const handlers: { [A in MessageAction]: Handler<A> } = {
     const tabId = await resolveTabId(sender, req.tabId);
     if (tabId === undefined) return { success: false, message: "No tab" };
     const channel = await chooseManualTarget(req.channel);
-    if (channel === null) return cancelledSelection();
+    if (channel === null) return CANCELLED_SELECTION;
     return downloadCandidate(tabId, req.candidateId, req.variantId, channel);
   },
 
@@ -414,20 +417,24 @@ const handlers: { [A in MessageAction]: Handler<A> } = {
     const tabId = await resolveTabId(sender, req.tabId);
     if (tabId === undefined) return { success: false, message: "No tab" };
     const channel = await chooseManualTarget(req.channel);
-    if (channel === null) return cancelledSelection();
+    if (channel === null) return CANCELLED_SELECTION;
     return downloadResources(tabId, req.resourceIds, channel);
+  },
+
+  async downloadSelection(req, sender) {
+    const tabId = await resolveTabId(sender, req.tabId);
+    if (tabId === undefined) return { success: false, message: "No tab" };
+    return downloadSelection(tabId, req.candidates, req.resourceIds);
   },
 
   async downloadUrls(req, sender) {
     const tabId = await resolveTabId(sender, req.tabId);
-    const channel = await chooseManualTarget(req.channel);
-    if (channel === null) return cancelledSelection();
-    return downloadUrls(req.urls, req.referrer, tabId, channel);
+    return downloadManualUrls(req.urls, req.referrer, tabId, req.channel);
   },
 
   async interceptMagnet(req, sender) {
     if (typeof req.url !== "string" || !/^magnet:/i.test(req.url)) return { success: false };
-    return downloadUrls([req.url], req.referrer, await resolveTabId(sender), undefined);
+    return downloadInterceptedMagnet(req.url, req.referrer, await resolveTabId(sender));
   },
 
   async handoffPage(req) {

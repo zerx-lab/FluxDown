@@ -79,7 +79,9 @@ export function HandoffCard(props: { handoff: HandoffState; tabId: number }): JS
     setBusy(true);
     try {
       const res = await sendAction<"handoffPage">({ action: "handoffPage", tabId: props.tabId });
-      if (res?.success) {
+      if (res?.cancelled) {
+        showToast(t("remote.manualCancelled"));
+      } else if (res?.success) {
         if (res.taskId) setResolving(res.taskId);
         else showToast(t(res.channel === "remote" ? "notify.downloadSent" : "handoff.sent"), "success");
       } else showToast(res?.message || t("list.sendFailed"), "error");

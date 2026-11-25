@@ -10,7 +10,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import type { JSX } from "preact";
 import type { ContentScriptContext } from "wxt/utils/content-script-context";
 import { createShadowRootUi, type ShadowRootContentScriptUi } from "wxt/utils/content-script-ui/shadow-root";
-import type { CandidateRow } from "@/background/protocol";
+import type { CandidateRow, SendResult } from "@/background/protocol";
 import type { PageConfig } from "@/page/bridge";
 import { isMediaTag, minTargetSize, type MediaTracker, type TrackedMedia } from "@/page/media-tracker";
 import { loadSiteProfiles, profileFor, saveSiteProfile } from "@/utils/site-profiles";
@@ -409,11 +409,14 @@ function FloatRoot(props: FloatRootProps): JSX.Element {
     window.setTimeout(() => setState("idle"), FLASH_MS);
   };
 
-  const send = async (run: () => Promise<{ success: boolean; message?: string } | undefined>): Promise<void> => {
+  const send = async (run: () => Promise<SendResult | undefined>): Promise<void> => {
     setState("busy");
     try {
       const res = await run();
-      if (res?.success) flash("done");
+      if (res?.cancelled) {
+        setState("idle");
+        showToast(t("remote.manualCancelled"));
+      } else if (res?.success) flash("done");
       else flash("error", res?.message);
     } catch (e) {
       flash("error", e instanceof Error ? e.message : undefined);

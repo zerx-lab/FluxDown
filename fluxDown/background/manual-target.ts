@@ -4,15 +4,11 @@ import { loadManualServers, manualServerUrl } from "@/utils/manual-servers";
 import type { DispatchTarget } from "@/utils/download-dispatch";
 import { t } from "@/utils/i18n";
 import { logWarn } from "@/utils/error-log";
-import type { SendChannel, SendResult } from "./protocol";
+import type { SendChannel } from "./protocol";
 import { getCachedSettings } from "./settings-cache";
 
 type Choice = { name: string; address?: string; target: DispatchTarget };
 const pending = new Map<string, { choices: Choice[]; finish: (target: DispatchTarget | null) => void }>();
-
-export function cancelledSelection(): SendResult {
-  return { success: false, message: t("remote.manualCancelled") };
-}
 
 /** undefined = keep default routing; null = no dispatch. Only explicit user actions call this. */
 export async function chooseManualTarget(channel?: SendChannel): Promise<DispatchTarget | null | undefined> {

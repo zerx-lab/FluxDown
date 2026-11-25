@@ -249,10 +249,17 @@ export type SendChannel = "local" | "remote";
 
 export interface SendResult {
   success: boolean;
+  /** 用户取消选择目标，尚未投递。 */
+  cancelled?: true;
   message?: string;
   channel?: SendChannel;
   /** 桌面端直接建好的任务 ID；交给桌面确认框（尚未建任务）或批量发送时为空。 */
   taskId?: string;
+}
+
+export interface CandidateSelection {
+  candidateId: string;
+  variantId?: string;
 }
 
 export interface PageLink {
@@ -352,6 +359,10 @@ export interface MessageMap {
   };
   downloadResources: {
     req: { tabId?: number; resourceIds: string[]; channel?: SendChannel };
+    res: SendResult;
+  };
+  downloadSelection: {
+    req: { tabId?: number; candidates: CandidateSelection[]; resourceIds: string[] };
     res: SendResult;
   };
   downloadUrls: {
