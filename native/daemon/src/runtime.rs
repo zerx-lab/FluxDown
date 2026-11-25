@@ -699,7 +699,9 @@ async fn initial_snapshot(
     })
 }
 
-fn take_engine_receivers(engine: &mut Engine) -> Result<EngineReceivers, std::io::Error> {
+pub(crate) fn take_engine_receivers(
+    engine: &mut Engine,
+) -> Result<EngineReceivers, std::io::Error> {
     let done = engine
         .manager
         .take_done_rx()

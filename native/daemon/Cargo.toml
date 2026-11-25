@@ -39,6 +39,7 @@ bt = ["fluxdown_engine/bt", "fluxdown_engine_protocol/bt"]
 ed2k = ["fluxdown_engine/ed2k", "fluxdown_engine_protocol/ed2k"]
 
 [dev-dependencies]
+tokio = { version = "1.52.3", features = ["test-util"] }
 zip = { version = "2", default-features = false }
 
 [target."cfg(windows)".build-dependencies]

@@ -394,9 +394,11 @@ async fn concurrent_reservations_pick_distinct_smallest_free_names() {
         }));
     }
     let mut names = Vec::new();
+    let mut reservations = Vec::new();
     for handle in handles {
         let (name, temp) = handle.await.expect("reservation task");
-        assert_eq!(temp, dir.join(format!("{name}.fdownloading")));
+        assert_eq!(temp.path, dir.join(format!("{name}.fdownloading")));
+        reservations.push(temp);
         names.push(name);
     }
     let distinct: HashSet<&String> = names.iter().collect();
@@ -413,5 +415,7 @@ async fn concurrent_reservations_pick_distinct_smallest_free_names() {
             .len(),
         24
     );
+    drop(reservations);
+    assert!(super::lock_reserved(&reserved).is_empty());
     std::fs::remove_dir_all(dir).expect("remove fixture dir");
 }

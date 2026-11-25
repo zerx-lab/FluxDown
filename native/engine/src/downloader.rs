@@ -6562,9 +6562,10 @@ async fn download_single_once(
     } else {
         downloaded = 0;
         file = tokio::io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, File::create(dest).await?);
-        // Reset DB progress so the UI doesn't show stale values
         if let Some(db) = checkpoint {
-            db.update_task_progress(task_id, 0).await?;
+            // A successfully opened temporary file belongs to this task even before the first byte.
+            db.record_http_partial(task_id, output::file_name(dest)?)
+                .await?;
         }
     }
 

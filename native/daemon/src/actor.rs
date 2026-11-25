@@ -28,6 +28,34 @@ pub const COMMAND_CAPACITY: usize = 64;
 
 /// 最后一次领域活动后静默多久收缩数据库连接池内存（见 `Db::release_idle_memory`）。
 const DB_MEMORY_TRIM_DELAY: Duration = Duration::from_secs(60);
+const REDOWNLOAD_STOP_TIMEOUT: Duration = Duration::from_secs(10);
+
+// Wait in the actor loop: TaskDone must release the old generation before
+// the command can reread state or touch any files.
+struct PendingRedownload {
+    generation: u64,
+    timer: tokio::task::AbortHandle,
+    recreate_if_present: bool,
+    ack: oneshot::Sender<Result<ActorResult, ActorError>>,
+}
+
+enum WorkerEvent {
+    Done(TaskDone),
+    RedownloadTimeout(Result<(String, u64), tokio::task::JoinError>),
+}
+
+async fn next_worker_event(
+    done: &mut mpsc::Receiver<TaskDone>,
+    timers: &mut tokio::task::JoinSet<(String, u64)>,
+) -> WorkerEvent {
+    tokio::select! {
+        // If both are ready, consume the worker completion before its timeout.
+        biased;
+        Some(done) = done.recv() => WorkerEvent::Done(done),
+        Some(timer) = timers.join_next(), if !timers.is_empty() => WorkerEvent::RedownloadTimeout(timer),
+        else => std::future::pending().await,
+    }
+}
 
 /// 本机做种任务的登记选项（`daemon.task.seedLocal`）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -423,6 +451,8 @@ pub enum ActorError {
     TaskFilesKept { in_use: bool, message: String },
     #[error("{}", fluxdown_engine::downloader::POST_ONLY_RESUME_MESSAGE)]
     BrowserRequestRequired,
+    #[error("Could not restart the download: the previous download did not stop in time.")]
+    TaskRestartTimeout,
 }
 
 /// daemon actor 命令。
@@ -639,6 +669,8 @@ async fn run_actor(
     let db_memory_trim = tokio::time::sleep(DB_MEMORY_TRIM_DELAY);
     tokio::pin!(db_memory_trim);
     let mut db_memory_trim_armed = true;
+    let mut redownloads = HashMap::<String, PendingRedownload>::new();
+    let mut redownload_timers = tokio::task::JoinSet::new();
 
     loop {
         tokio::select! {
@@ -647,6 +679,30 @@ async fn run_actor(
                 arm_db_memory_trim(db_memory_trim.as_mut(), &mut db_memory_trim_armed);
                 match command {
                     DaemonCommand::Execute { operation, ack } => {
+                        if let ActorOperation::RestartMissingFile { task_id, recreate_if_present } = &operation {
+                            if redownloads.contains_key(task_id) {
+                                drop(ack.send(Err(ActorError::TaskStateConflict(
+                                    "a redownload already waits for this task".into(),
+                                ))));
+                                continue;
+                            }
+                            if let Some(generation) = engine.manager.redownload_worker_generation(task_id)
+                                && engine.db.load_task_by_id(task_id).await.is_ok_and(|task| {
+                                    task.is_some_and(|task| matches!(task.status, 3 | 4))
+                                })
+                            {
+                                let deadline = tokio::time::Instant::now() + REDOWNLOAD_STOP_TIMEOUT;
+                                let timer_id = task_id.clone();
+                                let timer = redownload_timers.spawn(async move {
+                                    tokio::time::sleep_until(deadline).await;
+                                    (timer_id, generation)
+                                });
+                                redownloads.insert(task_id.clone(), PendingRedownload {
+                                    generation, timer, recreate_if_present: *recreate_if_present, ack,
+                                });
+                                continue;
+                            }
+                        }
                         dispatch_operation(
                             operation,
                             ack,
@@ -666,10 +722,40 @@ async fn run_actor(
                     }
                 }
             }
-            Some(done) = receivers.done.recv() => {
-                arm_db_memory_trim(db_memory_trim.as_mut(), &mut db_memory_trim_armed);
-                engine.manager.on_task_done(&done).await;
-            }
+            event = next_worker_event(&mut receivers.done, &mut redownload_timers) => match event {
+                WorkerEvent::Done(done) => {
+                    arm_db_memory_trim(db_memory_trim.as_mut(), &mut db_memory_trim_armed);
+                    let request = if done.phase == fluxdown_engine::download_manager::TaskDonePhase::Finished
+                        && redownloads.get(&done.task_id)
+                            .is_some_and(|request| request.generation == done.generation)
+                    {
+                        redownloads.remove(&done.task_id)
+                    } else {
+                        None
+                    };
+                    engine.manager.on_task_done(&done).await;
+                    if let Some(request) = request {
+                        request.timer.abort();
+                        if !request.ack.is_closed() {
+                            dispatch_operation(
+                                ActorOperation::RestartMissingFile {
+                                    task_id: done.task_id,
+                                    recreate_if_present: request.recreate_if_present,
+                                },
+                                request.ack, &mut engine, &events, &maintenance_tx,
+                            ).await;
+                        }
+                    }
+                }
+                WorkerEvent::RedownloadTimeout(Ok((task_id, generation))) => {
+                    if redownloads.get(&task_id).is_some_and(|request| request.generation == generation)
+                        && let Some(request) = redownloads.remove(&task_id)
+                    {
+                        drop(request.ack.send(Err(ActorError::TaskRestartTimeout)));
+                    }
+                }
+                WorkerEvent::RedownloadTimeout(Err(_)) => {}
+            },
             Some(task_id) = receivers.retry.recv() => {
                 arm_db_memory_trim(db_memory_trim.as_mut(), &mut db_memory_trim_armed);
                 if engine.manager.is_task_in_error(&task_id).await {
@@ -743,6 +829,8 @@ async fn run_actor(
         }
     }
 
+    drop(redownloads);
+    drop(redownload_timers);
     engine.manager.shutdown().await;
     match tokio::time::timeout(Duration::from_secs(5), engine.flush_task_activity()).await {
         Ok(Ok(())) => {}
@@ -4645,6 +4733,213 @@ mod tests {
         if let Err(error) = tokio::fs::remove_dir_all(dir).await {
             eprintln!("actor ed2k status test directory removal failed: {error}");
         }
+    }
+
+    #[tokio::test]
+    async fn desktop_redownload_prefers_queued_completion_to_ready_timeout() {
+        use super::{TaskDone, WorkerEvent, next_worker_event};
+
+        let (send, mut done) = tokio::sync::mpsc::channel(1);
+        let mut timers = tokio::task::JoinSet::new();
+        let timer = timers.spawn(async { ("task".into(), 7) });
+        while !timer.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        send.send(TaskDone::finished("task".into(), 7))
+            .await
+            .unwrap();
+        let WorkerEvent::Done(event) = next_worker_event(&mut done, &mut timers).await else {
+            panic!("queued completion must beat a ready timeout");
+        };
+        assert_eq!((event.task_id.as_str(), event.generation), ("task", 7));
+    }
+
+    #[tokio::test]
+    async fn desktop_redownload_timeout_retains_task_and_files() {
+        desktop_redownload_while_worker_is_finishing(false).await;
+    }
+
+    #[tokio::test]
+    async fn desktop_redownload_restarts_missing_file_after_worker_stops() {
+        desktop_redownload_while_worker_is_finishing(true).await;
+    }
+
+    async fn desktop_redownload_while_worker_is_finishing(worker_finishes: bool) {
+        use std::{sync::Arc, time::Duration};
+
+        use fluxdown_engine::{Engine, EngineConfig, NoopSelection, NoopSink};
+        use fluxdown_protocol::{
+            ApplicationErrorCode, ErrorReason, RequestId, RpcRequest, RpcResponse,
+        };
+        use tokio::{
+            io::{AsyncReadExt as _, AsyncWriteExt as _},
+            net::TcpListener,
+        };
+
+        let dir =
+            std::env::temp_dir().join(format!("fluxdown_redownload_{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .expect("create test dir");
+        let save_dir = dir.to_string_lossy().into_owned();
+        let mut engine = Engine::new(
+            EngineConfig {
+                max_concurrent: 1,
+                speed_limit_bps: 0,
+                upload_limit_bps: 0,
+                default_save_dir: save_dir.clone(),
+                app_data_dir: save_dir.clone(),
+                bt_config: Default::default(),
+                proxy_config: Default::default(),
+                user_agent: String::new(),
+                data_dir_override: Some(dir.clone()),
+                database_url: None,
+            },
+            Arc::new(NoopSink),
+            Arc::new(NoopSelection),
+        )
+        .await
+        .expect("engine");
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("test server");
+        let address = listener.local_addr().expect("test address");
+        let id = engine
+            .manager
+            .create_task(fluxdown_engine::download_manager::NewTaskSpec {
+                url: format!("http://{address}/sample.bin"),
+                file_name: "sample.bin".into(),
+                save_dir,
+                hint_file_size: 5,
+                segments: 1,
+                ..Default::default()
+            })
+            .await
+            .expect("start task");
+        let mut socket = tokio::time::timeout(Duration::from_secs(5), async {
+            let (mut socket, _) = listener.accept().await.expect("accept download");
+            assert!(socket.read_u8().await.is_ok(), "download sent a request");
+            socket
+        })
+        .await
+        .expect("worker reached the test server");
+        // Model a terminal state published while that generation still owns its
+        // worker. Keep the HTTP connection open without sending response headers.
+        let partial = dir.join("sample.bin.fdownloading");
+        tokio::fs::write(&partial, b"saved")
+            .await
+            .expect("write partial");
+        let db = engine.db.clone();
+        db.update_task_progress(&id, 5).await.expect("progress");
+        db.insert_segments(&id, &[(0, 0, 9)])
+            .await
+            .expect("checkpoint");
+        if worker_finishes {
+            db.update_task_status(&id, 3, "")
+                .await
+                .expect("completed state");
+            assert!(db.update_task_file_missing(&id, true).await.unwrap());
+        } else {
+            db.update_task_status(&id, 4, "original error")
+                .await
+                .expect("terminal state");
+        }
+
+        let events = crate::event_hub::DaemonEventHub::new(Default::default(), 32);
+        let selections = crate::selection::DaemonSelection::new(events.clone());
+        let blobs = Arc::new(
+            crate::blob_store::BlobStore::open(dir.join("blobs"))
+                .await
+                .expect("blobs"),
+        );
+        let mut receivers =
+            crate::runtime::take_engine_receivers(&mut engine).expect("engine receivers");
+        let (finished_tx, finished_rx) = tokio::sync::mpsc::channel(1);
+        let mut worker_done = std::mem::replace(&mut receivers.done, finished_rx);
+        let (actor, actor_task) = super::spawn_actor(
+            engine,
+            receivers,
+            selections.clone(),
+            events.clone(),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        let service = crate::service::DaemonService::new(
+            crate::service_hello("redownload-test", Vec::new()),
+            events.clone(),
+            selections,
+            blobs,
+            actor.clone(),
+            db.clone(),
+            dir.clone(),
+            #[cfg(feature = "plugins")]
+            None,
+        );
+        let request = RpcRequest::new(
+            RequestId::Integer(1),
+            fluxdown_protocol::method::DAEMON_TASK_RESTART_FILE,
+            Some(serde_json::json!({ "taskId": &id, "recreateIfPresent": true })),
+        );
+        let (response, ()) = tokio::join!(
+            biased;
+            service.call("redownload-test", true, request),
+            async {
+                // This command is sent after the RPC and must not queue behind the worker.
+                tokio::time::timeout(
+                    Duration::from_secs(3),
+                    actor.execute(ActorOperation::PauseTask { task_id: "other-task".into() }),
+                ).await.expect("actor stays responsive").expect("pause command");
+                if worker_finishes {
+                    socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nsaved")
+                        .await.expect("release old worker");
+                    let done = tokio::time::timeout(Duration::from_secs(3), worker_done.recv())
+                        .await.expect("old worker finishes").expect("TaskDone");
+                    // Model the completed file disappearing before the actor handles TaskDone.
+                    tokio::fs::remove_file(dir.join("sample.bin")).await.expect("remove published file");
+                    assert!(db.update_task_file_missing(&id, true).await.unwrap());
+                    finished_tx.send(done).await.expect("forward worker completion");
+                } else {
+                    tokio::time::pause();
+                    tokio::time::advance(super::REDOWNLOAD_STOP_TIMEOUT).await;
+                    tokio::time::resume();
+                }
+            }
+        );
+
+        let kept = db.load_task_by_id(&id).await.expect("load original task");
+        let segments = db
+            .load_segments(&id)
+            .await
+            .expect("load original checkpoint");
+        let saved = tokio::fs::read(&partial).await;
+        actor.shutdown().await.expect("shutdown actor");
+        actor_task.await.expect("join actor");
+        drop(socket);
+        drop(listener);
+        drop(service);
+        drop(db);
+        tokio::fs::remove_dir_all(dir)
+            .await
+            .expect("remove test dir");
+
+        if worker_finishes {
+            let RpcResponse::Success(response) = response else {
+                panic!("redownload must continue after the writer finishes");
+            };
+            assert_eq!(response.result, serde_json::json!(false));
+            assert_eq!(kept.expect("restart same task").task_id, id);
+            assert!(segments.is_empty(), "reset the old checkpoint");
+            return;
+        }
+        let RpcResponse::Failure(response) = response else {
+            panic!("redownload must not authorize recreation");
+        };
+        let data = response.error.data.expect("typed RPC error");
+        assert_eq!(data.code, ApplicationErrorCode::Conflict);
+        assert_eq!(data.reason, Some(ErrorReason::TaskRestartTimeout));
+        assert!(!data.retryable);
+        let task = kept.expect("keep original task");
+        assert_eq!((task.status, task.downloaded_bytes), (4, 5));
+        assert_eq!(task.error_message, "original error");
+        assert_eq!(saved.expect("keep original partial"), b"saved");
+        assert_eq!(segments.len(), 1, "keep original checkpoint");
     }
 
     /// `daemon.task.delete`：文件删不掉时回报「任务已保留」而不是成功，任务记录与文件都在

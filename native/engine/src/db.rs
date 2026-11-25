@@ -49,19 +49,90 @@ pub enum ConfigPatchError {
     InvalidStoredRevision(String),
 }
 
+// Keep deletion/restart and resume on the same task-ID-scoped checkpoint predicate.
+macro_rules! resume_checkpoint_sql {
+    ($id:literal) => {
+        concat!(
+            "CASE WHEN EXISTS (SELECT 1 FROM task_segments WHERE task_id = ",
+            $id,
+            ")
+               OR EXISTS (SELECT 1 FROM ed2k_blocks WHERE task_id = ",
+            $id,
+            ")
+               OR EXISTS (SELECT 1 FROM config WHERE key IN
+                   ('hls_resume_' || ",
+            $id,
+            ", 'hls_audio_resume_' || ",
+            $id,
+            "))
+             THEN 1 ELSE 0 END"
+        )
+    };
+}
+
+macro_rules! select_cleanup_tasks {
+    ($where_clause:literal) => {
+        concat!(
+            "SELECT id, save_dir, file_name, url, status, downloaded_bytes,
+                    exists_decision, file_missing, http_partial_name, audio_partial_name, audio_output_name, ",
+            resume_checkpoint_sql!("tasks.id"),
+            " AS has_checkpoint FROM tasks ",
+            $where_clause
+        )
+    };
+}
+
 /// [`Db::load_deletion_facts`] 的结果：批量删除决定逐任务删哪些文件所需的全部库内事实。
 #[derive(Debug, Default)]
-pub struct DeletionFacts {
-    /// 任务 → 「文件已存在」决定原值（'' / rename / overwrite / skip）；缺失 = 任务不存在。
-    pub exists_decisions: HashMap<String, String>,
-    /// 带独立音轨（`audio_url` 非空）的任务。
-    pub has_audio_url: HashSet<String>,
-    /// Checksum tasks with zero recorded bytes but a persisted segment plan.
-    pub(crate) checksum_segment_tasks: HashSet<String>,
+pub(crate) struct DeletionFacts {
+    pub tasks: Vec<DeletionTask>,
     /// 任务 → 已登记的衍生产物文件名。
     pub artifacts: HashMap<String, Vec<String>>,
-    /// `(save_dir, file_name)` → 把该名字登记为自己 `file_name` 的全部任务 id。
-    pub file_owners: HashMap<(String, String), Vec<String>>,
+    /// Directory → registered filename → all task IDs that claim it.
+    pub file_owners: HashMap<String, HashMap<String, Vec<String>>>,
+}
+
+/// 同一条数据库记录中的路径、运行状态与归属，不能分开读取。
+#[derive(Debug)]
+pub(crate) struct DeletionTask {
+    pub task_id: String,
+    pub save_dir: String,
+    pub file_name: String,
+    pub url: String,
+    pub status: i32,
+    pub downloaded_bytes: i64,
+    pub has_checkpoint: bool,
+    pub file_clear_state: FileClearState,
+    pub unowned_path: bool,
+    pub http_partial_name: String,
+    pub audio_partial_name: String,
+    pub audio_output_name: String,
+}
+
+impl DeletionTask {
+    fn from_row(row: AnyRow) -> Result<Self, sqlx::Error> {
+        let decision: String = row.try_get("exists_decision")?;
+        let http_partial_name = row.try_get("http_partial_name")?;
+        Ok(Self {
+            task_id: row.try_get("id")?,
+            save_dir: row.try_get("save_dir")?,
+            file_name: row.try_get("file_name")?,
+            url: row.try_get("url")?,
+            status: row.try_get("status")?,
+            downloaded_bytes: row.try_get("downloaded_bytes")?,
+            has_checkpoint: row.try_get::<i32, _>("has_checkpoint")? != 0,
+            file_clear_state: match row.try_get::<i32, _>("file_missing")? {
+                2 => FileClearState::Cleared,
+                3 => FileClearState::Pending,
+                4 => FileClearState::RestartPending,
+                _ => FileClearState::None,
+            },
+            unowned_path: crate::file_exists::ExistsDecision::from_db(&decision).has_unowned_path(),
+            http_partial_name,
+            audio_partial_name: row.try_get("audio_partial_name")?,
+            audio_output_name: row.try_get("audio_output_name")?,
+        })
+    }
 }
 
 /// 一条 `DELETE FROM config WHERE key IN (...)` 覆盖的任务数（每任务 5 个键，
@@ -129,6 +200,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     orig_etag TEXT NOT NULL DEFAULT '',
     orig_last_modified TEXT NOT NULL DEFAULT '',
     audio_url TEXT NOT NULL DEFAULT '',
+    http_partial_name TEXT NOT NULL DEFAULT '',
+    audio_partial_name TEXT NOT NULL DEFAULT '',
+    audio_output_name TEXT NOT NULL DEFAULT '',
     file_missing INTEGER NOT NULL DEFAULT 0,
     file_hash TEXT NOT NULL DEFAULT '',
     range_verified INTEGER NOT NULL DEFAULT 1,
@@ -430,6 +504,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     orig_etag TEXT NOT NULL DEFAULT '',
     orig_last_modified TEXT NOT NULL DEFAULT '',
     audio_url TEXT NOT NULL DEFAULT '',
+    http_partial_name TEXT NOT NULL DEFAULT '',
+    audio_partial_name TEXT NOT NULL DEFAULT '',
+    audio_output_name TEXT NOT NULL DEFAULT '',
     file_missing INTEGER NOT NULL DEFAULT 0,
     file_hash TEXT NOT NULL DEFAULT '',
     range_verified INTEGER NOT NULL DEFAULT 1,
@@ -1578,6 +1655,14 @@ impl Db {
             .await?;
         self.add_column_if_missing("tasks", "audio_url", "TEXT NOT NULL DEFAULT ''")
             .await?;
+        for column in [
+            "http_partial_name",
+            "audio_partial_name",
+            "audio_output_name",
+        ] {
+            self.add_column_if_missing("tasks", column, "TEXT NOT NULL DEFAULT ''")
+                .await?;
+        }
         // 任务请求上下文（cookies/referrer/extra_headers JSON）持久化：resume
         // 时恢复鉴权上下文。鉴权站点（cookie+token 双因子的 fnOS、带
         // Authorization 的私有服务）没有它们 resume 必然 4xx。
@@ -2217,7 +2302,7 @@ impl Db {
     ///
     /// 一条语句内聚合 + 写入（主键前缀索引，≤ 512 行），不把段行搬进内存；
     /// `segments_epoch` 守卫使被新 spawn 夺权后的旧下载器 0 行生效。与
-    /// `restart_task` 的 `delete_segments`（同事务删段 + 进度归零）并发时不得
+    /// `delete_segments`（同事务删段 + 进度归零）并发时不得
     /// 出现「读到删前段和、写在归零之后」：SQLite 单语句天然原子；pg 读已提交
     /// 下子查询快照早于行锁，故先 `FOR UPDATE` 锁任务行，再以锁后的新快照聚合。
     pub async fn sync_task_progress_from_segments(
@@ -2451,7 +2536,8 @@ impl Db {
             "UPDATE tasks SET status = 0, file_missing = 4, downloaded_bytes = 0, total_bytes = 0,
                  src_cdn_bytes = 0, src_proxy_bytes = 0, src_nic_bytes = 0,
                  error_message = '', completed_at = '', file_hash = '', exists_decision = '',
-                 orig_etag = '', orig_last_modified = '', range_verified = 1
+                 orig_etag = '', orig_last_modified = '', range_verified = 1,
+                 http_partial_name = '', audio_partial_name = '', audio_output_name = ''
              WHERE id = $1 AND status = 3 AND file_missing IN (1, 2)",
         )
         .bind(id)
@@ -3051,28 +3137,6 @@ impl Db {
         Ok(())
     }
 
-    pub(crate) async fn rename_task_output(
-        &self,
-        task_id: &str,
-        file_name: &str,
-        companion: Option<(&Path, &Path)>,
-    ) -> Result<(), DbError> {
-        let Some((old, new)) = companion else {
-            return self
-                .set_task_file_name_with_source(task_id, file_name, false)
-                .await;
-        };
-        let mut tx = self.pool.begin().await?;
-        sqlx::query("UPDATE tasks SET file_name = $1, name_inferred = 0 WHERE id = $2")
-            .bind(file_name)
-            .bind(task_id)
-            .execute(&mut *tx)
-            .await?;
-        Self::rename_registered_artifact(&mut tx, task_id, old, new).await?;
-        tx.commit().await?;
-        Ok(())
-    }
-
     pub(crate) async fn rename_registered_artifact(
         tx: &mut sqlx::Transaction<'_, Any>,
         task_id: &str,
@@ -3093,6 +3157,42 @@ impl Db {
             .execute(&mut **tx)
             .await?;
         }
+        Ok(())
+    }
+
+    pub(crate) async fn rename_task_outputs(
+        &self,
+        task: &str,
+        name: &str,
+        partial: Option<(&str, &str)>,
+        audio: Option<(&str, &str)>,
+        audio_partial: Option<(&str, &str)>,
+    ) -> Result<(), DbError> {
+        let (old_partial, new_partial) = partial.unzip();
+        let (old_audio, new_audio) = audio.unzip();
+        let (old_audio_partial, new_audio_partial) = audio_partial.unzip();
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "UPDATE tasks SET file_name = $1, name_inferred = 0, exists_decision = '',
+                 http_partial_name = CASE WHEN http_partial_name = $2 THEN $3 ELSE http_partial_name END,
+                 audio_output_name = CASE WHEN audio_output_name = $4 THEN $5 ELSE audio_output_name END,
+                 audio_partial_name = CASE WHEN audio_partial_name = $6 THEN $7 ELSE audio_partial_name END
+             WHERE id = $8",
+        )
+        .bind(name)
+        .bind(old_partial)
+        .bind(new_partial)
+        .bind(old_audio)
+        .bind(new_audio)
+        .bind(old_audio_partial)
+        .bind(new_audio_partial)
+        .bind(task)
+        .execute(&mut *tx)
+        .await?;
+        if let Some((old, new)) = audio {
+            Self::rename_registered_artifact(&mut tx, task, Path::new(old), Path::new(new)).await?;
+        }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -3229,6 +3329,25 @@ impl Db {
             }
         }
         Ok(results)
+    }
+
+    /// Only paused/failed tasks may be stopped by partial-only cleanup.
+    pub(crate) async fn unfinished_cleanup_ids(
+        &self,
+        ids: &[String],
+    ) -> Result<Vec<String>, DbError> {
+        let mut eligible = Vec::with_capacity(ids.len());
+        for chunk in ids.chunks(500) {
+            let placeholders = numbered_placeholders(chunk.len());
+            let sql =
+                format!("SELECT id FROM tasks WHERE status IN (2, 4) AND id IN ({placeholders})");
+            let mut query = sqlx::query_scalar::<Any, String>(AssertSqlSafe(sql));
+            for id in chunk {
+                query = query.bind(id.as_str());
+            }
+            eligible.extend(query.fetch_all(&self.pool).await?);
+        }
+        Ok(eligible)
     }
 
     /// Recheck detached scan results before the actor removes task records.
@@ -3429,44 +3548,91 @@ impl Db {
         Ok(rows)
     }
 
+    pub(crate) async fn record_http_partial(&self, task: &str, name: &str) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE tasks SET http_partial_name = $1, downloaded_bytes = 0,
+                 src_cdn_bytes = 0, src_proxy_bytes = 0, src_nic_bytes = 0 WHERE id = $2",
+        )
+        .bind(name)
+        .bind(task)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn record_audio_partial(&self, task: &str, name: &str) -> Result<(), DbError> {
+        sqlx::query("UPDATE tasks SET audio_partial_name = $1 WHERE id = $2")
+            .bind(name)
+            .bind(task)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn record_audio_output(&self, task: &str, name: &str) -> Result<(), DbError> {
+        let result = sqlx::query(
+            "UPDATE tasks SET audio_partial_name = '', audio_output_name = $1 WHERE id = $2",
+        )
+        .bind(name)
+        .bind(task)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(sqlx::Error::RowNotFound.into());
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn audio_partial_name(&self, task: &str) -> Result<String, DbError> {
+        Ok(
+            sqlx::query_scalar("SELECT audio_partial_name FROM tasks WHERE id = $1")
+                .bind(task)
+                .fetch_one(&self.pool)
+                .await?,
+        )
+    }
+
+    pub(crate) async fn audio_output_name(&self, task: &str) -> Result<String, DbError> {
+        Ok(
+            sqlx::query_scalar("SELECT audio_output_name FROM tasks WHERE id = $1")
+                .bind(task)
+                .fetch_one(&self.pool)
+                .await?,
+        )
+    }
+
+    /// Read the path and evidence for named-file cleanup from one database snapshot.
+    pub(crate) async fn load_cleanup_task(
+        &self,
+        id: &str,
+    ) -> Result<Option<DeletionTask>, DbError> {
+        let row = sqlx::query(select_cleanup_tasks!("WHERE id = $1"))
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(DeletionTask::from_row).transpose()?)
+    }
+
     /// 批量删除前一次读出整批任务的删除上下文，替代逐任务查询
     /// （`get_exists_decision` / `load_audio_url` / `load_task_artifacts` /
     /// `list_task_ids_by_file`）。
     ///
-    /// `save_dirs` 是批内任务涉及的保存目录：`file_owners` 只覆盖这些目录下登记的产物名，
-    /// 足以回答「某目录下某名字还归不归批外任务」。
-    pub async fn load_deletion_facts(
+    /// 产物名归属索引只覆盖这些任务实际所在的保存目录。
+    pub(crate) async fn load_deletion_facts(
         &self,
         ids: &[String],
-        save_dirs: &[String],
     ) -> Result<DeletionFacts, DbError> {
         const CHUNK: usize = 500;
         let mut facts = DeletionFacts::default();
         for chunk in ids.chunks(CHUNK) {
             let placeholders = numbered_placeholders(chunk.len());
-            let sql = format!(
-                "SELECT id, exists_decision, audio_url,
-                    CASE WHEN checksum <> '' AND downloaded_bytes = 0 AND EXISTS (
-                        SELECT 1 FROM task_segments WHERE task_id = tasks.id
-                    ) THEN 1 ELSE 0 END AS checksum_has_segments
-                 FROM tasks WHERE id IN ({placeholders})"
-            );
+            let sql = format!(select_cleanup_tasks!("WHERE id IN ({})"), placeholders);
             let mut query = sqlx::query(AssertSqlSafe(sql));
             for id in chunk {
                 query = query.bind(id.as_str());
             }
             for row in query.fetch_all(&self.pool).await? {
-                let id: String = row.try_get("id")?;
-                let audio_url: String = row.try_get("audio_url")?;
-                if !audio_url.is_empty() {
-                    facts.has_audio_url.insert(id.clone());
-                }
-                if row.try_get::<i32, _>("checksum_has_segments")? != 0 {
-                    facts.checksum_segment_tasks.insert(id.clone());
-                }
-                facts
-                    .exists_decisions
-                    .insert(id, row.try_get("exists_decision")?);
+                facts.tasks.push(DeletionTask::from_row(row)?);
             }
 
             let sql = format!(
@@ -3484,27 +3650,44 @@ impl Db {
                     .push(row.try_get("file_name")?);
             }
         }
+        let mut save_dirs: Vec<_> = facts
+            .tasks
+            .iter()
+            .map(|task| task.save_dir.as_str())
+            .collect();
+        save_dirs.sort_unstable();
+        save_dirs.dedup();
         for chunk in save_dirs.chunks(CHUNK) {
             let placeholders = numbered_placeholders(chunk.len());
             // Cleared and restart-pending rows retain historical names, not file claims.
             let sql = format!(
-                "SELECT id, save_dir, file_name FROM tasks WHERE save_dir IN ({placeholders})
-                 AND file_missing NOT IN (2, 4)
+                "SELECT id, save_dir, file_name, audio_partial_name, audio_output_name,
+                        CASE WHEN status <> 3 THEN http_partial_name ELSE '' END AS http_partial_name
+                 FROM tasks WHERE save_dir IN ({placeholders}) AND file_missing NOT IN (2, 4)
                  UNION ALL
-                 SELECT tasks.id, tasks.save_dir, task_artifacts.file_name FROM task_artifacts
-                 JOIN tasks ON tasks.id = task_artifacts.task_id
+                 SELECT tasks.id, tasks.save_dir, task_artifacts.file_name, '', '', ''
+                 FROM task_artifacts JOIN tasks ON tasks.id = task_artifacts.task_id
                  WHERE tasks.save_dir IN ({placeholders}) AND tasks.file_missing NOT IN (2, 4)"
             );
             let mut query = sqlx::query(AssertSqlSafe(sql));
             for dir in chunk {
-                query = query.bind(dir.as_str());
+                query = query.bind(*dir);
             }
             for row in query.fetch_all(&self.pool).await? {
-                facts
-                    .file_owners
-                    .entry((row.try_get("save_dir")?, row.try_get("file_name")?))
-                    .or_default()
-                    .push(row.try_get("id")?);
+                let save_dir: String = row.try_get("save_dir")?;
+                let id: String = row.try_get("id")?;
+                let owners = facts.file_owners.entry(save_dir).or_default();
+                for column in [
+                    "file_name",
+                    "audio_partial_name",
+                    "audio_output_name",
+                    "http_partial_name",
+                ] {
+                    let name: String = row.try_get(column)?;
+                    if !name.is_empty() {
+                        owners.entry(name).or_default().push(id.clone());
+                    }
+                }
             }
         }
         Ok(facts)
@@ -3662,11 +3845,28 @@ impl Db {
         Ok(())
     }
 
-    pub(crate) async fn has_task_segments(&self, task_id: &str) -> Result<bool, DbError> {
-        let found: i32 = sqlx::query_scalar(
+    /// Check for task-bound progress or a reserved single-stream partial, even
+    /// if the writer stopped before saving its first byte.
+    pub(crate) async fn has_resume_checkpoint(&self, task_id: &str) -> Result<bool, DbError> {
+        let found: i32 = sqlx::query_scalar(concat!(
             "SELECT CASE WHEN EXISTS (
-                SELECT 1 FROM task_segments WHERE task_id = $1
-            ) THEN 1 ELSE 0 END",
+                 SELECT 1 FROM tasks WHERE id = $1 AND status <> 3 AND file_missing NOT IN (2, 4)
+                   AND http_partial_name = file_name || $2
+             ) THEN 1 ELSE ",
+            resume_checkpoint_sql!("$1"),
+            " END"
+        ))
+        .bind(task_id)
+        .bind(crate::downloader::TEMP_EXT)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(found != 0)
+    }
+
+    pub(crate) async fn has_segment_checkpoint(&self, task_id: &str) -> Result<bool, DbError> {
+        let found: i32 = sqlx::query_scalar(
+            "SELECT CASE WHEN EXISTS (SELECT 1 FROM task_segments WHERE task_id = $1)
+             THEN 1 ELSE 0 END",
         )
         .bind(task_id)
         .fetch_one(&self.pool)
@@ -4060,8 +4260,13 @@ impl Db {
         file_name: &str,
     ) -> Result<Vec<String>, DbError> {
         let rows = sqlx::query(
-            "SELECT id FROM tasks WHERE save_dir = $1 AND file_name = $2
-             AND file_missing NOT IN (2, 4)",
+            "SELECT id FROM tasks WHERE save_dir = $1 AND file_missing NOT IN (2, 4)
+             AND (file_name = $2 OR audio_output_name = $2 OR audio_partial_name = $2
+                  OR (status <> 3 AND http_partial_name = $2))
+             UNION
+             SELECT tasks.id FROM task_artifacts JOIN tasks ON tasks.id = task_artifacts.task_id
+             WHERE tasks.save_dir = $1 AND tasks.file_missing NOT IN (2, 4)
+               AND task_artifacts.file_name = $2",
         )
         .bind(save_dir)
         .bind(file_name)
@@ -8977,14 +9182,14 @@ mod tests {
         }
     }
 
-    /// PostgreSQL 冒烟（需要本地 pg 实例）：
-    /// `PG_TEST_URL=postgres://postgres:pw@localhost/postgres \
-    ///  cargo test -p fluxdown_engine -- --ignored pg_smoke`
+    /// PostgreSQL 冒烟（仅在一次性测试库串行执行；使用同一 schema）：
+    /// `PG_TEST_URL=postgres://localhost/fluxdown_smoke_disposable \
+    ///  cargo test -p fluxdown_engine --lib pg_smoke -- --ignored --test-threads=1`
     #[tokio::test]
     #[ignore = "requires a running PostgreSQL instance (set PG_TEST_URL)"]
     async fn pg_smoke_roundtrip() {
         let url = std::env::var("PG_TEST_URL")
-            .unwrap_or_else(|_| "postgres://postgres:pw@localhost/postgres".to_owned());
+            .expect("set PG_TEST_URL to a disposable PostgreSQL database");
         let db = Db::connect(&url).await.expect("connect pg");
         let id = format!("pg-smoke-{}", std::process::id());
         // 清理上次残留（幂等）。
@@ -9018,6 +9223,7 @@ mod tests {
             .expect("present");
         assert_eq!(task.total_bytes, 5_000_000_000);
         assert_eq!(task.downloaded_bytes, 3_000_000_000, "GREATEST 钳制生效");
+        assert!(!db.has_resume_checkpoint(&id).await.expect("no checkpoint"));
 
         // 分段 + 配置 upsert。
         db.insert_segments(
@@ -9029,6 +9235,36 @@ mod tests {
         let segs = db.load_segments(&id).await.expect("load segs");
         assert_eq!(segs.len(), 2);
         assert_eq!(segs[1].end_byte, 4_999_999_999);
+        assert!(
+            db.has_resume_checkpoint(&id)
+                .await
+                .expect("resume checkpoint")
+        );
+        assert!(
+            db.has_segment_checkpoint(&id)
+                .await
+                .expect("segment checkpoint")
+        );
+        db.record_audio_partial(&id, "big.audio.m4a.fdownloading")
+            .await
+            .expect("register audio partial");
+        let facts = db
+            .load_deletion_facts(std::slice::from_ref(&id))
+            .await
+            .expect("deletion facts");
+        let [task] = facts.tasks.as_slice() else {
+            panic!("expected one task in deletion facts");
+        };
+        assert!(task.has_checkpoint);
+        assert_eq!(task.audio_partial_name, "big.audio.m4a.fdownloading");
+        assert!(facts.file_owners["/tmp"][&task.audio_partial_name].contains(&id));
+        db.update_task_status(&id, 2, "").await.expect("pause task");
+        assert_eq!(
+            db.unfinished_cleanup_ids(std::slice::from_ref(&id))
+                .await
+                .expect("cleanup eligibility"),
+            std::slice::from_ref(&id)
+        );
         db.set_config("pg_smoke_key", "v1").await.expect("set");
         db.set_config("pg_smoke_key", "v2").await.expect("upsert");
         assert_eq!(
@@ -9066,6 +9302,73 @@ mod tests {
             .is_empty()
         );
         db.delete_config("pg_smoke_key").await.expect("clean cfg");
+    }
+
+    #[tokio::test]
+    async fn task_file_ownership_upgrade_sqlite() -> Result<(), DbError> {
+        let db = Db::connect_uninitialized("sqlite::memory:").await?;
+        task_file_ownership_upgrade(&db, SQLITE_SCHEMA).await
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty, disposable PostgreSQL database (set PG_OWNERSHIP_UPGRADE_URL)"]
+    async fn pg_ownership_upgrade() -> anyhow::Result<()> {
+        let url = std::env::var("PG_OWNERSHIP_UPGRADE_URL")?;
+        anyhow::ensure!(url.starts_with("postgres://") || url.starts_with("postgresql://"));
+        let db = Db::connect_uninitialized(&url).await?;
+        let empty: i32 =
+            sqlx::query_scalar("SELECT CASE WHEN to_regclass('tasks') IS NULL THEN 1 ELSE 0 END")
+                .fetch_one(&db.pool)
+                .await?;
+        anyhow::ensure!(
+            empty == 1,
+            "ownership upgrade requires a fresh disposable database"
+        );
+        task_file_ownership_upgrade(&db, POSTGRES_SCHEMA).await?;
+        Ok(())
+    }
+
+    async fn task_file_ownership_upgrade(db: &Db, schema: &str) -> Result<(), DbError> {
+        let legacy = [
+            "http_partial_name",
+            "audio_partial_name",
+            "audio_output_name",
+        ]
+        .into_iter()
+        .fold(schema.to_owned(), |ddl, name| {
+            ddl.replace(&format!("    {name} TEXT NOT NULL DEFAULT '',\n"), "")
+        });
+        sqlx::raw_sql(AssertSqlSafe(legacy))
+            .execute(&db.pool)
+            .await?;
+        sqlx::query(
+            "INSERT INTO tasks (id, url, file_name, save_dir, status, created_at)
+             VALUES ('legacy-audio', 'https://example.com/v.mpd', 'v.mp4', '/tmp', 3, '1')",
+        )
+        .execute(&db.pool)
+        .await?;
+        db.init_schema().await?;
+        let id = "legacy-audio";
+        let task = db
+            .load_cleanup_task(id)
+            .await?
+            .ok_or(sqlx::Error::RowNotFound)?;
+        assert_eq!((task.file_name.as_str(), task.status), ("v.mp4", 3));
+        assert!(task.http_partial_name.is_empty());
+        assert!(task.audio_partial_name.is_empty());
+        assert!(
+            task.audio_output_name.is_empty(),
+            "upgrade must not guess ownership"
+        );
+        db.record_audio_output(id, "v.audio.m4a").await?;
+        let ids = [id.to_owned()];
+        let facts = db.load_deletion_facts(&ids).await?;
+        assert_eq!(
+            facts.file_owners["/tmp"]["v.audio.m4a"].as_slice(),
+            ids.as_slice()
+        );
+        db.delete_task(id).await?;
+        Ok(())
     }
 
     #[tokio::test]
@@ -9134,7 +9437,7 @@ mod tests {
     #[ignore = "requires a running PostgreSQL instance (set PG_TEST_URL)"]
     async fn pg_smoke_bt_guard_roundtrip() {
         let url = std::env::var("PG_TEST_URL")
-            .unwrap_or_else(|_| "postgres://postgres:pw@localhost/postgres".to_owned());
+            .expect("set PG_TEST_URL to a disposable PostgreSQL database");
         let db = Db::connect(&url).await.expect("connect pg");
         let tag = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

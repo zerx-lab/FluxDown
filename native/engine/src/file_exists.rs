@@ -57,6 +57,10 @@ impl ExistsDecision {
         }
     }
 
+    pub(crate) fn has_unowned_path(self) -> bool {
+        self == Self::Skip
+    }
+
     /// 询问答复对应的持久化决定；`Cancel` 不持久化。
     pub fn from_choice(choice: FileExistsChoice) -> Option<Self> {
         match choice {

@@ -200,7 +200,6 @@ async fn failover_pending_after_transport_error(auto_route: &str, override_url: 
         .handle_task_done(&TaskDone {
             task_id: id.clone(),
             generation: 1,
-            reserved_temp_path: None,
             phase: TaskDonePhase::Finished,
         })
         .await;
