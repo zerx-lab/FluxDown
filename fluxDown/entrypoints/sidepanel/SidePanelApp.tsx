@@ -145,8 +145,9 @@ export function SidePanelApp(): JSX.Element {
     setSending(true);
     try {
       const res = await downloadSelection(view, selection);
-      if (res.success) showToast(t("list.sent"), "success");
-      else showToast(res.message || t("list.sendFailed"), "error");
+      if (res?.cancelled) showToast(t("remote.manualCancelled"));
+      else if (res?.success) showToast(t("list.sent"), "success");
+      else showToast(res?.message || t("list.sendFailed"), "error");
     } catch {
       showToast(t("list.sendFailed"), "error");
     } finally {
@@ -170,7 +171,7 @@ export function SidePanelApp(): JSX.Element {
           {view ? (
             <>
               <div class="sp-scroll">
-                <HandoffCard handoff={view.handoff} tabId={view.tabId} />
+                <HandoffCard handoff={view.handoff} canChoosePageTarget={view.canChoosePageTarget} tabId={view.tabId} />
                 <div class="sp-site">
                   <button type="button" class="sp-site-toggle" onClick={() => setSiteOpen(!siteOpen)}>
                     <Icon name={siteOpen ? "chevronDown" : "chevronRight"} size={12} />

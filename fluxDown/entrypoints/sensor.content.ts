@@ -676,7 +676,7 @@ export default defineContentScript({
       if (!href || !href.toLowerCase().startsWith("magnet:")) return;
       e.preventDefault();
       e.stopPropagation();
-      sendAction({ action: "downloadUrls", urls: [href], referrer: location.href })
+      sendAction({ action: "interceptMagnet", url: href, referrer: location.href })
         .then((res) => {
           // 未被 FluxDown 接管（被拒绝 / 后台无响应）时交还系统处理程序，避免点击变死链
           if (!res || res.success === false) location.href = href;

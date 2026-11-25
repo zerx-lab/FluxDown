@@ -28,6 +28,8 @@ export interface RemoteServerConfig {
   remoteUrl: string;
   /** 鉴权 token（server 端强制校验，恒非空） */
   remoteToken: string;
+  /** Explicit destinations must not forward credentials or request bodies on redirects. */
+  rejectRedirects?: boolean;
 }
 
 // 下载投递超时：服务端只需入队建任务、无需等待下载完成，但预留网络抖动余量。
@@ -78,6 +80,7 @@ async function postJson(
       method: "POST",
       headers: buildHeaders(cfg),
       body: JSON.stringify(body),
+      redirect: cfg.rejectRedirects ? "error" : "follow",
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (err) {
@@ -243,6 +246,7 @@ export async function remoteVerify(
     resp = await fetch(`${cfg.remoteUrl}/api/v1/info`, {
       method: "GET",
       headers: buildHeaders(cfg),
+      redirect: cfg.rejectRedirects ? "error" : "follow",
       signal,
     });
   } catch (err) {

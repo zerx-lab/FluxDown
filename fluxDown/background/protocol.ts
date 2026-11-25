@@ -16,6 +16,7 @@ import type { RulesListItem } from "./rule-view";
 import type { DashManifest } from "@/utils/dash-manifest";
 import type { HlsPlaylistInfo } from "@/utils/hls-playlist";
 import type { MediaCandidate } from "@/utils/media-candidates";
+import type { ManualServerChange } from "@/utils/manual-servers";
 import type { ResourceDebugLog } from "@/utils/resource-debug-log";
 import type {
   DetectedResource,
@@ -110,6 +111,7 @@ export interface TabView {
   hiddenLowConfidence: number;
   counts: Partial<Record<ResourceType | "all", number>>;
   handoff: HandoffState;
+  canChoosePageTarget: boolean;
   site: { host: string; profileKey: string | null; profile: SiteProfileFields };
   probe: ProbeState;
 }
@@ -248,10 +250,17 @@ export type SendChannel = "local" | "remote";
 
 export interface SendResult {
   success: boolean;
+  /** 用户取消选择目标，尚未投递。 */
+  cancelled?: true;
   message?: string;
   channel?: SendChannel;
   /** 桌面端直接建好的任务 ID；交给桌面确认框（尚未建任务）或批量发送时为空。 */
   taskId?: string;
+}
+
+export interface CandidateSelection {
+  candidateId: string;
+  variantId?: string;
 }
 
 export interface PageLink {
@@ -353,10 +362,15 @@ export interface MessageMap {
     req: { tabId?: number; resourceIds: string[]; channel?: SendChannel };
     res: SendResult;
   };
+  downloadSelection: {
+    req: { tabId?: number; candidates: CandidateSelection[]; resourceIds: string[] };
+    res: SendResult;
+  };
   downloadUrls: {
     req: { urls: string[]; referrer?: string; tabId?: number; channel?: SendChannel };
     res: SendResult;
   };
+  interceptMagnet: { req: { url: string; referrer: string }; res: SendResult };
   handoffPage: { req: { tabId: number }; res: SendResult };
   clearResources: { req: { tabId?: number }; res: { ok: boolean } };
   collectLinks: { req: { tabId: number }; res: { links: ClassifiedLink[] } };
@@ -368,6 +382,8 @@ export interface MessageMap {
   /** 规则全文（列表只带精简字段）；不存在或被隐藏（发布构建的内置规则）时为 null。 */
   ruleGet: { req: { id: string }; res: SniffRuleV1 | null };
   rulesSyncStatus: { req: Record<never, never>; res: RuleSyncStatus };
+  /** 命名服务器配置变更，只接受扩展页发来的消息。 */
+  updateManualServers: { req: { change: ManualServerChange }; res: { ok: boolean } };
   /**
    * 页面脚本状态。`refresh`：none = 只读缓存；stale = 缓存超过 1 分钟才同步；force = 立即同步（选项页打开 / 手动重新检查）。
    * 只接受扩展页发来的消息。

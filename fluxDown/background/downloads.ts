@@ -4,6 +4,7 @@
 import { browser } from "wxt/browser";
 import type { Browser } from "wxt/browser";
 import { sendBatchDownloadRequest, warmupNativeHost } from "@/utils/download-dispatch";
+import type { DispatchTarget } from "@/utils/download-dispatch";
 import { extractCleanFilename } from "@/utils/filename";
 import { t } from "@/utils/i18n";
 import { candidateFilename, defaultCandidateVariant } from "@/utils/media-candidates";
@@ -11,7 +12,9 @@ import type { BatchDownloadItem } from "@/utils/native-messaging";
 import { isAndroidPlatform } from "@/utils/platform";
 import { getCachedSettings } from "./settings-cache";
 import { notify, sleep } from "./notify";
-import type { SendChannel, SendResult } from "./protocol";
+import { CANCELLED_SELECTION, createManualBatches } from "./manual-batches";
+import { chooseManualTarget } from "./manual-target";
+import type { SendResult } from "./protocol";
 import { extractAuthFromCache, requestHeaderCache, withBrowserUserAgent } from "./request-cache";
 import {
   describeSendError,
@@ -33,15 +36,12 @@ import {
 import { buildTabView } from "./tab-view";
 import { allRows } from "./view-model";
 
-/** 单次 batch_download 条数上限（与桌面端 MAX_BATCH_ITEMS 对齐）。 */
-const BATCH_LIMIT = 1000;
-
 /** 候选下载（可指定清晰度）。 */
 export async function downloadCandidate(
   tabId: number,
   candidateId: string,
   variantId: string | undefined,
-  channel: SendChannel | undefined,
+  channel: DispatchTarget | undefined,
 ): Promise<SendResult> {
   const view = await buildTabView(tabId, { withHandoff: false });
   const row = allRows(view).find((r) => r.candidate.id === candidateId);
@@ -104,7 +104,12 @@ export async function downloadPlayingMedia(): Promise<void> {
     notify(t("shortcut.downloadTitle"), hint);
     return;
   }
-  const result = await downloadCandidate(tab.id, row.candidate.id, row.playingVariantId ?? undefined, undefined);
+  const channel = await chooseManualTarget();
+  if (channel === null) {
+    notify(t("shortcut.downloadTitle"), t("remote.manualCancelled"));
+    return;
+  }
+  const result = await downloadCandidate(tab.id, row.candidate.id, row.playingVariantId ?? undefined, channel);
   if (!result.success) notify(t("shortcut.downloadTitle"), result.message ?? t("notify.sendFailed"));
 }
 
@@ -124,7 +129,7 @@ interface BatchInput {
 async function sendBatch(
   rawItems: BatchInput[],
   tabId: number | undefined,
-  channel: SendChannel | undefined,
+  channel: DispatchTarget | undefined,
   pageHost: string | undefined,
 ): Promise<SendResult> {
   // 相同视频轨 + 音频轨只允许创建一个任务；不同清晰度/编码的 URL 保留。
@@ -159,7 +164,7 @@ async function sendBatch(
   }
 
   // 预热 NMH：App 冷启动与下方逐项 cookie 收集（各 500ms 上限）并行
-  warmupNativeHost();
+  if (!channel || channel === "local") warmupNativeHost();
   const tabResources = tabId !== undefined && tabId >= 0 ? getResources(tabId) : [];
 
   const batchItems: BatchDownloadItem[] = await Promise.all(
@@ -226,7 +231,7 @@ async function sendBatch(
 export async function downloadResources(
   tabId: number,
   resourceIds: string[],
-  channel: SendChannel | undefined,
+  channel: DispatchTarget | undefined,
 ): Promise<SendResult> {
   const wanted = new Set(resourceIds);
   const resources = getResources(tabId).filter((r) => wanted.has(r.id));
@@ -282,21 +287,19 @@ function magnetName(url: string): string | undefined {
   }
 }
 
-/** 任意 URL 列表下载（快速下载输入框、链接页、磁力点击接管）。 */
-export async function downloadUrls(
+/** 分块后的 URL 投递：单条仍走完整的单条发送，多条走批量。 */
+async function sendUrlChunk(
   urls: string[],
   referrer: string | undefined,
   tabId: number | undefined,
-  channel: SendChannel | undefined,
+  channel: DispatchTarget | undefined,
 ): Promise<SendResult> {
-  const unique = [...new Set(urls.map((u) => u.trim()).filter(Boolean))];
-  if (unique.length === 0) return { success: false, message: "No items" };
   const pageUrl = tabId !== undefined && tabId >= 0 ? getTabPageUrl(tabId) : "";
   const effectiveReferrer = referrer || pageUrl || undefined;
   const pageHost = hostOf(effectiveReferrer ?? "");
 
-  if (unique.length === 1) {
-    const url = unique[0];
+  if (urls.length === 1) {
+    const url = urls[0];
     const result = await sendToFluxDown({
       url,
       referrer: effectiveReferrer,
@@ -308,18 +311,28 @@ export async function downloadUrls(
     return { success: result.success, message: result.message, channel: result.channel };
   }
 
-  let last: SendResult = { success: true };
-  for (let i = 0; i < unique.length; i += BATCH_LIMIT) {
-    const chunk = unique.slice(i, i + BATCH_LIMIT);
-    last = await sendBatch(
-      chunk.map((url) => ({ url, referrer: effectiveReferrer, filename: magnetName(url), fileSize: 0 })),
-      tabId,
-      channel,
-      pageHost,
-    );
-    if (!last.success) return last;
-  }
-  return last;
+  return sendBatch(
+    urls.map((url) => ({ url, referrer: effectiveReferrer, filename: magnetName(url), fileSize: 0 })),
+    tabId,
+    channel,
+    pageHost,
+  );
+}
+
+export const { downloadSelection, downloadManualUrls } = createManualBatches({
+  chooseTarget: chooseManualTarget,
+  sendCandidate: downloadCandidate,
+  sendResources: downloadResources,
+  sendUrlChunk,
+});
+
+/** 磁力点击自动接管：直接走默认路由，不询问目标。 */
+export function downloadInterceptedMagnet(
+  url: string,
+  referrer: string,
+  tabId: number | undefined,
+): Promise<SendResult> {
+  return sendUrlChunk([url.trim()], referrer, tabId, undefined);
 }
 
 /** 把页面 URL 交给桌面端；命中解析插件时由桌面端选择清晰度。 */
@@ -333,8 +346,15 @@ export async function handoffPage(tabId: number): Promise<SendResult> {
     }
   }
   if (!pageUrl) return { success: false, message: "No page url" };
-  const result = await sendToFluxDown({ url: pageUrl, referrer: pageUrl, fileSize: 0 });
-  return { success: result.success, message: result.message, channel: result.channel, taskId: createdTaskId(result.data) };
+  const channel = await chooseManualTarget();
+  if (channel === null) return CANCELLED_SELECTION;
+  const result = await sendToFluxDown({ url: pageUrl, referrer: pageUrl, fileSize: 0, channel });
+  return {
+    success: result.success,
+    message: result.message,
+    channel: result.channel,
+    taskId: result.channel === "local" ? createdTaskId(result.data) : undefined,
+  };
 }
 
 /** 本机 `download` 应答的 `data`：直接建任务时为 `{ taskId }`，进确认框时为 `{ transactionIds }`。 */
