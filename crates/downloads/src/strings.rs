@@ -486,7 +486,10 @@ impl DownloadStrings {
         if delete_files {
             return self.delete_task_description(name, true);
         }
-        SharedString::from(self.group_delete_confirm_keep_file.replace("{fileName}", name))
+        SharedString::from(
+            self.group_delete_confirm_keep_file
+                .replace("{fileName}", name),
+        )
     }
 
     /// 组计数行各段（调用方以 ` · ` 连接）：总数恒在，其余为 0 的段省略；剩余时间只在
@@ -1272,7 +1275,8 @@ mod tests {
 
     #[test]
     fn group_record_delete_names_the_group_and_its_member_records() {
-        let catalog = fluxdown_ui_i18n::I18nCatalog::load_embedded().expect("embedded translations");
+        let catalog =
+            fluxdown_ui_i18n::I18nCatalog::load_embedded().expect("embedded translations");
         for (locale, expected_prefix) in [
             ("en", "Remove the task records in \"Example\"?"),
             ("zh", "确定要删除「Example」组内的任务记录吗？"),
