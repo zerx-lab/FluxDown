@@ -777,6 +777,8 @@ private struct NewDownloadContent: View {
             reject()
             return
         }
+        // Keep startup restore from replacing the host during manifest probing or task creation.
+        container.supersedeHostRestore()
         let manualProxy = manualProxyUrl(state.config)
         let requests = form.buildRequests(startPaused: startPaused, queue: queueId, manualProxy: manualProxy)
         #if FULL_FLAVOR
