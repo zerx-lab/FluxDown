@@ -20929,7 +20929,7 @@ mod tests {
         let mut manager = sched_manager(&db, 1);
         let ids = ["paused", "failed", "completed", "active"].map(str::to_owned);
         let outcome = manager.delete_unfinished_tasks(&ids).await.unwrap();
-        assert_eq!((outcome.deleted, outcome.failed), (2, 2));
+        assert_eq!((outcome.deleted, outcome.failed, outcome.skipped), (2, 0, 2));
         for id in ["paused", "failed"] {
             assert!(db.load_task_by_id(id).await.unwrap().is_none(), "{id}");
         }
