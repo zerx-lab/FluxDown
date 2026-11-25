@@ -127,6 +127,17 @@ class LinkParserRangeTest {
         )
     }
 
+    @Test fun expandsIndentedManualUrlsWithoutDroppingEntryOptions() {
+        val parsed = parseManualEntries(
+            "https://a/plain.zip\n  https://a/[01-02].zip\n\thttps://a/[03-03].zip\n  out=third.zip",
+        )
+        assertEquals(
+            listOf(UrlEntry("https://a/plain.zip"), UrlEntry("https://a/01.zip"),
+                UrlEntry("https://a/02.zip"), UrlEntry("https://a/03.zip", "third.zip")),
+            parsed.entries,
+        )
+    }
+
     @Test fun aria2CommandsAndTheirContinuationsAreNotReinterpretedAsManualTemplates() {
         assertTrue(parseManualEntries("aria2c 'https://example.com/[1-3].zip'").entries.isEmpty())
         val parsed = parseManualEntries("aria2c \\\nhttps://example.com/[1-3000].zip\nhttps://example.com/manual[1-2].zip")

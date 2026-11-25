@@ -376,13 +376,13 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
         pendingTorrentInjections.current.push(injection.torrentFiles)
       }
     }
-    if (parsed.rangeLimitExceeded) return
+    if (parsed.rangeLimitExceeded || target !== null || busy) return
     const pending = pendingTorrentInjections.current
     pendingTorrentInjections.current = []
     for (const files of pending) {
       void submitTorrentFiles(files, { saveDir: saveDir.trim(), queueId: context.queueId })
     }
-  }, [session.injections, saveDir, context.queueId, parsed.rangeLimitExceeded])
+  }, [session.injections, saveDir, context.queueId, parsed.rangeLimitExceeded, target, busy])
 
   // ── 站点凭据自动回填 ──
   const authDirty = useRef(false)
@@ -798,6 +798,10 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
         onDropFiles={(files) => {
           const torrentFiles = files.filter(isTorrentFile)
           if (torrentFiles.length > 0) {
+            if (target !== null) {
+              toast.key('downloadToTorrentLocalOnly', 'warning')
+              return
+            }
             openNewDownload({ torrentFiles })
           } else if (files.length > 0) {
             toast.info(t('unsupportedTorrentDropHint'))
@@ -912,7 +916,6 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
             <FieldHint>{t('urlRangeHint')}</FieldHint>
             {parsed.rangePreview ? (
               <FieldHint className="min-w-0 font-mono">
-                <div>{t('urlCount', { count: parsed.rangeCount })}</div>
                 <div className="truncate whitespace-pre" title={parsed.rangePreview.first}>{parsed.rangePreview.first}</div>
                 {parsed.rangeCount > 1 ? (
                   <>

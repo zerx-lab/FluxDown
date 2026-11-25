@@ -35,7 +35,10 @@ private inline fun forEachEntry(text: String, loose: Boolean, emit: (UrlEntry, f
         val fromCommand = continuation
         continuation = !loose && hasCommandContinuation(trimmed) &&
             (fromCommand || !line.first().isWhitespace() && startsAria2Command(trimmed))
-        if (line.startsWith(' ') || line.startsWith('\t')) {
+        val leadingUrl = if (loose) null else leadingHttpUrl(trimmed)
+        if ((line.startsWith(' ') || line.startsWith('\t')) &&
+            (loose || leadingUrl == null && !trimmed.startsWith("magnet:?", true) && !trimmed.startsWith("ed2k://", true))
+        ) {
             val entry = current ?: continue
             current = when {
                 trimmed.startsWith("out=") -> entry.copy(fileName = trimmed.removePrefix("out="))
@@ -53,7 +56,7 @@ private inline fun forEachEntry(text: String, loose: Boolean, emit: (UrlEntry, f
             magnet >= 0 -> UrlEntry(trimmed.substring(magnet))
             ed2k >= 0 -> UrlEntry(trimmed.substring(ed2k))
             loose -> findHttpUrl(trimmed)?.let { UrlEntry(trimImportedUrl(it)) }
-            else -> leadingHttpUrl(trimmed)?.let { UrlEntry(it) }
+            else -> leadingUrl?.let { UrlEntry(it) }
         }
     }
     current?.let { emit(it, currentFromCommand) }
