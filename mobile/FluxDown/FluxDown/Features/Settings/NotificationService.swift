@@ -577,12 +577,8 @@ final class NotificationService: NSObject {
             }
             await NotifyActivityPresenter.present(items: [file])
         case let .resolveDefault(requestId, hostID):
-            guard container.host.id == hostID else { return }
-            if container.store.state.connection == .connecting { await waitUntilLive() }
-            guard container.host.id == hostID,
-                  let request = container.store.state.selections.first(where: { $0.requestId == requestId }) else { return }
             do throws(HostError) {
-                try await container.session.resolveSelection(requestId, outcome: request.defaultChoice)
+                try await container.resolveDefaultSelection(requestId, hostID: hostID)
             } catch {
                 log.error("resolve default selection failed: \(error.description, privacy: .public)")
                 container.toasts.show(text: ErrorText.describe(error), tone: .error)

@@ -144,7 +144,7 @@ final class AppContainer {
         do throws(HostError) {
             let probe = try await FluxBridge.openRemote(endpoint: url, accessKey: key)
             defer { probe.close() }
-            try await Self.awaitFirstSnapshot(probe)
+            _ = try await Self.awaitFirstSnapshot(probe)
             let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
             let display = trimmedName.isEmpty ? Self.displayHost(url) : trimmedName
             let ref: HostRef
@@ -232,6 +232,17 @@ final class AppContainer {
     /// 调用方用完必须 `close()`。
     func openLocalSession() async -> Result<any HostSession, HostError> {
         await open(localRef)
+    }
+
+    /// 后台通知使用独立会话，不切换前台主机或改写启动记录。
+    func resolveDefaultSelection(_ requestID: String, hostID: String) async throws(HostError) {
+        guard let ref = hosts.first(where: { $0.id == hostID }) else { return }
+        let connection = await open(ref)
+        let session = try connection.get()
+        defer { session.close() }
+        let snapshot = try await Self.awaitFirstSnapshot(session)
+        guard let request = snapshot.pendingSelections.first(where: { $0.requestId == requestID }) else { return }
+        try await session.resolveSelection(requestID, outcome: request.defaultChoice)
     }
 
     private func revokeLinkPairing(fingerprint: String) async {
@@ -346,13 +357,13 @@ final class AppContainer {
         }
     }
 
-    private static func awaitFirstSnapshot(_ probe: any HostSession) async throws(HostError) {
+    private static func awaitFirstSnapshot(_ probe: any HostSession) async throws(HostError) -> HostSnapshot {
         let signals = probe.signals
-        let outcome: Result<Void, HostError> = await withTaskGroup(of: Result<Void, HostError>?.self) { group in
+        let outcome: Result<HostSnapshot, HostError> = await withTaskGroup(of: Result<HostSnapshot, HostError>?.self) { group in
             group.addTask {
                 for await signal in signals {
                     switch signal {
-                    case .snapshot: return .success(())
+                    case let .snapshot(snapshot): return .success(snapshot)
                     case let .fatal(error): return .failure(error)
                     case .event, .stale: continue
                     }
@@ -367,7 +378,7 @@ final class AppContainer {
             group.cancelAll()
             return first ?? .failure(HostError(.cancelled))
         }
-        try outcome.get()
+        return try outcome.get()
     }
 
     private static func displayHost(_ endpoint: String) -> String {
