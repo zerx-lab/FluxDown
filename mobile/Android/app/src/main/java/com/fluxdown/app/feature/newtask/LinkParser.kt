@@ -30,11 +30,28 @@ private inline fun forEachEntry(text: String, loose: Boolean, emit: (UrlEntry, f
     var current: UrlEntry? = null
     var currentFromCommand = false
     var continuation = false
-    for (line in text.splitToSequence('\n')) {
-        val raw = line.trim()
+    val lines = text.split('\n')
+    var index = 0
+    while (index < lines.size) {
+        val line = lines[index++]
+        var raw = line.trim()
         val fromCommand = continuation
-        continuation = !loose && hasCommandContinuation(raw) &&
-            (fromCommand || !line.first().isWhitespace() && startsAria2Command(raw))
+        val inCommand = !loose && (fromCommand ||
+            hasCommandContinuation(raw) && !line.first().isWhitespace() &&
+            startsAria2Command(raw.dropLast(1).trimEnd()))
+        // A continuation without surrounding whitespace can split one argument across lines.
+        if (inCommand && hasCommandContinuation(raw) && raw.getOrNull(raw.lastIndex - 1)?.isWhitespace() == false &&
+            lines.getOrNull(index)?.firstOrNull()?.isWhitespace() == false
+        ) {
+            val joined = StringBuilder()
+            do {
+                joined.append(raw, 0, raw.lastIndex)
+                raw = lines[index++].trimEnd()
+            } while (hasCommandContinuation(raw) && raw.getOrNull(raw.lastIndex - 1)?.isWhitespace() == false &&
+                lines.getOrNull(index)?.firstOrNull()?.isWhitespace() == false)
+            raw = joined.append(raw).toString()
+        }
+        continuation = inCommand && hasCommandContinuation(raw)
         val trimmed = if (continuation) raw.dropLast(1).trimEnd() else raw
         val leadingUrl = if (loose) null else leadingHttpUrl(trimmed)
         if ((line.startsWith(' ') || line.startsWith('\t')) &&

@@ -363,6 +363,12 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
     [],
   )
 
+  useEffect(() => () => {
+    const active = importAbort.current
+    importAbort.current = null
+    active?.abort()
+  }, [])
+
   // ── 会话期间追加的链接 / 种子 ──
   useEffect(() => {
     for (const injection of session.injections) {
@@ -513,26 +519,43 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
 
   /** 逐条下发到云账号设备 / 已配对设备；成功的从文本框移除，失败的保留并逐条显示原因。 */
   const submitRemote = async (remote: RemoteTarget) => {
+    setNotice(null)
+    setFailureOverflow(0)
     setFailures([])
     setPhase('submitting')
     const renamed = entries.length === 1 ? rename.trim() : ''
     const route = dispatchRoute(remote)
+    const controller = new AbortController()
+    importAbort.current = controller
+    setCancelling(false)
+    setProgress({ total: entries.length, done: 0, failed: 0, retry: null })
     const summary = await dispatchSequentially(entries, (entry) => {
       const input = { url: entry.url, fileName: renamed !== '' ? renamed : entry.fileName }
       return route.via === 'cloud'
         ? rpc.agent.remote.dispatch(remoteDispatchParams(remote.id, input, remoteSaveDir))
         : rpc.agent.link.dispatch(linkDispatchParams(route.fingerprint, input, remoteSaveDir))
+    }, controller.signal, (done, failed) => {
+      if (importAbort.current === controller) setProgress({ total: entries.length, done, failed, retry: null })
     })
-    if (summary.failed.length === 0) {
+    if (importAbort.current !== controller) return
+    importAbort.current = null
+    setProgress(null)
+    if (summary.unsent.length > 0) {
+      setNotice(t('importCancelled', { added: summary.ok.toLocaleString(), total: entries.length.toLocaleString() }))
+    }
+    if (summary.failed.length === 0 && summary.unsent.length === 0) {
       if (route.via === 'link') toast.key('linkDispatchedToDevice', 'success', { device: remote.name })
       else toast.key(remote.online === false ? 'downloadToDispatchedOffline' : 'downloadToDispatched', 'success', { count: summary.ok, device: remote.name })
       closeNewDownload()
       return
     }
     const failed = summary.failed.map(({ item, reason }) => ({ entry: item, key: accountErrorKey(reason) }))
-    if (summary.ok > 0) toast.key('downloadToPartial', 'warning', { ok: summary.ok, failed: failed.length, device: remote.name })
-    retryEntries(failed.map((item) => item.entry))
-    setFailures(failed.map((item) => ({ url: item.entry.url, message: t(item.key) })))
+    if (summary.unsent.length === 0 && summary.ok > 0) {
+      toast.key('downloadToPartial', 'warning', { ok: summary.ok, failed: failed.length, device: remote.name })
+    }
+    retryEntries([...failed.map((item) => item.entry), ...summary.unsent])
+    setFailures(failed.slice(0, MAX_FAILURE_ROWS).map((item) => ({ url: item.entry.url, message: t(item.key) })))
+    setFailureOverflow(Math.max(0, failed.length - MAX_FAILURE_ROWS))
     setPhase('idle')
   }
 
@@ -792,6 +815,10 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
         onDropFiles={(files) => {
           const torrentFiles = files.filter(isTorrentFile)
           if (torrentFiles.length > 0) {
+            if (busy) {
+              toast.key('torrentDropBusy', 'warning')
+              return
+            }
             if (target !== null) {
               toast.key('downloadToTorrentLocalOnly', 'warning')
               return

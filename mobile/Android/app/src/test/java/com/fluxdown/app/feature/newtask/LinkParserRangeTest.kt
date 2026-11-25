@@ -161,6 +161,15 @@ class LinkParserRangeTest {
         }
     }
 
+    @Test fun joinsAnUnbrokenCommandUrlAcrossPhysicalLines() {
+        val prefix = "https://example.com/[01-02].zip?token="
+        val parsed = parseManualEntries("aria2c \\\n  ${prefix}abc\\\ndef\\\nghi\nhttps://example.com/[1-2].zip")
+        assertEquals(
+            listOf("${prefix}abcdefghi", "https://example.com/1.zip", "https://example.com/2.zip"),
+            parsed.entries.map { it.url },
+        )
+    }
+
     @Test fun preservesWindowsCommandContinuationButNotAnEscapedMarkerOrUrlPath() {
         val template = "https://example.com/[01-02].zip"
         val windows = parseManualEntries("\"C:\\Program Files\\aria2\\aria2c.exe\" ^\n$template")

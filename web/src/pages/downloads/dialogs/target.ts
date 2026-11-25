@@ -99,14 +99,22 @@ export function linkDispatchParams(fingerprint: string, input: DispatchInput, sa
 }
 
 /** Each dispatch uses the same serial gateway lane. Await its reply before sending the next. */
-export async function dispatchSequentially<T>(items: readonly T[], send: (item: T) => Promise<unknown>) {
+export async function dispatchSequentially<T>(
+  items: readonly T[],
+  send: (item: T) => Promise<unknown>,
+  signal: AbortSignal,
+  onProgress: (done: number, failed: number) => void,
+) {
   const failed: { item: T; reason: unknown }[] = []
+  let done = 0
   for (const item of items) {
+    if (signal.aborted) break
     try {
       await send(item)
     } catch (reason) {
       failed.push({ item, reason })
     }
+    onProgress(++done, failed.length)
   }
-  return { ok: items.length - failed.length, failed }
+  return { ok: done - failed.length, failed, unsent: items.slice(done) }
 }

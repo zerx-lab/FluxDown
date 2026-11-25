@@ -172,8 +172,23 @@ describe('目标列表', () => {
       busy = false
       seen.push(url)
       if (url === urls[127]) throw failure
-    })
+    }, new AbortController().signal, () => {})
     expect(seen).toEqual(urls)
-    expect(result).toEqual({ ok: 599, failed: [{ item: urls[127], reason: failure }] })
+    expect(result).toEqual({ ok: 599, failed: [{ item: urls[127], reason: failure }], unsent: [] })
+  })
+
+  test('stops before the next RPC and reports the result of the in-flight request', async () => {
+    const controller = new AbortController()
+    const urls = ['first', 'second', 'third']
+    const progress: number[] = []
+    const sent: string[] = []
+    const result = await dispatchSequentially(urls, async (url) => {
+      sent.push(url)
+      await Promise.resolve()
+      if (url === 'second') controller.abort()
+    }, controller.signal, (done) => progress.push(done))
+    expect(sent).toEqual(['first', 'second'])
+    expect(progress).toEqual([1, 2])
+    expect(result).toEqual({ ok: 2, failed: [], unsent: ['third'] })
   })
 })

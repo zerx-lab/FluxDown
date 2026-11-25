@@ -98,6 +98,7 @@
   "unsupportedDropHint": "This file type isn't supported here. Drop a .torrent file or a .txt/.url/.list file of links.",
   "unsupportedDropHintGeneric": "This file type isn't supported here. Drop a .txt/.url/.list file of links.",
   "unsupportedTorrentDropHint": "Drop a .torrent file here.",
+  "torrentDropBusy": "Wait for the current operation to finish, then drop the torrent file again.",
   "taskCreatedToast": "Task added to the download list.",
   "importProgress": "Adding {done} / {total}",
   "importRetrying": "Connection interrupted — retrying in {seconds}s ({attempt}/{max})",
