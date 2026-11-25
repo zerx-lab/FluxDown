@@ -8,8 +8,12 @@
 import { Outlet, useLocation } from '@tanstack/react-router'
 import { useEffect } from 'react'
 import { useT } from '../i18n'
+import { useDaemon } from '../lib/rpc'
+import type { SelectionRequestDto } from '../lib/rpc'
+import { FileConflictDialog } from '../pages/downloads/dialogs/FileConflictDialog'
 import { NewDownloadDialog } from '../pages/downloads/dialogs/NewDownloadDialog'
 import { SeedLocalDialog } from '../pages/downloads/dialogs/SeedLocalDialog'
+import { SelectionHost } from '../pages/downloads/dialogs/SelectionDialogs'
 import { useDialogsState } from '../pages/downloads/dialogs/store'
 import { isPluginEntryActive } from '../pages/plugins/contributions'
 import { usePluginActivityEntries, usePluginShellBridge } from '../pages/plugins/usePluginContributions'
@@ -59,13 +63,18 @@ function useExitChromeEditing(mobile: boolean): void {
   }, [editing, mobile])
 }
 
-/** Keep task creation and its follow-on seeding dialog available across shell route changes. */
+const EMPTY_SELECTIONS: readonly SelectionRequestDto[] = []
+
+/** Keep task creation and its follow-up dialogs available across shell route changes. */
 function DownloadCreationHost() {
   const { newDownload, seedLocal } = useDialogsState()
+  const selections = useDaemon((daemon) => daemon.pendingSelections, EMPTY_SELECTIONS)
   return (
     <>
       {newDownload ? <NewDownloadDialog key={newDownload.session} session={newDownload} /> : null}
       {seedLocal ? <SeedLocalDialog /> : null}
+      <SelectionHost requests={selections} />
+      <FileConflictDialog />
     </>
   )
 }

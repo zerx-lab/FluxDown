@@ -1,23 +1,18 @@
-// 下载页对话框宿主：由 DownloadsPage 挂载一次，渲染下载页专属对话框，
-// 并根据快照自动弹出：daemon 的交互选择请求（HLS / BT / 变体 / 文件已存在聚合）与 agent 的待确认外部捕获。
+// 下载页专属对话框，以及进入新建下载的外部捕获入口。
 
 import { useEffect } from 'react'
-import { useAgent, useDaemon } from '../../../lib/rpc'
-import type { PendingCaptureDto, SelectionRequestDto } from '../../../lib/rpc'
-import { FileConflictDialog } from './FileConflictDialog'
+import { useAgent } from '../../../lib/rpc'
+import type { PendingCaptureDto } from '../../../lib/rpc'
 import { GroupDetailDialog } from './GroupDetailDialog'
 import { QueueManagerDialog } from './QueueManagerDialog'
-import { SelectionHost } from './SelectionDialogs'
 import { capturesShown, openNewDownload, useDialogsState } from './store'
 import { AddWebSeedDialog, ChangeSegmentsDialog, ChangeUrlDialog, MoveStorageDialog, RenameDialog, TaskLimitsDialog } from './TaskEditDialogs'
 import { TaskPropertiesDialog } from './TaskPropertiesDialog'
 
-const EMPTY_SELECTIONS: readonly SelectionRequestDto[] = []
 const EMPTY_CAPTURES: readonly PendingCaptureDto[] = []
 
 export function DownloadDialogsHost() {
   const state = useDialogsState()
-  const selections = useDaemon((daemon) => daemon.pendingSelections, EMPTY_SELECTIONS)
   const captures = useAgent((snapshot) => snapshot.pendingCaptures, EMPTY_CAPTURES)
 
   // 外部捕获（浏览器扩展 / 协议关联）到达：拉起新建下载表单并把捕获并入链接行。
@@ -37,8 +32,6 @@ export function DownloadDialogsHost() {
       {state.moveStorage ? <MoveStorageDialog key={state.moveStorage} taskId={state.moveStorage} /> : null}
       {state.taskLimits ? <TaskLimitsDialog key={state.taskLimits} taskId={state.taskLimits} /> : null}
       {state.addWebSeed ? <AddWebSeedDialog key={state.addWebSeed.session} taskId={state.addWebSeed.taskId} session={state.addWebSeed.session} /> : null}
-      <SelectionHost requests={selections} />
-      <FileConflictDialog />
     </>
   )
 }
