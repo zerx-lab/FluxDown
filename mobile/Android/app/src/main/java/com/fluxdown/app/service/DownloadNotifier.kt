@@ -78,8 +78,8 @@ object NotificationIntents {
     /** @return true = 这是通知意图（已处理）。 */
     fun handle(container: AppContainer, nav: AppNavigator, intent: Intent?): Boolean {
         if (intent?.action != ACTION_OPEN) return false
-        container.supersedeHostRestore()
         val hostId = intent.getStringExtra(EXTRA_HOST).orEmpty()
+        if (hostId.isNotEmpty()) container.supersedeHostRestore()
         val taskId = intent.getStringExtra(EXTRA_TASK).orEmpty()
         container.appScope.launch {
             if (!ensureHost(container, hostId)) return@launch
