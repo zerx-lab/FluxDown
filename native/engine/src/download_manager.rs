@@ -1196,6 +1196,180 @@ fn task_has_started(status: i32, downloaded_bytes: i64) -> bool {
     task_owns_final_file(status) || downloaded_bytes > 0
 }
 
+/// Active workers own a reserved name. Paused workers need proof that the
+/// object at that name is still the one left by their previous run.
+enum ChecksumPartial {
+    Unclaimed,
+    Reserved {
+        path: PathBuf,
+        hls_http_fallback: bool,
+    },
+    /// Worker ended, but file identity has not been captured. Still reserved.
+    PendingIdentity {
+        path: PathBuf,
+        hls_http_fallback: bool,
+    },
+    Retained {
+        path: PathBuf,
+        file: Arc<std::fs::File>,
+        hls_http_fallback: bool,
+    },
+}
+
+type ChecksumClaim = Arc<Mutex<ChecksumPartial>>;
+
+fn checksum_temp_path(task: &TaskInfo) -> Option<PathBuf> {
+    let mut path = task_target_path(&task.save_dir, &task.file_name)?.into_os_string();
+    path.push(downloader::TEMP_EXT);
+    Some(path.into())
+}
+
+async fn open_checksum_partial(path: PathBuf) -> std::io::Result<Option<std::fs::File>> {
+    tokio::task::spawn_blocking(move || {
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_file() => {}
+            Ok(_) => return Ok(None),
+            Err(error) if path_is_absent(&error) => return Ok(None),
+            Err(error) => return Err(error),
+        }
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::custom_flags(
+            &mut options,
+            libc::O_NONBLOCK | libc::O_NOFOLLOW,
+        );
+        let file = match options.open(path) {
+            Ok(file) => file,
+            Err(error) if path_is_absent(&error) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        Ok(file.metadata()?.is_file().then_some(file))
+    })
+    .await
+    .map_err(std::io::Error::other)?
+}
+
+/// Complete a worker's handoff, or retry a handoff that could not inspect the
+/// file. Keep the reservation until the identity is captured or the file is absent.
+async fn finish_checksum_claim(
+    claim: &ChecksumClaim,
+    reserved: &Mutex<HashSet<PathBuf>>,
+    worker_ended: bool,
+) -> std::io::Result<()> {
+    let (path, hls_http_fallback) = {
+        let mut claim = claim.lock().unwrap_or_else(|error| error.into_inner());
+        match &*claim {
+            ChecksumPartial::Reserved {
+                path,
+                hls_http_fallback,
+            } if worker_ended => {
+                let (path, hls_http_fallback) = (path.clone(), *hls_http_fallback);
+                *claim = ChecksumPartial::PendingIdentity {
+                    path: path.clone(),
+                    hls_http_fallback,
+                };
+                (path, hls_http_fallback)
+            }
+            ChecksumPartial::PendingIdentity {
+                path,
+                hls_http_fallback,
+            } => (path.clone(), *hls_http_fallback),
+            _ => return Ok(()),
+        }
+    };
+    let file = open_checksum_partial(path.clone()).await?;
+    let mut claim = claim.lock().unwrap_or_else(|error| error.into_inner());
+    if matches!(&*claim, ChecksumPartial::PendingIdentity { path: pending, .. } if *pending == path)
+    {
+        lock_reserved(reserved).remove(&path);
+        *claim = match file {
+            Some(file) => ChecksumPartial::Retained {
+                path,
+                file: Arc::new(file),
+                hls_http_fallback,
+            },
+            None => ChecksumPartial::Unclaimed,
+        };
+    }
+    Ok(())
+}
+
+/// For checksum workers the claim owns the reservation through the identity
+/// handoff. Do not also send its path in TaskDone, which could release it twice
+/// or release it while the identity check still needs to be retried.
+async fn finish_worker_reservation(
+    claim: Option<&ChecksumClaim>,
+    reserved: &Mutex<HashSet<PathBuf>>,
+    path: Option<PathBuf>,
+) -> Option<PathBuf> {
+    let Some(claim) = claim.filter(|_| path.is_some()) else {
+        return path;
+    };
+    if let Err(error) = finish_checksum_claim(claim, reserved, true).await {
+        crate::logger::report_warning("download-manager", "retain partial identity", &error);
+    }
+    None
+}
+
+async fn check_checksum_partial(claim: &ChecksumClaim, path: &Path) -> std::io::Result<bool> {
+    let file = {
+        let claim = claim.lock().unwrap_or_else(|error| error.into_inner());
+        match &*claim {
+            ChecksumPartial::Reserved { path: reserved, .. } => return Ok(reserved == path),
+            ChecksumPartial::PendingIdentity { path: pending, .. } if pending == path => {
+                return Err(std::io::ErrorKind::WouldBlock.into());
+            }
+            ChecksumPartial::Retained {
+                path: saved, file, ..
+            } if saved == path => Arc::clone(file),
+            _ => return Ok(false),
+        }
+    };
+    match open_checksum_partial(path.to_owned()).await? {
+        Some(current) => crate::file_hash::same_file(&file, &current),
+        None => Ok(false),
+    }
+}
+
+async fn checksum_partial_owned(claim: &ChecksumClaim, path: &Path) -> bool {
+    check_checksum_partial(claim, path).await.unwrap_or(false)
+}
+
+async fn has_partial_checkpoint(db: &Db, task: &TaskInfo) -> bool {
+    if task.downloaded_bytes > 0 {
+        return true;
+    }
+    match db.has_task_segments(&task.task_id).await {
+        Ok(has_segments) => has_segments,
+        Err(error) => {
+            crate::logger::report_error("download-manager", "check partial checkpoint", &error);
+            false
+        }
+    }
+}
+
+async fn checksum_candidate_unclaimed(
+    db: &Db,
+    task: &TaskInfo,
+    adopted: bool,
+    claim: Option<&ChecksumClaim>,
+) -> std::io::Result<bool> {
+    if task.checksum.is_empty() {
+        return Ok(false);
+    }
+    if adopted {
+        return Ok(true);
+    }
+    let Some(claim) = claim else {
+        return Ok(!has_partial_checkpoint(db, task).await);
+    };
+    match checksum_temp_path(task) {
+        Some(path) => Ok(!check_checksum_partial(claim, &path).await?),
+        None => Ok(true),
+    }
+}
+
 /// 「重新下载」的磁盘清理原语：删掉 `path`，`NotFound` 视为成功。
 ///
 /// `contended = true`（刚取消过在途 spawn）时最多重试 10 次、每次间隔
@@ -1481,6 +1655,7 @@ struct DeleteFiles {
     delete_files: bool,
     /// 非 BT 的临时路径仍归本任务；清理历史中的旧名字不再持有这些路径。
     cleanup_named_temps: bool,
+    checksum_claim: Option<ChecksumClaim>,
     /// 最终产物归本任务所有（已完成、未被批外任务登记、非「采纳」既有文件）。
     owns_final: bool,
     /// 任务启动过（且非采纳）：独立音轨成品可随任务删除。
@@ -1504,6 +1679,7 @@ struct DeleteCleanup {
     #[cfg(feature = "bt")]
     app_data_dir: Arc<str>,
     file_permits: Arc<Semaphore>,
+    reserved: Arc<Mutex<HashSet<PathBuf>>>,
 }
 
 /// 批量删除中单个任务的清理：等下载退出 → 移出 BT 会话 → 限时删除磁盘文件 →
@@ -1518,6 +1694,7 @@ async fn run_delete_cleanup(job: DeleteCleanup) -> Result<(), downloader::Downlo
         #[cfg(feature = "bt")]
         app_data_dir,
         file_permits,
+        reserved,
     } = job;
     // 超时后 abort 外层 future，加速纯 async 任务释放连接/句柄（F011）。
     let handle_timed_out = match handle {
@@ -1531,7 +1708,7 @@ async fn run_delete_cleanup(job: DeleteCleanup) -> Result<(), downloader::Downlo
         }
         None => false,
     };
-    let Some(files) = files else {
+    let Some(mut files) = files else {
         if handle_timed_out {
             tracing::debug!("orphan download aborted after deletion deadline");
         }
@@ -1546,6 +1723,18 @@ async fn run_delete_cleanup(job: DeleteCleanup) -> Result<(), downloader::Downlo
             files.delete_files,
         )
         .await?;
+    }
+    if let Some(claim) = &files.checksum_claim {
+        finish_checksum_claim(claim, &reserved, handle_timed_out).await?;
+    }
+    if files.cleanup_named_temps
+        && let Some(claim) = &files.checksum_claim
+    {
+        let mut path = Path::new(&files.save_dir)
+            .join(&files.file_name)
+            .into_os_string();
+        path.push(downloader::TEMP_EXT);
+        files.cleanup_named_temps = check_checksum_partial(claim, Path::new(&path)).await?;
     }
     let result = {
         let _permit = file_permits.acquire().await.map_err(|error| {
@@ -1564,7 +1753,10 @@ async fn run_delete_cleanup(job: DeleteCleanup) -> Result<(), downloader::Downlo
         }
     };
     // F010：下载未按时退出时可能仍在写盘，延迟二次清理兜底孤立文件，与单任务路径一致。
-    if handle_timed_out && (files.is_bt || files.cleanup_named_temps) {
+    if handle_timed_out
+        && files.checksum_claim.is_none()
+        && (files.is_bt || files.cleanup_named_temps)
+    {
         let deferred_delete_files = if files.is_bt {
             files.delete_files && files.owns_final
         } else {
@@ -1688,9 +1880,9 @@ async fn remove_deleted_task_files(
                 );
             }
         }
-        if removes_final {
-            keep_first_cleanup_error(&mut first_error, tokio::fs::remove_file(&path).await);
-        }
+    }
+    if !files.is_bt && removes_final {
+        keep_first_cleanup_error(&mut first_error, tokio::fs::remove_file(&path).await);
     }
     for artifact in &files.artifacts {
         keep_first_cleanup_error(&mut first_error, tokio::fs::remove_file(artifact).await);
@@ -1815,6 +2007,21 @@ fn reserve_deduped_name_blocking(
     (unique, temp)
 }
 
+/// Rolls back a reservation if its async caller is dropped while the blocking
+/// probe is still running or before it takes the probe's result.
+struct PendingNameReservation {
+    set: Option<Arc<Mutex<HashSet<PathBuf>>>>,
+    path: PathBuf,
+}
+
+impl Drop for PendingNameReservation {
+    fn drop(&mut self) {
+        if let Some(set) = &self.set {
+            lock_reserved(set).remove(&self.path);
+        }
+    }
+}
+
 /// [`reserve_deduped_name_blocking`] 的 async 包装：放进阻塞池执行，磁盘探测
 /// 不占 async 工作线程，也不在持锁状态下做任何 I/O。
 async fn reserve_deduped_name(
@@ -1829,17 +2036,26 @@ async fn reserve_deduped_name(
     let dir = dir.to_path_buf();
     let name = name.to_string();
     let overwrite = overwrite.clone();
-    tokio::task::spawn_blocking(move || {
-        reserve_deduped_name_blocking(
+    let (name, mut pending) = tokio::task::spawn_blocking(move || {
+        let (name, path) = reserve_deduped_name_blocking(
             &reserved,
             &dir,
             &name,
             &overwrite,
             companion_mp4,
             companion_audio,
+        );
+        (
+            name,
+            PendingNameReservation {
+                set: Some(reserved),
+                path,
+            },
         )
     })
-    .await
+    .await?;
+    pending.set = None;
+    Ok((name, std::mem::take(&mut pending.path)))
 }
 
 /// 取出文件名预订集合的快照（只读判定与选名探测用；锁内仅克隆）。
@@ -1864,44 +2080,46 @@ fn lock_reserved(
 /// 下载器把文件按字面原样保存，而不是继续顶着一个暗示"视频文件"的
 /// `.ts` 名字。
 ///
-/// 对新名字做一次只读冲突检查（磁盘 + 当前预订集合），避免撞车覆盖同名
-/// 文件；但不注册新预订——该任务在 spawn 前经历的 `.ts` 预订仍会在
-/// `TaskDone` 时按原样释放，这里只是这一极窄场景下的极小概率竞态，可
-/// 接受（对称于 `run_hls_download_inner` 本身在此错误分支不写任何字节，
-/// 不存在"半成品文件"需要清理）。
-async fn restore_non_hls_file_name(
-    mut params: DownloadParams,
-    reserved: &Mutex<HashSet<std::path::PathBuf>>,
-) -> DownloadParams {
+/// Reserve the actual HTTP path before releasing the abandoned HLS reservation.
+async fn reserve_non_hls_file_name(
+    params: &mut DownloadParams,
+    reserved: &Arc<Mutex<HashSet<PathBuf>>>,
+) -> Result<PathBuf, tokio::task::JoinError> {
     let restored =
         naming::extract_from_url(&params.url).unwrap_or_else(|| "download.m3u8".to_string());
-    let save_path = std::path::PathBuf::from(&params.save_dir);
-    let snapshot = reserved_snapshot(reserved);
-    let overwrite = params.overwrite.clone();
-    let probe_name = restored.clone();
-    // 磁盘探测放进阻塞池，不占 async 工作线程。
-    let deduped = match tokio::task::spawn_blocking(move || {
-        dedup_filename_sync(&save_path, &probe_name, &snapshot, &overwrite, false, false)
-    })
-    .await
-    {
-        Ok(chosen) => chosen,
-        Err(error) => {
-            crate::logger::report_warning("download-manager", "join filename dedup probe", &error);
-            downloader::uuid_suffixed_name(&restored)
-        }
-    };
+    let (deduped, temp) = reserve_deduped_name(
+        reserved,
+        Path::new(&params.save_dir),
+        &restored,
+        &params.overwrite,
+        false,
+        false,
+    )
+    .await?;
     log_info!(
         "[download] task {} not an HLS playlist, falling back to plain HTTP download as {}",
         params.task_id,
         deduped
     );
     params.file_name = deduped;
-    params
+    Ok(temp)
+}
+
+async fn existing_temp_conflict(temp_path: &Path, reserved: &Mutex<HashSet<PathBuf>>) -> bool {
+    let on_disk = match tokio::fs::try_exists(temp_path).await {
+        Ok(found) => found,
+        Err(error) => {
+            crate::logger::report_warning("download-manager", "probe temp file", &error);
+            true
+        }
+    };
+    on_disk || lock_reserved(reserved).contains(temp_path)
 }
 
 /// [`finalize_start_file_name`] 的结果：调用方据此决定是否继续启动下载器。
 enum StartPrelude {
+    /// The task was cancelled before any output was claimed.
+    Cancelled,
     /// 文件名持久化失败：不启动下载器，也不发布完成态。
     Failed { error: downloader::DownloadError },
     /// 继续启动下载器；`Some(path)` 是已预订的 `.fdownloading` 临时路径。
@@ -1909,7 +2127,7 @@ enum StartPrelude {
     /// 磁盘上已存在同名最终文件且策略/决定为跳过：序幕在 dedup 之前就地判定
     /// 完成——不产生任何网络流量、不改名、不触碰已有文件。调用方应跳过下载器，
     /// 把任务标记为已完成（采纳已有文件，任务不拥有它）。
-    SkipExisting { size: i64 },
+    SkipExisting { size: i64, checksum: Option<String> },
     /// 需要询问用户：未预订任何临时路径，调用方让出并发槽后等待答复。
     AwaitDecision(crate::selection::FileConflict),
 }
@@ -2072,10 +2290,9 @@ async fn probe_start_meta(params: &mut DownloadParams) -> crate::meta_prober::Pr
 ///   6. dedup 改名时落库（预订已在锁内完成，兄弟任务经预订集合感知冲突，
 ///      不依赖 DB 中的名字）
 ///
-/// `Proceed` 携带预订的临时路径，经 `TaskDone.reserved_temp_path` 在
-/// `on_task_done` 释放；`Proceed(None)` = 名称最终仍未知（probe 失败），
-/// 下载器内部按响应头/URL 兜底命名，但不参与 dedup 协调（极端情况，正常
-/// 路径不会到此）。
+/// `Proceed` 携带预订的临时路径。校验任务在残片身份交接时释放预订，其余任务
+/// 经 `TaskDone.reserved_temp_path` 释放。`Proceed(None)` 表示最终仍无法确定文件名，
+/// 下载器内部按响应头/URL 兜底，不参与 dedup 协调。
 async fn finalize_start_file_name(
     params: &mut DownloadParams,
     reserved: &Arc<Mutex<HashSet<std::path::PathBuf>>>,
@@ -2266,6 +2483,7 @@ async fn finalize_start_file_name(
     // Overwrite authorizes the primary output, not an existing audio companion.
     // A manifest can declare separate audio even when audio_url is absent.
     let companion_audio = !ctx.html_only && (params.audio_url.is_some() || is_hls || is_dash);
+    let mut clear_skip = false;
     if !ctx.html_only
         && let Some(candidate) = task_target_path(&params.save_dir, &params.file_name)
     {
@@ -2278,30 +2496,114 @@ async fn finalize_start_file_name(
                 None
             }
         };
-        if let Some(metadata) = existing {
-            let temp_path = save_path.join(format!("{}{}", params.file_name, downloader::TEMP_EXT));
-            let reserved_hit = lock_reserved(reserved).contains(&temp_path);
-            let temp_on_disk = match tokio::fs::try_exists(&temp_path).await {
-                Ok(found) => found,
-                Err(error) => {
-                    crate::logger::report_warning("download-manager", "probe temp file", &error);
-                    true
-                }
-            };
-            let decision = match params.db.get_exists_decision(&params.task_id).await {
-                Ok(value) => crate::file_exists::ExistsDecision::from_db(&value),
+        use crate::file_exists::{AskSupport, ExistsDecision};
+        let requires_checksum = !ctx.restart_missing && !params.checksum.is_empty();
+        let mut decision = if existing.is_some() || requires_checksum {
+            match params.db.get_exists_decision(&params.task_id).await {
+                Ok(value) => ExistsDecision::from_db(&value),
                 Err(error) => {
                     return StartPrelude::Failed {
                         error: error.into(),
                     };
                 }
-            };
+            }
+        } else {
+            ExistsDecision::None
+        };
+        let mut temp_conflict = false;
+        if let Some(metadata) = &existing {
+            let temp_path = save_path.join(format!("{}{}", params.file_name, downloader::TEMP_EXT));
+            temp_conflict = existing_temp_conflict(&temp_path, reserved).await;
+            if requires_checksum
+                && ctx.support == AskSupport::WithSkip
+                && !temp_conflict
+                && (decision == ExistsDecision::Skip
+                    || (decision == ExistsDecision::None
+                        && matches!(
+                            ctx.global,
+                            FileExistsBehavior::Skip | FileExistsBehavior::Ask
+                        )))
+            {
+                let verified =
+                    downloader::verify_checksum(&candidate, &params.checksum, &params.cancel_token)
+                        .await;
+                if params.cancel_token.is_cancelled() {
+                    return StartPrelude::Cancelled;
+                }
+                match verified {
+                    Ok((checksum, hashed_file)) => {
+                        temp_conflict = existing_temp_conflict(&temp_path, reserved).await;
+                        if params.cancel_token.is_cancelled() {
+                            return StartPrelude::Cancelled;
+                        }
+                        let path = candidate.clone();
+                        let current = tokio::task::spawn_blocking(move || {
+                            let current = std::fs::File::open(path)?;
+                            if crate::file_hash::same_file(&hashed_file, &current)? {
+                                current.metadata().map(Some)
+                            } else {
+                                Ok(None)
+                            }
+                        })
+                        .await;
+                        if params.cancel_token.is_cancelled() {
+                            return StartPrelude::Cancelled;
+                        }
+                        match current {
+                            Ok(Ok(Some(current)))
+                                if !temp_conflict
+                                    && current.is_file()
+                                    && current.len() == metadata.len()
+                                    && metadata.modified().is_ok_and(|original| {
+                                        current.modified().is_ok_and(|now| now == original)
+                                    }) =>
+                            {
+                                return StartPrelude::SkipExisting {
+                                    size: i64::try_from(current.len()).unwrap_or(i64::MAX),
+                                    checksum: Some(checksum),
+                                };
+                            }
+                            Ok(Ok(_)) => {}
+                            Ok(Err(error)) => crate::logger::report_warning(
+                                "download-manager",
+                                "recheck existing file after checksum",
+                                &error,
+                            ),
+                            Err(error) => crate::logger::report_warning(
+                                "download-manager",
+                                "join existing file identity check",
+                                &error,
+                            ),
+                        }
+                    }
+                    Err(downloader::DownloadError::Cancelled) => return StartPrelude::Cancelled,
+                    Err(downloader::DownloadError::ChecksumMismatch(_)) => {}
+                    Err(error) => crate::logger::report_warning(
+                        "download-manager",
+                        "verify existing file checksum",
+                        &error,
+                    ),
+                }
+            }
+        }
+        if params.cancel_token.is_cancelled() {
+            return StartPrelude::Cancelled;
+        }
+        if requires_checksum && decision == ExistsDecision::Skip {
+            decision = ExistsDecision::None;
+            clear_skip = true;
+        }
+        if let Some(metadata) = existing {
             let mut facts = crate::file_exists::ExistsFacts {
                 final_file_exists: true,
-                temp_conflict: reserved_hit || temp_on_disk,
+                temp_conflict,
                 decision,
                 global: ctx.global,
-                support: ctx.support,
+                support: if requires_checksum && ctx.support == AskSupport::WithSkip {
+                    AskSupport::NoSkip
+                } else {
+                    ctx.support
+                },
                 unattended: params.unattended,
                 can_prompt: params.selector.can_prompt(),
             };
@@ -2319,6 +2621,7 @@ async fn finalize_start_file_name(
                 crate::file_exists::ExistsAction::Skip => {
                     return StartPrelude::SkipExisting {
                         size: i64::try_from(metadata.len()).unwrap_or(i64::MAX),
+                        checksum: None,
                     };
                 }
                 crate::file_exists::ExistsAction::Overwrite => {
@@ -2469,6 +2772,17 @@ async fn finalize_start_file_name(
             };
         }
     }
+    if params.cancel_token.is_cancelled() {
+        lock_reserved(reserved).remove(&temp);
+        return StartPrelude::Cancelled;
+    }
+    // A task taking its own output name must no longer be treated as an adoption.
+    if clear_skip && let Err(error) = params.db.set_exists_decision(&params.task_id, "").await {
+        lock_reserved(reserved).remove(&temp);
+        return StartPrelude::Failed {
+            error: error.into(),
+        };
+    }
     StartPrelude::Proceed(Some(temp))
 }
 
@@ -2533,6 +2847,9 @@ struct HttpFamilyRun {
     /// `None` = 续传，名字已定，直接交给下载器。
     prelude: Option<PreludeCtx>,
     reserved_set: Arc<Mutex<HashSet<std::path::PathBuf>>>,
+    checksum_prelude: Option<ChecksumClaim>,
+    resume_reservation: Option<PathBuf>,
+    hls_http_fallback: bool,
     done_tx: mpsc::Sender<TaskDone>,
     spawn_gen: u64,
     /// resolver 下发的请求补丁；每次运行起跑前应用。
@@ -2551,7 +2868,7 @@ async fn send_task_done(done_tx: &mpsc::Sender<TaskDone>, done: TaskDone) -> boo
 }
 
 /// 序幕判定跳过：记下逐任务「跳过」决定（任务采纳已有文件而不拥有它），再标记完成。
-async fn complete_skipped_task(params: &DownloadParams, size: i64) {
+async fn complete_skipped_task(params: &DownloadParams, size: i64, checksum: Option<String>) {
     log_info!(
         "[download] task {} skipped: file already exists ({})",
         params.task_id,
@@ -2565,6 +2882,12 @@ async fn complete_skipped_task(params: &DownloadParams, size: i64) {
                 crate::file_exists::ExistsDecision::Skip.as_db(),
             )
             .await?;
+        if let Some(checksum) = checksum {
+            params
+                .db
+                .set_task_file_hash(&params.task_id, &checksum)
+                .await?;
+        }
         params.db.update_task_status(&params.task_id, 3, "").await
     }
     .await;
@@ -2682,6 +3005,9 @@ async fn run_http_family_task(run: HttpFamilyRun) {
         html_only,
         mut prelude,
         reserved_set,
+        checksum_prelude,
+        resume_reservation,
+        hls_http_fallback,
         done_tx,
         spawn_gen,
         resolver_patch,
@@ -2699,7 +3025,14 @@ async fn run_http_family_task(run: HttpFamilyRun) {
         && let Err(message) = prepare_request(&mut params, prelude.is_some(), resolver_patch).await
     {
         persist_task_failure(&task_id, message, &panic_db, &panic_progress_tx).await;
-        send_task_done(&done_tx, TaskDone::finished(task_id, spawn_gen, None)).await;
+        let reservation =
+            finish_worker_reservation(checksum_prelude.as_ref(), &reserved_set, resume_reservation)
+                .await;
+        send_task_done(
+            &done_tx,
+            TaskDone::finished(task_id, spawn_gen, reservation),
+        )
+        .await;
         return;
     }
     if html_only {
@@ -2745,13 +3078,16 @@ async fn run_http_family_task(run: HttpFamilyRun) {
         None => StartPrelude::Proceed(None),
     };
     let reserved_temp_path = match prelude {
+        StartPrelude::Cancelled => None,
         StartPrelude::Failed { error } => {
             crate::logger::report_error("download-manager", "finalize start file name", &error);
             persist_task_failure(&task_id, error.to_string(), &panic_db, &panic_progress_tx).await;
             None
         }
-        StartPrelude::SkipExisting { size } => {
-            complete_skipped_task(&params, size).await;
+        StartPrelude::SkipExisting { size, checksum } => {
+            if !params.cancel_token.is_cancelled() {
+                complete_skipped_task(&params, size, checksum).await;
+            }
             None
         }
         StartPrelude::AwaitDecision(conflict) => {
@@ -2802,29 +3138,59 @@ async fn run_http_family_task(run: HttpFamilyRun) {
             return;
         }
         StartPrelude::Proceed(reserved_temp_path) => {
+            let mut reserved_temp_path = reserved_temp_path.or(resume_reservation);
+            if let (Some(claim), Some(path)) = (&checksum_prelude, &reserved_temp_path) {
+                *claim.lock().unwrap_or_else(|error| error.into_inner()) =
+                    ChecksumPartial::Reserved {
+                        path: path.clone(),
+                        hls_http_fallback,
+                    };
+            }
             let result = if use_ftp {
                 std::panic::AssertUnwindSafe(ftp_downloader::run_ftp_download(params))
                     .catch_unwind()
                     .await
-            } else if use_hls {
+            } else if use_hls && !hls_http_fallback {
                 let hls_result =
                     std::panic::AssertUnwindSafe(hls_downloader::run_hls_download(params))
                         .catch_unwind()
                         .await;
                 match hls_result {
-                    Ok(Some(fallback_params)) => {
-                        // 误判为 HLS 的普通文件——退回普通 HTTP 下载器，
-                        // 文件名恢复为 URL 派生的原始扩展名。
-                        let fallback_params =
-                            restore_non_hls_file_name(fallback_params, &reserved_set).await;
-                        std::panic::AssertUnwindSafe(downloader::run_download(fallback_params))
-                            .catch_unwind()
-                            .await
+                    Ok(Some(mut fallback_params)) => {
+                        match reserve_non_hls_file_name(&mut fallback_params, &reserved_set).await {
+                            Ok(path) => {
+                                if let Some(claim) = &checksum_prelude {
+                                    *claim.lock().unwrap_or_else(|error| error.into_inner()) =
+                                        ChecksumPartial::Reserved {
+                                            path: path.clone(),
+                                            hls_http_fallback: true,
+                                        };
+                                }
+                                if let Some(old_path) = reserved_temp_path.replace(path) {
+                                    lock_reserved(&reserved_set).remove(&old_path);
+                                }
+                                std::panic::AssertUnwindSafe(downloader::run_download(
+                                    fallback_params,
+                                ))
+                                .catch_unwind()
+                                .await
+                            }
+                            Err(error) => {
+                                persist_task_failure(
+                                    &task_id,
+                                    format!("reserve HTTP fallback file name: {error}"),
+                                    &panic_db,
+                                    &panic_progress_tx,
+                                )
+                                .await;
+                                Ok(())
+                            }
+                        }
                     }
                     Ok(None) => Ok(()),
                     Err(panic_info) => Err(panic_info),
                 }
-            } else if use_dash {
+            } else if use_dash && !hls_http_fallback {
                 std::panic::AssertUnwindSafe(dash_downloader::run_dash_download(params))
                     .catch_unwind()
                     .await
@@ -2861,7 +3227,8 @@ async fn run_http_family_task(run: HttpFamilyRun) {
             if let Some(used) = &pac_proxy {
                 crate::pac_route::report_outcome(&panic_db, &task_id, used).await;
             }
-            reserved_temp_path
+            finish_worker_reservation(checksum_prelude.as_ref(), &reserved_set, reserved_temp_path)
+                .await
         }
     };
     send_task_done(
@@ -4397,6 +4764,9 @@ pub struct DownloadManager {
     /// 共享互斥：actor（删除路径的主动释放）与各下载任务（启动序幕的
     /// dedup+预订）都会触碰，锁内只做同步操作，绝无 `.await`。
     reserved_temp_paths: Arc<Mutex<HashSet<std::path::PathBuf>>>,
+    /// In-process claims for checksum tasks; a retained handle pins the identity
+    /// of a partial after its worker releases the reservation.
+    checksum_preludes: HashMap<String, ChecksumClaim>,
     /// 引擎事件接收端(进度/队列变化/分段拆分等)——由宿主注入。
     sink: Arc<dyn EventSink>,
     /// 需要宿主介入决策的选择接口(HLS 画质/BT 文件选择)——由宿主注入。
@@ -4608,6 +4978,7 @@ impl DownloadManager {
             auto_failover_pending: HashMap::new(),
             auto_failover_attempts: HashMap::new(),
             reserved_temp_paths: Arc::new(Mutex::new(HashSet::new())),
+            checksum_preludes: HashMap::new(),
             sink,
             selector,
             rss: crate::rss::RssManager::new(rss_db, rss_sink),
@@ -8260,13 +8631,18 @@ impl DownloadManager {
         if task.status == 3 || task.downloaded_bytes != 0 {
             return false;
         }
-        match self.db.load_segments(&task.task_id).await {
-            Ok(rows) if rows.is_empty() => {}
-            Ok(_) => return false,
+        match self.db.has_task_segments(&task.task_id).await {
+            Ok(false) => {}
+            Ok(true) => return false,
             Err(error) => {
                 crate::logger::report_error("download-manager", "load segments", &error);
                 return false;
             }
+        }
+        // A checksum task without persisted progress cannot establish ownership
+        // from a same-name partial alone.
+        if !task.checksum.is_empty() {
+            return true;
         }
         if task.file_name.is_empty() {
             return true;
@@ -12445,7 +12821,7 @@ impl DownloadManager {
             // off-actor，本函数 spawn 后立即返回——创建任务后的 AllTasks
             // 快照不再被 probe 的网络往返压后，probe 期间其余信号照常处理。
             // dedup+预订经共享互斥锁串行化，原子性等价于旧 actor 同步段；
-            // 预订仍经 TaskDone.reserved_temp_path 在 on_task_done 释放。
+            // 校验任务在残片身份交接后释放预订，其余任务经 TaskDone 释放。
             // ---------------------------------------------------------------
 
             // 构造完整 HTTP 请求事务规格——method/body 来自浏览器扩展，
@@ -12542,6 +12918,16 @@ impl DownloadManager {
             };
 
             let reserved_set = Arc::clone(&self.reserved_temp_paths);
+            let checksum_prelude = if params.checksum.is_empty() {
+                self.checksum_preludes.remove(&task_id);
+                None
+            } else {
+                Some(Arc::clone(
+                    self.checksum_preludes
+                        .entry(task_id.clone())
+                        .or_insert_with(|| Arc::new(Mutex::new(ChecksumPartial::Unclaimed))),
+                ))
+            };
             tokio::spawn(
                 run_http_family_task(HttpFamilyRun {
                     params,
@@ -12557,6 +12943,9 @@ impl DownloadManager {
                         restart_missing: false,
                     }),
                     reserved_set,
+                    checksum_prelude,
+                    resume_reservation: None,
+                    hls_http_fallback: false,
                     done_tx,
                     spawn_gen,
                     resolver_patch,
@@ -13102,6 +13491,16 @@ impl DownloadManager {
             self.resume_task(task_id).await;
             return;
         }
+        if let Some(claim) = self.checksum_preludes.get(task_id)
+            && let Err(error) = finish_checksum_claim(claim, &self.reserved_temp_paths, false).await
+        {
+            crate::logger::report_error(
+                "download-manager",
+                "inspect partial before restart",
+                &error,
+            );
+            return;
+        }
         // 在途哈希读的是即将被删除的上一次产物：立即停止并作废其结果。
         self.file_hash_jobs.cancel(task_id);
 
@@ -13145,7 +13544,17 @@ impl DownloadManager {
             if task_owns_final_file(orig_status) && !adopted_existing {
                 remove_file_retrying(task_id, &path, was_active).await;
             }
-            remove_file_retrying(task_id, &temp_path, was_active).await;
+            let unclaimed = checksum_candidate_unclaimed(
+                &self.db,
+                &t,
+                adopted_existing,
+                self.checksum_preludes.get(task_id),
+            )
+            .await
+            .unwrap_or(true);
+            if !unclaimed {
+                remove_file_retrying(task_id, &temp_path, was_active).await;
+            }
             // DASH 音轨 sidecar（轨对任务的视频轨 URL 非 .mpd，需查库确认）
             // 与其临时文件一并清理，否则重下会复用上一轮的旧音轨。
             let has_audio_sidecar = dash_downloader::is_dash_url(&t.url)
@@ -13156,7 +13565,7 @@ impl DownloadManager {
                     .await
                     .unwrap_or_default()
                     .is_some();
-            if has_audio_sidecar {
+            if has_audio_sidecar && !unclaimed {
                 let audio_path = dash_downloader::build_audio_path(&path);
                 let audio_temp =
                     PathBuf::from(format!("{}{}", audio_path.display(), downloader::TEMP_EXT));
@@ -13215,6 +13624,12 @@ impl DownloadManager {
             );
         }
 
+        if !t.checksum.is_empty() {
+            self.checksum_preludes.insert(
+                task_id.to_owned(),
+                Arc::new(Mutex::new(ChecksumPartial::Unclaimed)),
+            );
+        }
         self.resume_restarted_task(task_id).await;
     }
 
@@ -14239,6 +14654,76 @@ impl DownloadManager {
             let range_verified = range_verified || plugin_range_supported;
 
             let restart_missing = task.file_clear_state == FileClearState::RestartPending;
+            let mut resume_reservation = None;
+            let mut hls_http_fallback = false;
+            let fresh = if html_only {
+                task.downloaded_bytes == 0
+            } else if let Some(claim) = self.checksum_preludes.get(task_id) {
+                if let Err(error) =
+                    finish_checksum_claim(claim, &self.reserved_temp_paths, false).await
+                {
+                    persist_task_failure(&tid, error.to_string(), &self.db, &self.progress_tx)
+                        .await;
+                    send_task_done(&done_tx, TaskDone::finished(tid, spawn_gen, None)).await;
+                    return;
+                }
+                if !restart_missing
+                    && let Some(path) = checksum_temp_path(&task)
+                    && checksum_partial_owned(claim, &path).await
+                    && lock_reserved(&self.reserved_temp_paths).insert(path.clone())
+                {
+                    let mut claim = claim.lock().unwrap_or_else(|error| error.into_inner());
+                    hls_http_fallback = matches!(
+                        *claim,
+                        ChecksumPartial::Retained {
+                            hls_http_fallback: true,
+                            ..
+                        }
+                    );
+                    *claim = ChecksumPartial::Reserved {
+                        path: path.clone(),
+                        hls_http_fallback,
+                    };
+                    resume_reservation = Some(path);
+                }
+                resume_reservation.is_none()
+            } else if !task.checksum.is_empty() {
+                restart_missing
+                    || (task.status != 3 && !has_partial_checkpoint(&self.db, &task).await)
+            } else {
+                self.never_started(&task, audio_url.is_some()).await
+            };
+            // HTTP fallbacks keep their playlist extension on disk; genuine HLS
+            // downloads use a video name and their own checkpoint.
+            if use_hls
+                && !fresh
+                && !restart_missing
+                && task.status != 3
+                && !self.checksum_preludes.contains_key(task_id)
+                && !task.checksum.is_empty()
+                && hls_downloader::is_hls_url(&task.file_name)
+                && let Some(path) = checksum_temp_path(&task)
+            {
+                match self.db.get_config(&format!("hls_resume_{task_id}")).await {
+                    Ok(None) if lock_reserved(&self.reserved_temp_paths).insert(path.clone()) => {
+                        hls_http_fallback = true;
+                        resume_reservation = Some(path);
+                    }
+                    Ok(Some(_)) => {}
+                    result => {
+                        let message = match result {
+                            Err(error) => error.to_string(),
+                            Ok(_) => {
+                                format!("HTTP fallback partial is reserved: {}", path.display())
+                            }
+                        };
+                        persist_task_failure(&tid, message, &self.db, &self.progress_tx).await;
+                        send_task_done(&done_tx, TaskDone::finished(tid, spawn_gen, None)).await;
+                        return;
+                    }
+                }
+            }
+
             // 普通 HTTP 续传已持久化文件大小、分段进度与原始 validator。
             // 已知大小时直接从真实缺口发 Range 请求，避免 HEAD / Range 0-0 /
             // plain GET 重新消耗一次性签名 URL。下游直接发送 Range，并用持久化的
@@ -14246,7 +14731,8 @@ impl DownloadManager {
             //
             // 未知大小仅沿用未验证 hint 任务的免 probe 语义；FTP/HLS/DASH/ED2K
             // 使用各自下载器，不把 HTTP hint 契约扩散到协议专用路径。
-            let is_plain_http = !use_ftp && !use_hls && !use_dash && !use_ed2k;
+            let is_plain_http =
+                hls_http_fallback || (!use_ftp && !use_hls && !use_dash && !use_ed2k);
             // 换源后首次续传必须真实探测新链接：库里的大小属于旧链接，沿用它作 hint
             // 会跳过探测，`settle_source_change` 拿旧值与旧值比较而永远判「未换文件」，
             // 新文件更小时分段越过 EOF 持续 416。读标记失败按已换源处理（多一次探测，
@@ -14307,14 +14793,6 @@ impl DownloadManager {
                 )
             };
             let task_unattended = self.db.is_task_unattended(&tid).await.unwrap_or(false);
-            // 从未有过任何落盘进度的任务（稍后下载 / 排队中暂停后恢复 / 重启自动
-            // 恢复 / 重新下载 / 答复后重入）等同全新起跑：经启动序幕统一处理命名、
-            // 跳过、dedup 与「文件已存在」询问。
-            let fresh = if html_only {
-                task.downloaded_bytes == 0
-            } else {
-                self.never_started(&task, audio_url.is_some()).await
-            };
             let decision = if html_only {
                 crate::file_exists::ExistsDecision::None
             } else {
@@ -14418,6 +14896,24 @@ impl DownloadManager {
             };
 
             let reserved_set = Arc::clone(&self.reserved_temp_paths);
+            let checksum_prelude = if fresh && !params.checksum.is_empty() {
+                let claim = Arc::new(Mutex::new(ChecksumPartial::Unclaimed));
+                self.checksum_preludes
+                    .insert(task_id.to_owned(), Arc::clone(&claim));
+                Some(claim)
+            } else if let Some(claim) = self.checksum_preludes.get(task_id) {
+                Some(Arc::clone(claim))
+            } else if let Some(path) = &resume_reservation {
+                let claim = Arc::new(Mutex::new(ChecksumPartial::Reserved {
+                    path: path.clone(),
+                    hls_http_fallback,
+                }));
+                self.checksum_preludes
+                    .insert(task_id.to_owned(), Arc::clone(&claim));
+                Some(claim)
+            } else {
+                None
+            };
             tokio::spawn(
                 run_http_family_task(HttpFamilyRun {
                     params,
@@ -14433,6 +14929,9 @@ impl DownloadManager {
                         restart_missing,
                     }),
                     reserved_set,
+                    checksum_prelude,
+                    resume_reservation,
+                    hls_http_fallback,
                     done_tx,
                     spawn_gen,
                     resolver_patch,
@@ -14703,12 +15202,39 @@ impl DownloadManager {
                 )
                 .await;
             let adopted = self.skip_adopted(task_id).await;
+            // Do not remove a sibling partial or schedule path-based cleanup merely
+            // because the checksum prelude had a worker handle.
+            if let Some(claim) = self.checksum_preludes.get(task_id)
+                && let Err(error) =
+                    finish_checksum_claim(claim, &self.reserved_temp_paths, handle_timed_out).await
+            {
+                cleanup_error = Some(error.into());
+            }
+            let cleanup_named_temps = if cleanup_named_temps && cleanup_error.is_none() {
+                match checksum_candidate_unclaimed(
+                    &self.db,
+                    &t,
+                    adopted,
+                    self.checksum_preludes.get(task_id),
+                )
+                .await
+                {
+                    Ok(unclaimed) => !unclaimed,
+                    Err(error) => {
+                        cleanup_error = Some(error.into());
+                        false
+                    }
+                }
+            } else {
+                false
+            };
             let owns_final = task_owns_final_file(t.status) && !claimed_by_other && !adopted;
             let has_started = task_has_started(t.status, t.downloaded_bytes) && !adopted;
             // 若 handle 超时且文件名已知，记录信息以便后续延迟清理
             if handle_timed_out
                 && !t.file_name.is_empty()
-                && (is_bt_url(&t.url) || cleanup_named_temps)
+                && (is_bt_url(&t.url)
+                    || (cleanup_named_temps && !self.checksum_preludes.contains_key(task_id)))
             {
                 // BT 的最终路径同样只归完成任务所有（dedup 在完成期），
                 // 延迟清理沿用同一守卫；非 BT 走到这里必然启动过（有
@@ -14918,22 +15444,22 @@ impl DownloadManager {
                         }
                     }
                 }
-
-                if delete_files
-                    && owns_final
-                    && is_safe_file_name(&t.file_name)
-                    && let Err(e) = tokio::fs::remove_file(&path).await
-                    && !path_is_absent(&e)
-                {
-                    log_info!(
-                        "[manager] delete_task {}: remove file {} failed: {}",
-                        task_id,
-                        path.display(),
-                        e
-                    );
-                    if cleanup_error.is_none() {
-                        cleanup_error = Some(e.into());
-                    }
+            }
+            if !is_bt_url(&t.url)
+                && delete_files
+                && owns_final
+                && is_safe_file_name(&t.file_name)
+                && let Err(e) = tokio::fs::remove_file(&path).await
+                && !path_is_absent(&e)
+            {
+                log_info!(
+                    "[manager] delete_task {}: remove file {} failed: {}",
+                    task_id,
+                    path.display(),
+                    e
+                );
+                if cleanup_error.is_none() {
+                    cleanup_error = Some(e.into());
                 }
             }
         }
@@ -14984,6 +15510,7 @@ impl DownloadManager {
                 return Err(DeleteTaskError::Record(error.into()));
             }
         }
+        self.checksum_preludes.remove(task_id);
         #[cfg(feature = "plugins")]
         self.pending_failure_diagnostics.remove(task_id);
         #[cfg(feature = "bt")]
@@ -15150,7 +15677,7 @@ impl DownloadManager {
                 && !files.is_bt
             {
                 self.auto_retry_counts.remove(task_id.as_str());
-                if files.cleanup_named_temps {
+                if files.cleanup_named_temps && files.checksum_claim.is_none() {
                     // abort 超时时 on_task_done 不会执行，在这里主动释放本任务的预订。
                     let reserved = PathBuf::from(&files.save_dir).join(format!(
                         "{}{}",
@@ -15169,6 +15696,7 @@ impl DownloadManager {
                 #[cfg(feature = "bt")]
                 app_data_dir: Arc::clone(&app_data_dir),
                 file_permits: Arc::clone(&file_permits),
+                reserved: Arc::clone(&self.reserved_temp_paths),
             };
             workers.push((task_id, tokio::spawn(run_delete_cleanup(job))));
         }
@@ -15209,6 +15737,7 @@ impl DownloadManager {
             match self.db.delete_tasks_batch(&deleted).await {
                 Ok(sources) => {
                     for task_id in &deleted {
+                        self.checksum_preludes.remove(task_id);
                         self.replayable_requests.remove(task_id);
                         #[cfg(feature = "plugins")]
                         self.pending_failure_diagnostics.remove(task_id);
@@ -15357,10 +15886,17 @@ impl DownloadManager {
             } else {
                 Vec::new()
             };
+            let checksum_claim = self.checksum_preludes.get(&task.task_id).cloned();
+            let can_clean_temps = task.checksum.is_empty()
+                || (!adopted
+                    && (checksum_claim.is_some()
+                        || task.downloaded_bytes > 0
+                        || facts.checksum_segment_tasks.contains(&task.task_id)));
             let files = DeleteFiles {
                 is_bt: is_bt_url(&task.url),
                 delete_files,
-                cleanup_named_temps,
+                cleanup_named_temps: cleanup_named_temps && can_clean_temps,
+                checksum_claim,
                 owns_final: task_owns_final_file(task.status) && !claimed && !adopted,
                 has_started: task_has_started(task.status, task.downloaded_bytes) && !adopted,
                 claimed_by_other: claimed,

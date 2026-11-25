@@ -56,6 +56,8 @@ pub struct DeletionFacts {
     pub exists_decisions: HashMap<String, String>,
     /// 带独立音轨（`audio_url` 非空）的任务。
     pub has_audio_url: HashSet<String>,
+    /// Checksum tasks with zero recorded bytes but a persisted segment plan.
+    pub(crate) checksum_segment_tasks: HashSet<String>,
     /// 任务 → 已登记的衍生产物文件名。
     pub artifacts: HashMap<String, Vec<String>>,
     /// `(save_dir, file_name)` → 把该名字登记为自己 `file_name` 的全部任务 id。
@@ -3443,7 +3445,11 @@ impl Db {
         for chunk in ids.chunks(CHUNK) {
             let placeholders = numbered_placeholders(chunk.len());
             let sql = format!(
-                "SELECT id, exists_decision, audio_url FROM tasks WHERE id IN ({placeholders})"
+                "SELECT id, exists_decision, audio_url,
+                    CASE WHEN checksum <> '' AND downloaded_bytes = 0 AND EXISTS (
+                        SELECT 1 FROM task_segments WHERE task_id = tasks.id
+                    ) THEN 1 ELSE 0 END AS checksum_has_segments
+                 FROM tasks WHERE id IN ({placeholders})"
             );
             let mut query = sqlx::query(AssertSqlSafe(sql));
             for id in chunk {
@@ -3454,6 +3460,9 @@ impl Db {
                 let audio_url: String = row.try_get("audio_url")?;
                 if !audio_url.is_empty() {
                     facts.has_audio_url.insert(id.clone());
+                }
+                if row.try_get::<i32, _>("checksum_has_segments")? != 0 {
+                    facts.checksum_segment_tasks.insert(id.clone());
                 }
                 facts
                     .exists_decisions
@@ -3651,6 +3660,18 @@ impl Db {
         }
         tx.commit().await?;
         Ok(())
+    }
+
+    pub(crate) async fn has_task_segments(&self, task_id: &str) -> Result<bool, DbError> {
+        let found: i32 = sqlx::query_scalar(
+            "SELECT CASE WHEN EXISTS (
+                SELECT 1 FROM task_segments WHERE task_id = $1
+            ) THEN 1 ELSE 0 END",
+        )
+        .bind(task_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(found != 0)
     }
 
     pub async fn load_segments(&self, task_id: &str) -> Result<Vec<SegmentInfo>, DbError> {

@@ -916,7 +916,7 @@
   "useServerTime": "使用服务器文件时间",
   "useServerTimeDesc": "下载完成后将文件的修改时间设为服务器提供的原始时间（HTTP Last-Modified / FTP MDTM），而非下载完成时间。适用于 HTTP/HTTPS、FTP 直链与音视频分轨合并的文件；HLS/DASH 分片流、BT、eD2k 没有服务器文件时间，不受影响",
   "fileExistsBehavior": "文件已存在时",
-  "fileExistsBehaviorDesc": "自动追加序号重命名、覆盖旧文件、跳过下载，或每次询问。询问需要有打开的 FluxDown 界面；无人值守的下载（RSS、远程派发、跳过二次选择的免打扰下载）以及没有界面在线的主机按自动重命名处理",
+  "fileExistsBehaviorDesc": "自动追加序号重命名、覆盖、跳过或询问。支持跳过的任务若填写了校验和，可在确认同名文件内容一致后跳过；未填校验和时，选择跳过只比对文件名。询问需要有打开的 FluxDown 界面，无人值守的下载按自动重命名处理。",
   "fileExistsRename": "自动重命名",
   "fileExistsOverwrite": "覆盖旧文件",
   "fileExistsAsk": "每次询问",
