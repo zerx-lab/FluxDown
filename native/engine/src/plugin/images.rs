@@ -438,13 +438,15 @@ mod tests {
     }
 
     fn png(width: u32, height: u32) -> Vec<u8> {
-        let image = DynamicImage::ImageRgba8(RgbaImage::from_pixel(
-            width,
-            height,
-            Rgba([20, 40, 60, 255]),
-        ));
+        let image = RgbaImage::from_pixel(width, height, Rgba([20, 40, 60, 255]));
+        encode_png(image)
+    }
+
+    fn encode_png(image: RgbaImage) -> Vec<u8> {
         let mut output = Cursor::new(Vec::new());
-        image.write_to(&mut output, ImageFormat::Png).unwrap();
+        DynamicImage::ImageRgba8(image)
+            .write_to(&mut output, ImageFormat::Png)
+            .unwrap();
         output.into_inner()
     }
 
@@ -485,9 +487,29 @@ mod tests {
                 Rgba([20, 40, 60, 255])
             );
             assert_eq!(output.get_pixel(0, 12).0[3], if circle { 0 } else { 255 });
+            assert_eq!(output.get_pixel(7, 7).0[3], 255);
             registry
                 .insert("plugin-a", "session-a", &opts, bytes)
                 .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn circle_center_crops_both_landscape_and_portrait_sources() {
+        fn pixel(x: u32, y: u32) -> Rgba<u8> {
+            Rgba([u8::try_from(x).unwrap(), u8::try_from(y).unwrap(), 0, 255])
+        }
+        let mut opts = options(false);
+        opts.circle = true;
+        for (width, height, left, top) in [(80, 40, 20, 0), (40, 80, 0, 20)] {
+            let source = encode_png(RgbaImage::from_fn(width, height, pixel));
+            let bytes = thumbnail(source, &opts).await.unwrap();
+            let output = image::load_from_memory(&bytes).unwrap().into_rgba8();
+            assert_eq!(output.dimensions(), (40, 40));
+            for (x, y) in [(20, 20), (7, 7)] {
+                assert_eq!(*output.get_pixel(x, y), pixel(left + x, top + y));
+            }
+            assert_eq!(output.get_pixel(1, 10).0[3], 0);
         }
     }
 
