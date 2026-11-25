@@ -3588,6 +3588,7 @@
   "mobileHostSwitched": "Switched to “{name}”",
   "mobileHostSwitchFailed": "Can't connect to “{name}” · {reason}",
   "hostRestoreFailed": "Using this device. Couldn't reach “{name}”.",
+  "mobileDownloadDraftHostChanged": "The host changed. Switch back or reopen New Download before submitting.",
   "mobileHostAdd": "Add host",
   "mobileHostRemoveHint": "Long-press a remote host to remove it.",
   "mobileHostRemoveTitle": "Remove “{name}”?",

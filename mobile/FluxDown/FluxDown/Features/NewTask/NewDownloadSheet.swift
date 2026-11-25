@@ -13,26 +13,29 @@ struct NewDownloadSheet: View {
 
     @Environment(AppContainer.self) private var container
     @Environment(\.dismiss) private var dismiss
-    @State private var form: NewDownloadForm?
+    @State private var draft: (hostID: String, form: NewDownloadForm)?
 
     var body: some View {
         Group {
-            if let form {
-                NewDownloadContent(form: form, close: { dismiss() })
+            if let draft {
+                NewDownloadContent(form: draft.form, hostID: draft.hostID, close: { dismiss() })
             } else {
                 Color.clear
             }
         }
         .task {
-            if form == nil { form = NewDownloadForm(prefill: prefill, state: container.store.state) }
+            if draft == nil {
+                draft = (container.host.id, NewDownloadForm(prefill: prefill, state: container.store.state))
+            }
         }
         // 关闭 Sheet 即取消进行中的清单预解析（在途 RPC 的晚到结果被忽略）。
-        .onDisappear { form?.cancelProbe() }
+        .onDisappear { draft?.form.cancelProbe() }
     }
 }
 
 private struct NewDownloadContent: View {
     @Bindable var form: NewDownloadForm
+    let hostID: String
     let close: () -> Void
 
     @Environment(AppContainer.self) private var container
@@ -750,6 +753,11 @@ private struct NewDownloadContent: View {
 
     private func submit(startPaused: Bool, queueId: String) {
         guard !form.submitting, form.probe == nil else { return }
+        guard container.host.id == hostID else {
+            reject()
+            container.toasts.show(text: L("mobileDownloadDraftHostChanged"), tone: .warning)
+            return
+        }
         let state = container.store.state
         if state.isReadOnly {
             reject()

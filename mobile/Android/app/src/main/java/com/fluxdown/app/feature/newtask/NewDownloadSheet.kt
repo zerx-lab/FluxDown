@@ -143,6 +143,7 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
     val actions = LocalTaskActions.current
     val haptics = FluxTheme.haptics
     val context = LocalContext.current
+    val draftHostId = remember { container.host.value.id }
     val form = remember { NewDownloadState.create(route.prefill, container.store.state.value, route.external, route.targetId) }
     val hostRef by container.host.collectAsStateWithLifecycle()
     val requestedLocalDir = form.saveDir.takeIf { form.hasExternalSaveDir && hostRef is HostRef.Local }
@@ -223,6 +224,12 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
     }
     fun submit(startPaused: Boolean, queueId: String) {
         if (form.submitting) return
+        if (container.host.value.id != draftHostId) {
+            haptics.reject()
+            overlays.toast(context.str(R.string.mobileDownloadDraftHostChanged), FluxToastKind.Error)
+            return
+        }
+        val session = container.session
         val state = container.store.state.value
         if (state.isReadOnly) {
             haptics.reject()
@@ -253,7 +260,7 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
         if (requests.size > ImportRules.CHUNK_SIZE) {
             // 多块导入：交给进程级导入中心，进度 / 取消在下载页顶部，关闭本 Sheet 不影响它；汇总提示由 ImportEffects 给出
             rememberMode()
-            container.imports.start(container.session, batches, startPaused, notify = true)
+            container.imports.start(session, batches, startPaused, notify = true)
             haptics.confirm()
             submitted()
             dismiss()
@@ -262,7 +269,7 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
         // 单块导入：Sheet 内联等待（提交中状态）；全部成功才关闭，失败 + 未提交的条目留在表单里供重试
         form.submitting = true
         container.appScope.launch {
-            val summary = container.imports.start(container.session, batches, startPaused, notify = false).await()
+            val summary = container.imports.start(session, batches, startPaused, notify = false).await()
             form.submitting = false
             val notice = summary.notice()
             val text = importNoticeText(context.resources, notice, summary.succeeded, startPaused) { actions.errorText(it) }
