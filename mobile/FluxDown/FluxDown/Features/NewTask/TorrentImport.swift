@@ -41,6 +41,8 @@ enum TorrentImport {
             toasts.show(text: L("localServiceDisconnected"), tone: .error, systemImage: FluxSymbol.offline)
             return outcome
         }
+        // Keep startup restore from closing the session while reading or importing the files.
+        container.supersedeHostRestore()
         let session = container.session
         let dir = saveDir.trimmingCharacters(in: .whitespacesAndNewlines)
 

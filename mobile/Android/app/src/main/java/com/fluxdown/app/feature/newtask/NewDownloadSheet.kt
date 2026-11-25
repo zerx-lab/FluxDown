@@ -258,6 +258,8 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
         }
         val requests = form.buildRequests(startPaused, queueId, manualProxyUrl(state.config), saveDir)
         val batches = groupImportBatches(requests)
+        // An accepted import owns this session; startup restore must not close it between batches.
+        container.supersedeHostRestore()
         if (requests.size > ImportRules.CHUNK_SIZE) {
             // 多块导入：交给进程级导入中心，进度 / 取消在下载页顶部，关闭本 Sheet 不影响它；汇总提示由 ImportEffects 给出
             rememberMode(session)

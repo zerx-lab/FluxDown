@@ -63,6 +63,7 @@ private struct NewDownloadContent: View {
     private static let hostTargetTag = "host"
 
     private var state: HostState { container.store.state }
+    private var isDraftHostLive: Bool { container.host.id == hostID && state.connection == .live }
 
     /// 「下载到」候选：云账号其他设备 + 局域网已配对设备（快照实时投影）。
     private var dispatchTargets: [DispatchTarget] {
@@ -153,12 +154,14 @@ private struct NewDownloadContent: View {
             }
         }
         .fluxAnimation(.snappy, value: dropTargeted)
-        // 预测输入（第一条链接的文件名 / 链接 / 重命名）变化，及打开表单时：重算分类目录并按「自动」规则跟随。
-        .onChange(of: form.categoryPredictionKey, initial: true) {
+        // Reconcile only against the draft host's live snapshot, including after returning to it.
+        .onChange(of: isDraftHostLive ? form.categoryPredictionKey : nil, initial: true) {
+            guard isDraftHostLive else { return }
             form.followCategory(session: container.session)
         }
-        .onChange(of: categoryOptions) {
-            form.reconcileCategory(options: categoryOptions, session: container.session)
+        .onChange(of: liveCategoryOptions) {
+            guard let options = liveCategoryOptions else { return }
+            form.reconcileCategory(options: options, session: container.session)
         }
         .interactiveDismissDisabled(form.isDirty || form.submitting)
         .fileImporter(
@@ -415,10 +418,9 @@ private struct NewDownloadContent: View {
     // MARK: 目录 / 文件名
 
     private func destinationSection(_ entries: [UrlEntry]) -> some View {
-        let options = categoryOptions
-        return Section {
-            categoryPicker(options)
-            if container.isLocalHost {
+        Section {
+            if let options = liveCategoryOptions { categoryPicker(options) }
+            if hostID == HostRef.localId {
                 LabeledContent(L("saveDir")) {
                     Text(form.saveDir.isEmpty ? LocalPaths.documents.path : form.saveDir)
                         .font(.footnote.monospaced())
@@ -448,8 +450,9 @@ private struct NewDownloadContent: View {
     // MARK: 分类
 
     /// 能产生分类路由的分类（可见、非「全部」、目录非空）；空列表仍提供自动 / 不分类。
-    private var categoryOptions: [CustomCategoryDto] {
-        SaveDirCategoryState.options(CustomCategoryDto.fromPreference(state.preferences[CustomCategoryDto.preferenceKey]))
+    private var liveCategoryOptions: [CustomCategoryDto]? {
+        guard isDraftHostLive else { return nil }
+        return SaveDirCategoryState.options(CustomCategoryDto.fromPreference(state.preferences[CustomCategoryDto.preferenceKey]))
     }
 
     /// 「自动」「不分类」，分隔后是各分类（分类图标同设置页）。「自动」命中时标题带上命中分类名。
@@ -480,7 +483,10 @@ private struct NewDownloadContent: View {
                 }
                 return form.categoryState.mode
             },
-            set: { form.selectCategory($0, options: options, session: container.session) }
+            set: {
+                guard isDraftHostLive else { return }
+                form.selectCategory($0, options: options, session: container.session)
+            }
         )
     }
     private var saveDirBinding: Binding<String> {
