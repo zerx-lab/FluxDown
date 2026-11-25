@@ -348,6 +348,7 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
     ) {
         NewDownloadContent(
             form, targets, target,
+            draftHostId = draftHostId,
             requestedLocalDir = requestedLocalDir,
             localConfirmation = localConfirmation,
             onOpenAdvanced = { advancedOpen = true },
@@ -422,6 +423,7 @@ private fun NewDownloadContent(
     form: NewDownloadState,
     targets: List<DispatchTarget>,
     target: DispatchTarget?,
+    draftHostId: String,
     requestedLocalDir: String?,
     localConfirmation: LocalDirectoryConfirmation?,
     onOpenAdvanced: () -> Unit,
@@ -478,6 +480,12 @@ private fun NewDownloadContent(
     val taskActions = LocalTaskActions.current
     val torrentLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris: List<Uri> ->
         if (uris.isEmpty() || importingTorrent || form.submitting) return@rememberLauncherForActivityResult
+        if (container.host.value.id != draftHostId) {
+            haptics.reject()
+            overlays.toast(context.str(R.string.mobileDownloadDraftHostChanged), FluxToastKind.Error)
+            return@rememberLauncherForActivityResult
+        }
+        val session = container.session
         if (!form.saveDirValid) {
             haptics.reject()
             return@rememberLauncherForActivityResult
@@ -494,6 +502,7 @@ private fun NewDownloadContent(
             val created = try {
                 TorrentImport.submit(
                     context, container, overlays, taskActions::errorText, uris, saveDir, queueId, startPaused = false,
+                    session = session,
                 )
             } finally {
                 importingTorrent = false

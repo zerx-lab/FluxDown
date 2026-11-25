@@ -135,7 +135,7 @@ private struct NewDownloadContent: View {
                     AdvancedOptionsView(form: form)
                 #if FULL_FLAVOR
                 case let .manifest(source, base):
-                    ManifestSelectView(source: source, base: base, close: close)
+                    ManifestSelectView(source: source, base: base, hostID: hostID, close: close)
                 #endif
                 }
             }
@@ -815,8 +815,9 @@ private struct NewDownloadContent: View {
     ) {
         let url = request.url
         let base = form.manifestBase(queue: queueId, manualProxy: manualProxy)
+        let session = container.session
         let probe = ManifestProbe(
-            session: container.session,
+            session: session,
             method: HostMethod.daemonGroupResolvePreview,
             params: base.previewRequest(url: url),
             host: URL(string: url)?.host ?? ""
@@ -828,6 +829,11 @@ private struct NewDownloadContent: View {
             let outcome = await probe.outcome()
             guard form.probe?.id == probe.id else { return }
             form.probe = nil
+            guard container.session === session else {
+                reject()
+                container.toasts.show(text: L("mobileDownloadDraftHostChanged"), tone: .warning)
+                return
+            }
             if case let .manifest(preview) = outcome {
                 FluxHaptic.soft.play()
                 path.append(.manifest(.daemon(preview: preview, sourceUrl: url), base))
@@ -966,6 +972,11 @@ private struct NewDownloadContent: View {
     /// N3：以表单当前保存目录与所选队列立即提交；表单里仍有链接时 N1 保留，否则关闭。
     private func importTorrents(_ urls: [URL]) async {
         guard !urls.isEmpty, !importingTorrent, !form.submitting else { return }
+        guard container.host.id == hostID else {
+            reject()
+            container.toasts.show(text: L("mobileDownloadDraftHostChanged"), tone: .warning)
+            return
+        }
         if !container.isLocalHost, !form.saveDirValid {
             reject()
             return
