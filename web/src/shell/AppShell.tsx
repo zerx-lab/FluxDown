@@ -9,6 +9,7 @@ import { Outlet, useLocation } from '@tanstack/react-router'
 import { useEffect } from 'react'
 import { useT } from '../i18n'
 import { NewDownloadDialog } from '../pages/downloads/dialogs/NewDownloadDialog'
+import { SeedLocalDialog } from '../pages/downloads/dialogs/SeedLocalDialog'
 import { useDialogsState } from '../pages/downloads/dialogs/store'
 import { isPluginEntryActive } from '../pages/plugins/contributions'
 import { usePluginActivityEntries, usePluginShellBridge } from '../pages/plugins/usePluginContributions'
@@ -58,10 +59,15 @@ function useExitChromeEditing(mobile: boolean): void {
   }, [editing, mobile])
 }
 
-/** Keep the draft and in-flight submissions mounted across shell route changes. */
-function NewDownloadHost() {
-  const { newDownload } = useDialogsState()
-  return newDownload ? <NewDownloadDialog key={newDownload.session} session={newDownload} /> : null
+/** Keep task creation and its follow-on seeding dialog available across shell route changes. */
+function DownloadCreationHost() {
+  const { newDownload, seedLocal } = useDialogsState()
+  return (
+    <>
+      {newDownload ? <NewDownloadDialog key={newDownload.session} session={newDownload} /> : null}
+      {seedLocal ? <SeedLocalDialog /> : null}
+    </>
+  )
 }
 
 export function AppShell() {
@@ -97,7 +103,7 @@ export function AppShell() {
             {mobile ? null : <ChromeStatusBar />}
           </div>
         </div>
-        <NewDownloadHost />
+        <DownloadCreationHost />
         {mobile ? <BottomTabBar /> : null}
         <AccountGuards />
         <PluginNotices />

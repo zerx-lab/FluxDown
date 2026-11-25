@@ -1,4 +1,4 @@
-// 下载页对话框宿主：由 DownloadsPage 挂载一次，渲染 store 里所有对话框，
+// 下载页对话框宿主：由 DownloadsPage 挂载一次，渲染下载页专属对话框，
 // 并根据快照自动弹出：daemon 的交互选择请求（HLS / BT / 变体 / 文件已存在聚合）与 agent 的待确认外部捕获。
 
 import { useEffect } from 'react'
@@ -7,7 +7,6 @@ import type { PendingCaptureDto, SelectionRequestDto } from '../../../lib/rpc'
 import { FileConflictDialog } from './FileConflictDialog'
 import { GroupDetailDialog } from './GroupDetailDialog'
 import { QueueManagerDialog } from './QueueManagerDialog'
-import { SeedLocalDialog } from './SeedLocalDialog'
 import { SelectionHost } from './SelectionDialogs'
 import { capturesShown, openNewDownload, useDialogsState } from './store'
 import { AddWebSeedDialog, ChangeSegmentsDialog, ChangeUrlDialog, MoveStorageDialog, RenameDialog, TaskLimitsDialog } from './TaskEditDialogs'
@@ -38,7 +37,6 @@ export function DownloadDialogsHost() {
       {state.moveStorage ? <MoveStorageDialog key={state.moveStorage} taskId={state.moveStorage} /> : null}
       {state.taskLimits ? <TaskLimitsDialog key={state.taskLimits} taskId={state.taskLimits} /> : null}
       {state.addWebSeed ? <AddWebSeedDialog key={state.addWebSeed.session} taskId={state.addWebSeed.taskId} session={state.addWebSeed.session} /> : null}
-      {state.seedLocal ? <SeedLocalDialog /> : null}
       <SelectionHost requests={selections} />
       <FileConflictDialog />
     </>
