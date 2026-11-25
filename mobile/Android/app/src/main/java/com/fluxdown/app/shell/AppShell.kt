@@ -142,6 +142,15 @@ fun AppShell() {
     val context = LocalContext.current
     val backdrop = remember { FluxBackdrop() }
     val overlays = rememberFluxOverlayState()
+    LaunchedEffect(container, overlays) {
+        container.restoreLastHost()?.let { name ->
+            val boundaries = android.icu.text.BreakIterator.getCharacterInstance()
+            boundaries.setText(name)
+            val end = boundaries.next(20)
+            val label = if (end in 0 until name.length) name.substring(0, end) + "…" else name
+            overlays.toast(context.str(R.string.hostRestoreFailed, "name" to label))
+        }
+    }
     val swipe = rememberSwipeRevealCoordinator()
     val scope = rememberCoroutineScope()
     val haptics = FluxTheme.haptics

@@ -40,6 +40,7 @@ struct RootView: View {
                     .onAppear { presented = route }
             }
             .toastHost(container.toasts, dismissLabel: L("close"))
+            .task { await container.restoreLastHost() }
             #if FULL_FLAVOR
             .pluginAutoDisabledToasts()
             #endif

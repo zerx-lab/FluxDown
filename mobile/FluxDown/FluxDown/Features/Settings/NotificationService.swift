@@ -351,7 +351,7 @@ final class NotificationService: NSObject {
         observeStore()
         if let intent = pendingIntent {
             pendingIntent = nil
-            Task { await handle(intent) }
+            receive(intent)
         }
     }
 
@@ -537,12 +537,19 @@ final class NotificationService: NSObject {
 
     // MARK: 响应
 
-    fileprivate func receive(_ intent: NotificationIntent) async {
-        guard container != nil else {
+    fileprivate func receive(_ intent: NotificationIntent) {
+        guard let container else {
             pendingIntent = intent // 冷启动：容器尚未接入，`attach` 后补处理
             return
         }
-        await handle(intent)
+        // 先让通知接管主机选择，再异步路由；迟到的恢复结果不能抢在路由前接管界面。
+        switch intent {
+        case .openTask, .openSelection, .shareTask:
+            container.supersedeHostRestore()
+        case .openDownloads, .resolveDefault:
+            break
+        }
+        Task { await handle(intent) }
     }
 
     private func handle(_ intent: NotificationIntent) async {
@@ -588,7 +595,7 @@ final class NotificationService: NSObject {
         guard let container else { return false }
         guard !hostID.isEmpty, container.host.id != hostID else { return true }
         guard let ref = container.hosts.first(where: { $0.id == hostID }) else { return false }
-        switch await container.switchHost(ref) {
+        switch await container.switchHost(ref, remember: false) {
         case .success: return true
         case .failure: return false
         }
@@ -619,13 +626,18 @@ extension NotificationService: UNUserNotificationCenterDelegate {
     }
 
     nonisolated func userNotificationCenter(
-        _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse
-    ) async {
+        _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping @Sendable () -> Void
+    ) {
         let info = response.notification.request.content.userInfo.reduce(into: [String: String]()) { result, pair in
             if let key = pair.key as? String, let value = pair.value as? String { result[key] = value }
         }
-        guard let intent = NotificationIntent.parse(actionIdentifier: response.actionIdentifier, userInfo: info) else { return }
-        await NotificationService.shared.receive(intent)
+        let intent = NotificationIntent.parse(actionIdentifier: response.actionIdentifier, userInfo: info)
+        // UIKit 可在此回调内更新后台快照。显式在主线程应答，不等待主机 I/O 或分享面板。
+        Task { @MainActor in
+            if let intent { NotificationService.shared.receive(intent) }
+            completionHandler()
+        }
     }
 }
 

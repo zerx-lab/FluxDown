@@ -69,10 +69,6 @@ internal class HostActions(
 
     /** 切换到 [ref]；已是当前主机则直接成功。[onDone] 带结果在主线程回调。 */
     fun switchTo(ref: HostRef, onDone: (Boolean) -> Unit = {}) {
-        if (ref.id == container.host.value.id) {
-            onDone(true)
-            return
-        }
         if (switchingId != null) {
             onDone(false)
             return

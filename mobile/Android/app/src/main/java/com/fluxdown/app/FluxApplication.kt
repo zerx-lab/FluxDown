@@ -160,6 +160,39 @@ class AppContainer(context: Context) {
     private var localMonitor: Job? = null
 
     private val switchLock = Mutex()
+    private var restoreStarted = false
+    private var restoreSuperseded = false
+
+    internal fun supersedeHostRestore() {
+        restoreSuperseded = true
+    }
+
+    /** 首次前台显示时尝试恢复；远端 I/O 不占用切换锁。 */
+    internal suspend fun restoreLastHost(): String? {
+        if (restoreStarted || restoreSuperseded) return null
+        restoreStarted = true
+        val ref = try {
+            hostRepo.lastRemote()
+        } catch (e: java.io.IOException) {
+            Log.w(TAG, "read last host failed", e)
+            null
+        } ?: return null
+        if (restoreSuperseded) return null
+        val opened = openOrFail(ref)
+        val next = opened.getOrNull()
+        var adopted = false
+        try {
+            return switchLock.withLock {
+                if (restoreSuperseded) return@withLock null
+                if (next == null) return@withLock ref.displayName
+                adopt(ref, next)
+                adopted = true
+                null
+            }
+        } finally {
+            if (!adopted) next?.close()
+        }
+    }
 
     init {
         appScope.launch {
@@ -179,9 +212,23 @@ class AppContainer(context: Context) {
      * 切换主机。打开失败时保持原主机不变并返回失败（[HostException]）。
      * 切到本机以外时本机引擎继续在进程内运行（由前台服务保活）。
      */
-    suspend fun switchHost(ref: HostRef): Result<Unit> = switchLock.withLock {
-        if (ref.id == _host.value.id && session !is UnavailableSession) return@withLock Result.success(Unit)
-        openOrFail(ref).map { adopt(ref, it) }
+    suspend fun switchHost(ref: HostRef, remember: Boolean = true): Result<Unit> {
+        supersedeHostRestore()
+        return switchLock.withLock {
+            val result = if (ref.id == _host.value.id && session !is UnavailableSession) {
+                Result.success(Unit)
+            } else {
+                openOrFail(ref).map { adopt(ref, it) }
+            }
+            if (remember && result.isSuccess) {
+                try {
+                    hostRepo.rememberRemote((ref as? HostRef.Remote)?.id)
+                } catch (e: java.io.IOException) {
+                    Log.w(TAG, "remember last host failed", e)
+                }
+            }
+            result
+        }
     }
 
     /**
@@ -284,6 +331,7 @@ class AppContainer(context: Context) {
      */
     suspend fun removeHost(id: String) {
         if (id == HostRef.Local.ID) return
+        supersedeHostRestore()
         val fingerprint = (hosts.value.firstOrNull { it.id == id } as? HostRef.Remote)?.linkFingerprint
         switchLock.withLock {
             if (_host.value.id == id) {

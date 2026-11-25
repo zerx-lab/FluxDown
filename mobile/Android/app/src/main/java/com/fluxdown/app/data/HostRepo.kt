@@ -21,9 +21,22 @@ import java.util.UUID
 class HostRepo(private val ds: DataStore<Preferences>, private val box: SecretBox) {
     private object K {
         val remote = stringPreferencesKey("hosts.remote")
+        val lastRemote = stringPreferencesKey("hosts.lastRemote")
     }
 
     val remotes: Flow<List<HostRef.Remote>> = ds.data.map { p -> RemoteHostCodec.decode(p[K.remote]).map { it.ref } }
+
+    internal suspend fun lastRemote(): HostRef.Remote? {
+        val prefs = ds.data.first()
+        val id = prefs[K.lastRemote] ?: return null
+        return RemoteHostCodec.decode(prefs[K.remote]).firstOrNull { it.ref.id == id }?.ref
+    }
+
+    internal suspend fun rememberRemote(id: String?) {
+        ds.edit { prefs ->
+            if (id == null) prefs.remove(K.lastRemote) else prefs[K.lastRemote] = id
+        }
+    }
 
     /** 解密凭据；条目不存在或密钥已不可读（设备迁移 / Keystore 失效）→ null。 */
     suspend fun accessKey(id: String): String? {
@@ -95,6 +108,7 @@ class HostRepo(private val ds: DataStore<Preferences>, private val box: SecretBo
         ds.edit { p ->
             val kept = RemoteHostCodec.decode(p[K.remote]).filter { it.ref.id != id }
             if (kept.isEmpty()) p.remove(K.remote) else p[K.remote] = RemoteHostCodec.encode(kept)
+            if (p[K.lastRemote] == id) p.remove(K.lastRemote)
         }
     }
 }

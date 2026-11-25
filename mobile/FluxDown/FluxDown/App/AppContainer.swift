@@ -34,6 +34,8 @@ final class AppContainer {
     @ObservationIgnored private let hostRepo = HostRepo()
     @ObservationIgnored private let localRef: HostRef
     @ObservationIgnored private var switchQueue: Task<Void, Never>?
+    @ObservationIgnored private var restoreStarted = false
+    @ObservationIgnored private var restoreSuperseded = false
     @ObservationIgnored private var lastRescan: ContinuousClock.Instant?
     @ObservationIgnored private let log = Logger(subsystem: "com.fluxdown.app", category: "host")
 
@@ -68,17 +70,46 @@ final class AppContainer {
 
     // MARK: 主机切换
 
+    func supersedeHostRestore() {
+        restoreSuperseded = true
+    }
+
+    /// 首次前台显示时尝试恢复；远端 I/O 不占用切换队列。
+    func restoreLastHost() async {
+        guard !restoreStarted, !restoreSuperseded else { return }
+        restoreStarted = true
+        guard let ref = hostRepo.lastRemote else { return }
+        let opened = await open(ref)
+        await switchQueue?.value
+        guard !restoreSuperseded, !Task.isCancelled else {
+            if case let .success(session) = opened { session.close() }
+            return
+        }
+        switch opened {
+        case let .success(session):
+            adopt(ref, session)
+        case .failure:
+            let name = ref.localizedName
+            let prefix = name.prefix(20)
+            let label = prefix.endIndex == name.endIndex ? name : String(prefix) + "…"
+            toasts.show(text: L("hostRestoreFailed", ["name": label]), tone: .warning)
+        }
+    }
+
     /// 切换主机。打开失败时保持原主机不变并返回失败。
-    func switchHost(_ ref: HostRef) async -> Result<Void, HostError> {
-        await withCheckedContinuation { continuation in
+    func switchHost(_ ref: HostRef, remember: Bool = true) async -> Result<Void, HostError> {
+        supersedeHostRestore()
+        return await withCheckedContinuation { continuation in
             serialized { container in
                 if ref.id == container.host.id, !(container.session is UnavailableSession) {
+                    if remember { container.hostRepo.rememberRemote(ref.isLocal ? nil : ref.id) }
                     continuation.resume(returning: .success(()))
                     return
                 }
                 switch await container.open(ref) {
                 case let .success(session):
                     container.adopt(ref, session)
+                    if remember { container.hostRepo.rememberRemote(ref.isLocal ? nil : ref.id) }
                     continuation.resume(returning: .success(()))
                 case let .failure(error):
                     continuation.resume(returning: .failure(error))
@@ -161,6 +192,7 @@ final class AppContainer {
     /// 让主机侧撤销这台手机的控制授权；失败只记日志（主机离线时手机侧仍然删除，主机侧可手动解除）。
     func removeHost(id: String) async -> Result<Void, HostError> {
         guard id != HostRef.localId else { return .success(()) }
+        supersedeHostRestore()
         return await withCheckedContinuation { continuation in
             serialized { container in
                 if container.host.id == id {
@@ -289,7 +321,8 @@ final class AppContainer {
                 try? await Task.sleep(for: .milliseconds(100))
             }
             let state = self.store.state
-            guard state.connection == .live, let saved = state.config["default_save_dir"], !saved.isEmpty else { return }
+            guard self.host.isLocal, state.connection == .live,
+                  let saved = state.config["default_save_dir"], !saved.isEmpty else { return }
             let current = LocalPaths.rebased(saved)
             guard current != saved else { return }
             do throws(HostError) {
