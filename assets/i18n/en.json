@@ -3679,6 +3679,8 @@
   "mobileDispatchFileNameSingleOnly": "A file name can only be set when sending a single link.",
   "mobileDispatchSend": "Send",
   "mobileDispatchSending": "Sending {done}/{total}…",
+  "mobileDispatchReturnToSourceHost": "Switch back to source host",
+  "mobileDispatchSourceHostMissing": "The source host was removed. This draft can’t be sent; closing this form discards it.",
   "mobileDispatchTitle": "Send to {device}",
   "mobileDispatchUrlsHint": "One link per line. Each link becomes its own task on the target device.",
   "mobileIncomingPairingCancelled": "The pairing request was cancelled or has expired.",

@@ -105,6 +105,7 @@ final class DispatchModel {
     var fileName = ""
     var saveDir = ""
     private(set) var sending = false
+    private(set) var returningToSource = false
     private(set) var done = 0
     private(set) var total = 0
     /// 内联错误（全部失败 / 部分失败时保留失败的链接供重试）。
@@ -121,18 +122,32 @@ final class DispatchModel {
     }
 
     var entries: [UrlEntry] { parseEntries(urlText).dedupe() }
+    var isOnSourceHost: Bool { container.host.id == sourceHostID }
+    var sourceHost: HostRef? { container.hosts.first { $0.id == sourceHostID } }
+    var isBusy: Bool { sending || returningToSource }
 
     var saveDirCheck: DeviceRules.SaveDirCheck {
         DeviceRules.checkSaveDir(saveDir, style: target.pathStyle)
     }
 
+    func returnToSourceHost() async {
+        guard !isBusy, !isOnSourceHost, !container.isSwitching, let sourceHost else { return }
+        returningToSource = true
+        failure = nil
+        defer { returningToSource = false }
+        // Resume this draft without changing the host remembered for the next launch.
+        if case let .failure(error) = await container.switchHost(sourceHost, remember: false) {
+            let paired = HostFlow.needsRepair(error, ref: sourceHost, container: container)
+            failure = L("mobileHostSwitchFailed", [
+                "name": sourceHost.localizedName,
+                "reason": HostFlow.errorText(error, paired: paired),
+            ])
+        }
+    }
+
     /// 提交；返回是否全部成功（成功时调用方关闭表单）。
     func send() async -> Bool {
-        guard !sending else { return false }
-        guard container.host.id == sourceHostID else {
-            failure = L("mobileDownloadDraftHostChanged")
-            return false
-        }
+        guard !isBusy, isOnSourceHost else { return false }
         let entries = entries
         guard !entries.isEmpty else { return false }
         let dir: String?
@@ -191,17 +206,35 @@ private struct DispatchForm: View {
         let readOnly = container.store.state.isReadOnly
         let target = model.target
         let saveDirInvalid: Bool = if case .invalid = model.saveDirCheck { true } else { false }
-        let canSend = !entries.isEmpty && !saveDirInvalid && !readOnly && !model.sending
+        let onSourceHost = model.isOnSourceHost
+        let canSend = onSourceHost && !entries.isEmpty && !saveDirInvalid && !readOnly && !model.isBusy
         NavigationStack {
             Form {
-                if readOnly {
+                if !onSourceHost {
+                    let sourceAvailable = model.sourceHost != nil
+                    let canReturn = sourceAvailable && !model.isBusy && !container.isSwitching
+                    Section {
+                        Banner(
+                            text: L(sourceAvailable ? "mobileDownloadDraftHostChanged" : "mobileDispatchSourceHostMissing"),
+                            tone: .warning,
+                            systemImage: FluxSymbol.switchHost,
+                            slim: true,
+                            action: canReturn ? BannerAction(title: L("mobileDispatchReturnToSourceHost")) {
+                                linksFocused = false
+                                Task { await model.returnToSourceHost() }
+                            } : nil
+                        )
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets())
+                    }
+                } else if readOnly {
                     Section {
                         Banner(text: L("localServiceDisconnected"), tone: .warning, systemImage: FluxSymbol.offline, slim: true)
                             .listRowBackground(Color.clear)
                             .listRowInsets(EdgeInsets())
                     }
                 }
-                if target.isOffline {
+                if onSourceHost && target.isOffline {
                     Section {
                         Banner(
                             text: L(target.isCloud ? "downloadToOfflineHint" : "errReasonPeerOffline"),
@@ -211,6 +244,13 @@ private struct DispatchForm: View {
                         )
                         .listRowBackground(Color.clear)
                         .listRowInsets(EdgeInsets())
+                    }
+                }
+                if let failure = model.failure {
+                    Section {
+                        Banner(text: failure, tone: .error, systemImage: FluxSymbol.failure, slim: true)
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets())
                     }
                 }
                 linksSection(model: $model, entries: entries)
@@ -233,13 +273,6 @@ private struct DispatchForm: View {
                         .accessibilityElement(children: .combine)
                     }
                 }
-                if let failure = model.failure {
-                    Section {
-                        Banner(text: failure, tone: .error, systemImage: FluxSymbol.failure, slim: true)
-                            .listRowBackground(Color.clear)
-                            .listRowInsets(EdgeInsets())
-                    }
-                }
             }
             .scrollDismissesKeyboard(.interactively)
             .navigationTitle(L("mobileDispatchTitle", ["device": target.name]))
@@ -247,11 +280,13 @@ private struct DispatchForm: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(L("cancel"), role: .cancel) { dismiss() }
-                        .disabled(model.sending)
+                        .disabled(model.isBusy)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     if model.sending {
                         ProgressView().accessibilityLabel(L("mobileDispatchSend"))
+                    } else if model.returningToSource {
+                        ProgressView().accessibilityLabel(L("mobileDispatchReturnToSourceHost"))
                     } else {
                         Button(L("mobileDispatchSend")) {
                             linksFocused = false
@@ -263,7 +298,7 @@ private struct DispatchForm: View {
                     }
                 }
             }
-            .interactiveDismissDisabled(model.sending)
+            .interactiveDismissDisabled(model.isBusy)
         }
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
