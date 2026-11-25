@@ -75,16 +75,21 @@ final class AppContainer {
         restoreSuperseded = true
     }
 
-    /// 首次前台显示时尝试恢复；远端 I/O 不占用切换队列。
-    func restoreLastHost() async {
+    /// 首次显示时启动容器级恢复；视图消失不取消远端连接。
+    func startHostRestore() {
         guard !restoreStarted, !restoreSuperseded else { return }
         restoreStarted = true
         guard let ref = hostRepo.lastRemote else { return }
+        Task { await self.restoreHost(ref) }
+    }
+
+    private func restoreHost(_ ref: HostRef) async {
+        guard !restoreSuperseded else { return }
         let opened = await open(ref)
         await switchQueue?.value
         // Let the startup local session finish migrating its own configuration before closing it.
         if !restoreSuperseded, case .success = opened { await localSaveDirRepair?.value }
-        guard !restoreSuperseded, !Task.isCancelled else {
+        guard !restoreSuperseded else {
             if case let .success(session) = opened { session.close() }
             return
         }
