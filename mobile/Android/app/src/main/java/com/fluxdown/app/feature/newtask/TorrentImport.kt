@@ -62,6 +62,11 @@ object TorrentImport {
             }
             val params = TorrentFile.createParams(data, dir, queueId, startPaused)
             if (beforeCreate != null && !beforeCreate()) break
+            // On Main, check after both suspension points and before entering the native session.
+            if (container.session !== session) {
+                overlays.toast(context.str(R.string.mobileDownloadDraftHostChanged), FluxToastKind.Warn)
+                break
+            }
             try {
                 session.callUnit(HostMethod.daemonTaskCreate, params)
                 created++
