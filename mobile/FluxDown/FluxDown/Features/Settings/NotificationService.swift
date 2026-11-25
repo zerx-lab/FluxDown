@@ -331,7 +331,6 @@ final class NotificationService: NSObject {
     @ObservationIgnored private var batchHost: String?
     @ObservationIgnored private var flushTask: Task<Void, Never>?
     @ObservationIgnored private var observers: [any NSObjectProtocol] = []
-    @ObservationIgnored private var pendingIntent: NotificationIntent?
     @ObservationIgnored private let log = Logger(subsystem: "com.fluxdown.app", category: "notifications")
 
     private var center: UNUserNotificationCenter { .current() }
@@ -341,7 +340,7 @@ final class NotificationService: NSObject {
         center.delegate = self
     }
 
-    /// 接入应用容器（幂等）。由根视图 `.settingsEffects()` 调用。
+    /// 冷启动接入应用容器；后台通知动作不依赖根视图出现。
     func attach(container: AppContainer) {
         guard self.container == nil else { return }
         self.container = container
@@ -349,10 +348,6 @@ final class NotificationService: NSObject {
         observeLifecycle()
         Task { await refreshAuthorization() }
         observeStore()
-        if let intent = pendingIntent {
-            pendingIntent = nil
-            receive(intent)
-        }
     }
 
     // MARK: 授权
@@ -537,18 +532,18 @@ final class NotificationService: NSObject {
 
     // MARK: 响应
 
-    fileprivate func receive(_ intent: NotificationIntent) {
-        guard let container else {
-            pendingIntent = intent // 冷启动：容器尚未接入，`attach` 后补处理
-            return
-        }
+    fileprivate func receive(_ intent: NotificationIntent) async {
+        guard let container else { return }
         // 先让通知接管主机选择，再异步路由；迟到的恢复结果不能抢在路由前接管界面。
         switch intent {
         case let .openDownloads(hostID) where !hostID.isEmpty:
             container.supersedeHostRestore()
         case .openTask, .openSelection, .shareTask:
             container.supersedeHostRestore()
-        case .openDownloads, .resolveDefault:
+        case .resolveDefault:
+            await handle(intent)
+            return
+        case .openDownloads:
             break
         }
         Task { await handle(intent) }
@@ -582,6 +577,8 @@ final class NotificationService: NSObject {
             }
             await NotifyActivityPresenter.present(items: [file])
         case let .resolveDefault(requestId, hostID):
+            guard container.host.id == hostID else { return }
+            if container.store.state.connection == .connecting { await waitUntilLive() }
             guard container.host.id == hostID,
                   let request = container.store.state.selections.first(where: { $0.requestId == requestId }) else { return }
             do throws(HostError) {
@@ -636,9 +633,9 @@ extension NotificationService: UNUserNotificationCenterDelegate {
             if let key = pair.key as? String, let value = pair.value as? String { result[key] = value }
         }
         let intent = NotificationIntent.parse(actionIdentifier: response.actionIdentifier, userInfo: info)
-        // UIKit 可在此回调内更新后台快照。显式在主线程应答，不等待主机 I/O 或分享面板。
+        // 在主线程应答；后台动作先等写入结果，前台路由不等待连接或分享面板。
         Task { @MainActor in
-            if let intent { NotificationService.shared.receive(intent) }
+            if let intent { await NotificationService.shared.receive(intent) }
             completionHandler()
         }
     }
