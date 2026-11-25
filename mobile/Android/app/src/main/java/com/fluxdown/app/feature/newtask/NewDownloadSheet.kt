@@ -57,6 +57,7 @@ import com.fluxdown.app.ui.label
 import com.fluxdown.app.ui.launchDocumentPicker
 import com.fluxdown.app.ui.rememberTaskInfoExport
 import com.fluxdown.app.ui.rememberLocalDirectoryPicker
+import com.fluxdown.core.host.HostSession
 import com.fluxdown.core.host.ImportRules
 import com.fluxdown.core.host.groupImportBatches
 import com.fluxdown.core.host.isError
@@ -206,11 +207,11 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
         )
     }
 
-    fun rememberMode() {
+    fun rememberMode(session: HostSession) {
         if (target == null) {
-            val session = container.session
             val mode = form.rememberedMode() ?: return
             container.appScope.launch {
+                if (container.session !== session) return@launch
                 try {
                     session.patchPreferences(
                         mapOf(NewDownloadState.LAST_CATEGORY_MODE_KEY to JsonValue.of(mode)),
@@ -259,7 +260,7 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
         val batches = groupImportBatches(requests)
         if (requests.size > ImportRules.CHUNK_SIZE) {
             // 多块导入：交给进程级导入中心，进度 / 取消在下载页顶部，关闭本 Sheet 不影响它；汇总提示由 ImportEffects 给出
-            rememberMode()
+            rememberMode(session)
             container.imports.start(session, batches, startPaused, notify = true)
             haptics.confirm()
             submitted()
@@ -274,7 +275,7 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
             val notice = summary.notice()
             val text = importNoticeText(context.resources, notice, summary.succeeded, startPaused) { actions.errorText(it) }
             if (summary.succeeded > 0) {
-                rememberMode()
+                rememberMode(session)
                 submitted()
             }
             if (summary.unfinished.isEmpty()) {
@@ -353,8 +354,8 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
             localConfirmation = localConfirmation,
             onOpenAdvanced = { advancedOpen = true },
             // 本机建了任务：记住分类模式、拉起前台服务；表单里没有待提交的链接时关闭（同 iOS `importTorrents`）
-            onTorrentImported = {
-                rememberMode()
+            onTorrentImported = { session ->
+                rememberMode(session)
                 submitted()
                 if (form.urlText.isBlank()) dismiss()
             },
@@ -427,7 +428,7 @@ private fun NewDownloadContent(
     requestedLocalDir: String?,
     localConfirmation: LocalDirectoryConfirmation?,
     onOpenAdvanced: () -> Unit,
-    onTorrentImported: () -> Unit,
+    onTorrentImported: (HostSession) -> Unit,
 ) {
     val container = LocalAppContainer.current
     val overlays = LocalFluxOverlays.current
@@ -509,7 +510,7 @@ private fun NewDownloadContent(
             }
             if (created > 0) {
                 haptics.confirm()
-                onTorrentImported()
+                onTorrentImported(session)
             } else {
                 haptics.reject()
             }
