@@ -31,10 +31,11 @@ private inline fun forEachEntry(text: String, loose: Boolean, emit: (UrlEntry, f
     var currentFromCommand = false
     var continuation = false
     for (line in text.splitToSequence('\n')) {
-        val trimmed = line.trim()
+        val raw = line.trim()
         val fromCommand = continuation
-        continuation = !loose && hasCommandContinuation(trimmed) &&
-            (fromCommand || !line.first().isWhitespace() && startsAria2Command(trimmed))
+        continuation = !loose && hasCommandContinuation(raw) &&
+            (fromCommand || !line.first().isWhitespace() && startsAria2Command(raw))
+        val trimmed = if (continuation) raw.dropLast(1).trimEnd() else raw
         val leadingUrl = if (loose) null else leadingHttpUrl(trimmed)
         if ((line.startsWith(' ') || line.startsWith('\t')) &&
             (loose || leadingUrl == null && !trimmed.startsWith("magnet:?", true) && !trimmed.startsWith("ed2k://", true))

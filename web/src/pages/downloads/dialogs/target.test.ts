@@ -4,10 +4,10 @@ import {
   buildRemoteTargets,
   checkRemoteSaveDir,
   dispatchRoute,
+  dispatchSequentially,
   linkDispatchParams,
   remoteDispatchParams,
   resolveTargetValue,
-  summarizeDispatch,
 } from './target'
 import { mergeDevices } from '../model/devices'
 
@@ -160,13 +160,20 @@ describe('目标列表', () => {
     expect(mergeDevices([cloud({ deviceId: 'me', isCurrent: true })], [], presence)).toHaveLength(0)
   })
 
-  test('汇总成功 / 失败条数', () => {
-    expect(
-      summarizeDispatch([
-        { status: 'fulfilled', value: 1 },
-        { status: 'rejected', reason: new Error('x') },
-        { status: 'fulfilled', value: 2 },
-      ]),
-    ).toEqual({ ok: 2, failed: 1 })
+  test('dispatches a large range in order without queueing against an in-flight request', async () => {
+    const urls = Array.from({ length: 600 }, (_, index) => `https://example.com/${index}.zip`)
+    const seen: string[] = []
+    const failure = new Error('device rejected this URL')
+    let busy = false
+    const result = await dispatchSequentially(urls, async (url) => {
+      if (busy) throw new Error('gateway lane full')
+      busy = true
+      await Promise.resolve()
+      busy = false
+      seen.push(url)
+      if (url === urls[127]) throw failure
+    })
+    expect(seen).toEqual(urls)
+    expect(result).toEqual({ ok: 599, failed: [{ item: urls[127], reason: failure }] })
   })
 })

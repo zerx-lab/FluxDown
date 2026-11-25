@@ -152,6 +152,15 @@ class LinkParserRangeTest {
         )
     }
 
+    @Test fun stripsOnlyTheCommandContinuationMarkerFromAnIndentedLiteralUrl() {
+        val url = "https://example.com/[01-02].zip"
+        for (marker in listOf('\\', '^')) {
+            val parsed = parseManualEntries("aria2c $marker\n  $url$marker\n  --check-integrity=true")
+            assertEquals(listOf(UrlEntry(url)), parsed.entries)
+            assertEquals(0, parsed.generatedCount)
+        }
+    }
+
     @Test fun preservesWindowsCommandContinuationButNotAnEscapedMarkerOrUrlPath() {
         val template = "https://example.com/[01-02].zip"
         val windows = parseManualEntries("\"C:\\Program Files\\aria2\\aria2c.exe\" ^\n$template")

@@ -49,7 +49,7 @@ import {
   saveDirChoices,
 } from '../../../lib/saveDirHistory'
 import { accountErrorKey } from '../../settings/sections/account/errorText'
-import { buildRemoteTargets, checkRemoteSaveDir, dispatchRoute, LOCAL_TARGET, linkDispatchParams, pathExample, remoteDispatchParams, resolveTargetValue, summarizeDispatch } from './target'
+import { buildRemoteTargets, checkRemoteSaveDir, dispatchRoute, dispatchSequentially, LOCAL_TARGET, linkDispatchParams, pathExample, remoteDispatchParams, resolveTargetValue } from './target'
 import type { RemoteTarget } from './target'
 import { queueLabel } from './utils'
 
@@ -517,26 +517,20 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
     setPhase('submitting')
     const renamed = entries.length === 1 ? rename.trim() : ''
     const route = dispatchRoute(remote)
-    const results = await Promise.allSettled(
-      entries.map((entry) => {
-        const input = { url: entry.url, fileName: renamed !== '' ? renamed : entry.fileName }
-        return route.via === 'cloud'
-          ? rpc.agent.remote.dispatch(remoteDispatchParams(remote.id, input, remoteSaveDir))
-          : rpc.agent.link.dispatch(linkDispatchParams(route.fingerprint, input, remoteSaveDir))
-      }),
-    )
-    const summary = summarizeDispatch(results)
-    if (summary.failed === 0) {
+    const summary = await dispatchSequentially(entries, (entry) => {
+      const input = { url: entry.url, fileName: renamed !== '' ? renamed : entry.fileName }
+      return route.via === 'cloud'
+        ? rpc.agent.remote.dispatch(remoteDispatchParams(remote.id, input, remoteSaveDir))
+        : rpc.agent.link.dispatch(linkDispatchParams(route.fingerprint, input, remoteSaveDir))
+    })
+    if (summary.failed.length === 0) {
       if (route.via === 'link') toast.key('linkDispatchedToDevice', 'success', { device: remote.name })
       else toast.key(remote.online === false ? 'downloadToDispatchedOffline' : 'downloadToDispatched', 'success', { count: summary.ok, device: remote.name })
       closeNewDownload()
       return
     }
-    const failed: { entry: UrlEntry; key: string }[] = []
-    results.forEach((result, index) => {
-      if (result.status === 'rejected') failed.push({ entry: entries[index], key: accountErrorKey(result.reason) })
-    })
-    if (summary.ok > 0) toast.key('downloadToPartial', 'warning', { ok: summary.ok, failed: summary.failed, device: remote.name })
+    const failed = summary.failed.map(({ item, reason }) => ({ entry: item, key: accountErrorKey(reason) }))
+    if (summary.ok > 0) toast.key('downloadToPartial', 'warning', { ok: summary.ok, failed: failed.length, device: remote.name })
     retryEntries(failed.map((item) => item.entry))
     setFailures(failed.map((item) => ({ url: item.entry.url, message: t(item.key) })))
     setPhase('idle')

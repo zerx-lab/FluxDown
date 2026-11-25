@@ -98,13 +98,15 @@ export function linkDispatchParams(fingerprint: string, input: DispatchInput, sa
   return { fingerprint, url: input.url, ...optionalFields(input, saveDir) }
 }
 
-export interface DispatchSummary {
-  ok: number
-  failed: number
-}
-
-export function summarizeDispatch(results: readonly PromiseSettledResult<unknown>[]): DispatchSummary {
-  let ok = 0
-  for (const result of results) if (result.status === 'fulfilled') ok += 1
-  return { ok, failed: results.length - ok }
+/** Each dispatch uses the same serial gateway lane. Await its reply before sending the next. */
+export async function dispatchSequentially<T>(items: readonly T[], send: (item: T) => Promise<unknown>) {
+  const failed: { item: T; reason: unknown }[] = []
+  for (const item of items) {
+    try {
+      await send(item)
+    } catch (reason) {
+      failed.push({ item, reason })
+    }
+  }
+  return { ok: items.length - failed.length, failed }
 }
