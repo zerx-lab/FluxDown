@@ -34,6 +34,7 @@ final class AppContainer {
     @ObservationIgnored private let hostRepo = HostRepo()
     @ObservationIgnored private let localRef: HostRef
     @ObservationIgnored private var switchQueue: Task<Void, Never>?
+    @ObservationIgnored private var localSaveDirRepair: Task<Void, Never>?
     @ObservationIgnored private var restoreStarted = false
     @ObservationIgnored private var restoreSuperseded = false
     @ObservationIgnored private var lastRescan: ContinuousClock.Instant?
@@ -81,6 +82,8 @@ final class AppContainer {
         guard let ref = hostRepo.lastRemote else { return }
         let opened = await open(ref)
         await switchQueue?.value
+        // Let the startup local session finish migrating its own configuration before closing it.
+        if !restoreSuperseded, case .success = opened { await localSaveDirRepair?.value }
         guard !restoreSuperseded, !Task.isCancelled else {
             if case let .success(session) = opened { session.close() }
             return
@@ -307,29 +310,34 @@ final class AppContainer {
         host = ref
         old.close()
         store.attach(next)
-        if ref.isLocal, !(next is UnavailableSession) { repairLocalSaveDir() }
+        localSaveDirRepair?.cancel()
+        localSaveDirRepair = nil
+        if ref.isLocal, !(next is UnavailableSession) {
+            localSaveDirRepair = Task { [weak self] in await self?.repairLocalSaveDir(session: next) }
+        }
     }
 
     /// App 更新后沙盒容器路径可能变化：库里的 `default_save_dir` 若指向旧容器的 Documents，改写到当前容器。
-    private func repairLocalSaveDir() {
-        Task { [weak self] in
-            guard let self else { return }
-            // 新会话的首个快照通常在 attach 后立即到达；最多等 5s。
-            var attempts = 0
-            while self.store.state.connection != .live, attempts < 50 {
-                attempts += 1
-                try? await Task.sleep(for: .milliseconds(100))
-            }
-            let state = self.store.state
-            guard self.host.isLocal, state.connection == .live,
-                  let saved = state.config["default_save_dir"], !saved.isEmpty else { return }
-            let current = LocalPaths.rebased(saved)
-            guard current != saved else { return }
-            do throws(HostError) {
-                try await self.session.patchConfig(expectedRevision: state.configRevision, values: ["default_save_dir": current])
+    private func repairLocalSaveDir(session: any HostSession) async {
+        // 新会话的首个快照通常在 attach 后立即到达；最多等 5s。
+        var attempts = 0
+        while store.state.connection != .live, attempts < 50 {
+            attempts += 1
+            do {
+                try await Task.sleep(for: .milliseconds(100))
             } catch {
-                self.log.warning("repair default_save_dir failed: \(error.description, privacy: .public)")
+                return
             }
+        }
+        let state = store.state
+        guard !Task.isCancelled, self.session === session, state.connection == .live,
+              let saved = state.config["default_save_dir"], !saved.isEmpty else { return }
+        let current = LocalPaths.rebased(saved)
+        guard current != saved else { return }
+        do throws(HostError) {
+            try await session.patchConfig(expectedRevision: state.configRevision, values: ["default_save_dir": current])
+        } catch {
+            log.warning("repair default_save_dir failed: \(error.description, privacy: .public)")
         }
     }
 

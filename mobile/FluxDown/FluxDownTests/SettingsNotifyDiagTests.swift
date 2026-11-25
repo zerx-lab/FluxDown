@@ -198,7 +198,8 @@ struct NotificationPlanTests {
         #expect(NotificationIntent.parse(actionIdentifier: NotificationIDs.actionShare, userInfo: task) == .shareTask(taskId: "t", hostID: "h"))
         #expect(NotificationIntent.parse(actionIdentifier: tap, userInfo: request) == .openSelection(requestId: "r", hostID: "h"))
         #expect(NotificationIntent.parse(actionIdentifier: NotificationIDs.actionUseDefault, userInfo: request) == .resolveDefault(requestId: "r", hostID: "h"))
-        #expect(NotificationIntent.parse(actionIdentifier: tap, userInfo: [NotificationIDs.keyHost: "h"]) == .openDownloads)
+        #expect(NotificationIntent.parse(actionIdentifier: tap, userInfo: [NotificationIDs.keyHost: "h"]) == .openDownloads(hostID: "h"))
+        #expect(NotificationIntent.parse(actionIdentifier: tap, userInfo: [:]) == .openDownloads(hostID: ""))
         #expect(NotificationIntent.parse(actionIdentifier: NotificationIDs.actionShare, userInfo: [:]) == nil)
         #expect(NotificationIntent.parse(actionIdentifier: UNNotificationDismissActionIdentifier, userInfo: task) == nil)
     }

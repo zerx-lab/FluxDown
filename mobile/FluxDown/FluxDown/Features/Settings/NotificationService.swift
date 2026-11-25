@@ -261,7 +261,7 @@ extension NotificationSpec {
 
 /// 用户对通知的响应。
 nonisolated enum NotificationIntent: Equatable, Sendable {
-    case openDownloads
+    case openDownloads(hostID: String)
     case openTask(taskId: String, hostID: String)
     case openSelection(requestId: String, hostID: String)
     case shareTask(taskId: String, hostID: String)
@@ -276,7 +276,7 @@ nonisolated enum NotificationIntent: Equatable, Sendable {
         case UNNotificationDefaultActionIdentifier, NotificationIDs.actionOpen:
             if !request.isEmpty { return .openSelection(requestId: request, hostID: host) }
             if !task.isEmpty { return .openTask(taskId: task, hostID: host) }
-            return .openDownloads
+            return .openDownloads(hostID: host)
         case NotificationIDs.actionShare:
             return task.isEmpty ? nil : .shareTask(taskId: task, hostID: host)
         case NotificationIDs.actionUseDefault:
@@ -544,6 +544,8 @@ final class NotificationService: NSObject {
         }
         // 先让通知接管主机选择，再异步路由；迟到的恢复结果不能抢在路由前接管界面。
         switch intent {
+        case let .openDownloads(hostID) where !hostID.isEmpty:
+            container.supersedeHostRestore()
         case .openTask, .openSelection, .shareTask:
             container.supersedeHostRestore()
         case .openDownloads, .resolveDefault:
@@ -555,7 +557,8 @@ final class NotificationService: NSObject {
     private func handle(_ intent: NotificationIntent) async {
         guard let container else { return }
         switch intent {
-        case .openDownloads:
+        case let .openDownloads(hostID):
+            guard await ensureHost(hostID) else { return }
             container.router.tab = .downloads
         case let .openTask(taskId, hostID):
             guard await ensureHost(hostID) else { return }

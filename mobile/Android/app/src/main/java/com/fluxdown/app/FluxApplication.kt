@@ -39,11 +39,13 @@ import com.fluxdown.app.update.UpdateCheckJobService
 import com.fluxdown.fluxui.theme.FluxFonts
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -160,17 +162,25 @@ class AppContainer(context: Context) {
     private var localMonitor: Job? = null
 
     private val switchLock = Mutex()
-    private var restoreStarted = false
+    private val startupRestore = appScope.async(start = CoroutineStart.LAZY) { performHostRestore() }
+    private var restoreFailureShown = false
     private var restoreSuperseded = false
 
     internal fun supersedeHostRestore() {
         restoreSuperseded = true
     }
 
-    /** 首次前台显示时尝试恢复；远端 I/O 不占用切换锁。 */
+    /** 界面重建只取消等待；恢复属于进程，并且失败只提示一次。 */
     internal suspend fun restoreLastHost(): String? {
-        if (restoreStarted || restoreSuperseded) return null
-        restoreStarted = true
+        val name = startupRestore.await() ?: return null
+        if (restoreSuperseded || restoreFailureShown) return null
+        restoreFailureShown = true
+        return name
+    }
+
+    /** 首次前台显示时尝试恢复；远端 I/O 不占用切换锁。 */
+    private suspend fun performHostRestore(): String? {
+        if (restoreSuperseded) return null
         val ref = try {
             hostRepo.lastRemote()
         } catch (e: java.io.IOException) {

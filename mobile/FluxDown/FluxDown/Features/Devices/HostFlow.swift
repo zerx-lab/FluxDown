@@ -17,10 +17,13 @@ enum HostFlow {
         }
     }
 
-    /// 切换到 `ref`；已是当前主机且会话可用则直接成功（不弹 Toast）。返回是否成功。
+    /// 切换到 `ref`；已是当前主机时仍记录手动选择，但不弹切换提示。
     @discardableResult
     static func switchTo(_ ref: HostRef, container: AppContainer) async -> Bool {
-        if ref.id == container.host.id, !(container.session is UnavailableSession) { return true }
+        if ref.id == container.host.id, !(container.session is UnavailableSession) {
+            if case .success = await container.switchHost(ref) { return true }
+            return false
+        }
         let name = ref.localizedName
         container.toasts.show(
             text: L("mobileHostSwitching", ["name": name]),
