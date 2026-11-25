@@ -322,7 +322,9 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
         form.dispatchFailure = null
         form.dispatchProgress = 0 to items.size
         container.appScope.launch {
-            val summary = Dispatcher.run(items, target, saveDir, session) { done -> form.dispatchProgress = done to items.size }
+            val summary = Dispatcher.run(items, target, saveDir, session, isSessionCurrent = { container.session === session }) { done ->
+                form.dispatchProgress = done to items.size
+            }
             form.dispatchProgress = null
             form.submitting = false
             val outcome = Dispatcher.outcome(context, summary, target)
