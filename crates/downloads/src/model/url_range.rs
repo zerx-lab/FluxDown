@@ -102,8 +102,15 @@ fn manual_ranges_deduplicate_without_losing_preview_endpoints() {
         "https://a/03.zip\n  out=first.zip\nhttps://a/[01-03].zip\nhttps://a/[01-03].zip",
         &Default::default(),
     );
-    let urls: Vec<_> = parsed.entries.iter().map(|entry| entry.url.as_str()).collect();
-    assert_eq!(urls, ["https://a/03.zip", "https://a/01.zip", "https://a/02.zip"]);
+    let urls: Vec<_> = parsed
+        .entries
+        .iter()
+        .map(|entry| entry.url.as_str())
+        .collect();
+    assert_eq!(
+        urls,
+        ["https://a/03.zip", "https://a/01.zip", "https://a/02.zip"]
+    );
     assert_eq!(parsed.entries[0].file_name, "first.zip");
     assert_eq!(parsed.ranges.generated_count, 6);
     assert_eq!(parsed.ranges.preview, Some((1, 0)));
@@ -292,7 +299,9 @@ mod tests {
             assert!(parsed.entries.is_empty(), "{input}");
             assert_eq!(parsed.ranges.preview, None);
         }
-        let literals: String = (0..1001).map(|i| format!("https://a/plain-{i}\n")).collect();
+        let literals: String = (0..1001)
+            .map(|i| format!("https://a/plain-{i}\n"))
+            .collect();
         assert_eq!(manual(&literals).entries.len(), 1001);
     }
 

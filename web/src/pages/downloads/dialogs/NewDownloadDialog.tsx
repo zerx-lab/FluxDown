@@ -917,7 +917,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
             {parsed.rangePreview ? (
               <FieldHint className="min-w-0 font-mono">
                 <div className="truncate whitespace-pre" title={parsed.rangePreview.first}>{parsed.rangePreview.first}</div>
-                {parsed.rangeCount > 1 ? (
+                {parsed.rangePreview.first !== parsed.rangePreview.last ? (
                   <>
                     <div aria-hidden="true">…</div>
                     <div className="truncate whitespace-pre" title={parsed.rangePreview.last}>{parsed.rangePreview.last}</div>
