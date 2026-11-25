@@ -1683,7 +1683,10 @@ async fn remove_deleted_task_files(
                 true
             };
             if owned {
-                keep_first_cleanup_error(&mut first_error, tokio::fs::remove_file(&temp_path).await);
+                keep_first_cleanup_error(
+                    &mut first_error,
+                    tokio::fs::remove_file(&temp_path).await,
+                );
             }
         }
         if removes_final {
@@ -14324,7 +14327,10 @@ impl DownloadManager {
                     resume_reservation = ReservedTempPath::try_new(&self.reserved_temp_paths, path);
                     hls_http_fallback = matches!(
                         *claim.lock().unwrap_or_else(|error| error.into_inner()),
-                        ChecksumPartial::Retained { hls_http_fallback: true, .. }
+                        ChecksumPartial::Retained {
+                            hls_http_fallback: true,
+                            ..
+                        }
                     );
                 }
                 if resume_reservation.is_none() {
@@ -14347,8 +14353,13 @@ impl DownloadManager {
                     match self.db.get_config(&format!("hls_resume_{task_id}")).await {
                         Ok(checkpoint) => hls_http_fallback = checkpoint.is_none(),
                         Err(error) => {
-                            persist_task_failure(&tid, error.to_string(), &self.db, &self.progress_tx)
-                                .await;
+                            persist_task_failure(
+                                &tid,
+                                error.to_string(),
+                                &self.db,
+                                &self.progress_tx,
+                            )
+                            .await;
                             send_task_done(&done_tx, TaskDone::finished(tid, spawn_gen)).await;
                             return;
                         }
@@ -24464,7 +24475,7 @@ mod tests {
             );
         }
 
-        // 只删记录不触碰磁盘；连文件删除遇到真实清理错误时保留记录。
+        // 两种删除方式均清理已归属的残片；真正的清理错误须保留记录。
         let blocked = "blocked.bin";
         let temp_path = std::path::PathBuf::from(format!(
             "{}{}",
@@ -24477,16 +24488,14 @@ mod tests {
         db.update_task_progress("blocked", 4)
             .await
             .expect("own partial");
-        let error = manager
-            .delete_task("blocked", true)
-            .await
-            .expect_err("directory occupying the owned temp path must keep the task");
-        assert!(matches!(error, DeleteTaskError::Cleanup(_)), "{error}");
-        assert!(db.load_task_by_id("blocked").await.expect("load").is_some());
-        manager
-            .delete_task("blocked", false)
-            .await
-            .expect("delete record only");
+        for delete_files in [true, false] {
+            let error = manager
+                .delete_task("blocked", delete_files)
+                .await
+                .expect_err("directory occupying the owned temp path must keep the task");
+            assert!(matches!(error, DeleteTaskError::Cleanup(_)), "{error}");
+            assert!(db.load_task_by_id("blocked").await.expect("load").is_some());
+        }
         assert_eq!(
             std::fs::read(temp_path.join("payload")).expect("payload preserved"),
             b"keep"

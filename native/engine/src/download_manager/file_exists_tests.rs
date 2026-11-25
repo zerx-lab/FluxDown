@@ -579,7 +579,11 @@ async fn redownload_does_not_delete_an_adopted_name() {
     let (url, server) = checksum_fixture_server();
     fx.base_url = url;
     fx.write_existing("adopted.bin", b"user file");
-    let id = fx.mgr.create_task(fx.spec("adopted.bin")).await.expect("create");
+    let id = fx
+        .mgr
+        .create_task(fx.spec("adopted.bin"))
+        .await
+        .expect("create");
     fx.pump_until_status(&id, 3).await;
     fx.pump_until("adopted task retired", |mgr| {
         mgr.redownload_worker_generation(&id).is_none()
@@ -595,7 +599,10 @@ async fn redownload_does_not_delete_an_adopted_name() {
             .expect("mark missing")
     );
     fx.write_existing("adopted.bin", b"user replacement");
-    fx.mgr.restart_missing_task_file(&id).await.expect("restart");
+    fx.mgr
+        .restart_missing_task_file(&id)
+        .await
+        .expect("restart");
     fx.pump_until_status(&id, 3).await;
     assert_eq!(fx.name(&id).await, "adopted (1).bin");
     assert!(!fx.mgr.has_unowned_existing_path(&id).await);
@@ -726,7 +733,10 @@ async fn checksum_worker_timeout_keeps_candidate_and_foreign_partial() {
         );
         assert!(lock_reserved(&fx.mgr.reserved_temp_paths).contains(&reserved));
         release.send(()).expect("worker was not aborted");
-        fx.mgr.delete_task(&id, true).await.expect("delete after stop");
+        fx.mgr
+            .delete_task(&id, true)
+            .await
+            .expect("delete after stop");
         assert!(fx.db.load_task_by_id(&id).await.expect("load").is_none());
         assert_eq!(
             std::fs::read(fx.dir.join("candidate.bin")).expect("candidate"),
@@ -742,7 +752,6 @@ async fn checksum_worker_timeout_keeps_candidate_and_foreign_partial() {
     }
     tokio::join!(check(false), check(true));
 }
-
 
 #[tokio::test]
 async fn delete_timeout_keeps_owned_partial_and_record_until_worker_exits() {
@@ -963,7 +972,10 @@ async fn check_delete_retry(batch: bool, worker_exits: bool) {
     #[cfg(windows)]
     drop(locked);
 
-    assert!(first_failed, "a live worker or inaccessible partial must block deletion");
+    assert!(
+        first_failed,
+        "a live worker or inaccessible partial must block deletion"
+    );
     assert!(fx.db.load_task_by_id(&id).await.expect("load").is_some());
     assert_eq!(std::fs::read(&path).expect("partial remains"), b"owned");
     assert!(
@@ -1078,7 +1090,6 @@ async fn checksum_task_with_zero_recorded_bytes_cleans_its_own_partial() {
     }
     tokio::join!(check(false), check(true));
 }
-
 
 #[tokio::test]
 async fn resume_keeps_the_name_of_a_registered_zero_byte_partial() {
@@ -1256,7 +1267,13 @@ async fn checksum_task_does_not_reuse_or_remove_a_replaced_partial() {
 async fn checksum_delete_preserves_a_replaced_partial_despite_a_checkpoint() {
     async fn check(batch: bool) {
         let (selector, _answers) = FakeSelector::new(false);
-        let mut fx = fixture("checksum_delete_replaced", 1, selector, FileExistsBehavior::Rename).await;
+        let mut fx = fixture(
+            "checksum_delete_replaced",
+            1,
+            selector,
+            FileExistsBehavior::Rename,
+        )
+        .await;
         let mut spec = fx.spec("shared.bin");
         spec.start_paused = true;
         spec.checksum = CHECKSUM.into();
