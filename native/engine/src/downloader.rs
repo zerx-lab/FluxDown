@@ -6561,12 +6561,12 @@ async fn download_single_once(
         file = tokio::io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, raw_file);
     } else {
         downloaded = 0;
-        file = tokio::io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, File::create(dest).await?);
         if let Some(db) = checkpoint {
-            // A successfully opened temporary file belongs to this task even before the first byte.
+            // Preserve the existing partial if resetting its checkpoint fails.
             db.record_http_partial(task_id, output::file_name(dest)?)
                 .await?;
         }
+        file = tokio::io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, File::create(dest).await?);
     }
 
     // 注：旧版本会从实际下载响应的 Content-Disposition 中提取"更好的文件名"，
@@ -11336,6 +11336,16 @@ mod single_resume_tests {
         assert_eq!(std::fs::read(&dest).unwrap(), b"existing partial data");
         let after_pause = TempFileGuard::acquire(&dest, "first").await.unwrap();
         drop(after_pause);
+        sqlx::query("ALTER TABLE tasks RENAME COLUMN http_partial_name TO unavailable_partial_name")
+            .execute(db.pool())
+            .await
+            .unwrap();
+        let failed = attempt().await;
+        let retained = std::fs::read(&dest).unwrap();
+        sqlx::query("ALTER TABLE tasks RENAME COLUMN unavailable_partial_name TO http_partial_name")
+            .execute(db.pool())
+            .await
+            .unwrap();
         let second = TempFileGuard::acquire(&dest, "second").await.unwrap();
         attempt().await.unwrap();
         assert_eq!(std::fs::read(&dest).unwrap(), b"finished download");
@@ -11346,6 +11356,8 @@ mod single_resume_tests {
         {
             tracing::warn!(%error, "test directory cleanup failed");
         }
+        assert!(failed.is_err(), "partial registration must fail");
+        assert_eq!(retained, b"existing partial data");
     }
 
     #[tokio::test]
