@@ -1,5 +1,7 @@
 //! Manual HTTP(S) filename ranges; imported URLs and commands remain literal.
 
+use std::collections::HashMap;
+
 use super::new_download::UrlEntry;
 
 pub(super) const MAX_GENERATED_URLS: usize = 1000;
@@ -59,6 +61,52 @@ impl UrlRangeExpansion {
             entries.len() - 1,
         ));
     }
+
+    pub(super) fn deduplicate(&mut self, entries: &mut Vec<UrlEntry>) {
+        if entries.len() < 2 {
+            return;
+        }
+        let mut first_positions = HashMap::with_capacity(entries.len());
+        let mut duplicates = Vec::new();
+        for (index, entry) in entries.iter().enumerate() {
+            match first_positions.entry(entry.url.as_str()) {
+                std::collections::hash_map::Entry::Occupied(_) => duplicates.push(index),
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(index - duplicates.len());
+                }
+            }
+        }
+        if duplicates.is_empty() {
+            return;
+        }
+        self.preview = self.preview.map(|(first, last)| {
+            (
+                first_positions[entries[first].url.as_str()],
+                first_positions[entries[last].url.as_str()],
+            )
+        });
+        let mut duplicates = duplicates.into_iter().peekable();
+        let mut index = 0;
+        entries.retain(|_| {
+            let keep = duplicates.next_if_eq(&index).is_none();
+            index += 1;
+            keep
+        });
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn manual_ranges_deduplicate_without_losing_preview_endpoints() {
+    let parsed = super::new_download::parse_manual_input(
+        "https://a/03.zip\n  out=first.zip\nhttps://a/[01-03].zip\nhttps://a/[01-03].zip",
+        &Default::default(),
+    );
+    let urls: Vec<_> = parsed.entries.iter().map(|entry| entry.url.as_str()).collect();
+    assert_eq!(urls, ["https://a/03.zip", "https://a/01.zip", "https://a/02.zip"]);
+    assert_eq!(parsed.entries[0].file_name, "first.zip");
+    assert_eq!(parsed.ranges.generated_count, 6);
+    assert_eq!(parsed.ranges.preview, Some((1, 0)));
 }
 
 struct FilenameRange<'a> {

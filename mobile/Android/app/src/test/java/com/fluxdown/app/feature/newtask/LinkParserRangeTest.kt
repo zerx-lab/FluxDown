@@ -120,6 +120,13 @@ class LinkParserRangeTest {
         )
     }
 
+    @Test fun txtExtractionDoesNotRestoreNonDecimalClosingBrackets() {
+        assertEquals(
+            listOf(UrlEntry("https://cdn.example/file[v2")),
+            parseEntries("see https://cdn.example/file[v2].", loose = true),
+        )
+    }
+
     @Test fun aria2CommandsAndTheirContinuationsAreNotReinterpretedAsManualTemplates() {
         assertTrue(parseManualEntries("aria2c 'https://example.com/[1-3].zip'").entries.isEmpty())
         val parsed = parseManualEntries("aria2c \\\nhttps://example.com/[1-3000].zip\nhttps://example.com/manual[1-2].zip")

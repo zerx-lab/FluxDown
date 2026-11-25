@@ -61,6 +61,7 @@ private inline fun forEachEntry(text: String, loose: Boolean, emit: (UrlEntry, f
 
 private const val MaxUrlRangeEntries = 1000
 private val FilenameRange = Regex("\\[([0-9]+)-([0-9]+)]")
+private val TerminalRangeBounds = Regex("\\[[0-9]+-[0-9]+$")
 
 /** Same shell continuation markers and executable spellings as the desktop aria2c parser. */
 private fun hasCommandContinuation(line: String): Boolean {
@@ -178,25 +179,14 @@ private fun findHttpUrl(line: String): String? {
     return null
 }
 
-/** Remove surrounding TXT punctuation without removing a balanced closing bracket from the URL. */
+/** Strip prose punctuation, retaining only a decimal range's closing bracket. */
 private fun trimImportedUrl(url: String): String {
-    var end = url.length
-    while (end > 0 && url[end - 1] in ".,;:!?()[]{}") end--
-    if (end == url.length) return url
-    var depth = 0
-    val firstOpen = url.indexOf('[')
-    if (firstOpen >= 0) {
-        for (i in firstOpen until url.length) {
-            when (url[i]) {
-                '[' -> depth++
-                ']' -> if (depth > 0) {
-                    depth--
-                    end = maxOf(end, i + 1)
-                }
-            }
-        }
+    val trimmed = url.trimEnd { it in ".,;:!?()[]{}" }
+    return if (url.getOrNull(trimmed.length) == ']' && TerminalRangeBounds.containsMatchIn(trimmed)) {
+        "$trimmed]"
+    } else {
+        trimmed
     }
-    return url.substring(0, end)
 }
 
 /** 按 URL 去重（保留首条）。 */

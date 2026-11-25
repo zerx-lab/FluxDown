@@ -145,6 +145,18 @@ describe('manual HTTP filename ranges', () => {
     }
   })
 
+  test('keeps the first URL and its options without reducing the generated count', () => {
+    const parsed = parseManualInput(
+      'https://a/03.zip\n  out=first.zip\nhttps://a/[01-03].zip\nhttps://a/[01-03].zip',
+    )
+    expect(parsed.entries.map(({ url }) => url)).toEqual([
+      'https://a/03.zip', 'https://a/01.zip', 'https://a/02.zip',
+    ])
+    expect(parsed.entries[0].fileName).toBe('first.zip')
+    expect(parsed.rangeCount).toBe(6)
+    expect(parsed.rangePreview).toEqual({ first: 'https://a/01.zip', last: 'https://a/03.zip' })
+  })
+
   test('does not reinterpret an aria2c URL even when an identical standalone URL expands', () => {
     const url = 'https://a/[01-02].zip'
     const parsed = parseManualInput(`aria2c -U CustomAgent \\\n  -o same.zip '${url}'\n  checksum=md5=ff\n${url}`)

@@ -175,6 +175,12 @@ export function parseManualInput(text: string, literalUrls?: ReadonlySet<string>
   const manualEntries = new Set<UrlEntry>()
   const parsed = parseLines(text, false, manualEntries)
   const entries: UrlEntry[] = []
+  const seen = new Set<string>()
+  const append = (item: UrlEntry) => {
+    if (seen.has(item.url)) return
+    seen.add(item.url)
+    entries.push(item)
+  }
   let rangeCount = 0
   let firstRangeUrl: string | undefined
   let lastRangeUrl: string | undefined
@@ -184,13 +190,13 @@ export function parseManualInput(text: string, literalUrls?: ReadonlySet<string>
       : null
     const range = filename?.match(/^([^[\]]*)\[([0-9]+)-([0-9]+)\]([^[\]]*)$/)
     if (filename === null || !range) {
-      entries.push(item)
+      append(item)
       continue
     }
     const start = BigInt(range[2])
     const end = BigInt(range[3])
     if (start > end) {
-      entries.push(item)
+      append(item)
       continue
     }
     const count = end - start + 1n
@@ -207,7 +213,7 @@ export function parseManualInput(text: string, literalUrls?: ReadonlySet<string>
     for (let value = start; value <= end; value += 1n) {
       // A singleton keeps its item options; a series cannot share a filename or digest.
       const url = `${prefix}${String(value).padStart(width, '0')}${suffix}`
-      entries.push(count === 1n ? { ...item, url } : entry(url))
+      append(count === 1n ? { ...item, url } : entry(url))
       firstRangeUrl ??= url
       lastRangeUrl = url
     }

@@ -155,10 +155,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   const txtInput = useRef<HTMLInputElement>(null)
   const resolveToken = useRef(0)
 
-  const parsed = useMemo(() => parseManualInput(
-    text,
-    captures.length === 0 ? literalUrls : new Set([...literalUrls, ...captures.map((capture) => capture.url)]),
-  ), [text, literalUrls, captures])
+  const parsed = useMemo(() => parseManualInput(text, literalUrls), [text, literalUrls])
   const entries = parsed.entries
 
   // aria2c 命令带出的 Cookie / UA / 请求头回填到高级字段（规则同桌面端，见 `aria2c.ts`）：
@@ -319,6 +316,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   const capturesRef = useRef<PendingCaptureDto[]>([])
   capturesRef.current = captures
   const injectionsDone = useRef(0)
+  const pendingTorrentInjections = useRef<File[][]>([])
   const textRef = useRef(text)
   textRef.current = text
 
@@ -337,7 +335,15 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
           setSaveDir(dir)
         }
       }
-      setUrlDraft((current) => appendLiteralEntries(current, fresh.map((capture) => captureEntry(capture.url, capture.fileName))))
+      setUrlDraft((current) => {
+        const draft = appendLiteralEntries(current, fresh.map((capture) => captureEntry(capture.url, capture.fileName)))
+        // An existing URL line can also be used to confirm this newly arrived capture.
+        const literalUrls = new Set(draft.literalUrls)
+        for (const capture of fresh) {
+          if (capture.url.includes('[')) literalUrls.add(capture.url)
+        }
+        return { ...draft, literalUrls }
+      })
       setCaptures((prev) => [...prev, ...fresh])
     }
     // 只保留 agent 仍在等待确认的捕获（其余已在别处处理 / agent 重启丢失）；对应链接行保留为普通链接。
@@ -367,8 +373,14 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
       }
       if (injection.torrentFiles.length > 0) {
         if (parsed.rangeLimitExceeded) toast.key('urlRangeLimit', 'error')
-        else void submitTorrentFiles(injection.torrentFiles, { saveDir: saveDir.trim(), queueId: context.queueId })
+        pendingTorrentInjections.current.push(injection.torrentFiles)
       }
+    }
+    if (parsed.rangeLimitExceeded) return
+    const pending = pendingTorrentInjections.current
+    pendingTorrentInjections.current = []
+    for (const files of pending) {
+      void submitTorrentFiles(files, { saveDir: saveDir.trim(), queueId: context.queueId })
     }
   }, [session.injections, saveDir, context.queueId, parsed.rangeLimitExceeded])
 

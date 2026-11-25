@@ -306,6 +306,9 @@ fn parse_input_impl(
     if let Some(entry) = current {
         ranges.push(&mut entries, entry, current_manual);
     }
+    if literal_urls.is_some() {
+        ranges.deduplicate(&mut entries);
+    }
     ParsedInput {
         entries,
         hints: hints.unwrap_or_default(),
