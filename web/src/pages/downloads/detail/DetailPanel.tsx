@@ -65,7 +65,7 @@ function TaskDetail({ view }: { view: DownloadTaskView }) {
       <div className="flex shrink-0 items-center gap-2 px-3 pt-3">
         <SegmentedTabs items={items} value={active} onValueChange={setTab} />
       </div>
-      <div className="min-h-0 flex-1 overflow-auto p-3">
+      <div className="view-viewport min-h-0 flex-1 overflow-auto p-3">
         {active === 'general' ? <GeneralTab view={view} /> : null}
         {active === 'files' ? <BtFilesTab key={view.taskId} taskId={view.taskId} /> : null}
         {active === 'speed' ? <SpeedTab view={view} history={speedHistory} /> : null}

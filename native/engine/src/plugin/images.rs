@@ -36,6 +36,12 @@ pub struct ImageLoadOptions {
     /// Maximum thumbnail height; defaults to 512.
     #[serde(default = "default_dimension")]
     pub max_height: u32,
+    /// Center-crop to a square and mask to a circle.
+    #[serde(default)]
+    pub circle: bool,
+    /// Rounded corners in output pixels; ignored for circular thumbnails.
+    #[serde(default)]
+    pub corner_radius: u32,
     /// Whether to memoize the generated image reference; defaults to true.
     #[serde(default = "default_cache")]
     pub cache: bool,
@@ -367,6 +373,8 @@ fn options_key(opts: &ImageLoadOptions) -> Result<[u8; 32], crate::plugin::runti
         opts.auth_ref.as_deref(),
         opts.max_width,
         opts.max_height,
+        opts.circle,
+        opts.corner_radius,
     ))
     .map_err(|e| {
         crate::plugin::runtime::PluginError::Runtime(format!("图片缓存键生成失败: {e}"))
@@ -384,12 +392,21 @@ pub async fn thumbnail(
     opts: &ImageLoadOptions,
 ) -> Result<Vec<u8>, crate::plugin::runtime::PluginError> {
     opts.validate()?;
-    raster::thumbnail(bytes, opts.max_width, opts.max_height, MAX_OUTPUT_BYTES)
-        .await
-        .map_err(|error| match error {
-            ThumbnailError::OutputTooLarge { .. } => image_error("缩略图超过 4 MiB 上限"),
-            error => crate::plugin::runtime::PluginError::InvalidOutput(error.to_string()),
-        })
+    raster::thumbnail_with_mask(
+        bytes,
+        opts.max_width,
+        opts.max_height,
+        MAX_OUTPUT_BYTES,
+        raster::ThumbnailMask {
+            circle: opts.circle,
+            corner_radius: opts.corner_radius,
+        },
+    )
+    .await
+    .map_err(|error| match error {
+        ThumbnailError::OutputTooLarge { .. } => image_error("缩略图超过 4 MiB 上限"),
+        error => crate::plugin::runtime::PluginError::InvalidOutput(error.to_string()),
+    })
 }
 
 fn image_error(message: &str) -> crate::plugin::runtime::PluginError {
@@ -410,6 +427,8 @@ mod tests {
             auth_ref: None,
             max_width: 512,
             max_height: 512,
+            circle: false,
+            corner_radius: 0,
             cache,
         }
     }
@@ -419,14 +438,79 @@ mod tests {
     }
 
     fn png(width: u32, height: u32) -> Vec<u8> {
-        let image = DynamicImage::ImageRgba8(RgbaImage::from_pixel(
-            width,
-            height,
-            Rgba([20, 40, 60, 255]),
-        ));
+        let image = RgbaImage::from_pixel(width, height, Rgba([20, 40, 60, 255]));
+        encode_png(image)
+    }
+
+    fn encode_png(image: RgbaImage) -> Vec<u8> {
         let mut output = Cursor::new(Vec::new());
-        image.write_to(&mut output, ImageFormat::Png).unwrap();
+        DynamicImage::ImageRgba8(image)
+            .write_to(&mut output, ImageFormat::Png)
+            .unwrap();
         output.into_inner()
+    }
+
+    #[tokio::test]
+    async fn thumbnail_shapes_preserve_geometry_and_do_not_share_cached_results() {
+        let registry = ImageResources::new();
+        registry.open_session("plugin-a", "session-a");
+        let mut opts = options(true);
+        for (circle, radius, size) in [
+            (false, 0, (80, 40)),
+            (false, 12, (80, 40)),
+            (true, 12, (40, 40)),
+        ] {
+            opts.circle = circle;
+            opts.corner_radius = radius;
+            assert!(
+                registry
+                    .cached("plugin-a", "session-a", &opts)
+                    .unwrap()
+                    .is_none()
+            );
+            let bytes = thumbnail(png(80, 40), &opts).await.unwrap();
+            let output = image::load_from_memory(&bytes).unwrap().into_rgba8();
+            assert_eq!(output.dimensions(), size);
+            for (x, y) in [
+                (0, 0),
+                (size.0 - 1, 0),
+                (0, size.1 - 1),
+                (size.0 - 1, size.1 - 1),
+            ] {
+                assert_eq!(
+                    output.get_pixel(x, y).0[3],
+                    if radius == 0 { 255 } else { 0 }
+                );
+            }
+            assert_eq!(
+                *output.get_pixel(size.0 / 2, size.1 / 2),
+                Rgba([20, 40, 60, 255])
+            );
+            assert_eq!(output.get_pixel(0, 12).0[3], if circle { 0 } else { 255 });
+            assert_eq!(output.get_pixel(7, 7).0[3], 255);
+            registry
+                .insert("plugin-a", "session-a", &opts, bytes)
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn circle_center_crops_both_landscape_and_portrait_sources() {
+        fn pixel(x: u32, y: u32) -> Rgba<u8> {
+            Rgba([u8::try_from(x).unwrap(), u8::try_from(y).unwrap(), 0, 255])
+        }
+        let mut opts = options(false);
+        opts.circle = true;
+        for (width, height, left, top) in [(80, 40, 20, 0), (40, 80, 0, 20)] {
+            let source = encode_png(RgbaImage::from_fn(width, height, pixel));
+            let bytes = thumbnail(source, &opts).await.unwrap();
+            let output = image::load_from_memory(&bytes).unwrap().into_rgba8();
+            assert_eq!(output.dimensions(), (40, 40));
+            for (x, y) in [(20, 20), (7, 7)] {
+                assert_eq!(*output.get_pixel(x, y), pixel(left + x, top + y));
+            }
+            assert_eq!(output.get_pixel(1, 10).0[3], 0);
+        }
     }
 
     #[test]

@@ -70,7 +70,7 @@ export function Dialog({ open, onOpenChange, title, description, footer, size = 
             mobile
               ? 'animate-fx-slide-up data-[state=closed]:animate-fx-slide-up-out inset-0 pt-safe pl-safe pr-safe'
               : cn(
-                  'animate-fx-zoom data-[state=closed]:animate-fx-zoom-out top-1/2 left-1/2 max-h-[85dvh] w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 rounded-[var(--fx-components-dialog-radius)] border border-hairline shadow-lg',
+                  'view-dialog animate-fx-zoom data-[state=closed]:animate-fx-zoom-out top-1/2 left-1/2 max-h-[85dvh] w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 rounded-[var(--fx-components-dialog-radius)] border border-hairline shadow-lg',
                   WIDTH[size],
                 ),
             className,
@@ -97,7 +97,7 @@ export function Dialog({ open, onOpenChange, title, description, footer, size = 
               </RadixDialog.Close>
             ) : null}
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-2">{children}</div>
+          <div className="view-viewport min-h-0 flex-1 overflow-y-auto px-4 py-2">{children}</div>
           {footer ? (
             <div className="shrink-0 border-t border-hairline bg-chrome px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] desktop:rounded-b-[var(--fx-components-dialog-radius)]">
               {footer}

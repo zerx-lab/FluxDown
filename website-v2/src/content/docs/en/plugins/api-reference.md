@@ -345,6 +345,8 @@ The host applies FluxDown's outbound proxy/TUN routing and SSRF protections (inc
 | `headers` | none | Optional string headers. |
 | `authRef` | none | Optional saved credential reference; requires `auth` permission. |
 | `maxWidth`, `maxHeight` | `512` each | Integers from 1 to 2048. The host preserves aspect ratio and does not upscale. |
+| `circle` | `false` | Center-crop to a square and mask to a circle with transparent edges. Still bounded by both dimensions and never upscaled. |
+| `cornerRadius` | `0` | Corner radius in output pixels (integer), capped at half the shorter side. Ignored when `circle` is true. |
 | `cache` | `true` | `false` skips source/options memoization; images are never written to disk. HTTP responses remain `no-store`. Identical output still shares one reference, valid until explicit release or session close. |
 
 Input is accepted only when sniffed as PNG, JPEG or WebP; declared content type alone is not trusted. Input dimensions are capped at 8192 per side and 16 megapixels, decoding at 64 MiB, network body at 8 MiB, and fetch time at 10 seconds. The host emits a sanitized static PNG thumbnail of at most 4 MiB and serves it as `image/png`. Per-session quotas are 128 resources / 16 MiB; the global image-resource byte quota is 64 MiB. Quota exhaustion is an explicit error; references are never implicitly evicted. Cached source/options results live for five minutes, but their returned resource remains valid until explicit release or session close. Closing the view session or unloading the plugin frees its image resources. These limits are host-enforced.

@@ -14,6 +14,12 @@ const MAX_DECODE_BYTES: u64 = 64 * 1024 * 1024;
 const RSS_MAX_OUTPUT_BYTES: usize = 512 * 1024;
 static DECODE_SLOTS: Semaphore = Semaphore::const_new(2);
 
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ThumbnailMask {
+    pub circle: bool,
+    pub corner_radius: u32,
+}
+
 /// Why raster thumbnail generation failed.
 #[derive(Debug, thiserror::Error)]
 pub enum ThumbnailError {
@@ -81,11 +87,28 @@ pub async fn thumbnail(
     max_height: u32,
     max_output_bytes: usize,
 ) -> Result<Vec<u8>, ThumbnailError> {
+    thumbnail_with_mask(
+        bytes,
+        max_width,
+        max_height,
+        max_output_bytes,
+        ThumbnailMask::default(),
+    )
+    .await
+}
+
+pub(crate) async fn thumbnail_with_mask(
+    bytes: Vec<u8>,
+    max_width: u32,
+    max_height: u32,
+    max_output_bytes: usize,
+    mask: ThumbnailMask,
+) -> Result<Vec<u8>, ThumbnailError> {
     let dimensions = 1..=MAX_THUMBNAIL_DIMENSION;
     if !dimensions.contains(&max_width) || !dimensions.contains(&max_height) {
         return Err(ThumbnailError::InvalidThumbnailDimensions);
     }
-    make_thumbnail(bytes, max_width, max_height, max_output_bytes, &[]).await
+    make_thumbnail(bytes, max_width, max_height, max_output_bytes, &[], mask).await
 }
 
 /// Decode PNG, JPEG or WebP into a metadata-free RSS preview.
@@ -108,7 +131,15 @@ pub async fn thumbnail(
 /// ```
 pub async fn rss_thumbnail(bytes: Vec<u8>) -> Result<Vec<u8>, ThumbnailError> {
     // At 224px even an uncompressed RGBA16 image leaves room for PNG overhead.
-    make_thumbnail(bytes, 640, 640, RSS_MAX_OUTPUT_BYTES, &[384, 224]).await
+    make_thumbnail(
+        bytes,
+        640,
+        640,
+        RSS_MAX_OUTPUT_BYTES,
+        &[384, 224],
+        ThumbnailMask::default(),
+    )
+    .await
 }
 
 async fn make_thumbnail(
@@ -117,6 +148,7 @@ async fn make_thumbnail(
     max_height: u32,
     max_output_bytes: usize,
     fallback_sides: &'static [u32],
+    mask: ThumbnailMask,
 ) -> Result<Vec<u8>, ThumbnailError> {
     if bytes.len() > MAX_SOURCE_BYTES {
         return Err(ThumbnailError::SourceTooLarge);
@@ -128,7 +160,31 @@ async fn make_thumbnail(
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let decoded = decode_raster(bytes)?;
-        let mut thumbnail = resize_thumbnail(decoded, max_width, max_height);
+        let mut thumbnail = if mask.circle {
+            let side = decoded
+                .width()
+                .min(decoded.height())
+                .min(max_width)
+                .min(max_height);
+            if decoded.width() == side && decoded.height() == side {
+                decoded
+            } else {
+                decoded.resize_to_fill(side, side, image::imageops::FilterType::Lanczos3)
+            }
+        } else {
+            resize_thumbnail(decoded, max_width, max_height)
+        };
+        if mask.circle || mask.corner_radius != 0 {
+            let mut rgba = thumbnail.into_rgba8();
+            let half = f64::from(rgba.width().min(rgba.height())) / 2.0;
+            let radius = if mask.circle {
+                half
+            } else {
+                f64::from(mask.corner_radius).min(half)
+            };
+            mask_corners(&mut rgba, radius);
+            thumbnail = DynamicImage::ImageRgba8(rgba);
+        }
         for &side in fallback_sides {
             if thumbnail.width() <= side && thumbnail.height() <= side {
                 continue;
@@ -184,6 +240,37 @@ fn resize_thumbnail(image: DynamicImage, max_width: u32, max_height: u32) -> Dyn
     let out_width = (f64::from(width) * scale).floor().max(1.0) as u32;
     let out_height = (f64::from(height) * scale).floor().max(1.0) as u32;
     image.resize_exact(out_width, out_height, image::imageops::FilterType::Lanczos3)
+}
+
+fn mask_corners(image: &mut image::RgbaImage, radius: f64) {
+    let (width, height) = image.dimensions();
+    let inner = (radius - 0.5).powi(2);
+    let outer = (radius + 0.5).powi(2);
+    // The four corner squares do not overlap; leave the rest of the pixels untouched.
+    for y in 0..radius as u32 {
+        let dy = radius - f64::from(y) - 0.5;
+        for x in 0..radius as u32 {
+            let dx = radius - f64::from(x) - 0.5;
+            let distance_squared = dx * dx + dy * dy;
+            if distance_squared <= inner {
+                continue;
+            }
+            let coverage = if distance_squared >= outer {
+                0.0
+            } else {
+                radius + 0.5 - distance_squared.sqrt()
+            };
+            for (x, y) in [
+                (x, y),
+                (width - 1 - x, y),
+                (x, height - 1 - y),
+                (width - 1 - x, height - 1 - y),
+            ] {
+                let alpha = &mut image.get_pixel_mut(x, y).0[3];
+                *alpha = (f64::from(*alpha) * coverage).round() as u8;
+            }
+        }
+    }
 }
 
 fn encode_png(
