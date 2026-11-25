@@ -140,6 +140,7 @@ export interface ViewModelInput {
   engine: Pick<CompiledRules, "dedupeKey" | "trackKind">;
   showLowConfidence: boolean;
   handoff: HandoffState;
+  chooseManualTarget: boolean;
   site: TabView["site"];
   /** 探测协调器给出的基础状态（live / recovering / unavailable / unknown）。 */
   probe: ProbeState;
@@ -480,6 +481,7 @@ export function composeTabView(input: ViewModelInput): TabView {
     hiddenLowConfidence,
     counts,
     handoff: input.handoff,
+    canChoosePageTarget: input.chooseManualTarget && /^https?:\/\//i.test(input.pageUrl),
     site: input.site,
     probe: degraded ? "degraded" : input.probe,
   };

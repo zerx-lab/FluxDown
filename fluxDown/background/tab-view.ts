@@ -91,9 +91,8 @@ export async function buildTabView(tabId: number, opts: { withHandoff?: boolean 
     retiredElements: getRetiredElements(tabId),
     engine,
     showLowConfidence: settings.showLowConfidence,
-    handoff: manual?.enabled && /^https?:\/\//i.test(pageUrl)
-      ? { kind: "choose-target" }
-      : caps ? handoffFor({ remoteMode, caps, pageUrl }) : { kind: "unavailable", reason: "disconnected" },
+    handoff: caps ? handoffFor({ remoteMode, caps, pageUrl }) : { kind: "unavailable", reason: "disconnected" },
+    chooseManualTarget: manual?.enabled ?? false,
     site,
     probe: probeStateOf(tabId),
     lateFrames: lateHookFrames(tabId),

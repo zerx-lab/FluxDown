@@ -47,7 +47,7 @@ const en: Record<MessageKey, string> = {
   "remote.modeAlways": "Remote Only",
   "remote.manualChoose": "Choose a download destination",
   "remote.manualEnable": "Ask where to send manual downloads",
-  "remote.manualHint": "Choose the local app or a verified server each time. Automatic interception keeps using the mode above.",
+  "remote.manualHint": "Choose the local app or a configured server each time. Automatic interception keeps using the mode above.",
   "remote.manualDefault": "Default remote server",
   "remote.manualAdd": "Add a server",
   "remote.manualName": "Server name",

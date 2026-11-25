@@ -6,6 +6,8 @@ export const MANUAL_SERVERS_KEY = "manualDownloadServers";
 export interface ManualServer extends RemoteServerConfig {
   id: string;
   name: string;
+  /** Reachability was verified, but the management API could not confirm the access key. */
+  managementUnverified?: true;
 }
 
 export interface ManualServers {

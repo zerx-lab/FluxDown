@@ -93,7 +93,6 @@ export interface ResourceRow {
 }
 
 export type HandoffState =
-  | { kind: "choose-target" }
   | { kind: "unavailable"; reason: "disconnected" | "remote-mode" | "old-app" | "plugins-unsupported" }
   | { kind: "no-match"; installed: number }
   | { kind: "disabled"; identity: string; name: string }
@@ -112,6 +111,7 @@ export interface TabView {
   hiddenLowConfidence: number;
   counts: Partial<Record<ResourceType | "all", number>>;
   handoff: HandoffState;
+  canChoosePageTarget: boolean;
   site: { host: string; profileKey: string | null; profile: SiteProfileFields };
   probe: ProbeState;
 }

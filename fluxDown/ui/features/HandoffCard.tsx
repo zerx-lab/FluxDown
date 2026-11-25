@@ -1,4 +1,4 @@
-/** 「交给桌面端解析」卡片：按 HandoffState 显示状态；仅 match 时给出按钮。 */
+/** 插件交接状态与手动选择整页发送目标互不覆盖。 */
 import type { JSX } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import { browser } from "wxt/browser";
@@ -39,13 +39,16 @@ async function fetchTask(taskId: string): Promise<TrackedTask> {
   return null;
 }
 
-export function HandoffCard(props: { handoff: HandoffState; tabId: number }): JSX.Element | null {
+export function HandoffCard({ handoff: h, canChoosePageTarget, tabId }: {
+  handoff: HandoffState;
+  canChoosePageTarget: boolean;
+  tabId: number;
+}): JSX.Element | null {
   const t = useT();
   const { desktopApp } = usePlatform();
   const [busy, setBusy] = useState(false);
   /** 正在桌面端解析的任务 ID；为空表示没有在途解析。 */
   const [resolving, setResolving] = useState<string | null>(null);
-  const h = props.handoff;
 
   useEffect(() => {
     if (!resolving) return;
@@ -78,7 +81,7 @@ export function HandoffCard(props: { handoff: HandoffState; tabId: number }): JS
   const send = async () => {
     setBusy(true);
     try {
-      const res = await sendAction<"handoffPage">({ action: "handoffPage", tabId: props.tabId });
+      const res = await sendAction<"handoffPage">({ action: "handoffPage", tabId });
       if (res?.cancelled) {
         showToast(t("remote.manualCancelled"));
       } else if (res?.success) {
@@ -94,9 +97,6 @@ export function HandoffCard(props: { handoff: HandoffState; tabId: number }): JS
 
   let text: string;
   switch (h.kind) {
-    case "choose-target":
-      text = t("remote.manualHint");
-      break;
     case "unavailable":
       text = t(`handoff.unavailable.${h.reason}`);
       break;
@@ -112,23 +112,23 @@ export function HandoffCard(props: { handoff: HandoffState; tabId: number }): JS
   }
 
   // 交给桌面解析依赖 NMH；Android 无桌面 App，也不探测完成前先隐藏
-  if (!desktopApp && h.kind !== "choose-target") return null;
+  if (!desktopApp && !canChoosePageTarget) return null;
 
   return (
-    <div class={`fd-handoff fd-handoff-${h.kind}`}>
+    <div class={`fd-handoff${desktopApp ? ` fd-handoff-${h.kind}` : ""}`}>
       <Icon name="external" size={16} />
       <div class="fd-handoff-text">
-        <div class="fd-handoff-title">{t(h.kind === "choose-target" ? "contextMenu.sendPageToFluxDown" : "handoff.title")}</div>
-        <div class="fd-handoff-desc">{text}</div>
+        <div class="fd-handoff-title">{t(canChoosePageTarget ? "contextMenu.sendPageToFluxDown" : "handoff.title")}</div>
+        {desktopApp ? <div class="fd-handoff-desc">{text}</div> : null}
         {resolving ? (
           <div class="fd-progress fd-handoff-progress">
             <div class="fd-progress-fill fd-indeterminate" style={{ width: "100%" }} />
           </div>
         ) : null}
       </div>
-      {h.kind === "match" || h.kind === "choose-target" ? (
+      {canChoosePageTarget || (desktopApp && h.kind === "match") ? (
         <Button size="sm" variant="primary" disabled={busy || resolving !== null} onClick={() => void send()}>
-          {resolving ? t("handoff.resolvingButton") : t(h.kind === "choose-target" ? "remote.manualChoose" : "handoff.button")}
+          {resolving ? t("handoff.resolvingButton") : t(canChoosePageTarget ? "remote.manualChoose" : "handoff.button")}
         </Button>
       ) : null}
     </div>

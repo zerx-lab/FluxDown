@@ -171,7 +171,7 @@ export function SidePanelApp(): JSX.Element {
           {view ? (
             <>
               <div class="sp-scroll">
-                <HandoffCard handoff={view.handoff} tabId={view.tabId} />
+                <HandoffCard handoff={view.handoff} canChoosePageTarget={view.canChoosePageTarget} tabId={view.tabId} />
                 <div class="sp-site">
                   <button type="button" class="sp-site-toggle" onClick={() => setSiteOpen(!siteOpen)}>
                     <Icon name={siteOpen ? "chevronDown" : "chevronRight"} size={12} />

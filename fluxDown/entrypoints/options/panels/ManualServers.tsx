@@ -71,12 +71,17 @@ export function ManualServers(): JSX.Element | null {
     }
     void change(async () => {
       const result = await remoteVerify({ remoteUrl, remoteToken, rejectRedirects: true });
-      if (!result.success || result.message === REMOTE_MANAGEMENT_UNAVAILABLE) {
-        setError(result.message === "remote_auth_failed" ? t("remote.testAuthFailed") :
-          result.message === REMOTE_MANAGEMENT_UNAVAILABLE ? t("remote.testManagementUnavailable") : t("remote.testUnreachable"));
+      if (!result.success) {
+        setError(t(result.message === "remote_auth_failed" ? "remote.testAuthFailed" : "remote.testUnreachable"));
         return;
       }
-      await write({ kind: server.kind, server: { id: server.id, name, remoteUrl, remoteToken } });
+      await write({ kind: server.kind, server: {
+        id: server.id,
+        name,
+        remoteUrl,
+        remoteToken,
+        ...(result.message === REMOTE_MANAGEMENT_UNAVAILABLE ? { managementUnverified: true } : {}),
+      } });
       setDraft(undefined);
     });
   }
@@ -86,7 +91,8 @@ export function ManualServers(): JSX.Element | null {
       <ToggleRow title={t("remote.manualEnable")} desc={t("remote.manualHint")} checked={settings.enabled}
         disabled={busy} onChange={(enabled) => void change(() => write({ kind: "toggle", enabled }))} />
       {settings.servers.map((server) => (
-        <SettingRow key={server.id} title={server.name} desc={server.remoteUrl} inline>
+        <SettingRow key={server.id} title={server.name} desc={server.remoteUrl}
+          note={server.managementUnverified ? t("remote.testManagementUnavailable") : undefined} inline>
           <Button disabled={busy} onClick={() => { setError(""); setDraft({ ...server, kind: "edit" }); }}>{t("remote.manualEdit")}</Button>
           <Button disabled={busy} onClick={() => {
             void change(async () => {

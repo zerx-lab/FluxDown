@@ -44,7 +44,7 @@ const zhCN = {
   "remote.modeAlways": "仅远程",
   "remote.manualChoose": "选择下载目标",
   "remote.manualEnable": "手动下载时询问目标",
-  "remote.manualHint": "每次选择本机或已验证的服务器。自动接管仍使用上方的模式。",
+  "remote.manualHint": "每次选择本机或已配置的服务器。自动接管仍使用上方的模式。",
   "remote.manualDefault": "默认远程服务器",
   "remote.manualAdd": "添加服务器",
   "remote.manualName": "服务器名称",

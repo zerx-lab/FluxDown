@@ -46,7 +46,7 @@ const zhTW = {
   "remote.modeAlways": "僅遠端",
   "remote.manualChoose": "選擇下載目標",
   "remote.manualEnable": "手動下載時詢問目標",
-  "remote.manualHint": "每次選擇本機或已驗證的伺服器。自動接管仍使用上方的模式。",
+  "remote.manualHint": "每次選擇本機或已設定的伺服器。自動接管仍使用上方的模式。",
   "remote.manualDefault": "預設遠端伺服器",
   "remote.manualAdd": "新增伺服器",
   "remote.manualName": "伺服器名稱",
