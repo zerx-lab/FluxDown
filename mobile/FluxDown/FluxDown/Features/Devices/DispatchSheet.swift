@@ -111,10 +111,12 @@ final class DispatchModel {
     private(set) var failure: String?
 
     let target: DispatchTarget
+    private let sourceHostID: String
     @ObservationIgnored private unowned let container: AppContainer
 
-    init(target: DispatchTarget, container: AppContainer) {
+    init(target: DispatchTarget, sourceHostID: String, container: AppContainer) {
         self.target = target
+        self.sourceHostID = sourceHostID
         self.container = container
     }
 
@@ -127,6 +129,10 @@ final class DispatchModel {
     /// 提交；返回是否全部成功（成功时调用方关闭表单）。
     func send() async -> Bool {
         guard !sending else { return false }
+        guard container.host.id == sourceHostID else {
+            failure = L("mobileDownloadDraftHostChanged")
+            return false
+        }
         let entries = entries
         guard !entries.isEmpty else { return false }
         let dir: String?
@@ -162,9 +168,10 @@ final class DispatchModel {
 struct DispatchSheet: View {
     @Environment(AppContainer.self) private var container
     let target: DispatchTarget
+    let sourceHostID: String
 
     var body: some View {
-        DispatchForm(target: target, container: container)
+        DispatchForm(target: target, sourceHostID: sourceHostID, container: container)
     }
 }
 
@@ -174,8 +181,8 @@ private struct DispatchForm: View {
     @State private var model: DispatchModel
     @FocusState private var linksFocused: Bool
 
-    init(target: DispatchTarget, container: AppContainer) {
-        _model = State(initialValue: DispatchModel(target: target, container: container))
+    init(target: DispatchTarget, sourceHostID: String, container: AppContainer) {
+        _model = State(initialValue: DispatchModel(target: target, sourceHostID: sourceHostID, container: container))
     }
 
     var body: some View {

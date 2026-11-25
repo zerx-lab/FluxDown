@@ -3588,7 +3588,7 @@
   "mobileHostSwitched": "已切换到「{name}」",
   "mobileHostSwitchFailed": "无法连接「{name}」· {reason}",
   "hostRestoreFailed": "已切换到本机。无法连接“{name}”。",
-  "mobileDownloadDraftHostChanged": "主机已切换。请切回原主机，或重新打开「新建下载」后再提交。",
+  "mobileDownloadDraftHostChanged": "主机已切换。请切回原主机，或重新打开此表单后再提交。",
   "mobileHostAdd": "添加主机",
   "mobileHostRemoveHint": "长按远程主机可将其移除。",
   "mobileHostRemoveTitle": "移除「{name}」？",

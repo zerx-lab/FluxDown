@@ -21,6 +21,13 @@ struct DeviceDetailScreen: View {
     }
 }
 
+private struct DeviceDispatchRequest: Identifiable {
+    let target: DispatchTarget
+    let sourceHostID: String
+
+    var id: String { target.id }
+}
+
 // MARK: - 云端设备
 
 private struct CloudDeviceDetail: View {
@@ -31,14 +38,14 @@ private struct CloudDeviceDetail: View {
     let id: String
     @State private var renaming: CloudDeviceRecord?
     @State private var deleting: CloudDeviceRecord?
-    @State private var showDispatch = false
+    @State private var dispatchRequest: DeviceDispatchRequest?
     /// 已由本页（删除成功）或消失检测返回，避免重复提示 / 重复 dismiss。
     @State private var leaving = false
 
     var body: some View {
         let state = container.store.state
         let record = model.cloudRecords.first { $0.id == id }
-        let gone = record == nil && model.cloudPhase != .loading
+        let gone = dispatchRequest == nil && record == nil && model.cloudPhase != .loading
         Group {
             if let record {
                 detailList(record, state: state)
@@ -57,12 +64,16 @@ private struct CloudDeviceDetail: View {
             dismiss()
         }
         .cloudDeviceRenameAlert(renaming: $renaming)
+        .sheet(item: $dispatchRequest) { request in
+            DispatchSheet(target: request.target, sourceHostID: request.sourceHostID)
+        }
     }
 
     private func detailList(_ record: CloudDeviceRecord, state: HostState) -> some View {
         let presenceKnown = model.presenceKnown(state)
         let online = presenceKnown && record.isOnline
         let readOnly = state.isReadOnly
+        let sourceHostID = container.host.id
         let statusText = L(CloudPresence.deviceKey(isOnline: record.isOnline, presenceKnown: presenceKnown))
         return List {
             Section {
@@ -90,9 +101,16 @@ private struct CloudDeviceDetail: View {
             }
 
             Section {
-                if !record.isCurrent {
+                if !record.isCurrent, model.cloudRecordsHostID == sourceHostID {
                     Button {
-                        showDispatch = true
+                        // 同机既有云端记录又已配对时，优先投递到在线的直连设备。
+                        let attached = state.linkDevices.first {
+                            !$0.revoked && !$0.fingerprint.isEmpty && $0.cloudDeviceId == record.deviceId
+                        }.flatMap { model.linkInfo($0.fingerprint, state: state) }
+                        dispatchRequest = DeviceDispatchRequest(
+                            target: DispatchTarget(cloud: record, presenceKnown: presenceKnown, link: attached),
+                            sourceHostID: sourceHostID
+                        )
                     } label: {
                         Label(L("mobileDeviceDispatchAction"), systemImage: "arrow.down.circle")
                     }
@@ -131,13 +149,6 @@ private struct CloudDeviceDetail: View {
             if let error = await model.loadCloud() {
                 container.toasts.show(text: AccountText.error(error), tone: .error)
             }
-        }
-        .sheet(isPresented: $showDispatch) {
-            // 同一台机器同时是直连设备时合并：直连在线走局域网，否则走云。
-            let attached = state.linkDevices.first {
-                !$0.revoked && !$0.fingerprint.isEmpty && $0.cloudDeviceId == record.deviceId
-            }.flatMap { model.linkInfo($0.fingerprint, state: container.store.state) }
-            DispatchSheet(target: DispatchTarget(cloud: record, presenceKnown: presenceKnown, link: attached))
         }
     }
 
@@ -182,7 +193,7 @@ private struct LinkDeviceDetail: View {
     @Environment(\.dismiss) private var dismiss
 
     let fingerprint: String
-    @State private var showDispatch = false
+    @State private var dispatchRequest: DeviceDispatchRequest?
     @State private var renamingLink: LinkRenameTarget?
     @State private var confirmingUnpair = false
     @State private var unpairing = false
@@ -191,7 +202,7 @@ private struct LinkDeviceDetail: View {
     var body: some View {
         let state = container.store.state
         let info = model.linkInfo(fingerprint, state: state)
-        let gone = info == nil && state.connection == .live
+        let gone = dispatchRequest == nil && info == nil && state.connection == .live
         Group {
             if let info {
                 detailList(info, state: state)
@@ -209,10 +220,14 @@ private struct LinkDeviceDetail: View {
             container.toasts.show(text: L("mobileDeviceGone"), tone: .info, systemImage: "minus.circle")
             dismiss()
         }
+        .sheet(item: $dispatchRequest) { request in
+            DispatchSheet(target: request.target, sourceHostID: request.sourceHostID)
+        }
     }
 
     private func detailList(_ info: LinkDeviceInfo, state: HostState) -> some View {
         let readOnly = state.isReadOnly
+        let sourceHostID = container.host.id
         let revoked = info.revoked
         let online = info.online && !revoked
         let statusText = L(online ? "deviceOnline" : "deviceOffline")
@@ -251,7 +266,7 @@ private struct LinkDeviceDetail: View {
             Section {
                 if !revoked {
                     Button {
-                        showDispatch = true
+                        dispatchRequest = DeviceDispatchRequest(target: DispatchTarget(link: info), sourceHostID: sourceHostID)
                     } label: {
                         Label(L("mobileDeviceDispatchAction"), systemImage: "arrow.down.circle")
                     }
@@ -301,9 +316,6 @@ private struct LinkDeviceDetail: View {
             }
         }
         .linkDeviceRenameAlert(renaming: $renamingLink)
-        .sheet(isPresented: $showDispatch) {
-            DispatchSheet(target: DispatchTarget(link: info))
-        }
     }
 
     private func unpair(_ info: LinkDeviceInfo) {
