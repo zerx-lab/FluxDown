@@ -292,7 +292,7 @@ mod tests {
             assert!(parsed.entries.is_empty(), "{input}");
             assert_eq!(parsed.ranges.preview, None);
         }
-        let literals = "https://a/plain\n".repeat(1001);
+        let literals: String = (0..1001).map(|i| format!("https://a/plain-{i}\n")).collect();
         assert_eq!(manual(&literals).entries.len(), 1001);
     }
 
