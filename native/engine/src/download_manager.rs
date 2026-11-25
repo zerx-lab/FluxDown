@@ -2635,7 +2635,7 @@ const FILE_EXISTS_PROMPT_TIMEOUT: std::time::Duration = std::time::Duration::fro
 struct HttpFamilyRun {
     params: DownloadParams,
     use_ftp: bool,
-    use_hls: bool,
+    hls_discard: Option<CancellationToken>,
     use_dash: bool,
     use_ed2k: bool,
     html_only: bool,
@@ -2794,7 +2794,7 @@ async fn run_http_family_task(run: HttpFamilyRun) {
     let HttpFamilyRun {
         params,
         use_ftp,
-        use_hls,
+        hls_discard,
         use_dash,
         use_ed2k,
         html_only,
@@ -2929,9 +2929,9 @@ async fn run_http_family_task(run: HttpFamilyRun) {
                 std::panic::AssertUnwindSafe(ftp_downloader::run_ftp_download(params))
                     .catch_unwind()
                     .await
-            } else if use_hls && !hls_http_fallback {
+            } else if let Some(discard) = &hls_discard {
                 let hls_result =
-                    std::panic::AssertUnwindSafe(hls_downloader::run_hls_download(params))
+                    std::panic::AssertUnwindSafe(hls_downloader::run_hls_download(params, discard))
                         .catch_unwind()
                         .await;
                 match hls_result {
@@ -3929,6 +3929,8 @@ impl PendingQueue {
 struct ActiveTaskEntry {
     /// Cancellation token — call `.cancel()` to request graceful shutdown.
     token: CancellationToken,
+    /// Only deletion cancels this worker's HLS finalization; pause still saves its recording.
+    hls_discard: Option<CancellationToken>,
     /// Monotonic spawn generation — used to ignore stale `TaskDone` signals.
     generation: u64,
     /// JoinHandle for the spawned tokio task.  `None` until the task is
@@ -3950,12 +3952,21 @@ struct ActiveTaskEntry {
 struct PendingPause {
     generation: u64,
     handle: Option<JoinHandle<()>>,
+    hls_discard: Option<CancellationToken>,
+    stop: PendingStop,
     notify: bool,
     resume_requested: bool,
     /// 暂停前的队列归属与是否 BT：挂起恢复（`resume_requested`）的 HTTP / FTP 任务
     /// 继续占用全局与队列并发槽位，见 [`DownloadManager::pending_resume_slots`]。
     queue_id: String,
     is_bt: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PendingStop {
+    Paused,
+    Cancelled,
+    PauseAfterCancel,
 }
 
 /// off-actor resolve 的种类（start 或 resume 侧再入）。
@@ -6188,6 +6199,7 @@ impl DownloadManager {
         self.active_tasks.insert(
             task_id.clone(),
             ActiveTaskEntry {
+                hls_discard: None,
                 token: resolve_token.clone(),
                 generation: spawn_gen,
                 handle: None,
@@ -6413,6 +6425,7 @@ impl DownloadManager {
         self.active_tasks.insert(
             task_id.to_string(),
             ActiveTaskEntry {
+                hls_discard: None,
                 token: resolve_token.clone(),
                 generation: spawn_gen,
                 handle: None,
@@ -8841,13 +8854,6 @@ impl DownloadManager {
             .get(task_id)
             .map(|e| e.generation == generation)
             .unwrap_or(false);
-        let pending_generation_matched = self
-            .pending_pauses
-            .get(task_id)
-            .is_some_and(|pending| pending.generation == generation);
-        if generation_matched || pending_generation_matched {
-            hls_downloader::clear_discard(task_id);
-        }
 
         if generation_matched {
             self.active_tasks.remove(task_id);
@@ -12260,6 +12266,7 @@ impl DownloadManager {
         self.active_tasks.insert(
             task_id.clone(),
             ActiveTaskEntry {
+                hls_discard: None,
                 token: cancel_token.clone(),
                 generation: spawn_gen,
                 handle: None,
@@ -12280,6 +12287,7 @@ impl DownloadManager {
         let panic_db = self.db.clone();
         let task_span = tracing::error_span!("download_task", task_id = %task_id);
 
+        let mut hls_discard = None;
         let handle = if use_bt {
             // BT 不走 HTTP 出口决策：解析留下的出口一并作废。
             #[cfg(feature = "plugins")]
@@ -12652,11 +12660,12 @@ impl DownloadManager {
                         .or_insert_with(|| Arc::new(Mutex::new(ChecksumPartial::Unclaimed))),
                 ))
             };
+            hls_discard = (use_hls && !use_ftp).then(CancellationToken::new);
             tokio::spawn(
                 run_http_family_task(HttpFamilyRun {
                     params,
                     use_ftp,
-                    use_hls,
+                    hls_discard: hls_discard.clone(),
                     use_dash,
                     use_ed2k,
                     html_only: false,
@@ -12679,6 +12688,7 @@ impl DownloadManager {
         };
         if let Some(entry) = self.active_tasks.get_mut(&task_id) {
             entry.handle = Some(handle);
+            entry.hls_discard = hls_discard;
         }
     }
 
@@ -12759,7 +12769,7 @@ impl DownloadManager {
             return false;
         }
 
-        let task = match self.db.load_task_by_id(task_id).await {
+        let mut task = match self.db.load_task_by_id(task_id).await {
             Ok(Some(task)) => task,
             Ok(None) => return false,
             Err(error) => {
@@ -12771,6 +12781,17 @@ impl DownloadManager {
                 return false;
             }
         };
+        if task.status == 4
+            && pending.stop == PendingStop::PauseAfterCancel
+            && !pending.resume_requested
+        {
+            if let Err(error) = self.db.update_task_status(task_id, 2, "").await {
+                crate::logger::report_error("download-manager", "pause stopped recording", &error);
+                return false;
+            }
+            task.status = 2;
+            task.error_message.clear();
+        }
         if task.status == 2 {
             if self
                 .progress_tx
@@ -12798,9 +12819,11 @@ impl DownloadManager {
             }
         }
 
-        // 暂停写库失败可能仍显示 downloading；writer 已由匹配 TaskDone 确认退出，
-        // 此时才允许此前挂起的显式恢复。完成/错误态仍不自动重启。
-        pending.resume_requested && matches!(task.status, 0..=2)
+        // An explicit retry during cancellation waits for the writer, but may
+        // still retry a failed recording. A finalized recording remains complete.
+        pending.resume_requested
+            && (matches!(task.status, 0..=2)
+                || (task.status == 4 && pending.stop != PendingStop::Paused))
     }
 
     /// 用户显式暂停**单个**任务。会发 `task.paused` webhook。
@@ -12875,6 +12898,9 @@ impl DownloadManager {
             // 最后一次用户意图是暂停：撤销 flush 窗口内挂起的恢复请求。
             let released_slot = std::mem::replace(&mut pending.resume_requested, false);
             pending.notify |= notify;
+            if pending.stop == PendingStop::Cancelled {
+                pending.stop = PendingStop::PauseAfterCancel;
+            }
             // 挂起的恢复一直占着槽位（`pending_resume_slots`）；撤销后即让给排队任务，
             // 批删失败回滚时则由批量流程统一 drain。
             if released_slot && drain_freed_slot {
@@ -12929,8 +12955,10 @@ impl DownloadManager {
                 self.pending_pauses.insert(
                     task_id.to_string(),
                     PendingPause {
+                        stop: PendingStop::Paused,
                         generation,
                         handle: Some(handle),
+                        hls_discard: entry.hls_discard,
                         notify,
                         resume_requested: reconnect,
                         queue_id: entry.queue_id.clone(),
@@ -13955,6 +13983,7 @@ impl DownloadManager {
         self.active_tasks.insert(
             task_id.to_string(),
             ActiveTaskEntry {
+                hls_discard: None,
                 token: cancel_token.clone(),
                 generation: spawn_gen,
                 handle: None,
@@ -13976,6 +14005,7 @@ impl DownloadManager {
         let panic_db = self.db.clone();
         let task_span = tracing::error_span!("download_task", task_id = %tid);
 
+        let mut hls_discard = None;
         let handle = if use_bt {
             // BT 不走 HTTP 出口决策：解析留下的出口一并作废。
             #[cfg(feature = "plugins")]
@@ -14551,11 +14581,12 @@ impl DownloadManager {
                 }
                 Some(Arc::clone(claim))
             };
+            hls_discard = (use_hls && !use_ftp && !hls_http_fallback).then(CancellationToken::new);
             tokio::spawn(
                 run_http_family_task(HttpFamilyRun {
                     params,
                     use_ftp,
-                    use_hls,
+                    hls_discard: hls_discard.clone(),
                     use_dash,
                     use_ed2k,
                     html_only,
@@ -14578,6 +14609,7 @@ impl DownloadManager {
         };
         if let Some(entry) = self.active_tasks.get_mut(task_id) {
             entry.handle = Some(handle);
+            entry.hls_discard = hls_discard;
         }
     }
 
@@ -14626,10 +14658,29 @@ impl DownloadManager {
             {
                 crate::logger::report_error("download-manager", "pause BT task", &error);
             }
-            // Clean up the JoinHandle so it doesn't linger after cancellation.
-            if let Some(handle) = entry.handle {
-                drop(handle);
+            // A cancelled live HLS worker can still be saving its recording. Keep it
+            // reachable so a subsequent delete can discard it and wait for it to stop.
+            if let (Some(handle), Some(discard)) = (entry.handle, entry.hls_discard) {
+                self.pending_pauses.insert(
+                    task_id.to_owned(),
+                    PendingPause {
+                        stop: PendingStop::Cancelled,
+                        generation: entry.generation,
+                        handle: Some(handle),
+                        hls_discard: Some(discard),
+                        notify: false,
+                        resume_requested: false,
+                        queue_id: entry.queue_id,
+                        is_bt: entry.is_bt,
+                    },
+                );
             }
+        } else if let Some(pending) = self.pending_pauses.get_mut(task_id)
+            && pending.hls_discard.is_some()
+        {
+            pending.stop = PendingStop::Cancelled;
+            pending.notify = false;
+            pending.resume_requested = false;
         }
 
         if let Err(error) = self
@@ -14771,13 +14822,17 @@ impl DownloadManager {
 
         // Cancel the active download (if any) and wait for the spawned task
         // to exit, ensuring all network sockets and file handles are closed.
-        // 先声明"删除":HLS 直播在任务令牌取消(= 停止并保存)时会把已录内容定稿,
-        // 删除不能走这条路径。登记在等待下载器退出之后释放。
-        hls_downloader::request_discard(task_id);
+        // Mark this HLS worker for discard before normal cancellation can trigger finalization.
         let handle = if let Some(entry) = self.active_tasks.get_mut(task_id) {
+            if let Some(discard) = &entry.hls_discard {
+                discard.cancel();
+            }
             entry.token.cancel();
             &mut entry.handle
         } else if let Some(pending) = self.pending_pauses.get_mut(task_id) {
+            if let Some(discard) = &pending.hls_discard {
+                discard.cancel();
+            }
             pending.resume_requested = false;
             &mut pending.handle
         } else {
@@ -14798,7 +14853,6 @@ impl DownloadManager {
                 "the download has not stopped; retry deletion after it stops".to_owned(),
             )));
         }
-        hls_downloader::clear_discard(task_id);
         self.active_tasks.remove(task_id);
         if let Some(pending) = self.pending_pauses.get_mut(task_id) {
             pending.handle = None;
@@ -15180,9 +15234,6 @@ impl DownloadManager {
             Ok(plans) => plans,
             Err(error) => {
                 for task_id in task_ids {
-                    hls_downloader::clear_discard(task_id);
-                }
-                for task_id in task_ids {
                     if !self.active_tasks.contains_key(task_id) {
                         continue;
                     }
@@ -15225,7 +15276,6 @@ impl DownloadManager {
         for task_id in task_ids {
             // A task may have completed while its worker wound down.
             if mode == BatchDeleteMode::Unfinished && !plans.contains_key(task_id) {
-                hls_downloader::clear_discard(task_id);
                 skipped += 1;
                 continue;
             }
@@ -15247,9 +15297,7 @@ impl DownloadManager {
         let mut deleted = Vec::with_capacity(workers.len());
         let mut files_in_use = false;
         for (task_id, worker) in workers {
-            let joined = worker.await;
-            hls_downloader::clear_discard(task_id);
-            match joined {
+            match worker.await {
                 Ok(Ok(())) => {
                     deleted.push(task_id.clone());
                 }
@@ -15356,15 +15404,20 @@ impl DownloadManager {
     async fn stop_batch_downloads<'a>(&mut self, task_ids: &'a [String]) -> HashSet<&'a str> {
         let mut handles = Vec::new();
         for task_id in task_ids {
-            hls_downloader::request_discard(task_id);
             #[cfg(feature = "bt")]
             self.integrity_checks.cancel(task_id);
             self.file_hash_jobs.cancel(task_id);
             let handle = if let Some(entry) = self.active_tasks.get_mut(task_id) {
+                if let Some(discard) = &entry.hls_discard {
+                    discard.cancel();
+                }
                 entry.token.cancel();
                 entry.handle.take()
             } else {
                 self.pending_pauses.get_mut(task_id).and_then(|pending| {
+                    if let Some(discard) = &pending.hls_discard {
+                        discard.cancel();
+                    }
                     pending.resume_requested = false;
                     pending.handle.take()
                 })
@@ -19834,6 +19887,7 @@ mod tests {
         mgr.active_tasks.insert(
             "t-auto-failover".to_string(),
             ActiveTaskEntry {
+                hls_discard: None,
                 token: CancellationToken::new(),
                 generation: 7,
                 handle: None,
@@ -19982,6 +20036,7 @@ mod tests {
             mgr.active_tasks.insert(
                 id.to_string(),
                 ActiveTaskEntry {
+                    hls_discard: None,
                     token: CancellationToken::new(),
                     generation,
                     handle: None,
@@ -20329,6 +20384,7 @@ mod tests {
             mgr.active_tasks.insert(
                 id.to_string(),
                 ActiveTaskEntry {
+                    hls_discard: None,
                     token: CancellationToken::new(),
                     generation,
                     handle: None,
@@ -20622,6 +20678,7 @@ mod tests {
         mgr.active_tasks.insert(
             ID.into(),
             ActiveTaskEntry {
+                hls_discard: None,
                 token: CancellationToken::new(),
                 generation: 1,
                 handle: None,
@@ -21395,6 +21452,7 @@ mod tests {
         mgr.active_tasks.insert(
             "live".to_string(),
             ActiveTaskEntry {
+                hls_discard: None,
                 token: CancellationToken::new(),
                 generation: 1,
                 handle: None,
@@ -23421,6 +23479,7 @@ mod tests {
         mgr.active_tasks.insert(
             "pause-flush".to_string(),
             ActiveTaskEntry {
+                hls_discard: None,
                 token,
                 generation: 41,
                 handle: Some(handle),
@@ -23500,6 +23559,7 @@ mod tests {
         mgr.active_tasks.insert(
             "pause-race".to_string(),
             ActiveTaskEntry {
+                hls_discard: None,
                 token: old_token,
                 generation: 51,
                 handle: Some(old_handle),
@@ -23531,6 +23591,7 @@ mod tests {
         mgr.active_tasks.insert(
             "pause-race".to_string(),
             ActiveTaskEntry {
+                hls_discard: None,
                 token: new_token,
                 generation: 52,
                 handle: Some(new_handle),
@@ -24005,6 +24066,7 @@ mod tests {
             mgr.active_tasks.insert(
                 task_id.to_string(),
                 ActiveTaskEntry {
+                    hls_discard: None,
                     token: CancellationToken::new(),
                     generation: 3,
                     handle: None,
@@ -24045,6 +24107,7 @@ mod tests {
         mgr.active_tasks.insert(
             task_id.to_string(),
             ActiveTaskEntry {
+                hls_discard: None,
                 token: CancellationToken::new(),
                 generation: 1,
                 handle: None,
@@ -24761,6 +24824,7 @@ mod tests {
         mgr.active_tasks.insert(
             id.to_string(),
             ActiveTaskEntry {
+                hls_discard: None,
                 token,
                 generation,
                 handle: Some(handle),
@@ -25677,6 +25741,8 @@ mod tests {
         mgr.pending_pauses.insert(
             "boosted".into(),
             PendingPause {
+                stop: PendingStop::Paused,
+                hls_discard: None,
                 generation: 1,
                 handle: None,
                 notify: false,
@@ -25736,6 +25802,7 @@ mod tests {
         mgr.active_tasks.insert(
             "occupier".to_string(),
             ActiveTaskEntry {
+                hls_discard: None,
                 token: CancellationToken::new(),
                 generation: 0,
                 handle: None,
@@ -26034,6 +26101,7 @@ mod tests {
         mgr.active_tasks.insert(
             "occupier".to_string(),
             ActiveTaskEntry {
+                hls_discard: None,
                 token: CancellationToken::new(),
                 generation: 0,
                 handle: None,
@@ -26105,6 +26173,7 @@ mod tests {
         mgr.active_tasks.insert(
             "occupier".to_string(),
             ActiveTaskEntry {
+                hls_discard: None,
                 token: CancellationToken::new(),
                 generation: 0,
                 handle: None,
@@ -26171,6 +26240,7 @@ mod tests {
         mgr.active_tasks.insert(
             "occupier".to_string(),
             ActiveTaskEntry {
+                hls_discard: None,
                 token: CancellationToken::new(),
                 generation: 0,
                 handle: None,
@@ -26391,6 +26461,7 @@ mod tests {
         mgr.active_tasks.insert(
             "r1".to_string(),
             ActiveTaskEntry {
+                hls_discard: None,
                 token: CancellationToken::new(),
                 generation: 0,
                 handle: None,
@@ -26559,6 +26630,7 @@ mod tests {
         mgr.active_tasks.insert(
             "c1".to_string(),
             ActiveTaskEntry {
+                hls_discard: None,
                 token: CancellationToken::new(),
                 generation: 0,
                 handle: None,

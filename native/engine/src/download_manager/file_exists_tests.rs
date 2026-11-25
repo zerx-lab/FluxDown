@@ -699,6 +699,7 @@ async fn checksum_worker_timeout_keeps_candidate_and_foreign_partial() {
         fx.mgr.active_tasks.insert(
             id.clone(),
             ActiveTaskEntry {
+                hls_discard: None,
                 token: CancellationToken::new(),
                 generation: 1,
                 handle: Some(tokio::spawn(async move {
@@ -771,6 +772,7 @@ async fn delete_timeout_keeps_owned_partial_and_record_until_worker_exits() {
         fx.mgr.active_tasks.insert(
             id.clone(),
             ActiveTaskEntry {
+                hls_discard: None,
                 token: CancellationToken::new(),
                 generation: 1,
                 handle: Some(tokio::spawn(async move {
@@ -830,6 +832,205 @@ async fn delete_timeout_keeps_owned_partial_and_record_until_worker_exits() {
     }
 
     tokio::join!(check(false), check(true));
+}
+
+#[tokio::test]
+async fn hls_retry_finalizes_after_delete_timeout_and_stale_done() {
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+
+    async fn check(batch: bool, cancel_first: bool) {
+        const SEGMENT: &[u8] = b"recorded segment";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                let mut socket = BufReader::new(socket);
+                let mut line = String::new();
+                socket.read_line(&mut line).await.unwrap();
+                let body: &[u8] = match line.split_whitespace().nth(1) {
+                    Some("/live.m3u8") => {
+                        b"#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:1,\nsegment.ts\n"
+                    }
+                    Some("/segment.ts") => SEGMENT,
+                    path => panic!("unexpected HLS request: {path:?}"),
+                };
+                loop {
+                    line.clear();
+                    if socket.read_line(&mut line).await.unwrap() == 0 || line == "\r\n" {
+                        break;
+                    }
+                }
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                socket.get_mut().write_all(header.as_bytes()).await.unwrap();
+                socket.get_mut().write_all(body).await.unwrap();
+            }
+        });
+
+        let (selector, _answers) = FakeSelector::new(false);
+        let mut fx = fixture("hls_retry", 1, selector, FileExistsBehavior::Rename).await;
+        fx.base_url = base_url;
+        let mut progress = fx.mgr.take_progress_rx().unwrap();
+        let mut spec = fx.spec("live.ts");
+        spec.url = format!("{}/live.m3u8", fx.base_url);
+        spec.start_paused = true;
+        let id = fx.mgr.create_task(spec).await.unwrap();
+
+        // The first worker stalls before live recording, then fails without ever reading
+        // its discard token. Keep its completion queued until after the retry is spawned.
+        let (release, stopped) = tokio::sync::oneshot::channel();
+        let done_tx = fx.mgr.done_tx.clone();
+        let db = fx.db.clone();
+        let old_id = id.clone();
+        fx.mgr.generation += 1;
+        let generation = fx.mgr.generation;
+        let discard = CancellationToken::new();
+        fx.mgr.active_tasks.insert(
+            id.clone(),
+            ActiveTaskEntry {
+                token: CancellationToken::new(),
+                hls_discard: Some(discard.clone()),
+                generation,
+                handle: Some(tokio::spawn(async move {
+                    stopped.await.unwrap();
+                    db.update_task_status(&old_id, 4, "playlist failure")
+                        .await
+                        .unwrap();
+                    done_tx
+                        .send(TaskDone::finished(old_id, generation))
+                        .await
+                        .unwrap();
+                })),
+                is_bt: false,
+                queue_id: String::new(),
+            },
+        );
+        if cancel_first {
+            fx.mgr.cancel_task(&id).await;
+            fx.mgr.resume_task(&id).await;
+            assert_eq!(fx.status(&id).await, 4, "retry waits for the old writer");
+        } else if batch {
+            let result = fx
+                .mgr
+                .delete_tasks_batch(std::slice::from_ref(&id), true)
+                .await
+                .unwrap();
+            assert_eq!((result.deleted, result.failed), (0, 1));
+        } else {
+            assert!(matches!(
+                fx.mgr.delete_task(&id, true).await,
+                Err(DeleteTaskError::Cleanup(_))
+            ));
+        }
+        assert_eq!(discard.is_cancelled(), !cancel_first);
+        release.send(()).unwrap();
+        let old_done = tokio::time::timeout(Duration::from_secs(5), fx.done_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        if !cancel_first {
+            if batch {
+                fx.mgr.batch_resume(std::slice::from_ref(&id)).await;
+            } else {
+                fx.mgr.resume_task(&id).await;
+            }
+        }
+        fx.mgr.on_task_done(&old_done).await;
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some(update) = progress.recv().await {
+                if update.task_id == id && update.status == 1 && update.downloaded_bytes > 0 {
+                    return;
+                }
+            }
+            panic!("progress closed before the retry recorded a segment");
+        })
+        .await
+        .expect("the retry records the live segment");
+        fx.mgr.pause_task(&id).await;
+        fx.pump_until_status(&id, 3).await;
+        assert_eq!(
+            std::fs::read(fx.dir.join(fx.name(&id).await)).unwrap(),
+            SEGMENT
+        );
+
+        fx.mgr.shutdown().await;
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+        std::fs::remove_dir_all(&fx.dir).unwrap();
+    }
+
+    tokio::join!(check(false, false), check(true, false), check(false, true));
+}
+
+#[tokio::test]
+async fn deleting_cancelled_hls_waits_for_recording_to_discard() {
+    check_cancelled_hls_stop(true).await;
+}
+
+#[tokio::test]
+async fn pause_after_hls_cancel_is_applied_when_the_worker_stops() {
+    check_cancelled_hls_stop(false).await;
+}
+
+async fn check_cancelled_hls_stop(delete: bool) {
+    let (selector, _answers) = FakeSelector::new(false);
+    let mut fx = fixture("hls_cancel_delete", 1, selector, FileExistsBehavior::Rename).await;
+    let mut spec = fx.spec("live.m3u8");
+    spec.start_paused = true;
+    let id = fx.mgr.create_task(spec).await.unwrap();
+    let stop = CancellationToken::new();
+    let discard = CancellationToken::new();
+    let worker_stop = stop.clone();
+    let worker_discard = discard.clone();
+    let (release, released) = tokio::sync::oneshot::channel();
+    let (exited, mut exit) = tokio::sync::oneshot::channel();
+    fx.mgr.active_tasks.insert(
+        id.clone(),
+        ActiveTaskEntry {
+            token: stop,
+            hls_discard: Some(discard.clone()),
+            generation: 1,
+            handle: Some(tokio::spawn(async move {
+                worker_stop.cancelled().await;
+                tokio::select! {
+                    () = worker_discard.cancelled() => {}
+                    released = released => released.unwrap(),
+                }
+                exited.send(()).unwrap();
+            })),
+            is_bt: false,
+            queue_id: String::new(),
+        },
+    );
+    fx.mgr.cancel_task(&id).await;
+    assert!(
+        !discard.is_cancelled(),
+        "cancel alone still saves the recording"
+    );
+    if delete {
+        fx.mgr.delete_task(&id, true).await.unwrap();
+        assert!(discard.is_cancelled(), "delete must discard the recording");
+        assert_eq!(exit.try_recv(), Ok(()), "delete must await the writer");
+        assert!(fx.db.load_task_by_id(&id).await.unwrap().is_none());
+    } else {
+        fx.mgr.pause_task(&id).await;
+        assert_eq!(fx.status(&id).await, 4, "pause must await the writer");
+        release.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), exit)
+            .await
+            .unwrap()
+            .unwrap();
+        fx.mgr
+            .on_task_done(&TaskDone::finished(id.clone(), 1))
+            .await;
+        assert_eq!(fx.status(&id).await, 2, "pause must not be lost");
+        assert!(!discard.is_cancelled());
+    }
+    fx.mgr.shutdown().await;
+    std::fs::remove_dir_all(&fx.dir).unwrap();
 }
 
 #[cfg(any(unix, windows))]
@@ -906,6 +1107,7 @@ async fn check_delete_retry(batch: bool, worker_exits: bool) {
     fx.mgr.active_tasks.insert(
         id.clone(),
         ActiveTaskEntry {
+            hls_discard: None,
             token: token.clone(),
             generation: 1,
             handle: Some(handle),
@@ -1188,6 +1390,7 @@ async fn batch_delete_uses_the_name_claimed_when_the_worker_exits() {
     fx.mgr.active_tasks.insert(
         id.clone(),
         ActiveTaskEntry {
+            hls_discard: None,
             token,
             generation: 1,
             handle: Some(handle),

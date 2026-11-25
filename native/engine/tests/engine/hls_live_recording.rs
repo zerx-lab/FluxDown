@@ -225,13 +225,10 @@ async fn hls_live_recording_runs_until_endlist() {
         }
     });
 
-    let fallback = fluxdown_engine::hls_downloader::run_hls_download(make_params(
-        &url,
-        &work_dir,
-        &db,
-        tx,
-        CancellationToken::new(),
-    ))
+    let fallback = fluxdown_engine::hls_downloader::run_hls_download(
+        make_params(&url, &work_dir, &db, tx, CancellationToken::new()),
+        &CancellationToken::new(),
+    )
     .await;
     collector.await.unwrap();
 
@@ -277,9 +274,10 @@ async fn hls_live_user_stop_finalizes_recorded_content() {
         }
     });
 
-    let fallback = fluxdown_engine::hls_downloader::run_hls_download(make_params(
-        &url, &work_dir, &db, tx, cancel,
-    ))
+    let fallback = fluxdown_engine::hls_downloader::run_hls_download(
+        make_params(&url, &work_dir, &db, tx, cancel),
+        &CancellationToken::new(),
+    )
     .await;
     collector.await.unwrap();
 

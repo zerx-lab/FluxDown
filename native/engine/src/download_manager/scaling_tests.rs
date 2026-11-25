@@ -150,6 +150,7 @@ fn occupy(manager: &mut DownloadManager, id: &str, queue_id: &str) {
     manager.active_tasks.insert(
         id.to_string(),
         ActiveTaskEntry {
+            hls_discard: None,
             token: CancellationToken::new(),
             generation: 0,
             handle: None,

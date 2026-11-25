@@ -55,6 +55,7 @@ fn occupy_five_slots(manager: &mut DownloadManager) {
         manager.active_tasks.insert(
             format!("occupied-{slot}"),
             ActiveTaskEntry {
+                hls_discard: None,
                 token: CancellationToken::new(),
                 generation: 0,
                 handle: None,
