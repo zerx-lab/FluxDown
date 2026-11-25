@@ -135,6 +135,7 @@ final class DispatchModel {
         case .useDefault: dir = nil
         case let .explicit(path): dir = path
         }
+        container.supersedeHostRestore()
         sending = true
         failure = nil
         done = 0

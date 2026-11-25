@@ -911,6 +911,7 @@ private struct NewDownloadContent: View {
         case let .explicit(dir): saveDir = dir
         }
         let items = form.dispatchItems()
+        container.supersedeHostRestore()
         form.submitting = true
         linksFocused = false
         dispatchFailure = nil

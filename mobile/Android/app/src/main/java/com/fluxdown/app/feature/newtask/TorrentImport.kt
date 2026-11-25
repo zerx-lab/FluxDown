@@ -41,6 +41,7 @@ object TorrentImport {
             overlays.toast(context.str(R.string.localServiceDisconnected), FluxToastKind.Error)
             return 0
         }
+        container.supersedeHostRestore()
         val dir = saveDir.trim()
         var created = 0
         for (uri in uris) {

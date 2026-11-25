@@ -319,6 +319,7 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
             is DeviceRules.SaveDirCheck.Explicit -> check.dir
         }
         val items = form.dispatchItems()
+        container.supersedeHostRestore()
         val session = container.session
         form.submitting = true
         form.dispatchFailure = null
