@@ -8,6 +8,8 @@
 import { Outlet, useLocation } from '@tanstack/react-router'
 import { useEffect } from 'react'
 import { useT } from '../i18n'
+import { NewDownloadDialog } from '../pages/downloads/dialogs/NewDownloadDialog'
+import { useDialogsState } from '../pages/downloads/dialogs/store'
 import { isPluginEntryActive } from '../pages/plugins/contributions'
 import { usePluginActivityEntries, usePluginShellBridge } from '../pages/plugins/usePluginContributions'
 import { useIsMobile } from '../ui'
@@ -56,6 +58,12 @@ function useExitChromeEditing(mobile: boolean): void {
   }, [editing, mobile])
 }
 
+/** Keep the draft and in-flight submissions mounted across shell route changes. */
+function NewDownloadHost() {
+  const { newDownload } = useDialogsState()
+  return newDownload ? <NewDownloadDialog key={newDownload.session} session={newDownload} /> : null
+}
+
 export function AppShell() {
   const defaultTitle = useDefaultTitle()
   const mobile = useIsMobile()
@@ -89,6 +97,7 @@ export function AppShell() {
             {mobile ? null : <ChromeStatusBar />}
           </div>
         </div>
+        <NewDownloadHost />
         {mobile ? <BottomTabBar /> : null}
         <AccountGuards />
         <PluginNotices />

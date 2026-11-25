@@ -6,7 +6,6 @@ import { useAgent, useDaemon } from '../../../lib/rpc'
 import type { PendingCaptureDto, SelectionRequestDto } from '../../../lib/rpc'
 import { FileConflictDialog } from './FileConflictDialog'
 import { GroupDetailDialog } from './GroupDetailDialog'
-import { NewDownloadDialog } from './NewDownloadDialog'
 import { QueueManagerDialog } from './QueueManagerDialog'
 import { SeedLocalDialog } from './SeedLocalDialog'
 import { SelectionHost } from './SelectionDialogs'
@@ -30,7 +29,6 @@ export function DownloadDialogsHost() {
 
   return (
     <>
-      {state.newDownload ? <NewDownloadDialog key={state.newDownload.session} session={state.newDownload} /> : null}
       {state.queueManager ? <QueueManagerDialog key={state.queueManager.nonce} initialQueueId={state.queueManager.queueId} /> : null}
       {state.groupDetail ? <GroupDetailDialog key={state.groupDetail} groupId={state.groupDetail} /> : null}
       {state.rename ? <RenameDialog key={state.rename} taskId={state.rename} /> : null}
