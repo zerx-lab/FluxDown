@@ -105,11 +105,11 @@ final class AppContainer {
     }
 
     /// 切换主机。打开失败时保持原主机不变并返回失败。
-    func switchHost(_ ref: HostRef, remember: Bool = true) async -> Result<Void, HostError> {
+    func switchHost(_ ref: HostRef, remember: Bool = true, forceReconnect: Bool = false) async -> Result<Void, HostError> {
         supersedeHostRestore()
         return await withCheckedContinuation { continuation in
             serialized { container in
-                if ref.id == container.host.id, !(container.session is UnavailableSession) {
+                if !forceReconnect, ref.id == container.host.id, !(container.session is UnavailableSession) {
                     if remember { container.hostRepo.rememberRemote(ref.isLocal ? nil : ref.id) }
                     continuation.resume(returning: .success(()))
                     return

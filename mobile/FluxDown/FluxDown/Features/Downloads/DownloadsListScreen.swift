@@ -475,7 +475,7 @@ struct DownloadsListScreen: View {
         let name = ref.localizedName
         toasts.show(text: L("mobileHostSwitching", ["name": name]), tone: .info, systemImage: FluxSymbol.remoteHost)
         Task {
-            switch await container.switchHost(ref, remember: false) {
+            switch await container.switchHost(ref, remember: false, forceReconnect: true) {
             case .success:
                 toasts.show(text: L("mobileHostSwitched", ["name": name]), tone: .success, systemImage: FluxSymbol.done)
             case let .failure(error):
