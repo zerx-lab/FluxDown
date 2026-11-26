@@ -154,10 +154,24 @@ class DocsTest(unittest.TestCase):
         self.assertIn("title: 指南\norder: 2\nsourceHash:", final)
         self.assertTrue(final.endswith("## 安装\n\n保留我。\n\n译See [译setup](#安装).\n"))
 
-    def test_align_blocks_skips_extra_zh_block_by_signature(self):
-        en = ["## Install", "Run `a`.", "```sh\nx\n```", "See [b](/docs/en/b/#top)."]
-        zh = ["## 安装", "运行 `a`。", "补充说明。", "```sh\nx\n```", "参见 [b](/docs/zh/b/#顶部)。"]
-        self.assertEqual(align_blocks(en, zh), {0: 0, 1: 1, 2: 3, 3: 4})
+    def test_align_blocks_anchors_on_shared_tokens_and_skips_ambiguous_gaps(self):
+        en = [
+            "## Install FluxDown",
+            "Run `fluxdown add` with --local.",
+            "Pick a folder.",
+            "```sh\nfluxdown add URL --local\n```",
+            "See [setup](/docs/en/setup/#top).",
+        ]
+        zh = [
+            "## 安装 FluxDown",
+            "运行 `fluxdown add`，加上 --local。",
+            "选择文件夹。",
+            "补充说明。",
+            "```sh\nfluxdown add URL --local\n```",
+            "参见[安装](/docs/zh/setup/#顶部)。",
+        ]
+        # en[2] 落在两边块数不同的空档里（zh 多出一段），对应关系不确定 → 不复用。
+        self.assertEqual(align_blocks(en, zh), {0: 0, 1: 1, 3: 4, 4: 5})
 
 
 if __name__ == "__main__":
