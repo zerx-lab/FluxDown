@@ -75,6 +75,13 @@ final class AppContainer {
         restoreSuperseded = true
     }
 
+    func confirmCurrentHost(_ ref: HostRef) -> Bool {
+        guard ref.id == host.id, !(session is UnavailableSession) else { return false }
+        supersedeHostRestore()
+        if !ref.isLocal { hostRepo.rememberRemote(ref.id) }
+        return true
+    }
+
     /// 首次显示时启动容器级恢复；视图消失不取消远端连接。
     func startHostRestore() {
         guard !restoreStarted, !restoreSuperseded else { return }

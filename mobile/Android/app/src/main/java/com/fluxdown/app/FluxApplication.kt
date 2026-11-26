@@ -177,6 +177,10 @@ class AppContainer(context: Context) {
         return true
     }
 
+    internal suspend fun rememberConfirmedRemote(ref: HostRef.Remote) = appScope.async {
+        switchLock.withLock { persistRemoteChoice(ref.id) }
+    }.await()
+
     /** 界面重建只取消等待；恢复属于进程，并且失败只提示一次。 */
     internal suspend fun restoreLastHost(): String? {
         val name = startupRestore.await() ?: return null
@@ -240,15 +244,19 @@ class AppContainer(context: Context) {
                 openOrFail(ref).map { adopt(ref, it) }
             }
             if (remember && (changedHost || ref is HostRef.Remote) && result.isSuccess) {
-                try {
-                    hostRepo.rememberRemote((ref as? HostRef.Remote)?.id)
-                } catch (e: java.io.IOException) {
-                    Log.w(TAG, "remember last host failed", e)
-                }
+                persistRemoteChoice((ref as? HostRef.Remote)?.id)
             }
             result
         }
     }.await()
+
+    private suspend fun persistRemoteChoice(id: String?) {
+        try {
+            hostRepo.rememberRemote(id)
+        } catch (e: java.io.IOException) {
+            Log.w(TAG, "remember last host failed", e)
+        }
+    }
 
     /**
      * 保存远端主机：先真实连接并拿到首个快照（鉴权 / 协议 / 可达性），通过后加密保存凭据。

@@ -75,7 +75,10 @@ internal class HostActions(
         }
         if (container.keepCurrentHost(ref)) {
             if (ref is HostRef.Remote) {
-                scope.launch { onDone(container.switchHost(ref).isSuccess) }
+                scope.launch {
+                    container.rememberConfirmedRemote(ref)
+                    onDone(true)
+                }
             } else {
                 onDone(true)
             }
