@@ -1,9 +1,9 @@
 {
   "format": "fluxdown-sniff-pack",
   "packId": "official",
-  "sequence": 1794788723,
+  "sequence": 1795674313,
   "engine": 1,
-  "issuedAt": "2026-11-16T00:25:23.178Z",
+  "issuedAt": "2026-11-26T06:25:13.618Z",
   "rules": [
     {
       "id": "official.bilibili.track",
@@ -176,6 +176,59 @@
         "selector": ".html5-video-player.ytp-player-minimized, .html5-video-player.ytp-miniplayer-active, ytd-miniplayer[active]",
         "float": "inset",
         "top": 52
+      }
+    },
+    {
+      "id": "official.youtube.ignore-googlevideo",
+      "version": 1,
+      "tier": "official",
+      "title": "YouTube：googlevideo 播放分片（UMP 流）不是可下载文件",
+      "stage": "response",
+      "match": {
+        "host": [
+          "googlevideo.com"
+        ],
+        "pageHost": [
+          "youtube.com",
+          "youtube-nocookie.com"
+        ]
+      },
+      "action": {
+        "kind": "ignore"
+      }
+    },
+    {
+      "id": "official.youtube.watch-page",
+      "version": 1,
+      "tier": "official",
+      "title": "YouTube：播放页（含手机版 m.youtube.com）交给桌面端 / NAS 的解析插件",
+      "stage": "dom",
+      "match": {
+        "pageHost": [
+          "youtube.com"
+        ],
+        "url": [
+          "*://www.youtube.com/watch?*",
+          "*://youtube.com/watch?*",
+          "*://m.youtube.com/watch?*",
+          "*://music.youtube.com/watch?*",
+          "*://www.youtube.com/shorts/*",
+          "*://youtube.com/shorts/*",
+          "*://m.youtube.com/shorts/*",
+          "*://www.youtube.com/live/*",
+          "*://youtube.com/live/*",
+          "*://m.youtube.com/live/*"
+        ]
+      },
+      "action": {
+        "kind": "dom",
+        "selector": "#movie_player video, #shorts-player video, .html5-video-player video",
+        "attr": "src",
+        "emit": {
+          "mode": "resource",
+          "url": "${page}",
+          "type": "video"
+        }
       }
     }
   ]
