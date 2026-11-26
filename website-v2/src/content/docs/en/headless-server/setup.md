@@ -108,6 +108,8 @@ Once saved, the key is stored in the agent's state (`<data dir>/agent`) and surv
 
 The setup code is written to a file because NAS users (Synology, QNAP, Unraid, and similar) often cannot see container or package stderr. A secret printed only once to stderr would lock them out. The file is the operator channel; the startup log prints the path and value once as a supplement.
 
+NAS and router packages also expose a copy where users can reach it without a shell (set via `FLUXDOWN_SETUP_CODE_COPY=<path>`; the parent directory must exist, and the agent deletes the copy once setup succeeds): Synology and fnOS write `FluxDown-setup-code.txt` into the download shared folder, QNAP into the `Public` share (`/share/Public`), and OpenWrt shows the code in LuCI next to the access key. The copy is a plain file that inherits its folder's permissions, so anyone who can read that folder can read the code until setup completes. Finish the setup before sharing the folder.
+
 ### Unattended deploys
 
 To skip the wizard (docker-compose, Kubernetes, CI), preset the key with `FLUXDOWN_TOKEN`. It is adopted only when the database still has no key, and no setup code is created:

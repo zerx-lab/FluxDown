@@ -107,7 +107,7 @@ Not sure which CPU family your model uses? Check the "Package Arch" column for y
 
 ### First-run access key
 
-On first open of the Web UI (`http://<NAS-IP>:17800`), the initialization wizard asks you to set an access key (at least 8 characters, letters and digits). That key is persisted in the package's database, so it survives restarts and upgrades. You can view or change it later under **Settings → Security & Access**.
+On first open of the Web UI (`http://<NAS-IP>:17800`), the initialization wizard asks for a one-time setup code, then for an access key (at least 8 characters, letters and digits). The code is in `FluxDown-setup-code.txt` in the download shared folder you chose in the install wizard — open it in File Station and paste its content. The file is deleted once setup succeeds (the private original stays at `/var/packages/FluxDown/var/agent/setup-bootstrap`). If no shared folder was resolved, read that private file over SSH instead. The key is persisted in the package's database, so it survives restarts and upgrades. You can view or change it later under **Settings → Security & Access**.
 
 ### Permissions and data locations
 
@@ -132,7 +132,7 @@ Every Server release ships native fnOS app packages — no Docker required:
 
 1. Open **App Center → Manual install**, pick the `.fpk` for your CPU, and follow the prompts (manually installed third-party apps are not reviewed by the fnOS App Center).
 2. Start the app, then click the **FluxDown** desktop icon — it opens the Web UI on port `17800` (`http://<NAS-IP>:17800`) in a new tab.
-3. On first launch, set your access key (8+ characters, letters and digits). You can change it later under **Settings → Security & access**.
+3. On first launch, the setup wizard asks for the one-time setup code first. Open `FluxDown-setup-code.txt` in the `fluxdown` shared folder (File Manager) and paste its content, then set your access key (8+ characters, letters and digits). The file is deleted once setup succeeds. You can change the key later under **Settings → Security & access**.
 
 ### Permissions and data location
 

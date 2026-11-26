@@ -21,6 +21,12 @@ const ISSUE_KEY: Record<AccessKeyIssue, string> = {
   needsMix: 'webKeyNeedsMix',
 }
 
+// 401 = 引导码错误，429 = 错误尝试过多被限流；两者都留在表单上让用户重试。
+const REJECTION_KEY: Record<number, string | undefined> = {
+  401: 'webSetupBootstrapWrong',
+  429: 'webSetupTooManyAttempts',
+}
+
 export function SetupPage() {
   const t = useT()
   const navigate = useNavigate()
@@ -81,7 +87,8 @@ export function SetupPage() {
         await navigate({ to: '/login', replace: true })
         return
       }
-      setError(t('webSetupFailed', { error: errorMessage(cause) }))
+      const rejection = cause instanceof SetupError ? REJECTION_KEY[cause.status] : undefined
+      setError(rejection ? t(rejection) : t('webSetupFailed', { error: errorMessage(cause) }))
       setSubmitting(false)
     }
   }

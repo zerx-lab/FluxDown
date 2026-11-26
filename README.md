@@ -125,7 +125,7 @@ From a checkout, use the supplied [Compose configuration](docker/docker-compose.
 docker compose -f docker/docker-compose.yml up -d
 ```
 
-Open `http://<server>:17800/` and set an access key in the first-run wizard. The key must contain 8–128 visible ASCII characters, including both a letter and a digit. Set it up on a trusted network before exposing the service; use an HTTPS reverse proxy for remote access.
+Open `http://<server>:17800/` and complete the first-run wizard: it asks for a one-time setup code, then lets you set an access key. For Docker, read the code from `docker logs <container>` or from `agent/setup-bootstrap` in the data volume; the Synology, fnOS and QNAP packages put `FluxDown-setup-code.txt` in the download (Public) shared folder, and OpenWrt shows it in LuCI. The key must contain 8–128 visible ASCII characters, including both a letter and a digit. Set it up on a trusted network before exposing the service; use an HTTPS reverse proxy for remote access.
 
 **Browser extension:** Viewing remote progress and removing tasks requires the host’s Management API. If an existing Docker deployment can accept downloads but cannot list tasks, open the server’s Web UI, enable **Settings → API Service → Management API**, then test the connection again in the extension. If you use a reverse proxy, make sure it forwards `/api/v1/` requests. Remote Only shows the server automatically; in Desktop First, select Remote server in the task panel. Removing tasks does not delete downloaded files.
 

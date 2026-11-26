@@ -3,7 +3,7 @@ title: 服务器部署
 description: 从源码构建并运行 headless FluxDown 服务器(fluxdown-agent --server + fluxdownd),了解全部环境变量并安全地对外暴露。
 section: headless-server
 order: 1
-sourceHash: "9eede27ee07e"
+sourceHash: "c20e00824b67"
 ---
 
 headless 服务器 = `fluxdown-agent --server` 加上同级的 `fluxdownd` 下载守护进程:没有桌面界面、托盘或文件关联。它把同一套 Rust 引擎(HTTP/HTTPS、FTP、BitTorrent、HLS、DASH)通过编译进 `fluxdown-agent` 的 Web 界面和 JSON-RPC 端点(`/rpc`,与桌面客户端同一协议)暴露出来,因此你可以把它跑在 NAS、家庭服务器或 VPS 上,在浏览器里远程管理下载。发行版是**同一目录下的两个二进制**——`fluxdown-agent`(内嵌 Web 界面)与 `fluxdownd`。请把它们放在同一目录:agent 会把 `fluxdownd` 作为子进程拉起,并在收到 `SIGTERM`/`SIGINT` 时一并关停它。
@@ -108,6 +108,8 @@ FLUXDOWN_DATA_DIR=/srv/fluxdown/data \
 - 用 `Authorization: Bearer <token>` 鉴权管理 API 调用(见 [API 总览](/docs/zh/api/overview/))。
 
 初始化口令写在文件里,是因为 NAS(群晖、QNAP、Unraid 等)用户往往看不到容器/套件的 stderr,只往 stderr 打一次密钥等于把人锁在门外。文件才是操作者通道;启动日志会额外打印一次路径和口令,看不到日志时以文件为准。
+
+NAS 与路由器套件还会在用户无需 shell 就能访问的位置放一份副本(由 `FLUXDOWN_SETUP_CODE_COPY=<路径>` 指定;父目录必须已存在,设置成功后 agent 删除副本):群晖与飞牛 fnOS 写入下载共享文件夹的 `FluxDown-setup-code.txt`,QNAP 写入 `Public` 共享(`/share/Public`),OpenWrt 则在 LuCI 里访问密钥旁显示口令。副本是普通文件、沿用所在文件夹的权限,设置完成前能读该文件夹的人都能读到口令,请先完成设置再共享该文件夹。
 
 ### 无人值守部署
 

@@ -97,7 +97,7 @@ stage_luci_data() {
 	# $1=data 目录
 	mkdir -p "$1"
 	cp -r "$SCRIPT_DIR/luci/." "$1/"
-	chmod 755 "$1/usr/libexec/fluxdown/luci-token"
+	chmod 755 "$1/usr/libexec/fluxdown/luci-token" "$1/usr/libexec/fluxdown/luci-setup-code"
 }
 
 # ── ipk ──
