@@ -34,7 +34,11 @@ class HostRepo(private val ds: DataStore<Preferences>, private val box: SecretBo
 
     internal suspend fun rememberRemote(id: String?) {
         ds.edit { prefs ->
-            if (id == null) prefs.remove(K.lastRemote) else prefs[K.lastRemote] = id
+            if (id == null) {
+                prefs.remove(K.lastRemote)
+            } else if (prefs[K.lastRemote] != id && RemoteHostCodec.decode(prefs[K.remote]).any { it.ref.id == id }) {
+                prefs[K.lastRemote] = id
+            }
         }
     }
 
