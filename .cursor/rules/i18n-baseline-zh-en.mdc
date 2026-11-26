@@ -1,5 +1,5 @@
 ---
-description: FluxDown 多语言以英文 + 简体中文为开发基线；assets/i18n 的其余语言（zh-TW 等）由 ZerxLabBot 翻译自动化维护，开发中只补基线
+description: FluxDown 多语言以英文 + 简体中文为开发基线；assets/i18n 的其余语言（zh-TW 等）、扩展 ru/zh-TW、官网文档 zh 由 GitHub Actions「i18n MT」（qwen-mt）自动翻译，开发中只补基线
 globs: assets/i18n/*.json,web/src/i18n/**,website-v2/src/i18n/messages/**,fluxDown/utils/locales/**
 alwaysApply: false
 ---

@@ -94,6 +94,8 @@ Each file starts with a YAML frontmatter block:
    Can't run the script locally (e.g. web-editor-only contributions)? That's fine — note it in the PR description and enable "Allow edits from maintainers"; a maintainer will fill it in around merge time.
 4. 之后 en 原文更新导致 `sourceHash` 不再匹配时，zh 页面会自动显示"译文可能已过期"提示，但页面仍正常展示，不影响访问。
    When the en source later changes and `sourceHash` no longer matches, the zh page automatically shows a "translation may be outdated" banner — the page still renders normally.
+5. en 原文合并到 main 后，i18n MT 工作流（`.github/workflows/i18n-mt.yml`）会自动起草或增量更新对应的 zh 页并写入 `sourceHash`，所以只改 en 也可以；手动翻译 zh 并按上述步骤刷新 `sourceHash` 同样有效。
+   Once en changes are merged to main, the i18n MT workflow (`.github/workflows/i18n-mt.yml`) automatically drafts or incrementally updates the matching zh page and writes its `sourceHash`, so en-only changes are fine; translating zh by hand and refreshing `sourceHash` as described above remains valid.
 
 ### 审核规则 / Review Rules
 
