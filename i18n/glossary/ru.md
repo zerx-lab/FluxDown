@@ -1,6 +1,6 @@
 # Глоссарий русской локали (ru)
 
-Глоссарий русской локали FluxDown. Написан по образцу `tr.md`; действует при любых правках `assets/i18n/ru.json`, чтобы термины не расходились. Локаль полная (все 3715 ключей `en.json`), per-key fallback на en не используется.
+Глоссарий русской локали FluxDown. Написан по образцу `tr.md`; действует при любых правках `assets/i18n/ru.json`, чтобы термины не расходились. Локаль полная (все 3715 ключей `en.json`), per-key fallback на en не используется. Для машинного перевода его читает workflow GitHub Actions `.github/workflows/i18n-mt.yml` (qwen-mt).
 
 ## Правила
 
@@ -88,3 +88,96 @@ FluxDown, `fluxdown_engine`, `fluxdownd`, `fluxdown-agent`, ZerxLabBot, BitTorre
 - `languageChinese: "中文"`, `第02话` в `rssSmartEpisodeDesc`, шаблон в `webhookTemplatePlaceholder` — сохранены как в en (примеры/данные).
 - `Wi-Fi` — обычный дефис; в en местами стоит непереносимый U+2011 (`Wi‑Fi`), семантика та же.
 - Время/размер в humanized-строках: `мин`, `ч`, `дн`, `с` учитывая контекст (en `min/hr/day/sec`).
+
+## qwen-mt 机器翻译配置
+
+`scripts/i18n-mt` 只读取本节的 JSON 代码块；改上文术语时同步这里。
+
+```json
+{
+  "targetLang": "Russian",
+  "source": "en",
+  "domains": "UI strings of FluxDown, a desktop and mobile download manager (HTTP, BitTorrent, eD2K). Standard Russian, lively but without slang: never «шорткат», use «сочетание клавиш»; «лич» is acceptable only for anti-leech. Guillemet quotes «…», en dash for ranges (1–100), × for multiplication, ellipsis …, ' · ' as list separator. Sentence case, no final period on buttons and labels. Space between number and unit, percent attached ({percent}%); Russian units: МиБ, КиБ/с, МБ/с, ГБ/с. Keep technical terms in Latin script. Keep {placeholder} names unchanged.",
+  "keep": [
+    "FluxDown", "fluxdown_engine", "fluxdownd", "fluxdown-agent", "ZerxLabBot", "BitTorrent", "BT", "eD2K", "Kad",
+    "aria2", "yt-dlp", "FFmpeg", "HLS", "DASH", "M3U8", "RSS", "WebDAV", "SMB", "DHT", "PEX", "uTP", "UPnP", "MSE",
+    "HTTP", "HTTPS", "FTP", "SOCKS5", "TLS", "CDN", "LAN", "VPN", "TUN", "Wi-Fi", "NMH", "ComSpec",
+    "%SystemRoot%\\system32\\cmd.exe", "chrome://restart", "FLUXDOWN_BIND", "PUID/PGID", "noexec", "loopback",
+    "link-local", "carrier-grade NAT", "HMAC-SHA256", "X-FluxDown-Signature", "CIDR", "IPv4", "IPv6", "infohash",
+    "peer ID", "Referer", "User-Agent", "cookie", "ntfy", "Bark", "WeCom", "Feishu", "DingTalk", "Telegram",
+    "Discord", "Slack", "Gotify", "Home Assistant", "NAS", "Docker", "macOS", "Windows", "Linux", "Android", "iOS",
+    "Chrome", "Edge", "Firefox", "Safari", "GitHub", "Torrent", "Magnet", "nodes.dat", "ipfilter.dat", "server.met",
+    "JSON", "Markdown", "API", "MCP", "CLI", "2xx", "3xx", "4xx", "5xx"
+  ],
+  "terms": {
+    "Seeding": "Раздача",
+    "Peer": "пир",
+    "Leech": "лич",
+    "Anti-leech": "анти-лич",
+    "Observe": "наблюдать",
+    "Enforce": "применять",
+    "Throttle": "дросселировать",
+    "Blocklist": "список блокировок",
+    "Allowlist": "список разрешённых",
+    "Evidence": "улики",
+    "Strike": "страйк",
+    "Task": "задача",
+    "Task group": "группа задач",
+    "Queue": "очередь",
+    "Category": "категория",
+    "File": "файл",
+    "Folder": "папка",
+    "Path": "путь",
+    "Extension": "расширение",
+    "Browser extension": "расширение браузера",
+    "Save location": "папка сохранения",
+    "Settings": "Настройки",
+    "Default": "по умолчанию",
+    "Advanced": "Дополнительно",
+    "Speed limit": "лимит скорости",
+    "Threads": "потоки",
+    "Connection": "соединение",
+    "Connections": "соединения",
+    "Segment": "сегмент",
+    "Proxy": "прокси",
+    "Dedicated proxy": "выделенный прокси",
+    "Plugin": "плагин",
+    "Resolver": "резолвер",
+    "Component": "компонент",
+    "Device": "устройство",
+    "Account": "аккаунт",
+    "Sign in": "Войти",
+    "Sign out": "Выйти",
+    "Membership": "участие",
+    "Membership card": "карта участия",
+    "Quota": "квота",
+    "Sync": "синхронизация",
+    "Notification": "уведомление",
+    "Push": "пуш",
+    "Webhook": "вебхук",
+    "Endpoint": "точка приёма",
+    "Delivery": "доставка",
+    "Diagnostics": "Диагностика",
+    "Log": "журнал",
+    "Language": "Язык",
+    "Theme": "тема",
+    "Appearance": "внешний вид",
+    "Tray": "трей",
+    "Shortcut": "сочетание клавиш",
+    "Update": "обновление",
+    "Subscription": "подписка",
+    "Feed": "фид",
+    "Tracker": "трекер",
+    "Host": "хост",
+    "Pairing": "сопряжение",
+    "Paired": "сопряжённый",
+    "Access key": "ключ доступа",
+    "Manifest": "список файлов",
+    "Placeholder": "плейсхолдер"
+  },
+  "copyKeys": [
+    "searchKeywords*", "languageChinese", "webhookTemplatePlaceholder", "urlPlaceholder", "rssProviderBuiltin",
+    "rssCookiesHint", "donateDate", "mobileReferrer", "apiServiceApi", "extension*Store"
+  ]
+}
+```

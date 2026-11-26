@@ -3,7 +3,8 @@
 Glosario de la localización española de FluxDown. Se aplica a cualquier cambio en
 `assets/i18n/es.json` para que la terminología no se disperse. La localización es
 completa: los 3715 valores de `en.json` están presentes y no se usa el respaldo
-por clave (`per-key fallback`).
+por clave (`per-key fallback`). El flujo de GitHub Actions
+`.github/workflows/i18n-mt.yml` (qwen-mt) lo lee para la traducción automática.
 
 ## Principios
 
@@ -125,3 +126,91 @@ Chrome, Edge, Firefox, Safari, GitHub, Torrent, Magnet, `nodes.dat`,
   (`Wi‑Fi`), pero la semántica es la misma.
 - Los formatos de fecha con placeholders (`donateDate`) no se reordenan: son
   plantillas del software y deben coincidir con las de `en.json`.
+
+## qwen-mt 机器翻译配置
+
+`scripts/i18n-mt` 只读取本节的 JSON 代码块；改上文术语时同步这里。
+
+```json
+{
+  "targetLang": "Spanish",
+  "source": "en",
+  "domains": "UI strings of FluxDown, a desktop and mobile download manager (HTTP, BitTorrent, eD2K). European Spanish (Spain), neutral and natural: añadir, ordenador, móvil, vídeo. Informal tú in messages; buttons and menus in infinitive or noun form. Sentence case; no final period on buttons, menus and labels, full sentences end with a period. Curly quotes “ ”, ellipsis …, em dash —. Decimal comma (1,5 GB), space between number and unit, percent as {percent} %. Keep {placeholder} names unchanged.",
+  "keep": [
+    "FluxDown", "fluxdown_engine", "fluxdownd", "fluxdown-agent", "ZerxLabBot", "BitTorrent", "BT", "eD2K", "Kad",
+    "aria2", "yt-dlp", "FFmpeg", "HLS", "DASH", "M3U8", "RSS", "WebDAV", "SMB", "DHT", "PEX", "uTP", "UPnP", "MSE",
+    "HTTP", "HTTPS", "FTP", "SOCKS5", "TLS", "CDN", "LAN", "VPN", "TUN", "Wi-Fi", "NMH", "ComSpec",
+    "%SystemRoot%\\system32\\cmd.exe", "chrome://restart", "FLUXDOWN_BIND", "PUID/PGID", "noexec", "loopback",
+    "link-local", "carrier-grade NAT", "HMAC-SHA256", "X-FluxDown-Signature", "CIDR", "IPv4", "IPv6", "infohash",
+    "peer ID", "Referer", "User-Agent", "cookie", "ntfy", "Bark", "WeCom", "Feishu", "DingTalk", "Telegram",
+    "Discord", "Slack", "Gotify", "Home Assistant", "NAS", "Docker", "macOS", "Windows", "Linux", "Android", "iOS",
+    "Chrome", "Edge", "Firefox", "Safari", "GitHub", "Torrent", "Magnet", "nodes.dat", "ipfilter.dat", "server.met",
+    "JSON", "Markdown", "API", "MCP", "CLI", "2xx", "3xx", "4xx", "5xx",
+    "Proxy", "Host", "Webhook", "Endpoint", "Push", "Ratio"
+  ],
+  "terms": {
+    "Seeding": "Sembrando",
+    "Seed": "Semilla",
+    "Peer": "Par",
+    "Leech": "Sanguijuela",
+    "Anti-leech": "Anti-sanguijuela",
+    "Observe": "Observar",
+    "Enforce": "Aplicar",
+    "Throttle": "Limitar",
+    "Blocklist": "Lista de bloqueados",
+    "Allowlist": "Lista de permitidos",
+    "Evidence": "Evidencia",
+    "Strike": "Aviso",
+    "Task": "Tarea",
+    "Task group": "Grupo de tareas",
+    "Queue": "Cola",
+    "Category": "Categoría",
+    "File": "Archivo",
+    "Folder": "Carpeta",
+    "Path": "Ruta",
+    "Browser extension": "Extensión del navegador",
+    "Save location": "Ubicación de guardado",
+    "Settings": "Configuración",
+    "Default": "Predeterminado",
+    "Advanced": "Avanzado",
+    "Speed limit": "Límite de velocidad",
+    "Threads": "Hilos",
+    "Connection": "Conexión",
+    "Connections": "Conexiones",
+    "Segment": "Segmento",
+    "Dedicated proxy": "Proxy dedicado",
+    "Plugin": "Complemento",
+    "Resolver": "Resolutor",
+    "Component": "Componente",
+    "Device": "Dispositivo",
+    "Account": "Cuenta",
+    "Sign in": "Iniciar sesión",
+    "Sign out": "Cerrar sesión",
+    "Membership": "Membresía",
+    "Membership card": "Tarjeta de membresía",
+    "Quota": "Cuota",
+    "Sync": "Sincronización",
+    "Notification": "Notificación",
+    "Delivery": "Entrega",
+    "Diagnostics": "Diagnóstico",
+    "Log": "Registro",
+    "Language": "Idioma",
+    "Theme": "Tema",
+    "Appearance": "Apariencia",
+    "Tray": "Bandeja del sistema",
+    "Shortcut": "Atajo",
+    "Subscription": "Suscripción",
+    "Feed": "Fuente",
+    "Tracker": "Rastreador",
+    "Pairing": "Emparejamiento",
+    "Paired": "Emparejado",
+    "Access key": "Clave de acceso",
+    "Manifest": "Manifiesto",
+    "Placeholder": "Marcador de posición"
+  },
+  "copyKeys": [
+    "searchKeywords*", "languageChinese", "webhookTemplatePlaceholder", "urlPlaceholder", "rssProviderBuiltin",
+    "rssCookiesHint", "donateDate", "mobileReferrer", "apiServiceApi", "extension*Store"
+  ]
+}
+```

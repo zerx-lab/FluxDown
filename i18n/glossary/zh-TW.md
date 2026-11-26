@@ -1,6 +1,6 @@
 # zh-TW（繁體中文・台灣）翻譯術語表
 
-ZerxLabBot 翻譯自動化（`i18n` 任務）翻譯 `assets/i18n/zh-TW.json` 時必讀；人工修正術語時也以本表為準。對照表從現有 `zh.json` ↔ `zh-TW.json` 的實際用法統計整理（出現次數多者優先）。
+GitHub Actions 工作流程 `.github/workflows/i18n-mt.yml`（qwen-mt）翻譯 `assets/i18n/zh-TW.json` 時讀取本表；人工修正術語時也以本表為準。對照表從現有 `zh.json` ↔ `zh-TW.json` 的實際用法統計整理（出現次數多者優先）。
 
 ## 原則
 
@@ -102,3 +102,112 @@ FluxDown、FluxCloud、ZerxLabBot、BitTorrent、BT、eD2K、ED2K、aria2、yt-d
 | 网盘 | 雲端硬碟 | |
 | 做种 | 做種 | |
 | 限速 | 速度上限 | |
+
+## qwen-mt 机器翻译配置
+
+`scripts/i18n-mt` 只读取本节的 JSON 代码块；改上文术语时同步这里。
+
+```json
+{
+  "targetLang": "Traditional Chinese",
+  "source": "zh",
+  "domains": "UI strings of FluxDown, a desktop and mobile download manager (HTTP, BitTorrent, eD2K), translated from Simplified Chinese. Traditional Chinese as used in Taiwan, not a character-by-character conversion: 檔案 not 文件, 設定 not 設置, 預設 not 默認. Address the user as 你, never 您. Full-width punctuation ，。：？！（）, quotes 「」 and 『』, ellipsis …. Keep length close to the source; no final period on buttons, menus and field names. Keep spacing between numbers, units and Latin words as in the source. Keep {placeholder} names unchanged.",
+  "keep": [
+    "FluxDown", "FluxCloud", "ZerxLabBot", "BitTorrent", "BT", "eD2K", "ED2K", "aria2", "yt-dlp", "FFmpeg", "HLS",
+    "DASH", "M3U8", "RSS", "Webhook", "Telegram", "WebDAV", "SMB", "DHT", "UPnP", "uTP", "PEX", "Tracker", "HTTP",
+    "HTTPS", "FTP", "SOCKS5", "URL", "API", "MCP", "JSON", "CLI", "NAS", "Docker", "Windows", "macOS", "Linux",
+    "Android", "iOS", "Chrome", "Edge", "Firefox", "Safari", "GitHub", "QR Code"
+  ],
+  "terms": {
+    "二维码": "QR Code",
+    "文件": "檔案",
+    "文档": "文件",
+    "文件夹": "資料夾",
+    "目录": "資料夾",
+    "文件名": "檔名",
+    "扩展名": "副檔名",
+    "设置": "設定",
+    "默认": "預設",
+    "服务器": "伺服器",
+    "网络": "網路",
+    "链接": "連結",
+    "磁力链接": "磁力連結",
+    "信息": "資訊",
+    "消息": "訊息",
+    "账号": "帳號",
+    "账户": "帳號",
+    "登录": "登入",
+    "程序": "程式",
+    "应用": "應用程式",
+    "软件": "軟體",
+    "插件": "外掛",
+    "搜索": "搜尋",
+    "粘贴": "貼上",
+    "剪贴板": "剪貼簿",
+    "导入": "匯入",
+    "导出": "匯出",
+    "用户": "使用者",
+    "设备": "裝置",
+    "队列": "佇列",
+    "任务组": "任務群組",
+    "局域网": "區域網路",
+    "端口": "連接埠",
+    "脚本": "指令碼",
+    "数据": "資料",
+    "日志": "記錄",
+    "反馈": "回饋",
+    "卸载": "解除安裝",
+    "优化": "最佳化",
+    "刷新": "重新整理",
+    "加载": "載入",
+    "保存": "儲存",
+    "创建": "建立",
+    "新建": "新增",
+    "重命名": "重新命名",
+    "套餐": "方案",
+    "推介有奖": "推薦有獎",
+    "带宽": "頻寬",
+    "窗口": "視窗",
+    "界面": "介面",
+    "全屏": "全螢幕",
+    "屏幕": "螢幕",
+    "磁盘": "磁碟",
+    "内存": "記憶體",
+    "缓存": "快取",
+    "字体": "字型",
+    "图标": "圖示",
+    "托盘": "系統匣",
+    "侧栏": "側欄",
+    "列表": "清單",
+    "视图": "檢視",
+    "选中": "選取",
+    "高级": "進階",
+    "定时": "排程",
+    "支持": "支援",
+    "运行": "執行",
+    "在线": "線上",
+    "实时": "即時",
+    "智能": "智慧",
+    "识别": "辨識",
+    "兼容": "相容",
+    "禁用": "停用",
+    "启用": "啟用",
+    "激活": "啟用",
+    "协议": "協定",
+    "令牌": "權杖",
+    "密钥": "金鑰",
+    "证书": "憑證",
+    "邮箱": "信箱",
+    "渠道": "管道",
+    "字符": "字元",
+    "变量": "變數",
+    "模板": "範本",
+    "视频": "影片",
+    "音频": "音訊",
+    "网盘": "雲端硬碟",
+    "做种": "做種",
+    "限速": "速度上限"
+  },
+  "copyKeys": []
+}
+```
