@@ -98,6 +98,7 @@ FluxDown, `fluxdown_engine`, `fluxdownd`, `fluxdown-agent`, ZerxLabBot, BitTorre
   "targetLang": "Russian",
   "source": "en",
   "domains": "UI strings of FluxDown, a desktop and mobile download manager (HTTP, BitTorrent, eD2K). Standard Russian, lively but without slang: never «шорткат», use «сочетание клавиш»; «лич» is acceptable only for anti-leech. Guillemet quotes «…», en dash for ranges (1–100), × for multiplication, ellipsis …, ' · ' as list separator. Sentence case, no final period on buttons and labels. Space between number and unit, percent attached ({percent}%); Russian units: МиБ, КиБ/с, МБ/с, ГБ/с. Keep technical terms in Latin script. Keep {placeholder} names unchanged.",
+  "siteDomains": "Website and documentation of FluxDown, a free open-source download manager (HTTP, BitTorrent, eD2K) for desktop, mobile, NAS and servers. Standard Russian, clear marketing / technical documentation tone; address the reader as «вы» (lowercase). Guillemet quotes «…». Sentence case for headings. Keep technical terms in Latin script. Do not translate code, commands, file paths, config keys, environment variables, URLs, product names or placeholders such as {0} or {name}; keep HTML tags and Markdown markup unchanged.",
   "keep": [
     "FluxDown", "fluxdown_engine", "fluxdownd", "fluxdown-agent", "ZerxLabBot", "BitTorrent", "BT", "eD2K", "Kad",
     "aria2", "yt-dlp", "FFmpeg", "HLS", "DASH", "M3U8", "RSS", "WebDAV", "SMB", "DHT", "PEX", "uTP", "UPnP", "MSE",

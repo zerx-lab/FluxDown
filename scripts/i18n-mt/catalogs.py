@@ -1,9 +1,11 @@
-"""键值文案面：`assets/i18n/*.json`（GPUI / Web / Android / iOS）与浏览器扩展 `fluxDown/utils/locales/*.ts`。"""
+"""键值文案面：`assets/i18n/*.json`（GPUI / Web / Android / iOS）、浏览器扩展 `fluxDown/utils/locales/*.ts`
+与官网界面文案（`website-v2/src/i18n/messages/*.ts` 抽出的翻译单元）。"""
 
 from __future__ import annotations
 
 import json
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
@@ -20,7 +22,9 @@ from common import (
     load_locale_config,
     plan_catalog,
     short_hash,
+    site_locale_config,
     translate_catalog,
+    website_langs,
 )
 
 APP_DIR = ROOT / "assets" / "i18n"
@@ -29,6 +33,9 @@ EXT_DIR = ROOT / "fluxDown" / "utils" / "locales"
 EXT_LOCK = ROOT / "i18n" / "extension-lock.json"
 # 每种语言自称，新增语言时人工写入；机器不翻、不覆盖。
 APP_PROTECTED = ("languageNativeName",)
+WEB_DIR = ROOT / "website-v2"
+WEB_STORE_DIR = WEB_DIR / "src" / "i18n" / "locales"
+WEB_LOCK = ROOT / "i18n" / "website-lock.json"
 
 
 def merge_order(existing: List[str], added: List[str], removed: set, source_order: List[str]) -> List[str]:
@@ -62,6 +69,11 @@ class Surface:
     write: Callable[[str, Dict[str, str], List[str]], None]
     protected: Tuple[str, ...]
     use_copy_keys: bool
+    config_for: Callable[[str], LocaleConfig] = load_locale_config
+    # 翻译（非演练）结束后调用：官网据 store 重新生成 TS 模块。
+    after: Optional[Callable[[], None]] = None
+    # 额外翻译记忆（参数为术语表语言名）：官网借用软件界面的已有译文统一用词。
+    memory: Optional[Callable[[str], List[Tuple[str, str]]]] = None
 
 
 def sync_surface(
@@ -75,9 +87,9 @@ def sync_surface(
     """同步一个面的全部目标语言；translate 为 None 时只演练（不调接口、不写文件）。返回是否有改动。"""
     changed = False
     for locale in surface.locales:
-        if wanted and locale not in wanted:
+        if wanted and locale.lower() not in wanted:
             continue
-        config = load_locale_config(locale)
+        config = surface.config_for(locale)
         target = surface.read(locale)
         lock = surface.lock.locale(locale)
         copy_key = config.is_copy_key if surface.use_copy_keys else (lambda key: False)
@@ -118,6 +130,8 @@ def sync_surface(
         changed = True
     if changed:
         surface.lock.save()
+    if translate is not None and surface.after is not None:
+        surface.after()
     return changed
 
 
@@ -148,6 +162,8 @@ def _translate_plan(
             continue
         origin = surface.zh_source.get(key, "") if config.source == "zh" else surface.source[key]
         pairs.append((origin, value))
+    if surface.memory is not None:
+        pairs.extend(surface.memory(config.locale))
     return translate_catalog(translate, config, plan.pending, source_text, MemoryPool(pairs), workers)
 
 
@@ -180,6 +196,65 @@ def app_surface() -> Surface:
         write=write,
         protected=APP_PROTECTED,
         use_copy_keys=True,
+    )
+
+
+# ── 官网界面文案（bun 抽取 / 生成）────────────────────────────────────
+
+
+def _web_messages(command: str) -> str:
+    """`website-v2/scripts/i18n-messages.ts`：extract 打印翻译单元，generate 据 store 生成 TS 模块。"""
+    try:
+        result = subprocess.run(
+            ["bun", "scripts/i18n-messages.ts", command], cwd=WEB_DIR, capture_output=True, text=True, check=False
+        )
+    except FileNotFoundError as exc:
+        raise ConfigError("官网文案需要 bun（并在 website-v2 下 bun install）") from exc
+    if result.returncode != 0:
+        raise ConfigError(f"bun scripts/i18n-messages.ts {command} 失败：{result.stderr.strip()[-2000:]}")
+    return result.stdout
+
+
+def website_surface() -> Surface:
+    try:
+        units = json.loads(_web_messages("extract"))["units"]
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise ConfigError(f"i18n-messages.ts extract 输出不是 {{\"units\": {{…}}}}：{exc!r}") from exc
+    if not isinstance(units, dict) or not all(isinstance(v, str) for v in units.values()):
+        raise ConfigError("i18n-messages.ts extract 的 units 必须是 string → string")
+
+    def read(lang: str) -> Dict[str, str]:
+        path = WEB_STORE_DIR / f"{lang}.json"
+        return _read_json(path) if path.is_file() else {}
+
+    def write(lang: str, values: Dict[str, str], order: List[str]) -> None:
+        WEB_STORE_DIR.mkdir(parents=True, exist_ok=True)
+        ordered = {key: values[key] for key in order}
+        (WEB_STORE_DIR / f"{lang}.json").write_text(json.dumps(ordered, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    def generate() -> None:
+        _web_messages("generate")
+
+    def app_memory(locale: str) -> List[Tuple[str, str]]:
+        path = APP_DIR / f"{locale}.json"
+        if not path.is_file():
+            return []
+        english = _read_json(APP_DIR / "en.json")
+        return [(english[key], value) for key, value in _read_json(path).items() if english.get(key, value) != value]
+
+    return Surface(
+        name="website",
+        lock=SourceLock(WEB_LOCK, "website-v2/src/i18n/messages"),
+        source=units,
+        zh_source={},
+        locales=[lang for lang in website_langs() if lang not in ("en", "zh")],
+        read=read,
+        write=write,
+        protected=(),
+        use_copy_keys=False,
+        config_for=site_locale_config,
+        after=generate,
+        memory=app_memory,
     )
 
 

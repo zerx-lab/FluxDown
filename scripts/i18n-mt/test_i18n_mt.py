@@ -5,7 +5,15 @@ from __future__ import annotations
 import unittest
 
 from catalogs import TsCatalog, merge_order
-from common import LocaleConfig, MemoryPool, check_translation, numbered_mask, plan_catalog, short_hash
+from common import (
+    LocaleConfig,
+    MemoryPool,
+    check_translation,
+    numbered_mask,
+    plan_catalog,
+    short_hash,
+    site_locale_config,
+)
 from docs import DOCS, DocDraft, DocPlan, align_blocks, heading_slugs, map_anchors, render_doc
 
 
@@ -65,6 +73,7 @@ class CheckTest(unittest.TestCase):
         self.assertIn("占位符", check_translation("Hi {name}", "嗨 {nombre}", False))
         self.assertIn("换行", check_translation("a\nb", "ab", False))
         self.assertIn("Big5", check_translation("Files", "文件设置", True))
+        self.assertIn("HTML", check_translation('Read <a href="/x">docs</a>', "Lee docs", False))
 
     def test_numbered_mask_roundtrip(self):
         masked, restore = numbered_mask("{count} of {total} from {count}")
@@ -79,6 +88,23 @@ class CheckTest(unittest.TestCase):
         cfg = config(terms={"Task": "任务"})
         self.assertEqual(cfg.terms_for("New task"), [{"source": "Task", "target": "任务"}])
         self.assertEqual(cfg.terms_for("Multitasking"), [])
+
+    def test_terms_follow_source_case(self):
+        cfg = config(locale="es", target_lang="Spanish", terms={"Task": "Tarea", "Task group": "Grupo de tareas"})
+        self.assertEqual(
+            cfg.terms_for("Move the task to a task group"),
+            [{"source": "task", "target": "tarea"}, {"source": "task group", "target": "grupo de tareas"}],
+        )
+        self.assertEqual(cfg.terms_for("Task list")[0], {"source": "Task", "target": "Tarea"})
+        tr = config(locale="tr", target_lang="Turkish", terms={"Cancel": "İptal"})
+        self.assertEqual(tr.terms_for("or cancel"), [{"source": "cancel", "target": "iptal"}])
+
+    def test_site_config_reads_from_english(self):
+        tw = site_locale_config("zh-tw")
+        self.assertEqual((tw.source, tw.target_lang), ("en", "Traditional Chinese"))
+        self.assertTrue(tw.domains.startswith("Website and documentation"))
+        self.assertEqual(tw.terms["Settings"], "設定")
+        self.assertFalse(any("\u4e00" <= ch <= "\u9fff" for term in tw.terms for ch in term))
 
 
 TS = """/**
@@ -126,6 +152,14 @@ class DocsTest(unittest.TestCase):
             render(results), "译Run `fluxdown add` then see [译the API](/docs/zh/api/overview/#auth) or https://x.dev/a."
         )
 
+    def test_links_point_at_target_language(self):
+        draft = DocDraft(config(), MemoryPool([]), "doc", "zh-tw")
+        render = draft.segment("See [the API](/docs/en/api/overview/#auth).")
+        from common import run_units
+
+        results, _ = run_units(fake_translate, draft.units, 1)
+        self.assertEqual(render(results), "译See [译the API](/docs/zh-tw/api/overview/#auth).")
+
     def test_block_kinds(self):
         draft = DocDraft(config(), MemoryPool([]), "doc")
         table = draft.block("| Field | Rules |\n|---|---|\n| `id` | Must be `x \\| y` |")
@@ -150,7 +184,7 @@ class DocsTest(unittest.TestCase):
         text, failures, fresh = render_doc(plan, config(), fake_translate, 1)
         self.assertEqual(failures, {})
         self.assertEqual(fresh, [2])
-        final = map_anchors(text, fresh, en, {})
+        final = map_anchors(text, fresh, en, {}, "zh")
         self.assertIn("title: 指南\norder: 2\nsourceHash:", final)
         self.assertTrue(final.endswith("## 安装\n\n保留我。\n\n译See [译setup](#安装).\n"))
 

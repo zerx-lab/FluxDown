@@ -1,10 +1,11 @@
-"""官网文档：en 原文变化后，用 qwen-mt 起草 / 增量更新 `website-v2/src/content/docs/zh/**`。
+"""官网文档：en 原文变化后，用 qwen-mt 起草 / 增量更新 `website-v2/src/content/docs/<lang>/**`。
 
-- 过期判定沿用 zh frontmatter 的 `sourceHash`（与 `website-v2/scripts/docs-hash.mjs` 同一规格）。
+- 目标语言 = 站点 `LANGS` 里 en 以外的全部（zh 也由 en 起草，再人工润色；其余语言纯机翻）。
+- 过期判定沿用译文 frontmatter 的 `sourceHash`（与 `website-v2/scripts/docs-hash.mjs` 同一规格）。
 - 增量：在 git 历史里找到 hash 等于 `sourceHash` 的旧 en 版本，按空行分块与新 en 做块级 diff；
-  未变的块直接沿用 zh 现有译文（人工润色保留），只翻新增 / 改动的块。
+  未变的块直接沿用现有译文（人工润色保留），只翻新增 / 改动的块。
 - 代码块、行内代码、URL、HTML 原样保留；链接文字与图片 alt 单独翻译；`/docs/en/` 链接改指
-  `/docs/zh/`，锚点按两边标题顺序映射；存在 `.zh.` 版本的截图自动换图。
+  `/docs/<lang>/`，锚点按两边标题顺序映射；存在 `.<lang>.` 版本的截图自动换图。
 """
 
 from __future__ import annotations
@@ -29,9 +30,10 @@ from common import (
     Unit,
     check_translation,
     has_letters,
-    load_locale_config,
     run_units,
     short_hash,
+    site_locale_config,
+    website_langs,
 )
 
 DOCS = ROOT / "website-v2" / "src" / "content" / "docs"
@@ -55,7 +57,13 @@ INLINE = re.compile(
     r"|(?P<html></?[A-Za-z][^>\n]*>)"
 )
 TOKEN = re.compile(r"\{x(\d+)\}")
-ANCHOR_LINK = re.compile(r"\]\((/docs/zh/[^)#\s]*)?#([^)\s]+)\)")
+LOCALIZED_DOCS = re.compile(r"/docs/[a-z]{2}(?:-[a-z]{2})?/")
+LOCALIZED_ASSET = re.compile(r"\.[a-z]{2}(?:-[a-z]{2})?\.(webp|png|jpe?g|gif|svg|avif)\b")
+
+
+def anchor_link(lang: str) -> re.Pattern:
+    return re.compile(r"\]\((/docs/" + re.escape(lang) + r"/[^)#\s]*)?#([^)\s]+)\)")
+
 
 Renderer = Callable[[List[Optional[str]]], str]
 
@@ -199,8 +207,8 @@ def _const(text: str) -> Renderer:
     return lambda results: text
 
 
-def check_doc_segment(source: str, translated: str) -> Optional[str]:
-    problem = check_translation(source, translated, False)
+def check_doc_segment(source: str, translated: str, traditional_chinese: bool = False) -> Optional[str]:
+    problem = check_translation(source, translated, traditional_chinese)
     if problem:
         return problem
     if translated.count("**") % 2 != source.count("**") % 2:
@@ -211,10 +219,11 @@ def check_doc_segment(source: str, translated: str) -> Optional[str]:
 class DocDraft:
     """收集一篇文档里所有待译片段，统一并发翻译后再拼装。"""
 
-    def __init__(self, config: LocaleConfig, pool: MemoryPool, label: str) -> None:
+    def __init__(self, config: LocaleConfig, pool: MemoryPool, label: str, lang: str = "zh") -> None:
         self.config = config
         self.pool = pool
         self.label = label
+        self.lang = lang
         self.units: List[Unit] = []
 
     def segment(self, text: str) -> Renderer:
@@ -224,11 +233,11 @@ class DocDraft:
         def mask(match: re.Match) -> str:
             if match.group("img") is not None:
                 alt = self.segment(match.group("alt"))
-                tail = rewrite_image(match.group("src")) + (match.group("ititle") or "")
+                tail = rewrite_image(match.group("src"), self.lang) + (match.group("ititle") or "")
                 tokens.append(lambda results, alt=alt, tail=tail: f"![{alt(results)}]({tail})")
             elif match.group("link") is not None:
                 inner = self.segment(match.group("text"))
-                tail = rewrite_link(match.group("href")) + (match.group("title") or "")
+                tail = rewrite_link(match.group("href"), self.lang) + (match.group("title") or "")
                 tokens.append(lambda results, inner=inner, tail=tail: f"[{inner(results)}]({tail})")
             else:
                 tokens.append(_const(match.group(0)))
@@ -252,7 +261,7 @@ class DocDraft:
                 target_lang=self.config.target_lang,
                 domains=self.config.domains,
                 attempts=[Attempt(masked, terms, self.pool.select(masked)), Attempt(masked, terms, [])],
-                check=lambda out: check_doc_segment(masked, out),
+                check=lambda out: check_doc_segment(masked, out, self.config.traditional_chinese),
             )
         )
         return lambda results: fill(results[index] if results[index] is not None else masked, results)
@@ -314,15 +323,16 @@ def _is_paragraph_line(line: str) -> bool:
     )
 
 
-def rewrite_link(href: str) -> str:
+def rewrite_link(href: str, lang: str) -> str:
     if href.startswith("/docs/en/"):
-        return "/docs/zh/" + href[len("/docs/en/") :]
+        return f"/docs/{lang}/" + href[len("/docs/en/") :]
     return href
 
 
-def rewrite_image(src: str) -> str:
+def rewrite_image(src: str, lang: str) -> str:
+    """有该语言版本的截图（`x.<lang>.webp`）就换图，否则沿用 en 截图。"""
     if ".en." in src and src.startswith("/"):
-        localized = src.replace(".en.", ".zh.")
+        localized = src.replace(".en.", f".{lang}.")
         if (PUBLIC / localized.lstrip("/")).is_file():
             return localized
     return src
@@ -407,7 +417,7 @@ def block_features(block: str) -> Tuple[tuple, frozenset]:
         kind = ("html",)
     else:
         kind = ("p",)
-    normalized = re.sub(r"#[^)\s]*\)", ")", block).replace("/docs/zh/", "/docs/en/").replace(".zh.", ".en.")
+    normalized = LOCALIZED_ASSET.sub(r".en.\1", LOCALIZED_DOCS.sub("/docs/en/", re.sub(r"#[^)\s]*\)", ")", block)))
     return kind, frozenset(ALIGN_TOKEN.findall(normalized))
 
 
@@ -460,13 +470,18 @@ def align_blocks(source: List[str], zh: List[str]) -> Dict[int, int]:
     return mapping
 
 
+def doc_lang(path: Path) -> str:
+    """`docs/<lang>/…` 的语言段。"""
+    return path.relative_to(DOCS).parts[0]
+
+
 def render_doc(plan: DocPlan, config: LocaleConfig, translate: Translate, workers: int) -> Tuple[str, Dict[str, str], List[int]]:
-    """返回（zh 全文，失败片段，新译块下标）。"""
+    """返回（译文全文，失败片段，新译块下标）。"""
     rel = str(plan.zh_path.relative_to(DOCS))
     en_fm, en_body = split_frontmatter(plan.en_raw)
     new_blocks = split_blocks(en_body)
     pool = MemoryPool([(new_blocks[j], zh) for j, zh in plan.reuse.items() if "\n" not in zh])
-    draft = DocDraft(config, pool, rel)
+    draft = DocDraft(config, pool, rel, doc_lang(plan.zh_path))
 
     zh_fields = field_values(split_frontmatter(plan.zh_raw)[0]) if plan.zh_raw else {}
     old_fields = field_values(split_frontmatter(plan.old_en_raw)[0]) if plan.old_en_raw else {}
@@ -501,8 +516,8 @@ def render_doc(plan: DocPlan, config: LocaleConfig, translate: Translate, worker
     return "---\n" + "\n".join(front) + "\n---\n\n" + "\n\n".join(blocks) + "\n", failures, fresh
 
 
-def map_anchors(raw: str, fresh: List[int], own_en: str, outputs: Dict[Path, str]) -> str:
-    """把新译块里 en 标题锚点换成目标 zh 文档同序标题的锚点；标题数对不上就保持原样。"""
+def map_anchors(raw: str, fresh: List[int], own_en: str, outputs: Dict[Path, str], lang: str) -> str:
+    """把新译块里 en 标题锚点换成目标语言文档同序标题的锚点；标题数对不上就保持原样。"""
     fm_lines, body = split_frontmatter(raw)
     blocks = split_blocks(body)
     own_zh = body
@@ -510,8 +525,8 @@ def map_anchors(raw: str, fresh: List[int], own_en: str, outputs: Dict[Path, str
     def zh_and_en(target: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
         if not target:
             return own_zh, split_frontmatter(own_en)[1]
-        rel = target.strip("/")[len("docs/zh/") :].strip("/")
-        zh_path = DOCS / "zh" / f"{rel}.md"
+        rel = target.strip("/")[len(f"docs/{lang}/") :].strip("/")
+        zh_path = DOCS / lang / f"{rel}.md"
         en_path = DOCS / "en" / f"{rel}.md"
         if not en_path.is_file():
             return None, None
@@ -531,23 +546,43 @@ def map_anchors(raw: str, fresh: List[int], own_en: str, outputs: Dict[Path, str
 
     for index in fresh:
         if index < len(blocks):
-            blocks[index] = ANCHOR_LINK.sub(sub, blocks[index])
+            blocks[index] = anchor_link(lang).sub(sub, blocks[index])
     return "---\n" + "\n".join(fm_lines) + "\n---\n\n" + "\n\n".join(blocks) + "\n"
 
 
-def sync_docs(translate: Optional[Translate], report: Report, limit: Optional[int], workers: int) -> bool:
-    config = load_locale_config("zh")
+def sync_docs(
+    translate: Optional[Translate],
+    report: Report,
+    limit: Optional[int],
+    workers: int,
+    wanted: Optional[List[str]] = None,
+) -> bool:
+    """所有站点语言（en 以外，含手写的 zh）都从 en 文档起草 / 增量更新；limit = 每语言每轮篇数。"""
+    changed = False
+    for lang in website_langs():
+        if lang == "en" or (wanted and lang not in wanted):
+            continue
+        changed |= _sync_docs_lang(lang, site_locale_config(lang), translate, report, limit, workers)
+    return changed
+
+
+def _sync_docs_lang(
+    lang: str,
+    config: LocaleConfig,
+    translate: Optional[Translate],
+    report: Report,
+    limit: Optional[int],
+    workers: int,
+) -> bool:
+    target_dir = DOCS / lang
     plans: List[DocPlan] = []
-    orphans = []
     for en_path in sorted((DOCS / "en").rglob("*.md")):
-        plan = plan_doc(en_path, DOCS / "zh" / en_path.relative_to(DOCS / "en"))
+        plan = plan_doc(en_path, target_dir / en_path.relative_to(DOCS / "en"))
         if plan is not None:
             plans.append(plan)
-    for zh_path in sorted((DOCS / "zh").rglob("*.md")):
-        if not (DOCS / "en" / zh_path.relative_to(DOCS / "zh")).is_file():
-            orphans.append(str(zh_path.relative_to(ROOT)))
-    for orphan in orphans:
-        report.note(f"`{orphan}` 没有对应 en 原文（未删除，需人工处理）")
+    for path in sorted(target_dir.rglob("*.md")) if target_dir.is_dir() else []:
+        if not (DOCS / "en" / path.relative_to(target_dir)).is_file():
+            report.note(f"`{path.relative_to(ROOT)}` 没有对应 en 原文（未删除，需人工处理）")
     for plan in plans:
         if plan.skip:
             report.note(
@@ -560,11 +595,16 @@ def sync_docs(translate: Optional[Translate], report: Report, limit: Optional[in
         deferred = len(plans) - limit
         plans = plans[:limit]
     if translate is None:
+        drafts = sum(1 for plan in plans if plan.zh_raw is None)
         for plan in plans:
+            if plan.zh_raw is None:
+                continue
             total = len(split_blocks(split_frontmatter(plan.en_raw)[1]))
-            state = "新建" if plan.zh_raw is None else f"沿用 {len(plan.reuse)}/{total} 块"
-            report.note(f"（演练）`{plan.zh_path.relative_to(ROOT)}`：{state}" + (f"；{plan.note}" if plan.note else ""))
-        report.add("docs（演练，译出=待译篇数）", "zh", {"translated": len(plans), "deferred": deferred}, {})
+            note = f"沿用 {len(plan.reuse)}/{total} 块" + (f"；{plan.note}" if plan.note else "")
+            report.note(f"（演练）`{plan.zh_path.relative_to(ROOT)}`：{note}")
+        if drafts:
+            report.note(f"（演练）`docs/{lang}` 新起草 {drafts} 篇")
+        report.add("docs（演练，译出=待译篇数）", lang, {"translated": len(plans), "deferred": deferred}, {})
         return False
     outputs: Dict[Path, str] = {}
     fresh_blocks: Dict[Path, List[int]] = {}
@@ -582,8 +622,8 @@ def sync_docs(translate: Optional[Translate], report: Report, limit: Optional[in
         fresh_blocks[plan.zh_path] = fresh
     by_path = {plan.zh_path: plan for plan in plans}
     for path, text in outputs.items():
-        final = map_anchors(text, fresh_blocks[path], by_path[path].en_raw, outputs)
+        final = map_anchors(text, fresh_blocks[path], by_path[path].en_raw, outputs, lang)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(final, encoding="utf-8")
-    report.add("docs", "zh", {"translated": len(outputs), "failed": len(failures), "deferred": deferred}, failures)
+    report.add("docs", lang, {"translated": len(outputs), "failed": len(failures), "deferred": deferred}, failures)
     return bool(outputs)

@@ -9,7 +9,7 @@ import re
 import unicodedata
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -18,6 +18,7 @@ GLOSSARY_DIR = ROOT / "i18n" / "glossary"
 CONFIG_HEADING = "## qwen-mt 机器翻译配置"
 
 PLACEHOLDER = re.compile(r"\{([A-Za-z0-9_.]+)\}")
+HTML_TAG = re.compile(r"</?[A-Za-z][^<>]*>")
 LATIN_WORD = re.compile(r"[A-Za-z][A-Za-z0-9'-]+")
 
 
@@ -71,6 +72,36 @@ def non_big5_chars(text: str) -> List[str]:
     return bad
 
 
+def lower_first(text: str, locale: str) -> str:
+    """首字母小写；土耳其语 İ → i、I → ı（str.lower 会把 İ 变成 i + 组合点）。"""
+    if not text:
+        return text
+    head = text[0]
+    if locale == "tr" and head in "İI":
+        head = "i" if head == "İ" else "ı"
+    else:
+        head = head.lower()
+    return head + text[1:]
+
+
+WEBSITE_LANG_CONFIG = ROOT / "website-v2" / "src" / "i18n" / "config.ts"
+# 站点语言码（URL / 目录，小写）→ 术语表文件名（与 assets/i18n 同名）。
+_GLOSSARY_NAMES = {"zh-tw": "zh-TW"}
+
+
+def website_langs() -> List[str]:
+    """读 `website-v2/src/i18n/config.ts` 的 `LANGS`（站点语言单一事实源）。"""
+    text = WEBSITE_LANG_CONFIG.read_text(encoding="utf-8")
+    match = re.search(r"export const LANGS = \[([^\]]*)\] as const", text)
+    if not match:
+        raise ConfigError(f"{WEBSITE_LANG_CONFIG.relative_to(ROOT)} 里找不到 `export const LANGS = [...] as const`")
+    return re.findall(r'"([^"]+)"', match.group(1))
+
+
+def glossary_locale(lang: str) -> str:
+    return _GLOSSARY_NAMES.get(lang, lang)
+
+
 @dataclass
 class LocaleConfig:
     """`i18n/glossary/<locale>.md` 末尾「qwen-mt 机器翻译配置」JSON 块。"""
@@ -82,7 +113,9 @@ class LocaleConfig:
     keep: List[str]
     terms: Dict[str, str]
     copy_keys: List[str]
-    _matchers: List[Tuple[re.Pattern, Dict[str, str]]] = field(default_factory=list, repr=False)
+    # 官网（界面文案 + 文档）用的领域提示；术语表没写时沿用 domains（那是软件界面口吻）。
+    site_domains: str = ""
+    _matchers: List[Tuple[re.Pattern, Dict[str, str]]] = field(default_factory=list, repr=False, init=False)
 
     def __post_init__(self) -> None:
         pairs = [(term, term) for term in self.keep] + list(self.terms.items())
@@ -102,8 +135,22 @@ class LocaleConfig:
         return self.target_lang == "Traditional Chinese"
 
     def terms_for(self, text: str) -> List[Dict[str, str]]:
-        """只传入文本里真正出现的术语：术语按 token 计费，也会干扰无关文本。"""
-        return [term for pattern, term in self._matchers if pattern.search(text)]
+        """只传入文本里真正出现的术语：术语按 token 计费，也会干扰无关文本。
+
+        术语表按界面标签写成首字母大写（`Task` → `Tarea`），qwen-mt 会原样照搬；原文里该词
+        小写出现时（句中），把术语两侧的首字母一起改成小写，避免句中冒出大写名词。"""
+        found = []
+        for pattern, term in self._matchers:
+            match = pattern.search(text)
+            if not match:
+                continue
+            occurrence = match.group(0)
+            cased = term["source"][:1].isupper() and term["target"][:1].isupper()
+            if term["source"] != term["target"] and cased and occurrence[:1].islower():
+                found.append({"source": occurrence, "target": lower_first(term["target"], self.locale)})
+            else:
+                found.append(term)
+        return found
 
     def is_copy_key(self, key: str) -> bool:
         return any(fnmatch.fnmatchcase(key, glob) for glob in self.copy_keys)
@@ -133,12 +180,27 @@ def load_locale_config(locale: str) -> LocaleConfig:
             keep=[str(v) for v in raw["keep"]],
             terms={str(k): str(v) for k, v in raw["terms"].items()},
             copy_keys=[str(v) for v in raw["copyKeys"]],
+            site_domains=str(raw.get("siteDomains", "")),
         )
     except (KeyError, AttributeError, TypeError) as exc:
         raise ConfigError(f"{path.relative_to(ROOT)} 配置缺字段或类型不对：{exc!r}") from exc
     if config.source not in ("en", "zh"):
         raise ConfigError(f"{path.relative_to(ROOT)} 的 source 只能是 en 或 zh")
     return config
+
+
+def site_locale_config(lang: str) -> LocaleConfig:
+    """官网语言（`website_langs()` 里的码）的翻译配置：一律从 en 翻，领域提示用 siteDomains。
+
+    术语表以 zh 为源的语言（zh-TW）：术语经 zh 术语表接成 en → zh → 目标语（zh 词条在目标语
+    术语表里有精确对应的才保留），keep 取两表并集。"""
+    base = load_locale_config(glossary_locale(lang))
+    terms, keep = base.terms, base.keep
+    if base.source == "zh":
+        bridge = load_locale_config("zh")
+        terms = {en: base.terms[zh] for en, zh in bridge.terms.items() if zh in base.terms}
+        keep = list(dict.fromkeys(base.keep + bridge.keep))
+    return replace(base, source="en", terms=terms, keep=keep, domains=base.site_domains or base.domains)
 
 
 class SourceLock:
@@ -250,6 +312,8 @@ def check_translation(source: str, translated: str, traditional_chinese: bool) -
         return f"占位符不一致：{sorted(placeholder_counts(source))} → {sorted(placeholder_counts(translated))}"
     if source.count("\n") != translated.count("\n"):
         return "换行数不一致"
+    if Counter(HTML_TAG.findall(source)) != Counter(HTML_TAG.findall(translated)):
+        return "HTML 标签不一致"
     if traditional_chinese:
         bad = non_big5_chars(translated)
         if bad:

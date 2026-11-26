@@ -3,7 +3,9 @@ name: i18n MT
 # qwen-mt 自动翻译（scripts/i18n-mt）：en 原文 / 术语表变化后补齐非基线语言并直接推回 main。
 # - assets/i18n 非基线语言（GPUI / Web / Android / iOS）：来源锁 i18n/source-lock.json
 # - 浏览器扩展 fluxDown/utils/locales 的 ru / zh-TW：来源锁 i18n/extension-lock.json
-# - 官网文档 website-v2/src/content/docs/zh：frontmatter sourceHash，块级增量
+# - 官网界面文案 website-v2/src/i18n/messages → src/i18n/locales/<lang>.json（来源锁 i18n/website-lock.json），
+#   再由 website-v2/scripts/i18n-messages.ts 生成 src/i18n/locales/<lang>/<ns>.ts
+# - 官网文档 website-v2/src/content/docs/<lang>（zh 及全部机翻语言）：frontmatter sourceHash，块级增量
 # Secrets：DASHSCOPE_API_KEY（必填）、I18N_BOT_TOKEN（可选，PAT / App token；用它推送才会触发
 # 后续 CI，且 main 有保护规则时须具备绕过权限）。Variables：QWEN_MT_MODEL、DASHSCOPE_BASE_URL（可选）。
 on:
@@ -15,6 +17,9 @@ on:
       - "fluxDown/utils/locales/en.ts"
       - "fluxDown/utils/locales/zh-CN.ts"
       - "website-v2/src/content/docs/en/**"
+      - "website-v2/src/i18n/messages/**"
+      - "website-v2/src/i18n/config.ts"
+      - "website-v2/scripts/i18n-messages.ts"
       - "i18n/glossary/**"
       - "scripts/i18n-mt/**"
       - ".github/workflows/i18n-mt.yml"
@@ -26,7 +31,7 @@ on:
       target:
         description: 同步范围
         type: choice
-        options: [all, app, extension, docs]
+        options: [all, app, extension, website, docs]
         default: all
       locales:
         description: 只处理这些语言（逗号分隔，留空 = 全部）
@@ -61,6 +66,12 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.I18N_BOT_TOKEN || github.token }}
 
+      # 官网界面文案的抽取 / 生成用 website-v2 的 typescript 编译器 API。
+      - uses: oven-sh/setup-bun@v2
+      - name: Install website deps
+        working-directory: website-v2
+        run: bun install --frozen-lockfile
+
       - name: Unit tests (offline)
         run: python3 -m unittest discover -s scripts/i18n-mt -p 'test_*.py'
 
@@ -81,10 +92,10 @@ jobs:
       - name: Detect changes
         id: changes
         run: |
-          git add -A assets/i18n i18n fluxDown/utils/locales website-v2/src/content/docs/zh
+          git add -A assets/i18n i18n fluxDown/utils/locales website-v2/src/content/docs website-v2/src/i18n/locales
           if git diff --cached --quiet; then echo "any=false" >> "$GITHUB_OUTPUT"; else echo "any=true" >> "$GITHUB_OUTPUT"; fi
           if git diff --cached --quiet -- assets/i18n; then echo "app=false" >> "$GITHUB_OUTPUT"; else echo "app=true" >> "$GITHUB_OUTPUT"; fi
-          if git diff --cached --quiet -- website-v2/src/content/docs/zh; then echo "docs=false" >> "$GITHUB_OUTPUT"; else echo "docs=true" >> "$GITHUB_OUTPUT"; fi
+          if git diff --cached --quiet -- website-v2; then echo "site=false" >> "$GITHUB_OUTPUT"; else echo "site=true" >> "$GITHUB_OUTPUT"; fi
           git diff --cached --stat
 
       # 直接推 main 前跑契约守卫：非基线语言占位符不越界（与 ci.yml 同一单测）。
@@ -99,10 +110,13 @@ jobs:
         if: steps.changes.outputs.app == 'true'
         run: cargo test -p fluxdown_ui_i18n --lib translated_locales_keep_baseline_placeholders
 
-      - name: Docs lint
-        if: steps.changes.outputs.docs == 'true'
+      # 官网：文档安全 lint + astro check（生成模块与 en 结构不符、文档 frontmatter 不合 schema 都会在这里拦下）。
+      - name: Website check
+        if: steps.changes.outputs.site == 'true'
         working-directory: website-v2
-        run: node scripts/docs-lint.mjs
+        run: |
+          node scripts/docs-lint.mjs
+          bun run check
 
       - name: Commit and push
         if: steps.changes.outputs.any == 'true'

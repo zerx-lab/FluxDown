@@ -136,6 +136,7 @@ Chrome, Edge, Firefox, Safari, GitHub, Torrent, Magnet, `nodes.dat`,
   "targetLang": "Spanish",
   "source": "en",
   "domains": "UI strings of FluxDown, a desktop and mobile download manager (HTTP, BitTorrent, eD2K). European Spanish (Spain), neutral and natural: añadir, ordenador, móvil, vídeo. Informal tú in messages; buttons and menus in infinitive or noun form. Sentence case; no final period on buttons, menus and labels, full sentences end with a period. Curly quotes “ ”, ellipsis …, em dash —. Decimal comma (1,5 GB), space between number and unit, percent as {percent} %. Keep {placeholder} names unchanged.",
+  "siteDomains": "Website and documentation of FluxDown, a free open-source download manager (HTTP, BitTorrent, eD2K) for desktop, mobile, NAS and servers. European Spanish (Spain), clear and natural marketing / technical documentation tone; address the reader as tú. Sentence case for headings. Do not translate code, commands, file paths, config keys, environment variables, URLs, product names or placeholders such as {0} or {name}; keep HTML tags and Markdown markup unchanged.",
   "keep": [
     "FluxDown", "fluxdown_engine", "fluxdownd", "fluxdown-agent", "ZerxLabBot", "BitTorrent", "BT", "eD2K", "Kad",
     "aria2", "yt-dlp", "FFmpeg", "HLS", "DASH", "M3U8", "RSS", "WebDAV", "SMB", "DHT", "PEX", "uTP", "UPnP", "MSE",

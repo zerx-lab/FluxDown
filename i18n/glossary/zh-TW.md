@@ -112,6 +112,7 @@ FluxDown、FluxCloud、ZerxLabBot、BitTorrent、BT、eD2K、ED2K、aria2、yt-d
   "targetLang": "Traditional Chinese",
   "source": "zh",
   "domains": "UI strings of FluxDown, a desktop and mobile download manager (HTTP, BitTorrent, eD2K), translated from Simplified Chinese. Traditional Chinese as used in Taiwan, not a character-by-character conversion: 檔案 not 文件, 設定 not 設置, 預設 not 默認. Address the user as 你, never 您. Full-width punctuation ，。：？！（）, quotes 「」 and 『』, ellipsis …. Keep length close to the source; no final period on buttons, menus and field names. Keep spacing between numbers, units and Latin words as in the source. Keep {placeholder} names unchanged.",
+  "siteDomains": "Website and documentation of FluxDown, a free open-source download manager (HTTP, BitTorrent, eD2K) for desktop, mobile, NAS and servers, translated from English. Traditional Chinese as used in Taiwan, with Taiwan terminology: 檔案 not 文件, 設定 not 設置, 預設 not 默認, 資料夾 not 文件夾, 伺服器 not 服務器. Address the reader as 你, never 您. Full-width punctuation ，。：？！（）, quotes 「」 and 『』. Put a space between Chinese and Latin letters or digits. Do not translate code, commands, file paths, config keys, environment variables, URLs, product names or placeholders such as {0} or {name}; keep HTML tags and Markdown markup unchanged.",
   "keep": [
     "FluxDown", "FluxCloud", "ZerxLabBot", "BitTorrent", "BT", "eD2K", "ED2K", "aria2", "yt-dlp", "FFmpeg", "HLS",
     "DASH", "M3U8", "RSS", "Webhook", "Telegram", "WebDAV", "SMB", "DHT", "UPnP", "uTP", "PEX", "Tracker", "HTTP",

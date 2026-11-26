@@ -72,6 +72,7 @@ FluxDown、FluxCloud、ZerxLabBot、BitTorrent、BT、eD2K、aria2、yt-dlp、FF
   "targetLang": "Turkish",
   "source": "en",
   "domains": "UI strings of FluxDown, a desktop and mobile download manager (HTTP, BitTorrent, eD2K). Standard Turkish with correct ç ğ ı İ ö ş ü and i/İ, ı/I casing (İndir, not Indir). Neutral polite tone: buttons and menus in imperative base form (İndir, Duraklat, Sil); hints in polite plural second person or impersonal, never informal 'sen'. Sentence case, no final period on buttons and labels. Decimal comma (1,5 GB), space before unit, percent first: %{percent}. Quotes “ ”, ellipsis …. Keep {placeholder} names unchanged; apostrophe before suffixes ({name}'e); noun after {count} stays singular.",
+  "siteDomains": "Website and documentation of FluxDown, a free open-source download manager (HTTP, BitTorrent, eD2K) for desktop, mobile, NAS and servers. Standard Turkish with correct ç ğ ı İ ö ş ü and i/İ, ı/I casing; neutral polite tone (polite plural second person or impersonal, never informal 'sen'). Sentence case for headings. Apostrophe before suffixes on names. Do not translate code, commands, file paths, config keys, environment variables, URLs, product names or placeholders such as {0} or {name}; keep HTML tags and Markdown markup unchanged.",
   "keep": [
     "FluxDown", "FluxCloud", "ZerxLabBot", "BitTorrent", "BT", "eD2K", "aria2", "yt-dlp", "FFmpeg", "HLS", "DASH",
     "M3U8", "RSS", "Webhook", "Telegram", "WebDAV", "SMB", "DHT", "UPnP", "uTP", "PEX", "HTTP", "HTTPS", "FTP",
