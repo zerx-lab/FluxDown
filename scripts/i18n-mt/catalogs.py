@@ -81,7 +81,8 @@ def sync_surface(
         target = surface.read(locale)
         lock = surface.lock.locale(locale)
         copy_key = config.is_copy_key if surface.use_copy_keys else (lambda key: False)
-        plan = plan_catalog(surface.source, target, lock, copy_key, surface.protected, limit)
+        untranslated = (surface.source, surface.zh_source) if config.source == "zh" else (surface.source,)
+        plan = plan_catalog(surface.source, target, lock, copy_key, surface.protected, limit, untranslated)
         for key in surface.protected:
             if key not in target:
                 report.note(f"`{surface.name}` `{locale}` 缺少 `{key}`（需人工填写该语言自称）")

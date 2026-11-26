@@ -309,8 +309,12 @@ def plan_catalog(
     copy_key: Callable[[str], bool],
     protected: Tuple[str, ...],
     limit: Optional[int],
+    untranslated: Tuple[Dict[str, str], ...] = (),
 ) -> CatalogPlan:
-    """对一种语言算出：待译（缺失 / en 原文已变）、采纳（已有译文无锁记录，视为人工）、原样复制、孤儿。"""
+    """对一种语言算出：待译（缺失 / en 原文已变）、采纳（已有译文无锁记录，视为人工）、原样复制、孤儿。
+
+    untranslated：值与其中某个源文件原样相同、又无锁记录的条目视为占位（如为过 tsc 先抄的 en 原文），
+    按待译处理而不是采纳。"""
     plan = CatalogPlan(pending=[], adopted=[], copies={}, orphans=[k for k in target if k not in source])
     for key, value in source.items():
         digest = short_hash(value)
@@ -329,7 +333,10 @@ def plan_catalog(
             else:
                 plan.copies[key] = value
         elif key not in lock:
-            plan.adopted.append(key)
+            if has_letters(value) and any(target[key] == other.get(key) for other in untranslated):
+                plan.pending.append(key)
+            else:
+                plan.adopted.append(key)
     if limit is not None and len(plan.pending) > limit:
         plan.deferred = len(plan.pending) - limit
         plan.pending = plan.pending[:limit]
