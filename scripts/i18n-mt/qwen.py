@@ -6,16 +6,19 @@ qwen-mt 只接受一条 user 消息、不支持 system prompt；语种、术语�
 
 from __future__ import annotations
 
+import email.utils
 import json
+import math
 import random
 import threading
 import time
 import urllib.error
 import urllib.request
 from collections import deque
-from typing import Deque, Dict, List
+from datetime import datetime, timezone
+from typing import Deque, Dict, List, Optional
 
-from common import FatalApiError, ItemError, progress
+from common import FatalApiError, ItemError, RateLimitError, progress
 
 DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 DEFAULT_MODEL = "qwen-mt-plus"
@@ -25,6 +28,12 @@ BACKOFF_BASE_SECONDS = 2.0
 MAX_RATE_LIMIT_WAITS = 12
 RATE_LIMIT_BASE_SECONDS = 5.0
 RATE_LIMIT_MAX_SECONDS = 60.0
+# 服务端 Retry-After 优先于本地退避，但设上限，防止异常值把整轮卡死。
+RETRY_AFTER_MAX_SECONDS = 300.0
+# 不会随时间自愈的账号状态（欠费、停服、仅免费额度已用尽）：任何 HTTP 状态命中都整轮中止。
+# 注意 Throttling.AllocationQuota / insufficient_quota 是 TPM 限流，可恢复，不在此列。
+# https://help.aliyun.com/zh/model-studio/error-code
+FATAL_ERROR_CODES = frozenset({"Arrearage", "isv.OUT_OF_SERVICE", "AllocationQuota.FreeTierOnly"})
 # 百炼对 qwen-mt 静态限流(按主账号,超出任一即 429 limit_requests):RPM 一律 60,
 # 且「可能按 RPS = RPM/60 限制」,所以请求必须匀速发出而不是一分钟内突发。TPM 按模型(北京地域):
 # https://help.aliyun.com/zh/model-studio/rate-limit
@@ -32,6 +41,37 @@ DEFAULT_RPM = 60
 DEFAULT_TPM = {"qwen-mt-plus": 25_000, "qwen-mt-flash": 35_000, "qwen-mt-lite": 100_000, "qwen-mt-turbo": 35_000}
 FALLBACK_TPM = 25_000
 WINDOW_SECONDS = 60.0
+
+
+def retry_after_seconds(value: Optional[str]) -> float:
+    """解析 Retry-After（秒数或 HTTP 日期）；缺失、非法或已过期返回 0。"""
+    if not value:
+        return 0.0
+    value = value.strip()
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            when = email.utils.parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return 0.0
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        seconds = (when - datetime.now(timezone.utc)).total_seconds()
+    return seconds if math.isfinite(seconds) and seconds > 0 else 0.0
+
+
+def error_codes(body: str) -> List[str]:
+    """取错误响应里的 code / type（兼容模式在 error 对象内，原生接口在顶层）。"""
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, dict):
+        return []
+    error = payload.get("error")
+    source = error if isinstance(error, dict) else payload
+    return [value for value in (source.get("code"), source.get("type")) if isinstance(value, str)]
 
 
 class QwenMt:
@@ -75,16 +115,23 @@ class QwenMt:
                     return entry
             time.sleep(min(wait, 5.0) + random.uniform(0, 0.05))
 
-    def _rate_limited(self) -> None:
-        """登记一次 429:冷却窗口未生效时开新窗口(时长按连续命中指数增长)并打一行日志。"""
+    def _rate_limited(self, retry_after: float) -> None:
+        """登记一次 429：开冷却窗口（本地指数退避与服务端 Retry-After 取大者）并打一行日志；
+        窗口已生效时只在 Retry-After 要求更久时延长。"""
+        hinted = min(RETRY_AFTER_MAX_SECONDS, retry_after)
         with self._lock:
             now = time.monotonic()
             if self._cooldown_until > now:
-                return
-            delay = min(RATE_LIMIT_MAX_SECONDS, RATE_LIMIT_BASE_SECONDS * (2 ** self._cooldown_streak))
-            self._cooldown_streak += 1
+                if now + hinted <= self._cooldown_until:
+                    return
+                delay = hinted
+            else:
+                backoff = min(RATE_LIMIT_MAX_SECONDS, RATE_LIMIT_BASE_SECONDS * (2 ** self._cooldown_streak))
+                self._cooldown_streak += 1
+                delay = max(backoff, hinted)
             self._cooldown_until = now + delay
-        progress(f"qwen-mt 触发限流(HTTP 429),全体暂停 {delay:.0f}s;持续出现请调低 QWEN_MT_RPM / QWEN_MT_TPM")
+        source = f"，服务端 Retry-After {retry_after:.0f}s" if retry_after > 0 else ""
+        progress(f"qwen-mt 触发限流(HTTP 429{source})，全体暂停 {delay:.0f}s；持续出现请调低 QWEN_MT_RPM / QWEN_MT_TPM")
 
     def _succeeded(self, entry: List[float], payload: object) -> None:
         usage = payload.get("usage") if isinstance(payload, dict) else None
@@ -131,14 +178,16 @@ class QwenMt:
                 with urllib.request.urlopen(request, timeout=self.timeout) as response:
                     payload = json.loads(response.read().decode("utf-8"))
             except urllib.error.HTTPError as exc:
-                detail = exc.read().decode("utf-8", errors="replace")[:300]
-                if exc.code in (401, 403):
-                    raise FatalApiError(f"qwen-mt 鉴权失败 HTTP {exc.code}：{detail}") from exc
+                body = exc.read().decode("utf-8", errors="replace")
+                detail = body[:300]
+                codes = error_codes(body)
+                if exc.code in (401, 403) or any(code in FATAL_ERROR_CODES for code in codes):
+                    raise FatalApiError(f"qwen-mt 账号不可用 HTTP {exc.code}：{detail}") from exc
                 if exc.code == 429:
                     throttled += 1
                     if throttled > MAX_RATE_LIMIT_WAITS:
-                        raise ItemError(f"限流重试 {MAX_RATE_LIMIT_WAITS} 次仍失败：HTTP 429") from exc
-                    self._rate_limited()
+                        raise RateLimitError(f"限流重试 {MAX_RATE_LIMIT_WAITS} 次仍失败：HTTP 429") from exc
+                    self._rate_limited(retry_after_seconds(exc.headers.get("Retry-After") if exc.headers else None))
                     continue
                 if exc.code < 500:
                     raise ItemError(f"HTTP {exc.code}：{detail}") from exc

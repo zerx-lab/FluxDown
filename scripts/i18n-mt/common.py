@@ -36,6 +36,10 @@ class ItemError(Exception):
     """单条请求失败（内容审查拦截、参数被拒、重试耗尽），跳过该条继续。"""
 
 
+class RateLimitError(ItemError):
+    """限流冷却已耗尽仍 429：同一时段继续拆条重试只会放大请求量，调用方应直接记失败。"""
+
+
 def short_hash(text: str) -> str:
     """来源锁使用的哈希：UTF-8 sha256 十六进制前 12 位。"""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
@@ -328,6 +332,8 @@ def run_units(translate: Translate, units: List[Unit], workers: int) -> Tuple[Li
         for attempt in unit.attempts:
             try:
                 raw = translate(attempt.text, unit.source_lang, unit.target_lang, attempt.terms, attempt.tm, unit.domains)
+            except RateLimitError as exc:
+                return None, str(exc)
             except ItemError as exc:
                 reason = str(exc)
                 continue
@@ -356,6 +362,8 @@ def run_units(translate: Translate, units: List[Unit], workers: int) -> Tuple[Li
             lines = raw.strip("\n").split("\n")
             if len(lines) != len(group):
                 lines = [line for line in lines if line.strip()]
+        except RateLimitError as exc:
+            return [(index, None, str(exc)) for index in indices]
         except ItemError:
             lines = []
         out = []
@@ -382,18 +390,24 @@ def run_units(translate: Translate, units: List[Unit], workers: int) -> Tuple[Li
     done = 0
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         futures = [pool.submit(batch, indices) for indices in batches]
-        for future in as_completed(futures):
-            for index, value, reason in future.result():
-                done += 1
-                results[index] = value
-                if value is None:
-                    failures[units[index].label] = reason or "unknown"
-                    progress(f"[{title}] 失败 {units[index].label}：{reason or 'unknown'}")
-            if done >= next_report or done == total:
-                next_report = done + step
-                elapsed = time.monotonic() - started
-                eta = elapsed / done * (total - done)
-                progress(f"[{title}] {done}/{total}（{done * 100 // total}%），失败 {len(failures)}，用时 {elapsed:.0f}s，预计剩余 {eta:.0f}s")
+        try:
+            for future in as_completed(futures):
+                for index, value, reason in future.result():
+                    done += 1
+                    results[index] = value
+                    if value is None:
+                        failures[units[index].label] = reason or "unknown"
+                        progress(f"[{title}] 失败 {units[index].label}：{reason or 'unknown'}")
+                if done >= next_report or done == total:
+                    next_report = done + step
+                    elapsed = time.monotonic() - started
+                    eta = elapsed / done * (total - done)
+                    progress(f"[{title}] {done}/{total}（{done * 100 // total}%），失败 {len(failures)}，用时 {elapsed:.0f}s，预计剩余 {eta:.0f}s")
+        except BaseException:
+            # FatalApiError 等整轮中止：取消尚未开始的批次，别让它们继续打接口。
+            for future in futures:
+                future.cancel()
+            raise
     return results, failures
 
 

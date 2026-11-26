@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import email.utils
 import unittest
+from datetime import datetime, timedelta, timezone
 
 from catalogs import TsCatalog, merge_order
 from common import (
     LocaleConfig,
     MemoryPool,
+    RateLimitError,
     check_translation,
     configure_batching,
     numbered_mask,
@@ -17,6 +20,7 @@ from common import (
     translate_catalog,
 )
 from docs import DOCS, DocDraft, DocPlan, align_blocks, heading_slugs, map_anchors, render_doc
+from qwen import FATAL_ERROR_CODES, error_codes, retry_after_seconds
 
 
 def fake_translate(text, source_lang, target_lang, terms, tm, domains):
@@ -150,6 +154,37 @@ class BatchTest(unittest.TestCase):
         self.assertIn("Open\nHi {name}\nClose", calls)
         self.assertIn("Hi {name}", calls)
         self.assertEqual(len(calls), 3)
+
+    def test_rate_limit_exhaustion_does_not_retry_per_item(self):
+        configure_batching(10, 1200)
+        calls = []
+
+        def translate(text, source_lang, target_lang, terms, tm, domains):
+            calls.append(text)
+            raise RateLimitError("限流重试 12 次仍失败：HTTP 429")
+
+        source = {"a": ("Open", "English"), "b": ("Close", "English")}
+        done, failures = translate_catalog(translate, config(), list(source), source, MemoryPool([]), 2)
+        self.assertEqual(done, {})
+        self.assertEqual(set(failures), {"a", "b"})
+        self.assertEqual(calls, ["Open\nClose"])
+
+
+class QwenErrorTest(unittest.TestCase):
+    def test_retry_after_seconds_and_http_date(self):
+        self.assertEqual(retry_after_seconds("30"), 30.0)
+        later = email.utils.format_datetime(datetime.now(timezone.utc) + timedelta(seconds=90), usegmt=True)
+        self.assertAlmostEqual(retry_after_seconds(later), 90.0, delta=2.0)
+        for value in (None, "", "soon", "nan", "-5", "Mon, 01 Jan 2001 00:00:00 GMT"):
+            self.assertEqual(retry_after_seconds(value), 0.0, value)
+
+    def test_error_codes_flag_account_states_only(self):
+        arrearage = '{"error": {"code": "Arrearage", "type": "Arrearage", "message": "Access denied"}}'
+        throttled = '{"error": {"code": "insufficient_quota", "type": "insufficient_quota"}}'
+        self.assertTrue(FATAL_ERROR_CODES.intersection(error_codes(arrearage)))
+        self.assertTrue(FATAL_ERROR_CODES.intersection(error_codes('{"code": "AllocationQuota.FreeTierOnly"}')))
+        self.assertFalse(FATAL_ERROR_CODES.intersection(error_codes(throttled)))
+        self.assertEqual(error_codes("<html>busy</html>"), [])
 
 
 class TsCatalogTest(unittest.TestCase):
