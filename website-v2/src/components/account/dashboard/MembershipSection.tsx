@@ -206,7 +206,9 @@ export default function MembershipSection({ ctx }: { ctx: DashboardCtx }) {
           ) : buyablePlans.length === 0 ? (
             <Panel className="px-6 py-10 text-center text-sm text-muted">{t.membership.plans.empty}</Panel>
           ) : (
-            <div className="cells border border-line sm:grid-cols-2">
+            <div
+              className={`cells border border-line ${buyablePlans.length > 1 ? "sm:grid-cols-2 sm:[&>*:last-child:nth-child(odd)]:col-span-2" : ""}`}
+            >
               {buyablePlans.map((plan) => (
                 <PlanCard key={plan.code} plan={plan} ctx={ctx} signedIn={signedIn} />
               ))}
