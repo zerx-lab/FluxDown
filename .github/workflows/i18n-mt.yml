@@ -72,10 +72,11 @@ jobs:
           TARGET: ${{ inputs.target || 'all' }}
           LOCALES: ${{ inputs.locales || '' }}
           LIMIT: ${{ inputs.limit || 1500 }}
-          DRY_RUN: ${{ inputs.dry_run && '--dry-run' || '' }}
+          DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
         run: |
-          python3 scripts/i18n-mt/main.py "$TARGET" --locales "$LOCALES" --limit "$LIMIT" \
-            --summary "$GITHUB_STEP_SUMMARY" $DRY_RUN
+          args=("$TARGET" --locales "$LOCALES" --limit "$LIMIT" --summary "$GITHUB_STEP_SUMMARY")
+          if [ "$DRY_RUN" = true ]; then args+=(--dry-run); fi
+          python3 scripts/i18n-mt/main.py "${args[@]}"
 
       - name: Detect changes
         id: changes
