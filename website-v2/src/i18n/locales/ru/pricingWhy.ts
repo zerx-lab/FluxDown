@@ -3,57 +3,57 @@ import type { pricingWhy } from "../../messages/pricingWhy";
 
 export default {
   meta: {
-    title: "Why FluxDown Is Introducing Paid Plans — FluxDown",
+    title: "Почему FluxDown вводит платные тарифы — FluxDown",
     description:
-      "Why FluxDown is introducing paid plans, what happens to the original free promise, and exactly what changes (and what never will) for free users.",
+      "Почему FluxDown вводит платные тарифы, что происходит с первоначальным обещанием бесплатности и что именно меняется (и что никогда не изменится) для бесплатных пользователей.",
   },
-  eyebrow: "Pricing explained",
-  title: "Why FluxDown is introducing <em>paid plans</em>",
+  eyebrow: "Объяснение цен",
+  title: "Почему FluxDown вводит <em>платные тарифы</em>",
   intro:
-    "FluxDown started as — and remains — a free, open-source downloader. This page explains honestly why paid plans are coming, what happens to the original promise, and exactly what changes for free users.",
-  back: "Back to pricing",
-  vote: "Vote on the price",
-  contents: "Contents",
-  draftLabel: "Draft",
+    "FluxDown начинался как — и остаётся — бесплатным, открытым загрузчиком. На этой странице честно объясняется, почему появляются платные тарифы, что происходит с первоначальным обещанием и что именно меняется для бесплатных пользователей.",
+  back: "Назад к ценам",
+  vote: "Проголосовать за цену",
+  contents: "Содержание",
+  draftLabel: "Черновик",
   draftNote:
-    "Prices and tiers are a draft — vote and comment to shape the final plan. One thing is not a draft: the local downloader stays fully free, forever.",
+    "Цены и уровни являются черновиком — голосуйте и комментируйте, чтобы сформировать окончательный план. Одно остаётся нечерновым: локальный загрузчик остаётся полностью бесплатным навсегда.",
   sections: [
     {
-      id: "promise",
-      title: "The original promise",
+      id: "обещание",
+      title: "Изначальное обещание",
       body: [
-        "When FluxDown launched we promised a free, open-source download manager. That promise stands: the app is AGPL-3.0 licensed, the full source code stays public, and the downloader you use today keeps working without paying anything.",
-        "Introducing paid plans does not mean putting the downloader behind a paywall. It means giving the project a sustainable way to keep shipping.",
+        "Когда FluxDown только запустился, мы пообещали бесплатный, открытый загрузчик. Это обещание остается в силе: приложение распространяется под лицензией AGPL-3.0, полный исходный код остаётся открытым, и тот загрузчик, которым вы пользуетесь сегодня, продолжит работать без каких-либо платежей.",
+        "Введение платных тарифов не означает, что загрузчик будет закрыт за платным доступом. Это значит, что проект получит устойчивый способ дальнейшего развития.",
       ],
     },
     {
-      id: "why-charge",
-      title: "Why charge at all?",
+      id: "почему-стоимость",
+      title: "Почему вообще взимать плату?",
       body: [
-        "Some upcoming features cannot run on your machine alone: account sync, cross-device task dispatch and CDN-backed delivery all need servers that cost real money every month. Development time is also finite — sustainable funding keeps updates coming.",
-        "Paid plans cover exactly those server-backed capabilities. Donations and sponsorships helped us get here, but they don't scale with server bills.",
+        "Некоторые будущие функции невозможно реализовать на одном устройстве: синхронизация аккаунта, распределение задач между устройствами и доставка через CDN — всё это требует серверов, которые ежемесячно обходятся в реальные деньги. Время разработки тоже ограничено — стабильное финансирование позволяет регулярно выпускать обновления.",
+        "Платные тарифы покрывают именно те возможности, которые опираются на серверную инфраструктуру. Пожертвования и спонсорство помогли нам дойти до этого этапа, но они не растут пропорционально расходам на серверы.",
       ],
     },
     {
-      id: "free-users",
-      title: "Will free users lose anything?",
+      id: "бесплатные-пользователи",
+      title: "Будут ли бесплатные пользователи чем-то лишены?",
       body: [
-        "No. The principle is simple: everything that runs locally stays fully free — every protocol, unlimited threads, the browser extension, themes, plugins and the local API. There will never be artificial limits like capping free users to 8 threads — not now, not ever. Paid plans only add cloud-backed services on top.",
+        "Нет. Принцип прост: всё, что работает локально, остаётся полностью бесплатным — любые протоколы, неограниченное количество потоков, расширение браузера, темы, плагины и локальный API. Никогда не будет искусственных ограничений, таких как лимит в 8 потоков для бесплатных пользователей — ни сейчас, ни в будущем. Платные тарифы лишь добавляют облачные сервисы поверх этого.",
       ],
     },
     {
-      id: "decide",
-      title: "Help decide",
+      id: "решить",
+      title: "Помогите принять решение",
       body: [
-        "Price points are still open. The poll and discussion feed directly into the final decision — every vote and comment is recorded publicly in a GitHub issue.",
+        "Ценовые параметры пока не определены. Опрос и обсуждение напрямую влияют на окончательное решение — каждый голос и комментарий публично фиксируются в задаче на GitHub.",
       ],
     },
   ],
   afterTable:
-    "In other words, free and premium download exactly the same way. The differences are only services that run on our servers — cloud sync, cross-device dispatch, priority support — plus more premium features we'll keep adding over time. And FluxDown stays open source: nothing about the license changes.",
-  selfHostTitle: "One more promise: a self-hosted path, wherever we can",
+    "Другими словами, бесплатные и премиум-скачивания выполняются точно так же. Различия заключаются лишь в сервисах, работающих на наших серверах — облачная синхронизация, распределение задач между устройствами, приоритетная поддержка — а также в дополнительных премиум-функциях, которые мы будем добавлять со временем. При этом FluxDown остается открытым исходным кодом: лицензия не меняется.",
+  selfHostTitle: "Еще одно обещание: собственный путь, где бы мы ни могли.",
   selfHostBody:
-    "You'll never be forced onto our servers. Wherever a feature depends on the cloud, we'll do our best to keep a self-hosted alternative open: webhook notifications already work with your own endpoint on any plan, and multi-device connectivity can be built on your own tunnel or private network (e.g. frp or Tailscale) pointing at your own headless server. What paid plans buy is convenience — it works out of the box and we run the servers for you — never a lock-in.",
-  cta: "Vote on the price",
-  ctaSecondary: "See plans",
+    "Вас никогда не заставят переносить данные на наши серверы. Там, где какая-либо функция зависит от облачных сервисов, мы постараемся предоставить возможность использовать самостоятельно развернутую альтернативу: уведомления через вебхук уже работают с вашей собственной точкой приёма на любом тарифе, а многоплатформенная связь может быть организована через ваш собственный туннель или частную сеть (например, frp или Tailscale), подключённые к вашему безголовому серверу. Платные тарифы обеспечивают удобство — всё работает «из коробки», и мы сами обслуживаем серверы; при этом вы не попадаете в условия привязки к провайдеру.",
+  cta: "Проголосуйте за цену",
+  ctaSecondary: "Посмотреть тарифы",
 } satisfies (typeof pricingWhy)["en"];

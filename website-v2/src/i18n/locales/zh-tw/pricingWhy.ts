@@ -3,57 +3,57 @@ import type { pricingWhy } from "../../messages/pricingWhy";
 
 export default {
   meta: {
-    title: "Why FluxDown Is Introducing Paid Plans — FluxDown",
+    title: "為什麼 FluxDown 將推出付費方案 — FluxDown",
     description:
-      "Why FluxDown is introducing paid plans, what happens to the original free promise, and exactly what changes (and what never will) for free users.",
+      "為什麼 FluxDown 要推出付費方案，原本的免費承諾會有什麼變化，以及免費使用者究竟會有哪些改變（和永遠不會改變的地方）。",
   },
-  eyebrow: "Pricing explained",
-  title: "Why FluxDown is introducing <em>paid plans</em>",
+  eyebrow: "價格說明",
+  title: "為什麼 FluxDown 要推出<em>付費方案</em>",
   intro:
-    "FluxDown started as — and remains — a free, open-source downloader. This page explains honestly why paid plans are coming, what happens to the original promise, and exactly what changes for free users.",
-  back: "Back to pricing",
-  vote: "Vote on the price",
-  contents: "Contents",
-  draftLabel: "Draft",
+    "FluxDown 最初是——並且仍然是——一款免費的開源下載器。本頁誠實地說明了為什麼要推出付費方案、原本的承諾會有什麼變化，以及免費使用者究竟會有哪些改變。",
+  back: "返回價格頁面",
+  vote: "為價格投票",
+  contents: "目錄",
+  draftLabel: "草案",
   draftNote:
-    "Prices and tiers are a draft — vote and comment to shape the final plan. One thing is not a draft: the local downloader stays fully free, forever.",
+    "價格和等級目前只是草案——請投票並留言，以形塑最終的方案。有一件事不是草案：本地下載器將永遠保持完全免費。",
   sections: [
     {
-      id: "promise",
-      title: "The original promise",
+      id: "承諾",
+      title: "最初的承諾",
       body: [
-        "When FluxDown launched we promised a free, open-source download manager. That promise stands: the app is AGPL-3.0 licensed, the full source code stays public, and the downloader you use today keeps working without paying anything.",
-        "Introducing paid plans does not mean putting the downloader behind a paywall. It means giving the project a sustainable way to keep shipping.",
+        "當 FluxDown 創立時，我們承諾提供一款免費的開源下載管理器。這個承諾依然有效：該應用採用 AGPL-3.0 許可證，完整原始碼公開，而您今天使用的下載器無需支付任何費用即可持續運作。",
+        "推出付費方案並不意味著將下載器置於付費牆後。這意味著為專案提供一種可持續發展的方式，以確保未來仍能不斷推出新功能。",
       ],
     },
     {
-      id: "why-charge",
-      title: "Why charge at all?",
+      id: "為什麼要收費",
+      title: "為什麼還要收費？",
       body: [
-        "Some upcoming features cannot run on your machine alone: account sync, cross-device task dispatch and CDN-backed delivery all need servers that cost real money every month. Development time is also finite — sustainable funding keeps updates coming.",
-        "Paid plans cover exactly those server-backed capabilities. Donations and sponsorships helped us get here, but they don't scale with server bills.",
+        "一些即將推出的機能無法單獨在您的裝置上運行：帳號同步、跨裝置任務調度以及由 CDN 支援的傳輸都需要伺服器，而這些伺服器每月都會產生實際成本。開發時間也是有限的——穩定的資金來源才能確保更新如期推出。",
+        "付費方案僅涵蓋那些需要伺服器支援的功能。捐款與贊助曾幫助我們走到今天，但它們無法跟上伺服器費用的增長。",
       ],
     },
     {
-      id: "free-users",
-      title: "Will free users lose anything?",
+      id: "免費用戶",
+      title: "免費用戶會失去什麼嗎？",
       body: [
-        "No. The principle is simple: everything that runs locally stays fully free — every protocol, unlimited threads, the browser extension, themes, plugins and the local API. There will never be artificial limits like capping free users to 8 threads — not now, not ever. Paid plans only add cloud-backed services on top.",
+        "不會。原則很簡單：所有在本地運行的功能都將完全免費——無論是哪種協定、不限線程數量、瀏覽器擴充功能、主題、外掛，還是本地 API。我們絕不會對免費用戶設定人為限制，例如將線程數上限設為 8 個——現在不會，未來也不會。付費方案只會額外提供雲端支援的服務。",
       ],
     },
     {
-      id: "decide",
-      title: "Help decide",
+      id: "稍後決定",
+      title: "協助決定",
       body: [
-        "Price points are still open. The poll and discussion feed directly into the final decision — every vote and comment is recorded publicly in a GitHub issue.",
+        "價格定點仍開放中。投票和討論將直接影響最終決策——每一個投票和留言都會公開記錄在 GitHub 的議題中。",
       ],
     },
   ],
   afterTable:
-    "In other words, free and premium download exactly the same way. The differences are only services that run on our servers — cloud sync, cross-device dispatch, priority support — plus more premium features we'll keep adding over time. And FluxDown stays open source: nothing about the license changes.",
-  selfHostTitle: "One more promise: a self-hosted path, wherever we can",
+    "換句話說，免費版和付費版的下載方式完全相同。兩者的差異僅在於我們伺服器上提供的服務——雲端同步、跨裝置調度、優先支援——以及未來將持續新增的更多付費功能。而 FluxDown 仍維持開源：授權條款並無任何變更。",
+  selfHostTitle: "再給你一個承諾：只要可行，我們會提供自架設的選項。",
   selfHostBody:
-    "You'll never be forced onto our servers. Wherever a feature depends on the cloud, we'll do our best to keep a self-hosted alternative open: webhook notifications already work with your own endpoint on any plan, and multi-device connectivity can be built on your own tunnel or private network (e.g. frp or Tailscale) pointing at your own headless server. What paid plans buy is convenience — it works out of the box and we run the servers for you — never a lock-in.",
-  cta: "Vote on the price",
-  ctaSecondary: "See plans",
+    "你永遠不會被迫使用我們的伺服器。凡是需要依賴雲端的功能，我們都會盡力提供自架設的替代方案：例如，Webhook 通知在任何方案下都可與你自己的終端點搭配使用；多裝置連線也可以透過你自己的隧道或私人網路（如 frp 或 Tailscale）連接到你自己的無頭伺服器來實現。付費方案所帶來的只是便利性——它開箱即用，且由我們負責運營伺服器——絕不會讓你被綁定。",
+  cta: "為價格投票",
+  ctaSecondary: "查看方案",
 } satisfies (typeof pricingWhy)["en"];

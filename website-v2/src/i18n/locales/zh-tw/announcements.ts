@@ -3,15 +3,15 @@ import type { announcements } from "../../messages/announcements";
 
 export default {
   meta: {
-    title: "Announcements — FluxDown",
-    description: "News, community events and security notices from the FluxDown team.",
+    title: "公告 — FluxDown",
+    description: "來自 FluxDown 團隊的新聞、社群活動及安全通知。",
   },
-  eyebrow: "Announcements",
-  title: "News from the <em>team</em>",
-  lede: "Community events, votes and security notices, newest first.",
-  active: "Active",
-  ended: "Ended",
-  open: "Open",
-  empty: "No announcements yet.",
-  count: (n: number) => `${n} announcement${n === 1 ? "" : "s"}`,
+  eyebrow: "公告",
+  title: "來自<em>團隊</em>的最新消息",
+  lede: "社群活動、投票及安全通知，按時間由新到舊排列。",
+  active: "進行中",
+  ended: "已結束",
+  open: "開放中",
+  empty: "目前尚無任何公告。",
+  count: (n: number) => `${n}則公告${n === 1 ? "" : "s"}`,
 } satisfies (typeof announcements)["en"];

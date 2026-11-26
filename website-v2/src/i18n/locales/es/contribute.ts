@@ -2,34 +2,34 @@
 import type { contribute } from "../../messages/contribute";
 
 export default {
-  eyebrow: "Contribute",
-  title: "Build FluxDown <em>with us</em>",
-  lede: "FluxDown is spread across a few public repositories. Pick what you want to share — a plugin, a theme, a sniffing rule, a translation or a docs fix — and each guide walks you through it.",
-  overview: "Ways to contribute",
-  guide: "Read the guide",
-  repo: "Repository",
+  eyebrow: "Contribuir",
+  title: "Construye FluxDown <em>con nosotros</em>",
+  lede: "FluxDown está distribuido en varios repositorios públicos. Elige lo que quieras compartir: un complemento, un tema, una regla de detección, una traducción o una corrección en la documentación, y cada guía te lo explica paso a paso.",
+  overview: "Formas de contribuir",
+  guide: "Leer la guía",
+  repo: "Repositorio",
   areas: {
     plugins: {
-      title: "Plugins",
-      desc: "Publish resolvers, hooks and views to the plugin market. Your plugin stays in your own repository; register it once in the index.",
+      title: "Complementos",
+      desc: "Publica resolutores, hooks y vistas en el mercado de complementos. Tu complemento permanece en tu propio repositorio; regístralo una vez en el índice.",
     },
     themes: {
-      title: "Themes",
-      desc: "Share a color scheme in the theme market. Design it in the Theme Builder, then open a pull request with the JSON and screenshots.",
+      title: "Temas",
+      desc: "Comparte un esquema de colores en el mercado de temas. Diseñalo en el Constructor de Temas y luego abre una solicitud de extracción con el JSON y las capturas de pantalla.",
     },
     sniffRules: {
-      title: "Sniffing rules",
-      desc: "Teach the browser extension a new site. Maintain your own rule repository or submit a one-off rule through an issue form.",
+      title: "Reglas de detección del navegador",
+      desc: "Enséñale a la extensión del navegador un nuevo sitio. Mantén tu propio repositorio de reglas o envía una regla puntual mediante un formulario de incidencias.",
     },
     translations: {
-      title: "Translations",
-      desc: "Bring the desktop, mobile and Web apps to your language. Partial translations are welcome — missing strings fall back to English.",
+      title: "Traducciones",
+      desc: "Lleva las aplicaciones de escritorio, móvil y web a tu idioma. Se aceptan traducciones parciales: las cadenas faltantes se muestran en inglés.",
     },
     docs: {
-      title: "Docs & code",
-      desc: "Fix a page, add a guide or send a patch. Every docs page links to its source; pull requests go to the main branch.",
+      title: "Documentación y código",
+      desc: "Corrige una página, añade una guía o envía un parche. Cada página de documentación enlaza con su fuente; las solicitudes de extracción se envían a la rama principal.",
     },
   },
-  sdk: "Plugin SDK",
-  sdkDesc: "fluxdown-plugin-sdk on npm",
+  sdk: "SDK del complemento",
+  sdkDesc: "fluxdown-plugin-sdk en npm",
 } satisfies (typeof contribute)["en"];

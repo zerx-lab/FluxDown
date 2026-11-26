@@ -2,14 +2,14 @@
 import type { film } from "../../messages/film";
 
 export default {
-  title: "FluxDown — the film",
-  tagline: "The download manager, rebuilt in Rust.",
+  title: "FluxDown — 影片",
+  tagline: "以 Rust 重新建構的下載管理員。",
   captions: [
-    { k: "01", v: "Paste any link." },
-    { k: "02", v: "It splits itself — 1 → 16 connections." },
-    { k: "03", v: "Close the window. It keeps going." },
+    { k: "01", v: "貼上任何連結。" },
+    { k: "02", v: "自動分割——1 → 16 條連線。" },
+    { k: "03", v: "關閉視窗，它仍會繼續執行。" },
   ],
-  endTitle: "Download anything.",
-  endAccent: "Natively fast.",
-  endMeta: "macOS · Windows · Linux — free & open source",
+  endTitle: "下載任何內容。",
+  endAccent: "原生快速。",
+  endMeta: "macOS · Windows · Linux — 免費且開源",
 } satisfies (typeof film)["en"];

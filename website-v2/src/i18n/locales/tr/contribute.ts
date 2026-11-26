@@ -2,34 +2,34 @@
 import type { contribute } from "../../messages/contribute";
 
 export default {
-  eyebrow: "Contribute",
-  title: "Build FluxDown <em>with us</em>",
-  lede: "FluxDown is spread across a few public repositories. Pick what you want to share — a plugin, a theme, a sniffing rule, a translation or a docs fix — and each guide walks you through it.",
-  overview: "Ways to contribute",
-  guide: "Read the guide",
-  repo: "Repository",
+  eyebrow: "Katıl",
+  title: "FluxDown'u <em>bizimle birlikte</em> geliştirin",
+  lede: "FluxDown birkaç halka açık depoda dağılmış durumda. Paylaşmak istediğiniz şeyi seçin — bir eklenti, bir tema, bir izleme kuralı, bir çeviri veya belgelerdeki bir düzeltme — ve her kılavuz sizi adım adım yönlendirecektir.",
+  overview: "Katılım yolları",
+  guide: "Kılavuzu okuyun",
+  repo: "Depo",
   areas: {
     plugins: {
-      title: "Plugins",
-      desc: "Publish resolvers, hooks and views to the plugin market. Your plugin stays in your own repository; register it once in the index.",
+      title: "Eklentiler",
+      desc: "Çözücüler, hook'lar ve görünümleri eklenti pazarına yayınlayın. Eklentiniz kendi deponuzda kalır; bunu dizinde bir kez kaydedin.",
     },
     themes: {
-      title: "Themes",
-      desc: "Share a color scheme in the theme market. Design it in the Theme Builder, then open a pull request with the JSON and screenshots.",
+      title: "Temalar",
+      desc: "Tema pazarında bir renk paleti paylaşın. Tema Oluşturucu'da tasarlayın, ardından JSON ve ekran görüntülerini içeren bir çekme isteği açın.",
     },
     sniffRules: {
-      title: "Sniffing rules",
-      desc: "Teach the browser extension a new site. Maintain your own rule repository or submit a one-off rule through an issue form.",
+      title: "Tarayıcı algılama kuralları",
+      desc: "Tarayıcı uzantısına yeni bir site öğretin. Kendi kural deposunuzu yönetin veya bir sorun formu aracılığıyla tek seferlik bir kural gönderin.",
     },
     translations: {
-      title: "Translations",
-      desc: "Bring the desktop, mobile and Web apps to your language. Partial translations are welcome — missing strings fall back to English.",
+      title: "Çeviriler",
+      desc: "Masaüstü, mobil ve web uygulamalarını kendi dilinize uyarlayın. Kısmi çeviriler de kabul edilir — eksik dize İngilizceye geri dönerek gösterilir.",
     },
     docs: {
-      title: "Docs & code",
-      desc: "Fix a page, add a guide or send a patch. Every docs page links to its source; pull requests go to the main branch.",
+      title: "Belgeler ve kod",
+      desc: "Bir sayfayı düzeltin, bir kılavuz ekleyin veya bir yama gönderin. Her belge sayfası kaynağına bağlantı verir; çekme istekleri ana dalına gönderilir.",
     },
   },
-  sdk: "Plugin SDK",
-  sdkDesc: "fluxdown-plugin-sdk on npm",
+  sdk: "Eklenti SDK'sı",
+  sdkDesc: "npm'de fluxdown-plugin-sdk",
 } satisfies (typeof contribute)["en"];

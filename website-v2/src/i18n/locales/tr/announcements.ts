@@ -3,15 +3,15 @@ import type { announcements } from "../../messages/announcements";
 
 export default {
   meta: {
-    title: "Announcements — FluxDown",
-    description: "News, community events and security notices from the FluxDown team.",
+    title: "Duyurular — FluxDown",
+    description: "FluxDown ekibinden haberler, topluluk etkinlikleri ve güvenlik uyarıları.",
   },
-  eyebrow: "Announcements",
-  title: "News from the <em>team</em>",
-  lede: "Community events, votes and security notices, newest first.",
-  active: "Active",
-  ended: "Ended",
-  open: "Open",
-  empty: "No announcements yet.",
-  count: (n: number) => `${n} announcement${n === 1 ? "" : "s"}`,
+  eyebrow: "Duyurular",
+  title: "<em>ekip</em>den haberler",
+  lede: "Topluluk etkinlikleri, oylamalar ve güvenlik uyarıları, en yeniler başta.",
+  active: "Aktif",
+  ended: "Bitmiş",
+  open: "Açık",
+  empty: "Henüz duyuru yok.",
+  count: (n: number) => `${n} duyuru${n === 1 ? "" : "s"}`,
 } satisfies (typeof announcements)["en"];

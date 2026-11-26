@@ -142,10 +142,9 @@ export default defineConfig({
     checkOrigin: false,
   },
 
-  // 日文站点已下线;旧链接永久跳转到英文首页。
   // macOS 构建已签名 + 公证,「已损坏」指南下线;旧链接跳下载页。
+  // (旧日文站的 `/ja` → `/` 跳转已删除:ja 重新作为站点语言,保留它会与自动语言跳转互相循环。)
   redirects: {
-    "/ja": { status: 301, destination: `${BASE}/` },
     "/macos-gatekeeper": { status: 301, destination: `${BASE}/download/` },
     "/zh/macos-gatekeeper": { status: 301, destination: `${BASE}/zh/download/` },
   },

@@ -2,14 +2,14 @@
 import type { film } from "../../messages/film";
 
 export default {
-  title: "FluxDown — the film",
-  tagline: "The download manager, rebuilt in Rust.",
+  title: "FluxDown — film",
+  tagline: "Rust dilinde yeniden geliştirilen indirme yöneticisi.",
   captions: [
-    { k: "01", v: "Paste any link." },
-    { k: "02", v: "It splits itself — 1 → 16 connections." },
-    { k: "03", v: "Close the window. It keeps going." },
+    { k: "01", v: "Herhangi bir bağlantıyı yapıştırın." },
+    { k: "02", v: "Kendini 1 → 16 bağlantıya ayırır." },
+    { k: "03", v: "Pencereyi kapatın. İşlem devam eder." },
   ],
-  endTitle: "Download anything.",
-  endAccent: "Natively fast.",
-  endMeta: "macOS · Windows · Linux — free & open source",
+  endTitle: "Her şeyi indirin.",
+  endAccent: "Doğal olarak hızlı.",
+  endMeta: "macOS · Windows · Linux — ücretsiz ve açık kaynaklı",
 } satisfies (typeof film)["en"];

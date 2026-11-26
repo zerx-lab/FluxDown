@@ -2,34 +2,34 @@
 import type { contribute } from "../../messages/contribute";
 
 export default {
-  eyebrow: "Contribute",
-  title: "Build FluxDown <em>with us</em>",
-  lede: "FluxDown is spread across a few public repositories. Pick what you want to share — a plugin, a theme, a sniffing rule, a translation or a docs fix — and each guide walks you through it.",
-  overview: "Ways to contribute",
-  guide: "Read the guide",
-  repo: "Repository",
+  eyebrow: "Внести вклад",
+  title: "Соберите FluxDown <em>с нами</em>",
+  lede: "FluxDown распределён по нескольким публичным репозиториям. Выберите, чем хотите поделиться — плагином, темой, правилом для обнаружения протоколов, переводом или исправлением документации — и каждое руководство проведёт вас через этот процесс.",
+  overview: "Способы вклада",
+  guide: "Читать руководство",
+  repo: "Репозиторий",
   areas: {
     plugins: {
-      title: "Plugins",
-      desc: "Publish resolvers, hooks and views to the plugin market. Your plugin stays in your own repository; register it once in the index.",
+      title: "Плагины",
+      desc: "Публикуйте резолверы, хуки и виджеты на рынок плагинов. Ваш плагин остаётся в вашем собственном репозитории; зарегистрируйте его один раз в индексе.",
     },
     themes: {
-      title: "Themes",
-      desc: "Share a color scheme in the theme market. Design it in the Theme Builder, then open a pull request with the JSON and screenshots.",
+      title: "Темы",
+      desc: "Поделитесь цветовой схемой на рынке тем. Создайте её в Конструкторе тем, затем отправьте pull-запрос с JSON-файлом и скриншотами.",
     },
     sniffRules: {
-      title: "Sniffing rules",
-      desc: "Teach the browser extension a new site. Maintain your own rule repository or submit a one-off rule through an issue form.",
+      title: "Правила сниффинга",
+      desc: "Научите расширение браузера новому сайту. Поддерживайте собственный репозиторий правил или отправьте одноразовое правило через форму обращения.",
     },
     translations: {
-      title: "Translations",
-      desc: "Bring the desktop, mobile and Web apps to your language. Partial translations are welcome — missing strings fall back to English.",
+      title: "Переводы",
+      desc: "Переведите десктопное, мобильное и веб-приложения на ваш язык. Приветствуются частичные переводы — недостающие строки отображаются на английском языке.",
     },
     docs: {
-      title: "Docs & code",
-      desc: "Fix a page, add a guide or send a patch. Every docs page links to its source; pull requests go to the main branch.",
+      title: "Документация и код",
+      desc: "Исправьте страницу, добавьте руководство или отправьте патч. Каждая страница документации ссылается на свой исходный код; pull-запросы направляются в основную ветку.",
     },
   },
-  sdk: "Plugin SDK",
-  sdkDesc: "fluxdown-plugin-sdk on npm",
+  sdk: "SDK для плагинов",
+  sdkDesc: "fluxdown-plugin-sdk на npm",
 } satisfies (typeof contribute)["en"];

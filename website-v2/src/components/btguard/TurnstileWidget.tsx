@@ -10,9 +10,21 @@ const TURNSTILE_LANG: Record<Lang, string> = {
   en: "en",
   zh: "zh-cn",
   "zh-tw": "zh-tw",
+  ja: "ja",
+  ko: "ko",
   es: "es",
+  "pt-br": "pt-br",
+  fr: "fr",
+  de: "de",
+  it: "it",
+  nl: "nl",
+  pl: "pl",
   ru: "ru",
+  uk: "uk",
   tr: "tr",
+  vi: "vi",
+  id: "id",
+  th: "th",
 };
 
 interface TurnstileApi {

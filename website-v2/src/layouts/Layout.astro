@@ -145,29 +145,68 @@ const loadAnalytics = import.meta.env.PROD && BASE === "";
          langHrefs 为 null 的页面(显式语言 URL)直接跳过。 -->
     <script is:inline define:vars={{ langHrefs: autoLangHrefs, langs: LANGS }}>
       (function () {
-        if (!langHrefs) return;
+        if (!langHrefs) {
+          // 已到达目标语言页:清掉防循环标记,之后回到英文页仍可正常自动跳转。
+          try { sessionStorage.removeItem("fluxdown-auto-lang"); } catch (e) {}
+          return;
+        }
         function match(tag) {
-          tag = String(tag).trim().toLowerCase();
+          tag = String(tag).trim().toLowerCase().replace(/_/g, "-");
           if (tag.indexOf("zh") === 0) {
             if (/(^|-)hans(-|$)/.test(tag)) return "zh";
             if (/(^|-)hant(-|$)/.test(tag) || /-(tw|hk|mo)(-|$)/.test(tag)) return "zh-tw";
             return "zh";
           }
+          if (langs.indexOf(tag) >= 0) return tag;
           var primary = tag.split("-")[0];
-          return langs.indexOf(primary) >= 0 ? primary : null;
+          if (primary === "in") primary = "id";
+          for (var i = 0; i < langs.length; i++) {
+            if (langs[i].split("-")[0] === primary) return langs[i];
+          }
+          return null;
         }
-        var pref = null;
-        try { pref = localStorage.getItem("fluxdown-locale"); } catch (e) {}
-        if (langs.indexOf(pref) < 0) {
+        var LOCALE_KEY = "fluxdown-locale";
+        var stored = null;
+        try { stored = localStorage.getItem(LOCALE_KEY); } catch (e) {}
+        if (langs.indexOf(stored) < 0) {
           var m = document.cookie.match(/(?:^|;\s*)fluxdown-locale=([\w-]+)(?:;|$)/);
-          pref = m && langs.indexOf(m[1]) >= 0 ? m[1] : null;
+          stored = m && langs.indexOf(m[1]) >= 0 ? m[1] : null;
         }
-        if (!pref) {
+        // 显式选了英文:留在本页。
+        if (stored && !langHrefs[stored]) return;
+        // 防循环:浏览器可能缓存了历史 301(旧站 `/ja` → `/`),跳过去又被打回本页。
+        // 本会话已自动跳过、却又回到这里的目标视为不可达,改用下一个候选。
+        var guardKey = "fluxdown-auto-lang";
+        var blocked = null;
+        try { blocked = sessionStorage.getItem(guardKey); } catch (e) {}
+        var candidates = [];
+        if (stored) {
+          if (langHrefs[stored] === blocked) {
+            // 已保存的选择在本浏览器跳不过去(多为旧站遗留的 ja):作废,回到按系统语言判定。
+            try { localStorage.removeItem(LOCALE_KEY); } catch (e) {}
+            document.cookie = LOCALE_KEY + "=; Path=/; Max-Age=0; SameSite=Lax";
+          } else {
+            candidates.push(stored);
+          }
+        }
+        if (!candidates.length) {
           if (/bot|crawl|spider|slurp|lighthouse|headless/i.test(navigator.userAgent)) return;
           var tags = navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || ""];
-          for (var i = 0; i < tags.length && !pref; i++) pref = match(tags[i]);
+          for (var i = 0; i < tags.length; i++) {
+            var lang = match(tags[i]);
+            if (!lang) continue;
+            // 系统语言列表里英文排在前面(如 en-US 在前):按英文用户处理,不再看后面的语言。
+            if (!langHrefs[lang]) break;
+            candidates.push(lang);
+          }
         }
-        if (pref && langHrefs[pref]) location.replace(langHrefs[pref] + location.search + location.hash);
+        for (var j = 0; j < candidates.length; j++) {
+          var target = langHrefs[candidates[j]];
+          if (!target || target === blocked) continue;
+          try { sessionStorage.setItem(guardKey, target); } catch (e) {}
+          location.replace(target + location.search + location.hash);
+          return;
+        }
       })();
     </script>
 

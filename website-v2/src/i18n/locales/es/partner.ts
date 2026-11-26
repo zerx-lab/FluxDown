@@ -3,14 +3,14 @@ import type { partner } from "../../messages/partner";
 
 export default {
   meta: {
-    title: "Authorization Certificate — FluxDown",
-    description: "FluxDown authorizes DIGITALYCHEE as its official partner in China.",
+    title: "Certificado de autorización — FluxDown",
+    description: "FluxDown autoriza a DIGITALYCHEE como su socio oficial en China.",
   },
-  figCaption: "authorization certificate",
+  figCaption: "certificado de autorización",
   logoAlt: "DIGITALYCHEE",
-  title: "Authorization Certificate",
-  statement: "FluxDown authorizes DIGITALYCHEE as its official partner in China",
-  productsLabel: "Responsible for the sales of the following product(s)",
-  channelsLabel: "Authorized sales channels",
-  verify: "This page is the only official proof of authorization",
+  title: "Certificado de autorización",
+  statement: "FluxDown autoriza a DIGITALYCHEE como su socio oficial en China",
+  productsLabel: "Responsable de las ventas del/los siguiente(s) producto(s)",
+  channelsLabel: "Canales autorizados",
+  verify: "Esta página es la única prueba oficial de autorización",
 } satisfies (typeof partner)["en"];

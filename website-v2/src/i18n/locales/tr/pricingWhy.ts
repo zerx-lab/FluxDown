@@ -3,57 +3,57 @@ import type { pricingWhy } from "../../messages/pricingWhy";
 
 export default {
   meta: {
-    title: "Why FluxDown Is Introducing Paid Plans — FluxDown",
+    title: "FluxDown Neden Ücretli Planlar Sunuyor — FluxDown",
     description:
-      "Why FluxDown is introducing paid plans, what happens to the original free promise, and exactly what changes (and what never will) for free users.",
+      "FluxDown neden ücretli planlar sunuyor, orijinal ücretsiz vaat ne olacak ve ücretsiz kullanıcılar için tam olarak neler değişiyor (ve asla değişmeyecek)?",
   },
-  eyebrow: "Pricing explained",
-  title: "Why FluxDown is introducing <em>paid plans</em>",
+  eyebrow: "Fiyatlandırma açıklaması",
+  title: "FluxDown neden <em>ücretli planlar</em> sunuyor",
   intro:
-    "FluxDown started as — and remains — a free, open-source downloader. This page explains honestly why paid plans are coming, what happens to the original promise, and exactly what changes for free users.",
-  back: "Back to pricing",
-  vote: "Vote on the price",
-  contents: "Contents",
-  draftLabel: "Draft",
+    "FluxDown — ve hâlâ da öyle — ücretsiz, açık kaynaklı bir indirme yöneticisi olarak başladı. Bu sayfa, ücretli planların neden geldiğini, orijinal vaatin akıbetini ve ücretsiz kullanıcılar için tam olarak nelerin değişeceğini dürüstçe açıklıyor.",
+  back: "Fiyatlamaya geri dön",
+  vote: "Fiyat için oy ver",
+  contents: "İçindekiler",
+  draftLabel: "Taslak",
   draftNote:
-    "Prices and tiers are a draft — vote and comment to shape the final plan. One thing is not a draft: the local downloader stays fully free, forever.",
+    "Fiyatlar ve katmanlar bir taslaktır — nihai planı şekillendirmek için oy verin ve yorum yapın. Taslak olmayan tek şey ise şudur: yerel indirme yöneticisi sonsuza dek tamamen ücretsiz kalacaktır.",
   sections: [
     {
-      id: "promise",
-      title: "The original promise",
+      id: "vaat",
+      title: "Orijinal vaat",
       body: [
-        "When FluxDown launched we promised a free, open-source download manager. That promise stands: the app is AGPL-3.0 licensed, the full source code stays public, and the downloader you use today keeps working without paying anything.",
-        "Introducing paid plans does not mean putting the downloader behind a paywall. It means giving the project a sustainable way to keep shipping.",
+        "FluxDown’ı piyasaya sunduğumuzda ücretsiz, açık kaynaklı bir indirme yöneticisi vaat ettik. Bu vaat hâlâ geçerlidir: uygulama AGPL-3.0 lisanslıdır, tam kaynak kodu her zaman halka açıktır ve bugün kullandığınız indirici hiçbir ücret ödemeden çalışmaya devam eder.",
+        "Ücretli planlar sunmak, indiriciyi ödeme duvarının arkasına kapatmak anlamına gelmez. Bu, projeye sürdürülebilir bir şekilde ilerlemesini sağlayacak bir yol tanımaktır.",
       ],
     },
     {
-      id: "why-charge",
-      title: "Why charge at all?",
+      id: "neden-fiyatlandirma",
+      title: "Neden hiç ücret alalım ki?",
       body: [
-        "Some upcoming features cannot run on your machine alone: account sync, cross-device task dispatch and CDN-backed delivery all need servers that cost real money every month. Development time is also finite — sustainable funding keeps updates coming.",
-        "Paid plans cover exactly those server-backed capabilities. Donations and sponsorships helped us get here, but they don't scale with server bills.",
+        "Önümüzdeki bazı özellikler yalnızca sizin cihazınızda çalışamaz: hesap eşitlemesi, cihazlar arası görev dağıtımı ve CDN destekli dağıtımın tümü her ay gerçek maliyetleri olan sunucular gerektirir. Geliştirme süresi de sınırlıdır; sürdürülebilir finansman güncellemelerin devam etmesini sağlar.",
+        "Ücretli planlar tam olarak bu sunucu tabanlı yetenekleri kapsar. Bağışlar ve sponsorluklar bize buraya gelmemize yardımcı oldu, ancak sunucu masraflarıyla orantılı olarak büyüyemezler.",
       ],
     },
     {
-      id: "free-users",
-      title: "Will free users lose anything?",
+      id: "bedava-kullanicilar",
+      title: "Bedava kullanıcılar herhangi bir şey kaybedecek mi?",
       body: [
-        "No. The principle is simple: everything that runs locally stays fully free — every protocol, unlimited threads, the browser extension, themes, plugins and the local API. There will never be artificial limits like capping free users to 8 threads — not now, not ever. Paid plans only add cloud-backed services on top.",
+        "Hayır. Prensip basit: yerel olarak çalışan her şey tamamen ücretsiz kalır — her protokol, sınırsız iş parçacığı, tarayıcı uzantısı, temalar, eklentiler ve yerel API. Bedava kullanıcıları 8 iş parçacığıyla sınırlandırmak gibi yapay kısıtlamalar asla olmayacak — ne şimdi, ne de gelecekte. Ücretli planlar sadece bunların üzerine bulut destekli hizmetler ekler.",
       ],
     },
     {
-      id: "decide",
-      title: "Help decide",
+      id: "Daha sonra karar ver",
+      title: "Karar vermeye yardımcı olun",
       body: [
-        "Price points are still open. The poll and discussion feed directly into the final decision — every vote and comment is recorded publicly in a GitHub issue.",
+        "Fiyat seviyeleri hala açık. Anket ve tartışma doğrudan nihai karara yansıyor — her oy ve yorum GitHub sorunsalında halka açık olarak kaydediliyor.",
       ],
     },
   ],
   afterTable:
-    "In other words, free and premium download exactly the same way. The differences are only services that run on our servers — cloud sync, cross-device dispatch, priority support — plus more premium features we'll keep adding over time. And FluxDown stays open source: nothing about the license changes.",
-  selfHostTitle: "One more promise: a self-hosted path, wherever we can",
+    "Başka bir deyişle, ücretsiz ve premium indirme tamamen aynı şekilde gerçekleşiyor. Farklılıklar yalnızca sunucularımızda çalışan hizmetlerde — bulut eşitlemesi, cihazlar arası dağıtım, öncelikli destek — ve zamanla ekleyeceğimiz daha fazla premium özelliğe dayanıyor. Ve FluxDown açık kaynak olarak kalıyor: lisansla ilgili hiçbir şey değişmiyor.",
+  selfHostTitle: "Bir söz daha: mümkün olduğu her yerde kendi barındırma seçeneği",
   selfHostBody:
-    "You'll never be forced onto our servers. Wherever a feature depends on the cloud, we'll do our best to keep a self-hosted alternative open: webhook notifications already work with your own endpoint on any plan, and multi-device connectivity can be built on your own tunnel or private network (e.g. frp or Tailscale) pointing at your own headless server. What paid plans buy is convenience — it works out of the box and we run the servers for you — never a lock-in.",
-  cta: "Vote on the price",
-  ctaSecondary: "See plans",
+    "Hiçbir zaman sunucularımıza zorlanmayacaksınız. Bir özellik ne zaman buluta bağımlı olursa olsun, kendi barındırma alternatifini açık tutmak için elimizden geleni yapacağız: webhook bildirimleri zaten her planla kendi uç noktanızda çalışıyor ve çok cihazlı bağlantı kendi tüneliniz veya özel ağınız (örneğin frp veya Tailscale) üzerinden kendi başsız sunucunuza yönlendirilebilir. Ücretli planların sağladığı şey ise kolaylık — kutudan çıkar çıkmaz çalışır ve sunucuları sizin adınıza biz işletiriz — asla bir bağlılığa mahkûm etmez.",
+  cta: "Fiyat için oy ver",
+  ctaSecondary: "Planları gör",
 } satisfies (typeof pricingWhy)["en"];

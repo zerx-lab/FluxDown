@@ -21,7 +21,7 @@ describe("语言路由", () => {
 
   test("resolveLang 未知值回退 en", () => {
     expect(resolveLang(undefined)).toBe("en");
-    expect(resolveLang("fr")).toBe("en");
+    expect(resolveLang("xx")).toBe("en");
     expect(resolveLang("zh-tw")).toBe("zh-tw");
   });
 
@@ -73,15 +73,40 @@ describe("浏览器语言判定", () => {
     expect(matchLangTag("ru")).toBe("ru");
     expect(matchLangTag("tr-TR")).toBe("tr");
     expect(matchLangTag("en-GB")).toBe("en");
-    expect(matchLangTag("fr-FR")).toBeNull();
+    expect(matchLangTag("pt-PT")).toBe("pt-br");
+    expect(matchLangTag("pt_BR")).toBe("pt-br");
+    expect(matchLangTag("fr-FR")).toBe("fr");
+    expect(matchLangTag("sv-SE")).toBeNull();
+    const typical: Record<string, string[]> = {
+      ja: ["ja-JP", "ja"],
+      ko: ["ko-KR"],
+      es: ["es-ES", "es-MX", "es-419"],
+      "pt-br": ["pt-BR", "pt"],
+      fr: ["fr-FR", "fr-CA"],
+      de: ["de-DE", "de-AT", "de-CH"],
+      it: ["it-IT"],
+      nl: ["nl-NL", "nl-BE"],
+      pl: ["pl-PL"],
+      ru: ["ru-RU"],
+      uk: ["uk-UA"],
+      tr: ["tr-TR"],
+      vi: ["vi-VN"],
+      id: ["id-ID", "in-ID", "in"],
+      th: ["th-TH"],
+      "zh-tw": ["zh-MO", "zh-Hant-TW"],
+      zh: ["zh-SG", "zh-Hans-CN"],
+    };
+    for (const [lang, tags] of Object.entries(typical)) {
+      for (const tag of tags) expect(matchLangTag(tag)).toBe(lang);
+    }
   });
 
   test("parseAcceptLanguage 按 q 值取第一个受支持语言,否则回退 en", () => {
     expect(parseAcceptLanguage(null)).toBe("en");
     expect(parseAcceptLanguage("zh-TW,zh;q=0.9,en;q=0.8")).toBe("zh-tw");
-    expect(parseAcceptLanguage("fr;q=0.9,es;q=0.8")).toBe("es");
+    expect(parseAcceptLanguage("sv;q=0.9,es;q=0.8")).toBe("es");
     expect(parseAcceptLanguage("en;q=0.5,ru;q=0.9")).toBe("ru");
-    expect(parseAcceptLanguage("ja,de")).toBe("en");
+    expect(parseAcceptLanguage("sv,fi")).toBe("en");
   });
 });
 
