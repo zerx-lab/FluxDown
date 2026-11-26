@@ -5568,6 +5568,7 @@ impl DownloadManager {
                     "[插件]"
                 };
                 let msg = format!("{prefix} {}: {}", out.identity, e);
+                log_warn!("[plugin-resolve] task {task_id} resolve failed: {msg}");
                 if let Err(error) = self.db.update_task_status(&task_id, 4, &msg).await {
                     crate::logger::report_error("download-manager", "persist task state", &error);
                 }

@@ -3172,6 +3172,18 @@ pub(crate) fn filename_looks_like_html(name: &str) -> bool {
 pub(crate) const UNEXPECTED_HTML_PREFIX: &str = "server returned HTML page (Content-Type: ";
 pub(crate) const HTML_RESPONSE_CHANGED_MESSAGE: &str =
     "the server did not return a complete HTML page; nothing was saved";
+/// YouTube 播放器的 UMP 流分片（`googlevideo.com/videoplayback?…&rn=…`）只是播放协议的一帧，
+/// 不是可下载的文件；照常保存会得到几十字节、却显示「已完成」的坏文件。
+pub(crate) const YOUTUBE_STREAM_FRAGMENT_MESSAGE: &str = "server returned a YouTube streaming \
+     fragment (Content-Type: application/vnd.yt-ump), not a downloadable file; add the YouTube \
+     video page URL instead so a resolver plugin can parse it";
+
+fn is_youtube_stream_fragment(content_type: &str) -> bool {
+    content_type
+        .split(';')
+        .next()
+        .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/vnd.yt-ump"))
+}
 
 // Keep the diagnostic prefix for localization, but only successful-response
 // rejections (not 401/403 login pages) qualify for saving.
@@ -4681,6 +4693,9 @@ async fn run_download_inner(
             evidence.detail(),
             html_response_hint(&p.url, probe_final_url.as_ref(), &p.spec.method)
         )));
+    }
+    if p.hint_file_size == 0 && is_youtube_stream_fragment(&info.content_type) {
+        return Err(DownloadError::Other(YOUTUBE_STREAM_FRAGMENT_MESSAGE.into()));
     }
 
     // 早期取消检查：probe 完成后、创建文件之前检测 pause/delete，
