@@ -626,6 +626,7 @@ async fn remove_stale_temp_files(dir: &Path) {
         if (name.starts_with(".agent-state.")
             || name.starts_with(".gateway-endpoint.")
             || name.starts_with(".device-id.")
+            || name.starts_with(".setup-bootstrap.")
             || name.starts_with(crate::startup_failure::TEMP_PREFIX))
             && name.ends_with(".tmp")
             && let Err(error) = tokio::fs::remove_file(entry.path()).await

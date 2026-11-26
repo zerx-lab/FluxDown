@@ -26,10 +26,10 @@ docker run -d \
 - `/data` holds the database, logs, and the access key — keep it on a persistent volume. Upgrading from an older image? Reuse the same volume: the data and access key carry over.
 - `/root/Downloads` is the container's default download directory (`HOME=/root`); bind it to a host path you want files written to.
 
-On first visit to `http://<host>:17800/`, the Web UI opens an initialization wizard where you set the access key yourself (at least 8 characters, must include both letters and digits). Use that key to sign in to the Web UI and to authenticate the HTTP API, MCP endpoint (`Authorization: Bearer <token>`) and the `/rpc` JSON-RPC endpoint.
+On first visit to `http://<host>:17800/`, the Web UI opens an initialization wizard. It asks for a one-time setup code and the access key you want to keep (at least 8 characters, must include both letters and digits). The code is in the data volume at `/data/agent/setup-bootstrap` (mode `0600`); the startup log also prints the path and value once. Read it with `docker exec fluxdown-server cat /data/agent/setup-bootstrap`. A remote caller cannot set the key without that code. Use the key you choose to sign in to the Web UI and to authenticate the HTTP API, MCP endpoint (`Authorization: Bearer <token>`) and the `/rpc` JSON-RPC endpoint.
 
-Before first setup completes, `/download`, `/download/batch`, and `/jsonrpc` (POST/WS upgrade) return HTTP 403 (`setup required: set the access key first`); aria2 clients and script takeover are unavailable. The Web setup page and setup endpoints remain reachable. Saving a valid key makes compatibility APIs available according to their switches, without restarting.
-For docker-compose or other orchestration, you can pre-set the key with `FLUXDOWN_TOKEN` and skip the wizard. It only takes effect when the instance has not set a key yet, unless you also set `FLUXDOWN_TOKEN_FORCE=1`, which makes it override the stored key on every restart (see [Environment variables](/docs/en/headless-server/setup/#environment-variables)):
+Before first setup completes, `/download`, `/download/batch`, and `/jsonrpc` (POST/WS upgrade) return HTTP 403 (`setup required: set the access key first`); aria2 clients and script takeover are unavailable. The Web setup page and `GET /api/v1/setup/status` remain reachable. Saving a valid key makes compatibility APIs available according to their switches, without restarting.
+For docker-compose or other orchestration, you can pre-set the key with `FLUXDOWN_TOKEN` and skip the wizard (no setup code is created). It only takes effect when the instance has not set a key yet, unless you also set `FLUXDOWN_TOKEN_FORCE=1`, which makes it override the stored key on every restart (see [Environment variables](/docs/en/headless-server/setup/#environment-variables)):
 
 ```bash
 docker run -d \
@@ -107,7 +107,7 @@ Not sure which CPU family your model uses? Check the "Package Arch" column for y
 
 ### First-run access key
 
-On first open of the Web UI (`http://<NAS-IP>:17800`), the initialization wizard asks you to set an access key (at least 8 characters, letters and digits). That key is persisted in the package's database, so it survives restarts and upgrades. You can view or change it later under **Settings → Security & Access**.
+On first open of the Web UI (`http://<NAS-IP>:17800`), the initialization wizard asks for a one-time setup code, then for an access key (at least 8 characters, letters and digits). The code is in `FluxDown-setup-code.txt` in the download shared folder you chose in the install wizard — open it in File Station and paste its content. The file is deleted once setup succeeds (the private original stays at `/var/packages/FluxDown/var/agent/setup-bootstrap`). If no shared folder was resolved, read that private file over SSH instead. The key is persisted in the package's database, so it survives restarts and upgrades. You can view or change it later under **Settings → Security & Access**.
 
 ### Permissions and data locations
 
@@ -132,7 +132,7 @@ Every Server release ships native fnOS app packages — no Docker required:
 
 1. Open **App Center → Manual install**, pick the `.fpk` for your CPU, and follow the prompts (manually installed third-party apps are not reviewed by the fnOS App Center).
 2. Start the app, then click the **FluxDown** desktop icon — it opens the Web UI on port `17800` (`http://<NAS-IP>:17800`) in a new tab.
-3. On first launch, set your access key (8+ characters, letters and digits). You can change it later under **Settings → Security & access**.
+3. On first launch, the setup wizard asks for the one-time setup code first. Open `FluxDown-setup-code.txt` in the `fluxdown` shared folder (File Manager) and paste its content, then set your access key (8+ characters, letters and digits). The file is deleted once setup succeeds. You can change the key later under **Settings → Security & access**.
 
 ### Permissions and data location
 

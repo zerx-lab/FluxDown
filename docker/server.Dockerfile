@@ -10,7 +10,8 @@
 #   docker buildx build --platform linux/amd64,linux/arm64 -f docker/server.Dockerfile .
 # 版本号 = 构建参数 FLUXDOWN_APP_VERSION（发布流水线传 tag 版本；不传则回落 crate 版本）。
 #
-# 运行（首次打开 Web 界面时自行设置访问密钥；也可用 -e FLUXDOWN_TOKEN=... 预置）：
+# 运行（首次打开 Web 界面时先输入一次性初始化口令——`docker logs <容器>` 或卷内 agent/setup-bootstrap——再自行设置访问密钥；
+# 也可用 -e FLUXDOWN_TOKEN=... 预置，此时不生成口令）：
 #   docker run -d -p 17800:17800 -v fluxdown-data:/data fluxdown-server
 
 # ── Stage 1: Web 前端（Vite SPA，bun 锁文件；产物架构无关，跑在构建机架构）──

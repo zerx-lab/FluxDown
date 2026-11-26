@@ -888,7 +888,7 @@ impl GatewayService {
     ) -> Result<serde_json::Value, RpcErrorData> {
         let patch = parse_params::<fluxdown_protocol::GatewayPatchParams>(Some(params))?;
         let _transaction = self.gateway_patch_lock.lock().await;
-        // server 模式的密钥同时是首次设置的开关：空值会把服务重新暴露给匿名 setup，
+        // server 模式的密钥同时是首次设置的开关：空值会在下次启动重新要求引导码，
         // 不合规的值会让 Web 登录页拒绝自己。二者都在这里拒绝。
         if self.server_mode
             && patch
@@ -3349,6 +3349,7 @@ mod tests {
                         demo: false,
                         allow_local_platform,
                         link: attach_link.then(|| link.clone()),
+                        setup_gate: Arc::new(crate::server_mode::SetupGate::new(&dir)),
                     })
                     .expect("server handle"),
                 ))

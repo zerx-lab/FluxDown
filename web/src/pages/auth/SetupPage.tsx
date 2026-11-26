@@ -1,5 +1,6 @@
 // 首次运行向导：为服务设置访问密钥（`/api/v1/setup`）。策略与服务端 `validate_access_key`
 // 逐条一致（lib/token-policy.ts）；提交成功后直接以该密钥登录。
+// 密钥仍空时必须另贴 data_dir 里的一次性引导码，不能匿名落盘。
 
 import { useNavigate } from '@tanstack/react-router'
 import { Copy, Dices, Eye, EyeOff } from 'lucide-react'
@@ -20,9 +21,17 @@ const ISSUE_KEY: Record<AccessKeyIssue, string> = {
   needsMix: 'webKeyNeedsMix',
 }
 
+// 401 = 引导码错误，429 = 错误尝试过多被限流；两者都留在表单上让用户重试。
+const REJECTION_KEY: Record<number, string | undefined> = {
+  401: 'webSetupBootstrapWrong',
+  429: 'webSetupTooManyAttempts',
+}
+
 export function SetupPage() {
   const t = useT()
   const navigate = useNavigate()
+  const [bootstrap, setBootstrap] = useState('')
+  const [needsBootstrap, setNeedsBootstrap] = useState(true)
   const [key, setKey] = useState('')
   const [confirm, setConfirm] = useState('')
   const [reveal, setReveal] = useState(false)
@@ -35,7 +44,10 @@ export function SetupPage() {
     fetchSetupStatus(controller.signal)
       .then((status) => {
         if (!status.setupRequired) void navigate({ to: '/login', replace: true })
-        else setMinLength(status.minLength)
+        else {
+          setMinLength(status.minLength)
+          setNeedsBootstrap(status.needsBootstrap)
+        }
       })
       .catch((cause: unknown) => {
         if (!controller.signal.aborted) setError(t('webSetupFailed', { error: errorMessage(cause) }))
@@ -46,7 +58,8 @@ export function SetupPage() {
   const issue = key === '' ? null : validateAccessKey(key)
   const issueText = issue ? t(ISSUE_KEY[issue], { min: Math.max(minLength, ACCESS_KEY_MIN_LEN), max: ACCESS_KEY_MAX_LEN }) : null
   const mismatch = confirm !== '' && confirm !== key
-  const canSubmit = key !== '' && issue === null && confirm === key && !submitting
+  const bootstrapMissing = needsBootstrap && bootstrap.trim() === ''
+  const canSubmit = key !== '' && issue === null && confirm === key && !bootstrapMissing && !submitting
 
   const generate = () => {
     const next = randomAccessKey()
@@ -65,7 +78,7 @@ export function SetupPage() {
     setSubmitting(true)
     setError(null)
     try {
-      await submitSetup(key)
+      await submitSetup(key, bootstrap.trim())
       saveToken(key, true)
       await navigate({ to: '/', replace: true })
     } catch (cause) {
@@ -74,7 +87,8 @@ export function SetupPage() {
         await navigate({ to: '/login', replace: true })
         return
       }
-      setError(t('webSetupFailed', { error: errorMessage(cause) }))
+      const rejection = cause instanceof SetupError ? REJECTION_KEY[cause.status] : undefined
+      setError(rejection ? t(rejection) : t('webSetupFailed', { error: errorMessage(cause) }))
       setSubmitting(false)
     }
   }
@@ -82,6 +96,21 @@ export function SetupPage() {
   return (
     <AuthCard title={t('webSetupTitle')} subtitle={t('webSetupSubtitle')}>
       <Form onSubmit={() => void submit()}>
+        {needsBootstrap ? (
+          <FormField label={t('webSetupBootstrapLabel')} htmlFor="setup-bootstrap" hint={t('webSetupBootstrapHint')}>
+            <Input
+              id="setup-bootstrap"
+              name="setup-bootstrap"
+              autoComplete="off"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+              autoFocus
+              value={bootstrap}
+              onChange={(event) => setBootstrap(event.target.value)}
+            />
+          </FormField>
+        ) : null}
         <FormField label={t('webSetupKeyLabel')} htmlFor="setup-key" error={issueText}>
           <InputWithAction
             input={
@@ -92,7 +121,7 @@ export function SetupPage() {
                 autoCapitalize="off"
                 autoCorrect="off"
                 spellCheck={false}
-                autoFocus
+                autoFocus={!needsBootstrap}
                 value={key}
                 invalid={issueText !== null}
                 onChange={(event) => setKey(event.target.value)}
