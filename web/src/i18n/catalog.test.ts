@@ -9,7 +9,10 @@ describe('i18n catalog', () => {
     expect(resolveLocale('zh-Hant-TW')).toBe('zh-tw')
     expect(resolveLocale('zh-HK')).toBe('zh-tw')
     expect(resolveLocale('EN-us')).toBe('en')
-    expect(resolveLocale('fr')).toBe('en')
+    expect(resolveLocale('sv-SE')).toBe('en')
+    expect(resolveLocale('pt-PT')).toBe('pt-br')
+    expect(resolveLocale('in-ID')).toBe('id')
+    expect(resolveLocale('ja-JP')).toBe('ja')
   })
 
   test('中文显式文字优先于地区，地区可带 Unicode 扩展', () => {
