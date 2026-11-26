@@ -225,13 +225,13 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
     }
     fun submit(startPaused: Boolean, queueId: String) {
         if (form.submitting) return
+        val state = container.store.state.value
         if (container.host.value.id != draftHostId) {
             haptics.reject()
             overlays.toast(context.str(R.string.mobileDownloadDraftHostChanged), FluxToastKind.Error)
             return
         }
         val session = container.session
-        val state = container.store.state.value
         if (state.isReadOnly) {
             haptics.reject()
             overlays.toast(s.readOnly, FluxToastKind.Error, FluxIcons.WifiOff)
@@ -295,14 +295,14 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
     /** 「下载到」其他设备：逐条下发链接 / 文件名 / 保存目录；全部成功关闭，有失败时只把失败的链接留在文本框里。 */
     fun submitRemote(target: DispatchTarget) {
         if (form.submitting) return
-        if (container.host.value.id != draftHostId) {
-            haptics.reject()
-            overlays.toast(context.str(R.string.mobileDownloadDraftHostChanged), FluxToastKind.Error)
-            return
-        }
         if (container.store.state.value.isReadOnly) {
             haptics.reject()
             overlays.toast(s.readOnly, FluxToastKind.Error, FluxIcons.WifiOff)
+            return
+        }
+        if (container.host.value.id != draftHostId) {
+            haptics.reject()
+            overlays.toast(context.str(R.string.mobileDownloadDraftHostChanged), FluxToastKind.Error)
             return
         }
         if (form.entries.isEmpty()) {
@@ -491,16 +491,16 @@ private fun NewDownloadContent(
     val taskActions = LocalTaskActions.current
     val torrentLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris: List<Uri> ->
         if (uris.isEmpty() || importingTorrent || form.submitting) return@rememberLauncherForActivityResult
+        if (!form.saveDirValid) {
+            haptics.reject()
+            return@rememberLauncherForActivityResult
+        }
         if (container.host.value.id != draftHostId) {
             haptics.reject()
             overlays.toast(context.str(R.string.mobileDownloadDraftHostChanged), FluxToastKind.Error)
             return@rememberLauncherForActivityResult
         }
         val session = container.session
-        if (!form.saveDirValid) {
-            haptics.reject()
-            return@rememberLauncherForActivityResult
-        }
         val saveDir = writableDownloadDirectory(context, container.host.value, form, localConfirmation) ?: run {
             haptics.reject()
             overlays.toast(context.str(R.string.mobileSaveDirNotWritable, "dir" to (localConfirmation?.path ?: form.saveDir.trim())), FluxToastKind.Error)
