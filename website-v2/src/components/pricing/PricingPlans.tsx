@@ -8,7 +8,6 @@ import { PlanBadge, PlanRibbon } from "./PlanBadge";
 import WebPurchase from "./WebPurchase";
 import type { CloudPlan } from "./types";
 import { withBase } from "@/lib/base";
-import { cloudPromoCopy, isCloudPromoActive } from "@/lib/cloud-promo";
 
 interface Props {
   lang: Lang;
@@ -65,7 +64,6 @@ export default function PricingPlans({ lang, downloadHref, sourceHref }: Props) 
   } else if (catalog.state === "ready") {
     for (const plan of catalog.plans.filter((p) => !isCard(p))) cells.push(<CloudPlanCell key={plan.code} plan={plan} lang={lang} />);
   } else {
-    const promoOn = isCloudPromoActive();
     cells.push(
       <PlanShell key="fb-free" tag={t.cloudTag} name={t.fallback.freeName} price={t.free} desc={t.fallback.freeDesc} />,
       <PlanShell
@@ -74,7 +72,6 @@ export default function PricingPlans({ lang, downloadHref, sourceHref }: Props) 
         name={t.fallback.lifetimeName}
         price={t.tbd}
         period={t.oneTime}
-        note={promoOn ? cloudPromoCopy[lang].badge : undefined}
         desc={t.fallback.lifetimeDesc}
         features={t.fallback.lifetimeFeatures}
         featured
@@ -206,7 +203,6 @@ interface ShellProps {
   price: string;
   period?: string;
   strike?: string;
-  note?: string;
   desc?: string;
   features?: readonly string[];
   badge?: ReactNode;
@@ -231,7 +227,6 @@ function PlanShell(p: ShellProps) {
         {p.strike && <s className="num text-base text-subtle">{p.strike}</s>}
         {p.period && <span className="font-mono text-xs uppercase tracking-[0.08em] text-muted">/ {p.period}</span>}
       </div>
-      {p.note && <p className="mt-2 text-xs text-muted">{p.note}</p>}
       {p.desc && <p className="mt-5 text-sm leading-relaxed text-muted">{p.desc}</p>}
       {p.features && p.features.length > 0 && (
         <ul className="mt-6 space-y-2.5 border-t border-dashed border-line pt-6">
