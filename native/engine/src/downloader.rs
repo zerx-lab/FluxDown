@@ -6564,11 +6564,22 @@ async fn download_single_once(
         file = tokio::io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, raw_file);
     } else {
         downloaded = 0;
-        file = tokio::io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, File::create(dest).await?);
-        // Reset DB progress so the UI doesn't show stale values
-        if let Some(db) = checkpoint {
-            db.update_task_progress(task_id, 0).await?;
-        }
+        let raw_file = if let Some(db) = checkpoint {
+            // Claim only an opened file, and preserve its contents if the checkpoint reset fails.
+            let raw_file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(dest)
+                .await?;
+            db.record_http_partial(task_id, output::file_name(dest)?)
+                .await?;
+            raw_file.set_len(0).await?;
+            raw_file
+        } else {
+            File::create(dest).await?
+        };
+        file = tokio::io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, raw_file);
     }
 
     // 注：旧版本会从实际下载响应的 Content-Disposition 中提取"更好的文件名"，
@@ -11348,6 +11359,78 @@ mod single_resume_tests {
         {
             tracing::warn!(%error, "test directory cleanup failed");
         }
+    }
+
+    #[tokio::test]
+    async fn single_stream_claims_partial_after_open_and_truncates_after_checkpoint() {
+        let dir =
+            std::env::temp_dir().join(format!("fluxdown_single_claim_{}", uuid::Uuid::new_v4()));
+        let dest = dir.join("f.bin.fdownloading");
+        let foreign_file = dest.join("payload");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(&foreign_file, b"foreign").unwrap();
+        let db = Db::connect("sqlite::memory:").await.unwrap();
+        let port = spawn_http(|_| response("200 OK", "", b"finished download")).await;
+        let url = format!("http://127.0.0.1:{port}/f.bin");
+        db.insert_task(
+            "t1",
+            &url,
+            "f.bin",
+            dir.to_str().unwrap(),
+            1,
+            0,
+            "",
+            "",
+            "",
+            0,
+        )
+        .await
+        .unwrap();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        let cancel = CancellationToken::new();
+        let limiter = SpeedLimiter::new(0);
+        let spec = super::DownloadSpec::new(RequestSpec {
+            method: reqwest::Method::GET,
+            ..Default::default()
+        });
+        let attempt = || {
+            download_single(
+                "t1", &url, &dest, 17, false, &client, &db, &NoopSink, &tx, &cancel, &limiter,
+                &spec, "", "", false,
+            )
+        };
+
+        let open_error = attempt().await;
+        let after_open = db.load_cleanup_task("t1").await.unwrap().unwrap();
+        let foreign_contents = std::fs::read(&foreign_file).unwrap();
+
+        std::fs::remove_dir_all(&dest).unwrap();
+        let partial = b"existing partial data";
+        std::fs::write(&dest, partial).unwrap();
+        db.update_task_progress("t1", partial.len() as i64)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TRIGGER fail_partial_registration BEFORE UPDATE OF http_partial_name ON tasks
+             BEGIN SELECT RAISE(ABORT, 'checkpoint rejected'); END",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+        let registration_error = attempt().await;
+        let after_registration = db.load_cleanup_task("t1").await.unwrap().unwrap();
+        let retained = std::fs::read(&dest).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert!(matches!(open_error, Err(DownloadError::Io(_))));
+        assert!(after_open.http_partial_name.is_empty());
+        assert_eq!(after_open.downloaded_bytes, 0);
+        assert_eq!(foreign_contents, b"foreign");
+        assert!(matches!(registration_error, Err(DownloadError::Db(_))));
+        assert!(after_registration.http_partial_name.is_empty());
+        assert_eq!(after_registration.downloaded_bytes, partial.len() as i64);
+        assert_eq!(retained, partial);
     }
 
     #[tokio::test]

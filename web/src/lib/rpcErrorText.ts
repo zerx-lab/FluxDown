@@ -41,6 +41,7 @@ export function rpcErrorText(error: unknown, t: TFunction): string {
     case 'taskFilesNotDeleted': return t('errReasonTaskFilesNotDeleted')
     case 'taskFileClearPending': return t('errReasonTaskFileClearPending')
     case 'browserRequestRequired': return t('taskErrorPostOnlyResume')
+    case 'taskRestartTimeout': return t('errReasonTaskRestartTimeout')
     case 'remoteTaskGone': return t('errReasonRemoteTaskGone')
     case 'targetDeviceOffline': return t('errReasonTargetDeviceOffline')
   }

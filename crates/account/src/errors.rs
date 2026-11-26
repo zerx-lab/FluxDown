@@ -119,6 +119,7 @@ pub(crate) fn reason_key(reason: ErrorReason, context: ErrorContext) -> Option<&
         ErrorReason::TaskFilesNotDeleted => "errReasonTaskFilesNotDeleted",
         ErrorReason::TaskFileClearPending => "errReasonTaskFileClearPending",
         ErrorReason::BrowserRequestRequired => "taskErrorPostOnlyResume",
+        ErrorReason::TaskRestartTimeout => "errReasonTaskRestartTimeout",
         ErrorReason::PaymentDisabled
         | ErrorReason::PaymentGatewayFailed
         | ErrorReason::PlanNotPurchasable

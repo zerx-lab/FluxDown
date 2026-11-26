@@ -211,7 +211,6 @@ async fn publish(results: Results, sender: mpsc::Sender<TaskDone>, id: String, r
         TaskDone {
             task_id: id.clone(),
             generation: 0,
-            reserved_temp_path: None,
             phase: TaskDonePhase::BtArchiveWorkReady,
         },
     )
