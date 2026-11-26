@@ -1,7 +1,7 @@
 import { defineMessages } from "../define";
 
 /** 公告列表页(/announcements);公告正文本身在 `src/lib/announcements.ts`。 */
-export const announcements = defineMessages({
+export const announcements = defineMessages("announcements", {
   en: {
     meta: {
       title: "Announcements — FluxDown",

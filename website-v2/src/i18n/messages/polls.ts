@@ -1,7 +1,7 @@
 import { defineMessages } from "../define";
 
 /** 社区平台投票(`/vote/`)与 Logo 投票(`/logo-vote/`)文案。 */
-export const polls = defineMessages({
+export const polls = defineMessages("polls", {
   en: {
     platform: {
       meta: {

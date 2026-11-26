@@ -1,7 +1,7 @@
 import { defineMessages } from "../define";
 
 /** QQ 群(`/qq-group/`)与 Telegram 群(`/telegram-group/`)落地页文案。 */
-export const groups = defineMessages({
+export const groups = defineMessages("groups", {
   en: {
     qq: {
       meta: {

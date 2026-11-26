@@ -1,7 +1,7 @@
 import { defineMessages } from "../define";
 
 /** 主题构建器 `/theme-builder/` 文案:编辑器(tb)与桌面客户端预览(mock)。 */
-export const themeBuilder = defineMessages({
+export const themeBuilder = defineMessages("themeBuilder", {
   en: {
     metaTitle: "Theme Builder — FluxDown",
     metaDescription:

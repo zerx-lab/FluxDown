@@ -1,7 +1,7 @@
 import { defineMessages } from "../define";
 
 /** 账户中心首页（/account 与 /zh/account）：身份条、五个分区与各自的加载 / 空 / 错误态文案。 */
-export const account = defineMessages({
+export const account = defineMessages("account", {
   en: {
     meta: {
       title: "Account center - FluxDown",

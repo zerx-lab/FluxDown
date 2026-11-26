@@ -13,7 +13,7 @@ const ext = (url: string, label: string) =>
 const BILLING_EMAIL = "1603852@qq.com";
 const BILLING_MAIL = `<a href="mailto:${BILLING_EMAIL}">${BILLING_EMAIL}</a>`;
 
-export const legal = defineMessages({
+export const legal = defineMessages("legal", {
   en: {
     index: "On this page",
     updated: "Last updated",

@@ -6,36 +6,47 @@ import sitemap, { ChangeFreqEnum } from "@astrojs/sitemap";
 import tailwindcss from "@tailwindcss/vite";
 import node from "@astrojs/node";
 import { getFallbackPathnames } from "./src/lib/docs-fallback.ts";
+import { DEFAULT_LANG, HREFLANG, LANGS } from "./src/i18n/config.ts";
 
-// 文档回退页(en 有 zh 缺):noindex,不进 sitemap(设计决策 D4,单一判定源 docs-fallback.ts)
+// 文档回退页(en 有而某语言缺):noindex,不进 sitemap(设计决策 D4,单一判定源 docs-fallback.ts)
 const docsFallbackPathnames = getFallbackPathnames();
 
+// 站点语言路由:en 在根路径,其余语言在 `/<lang>` 前缀(语言集来自 src/i18n/config.ts,
+// 路由规则与 src/i18n/routing.ts 同契约)。docs 自带 /docs/<lang>/ 结构,不走此映射。
+const PREFIX_LANGS = LANGS.filter((lang) => lang !== DEFAULT_LANG);
+const LANG_PREFIX_RE = new RegExp(`^/(?:${PREFIX_LANGS.join("|")})(?=/)`);
+const LANG_HOME_RE = new RegExp(`^/(?:${PREFIX_LANGS.join("|")})/?$`);
+
+/**
+ * 无语言前缀的站点路径 → 某语言下的路径(en 不加前缀,其余首页为 `/<lang>/`)。
+ * @param {string} bare
+ * @param {(typeof LANGS)[number]} lang
+ */
+function langPath(bare, lang) {
+  if (lang === DEFAULT_LANG) return bare;
+  return bare === "/" ? `/${lang}/` : `/${lang}${bare}`;
+}
+
 // 纯社群入口页(内容单薄、与外部邀请链接重复)与短片舞台:noindex 且不进 sitemap,
-// 避免与主内容页争夺抓取预算(与页面 noindex prop 保持一致,en/zh 双路径)。
-const noindexPathnames = new Set([
-  "/qq-group",
-  "/telegram-group",
-  "/zh/qq-group",
-  "/zh/telegram-group",
-  // 产品短片录制舞台
-  "/film",
-  "/zh/film",
-  // 账户中心(个人页面,noindex)
-  "/account",
-  "/account/login",
-  "/account/register",
-  "/account/forgot",
-  "/zh/account",
-  "/zh/account/login",
-  "/zh/account/register",
-  "/zh/account/forgot",
-]);
+// 避免与主内容页争夺抓取预算(与页面 noindex prop 保持一致,全部语言路径)。
+const noindexPathnames = new Set(
+  [
+    "/qq-group",
+    "/telegram-group",
+    // 产品短片录制舞台
+    "/film",
+    // 账户中心(个人页面,noindex)
+    "/account",
+    "/account/login",
+    "/account/register",
+    "/account/forgot",
+  ].flatMap((bare) => LANGS.map((lang) => langPath(bare, lang))),
+);
 
 // 构建时刻(ISO8601),用作 sitemap lastmod —— 每次部署刷新站点 freshness 信号。
 const BUILD_TIME = new Date().toISOString();
 
-// 站点语言路由:en 在根路径,zh 在 /zh 前缀(与 src/i18n/routing.ts 同契约;
-// config 无法 import TS 模块,双处以注释互指)。docs 自带 /docs/<lang>/ 结构,不走此映射。
+// 站点源。
 const SITE = "https://fluxdown.com";
 
 // 站点挂载前缀:根部署留空;预览部署到子路径时构建期注入(如 SITE_BASE=/v2,见 Dockerfile)。
@@ -73,14 +84,13 @@ function rehypeBaseLinks() {
 }
 
 /**
- * 页面路径 → [enPath, zhPath];docs/api 返回 null(不生成 hreflang 簇)。
+ * 页面路径 → 各语言路径(按 LANGS 顺序,en 在前);docs/api 返回 null(不生成 hreflang 簇)。
  * @param {string} pathname
  */
-function langPair(pathname) {
+function langVariants(pathname) {
   if (pathname.startsWith("/docs/") || pathname.startsWith("/api/")) return null;
-  const bare = pathname === "/zh/" || pathname === "/zh" ? "/" : pathname.replace(/^\/zh(?=\/)/, "");
-  const zh = bare === "/" ? "/zh/" : `/zh${bare}`;
-  return [bare, zh];
+  const bare = LANG_HOME_RE.test(pathname) ? "/" : pathname.replace(LANG_PREFIX_RE, "");
+  return LANGS.map((lang) => ({ lang, path: langPath(bare, lang) }));
 }
 
 // https://astro.com/docs/en/guides/environment-variables/
@@ -96,21 +106,19 @@ export default defineConfig({
         return !docsFallbackPathnames.has(path) && !noindexPathnames.has(path);
       },
       // Bing/IndexNow 依赖 ISO8601 lastmod 做 freshness 判定。SSG 页无天然 mtime,
-      // 用构建时刻统一标注(每次部署刷新,反映站点最近更新)。每个页面输出 en/zh
+      // 用构建时刻统一标注(每次部署刷新,反映站点最近更新)。每个页面输出全部语言的
       // hreflang 簇(xhtml:link);首页 changefreq/priority 最高。
       serialize: (item) => {
         item.lastmod = BUILD_TIME;
         const pathname = stripBase(new URL(item.url).pathname);
-        const pair = langPair(pathname);
-        if (pair) {
-          const [en, zh] = pair;
+        const variants = langVariants(pathname);
+        if (variants) {
           item.links = [
-            { url: `${SITE}${BASE}${en}`, lang: "en" },
-            { url: `${SITE}${BASE}${zh}`, lang: "zh" },
-            { url: `${SITE}${BASE}${en}`, lang: "x-default" },
+            ...variants.map(({ lang, path }) => ({ url: `${SITE}${BASE}${path}`, lang: HREFLANG[lang] })),
+            { url: `${SITE}${BASE}${variants[0]?.path ?? "/"}`, lang: "x-default" },
           ];
         }
-        if (pathname === "/" || pathname === "/zh/") {
+        if (pathname === "/" || LANG_HOME_RE.test(pathname)) {
           item.changefreq = ChangeFreqEnum.WEEKLY;
           item.priority = pathname === "/" ? 1.0 : 0.9;
         }
@@ -134,7 +142,7 @@ export default defineConfig({
     checkOrigin: false,
   },
 
-  // 日文站点已下线(v2 仅 en + zh);旧链接永久跳转到英文首页。
+  // 日文站点已下线;旧链接永久跳转到英文首页。
   // macOS 构建已签名 + 公证,「已损坏」指南下线;旧链接跳下载页。
   redirects: {
     "/ja": { status: 301, destination: `${BASE}/` },

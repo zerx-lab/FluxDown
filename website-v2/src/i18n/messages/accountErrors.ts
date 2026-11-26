@@ -4,7 +4,7 @@ import { defineMessages } from "../define";
  * 账户中心共用的错误文案：键是 FluxCloud / 官网 BFF 返回的 `code`（snake_case 原样），
  * 未登记的 code 一律落到 `fallback`。按 code 取文案用 `src/lib/account/client.ts::accountErrorText`。
  */
-export const accountErrors = defineMessages({
+export const accountErrors = defineMessages("accountErrors", {
   en: {
     invalid_credentials: "Incorrect account or password",
     invalid_code: "The verification code is wrong or has expired",

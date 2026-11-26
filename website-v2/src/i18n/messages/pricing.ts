@@ -1,7 +1,7 @@
 import { defineMessages } from "../define";
 
 /** /pricing/: plan columns, free-vs-premium comparison, pricing-model notes, web purchase dialog. */
-export const pricing = defineMessages({
+export const pricing = defineMessages("pricing", {
   en: {
     meta: {
       title: "Pricing — FluxDown",

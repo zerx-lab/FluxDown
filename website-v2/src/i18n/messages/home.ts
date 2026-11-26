@@ -4,7 +4,7 @@ import { defineMessages } from "../define";
  * 首页文案。`app.*` 是 GPUI 客户端复刻界面的字符串,逐字取自客户端 `assets/i18n/{en,zh}.json`
  * (searchTasksPlaceholder / newDownload / colFileName …),保持与真实界面一致。
  */
-export const home = defineMessages({
+export const home = defineMessages("home", {
   en: {
     meta: {
       title: "FluxDown — The Download Manager, Rebuilt in Rust",

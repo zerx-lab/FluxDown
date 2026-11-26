@@ -1,7 +1,7 @@
 import { defineMessages } from "../define";
 
 /** 路线图 + 功能投票页(`/feature-vote/`)文案。 */
-export const roadmap = defineMessages({
+export const roadmap = defineMessages("roadmap", {
   en: {
     meta: {
       title: "Roadmap & Feature Vote — FluxDown",

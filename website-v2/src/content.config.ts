@@ -1,7 +1,7 @@
 /**
  * Astro Content Collections 配置
  *
- * docs 集合:产品文档,双语目录结构 src/content/docs/{en,zh}/<section>/<page>.md
+ * docs 集合:产品文档,多语言目录结构 src/content/docs/<lang>/<section>/<page>.md(lang 取 `LANGS`,en 为全集)
  * schema 刻意保持最小(除 title 外全部可选/带默认),
  * 降低社区 PR 因 frontmatter 错误拖垮全站构建的概率(CI 见 .github/workflows/website-ci.yml)。
  */
@@ -23,7 +23,7 @@ const docs = defineCollection({
       "contributing",
     ]),
     order: z.number().default(999),
-    /** 仅 zh 文件使用:对应 en 文件正文的 sha256 前 12 位(见 npm run docs:hash) */
+    /** 仅译文(非 en)文件使用:对应 en 文件正文的 sha256 前 12 位(见 npm run docs:hash) */
     sourceHash: z.string().optional(),
   }),
 });

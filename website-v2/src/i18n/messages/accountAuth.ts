@@ -4,7 +4,7 @@ import { defineMessages } from "../define";
  * 账户认证页文案:`/account/login`、`/account/register`、`/account/forgot` 与它们共用的表单小件。
  * 错误文案不在这里——按 code 走 `src/lib/account/client.ts::accountErrorText`。
  */
-export const accountAuth = defineMessages({
+export const accountAuth = defineMessages("accountAuth", {
   en: {
     brand: {
       pointsLabel: "What your account is for",

@@ -1,7 +1,7 @@
 import { defineMessages } from "../define";
 
 /** 支持类页面文案:安全警告(仿冒站)、404。 */
-export const guides = defineMessages({
+export const guides = defineMessages("guides", {
   en: {
     security: {
       meta: {

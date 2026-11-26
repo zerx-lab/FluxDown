@@ -1,7 +1,7 @@
 import { defineMessages } from "../define";
 
 /** /film/ 短片舞台的字幕与片头片尾文案。 */
-export const film = defineMessages({
+export const film = defineMessages("film", {
   en: {
     title: "FluxDown — the film",
     tagline: "The download manager, rebuilt in Rust.",

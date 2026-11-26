@@ -58,15 +58,15 @@ node dist/server/entry.mjs
 | `src/scripts/motion.ts` | `data-reveal` / `data-scramble` / `data-count`、`.rule` 扫描揭示、`.spot` / `.spot-edge` 聚光与边缘光、`data-magnetic` 按钮磁吸、主题圆形揭示切换、`D` 与 `⌘K` 快捷键 |
 | `src/scripts/particle-stage.ts` | 粒子舞台：canvas 尺寸 / DPR、离屏停帧、`prefers-reduced-motion` 静帧、设计 token 取色（随主题切换）、宿主指针与按下事件、`StrokeBatch` 合批绘制；场景只实现 `Scene` |
 | `src/scripts/idle.ts` | `whenIdle()`：装饰动效（粒子舞台、复刻窗口演示、分段可视化等）统一延后到首帧绘制后的空闲时段，并以动态 `import()` 拆出首屏关键路径；首屏 UI 全部 SSR 直出，首屏（Hero）不挂 `data-reveal`，不等任何脚本 |
-| `src/i18n/` | 语言契约与路由（`config.ts`、`routing.ts`）、`defineMessages` 类型化文案、`messages/<命名空间>.ts` |
-| `src/pages/[...lang]/` | 全部页面：一个文件同时产出 `/x/`（en）与 `/zh/x/`（zh） |
-| `src/pages/docs/` | 文档（`/docs/<lang>/…`，内容在 `src/content/docs/{en,zh}`） |
+| `src/i18n/` | 语言契约与路由（`config.ts`、`routing.ts`）、`defineMessages` 类型化文案、`messages/<命名空间>.ts`；机翻语言的生成模块 `locales/<lang>/<ns>.ts` 与译文库 `locales/<lang>.json` |
+| `src/pages/[...lang]/` | 全部页面：一个文件同时产出 `/x/`（en）与 `/<lang>/x/`（其余语言） |
+| `src/pages/docs/` | 文档（`/docs/<lang>/…`，内容在 `src/content/docs/<lang>`） |
 | `src/pages/api/` | 后端接口（release / download / plugins / pay …，桌面客户端依赖其中部分，契约不随 UI 变动） |
 | `src/components/home/` | 首页分区；`AppReplica.astro` + `app-demo.ts` 是 GPUI 客户端的 DOM 复刻与脚本化演示，`segment-sim.ts` 是动态分段模拟；`flux-field.ts`（首屏数据流粒子，几何与线稿共用 `hero-geometry.ts`）与 `neural-sphere.ts`（收尾 CTA 神经点云球）是两个粒子场景 |
 
 ## 语言
 
-只维护 en + zh。en 在根路径，zh 在 `/zh` 前缀，服务端按 URL 直出，不做客户端语言探测。新增文案：在 `src/i18n/messages/` 用 `defineMessages({ en, zh })` 声明，zh 与 en 结构不一致会在 `astro check` 报错。站内链接一律经 `href(path, lang)` 生成。
+语言集见 `src/i18n/config.ts::LANGS`：en + zh 手写，zh-tw / es / ru / tr 由 qwen-mt 机翻（`.github/workflows/i18n-mt.yml`，本机 `task i18n:mt`）。en 在根路径，其余语言在 `/<lang>` 前缀，服务端按 URL 直出。新增文案：在 `src/i18n/messages/` 用 `defineMessages("<ns>", { en, zh })` 声明，zh 与 en 结构不一致会在 `astro check` 报错；改了 en 结构后跑 `bun run i18n:generate` 刷新机翻语言模块（缺译回退 en），不要手改 `src/i18n/locales/`。站内链接一律经 `href(path, lang)` 生成。
 
 ## 产品短片
 
