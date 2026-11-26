@@ -261,7 +261,7 @@ extension NotificationSpec {
 
 /// 用户对通知的响应。
 nonisolated enum NotificationIntent: Equatable, Sendable {
-    case openDownloads
+    case openDownloads(hostID: String)
     case openTask(taskId: String, hostID: String)
     case openSelection(requestId: String, hostID: String)
     case shareTask(taskId: String, hostID: String)
@@ -276,7 +276,7 @@ nonisolated enum NotificationIntent: Equatable, Sendable {
         case UNNotificationDefaultActionIdentifier, NotificationIDs.actionOpen:
             if !request.isEmpty { return .openSelection(requestId: request, hostID: host) }
             if !task.isEmpty { return .openTask(taskId: task, hostID: host) }
-            return .openDownloads
+            return .openDownloads(hostID: host)
         case NotificationIDs.actionShare:
             return task.isEmpty ? nil : .shareTask(taskId: task, hostID: host)
         case NotificationIDs.actionUseDefault:
@@ -331,7 +331,6 @@ final class NotificationService: NSObject {
     @ObservationIgnored private var batchHost: String?
     @ObservationIgnored private var flushTask: Task<Void, Never>?
     @ObservationIgnored private var observers: [any NSObjectProtocol] = []
-    @ObservationIgnored private var pendingIntent: NotificationIntent?
     @ObservationIgnored private let log = Logger(subsystem: "com.fluxdown.app", category: "notifications")
 
     private var center: UNUserNotificationCenter { .current() }
@@ -341,7 +340,7 @@ final class NotificationService: NSObject {
         center.delegate = self
     }
 
-    /// 接入应用容器（幂等）。由根视图 `.settingsEffects()` 调用。
+    /// 冷启动接入应用容器；后台通知动作不依赖根视图出现。
     func attach(container: AppContainer) {
         guard self.container == nil else { return }
         self.container = container
@@ -349,10 +348,6 @@ final class NotificationService: NSObject {
         observeLifecycle()
         Task { await refreshAuthorization() }
         observeStore()
-        if let intent = pendingIntent {
-            pendingIntent = nil
-            Task { await handle(intent) }
-        }
     }
 
     // MARK: 授权
@@ -538,17 +533,27 @@ final class NotificationService: NSObject {
     // MARK: 响应
 
     fileprivate func receive(_ intent: NotificationIntent) async {
-        guard container != nil else {
-            pendingIntent = intent // 冷启动：容器尚未接入，`attach` 后补处理
+        guard let container else { return }
+        // 先让通知接管主机选择，再异步路由；迟到的恢复结果不能抢在路由前接管界面。
+        switch intent {
+        case let .openDownloads(hostID) where !hostID.isEmpty:
+            container.supersedeHostRestore()
+        case .openTask, .openSelection, .shareTask:
+            container.supersedeHostRestore()
+        case .resolveDefault:
+            await handle(intent)
             return
+        case .openDownloads:
+            break
         }
-        await handle(intent)
+        Task { await handle(intent) }
     }
 
     private func handle(_ intent: NotificationIntent) async {
         guard let container else { return }
         switch intent {
-        case .openDownloads:
+        case let .openDownloads(hostID):
+            guard await ensureHost(hostID) else { return }
             container.router.tab = .downloads
         case let .openTask(taskId, hostID):
             guard await ensureHost(hostID) else { return }
@@ -572,10 +577,8 @@ final class NotificationService: NSObject {
             }
             await NotifyActivityPresenter.present(items: [file])
         case let .resolveDefault(requestId, hostID):
-            guard container.host.id == hostID,
-                  let request = container.store.state.selections.first(where: { $0.requestId == requestId }) else { return }
             do throws(HostError) {
-                try await container.session.resolveSelection(requestId, outcome: request.defaultChoice)
+                try await container.resolveDefaultSelection(requestId, hostID: hostID)
             } catch {
                 log.error("resolve default selection failed: \(error.description, privacy: .public)")
                 container.toasts.show(text: ErrorText.describe(error), tone: .error)
@@ -588,7 +591,7 @@ final class NotificationService: NSObject {
         guard let container else { return false }
         guard !hostID.isEmpty, container.host.id != hostID else { return true }
         guard let ref = container.hosts.first(where: { $0.id == hostID }) else { return false }
-        switch await container.switchHost(ref) {
+        switch await container.switchHost(ref, remember: false) {
         case .success: return true
         case .failure: return false
         }
@@ -619,13 +622,18 @@ extension NotificationService: UNUserNotificationCenterDelegate {
     }
 
     nonisolated func userNotificationCenter(
-        _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse
-    ) async {
+        _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping @Sendable () -> Void
+    ) {
         let info = response.notification.request.content.userInfo.reduce(into: [String: String]()) { result, pair in
             if let key = pair.key as? String, let value = pair.value as? String { result[key] = value }
         }
-        guard let intent = NotificationIntent.parse(actionIdentifier: response.actionIdentifier, userInfo: info) else { return }
-        await NotificationService.shared.receive(intent)
+        let intent = NotificationIntent.parse(actionIdentifier: response.actionIdentifier, userInfo: info)
+        // 在主线程应答；后台动作先等写入结果，前台路由不等待连接或分享面板。
+        Task { @MainActor in
+            if let intent { await NotificationService.shared.receive(intent) }
+            completionHandler()
+        }
     }
 }
 

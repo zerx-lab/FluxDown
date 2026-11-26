@@ -66,6 +66,7 @@ final class DevicesModel {
     // MARK: 状态
 
     private(set) var cloudRecords: [CloudDeviceRecord] = []
+    private(set) var cloudRecordsHostID: String?
     private(set) var cloudPhase: Phase = .idle
     private(set) var linkInfos: [LinkDeviceInfo] = []
     private(set) var linkPhase: Phase = .idle
@@ -178,6 +179,7 @@ final class DevicesModel {
             }
         } else if cloudPhase != .loading, cloudPhase != .idle || !cloudRecords.isEmpty {
             cloudRecords = []
+            cloudRecordsHostID = nil
             cloudPhase = .idle
         }
 
@@ -209,6 +211,7 @@ final class DevicesModel {
 
     private func resetAll() {
         cloudRecords = []
+        cloudRecordsHostID = nil
         cloudPhase = .idle
         linkInfos = []
         linkPhase = .idle
@@ -244,6 +247,7 @@ final class DevicesModel {
             let list = try await container.agent.deviceList()
             guard container.host.id == hostId else { return nil }
             cloudRecords = list
+            cloudRecordsHostID = hostId
             cloudPhase = .loaded
             return nil
         } catch {

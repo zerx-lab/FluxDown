@@ -4,6 +4,7 @@ import android.content.Context
 import com.fluxdown.app.R
 import com.fluxdown.app.feature.settings.account.AccountText
 import com.fluxdown.app.i18n.str
+import com.fluxdown.core.host.HostErrorCode
 import com.fluxdown.core.host.HostException
 import com.fluxdown.core.host.HostSession
 import com.fluxdown.core.protocol.AccountErrorContext
@@ -37,12 +38,21 @@ internal object Dispatcher {
         target: DispatchTarget,
         saveDir: String?,
         session: HostSession,
+        isSessionCurrent: () -> Boolean,
         progress: (Int) -> Unit,
     ): DispatchSummary {
         var successes = 0
         var firstError: HostException? = null
         val failed = ArrayList<UrlEntry>()
-        items.forEachIndexed { index, item ->
+        for ((index, item) in items.withIndex()) {
+            // The main-thread session can change while the previous RPC is suspended.
+            if (!isSessionCurrent()) {
+                if (firstError == null) {
+                    firstError = HostException(HostErrorCode.Unavailable, message = "dispatch session changed")
+                }
+                for (remaining in index until items.size) failed += items[remaining].entry
+                break
+            }
             try {
                 dispatch(item, target, saveDir, session)
                 successes++

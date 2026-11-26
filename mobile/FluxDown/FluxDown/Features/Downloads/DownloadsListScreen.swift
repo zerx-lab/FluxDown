@@ -333,7 +333,7 @@ struct DownloadsListScreen: View {
                         tone: .warning,
                         systemImage: FluxSymbol.offline,
                         slim: true,
-                        action: chrome.link == .failed ? BannerAction(title: L("mobileRetry")) { switchHost(container.host, force: true) } : nil
+                        action: chrome.link == .failed ? BannerAction(title: L("mobileRetry"), handler: retryCurrentHost) : nil
                     )
                     .bannerRow()
                 }
@@ -468,13 +468,14 @@ struct DownloadsListScreen: View {
         HostTitleMenuItems(status: linkStatus)
     }
 
-    /// 切换主机（toast：切换中 / 已切换 / 失败原因）；`force` = 重连当前主机。
-    private func switchHost(_ ref: HostRef, force: Bool = false) {
-        guard !container.isSwitching, force || ref.id != container.host.id else { return }
+    /// 重试当前主机，不改变下次启动要恢复的手动选择。
+    private func retryCurrentHost() {
+        guard !container.isSwitching else { return }
+        let ref = container.host
         let name = ref.localizedName
         toasts.show(text: L("mobileHostSwitching", ["name": name]), tone: .info, systemImage: FluxSymbol.remoteHost)
         Task {
-            switch await container.switchHost(ref) {
+            switch await container.switchHost(ref, remember: false, forceReconnect: true) {
             case .success:
                 toasts.show(text: L("mobileHostSwitched", ["name": name]), tone: .success, systemImage: FluxSymbol.done)
             case let .failure(error):

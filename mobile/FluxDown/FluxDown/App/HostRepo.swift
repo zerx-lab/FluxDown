@@ -17,6 +17,7 @@ final class HostRepo {
     }
 
     private static let listKey = "hosts.remotes"
+    private static let lastRemoteKey = "hosts.lastRemote"
     private static let service = "com.fluxdown.app.host-access-key"
 
     private let defaults: UserDefaults
@@ -26,6 +27,15 @@ final class HostRepo {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         publish(load())
+    }
+
+    var lastRemote: HostRef? {
+        guard let id = defaults.string(forKey: Self.lastRemoteKey) else { return nil }
+        return remotes.first { $0.id == id }
+    }
+
+    func rememberRemote(_ id: String?) {
+        defaults.set(id, forKey: Self.lastRemoteKey)
     }
 
     private func load() -> [Saved] {
@@ -82,6 +92,7 @@ final class HostRepo {
 
     func remove(id: String) throws(HostError) {
         try store(load().filter { $0.id != id })
+        if defaults.string(forKey: Self.lastRemoteKey) == id { rememberRemote(nil) }
         try Keychain.delete(service: Self.service, account: id)
     }
 

@@ -126,9 +126,14 @@ final class ManifestSelectModel {
     var canSubmit: Bool { !submitting && selection.count > 0 }
 
     /// 成功返回 `true`（调用方关闭整个 Sheet）；失败已 Toast 并保留页面。
-    func submit(startPaused: Bool, queueId: String, container: AppContainer) async -> Bool {
+    func submit(startPaused: Bool, queueId: String, hostID: String, container: AppContainer) async -> Bool {
         guard canSubmit else { return false }
         let toasts = container.toasts
+        guard container.host.id == hostID else {
+            FluxHaptic.error.play()
+            toasts.show(text: L("mobileDownloadDraftHostChanged"), tone: .warning)
+            return false
+        }
         if container.store.state.isReadOnly {
             FluxHaptic.error.play()
             toasts.show(text: L("localServiceDisconnected"), tone: .error, systemImage: FluxSymbol.offline)
@@ -172,14 +177,16 @@ final class ManifestSelectModel {
 /// `close` 关闭承载它的整个 Sheet（建组成功后调用）。
 struct ManifestSelectView: View {
     let close: () -> Void
+    let hostID: String
 
     @Environment(AppContainer.self) private var container
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var model: ManifestSelectModel
     @State private var taskInfoExport: TaskInfoDocument?
 
-    init(source: ManifestSource, base: ManifestBaseOptions, close: @escaping () -> Void) {
+    init(source: ManifestSource, base: ManifestBaseOptions, hostID: String, close: @escaping () -> Void) {
         _model = State(initialValue: ManifestSelectModel(source: source, base: base))
+        self.hostID = hostID
         self.close = close
     }
 
@@ -494,7 +501,7 @@ struct ManifestSelectView: View {
     private func run(startPaused: Bool, queueId: String) {
         guard model.canSubmit else { return }
         Task {
-            if await model.submit(startPaused: startPaused, queueId: queueId, container: container) { close() }
+            if await model.submit(startPaused: startPaused, queueId: queueId, hostID: hostID, container: container) { close() }
         }
     }
 }

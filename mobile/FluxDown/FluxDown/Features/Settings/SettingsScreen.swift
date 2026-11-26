@@ -384,19 +384,7 @@ private struct SettingsHostMenu<Label: View>: View {
     }
 
     private func switchTo(_ id: String) {
-        guard id != container.host.id, let target = container.hosts.first(where: { $0.id == id }) else { return }
-        let name = target.displayName
-        Task {
-            container.toasts.show(text: L("mobileHostSwitching", ["name": name]), tone: .info, systemImage: FluxSymbol.syncing)
-            switch await container.switchHost(target) {
-            case .success:
-                container.toasts.show(text: L("mobileHostSwitched", ["name": name]), tone: .success)
-            case let .failure(error):
-                container.toasts.show(
-                    text: L("mobileHostSwitchFailed", ["name": name, "reason": ErrorText.describe(error)]),
-                    tone: .error
-                )
-            }
-        }
+        guard let target = container.hosts.first(where: { $0.id == id }) else { return }
+        Task { await HostFlow.switchTo(target, container: container) }
     }
 }
