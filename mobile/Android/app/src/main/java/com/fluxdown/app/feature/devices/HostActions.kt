@@ -67,10 +67,14 @@ internal class HostActions(
     var switchingId: String? by mutableStateOf(null)
         private set
 
-    /** 切换到 [ref]；已是当前主机则直接成功。[onDone] 带结果在主线程回调。 */
+    /** 切换到 [ref]；已选主机可用时不弹切换提示。[onDone] 在主线程回调。 */
     fun switchTo(ref: HostRef, onDone: (Boolean) -> Unit = {}) {
         if (switchingId != null) {
             onDone(false)
+            return
+        }
+        if (container.keepCurrentHost(ref)) {
+            onDone(true)
             return
         }
         switchingId = ref.id

@@ -170,6 +170,13 @@ class AppContainer(context: Context) {
         restoreSuperseded = true
     }
 
+    /** 已选主机可用时只接管本次启动，不改下次启动的选择。 */
+    internal fun keepCurrentHost(ref: HostRef): Boolean {
+        if (ref.id != _host.value.id || session is UnavailableSession) return false
+        supersedeHostRestore()
+        return true
+    }
+
     /** 界面重建只取消等待；恢复属于进程，并且失败只提示一次。 */
     internal suspend fun restoreLastHost(): String? {
         val name = startupRestore.await() ?: return null
@@ -226,12 +233,10 @@ class AppContainer(context: Context) {
     suspend fun switchHost(ref: HostRef, remember: Boolean = true): Result<Unit> = appScope.async {
         supersedeHostRestore()
         switchLock.withLock {
-            val result = if (ref.id == _host.value.id && session !is UnavailableSession) {
-                Result.success(Unit)
-            } else {
-                openOrFail(ref).map { adopt(ref, it) }
-            }
-            if (remember && result.isSuccess) {
+            val changedHost = ref.id != _host.value.id
+            if (!changedHost && session !is UnavailableSession) return@withLock Result.success(Unit)
+            val result = openOrFail(ref).map { adopt(ref, it) }
+            if (remember && changedHost && result.isSuccess) {
                 try {
                     hostRepo.rememberRemote((ref as? HostRef.Remote)?.id)
                 } catch (e: java.io.IOException) {

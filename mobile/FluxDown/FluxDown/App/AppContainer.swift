@@ -109,15 +109,15 @@ final class AppContainer {
         supersedeHostRestore()
         return await withCheckedContinuation { continuation in
             serialized { container in
-                if !forceReconnect, ref.id == container.host.id, !(container.session is UnavailableSession) {
-                    if remember { container.hostRepo.rememberRemote(ref.isLocal ? nil : ref.id) }
+                let changedHost = ref.id != container.host.id
+                if !forceReconnect, !changedHost, !(container.session is UnavailableSession) {
                     continuation.resume(returning: .success(()))
                     return
                 }
                 switch await container.open(ref) {
                 case let .success(session):
                     container.adopt(ref, session)
-                    if remember { container.hostRepo.rememberRemote(ref.isLocal ? nil : ref.id) }
+                    if remember, changedHost { container.hostRepo.rememberRemote(ref.isLocal ? nil : ref.id) }
                     continuation.resume(returning: .success(()))
                 case let .failure(error):
                     continuation.resume(returning: .failure(error))
