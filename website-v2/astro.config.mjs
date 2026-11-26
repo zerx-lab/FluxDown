@@ -20,6 +20,15 @@ const noindexPathnames = new Set([
   // 产品短片录制舞台
   "/film",
   "/zh/film",
+  // 账户中心(个人页面,noindex)
+  "/account",
+  "/account/login",
+  "/account/register",
+  "/account/forgot",
+  "/zh/account",
+  "/zh/account/login",
+  "/zh/account/register",
+  "/zh/account/forgot",
 ]);
 
 // 构建时刻(ISO8601),用作 sitemap lastmod —— 每次部署刷新站点 freshness 信号。

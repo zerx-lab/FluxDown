@@ -3,7 +3,7 @@
  * 站点顶栏:沿页面导轨(rails)延伸的细线外框;下拉菜单纯 CSS(hover / focus-within),
  * 移动端菜单使用原生 Popover API(零 JS)。`D` 快捷键命中 `data-shortcut="d"` 的下载按钮。
  */
-import { ArrowRight, ChevronDown, Menu, Moon, Search, Sun, X, Languages } from "lucide-react";
+import { ArrowRight, ChevronDown, Menu, Moon, Search, Sun, UserRound, X, Languages } from "lucide-react";
 import { BrandIcon } from "../icons/brand";
 import Logo from "./Logo.astro";
 import { common } from "../../i18n/messages/common";
@@ -158,6 +158,16 @@ const isActive = (links: typeof PRODUCT_LINKS) =>
         <Sun size={16} strokeWidth={1.75} className="theme-sun" />
         <Moon size={16} strokeWidth={1.75} className="theme-moon" />
       </button>
+      <a
+        href={href("/account", lang)}
+        class="btn btn-secondary btn-sm account-btn ml-1.5 hidden sm:inline-flex"
+        data-account-link
+        data-label-in={t.nav.account}
+      >
+        <UserRound size={14} strokeWidth={1.75} aria-hidden="true" />
+        <span data-account-text>{t.nav.signIn}</span>
+        <span class="account-dot" aria-hidden="true"></span>
+      </a>
       <a href={href("/download", lang)} class="btn btn-primary btn-sm ml-1.5" data-shortcut="d">
         {t.nav.download}
         <span class="kbd hidden sm:inline-grid">D</span>
@@ -189,6 +199,16 @@ const isActive = (links: typeof PRODUCT_LINKS) =>
       <SPONSOR_LINK.icon size={16} strokeWidth={1.75} className="nav-sponsor-icon" />
       {sponsor.label}
     </a>
+    <a
+      href={href("/account", lang)}
+      class="mobile-link"
+      data-account-link
+      data-label-in={t.nav.account}
+    >
+      <UserRound size={16} strokeWidth={1.75} className="text-subtle" />
+      <span data-account-text>{t.nav.signIn}</span>
+      <span class="account-dot" aria-hidden="true"></span>
+    </a>
     {
       menus.map((menu) => (
         <div class="mt-6">
@@ -214,6 +234,28 @@ const isActive = (links: typeof PRODUCT_LINKS) =>
     </div>
   </div>
 </div>
+
+<!--
+  账户入口:静态页拿不到登录态,读非 HttpOnly 的提示 Cookie `fd_signed_in=1`(同 src/lib/account/client.ts::SIGNED_IN_COOKIE,
+  只决定显示「登录」还是「账户」,不作鉴权)。内联同步执行,首帧前完成切换;无 Cookie 时什么都不改。
+-->
+<script is:inline>
+  (function () {
+    var signedIn = document.cookie.split(";").some(function (part) {
+      return part.trim() === "fd_signed_in=1";
+    });
+    if (!signedIn) return;
+    document.querySelectorAll("[data-account-link]").forEach(function (el) {
+      el.setAttribute("data-signed-in", "");
+      var label = el.getAttribute("data-label-in");
+      if (!label) return;
+      if (el.hasAttribute("aria-label")) el.setAttribute("aria-label", label);
+      if (el.hasAttribute("title")) el.setAttribute("title", label);
+      var text = el.querySelector("[data-account-text]");
+      if (text) text.textContent = label;
+    });
+  })();
+</script>
 
 <script>
   document.addEventListener("click", (event) => {
@@ -503,6 +545,32 @@ const isActive = (links: typeof PRODUCT_LINKS) =>
     .icon-btn:hover {
       color: var(--fg);
       background: var(--bg-inset);
+    }
+    .account-btn {
+      position: relative;
+    }
+    .account-btn[data-signed-in] {
+      color: var(--fg);
+    }
+    /* 已登录指示:按钮右上角一枚小圆点(桌面)/ 行尾圆点(移动端菜单) */
+    .account-dot {
+      display: none;
+      width: 7px;
+      height: 7px;
+      border-radius: 999px;
+      background: var(--ok);
+    }
+    [data-signed-in] > .account-dot {
+      display: block;
+    }
+    .account-btn > .account-dot {
+      position: absolute;
+      top: -3px;
+      right: -3px;
+      box-shadow: 0 0 0 2px var(--bg);
+    }
+    .mobile-link > .account-dot {
+      margin-left: auto;
     }
     .search-trigger {
       align-items: center;

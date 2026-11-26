@@ -38,6 +38,17 @@ node dist/server/entry.mjs
 - 代理传输、失败映射与 IP 透传在 `src/lib/cloud-proxy.ts`（`callUpstream` / `failureResponse`），环境变量只用 `FLUXCLOUD_API_BASE`（FluxCloud 根地址，无 `/api` 前缀，缺省 `http://127.0.0.1:8720`）。代理响应一律 `Cache-Control: no-store`、`X-Robots-Tag: noindex, nofollow`。
 - 回归：`bun test tests/bt-guard-proxy.test.ts`（替换 FluxCloud fetch，不代表真实上游与 Turnstile 演练）。
 
+## 账户中心
+
+- 页面：`/account/`（账户中心：概览 / 会员 / 设备 / 云端推送 / 账户与安全）与 `/account/login/`、`/account/register/`、`/account/forgot/`（zh 加 `/zh` 前缀），静态外壳 + React island，全部 `noindex` 且不进 sitemap（`astro.config.mjs::noindexPathnames`）。
+- BFF：浏览器只调同源 `/api/account/*`（`src/pages/api/account/[...path].ts` → `src/lib/account/routes.ts` 白名单路由），服务端再调 FluxCloud `/api/v1/*`。请求体只取已知字段重建，响应只回 `src/lib/account/types.ts` 的字段，**任何响应都不含令牌**；失败透传 FluxCloud 状态码与 `code`（文案 `src/i18n/messages/accountErrors.ts`）。
+- 会话（`src/lib/account/session.ts`）：刷新令牌 `fd_acct_rt`（90 天滑动）与访问令牌 `fd_acct_at`（15 分钟，提前 60 秒过期）为 HttpOnly + SameSite=Strict + 生产 Secure，Path `/api/account`；`fd_acct_dev` 是本浏览器的 Web 会话 deviceId（随机 UUID）；`fd_signed_in=1` 是给静态页顶栏用的非 HttpOnly 提示，不作鉴权。访问令牌过期或上游 401 `unauthorized` 时刷新一次再重放；同一刷新令牌并发只刷新一次，结果复用 30 秒（单进程内，多副本依赖 FluxCloud 的轮换重放宽限）。
+- CSRF：`security.checkOrigin` 全站关闭，账户接口自行把关——每个请求必须带 `X-Fluxdown-Account: 1`（跨站带自定义头需 CORS 预检，本站不应答），浏览器给出的 `Sec-Fetch-Site` 必须是 `same-origin`。
+- Web 会话依赖 FluxCloud 把 `devicePlatform: "web"` 的设备与 App 设备隔离（不占 `maxDevices`、不进 `GET /devices`、不能当派发目标、每账号至多 5 个），**部署顺序：先升级 FluxCloud 再上线官网**，否则官网登录会占用 App 设备名额并出现在各端设备列表里。新浏览器首次密码登录照常需要邮箱验证码；登出会删除该 Web 会话的设备信任。
+- 登录后购买复用 `/api/cloud/order*` 公开网页下单端点（`account` = 本人 Origin ID 或邮箱），不新增订单接口；定价页在有登录提示时先取 `/api/account/me` 跳过账号确认步。官网仍不展示 USDT。
+- 环境变量只用既有的 `FLUXCLOUD_API_BASE`；反代须转发 `/api/account/*` 的 Cookie 与 `Set-Cookie`，不缓存其响应。
+- 回归：`bun test tests/account-bff.test.ts`（替换 FluxCloud fetch 与 Cookie，不代表真实上游演练）。
+
 ## 结构
 
 | 位置 | 内容 |

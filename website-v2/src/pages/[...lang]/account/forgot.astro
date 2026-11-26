@@ -1,0 +1,21 @@
+---
+/**
+ * 找回密码(en → /account/forgot,zh → /zh/account/forgot):邮箱验证码 + 新密码。
+ * 重置会吊销该账户所有会话,不自动登录;支持 `?email=` 预填。
+ */
+import Layout from "@/layouts/Layout.astro";
+import AuthShell from "@/components/account/auth/AuthShell.astro";
+import ForgotForm from "@/components/account/auth/ForgotForm";
+import { accountAuth } from "@/i18n/messages/accountAuth";
+import { langStaticPaths, resolveLang } from "@/i18n/routing";
+
+export const getStaticPaths = langStaticPaths;
+const lang = resolveLang(Astro.params.lang);
+const t = accountAuth[lang].forgot;
+---
+
+<Layout lang={lang} title={t.meta.title} description={t.meta.description} noindex>
+  <AuthShell lang={lang} eyebrow={t.head.eyebrow} title={t.head.title} lede={t.head.lede}>
+    <ForgotForm client:load lang={lang} />
+  </AuthShell>
+</Layout>

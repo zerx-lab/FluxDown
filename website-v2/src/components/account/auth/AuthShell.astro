@@ -1,0 +1,54 @@
+---
+/**
+ * 账户认证页共用外壳(登录 / 注册 / 找回密码):`.frame` 内两栏——品牌说明 + 表单卡片(默认 slot)。
+ * DOM 里品牌区在前(标题先于表单被读到),窄屏用 order 把表单放到视觉最前;lg 起表单卡片吸顶随滚动。
+ * 标题中用 `<em>` 包裹的片段渲染为 serif 强调(与 `PageHeader` 同约定)。
+ */
+import { CloudCog, MonitorSmartphone, Receipt } from "lucide-react";
+import type { Lang } from "@/i18n/config";
+import { accountAuth } from "@/i18n/messages/accountAuth";
+
+interface Props {
+  lang: Lang;
+  eyebrow: string;
+  title: string;
+  lede: string;
+}
+const { lang, eyebrow, title, lede } = Astro.props;
+const brand = accountAuth[lang].brand;
+const html = title.replace(/<em>(.*?)<\/em>/g, '<span class="serif">$1</span>');
+const icons = [CloudCog, Receipt, MonitorSmartphone];
+---
+
+<section class="frame">
+  <div class="section-tight grid items-start gap-10 lg:grid-cols-[minmax(0,1fr)_minmax(0,28rem)] lg:gap-16 xl:gap-24">
+    <div class="flex flex-col gap-5 max-lg:order-2 lg:pt-6">
+      <span class="eyebrow self-start" data-scramble>{eyebrow}</span>
+      <h1 class="h2 max-w-[16ch]" data-reveal set:html={html} />
+      <p class="lede max-w-[46ch]" data-reveal style="--d:1">{lede}</p>
+      <ul class="mt-4 flex flex-col gap-5" aria-label={brand.pointsLabel} data-reveal style="--d:2">
+        {
+          brand.points.map((point, i) => {
+            const Icon = icons[i];
+            return (
+              <li class="flex gap-3.5">
+                <span class="mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg bg-elev text-accent-ink shadow-[0_0_0_1px_var(--line-strong)_inset]">
+                  <Icon size={16} strokeWidth={1.75} aria-hidden="true" />
+                </span>
+                <div>
+                  <p class="text-[14.5px] font-medium">{point.title}</p>
+                  <p class="mt-1 text-[13.5px] leading-relaxed text-muted">{point.desc}</p>
+                </div>
+              </li>
+            );
+          })
+        }
+      </ul>
+      <p class="mt-2 border-t border-line pt-5 text-[13px] text-subtle" data-reveal style="--d:3">{brand.note}</p>
+    </div>
+    <div class="max-lg:order-1 lg:sticky lg:top-[calc(var(--header-h)+24px)]">
+      <slot />
+    </div>
+  </div>
+  <div class="rule"></div>
+</section>
