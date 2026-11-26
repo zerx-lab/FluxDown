@@ -2,10 +2,10 @@
 /**
  * 全站基础布局:SEO 头、主题预绘制、字体预加载、外壳(Header / Footer / 命令面板)。
  *
- * - 语言由页面显式传入(URL 决定);hreflang 默认按当前路径生成 en/zh 双向簇,
+ * - 语言由页面显式传入(URL 决定);hreflang 默认按当前路径生成全部语言的双向簇(含 x-default),
  *   docs 等自有语言结构的页面传 `alternates` 覆盖,无变体页面传 `alternates={[]}`。
- * - 无前缀(英文)页面是「自动语言」入口:首帧前按用户显式选择 → 浏览器/系统语言
- *   判定,偏好中文则 replace 到 /zh/ 对应页。/zh/ 与 docs 是显式语言 URL,不跳;
+ * - 无前缀(默认语言 en)页面是「自动语言」入口:首帧前按用户显式选择 → 浏览器/系统语言
+ *   判定,偏好其他站点语言则 replace 到 /<lang>/ 对应页。/<lang>/ 与 docs 是显式语言 URL,不跳;
  *   爬虫不跳(英文页保持可索引)。
  * - `chrome={false}` 用于需要整屏自管的工具页(只保留 <head> 与主题)。
  */
@@ -16,7 +16,7 @@ import CommandPalette from "../components/site/CommandPalette";
 import AnnouncementBar from "../components/site/AnnouncementBar.astro";
 import AnnouncementPopup from "../components/site/AnnouncementPopup";
 import { SITE_ORIGIN, OG_IMAGE_URL, OG_IMAGE_WIDTH, OG_IMAGE_HEIGHT, HOME_META, buildGraph } from "../lib/seo";
-import { HREFLANG, HTML_LANG, LANGS, OG_LOCALE, type Lang } from "../i18n/config";
+import { DEFAULT_LANG, HREFLANG, HTML_LANG, LANGS, OG_LOCALE, toBaselineLang, type Lang } from "../i18n/config";
 import { common } from "../i18n/messages/common";
 import { PRODUCT_LINKS, COMMUNITY_LINKS, SPONSOR_LINK, docsPath, navHref } from "../lib/site-nav";
 import { href, switchLang } from "../i18n/routing";
@@ -39,8 +39,8 @@ interface Props {
 
 const {
   lang,
-  title = HOME_META[lang].title,
-  description = HOME_META[lang].description,
+  title = HOME_META[toBaselineLang(lang)].title,
+  description = HOME_META[toBaselineLang(lang)].description,
   canonicalUrl,
   noindex: pageNoindex = false,
   nofollow = false,
@@ -79,7 +79,12 @@ const paletteLinks = [
 ];
 
 // 仅默认 hreflang 簇的英文页参与自动语言;自带 alternates 的页面(docs / 404 / 工具页)语言由 URL 固定。
-const autoZhHref = lang === "en" && Astro.props.alternates === undefined ? switchLang(normalizedPath, "zh") : null;
+const autoLangHrefs =
+  lang === DEFAULT_LANG && Astro.props.alternates === undefined
+    ? Object.fromEntries(LANGS.filter((l) => l !== DEFAULT_LANG).map((l) => [l, switchLang(normalizedPath, l)]))
+    : null;
+// 命令面板的语言切换动作:除当前语言外每种语言一条。
+const langLinks = LANGS.filter((l) => l !== lang).map((l) => ({ lang: l, href: switchLang(normalizedPath, l) }));
 
 // Google Analytics 4(媒体资源「FluxDown Website」,数据流 fluxdown.com):只在生产根部署加载,
 // 本地 dev 与子路径预览部署不计数。
@@ -135,27 +140,34 @@ const loadAnalytics = import.meta.env.PROD && BASE === "";
     <meta name="twitter:description" content={description} />
     <meta name="twitter:image" content={ogImage} />
 
-    <!-- 自动语言:键名与 src/lib/locale-pref.ts 的 LOCALE_KEY 一致;判定规则与 lib/locale-detect.ts 对齐。
-         zhHref 为 null 的页面(显式语言 URL)直接跳过。 -->
-    <script is:inline define:vars={{ zhHref: autoZhHref }}>
+    <!-- 自动语言:键名与 src/lib/locale-pref.ts 的 LOCALE_KEY 一致;判定规则与 config.ts 的 matchLangTag /
+         lib/locale-detect.ts 对齐(内联脚本无法 import,规则在此有一份副本)。
+         langHrefs 为 null 的页面(显式语言 URL)直接跳过。 -->
+    <script is:inline define:vars={{ langHrefs: autoLangHrefs, langs: LANGS }}>
       (function () {
-        if (!zhHref) return;
+        if (!langHrefs) return;
+        function match(tag) {
+          tag = String(tag).trim().toLowerCase();
+          if (tag.indexOf("zh") === 0) {
+            if (/(^|-)hans(-|$)/.test(tag)) return "zh";
+            if (/(^|-)hant(-|$)/.test(tag) || /-(tw|hk|mo)(-|$)/.test(tag)) return "zh-tw";
+            return "zh";
+          }
+          var primary = tag.split("-")[0];
+          return langs.indexOf(primary) >= 0 ? primary : null;
+        }
         var pref = null;
         try { pref = localStorage.getItem("fluxdown-locale"); } catch (e) {}
-        if (pref !== "en" && pref !== "zh") {
-          var m = document.cookie.match(/(?:^|;\s*)fluxdown-locale=(en|zh)(?:;|$)/);
-          pref = m ? m[1] : null;
+        if (langs.indexOf(pref) < 0) {
+          var m = document.cookie.match(/(?:^|;\s*)fluxdown-locale=([\w-]+)(?:;|$)/);
+          pref = m && langs.indexOf(m[1]) >= 0 ? m[1] : null;
         }
         if (!pref) {
           if (/bot|crawl|spider|slurp|lighthouse|headless/i.test(navigator.userAgent)) return;
-          var langs = navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || ""];
-          for (var i = 0; i < langs.length && !pref; i++) {
-            var tag = String(langs[i]).toLowerCase();
-            if (tag.indexOf("zh") === 0) pref = "zh";
-            else if (tag.indexOf("en") === 0) pref = "en";
-          }
+          var tags = navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || ""];
+          for (var i = 0; i < tags.length && !pref; i++) pref = match(tags[i]);
         }
-        if (pref === "zh") location.replace(zhHref + location.search + location.hash);
+        if (pref && langHrefs[pref]) location.replace(langHrefs[pref] + location.search + location.hash);
       })();
     </script>
 
@@ -194,7 +206,7 @@ const loadAnalytics = import.meta.env.PROD && BASE === "";
           client:idle
           lang={lang}
           links={paletteLinks}
-          altLangHref={switchLang(normalizedPath, lang === "en" ? "zh" : "en")}
+          langLinks={langLinks}
         />
       )
     }

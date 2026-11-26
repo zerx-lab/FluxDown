@@ -8,7 +8,7 @@
  * - 复制按钮、邮件订阅表单。
  */
 import { download } from "@/i18n/messages/download";
-import type { Lang } from "@/i18n/config";
+import { DEFAULT_LANG, INTL_LOCALE, isLang } from "@/i18n/config";
 import { formatSize, pickPath, versionAnchor, type ReleaseAsset, type ReleaseInfo } from "@/lib/release-format";
 import { withBase } from "@/lib/base";
 import { assetDownloadUrl } from "@/lib/download-source";
@@ -58,11 +58,11 @@ async function detectPlatform(): Promise<Platform> {
 }
 
 function init(root: HTMLElement) {
-  const lang = (root.dataset.lang === "zh" ? "zh" : "en") as Lang;
+  const lang = isLang(root.dataset.lang) ? root.dataset.lang : DEFAULT_LANG;
   const t = download[lang];
   const changelogHref = root.dataset.changelog ?? withBase("/changelog/");
   const githubUrl = root.dataset.github ?? "";
-  const dateFormat = new Intl.DateTimeFormat(lang === "zh" ? "zh-CN" : "en-US", {
+  const dateFormat = new Intl.DateTimeFormat(INTL_LOCALE[lang], {
     year: "numeric",
     month: "short",
     day: "numeric",
@@ -79,7 +79,8 @@ function init(root: HTMLElement) {
   const $$ = <T extends Element = HTMLElement>(sel: string) => Array.from(root.querySelectorAll<T>(sel));
 
   $$("[data-js]").forEach((el) => (el.hidden = false));
-  installDownloadCaptcha(lang);
+  // 大陆镜像验证码只对简体中文站启用中文界面(与 dl-cn 同一受众),其余语言一律英文
+  installDownloadCaptcha(lang === "zh" ? "zh" : "en");
   const status = $("[data-hero-status]");
   if (status) status.textContent = t.hero.detecting;
 
@@ -179,7 +180,7 @@ function init(root: HTMLElement) {
     // 新插入带 data-count 的节点,由 motion.ts 的 MutationObserver 接管计数动画
     const span = document.createElement("span");
     span.dataset.count = String(total);
-    span.textContent = new Intl.NumberFormat(lang === "zh" ? "zh-CN" : "en-US").format(total);
+    span.textContent = new Intl.NumberFormat(INTL_LOCALE[lang]).format(total);
     slot.replaceChildren(span);
     wrap.hidden = false;
   }

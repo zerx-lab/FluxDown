@@ -6,17 +6,19 @@
 import { X, ArrowRight } from "lucide-react";
 import { barAnnouncement, DISMISSED_KEY } from "@/lib/announcements";
 import { href } from "@/i18n/routing";
-import type { Lang } from "@/i18n/config";
+import { toBaselineLang, type Lang } from "@/i18n/config";
 
 interface Props {
   lang: Lang;
 }
 const { lang } = Astro.props;
 const item = barAnnouncement();
+// 公告数据与条内文案只有 en / zh 手写基线,机器翻译语言沿用 en
+const copyLang = toBaselineLang(lang);
 const t = {
   en: { label: "Announcement", cta: "Take a look", close: "Dismiss announcement" },
   zh: { label: "公告", cta: "去看看", close: "关闭公告" },
-}[lang];
+}[copyLang];
 ---
 
 {
@@ -35,14 +37,14 @@ const t = {
         <p class="ann-text">
           {item.link ? (
             <a href={href(item.link, lang)} class="ann-link" data-ann-dismiss>
-              <span>{item.text[lang]}</span>
+              <span>{item.text[copyLang]}</span>
               <span class="ann-cta">
                 {t.cta}
                 <ArrowRight size={13} strokeWidth={2} aria-hidden="true" />
               </span>
             </a>
           ) : (
-            item.text[lang]
+            item.text[copyLang]
           )}
         </p>
         <button type="button" class="ann-close" aria-label={t.close} data-ann-dismiss>

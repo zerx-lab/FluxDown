@@ -12,7 +12,7 @@ import { BrandIcon } from "../icons/brand";
 import { home } from "../../i18n/messages/home";
 import { common } from "../../i18n/messages/common";
 import { href } from "../../i18n/routing";
-import type { Lang } from "../../i18n/config";
+import { toBaselineLang, type Lang } from "../../i18n/config";
 import { GITHUB_URL } from "../../lib/site-nav";
 import { withBase } from "../../lib/base";
 import { heroPromoCopy } from "../../lib/cloud-promo";
@@ -23,7 +23,7 @@ interface Props {
 const { lang } = Astro.props;
 const t = home[lang].hero;
 const actions = common[lang].actions;
-const promoTag = heroPromoCopy[lang].tag;
+const promoTag = heroPromoCopy[toBaselineLang(lang)].tag;
 
 const osLabels = {
   mac: actions.downloadFor("macOS"),
@@ -159,6 +159,7 @@ const versions = [
   import { whenIdle } from "../../scripts/idle";
   import { withBase } from "../../lib/base";
   import { heroPromoView, pickHeroPromo } from "../../lib/cloud-promo";
+  import { isLang, DEFAULT_LANG } from "../../i18n/config";
 
   // 促销胶囊:FluxCloud 目录有进行中的活动才把新功能角标换成促销;拉取失败 / 无活动保持原样
   const news = document.querySelector<HTMLElement>("[data-hero-news]");
@@ -180,7 +181,8 @@ const versions = [
       const promo = pickHeroPromo(plans, now);
       // 用户正指向 / 聚焦新功能角标时不换,避免点击目标在手下变掉
       if (!promo || news.matches(":hover, :focus-within")) return;
-      const view = heroPromoView(promo, promoEl.dataset.lang === "zh" ? "zh" : "en", now);
+      const promoLang = isLang(promoEl.dataset.lang) ? promoEl.dataset.lang : DEFAULT_LANG;
+      const view = heroPromoView(promo, promoLang, now);
       const fill = (sel: string, text: string) => {
         const el = promoEl.querySelector<HTMLElement>(sel);
         if (el) el.textContent = text;

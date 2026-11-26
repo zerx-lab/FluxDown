@@ -126,8 +126,8 @@ export default function DocsSearch({ lang, variant = "compact" }: Props) {
   };
 
   const sectionLabel = (section: string) => {
-    const s = SECTIONS.find((x) => x.id === section);
-    return s ? s[lang] : section;
+    const known = SECTIONS.find((id) => id === section);
+    return known ? t.sectionLabels[known] : section;
   };
 
   const panel = (() => {

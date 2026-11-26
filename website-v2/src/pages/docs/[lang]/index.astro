@@ -1,6 +1,6 @@
 ---
 /**
- * 文档首页(静态预渲染,en/zh 各一条路由):hero + 内联搜索(支持 `?q=`)+ 分区卡片 + 与 Ghost Downloader 对比
+ * 文档首页(静态预渲染,LANGS 每种语言一条路由):hero + 内联搜索(支持 `?q=`)+ 分区卡片 + 与 Ghost Downloader 对比
  * + 参与贡献(各仓库入口)。
  */
 import { getCollection } from "astro:content";
@@ -10,7 +10,7 @@ import DocsSearch from "@/components/docs/DocsSearch";
 import DocsCompareGd from "@/components/docs/DocsCompareGd.astro";
 import { BrandIcon } from "@/components/icons/brand";
 import { SECTION_ICONS, docsAlternates, docsRepoTree } from "@/components/docs/meta";
-import { buildDocsNav, type DocsLang } from "@/lib/docs-nav";
+import { buildDocsNav } from "@/lib/docs-nav";
 import { docs } from "@/i18n/messages/docs";
 import { contribute } from "@/i18n/messages/contribute";
 import { docsCompare } from "@/i18n/messages/docsCompare";
@@ -23,14 +23,15 @@ import {
   githubUrl,
 } from "@/lib/ecosystem";
 import { withBase } from "@/lib/base";
+import { LANGS, type Lang } from "@/i18n/config";
 
 export const prerender = true;
 
 export function getStaticPaths() {
-  return [{ params: { lang: "en" } }, { params: { lang: "zh" } }];
+  return LANGS.map((lang) => ({ params: { lang } }));
 }
 
-const lang = Astro.params.lang as DocsLang;
+const lang = Astro.params.lang as Lang;
 const t = docs[lang];
 const all = await getCollection("docs");
 const { groups } = buildDocsNav(all, lang);
@@ -47,7 +48,7 @@ const cmp = docsCompare[lang];
   lang={lang}
   title={t.metaTitle}
   description={t.metaDescription}
-  alternates={docsAlternates("", ["en", "zh"])}
+  alternates={docsAlternates("", LANGS)}
 >
   <section class="frame">
     <div class="section docs-hero">

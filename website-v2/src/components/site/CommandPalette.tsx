@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, BookOpen, CornerDownLeft, FileText, Languages, Search, SunMoon } from "lucide-react";
 import { BrandIcon } from "../icons/brand";
 import { common } from "@/i18n/messages/common";
-import type { Lang } from "@/i18n/config";
+import { LANG_LABEL, type Lang } from "@/i18n/config";
 import { searchDocs, type SearchDoc } from "@/lib/docs-search";
 import { GITHUB_URL } from "@/lib/site-nav";
 import { withBase } from "@/lib/base";
@@ -29,10 +29,11 @@ interface Item {
 interface Props {
   lang: Lang;
   links: PaletteLink[];
-  altLangHref: string;
+  /** 其余语言下的当前页地址(语言切换动作,每种语言一条)。 */
+  langLinks: { lang: Lang; href: string }[];
 }
 
-export default function CommandPalette({ lang, links, altLangHref }: Props) {
+export default function CommandPalette({ lang, links, langLinks }: Props) {
   const t = common[lang].search;
   const dialogRef = useRef<HTMLDialogElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -100,16 +101,18 @@ export default function CommandPalette({ lang, links, altLangHref }: Props) {
           document.querySelector<HTMLElement>("[data-theme-toggle]")?.click();
         },
       },
-      {
-        id: "action:lang",
-        group: "actions",
-        label: t.switchLang,
-        icon: <Languages size={15} strokeWidth={1.75} />,
-        run: () => {
-          rememberLocale(lang === "en" ? "zh" : "en");
-          go(altLangHref);
-        },
-      },
+      ...langLinks.map(
+        (l): Item => ({
+          id: `action:lang:${l.lang}`,
+          group: "actions",
+          label: LANG_LABEL[l.lang],
+          icon: <Languages size={15} strokeWidth={1.75} />,
+          run: () => {
+            rememberLocale(l.lang);
+            go(l.href);
+          },
+        }),
+      ),
       {
         id: "action:github",
         group: "actions",
@@ -122,7 +125,7 @@ export default function CommandPalette({ lang, links, altLangHref }: Props) {
       },
     ].filter((a) => !q || a.label.toLowerCase().includes(q)) as Item[];
     return [...pageItems, ...docItems, ...actions];
-  }, [query, docs, links, altLangHref, t]);
+  }, [query, docs, links, langLinks, t]);
 
   useEffect(() => setActive(0), [query]);
   useEffect(() => {

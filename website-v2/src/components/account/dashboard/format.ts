@@ -1,10 +1,8 @@
-import type { Lang } from "@/i18n/config";
+import { INTL_LOCALE, type Lang } from "@/i18n/config";
 
 /** 账户中心的格式化小件:日期 / 相对时间 / 用户数据边界(空值、emoji、超长)。 */
 
 export const DASH = "-";
-
-const LOCALE: Record<Lang, string> = { en: "en", zh: "zh-CN" };
 
 const dateFormats = new Map<string, Intl.DateTimeFormat>();
 function dateFormat(lang: Lang, withTime: boolean): Intl.DateTimeFormat {
@@ -12,7 +10,7 @@ function dateFormat(lang: Lang, withTime: boolean): Intl.DateTimeFormat {
   let fmt = dateFormats.get(key);
   if (!fmt) {
     fmt = new Intl.DateTimeFormat(
-      LOCALE[lang],
+      INTL_LOCALE[lang],
       withTime
         ? { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }
         : { year: "numeric", month: "short", day: "numeric" },
@@ -26,7 +24,7 @@ const relativeFormats = new Map<Lang, Intl.RelativeTimeFormat>();
 function relativeFormat(lang: Lang): Intl.RelativeTimeFormat {
   let fmt = relativeFormats.get(lang);
   if (!fmt) {
-    fmt = new Intl.RelativeTimeFormat(LOCALE[lang], { numeric: "auto" });
+    fmt = new Intl.RelativeTimeFormat(INTL_LOCALE[lang], { numeric: "auto" });
     relativeFormats.set(lang, fmt);
   }
   return fmt;

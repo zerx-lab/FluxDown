@@ -8,7 +8,7 @@ import { BrandIcon } from "../icons/brand";
 import Logo from "./Logo.astro";
 import { common } from "../../i18n/messages/common";
 import { href, switchLang, stripLang } from "../../i18n/routing";
-import { LANG_LABEL, type Lang } from "../../i18n/config";
+import { HREFLANG, HTML_LANG, LANG_LABEL, LANGS, type Lang } from "../../i18n/config";
 import { COMMUNITY_LINKS, GITHUB_URL, PRODUCT_LINKS, SPONSOR_LINK, docsPath, navHref } from "../../lib/site-nav";
 import { stripBase } from "@/lib/base";
 
@@ -18,8 +18,13 @@ interface Props {
 const { lang } = Astro.props;
 const t = common[lang];
 const path = stripLang(Astro.url.pathname);
-const other: Lang = lang === "en" ? "zh" : "en";
-const otherHref = switchLang(Astro.url.pathname, other);
+// 语言切换:每种语言一条(当前语言标记 aria-current),href 保持当前页路径
+const langItems = LANGS.map((l) => ({
+  lang: l,
+  label: LANG_LABEL[l],
+  href: switchLang(Astro.url.pathname, l),
+  current: l === lang,
+}));
 
 const menus = [
   {
@@ -151,9 +156,31 @@ const isActive = (links: typeof PRODUCT_LINKS) =>
       <a href={GITHUB_URL} class="icon-btn hidden sm:inline-grid" aria-label={t.nav.github} target="_blank" rel="noopener">
         <BrandIcon name="github" size={16} />
       </a>
-      <a href={otherHref} class="icon-btn hidden sm:inline-grid" hreflang={other} data-lang-switch={other} aria-label={LANG_LABEL[other]} title={LANG_LABEL[other]}>
-        <span class="mono text-[11.5px] font-semibold">{other === "zh" ? "中" : "EN"}</span>
-      </a>
+      <div class="lang-menu hidden sm:block">
+        <button type="button" class="icon-btn" aria-haspopup="true" aria-label={LANG_LABEL[lang]} title={LANG_LABEL[lang]}>
+          <Languages size={16} strokeWidth={1.75} />
+        </button>
+        <div class="lang-panel">
+          <ul class="lang-panel-inner">
+            {
+              langItems.map((item) => (
+                <li>
+                  <a
+                    href={item.href}
+                    class="lang-option"
+                    lang={HTML_LANG[item.lang]}
+                    hreflang={HREFLANG[item.lang]}
+                    data-lang-switch={item.lang}
+                    aria-current={item.current ? "true" : undefined}
+                  >
+                    {item.label}
+                  </a>
+                </li>
+              ))
+            }
+          </ul>
+        </div>
+      </div>
       <button type="button" class="icon-btn header-theme" data-theme-toggle aria-label={t.theme.toggle}>
         <Sun size={16} strokeWidth={1.75} className="theme-sun" />
         <Moon size={16} strokeWidth={1.75} className="theme-moon" />
@@ -222,11 +249,23 @@ const isActive = (links: typeof PRODUCT_LINKS) =>
         </div>
       ))
     }
-    <div class="mt-8 flex items-center gap-2 border-t border-line pt-6">
-      <a href={otherHref} class="btn btn-secondary btn-sm" hreflang={other} data-lang-switch={other}>
-        <Languages size={14} strokeWidth={1.75} />
-        {LANG_LABEL[other]}
-      </a>
+    <div class="mt-8 flex flex-wrap items-center gap-2 border-t border-line pt-6">
+      {
+        langItems
+          .filter((item) => !item.current)
+          .map((item) => (
+            <a
+              href={item.href}
+              class="btn btn-secondary btn-sm"
+              lang={HTML_LANG[item.lang]}
+              hreflang={HREFLANG[item.lang]}
+              data-lang-switch={item.lang}
+            >
+              <Languages size={14} strokeWidth={1.75} />
+              {item.label}
+            </a>
+          ))
+      }
       <a href={GITHUB_URL} class="btn btn-secondary btn-sm" target="_blank" rel="noopener">
         <BrandIcon name="github" size={14} />
         GitHub
@@ -545,6 +584,72 @@ const isActive = (links: typeof PRODUCT_LINKS) =>
     .icon-btn:hover {
       color: var(--fg);
       background: var(--bg-inset);
+    }
+    /* 语言菜单:与 .nav-panel 同一套 hover / focus-within 展开,右对齐 */
+    .lang-menu {
+      position: relative;
+    }
+    .lang-panel {
+      position: absolute;
+      right: -6px;
+      top: 100%;
+      padding-top: 12px;
+      opacity: 0;
+      visibility: hidden;
+      transform: translateY(-6px) scale(0.985);
+      transform-origin: right top;
+      transition:
+        opacity 160ms,
+        transform 240ms var(--ease-out),
+        visibility 0s 240ms;
+    }
+    .lang-menu:hover .lang-panel,
+    .lang-menu:focus-within .lang-panel {
+      opacity: 1;
+      visibility: visible;
+      transform: none;
+      transition-delay: 60ms, 60ms, 0s;
+    }
+    /* 悬停桥:按钮与面板之间的空隙不丢 hover */
+    .lang-panel::before {
+      content: "";
+      position: absolute;
+      inset: 0 0 auto;
+      height: 12px;
+    }
+    .lang-panel-inner {
+      display: grid;
+      gap: 2px;
+      min-width: 152px;
+      margin: 0;
+      padding: 6px;
+      list-style: none;
+      border-radius: 12px;
+      background: var(--bg-elev);
+      box-shadow:
+        0 0 0 1px var(--line),
+        var(--shadow-float);
+    }
+    .lang-option {
+      display: flex;
+      align-items: center;
+      height: 32px;
+      padding-inline: 10px;
+      border-radius: 7px;
+      font-size: 13.5px;
+      white-space: nowrap;
+      color: var(--fg-muted);
+      transition:
+        color 150ms,
+        background-color 150ms;
+    }
+    .lang-option:hover,
+    .lang-option[aria-current] {
+      color: var(--fg);
+      background: var(--bg-inset);
+    }
+    .lang-option[aria-current] {
+      font-weight: 600;
     }
     .account-btn {
       position: relative;

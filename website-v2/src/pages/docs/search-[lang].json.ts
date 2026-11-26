@@ -1,20 +1,18 @@
 /**
- * 文档搜索索引(构建期预渲染,en/zh 各一份 JSON)。
+ * 文档搜索索引(构建期预渲染,LANGS 每种语言一份 JSON)。
  *
  * 客户端 DocsSearch 组件 fetch `/docs/search-{lang}.json` 后在浏览器内做模糊 + 全文匹配,
- * 无需服务端搜索接口(与全站静态预渲染一致)。zh 缺译页沿用 en 正文(与导航/回退策略一致)。
+ * 无需服务端搜索接口(与全站静态预渲染一致)。非 en 语言缺译页沿用 en 正文(与导航/回退策略一致)。
  */
 import type { APIRoute, GetStaticPaths } from "astro";
 import { getCollection } from "astro:content";
-import { buildDocsNav, type DocsLang } from "../../lib/docs-nav";
+import { buildDocsNav, docsEntriesOf } from "../../lib/docs-nav";
+import { DEFAULT_LANG, LANGS, type Lang } from "@/i18n/config";
 import { withBase } from "@/lib/base";
 
 export const prerender = true;
 
-export const getStaticPaths: GetStaticPaths = () => [
-  { params: { lang: "en" } },
-  { params: { lang: "zh" } },
-];
+export const getStaticPaths: GetStaticPaths = () => LANGS.map((lang) => ({ params: { lang } }));
 
 /** Markdown 正文 → 可搜索纯文本(去代码块/标记/链接语法,压缩空白)。 */
 function toPlainText(md: string): string {
@@ -29,20 +27,17 @@ function toPlainText(md: string): string {
 }
 
 export const GET: APIRoute = async ({ params }) => {
-  const lang = params.lang as DocsLang;
+  const lang = params.lang as Lang;
   const all = await getCollection("docs");
 
-  // 以 en 为 slug 全集,zh 优先取译文正文,缺译回退 en(与 buildDocsNav 一致)
-  const en = all.filter((e) => e.id.startsWith("en/"));
-  const zhMap = new Map(
-    all.filter((e) => e.id.startsWith("zh/")).map((e) => [e.id.slice(3), e]),
-  );
+  // 以 en 为 slug 全集,译文优先取各语言正文,缺译回退 en(与 buildDocsNav 一致)
+  const base = docsEntriesOf(all, DEFAULT_LANG);
+  const translated = docsEntriesOf(all, lang);
   const { flat } = buildDocsNav(all, lang);
   const titleBySlug = new Map(flat.map((i) => [i.slug, i.title]));
 
-  const docs = en.map((e) => {
-    const slug = e.id.slice(3);
-    const entry = lang === "zh" ? (zhMap.get(slug) ?? e) : e;
+  const docs = [...base].map(([slug, e]) => {
+    const entry = translated.get(slug) ?? e;
     const body = entry.body ?? "";
     const headings = [...body.matchAll(/^#{2,6}\s+(.+?)\s*$/gm)].map((m) =>
       (m[1] ?? "").replace(/[*_`~]/g, "").trim(),

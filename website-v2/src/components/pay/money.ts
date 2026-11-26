@@ -1,7 +1,4 @@
-import type { Lang } from "@/i18n/config";
-
-/** Intl locale per site language (currency / date formatting). */
-export const INTL_LOCALE: Record<Lang, string> = { en: "en-US", zh: "zh-CN" };
+import { INTL_LOCALE, type Lang } from "@/i18n/config";
 
 /** Minor units (cents / fen) → localized currency string; whole amounts drop decimals. */
 export function formatMinor(minor: number, currency: string, lang: Lang): string {

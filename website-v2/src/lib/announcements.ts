@@ -5,9 +5,10 @@
  * - 顶部公告条显示最新一条 active 且非弹窗的公告;弹窗显示 active 且带 `popup` 的公告。
  * - 关闭记录存 localStorage[`DISMISSED_KEY`](id 数组),与旧站同键,旧的关闭记录继续有效。
  */
-import type { Lang } from "@/i18n/config";
+import type { BaselineLang } from "@/i18n/config";
 
-export type Localized = Record<Lang, string>;
+/** 公告数据只有 en / zh 手写基线;机器翻译语言展示时沿用 en(见 `toBaselineLang`)。 */
+export type Localized = Record<BaselineLang, string>;
 
 export interface AnnouncementPopup {
   title: Localized;

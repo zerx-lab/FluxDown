@@ -9,8 +9,8 @@
  * 截止时间只在最后几天提示，余量用中性措辞，不做倒计时与闪烁。
  */
 import type { CloudPlan } from "@/components/pricing/types";
-import { formatMinor, INTL_LOCALE } from "@/components/pay/money";
-import type { Lang } from "@/i18n/config";
+import { formatMinor } from "@/components/pay/money";
+import { INTL_LOCALE, toBaselineLang, type Lang } from "@/i18n/config";
 
 export interface HeroPromo {
   campaignName: string;
@@ -99,9 +99,13 @@ export interface HeroPromoView {
   aria: string;
 }
 
-/** 促销 → 胶囊各段文案。中文站用后台活动名 + 套餐名，英文站用固定标题。 */
+/**
+ * 促销 → 胶囊各段文案。中文站用后台活动名 + 套餐名,其余语言用固定标题;
+ * 文案只有 en / zh 手写基线,机器翻译语言沿用 en(日期随文案语言格式化,金额按当前语言本地化)。
+ */
 export function heroPromoView(p: HeroPromo, lang: Lang, nowMs: number = Date.now()): HeroPromoView {
-  const t = heroPromoCopy[lang];
+  const copyLang = toBaselineLang(lang);
+  const t = heroPromoCopy[copyLang];
   const title =
     lang === "zh" && p.campaignName ? [p.campaignName, p.planName].filter(Boolean).join(" · ") : t.title;
   const sale = formatMinor(p.saleMinor, p.currency, lang);
@@ -111,8 +115,8 @@ export function heroPromoView(p: HeroPromo, lang: Lang, nowMs: number = Date.now
   if (p.stageLeft != null) {
     meta = t.left(p.stageLeft);
   } else if (p.endAt && Date.parse(p.endAt) - nowMs <= PROMO_DEADLINE_HINT_MS) {
-    const date = new Intl.DateTimeFormat(INTL_LOCALE[lang], {
-      month: lang === "zh" ? "long" : "short",
+    const date = new Intl.DateTimeFormat(INTL_LOCALE[copyLang], {
+      month: copyLang === "zh" ? "long" : "short",
       day: "numeric",
       timeZone: "Asia/Shanghai",
     }).format(new Date(p.endAt));
