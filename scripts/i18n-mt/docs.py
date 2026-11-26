@@ -384,49 +384,79 @@ def plan_doc(en_path: Path, zh_path: Path) -> Optional[DocPlan]:
     return DocPlan(en_path, zh_path, en_raw, old_raw, zh_raw, reuse, note)
 
 
-CODE_SPAN = re.compile(r"`+[^`\n]+`+")
-LINK_TARGET = re.compile(r"\]\(([^)\s]+)")
+ALIGN_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9_.\-/]+|\d+")
+STRONG_MATCH = 0.6
 
 
-def block_signature(block: str) -> tuple:
-    """跨语言不变的块指纹：块类型 + 行内代码 + 链接目标（去锚点、统一 en 路径）。"""
+def block_features(block: str) -> Tuple[tuple, frozenset]:
+    """块类型 + 跨语言保留下来的 ASCII 标识符 / 数字 / 链接路径（锚点、语言段、截图后缀归一）。"""
     first = block.lstrip()
     head = first.split("\n", 1)[0]
-    if first.startswith(("```", "~~~")):
-        return ("code", block.strip())
-    targets = tuple(
-        target.split("#")[0].replace("/docs/zh/", "/docs/en/").replace(".zh.", ".en.")
-        for target in LINK_TARGET.findall(block)
-    )
     heading = HEADING.match(head)
-    if heading:
-        kind: tuple = ("h", heading.group(1).strip())
+    if first.startswith(("```", "~~~")):
+        kind: tuple = ("code", head.strip("`~ ").split(" ")[0])
+    elif heading:
+        kind = ("h", heading.group(1).strip())
     elif first.startswith("|"):
-        kind = ("t", block.count("\n"))
+        kind = ("t", len(_split_row(head)))
     elif LIST_ITEM.match(head):
-        kind = ("l", block.count("\n"))
+        kind = ("l", "o" if head[0].isdigit() else "u")
     elif first.startswith(">"):
         kind = ("q",)
     elif first.startswith("<"):
-        kind = ("html", block.strip())
+        kind = ("html",)
     else:
         kind = ("p",)
-    return kind + (tuple(CODE_SPAN.findall(block)), targets)
+    normalized = re.sub(r"#[^)\s]*\)", ")", block).replace("/docs/zh/", "/docs/en/").replace(".zh.", ".en.")
+    return kind, frozenset(ALIGN_TOKEN.findall(normalized))
 
 
 def align_blocks(source: List[str], zh: List[str]) -> Dict[int, int]:
-    """en 块 → zh 块下标。块数相同按位置一一对应（人工译文通常逐块翻译）；
-    否则按块指纹做序列比对，只认指纹完全一致的连续区段。"""
-    if len(source) == len(zh):
-        return {index: index for index in range(len(source))}
-    matcher = difflib.SequenceMatcher(
-        a=[block_signature(b) for b in source], b=[block_signature(b) for b in zh], autojunk=False
-    )
-    mapping: Dict[int, int] = {}
-    for tag, i1, i2, j1, _ in matcher.get_opcodes():
-        if tag == "equal":
-            for offset in range(i2 - i1):
-                mapping[i1 + offset] = j1 + offset
+    """旧 en 块 → zh 块下标。
+
+    先做保序加权对齐找强锚点：同类块里 zh 保留的 ASCII 标识符 / 数字 / 链接大多也在 en 里
+    （包含率 ≥ 0.6）。锚点之间的空档若两边块数相同，同类块按位置一一对应；块数不同说明
+    人工译文在这里增删过块，无法确定对应关系，宁可重译也不把译文错配给相邻段落。
+    """
+    features_en = [block_features(b) for b in source]
+    features_zh = [block_features(b) for b in zh]
+    n, m = len(source), len(zh)
+
+    def strong(i: int, j: int) -> float:
+        (kind_en, tokens_en), (kind_zh, tokens_zh) = features_en[i], features_zh[j]
+        common = tokens_en & tokens_zh
+        # 至少两个共同记号：只含一个「FluxDown」之类的块会和大量段落「强匹配」。
+        if kind_en != kind_zh or len(common) < 2:
+            return 0.0
+        score = len(common) / len(tokens_zh)
+        return score if score >= STRONG_MATCH else 0.0
+
+    best = [[0.0] * (m + 1) for _ in range(n + 1)]
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            score = strong(i - 1, j - 1)
+            diagonal = best[i - 1][j - 1] + score if score > 0 else -1.0
+            best[i][j] = max(diagonal, best[i - 1][j], best[i][j - 1])
+    anchors: List[Tuple[int, int]] = []
+    i, j = n, m
+    while i > 0 and j > 0:
+        score = strong(i - 1, j - 1)
+        if score > 0 and best[i][j] == best[i - 1][j - 1] + score:
+            anchors.append((i - 1, j - 1))
+            i, j = i - 1, j - 1
+        elif best[i][j] == best[i - 1][j]:
+            i -= 1
+        else:
+            j -= 1
+    anchors.reverse()
+    mapping = dict(anchors)
+    bounded = [(-1, -1)] + anchors + [(n, m)]
+    for (a1, b1), (a2, b2) in zip(bounded, bounded[1:]):
+        if a2 - a1 != b2 - b1:
+            continue
+        for offset in range(1, a2 - a1):
+            if features_en[a1 + offset][0] == features_zh[b1 + offset][0]:
+                mapping[a1 + offset] = b1 + offset
     return mapping
 
 
