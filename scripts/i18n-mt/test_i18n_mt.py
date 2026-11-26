@@ -31,12 +31,20 @@ class CatalogPlanTest(unittest.TestCase):
             "missing": "Missing {name}",
             "searchKeywordsA": "a b",
             "symbols": "{n}%",
+            "placeholderCopy": "Copied for tsc",
         }
-        target = {"languageNativeName": "Español", "fresh": "Hola", "stale": "Viejo", "manual": "Manual es", "gone": "x"}
+        target = {
+            "languageNativeName": "Español",
+            "fresh": "Hola",
+            "stale": "Viejo",
+            "manual": "Manual es",
+            "placeholderCopy": "Copied for tsc",
+            "gone": "x",
+        }
         lock = {"fresh": short_hash("Hello"), "stale": short_hash("Old text")}
         cfg = config()
-        plan = plan_catalog(source, target, lock, cfg.is_copy_key, ("languageNativeName",), None)
-        self.assertEqual(plan.pending, ["stale", "missing"])
+        plan = plan_catalog(source, target, lock, cfg.is_copy_key, ("languageNativeName",), None, (source,))
+        self.assertEqual(plan.pending, ["stale", "missing", "placeholderCopy"])
         self.assertEqual(plan.adopted, ["languageNativeName", "manual"])
         self.assertEqual(plan.copies, {"searchKeywordsA": "a b", "symbols": "{n}%"})
         self.assertEqual(plan.orphans, ["gone"])
