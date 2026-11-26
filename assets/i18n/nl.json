@@ -4348,5 +4348,9 @@
   "aria2AdvancedInvalid": "Ongeldige optie",
   "aria2AdvancedExported": "Huidig concept geëxporteerd naar het klembord.",
   "aria2AdvancedOpenHint": "Alle ondersteunde opties worden weergegeven. Bewerk het concept en pas het toe om op te slaan, of exporteer het huidige concept.",
-  "aria2AdvancedBusy": "Een verzoek voor geavanceerde opties is al in behandeling."
+  "aria2AdvancedBusy": "Een verzoek voor geavanceerde opties is al in behandeling.",
+  "hostRestoreFailed": "Dit apparaat wordt gebruikt. Kon “{name}” niet bereiken.",
+  "mobileDownloadDraftHostChanged": "De host is gewijzigd. Schakel terug of open dit formulier opnieuw voordat je indient.",
+  "mobileDispatchReturnToSourceHost": "Terugschakelen naar bronhost",
+  "mobileDispatchSourceHostMissing": "De bronhost is verwijderd. Dit concept kan niet worden verzonden; dit formulier sluiten verwerpt het."
 }

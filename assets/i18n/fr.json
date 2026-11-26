@@ -4348,5 +4348,9 @@
   "aria2AdvancedInvalid": "Option non valide",
   "aria2AdvancedExported": "Brouillon actuel exporté dans le presse-papiers.",
   "aria2AdvancedOpenHint": "Toutes les options prises en charge sont affichées. Modifiez le brouillon et cliquez sur Appliquer pour enregistrer, ou exportez le brouillon actuel.",
-  "aria2AdvancedBusy": "Une demande d'options avancées est déjà en cours."
+  "aria2AdvancedBusy": "Une demande d'options avancées est déjà en cours.",
+  "hostRestoreFailed": "Cet appareil est utilisé. Impossible d’atteindre « {name} ».",
+  "mobileDownloadDraftHostChanged": "L’hôte a changé. Revenez à l’hôte d’origine ou rouvrez ce formulaire avant de soumettre.",
+  "mobileDispatchReturnToSourceHost": "Revenir à l’hôte d’origine",
+  "mobileDispatchSourceHostMissing": "L’hôte d’origine a été retiré. Ce brouillon ne peut pas être envoyé ; fermer ce formulaire l’abandonne."
 }

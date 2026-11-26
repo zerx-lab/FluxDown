@@ -4348,5 +4348,9 @@
   "cleanUnfinishedSelectionDesc": "Seçili {count} yerel duraklatılmış veya başarısız görev kaldırılsın ve bunlara atfedilebilen kısmi veriler silinsin mi? Tamamlanan dosyalar ile sahipliği bilinmeyen kısmi veriler korunur.",
   "cleanFinishedLocalDesc": "{count} tamamlanmış yerel görev kaldırılsın mı? Dosyalar ile paylaşılmakta olan veya paylaşım bekleyen görevler korunur.",
   "urlRangeHint": "Numaralı dosyalar için dosya adına bir aralık yazın: https://example.com/comic/[001-215].webp",
-  "urlRangeLimit": "Bu aralıklar 1000’den fazla bağlantı üretir. Göndermeden önce kısaltın."
+  "urlRangeLimit": "Bu aralıklar 1000’den fazla bağlantı üretir. Göndermeden önce kısaltın.",
+  "hostRestoreFailed": "Bu cihaz kullanılıyor. “{name}” konumuna bağlanılamadı.",
+  "mobileDownloadDraftHostChanged": "Ana bilgisayar değişti. Göndermeden önce geri dönün veya bu formu yeniden açın.",
+  "mobileDispatchReturnToSourceHost": "Kaynak ana bilgisayara geri dön",
+  "mobileDispatchSourceHostMissing": "Kaynak ana bilgisayar kaldırıldı. Bu taslak gönderilemez; bu formu kapatmak onu siler."
 }

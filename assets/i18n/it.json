@@ -4348,5 +4348,9 @@
   "aria2AdvancedInvalid": "Opzione non valida",
   "aria2AdvancedExported": "Bozza corrente esportata negli appunti.",
   "aria2AdvancedOpenHint": "Vengono mostrate tutte le opzioni supportate. Modifica la bozza e applica per salvare, oppure esporta la bozza corrente.",
-  "aria2AdvancedBusy": "Una richiesta di opzioni avanzate è già in corso."
+  "aria2AdvancedBusy": "Una richiesta di opzioni avanzate è già in corso.",
+  "hostRestoreFailed": "Si sta usando questo dispositivo. Impossibile raggiungere “{name}”.",
+  "mobileDownloadDraftHostChanged": "L’host è cambiato. Torna indietro o riapri questo modulo prima di inviare.",
+  "mobileDispatchReturnToSourceHost": "Torna all’host di origine",
+  "mobileDispatchSourceHostMissing": "L’host di origine è stato rimosso. Questa bozza non può essere inviata; chiudendo questo modulo viene scartata."
 }

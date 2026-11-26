@@ -4348,5 +4348,9 @@
   "aria2AdvancedInvalid": "Opsi tidak valid",
   "aria2AdvancedExported": "Draf saat ini telah diekspor ke papan klip.",
   "aria2AdvancedOpenHint": "Semua opsi yang didukung ditampilkan. Edit draf dan Terapkan untuk menyimpan, atau ekspor draf saat ini.",
-  "aria2AdvancedBusy": "Permintaan opsi lanjutan sedang berlangsung."
+  "aria2AdvancedBusy": "Permintaan opsi lanjutan sedang berlangsung.",
+  "hostRestoreFailed": "Menggunakan perangkat ini. Tidak dapat menjangkau “{name}”.",
+  "mobileDownloadDraftHostChanged": "Host telah berubah. Beralih kembali atau buka ulang formulir ini sebelum mengirim.",
+  "mobileDispatchReturnToSourceHost": "Kembali ke host sumber",
+  "mobileDispatchSourceHostMissing": "Host sumber telah dihapus. Draf ini tidak dapat dikirim; menutup formulir ini akan membuangnya."
 }

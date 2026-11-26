@@ -4348,5 +4348,9 @@
   "aria2AdvancedInvalid": "Opção inválida",
   "aria2AdvancedExported": "Rascunho atual exportado para a área de transferência.",
   "aria2AdvancedOpenHint": "Todas as opções suportadas são exibidas. Edite o rascunho e aplique para salvar, ou exporte o rascunho atual.",
-  "aria2AdvancedBusy": "Uma solicitação de opções avançadas já está em andamento."
+  "aria2AdvancedBusy": "Uma solicitação de opções avançadas já está em andamento.",
+  "hostRestoreFailed": "Usando este dispositivo. Não foi possível conectar a “{name}”.",
+  "mobileDownloadDraftHostChanged": "O host mudou. Volte ao original ou reabra este formulário antes de enviar.",
+  "mobileDispatchReturnToSourceHost": "Voltar ao host de origem",
+  "mobileDispatchSourceHostMissing": "O host de origem foi removido. Este rascunho não pode ser enviado; fechar este formulário o descarta."
 }
