@@ -3,7 +3,7 @@ title: 调试与排错
 description: 插件日志在哪、怎么搜；每种改动之后该做什么；以及你会遇到的报错信息、原因与解决办法对照表。
 section: plugins
 order: 9
-sourceHash: "b1d7b186aa7d"
+sourceHash: "82ec05b141de"
 ---
 
 这一页写给「出问题了」的时刻：去哪里看、插件的各种状态是什么意思、某个改动需要什么操作，以及最有用的——**报错信息**与它们的原因。
@@ -138,7 +138,7 @@ resolver、拦截器、订阅 provider 或 `main` 调用中，**连续** 3 次�
 | `interceptors match.urls 不可为空` | 规则列表为空。 | 至少添加一条规则；`interceptors.match` 必填。 |
 | `interceptors timeoutMs 不可为 0` | `timeoutMs` 为 `0`。 | 用正整数，实际生效最多 30000。 |
 | `声明 interceptors 时 permissions 必须包含 intercept` | 声明了 `interceptors` 却没有 `intercept` 权限。 | 把 `"intercept"` 加进 `permissions`。 |
-| `resolver timeoutMs 不可为 0` | `timeoutMs` 为 `0`（`auth` 与 `subscription` 同样会检查）。 | 用正整数，实际生效最多 30000。 |
+| `resolver timeoutMs 不可为 0` | `timeoutMs` 为 `0`（`auth` 与 `subscription` 同样会检查）。 | 用正整数；resolver 实际生效最多 120000，其余最多 30000。 |
 | `hooks.events 不可为空` | `hooks` 没有事件。 | 至少列出一个事件。 |
 | `未知事件 '…'，合法：[…]` | 不是 `onStart`、`onError`、`onDone`、`onMetaProbed`、`onCancel` 之一。 | 改正名称（`main.events` 同样适用，其信息为 `main.events 未知事件 '…'，合法：[…]`）。 |
 | `未知权限 '…'，合法：[…]` | 权限名不存在。 | 使用 `ffmpeg`、`ytdlp`、`auth`、`tasks`、`browserRules`、`desktop`、`background`、`intercept`、`pageScripts`、`archive` 之一。 |
@@ -203,7 +203,7 @@ resolver 失败时，任务会进入**下载失败**，信息以 `[插件] <iden
 | `插件运行时错误: <你的错误信息>` | 你的脚本抛了异常（或者某个被拒绝的 `await` 没有捕获）。`<你的错误信息>` 就是 `error.message`。 | 看它前面的日志行；想自己处理失败，就给 `flux.fetch` 包上 `try/catch`。 |
 | `插件运行时错误: 入口 resolve 未定义` | 脚本跑了，但没有在 `globalThis.resolve` 上放函数——漏了 `defineResolver(...)`、函数名写错，或者用了 ES 的 `export` 而不是全局函数。 | 定义 `resolve`。hook 的名字是 `onStart`/`onError`/`onDone`/`onMetaProbed`/`onCancel`；auth 是 `authenticate`；订阅是 `subscribe`。 |
 | `脚本编译失败: …` | 脚本有语法错误。 | 修正。 |
-| `脚本执行超时` | 调用没有在预算内完成（默认 10 秒，最多 30 秒）。计入熔断。 | 提速或减少请求数；确实有慢站点时把 `timeoutMs` 调到最多 30000。 |
+| `脚本执行超时` | 调用没有在预算内完成（默认 10 秒；resolver 最多 120 秒，其他类别最多 30 秒），或脚本用尽了 CPU 预算（以前显示为 `插件运行时错误: Error: interrupted …`）。计入熔断。 | 提速或减少请求数；确实有慢站点时调大 `timeoutMs`（resolver 最多 120000，其他最多 30000）。 |
 | `脚本超出内存上限` | 使用超过内存预算（默认 64 MB）。计入熔断。 | 不要持有大响应；谨慎对待被 `truncated` 截断的响应体。确实需要更多内存的 resolver 可声明 `memoryLimitMb`（最多 512）。 |
 | `插件运行时过载（并发已满）` | 同时的解析太多；等待空闲名额超过 3 秒。 | 重试任务。 |
 | `插件输出非法: resolve 返回值非法: …` | 返回的对象字段类型不对，比如 `totalBytes` 不是数字。 | 按 [API 参考](/docs/zh/plugins/api-reference/)返回正确的结构。 |

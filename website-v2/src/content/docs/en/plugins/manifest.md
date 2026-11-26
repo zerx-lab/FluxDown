@@ -103,7 +103,7 @@ A resolver turns a page URL into one or more downloadable files.
 |---|---|---|
 | `match.urls` | yes | Non-empty list of URL patterns (see [URL pattern rules](#url-pattern-rules)). |
 | `entry` | yes | Script file; safe relative path. Must define `globalThis.resolve`. |
-| `timeoutMs` | no | Per-call timeout in milliseconds. Must not be `0`. Replaces the 10 s default but is capped at the 30 s hard ceiling whatever you write. |
+| `timeoutMs` | no | Per-call timeout in milliseconds. Must not be `0`. Replaces the 10 s default and is clamped to the 120 s hard ceiling whatever you write. FluxDown 0.6.8 and earlier clamp at 30 s, so a plugin that needs more than 30 s must tolerate older apps. |
 | `memoryLimitMb` | no | QuickJS heap limit of one call in MiB. Must not be `0`. Replaces the 64 MiB default; anything above 512 MiB is capped at 512 MiB. Meant for resolvers that really process bulky data in script (for example parsing a multi-megabyte site script into a syntax tree); the limit is a ceiling, nothing is reserved up front. |
 | `multi` | no | Boolean, default `false`. `true` declares that this resolver may return a multi-file manifest and should take part in **pre-resolution** (the preview that lists the files before a task is created). With `false`, a single-file resolver is not run ahead of time just to find out; if it returns a multi-file list when the task starts, the engine still splits it into separate tasks, so `multi` is a hint for pre-resolution and not a requirement for returning lists. |
 

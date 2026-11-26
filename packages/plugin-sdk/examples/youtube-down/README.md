@@ -31,7 +31,7 @@
 
 ### 播放器缓存与内存
 
-ejs 首次处理某个播放器时要把约 3 MB 的播放器 JS 解析成 AST：QuickJS 里约 2.5 s、峰值约 180 MiB 堆，所以 manifest 声明 `memoryLimitMb: 384`（引擎默认 64 MiB）。处理结果（预处理播放器，约 4 MB）缓存进插件工作区（`flux.fs`，最多 3 份，索引在 `flux.storage` 的 `ejs.players`，按 ejs 版本与播放器变体区分），之后同一播放器只需约 0.2 s、约 60 MiB。
+ejs 首次处理某个播放器时要把约 3 MB 的播放器 JS 解析成 AST：QuickJS 里约 2.5 s（Apple Silicon；ARM NAS 等弱 CPU 上可慢一个数量级）、峰值约 180 MiB 堆，所以 manifest 声明 `memoryLimitMb: 384`（引擎默认 64 MiB）与 `timeoutMs: 120000`（resolve 硬顶；0.6.8 及更早版本的 App 按 30 s 截断，弱 CPU 设备上首次冷启动可能超时）。处理结果（预处理播放器，约 4 MB）缓存进插件工作区（`flux.fs`，最多 3 份，索引在 `flux.storage` 的 `ejs.players`，按 ejs 版本与播放器变体区分），之后同一播放器只需约 0.2 s、约 60 MiB。
 
 YouTube 同时灰度多个播放器构建。24 小时内缓存过的播放器直接沿用（会话 ytcfg 指明的当前播放器有缓存时优先用它），不必每次确认当前构建；这与 yt-dlp `player_js_version=STS@ID` 强制旧播放器同理：`signatureTimestamp` 告诉服务端按哪个版本加密。缓存过期才重新确定当前播放器并冷启动。缓存的播放器求解失败时丢弃该缓存，换当前播放器冷启动重试一次。播放列表建任务的那次解析会顺手预热缓存，避免裂变出的子任务各自冷启动。每次解析的分段耗时（`session` / `player` / `api` / `solve`，毫秒）写在插件日志里。
 
@@ -50,12 +50,12 @@ YouTube 同时灰度多个播放器构建。24 小时内缓存过的播放器直
 
 ## 浏览器扩展规则（`rules.json`）
 
-插件启用且已授权时，规则随 plugin 层同步到扩展（id 改写为 `plugin.fluxdown.youtube-down.*`）：
+插件启用且已授权时，规则随 plugin 层同步到扩展（id 改写为 `plugin.fluxdown.youtube-down.*`）。plugin 层只经本机 NMH 下发：扩展以远程模式连接 NAS，或在 Android 上运行时收不到这些规则，所以前两条另有同义的官方规则（规则仓 `rules/official/youtube.json` 的 `official.youtube.{ignore-googlevideo,watch-page}`，随扩展官方包快照分发）：
 
 |规则|作用|
 |---|---|
-|`ignore-googlevideo`|YouTube 页面上 `googlevideo.com` 的播放分片不再作为下载资源（它们是带 Range 的流式片段，单独下载没有意义）|
-|`watch-page`|播放页 / Shorts / 直播页上，主播放器的 `<video>` 一挂上媒体源，就把当前页面 URL 作为该播放器的视频资源（`${page}` 模板字段），并归属这个 `<video>`：浮钮与「下载正在播放的媒体」快捷键直接可用，下载请求带着浏览器里的 YouTube Cookie 交给桌面端，由本插件解析|
+|`ignore-googlevideo`|YouTube（含 `youtube-nocookie.com` 嵌入）页面上 `googlevideo.com` 的播放分片不再作为下载资源（它们是 UMP / 带 Range 的流式片段，单独下载只会得到几十字节的坏文件；引擎也会以 `application/vnd.yt-ump` 拒收）|
+|`watch-page`|播放页 / Shorts / 直播页（含手机版 `m.youtube.com`）上，主播放器的 `<video>` 一挂上媒体源，就把当前页面 URL 作为该播放器的视频资源（`${page}` 模板字段），并归属这个 `<video>`：浮钮与「下载正在播放的媒体」快捷键直接可用，下载请求带着浏览器里的 YouTube Cookie 交给桌面端 / NAS，由本插件解析|
 |`watch-title`|候选名取播放页标题 `ytd-watch-metadata h1`|
 
 ## 开发

@@ -608,7 +608,7 @@ globalThis.resolve = async (ctx) => {
 };
 ```
 
-In `resolve` the script's whole time budget (10 s by default, at most 30 s) also bounds the call, so a `timeoutMs` larger than that has no effect there.
+In `resolve` the script's whole time budget (10 s by default, at most 120 s) also bounds the call, so a `timeoutMs` larger than that has no effect there.
 
 ### Main-only facades
 
@@ -650,7 +650,7 @@ Budgets are per call. "CPU budget" is the time your JavaScript may execute; time
 
 | Entry | Wall clock | CPU budget | Memory |
 |---|---|---|---|
-| `resolve` | 10 s default; `resolvers[0].timeoutMs` replaces it, **30 s hard ceiling** | same value, ≤ 30 s | 64 MB default; `resolvers[0].memoryLimitMb` replaces it, 512 MB ceiling |
+| `resolve` | 10 s default; `resolvers[0].timeoutMs` replaces it, **120 s hard ceiling** (0.6.8 and earlier: 30 s) | same value, ≤ 120 s | 64 MB default; `resolvers[0].memoryLimitMb` replaces it, 512 MB ceiling |
 | `subscribe` | 10 s default; `subscriptions[0].timeoutMs` replaces it, 30 s ceiling | same | 64 MB |
 | `authenticate` | 30 s default; `auth.timeoutMs` replaces it, 30 s ceiling | same | 64 MB |
 | Hooks | 5 s | 5 s | 32 MB |

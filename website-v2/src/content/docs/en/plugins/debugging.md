@@ -137,7 +137,7 @@ The table quotes the engine's original messages, not the desktop or Web text. Ma
 | `interceptors match.urls 不可为空` | An empty pattern list. | Add at least one pattern; `interceptors.match` is required. |
 | `interceptors timeoutMs 不可为 0` | `timeoutMs` is `0`. | Use a positive integer, at most 30000 effective. |
 | `声明 interceptors 时 permissions 必须包含 intercept` | `interceptors` without the `intercept` permission. | Add `"intercept"` to `permissions`. |
-| `resolver timeoutMs 不可为 0` | `timeoutMs` is `0` (also checked for `auth` and `subscription`). | Use a positive integer, at most 30000 effective. |
+| `resolver timeoutMs 不可为 0` | `timeoutMs` is `0` (also checked for `auth` and `subscription`). | Use a positive integer; effective maximum is 120000 for a resolver, 30000 for the others. |
 | `hooks.events 不可为空` | `hooks` without events. | List at least one event. |
 | `未知事件 '…'，合法：[…]` | Not one of `onStart`, `onError`, `onDone`, `onMetaProbed`, `onCancel`. | Fix the name (also applies to `main.events`). |
 | `未知权限 '…'，合法：[…]` | A permission name that does not exist. | Use one of `ffmpeg`, `ytdlp`, `auth`, `tasks`, `browserRules`, `desktop`, `background`, `intercept`, `pageScripts`, `archive`. |
@@ -202,7 +202,7 @@ All of these appear as `[插件] <identity>: <message>`. Messages from the host 
 | `插件运行时错误: <your error message>` | Your script threw (or a rejected `await` was not caught). `<your message>` is `error.message`. | Read the log lines before it, and wrap `flux.fetch` in `try/catch` if you want to handle failures. |
 | `插件运行时错误: 入口 resolve 未定义` (“entry resolve is not defined”) | The script ran, but did not put a function on `globalThis.resolve` — a missing `defineResolver(...)`, a wrongly named function, or an ES `export` instead of the global. | Define `resolve`. Hooks: the names are `onStart`/`onError`/`onDone`/`onMetaProbed`/`onCancel`; auth: `authenticate`; subscription: `subscribe`. |
 | `脚本编译失败: …` | Syntax error in the script. | Fix it. |
-| `脚本执行超时` (“script execution timed out”) | The call did not finish within the budget (10 s by default, at most 30 s). Counts toward the circuit breaker. | Speed up or lower the number of requests; raise `timeoutMs` up to 30000 if a slow host needs it. |
+| `脚本执行超时` (“script execution timed out”) | The call did not finish within the budget (10 s by default; at most 120 s for a resolver, 30 s for the other planes), or the script used up its CPU budget (previously shown as `插件运行时错误: Error: interrupted …`). Counts toward the circuit breaker. | Speed up or lower the number of requests; raise `timeoutMs` (up to 120000 in a resolver, 30000 elsewhere) if a slow host needs it. |
 | `脚本超出内存上限` (“script exceeded the memory limit”) | More memory used than the budget (64 MB by default). Counts toward the breaker. | Do not hold big responses; use `truncated` bodies carefully. A resolver that really needs more can declare `memoryLimitMb` (up to 512). |
 | `插件运行时过载（并发已满）` (“plugin runtime overloaded”) | Too many resolves at once; waiting for a free slot timed out after 3 s. | Retry the task. |
 | `插件输出非法: resolve 返回值非法: …` (“resolve return value invalid”) | The returned object has wrong field types, e.g. `totalBytes` that is not a number. | Return the shape from the [API reference](/docs/en/plugins/api-reference/). |

@@ -22,7 +22,7 @@ const ITEM_PRESETS = [
   { id: "480", label: "≤ 480p" },
   { id: "audio", label: "仅音频" },
 ];
-/** 列出播放列表后还剩这么多墙钟时间才顺手预热播放器缓存（resolver 墙钟顶 30 s）。 */
+/** 列出播放列表后，耗时不到这么多才顺手预热播放器缓存（按 0.6.8 及更早版本 resolver 的 30 s 墙钟顶取的保守值；现顶 120 s）。 */
 const WARM_DEADLINE_MS = 12000;
 
 function sanitizeFileName(name, fallback) {

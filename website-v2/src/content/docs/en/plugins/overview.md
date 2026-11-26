@@ -96,7 +96,8 @@ An interceptor is one `intercept(ctx)` entry that FluxDown calls at the stages t
 
 | Limit | Value |
 |---|---|
-| Resolve / subscription timeout | 10 s default; the entry's `timeoutMs` can lower or raise it, hard ceiling 30 s |
+| Resolve timeout | 10 s default; the entry's `timeoutMs` can lower or raise it, hard ceiling 120 s (0.6.8 and earlier: 30 s) |
+| Subscription timeout | 10 s default; the entry's `timeoutMs` can lower or raise it, hard ceiling 30 s |
 | Auth timeout | 30 s default; `auth.timeoutMs` can change it, hard ceiling 30 s |
 | Interceptor timeout | 5 s default; `interceptors.timeoutMs` can change it, hard ceiling 30 s. `liveSegments` is capped at 2 s and `refresh` at 5 s. `finalize` of a plugin with the `ffmpeg` or `ytdlp` permission gets the long external-tool budget, like hooks |
 | Resolve, auth, subscription and interceptor memory | 64 MB |
