@@ -144,10 +144,12 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
     val actions = LocalTaskActions.current
     val haptics = FluxTheme.haptics
     val context = LocalContext.current
+    var appliedRoute by remember { mutableStateOf(route) }
     var draft by remember { mutableStateOf<Pair<String, NewDownloadState>?>(null) }
     LaunchedEffect(container, visible) {
         if (visible && draft == null) {
             val host = container.hostSelection.hostForNewDownloadDraft()
+            appliedRoute = route
             draft = host.id to NewDownloadState.create(route.prefill, container.store.state.value, route.external, route.targetId)
         }
     }
@@ -163,12 +165,15 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
     }
     val needsDirectory = requestedLocalDir != null && localConfirmation?.path == null
     LaunchedEffect(route) {
+        if (route == appliedRoute) return@LaunchedEffect
+        appliedRoute = route
         // 打开期间的后续唤起追加进同一表单（批量协议唤起逐条到达）
         route.external?.let(form::addExternal)
-        val extra = route.prefill.trim()
-        if (extra.isNotEmpty() && form.urlText.lineSequence().none { it.trim() == extra }) {
-            form.urlText = form.urlText.trimEnd().let { if (it.isEmpty()) extra else "$it\n$extra" }
-        }
+        val existing = form.urlText.lineSequence().map(String::trim).toHashSet()
+        val extra = route.prefill.trim().lineSequence()
+            .filter { it.isNotBlank() && existing.add(it.trim()) }
+            .joinToString("\n")
+        form.appendText(extra)
     }
     var advancedOpen by remember { mutableStateOf(false) }
     val dismiss by rememberUpdatedState(onDismiss)
