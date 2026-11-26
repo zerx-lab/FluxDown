@@ -73,10 +73,10 @@ internal class HostActions(
             onDone(false)
             return
         }
-        if (container.keepCurrentHost(ref)) {
+        if (container.hostSelection.keepCurrentHost(ref)) {
             if (ref is HostRef.Remote) {
                 scope.launch {
-                    container.rememberConfirmedRemote(ref)
+                    container.hostSelection.rememberConfirmedRemote(ref)
                     onDone(true)
                 }
             } else {
@@ -89,7 +89,7 @@ internal class HostActions(
         overlays.toast(context.str(R.string.mobileHostSwitching, "name" to name), FluxToastKind.Info, FluxIcons.Server)
         scope.launch {
             val result = try {
-                container.switchHost(ref)
+                container.hostSelection.switchHost(ref)
             } finally {
                 switchingId = null
             }

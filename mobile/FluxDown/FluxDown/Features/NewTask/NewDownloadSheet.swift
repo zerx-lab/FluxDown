@@ -25,6 +25,7 @@ struct NewDownloadSheet: View {
         }
         .task {
             if draft == nil {
+                container.supersedeHostRestore()
                 draft = (container.host.id, NewDownloadForm(prefill: prefill, state: container.store.state))
             }
         }
@@ -791,8 +792,6 @@ private struct NewDownloadContent: View {
             reject()
             return
         }
-        // Keep startup restore from replacing the host during manifest probing or task creation.
-        container.supersedeHostRestore()
         let manualProxy = manualProxyUrl(state.config)
         let requests = form.buildRequests(startPaused: startPaused, queue: queueId, manualProxy: manualProxy)
         #if FULL_FLAVOR
@@ -911,7 +910,6 @@ private struct NewDownloadContent: View {
         case let .explicit(dir): saveDir = dir
         }
         let items = form.dispatchItems()
-        container.supersedeHostRestore()
         form.submitting = true
         linksFocused = false
         dispatchFailure = nil

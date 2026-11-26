@@ -244,12 +244,18 @@ final class AppContainer {
 
     /// 后台通知使用独立会话，不切换前台主机或改写启动记录。
     func resolveDefaultSelection(_ requestID: String, hostID: String) async throws(HostError) {
-        guard let ref = hosts.first(where: { $0.id == hostID }) else { return }
+        guard let ref = hosts.first(where: { $0.id == hostID }) else {
+            log.warning("Default notification action skipped: source host not found")
+            return
+        }
         let connection = await open(ref)
         let session = try connection.get()
         defer { session.close() }
         let snapshot = try await Self.awaitFirstSnapshot(session)
-        guard let request = snapshot.pendingSelections.first(where: { $0.requestId == requestID }) else { return }
+        guard let request = snapshot.pendingSelections.first(where: { $0.requestId == requestID }) else {
+            log.warning("Default notification action skipped: selection no longer pending")
+            return
+        }
         try await session.resolveSelection(requestID, outcome: request.defaultChoice)
     }
 

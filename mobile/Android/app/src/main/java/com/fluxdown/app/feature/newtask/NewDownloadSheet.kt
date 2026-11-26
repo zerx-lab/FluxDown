@@ -144,8 +144,14 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
     val actions = LocalTaskActions.current
     val haptics = FluxTheme.haptics
     val context = LocalContext.current
-    val draftHostId = remember { container.host.value.id }
-    val form = remember { NewDownloadState.create(route.prefill, container.store.state.value, route.external, route.targetId) }
+    var draft by remember { mutableStateOf<Pair<String, NewDownloadState>?>(null) }
+    LaunchedEffect(container, visible) {
+        if (visible && draft == null) {
+            val host = container.hostSelection.hostForNewDownloadDraft()
+            draft = host.id to NewDownloadState.create(route.prefill, container.store.state.value, route.external, route.targetId)
+        }
+    }
+    val (draftHostId, form) = draft ?: return
     val hostRef by container.host.collectAsStateWithLifecycle()
     val requestedLocalDir = form.saveDir.takeIf { form.hasExternalSaveDir && hostRef is HostRef.Local }
     var localConfirmation by remember(requestedLocalDir) { mutableStateOf<LocalDirectoryConfirmation?>(null) }
@@ -258,8 +264,6 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
         }
         val requests = form.buildRequests(startPaused, queueId, manualProxyUrl(state.config), saveDir)
         val batches = groupImportBatches(requests)
-        // An accepted import owns this session; startup restore must not close it between batches.
-        container.supersedeHostRestore()
         if (requests.size > ImportRules.CHUNK_SIZE) {
             // 多块导入：交给进程级导入中心，进度 / 取消在下载页顶部，关闭本 Sheet 不影响它；汇总提示由 ImportEffects 给出
             rememberMode(session)
@@ -319,7 +323,6 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
             is DeviceRules.SaveDirCheck.Explicit -> check.dir
         }
         val items = form.dispatchItems()
-        container.supersedeHostRestore()
         val session = container.session
         form.submitting = true
         form.dispatchFailure = null

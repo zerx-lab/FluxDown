@@ -144,7 +144,7 @@ fun AppShell() {
     val backdrop = remember { FluxBackdrop() }
     val overlays = rememberFluxOverlayState()
     LaunchedEffect(container, overlays) {
-        container.restoreLastHost()?.let { name ->
+        container.hostSelection.restoreLastHost()?.let { name ->
             val boundaries = android.icu.text.BreakIterator.getCharacterInstance()
             boundaries.setText(name)
             val end = boundaries.next(20)

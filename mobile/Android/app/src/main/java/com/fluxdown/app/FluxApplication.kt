@@ -39,13 +39,11 @@ import com.fluxdown.app.update.UpdateCheckJobService
 import com.fluxdown.fluxui.theme.FluxFonts
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -162,58 +160,13 @@ class AppContainer(context: Context) {
     private var localMonitor: Job? = null
 
     private val switchLock = Mutex()
-    private val startupRestore = appScope.async(start = CoroutineStart.LAZY) { performHostRestore() }
-    private var restoreFailureShown = false
-    private var restoreSuperseded = false
-
-    internal fun supersedeHostRestore() {
-        restoreSuperseded = true
-    }
-
-    /** 已选主机可用时立即阻止本次自动恢复。 */
-    internal fun keepCurrentHost(ref: HostRef): Boolean {
-        if (ref.id != _host.value.id || session is UnavailableSession) return false
-        supersedeHostRestore()
-        return true
-    }
-
-    internal suspend fun rememberConfirmedRemote(ref: HostRef.Remote) = appScope.async {
-        switchLock.withLock { persistRemoteChoice(ref.id) }
-    }.await()
-
-    /** 界面重建只取消等待；恢复属于进程，并且失败只提示一次。 */
-    internal suspend fun restoreLastHost(): String? {
-        val name = startupRestore.await() ?: return null
-        if (restoreSuperseded || restoreFailureShown) return null
-        restoreFailureShown = true
-        return name
-    }
-
-    /** 首次前台显示时尝试恢复；远端 I/O 不占用切换锁。 */
-    private suspend fun performHostRestore(): String? {
-        if (restoreSuperseded) return null
-        val ref = try {
-            hostRepo.lastRemote()
-        } catch (e: java.io.IOException) {
-            Log.w(TAG, "read last host failed", e)
-            null
-        } ?: return null
-        if (restoreSuperseded) return null
-        val opened = openOrFail(ref)
-        val next = opened.getOrNull()
-        var adopted = false
-        try {
-            return switchLock.withLock {
-                if (restoreSuperseded) return@withLock null
-                if (next == null) return@withLock ref.displayName
-                adopt(ref, next)
-                adopted = true
-                null
-            }
-        } finally {
-            if (!adopted) next?.close()
-        }
-    }
+    internal val hostSelection = HostSelection(
+        appScope, switchLock, hostRepo,
+        currentHost = { _host.value },
+        hasSession = { session !is UnavailableSession },
+        open = ::openOrFail,
+        adopt = ::adopt,
+    )
 
     init {
         appScope.launch {
@@ -226,35 +179,6 @@ class AppContainer(context: Context) {
         // 只在状态切换时写一行（StateFlow 的 10 Hz 发布经 distinctUntilChanged 折叠），不做周期写入。
         appScope.launch(Dispatchers.IO) {
             store.state.map(::connectionSummary).distinctUntilChanged().collect { AppDiagnostics.event("host $it") }
-        }
-    }
-
-    /**
-     * 切换主机。打开失败时保持原主机不变并返回失败（[HostException]）。
-     * 切到本机以外时本机引擎继续在进程内运行（由前台服务保活）。
-     * 切换与保存归应用容器；界面销毁只取消对结果的等待。
-     */
-    suspend fun switchHost(ref: HostRef, remember: Boolean = true): Result<Unit> = appScope.async {
-        supersedeHostRestore()
-        switchLock.withLock {
-            val changedHost = ref.id != _host.value.id
-            val result = if (!changedHost && session !is UnavailableSession) {
-                Result.success(Unit)
-            } else {
-                openOrFail(ref).map { adopt(ref, it) }
-            }
-            if (remember && (changedHost || ref is HostRef.Remote) && result.isSuccess) {
-                persistRemoteChoice((ref as? HostRef.Remote)?.id)
-            }
-            result
-        }
-    }.await()
-
-    private suspend fun persistRemoteChoice(id: String?) {
-        try {
-            hostRepo.rememberRemote(id)
-        } catch (e: java.io.IOException) {
-            Log.w(TAG, "remember last host failed", e)
         }
     }
 
@@ -358,7 +282,7 @@ class AppContainer(context: Context) {
      */
     suspend fun removeHost(id: String) {
         if (id == HostRef.Local.ID) return
-        supersedeHostRestore()
+        hostSelection.supersedeHostRestore()
         val fingerprint = (hosts.value.firstOrNull { it.id == id } as? HostRef.Remote)?.linkFingerprint
         switchLock.withLock {
             if (_host.value.id == id) {

@@ -173,7 +173,7 @@ Android 正式 APK 使用 `ANDROID_NATIVE_*` 原生签名，不能覆盖旧 Flut
 - **主机端口**：`core/host/HostSession`（方法与 `fluxdown_protocol` 的 `daemon.* / agent.*` 一一对应）+ `HostSignal`（Snapshot / Event / Stale / Fatal），唯一实现是 `:bridge` 的 `RustHostSession` → `native/mobile`（`fluxdown_mobile`）：本机主机 = 进程内 daemon（`run_with`，回环临时端口）+ agent 嵌入模式（`start_embedded` / `LocalConnection`，启用只出站的 link），远端主机 = `--server` 或开启局域网访问的桌面 agent 的 WebSocket `/rpc` + 访问密钥或设备控制凭据（Bearer）。握手、epoch/sequence 游标、缓冲、重同步、重连退避与 800ms 离线宽限都在 Rust，Kotlin **不重复实现游标**。DTO 镜像：`native/mobile/src/dto.rs` ↔ `:core` 模型 ↔ `:bridge` `Mapping.kt`（三处字段同步）。**通用通道**（与 iOS 同一 Rust 面）：`HostSession.call(method, paramsJson): String`（只放行 `daemon.*` / `agent.*`，JSON = 协议 serde wire）、`HostSnapshot.sections` / `HostEvent.SectionChanged` / `HostEvent.Notice`（键常量见 `native/mobile/src/sections.rs`）；`HostState.sections` 保存分区 JSON，`Notice` 目前无消费方、`HostStore` 忽略。
 - **冷启动主机恢复（Android / iOS，#1015）**：两端 `AppContainer` 启动本机，首次显示主界面时从设备本地恢复上次手动成功切换的远端 ID。远端连接不占用切换队列，手动切换、删除和通知指定主机优先。恢复失败保留本机并提示一次，保留 ID 供下次冷启动重试；手动切回本机或删除该主机时清除 ID。
 - **通知主机优先级**：只有指定主机的打开通知才抢占自动恢复；不带主机的诊断通知只打开下载页。
-- **新建下载**：Android / iOS 打开表单时绑定当前主机；若提交前主机已切换，保留草稿并拒绝把请求交给新主机，即使最终目标是另一台设备。双端接受链接、种子或设备下发后，取消本次启动的自动恢复，避免关闭正在使用的会话；不修改下次启动的主机记录。iOS 草稿只在原主机的快照就绪后更新分类，不用其他主机或重连中的空快照重置目录。
+- **新建下载**：Android / iOS 创建表单时即阻止本次自动恢复，再绑定当前主机和默认值（包括外部预填），不修改下次启动的主机记录。若之后手动切换或通知切走主机，保留草稿并拒绝把请求交给新主机，即使最终目标是另一台设备。iOS 草稿只在原主机的快照就绪后更新分类，不用其他主机或重连中的空快照重置目录。
 - **种子与清单**：从草稿导入种子时同样校验原主机，整批使用同一会话；Android 每次建任务前确认原会话仍有效，切换后停止剩余导入。iOS 清单探测结果只交给原会话，清单确认页不允许向另一台主机建组。
 - **Android 逐条下发**：每次 RPC 前确认会话仍是提交时的会话；若已切换，停止下发并将未发送的链接留在草稿中。
 - **iOS 设备详情下发**：打开表单时固定目标和来源主机。主机切换后保留已打开的草稿并禁止发送；可直接在表单内切回原主机，连接失败时保留草稿。切回不修改下次启动记录、不自动发送；原主机已移除时明确提示无法发送。
