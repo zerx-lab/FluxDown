@@ -9,10 +9,12 @@ from common import (
     LocaleConfig,
     MemoryPool,
     check_translation,
+    configure_batching,
     numbered_mask,
     plan_catalog,
     short_hash,
     site_locale_config,
+    translate_catalog,
 )
 from docs import DOCS, DocDraft, DocPlan, align_blocks, heading_slugs, map_anchors, render_doc
 
@@ -123,6 +125,31 @@ const ru: Record<MessageKey, string> = {
 
 export default ru;
 """
+
+
+class BatchTest(unittest.TestCase):
+    def tearDown(self):
+        configure_batching(1, 1200)
+
+    def test_batches_single_lines_and_falls_back_per_item(self):
+        configure_batching(10, 1200)
+        calls = []
+
+        def translate(text, source_lang, target_lang, terms, tm, domains):
+            calls.append(text)
+            lines = text.split("\n")
+            if len(lines) > 1:
+                # 模型把第二行的占位符译坏：该条单独重试，其余照用批量结果。
+                return "\n".join("译" + (line.replace("{name}", "{nombre}") if i == 1 else line) for i, line in enumerate(lines))
+            return "译" + text
+
+        source = {"a": ("Open", "English"), "b": ("Hi {name}", "English"), "c": ("Close", "English"), "d": ("Two\nlines", "English")}
+        done, failures = translate_catalog(translate, config(), list(source), source, MemoryPool([]), 2)
+        self.assertEqual(failures, {})
+        self.assertEqual(done, {"a": "译Open", "b": "译Hi {name}", "c": "译Close", "d": "译Two\n译lines"})
+        self.assertIn("Open\nHi {name}\nClose", calls)
+        self.assertIn("Hi {name}", calls)
+        self.assertEqual(len(calls), 3)
 
 
 class TsCatalogTest(unittest.TestCase):
