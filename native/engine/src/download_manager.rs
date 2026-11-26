@@ -14849,6 +14849,9 @@ impl DownloadManager {
             false
         };
         if timed_out {
+            // token 已取消、worker 尚未退出：转入暂停流程（落库 status 2 并挂 PendingPause），
+            // 让迟到的 TaskDone 发布暂停态，任务不会停在「下载中」却没有 worker。
+            self.park_undeleted_worker(task_id, true).await;
             return Err(DeleteTaskError::Cleanup(downloader::DownloadError::Other(
                 "the download has not stopped; retry deletion after it stops".to_owned(),
             )));
@@ -15219,6 +15222,11 @@ impl DownloadManager {
             mode
         );
         let timed_out = self.stop_batch_downloads(task_ids).await;
+        // 超时未停的任务保留记录：转入暂停流程，避免停在「下载中」却没有 worker（同单删）。
+        // 并发槽由批量收尾统一 drain。
+        for task_id in &timed_out {
+            self.park_undeleted_worker(task_id, false).await;
+        }
         let eligible;
         let task_ids = if timed_out.is_empty() {
             task_ids
@@ -15441,6 +15449,15 @@ impl DownloadManager {
             }
         }
         timed_out
+    }
+
+    /// 删除等 worker 停止超时：记录保留并转入暂停。该 worker 是被取消的（不是用户暂停），
+    /// 迟到的失败按「取消后暂停」收尾：无恢复请求时显示暂停，用户随后恢复则照常重试。
+    async fn park_undeleted_worker(&mut self, task_id: &str, drain_freed_slot: bool) {
+        Box::pin(self.pause_task_inner(task_id, false, drain_freed_slot, false)).await;
+        if let Some(pending) = self.pending_pauses.get_mut(task_id) {
+            pending.stop = PendingStop::PauseAfterCancel;
+        }
     }
 
     /// 批量删除收尾：腾出的并发槽只在最后统一调度一次。

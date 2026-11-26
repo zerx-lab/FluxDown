@@ -783,6 +783,10 @@ async fn delete_timeout_keeps_owned_partial_and_record_until_worker_exits() {
             },
         );
         fx.write_existing("owned.bin", b"shared output");
+        fx.db
+            .update_task_status(&id, 1, "")
+            .await
+            .expect("mark downloading");
         if batch {
             let mut sibling = fx.spec("owned.bin");
             sibling.url = format!("{}/sibling", fx.base_url);
@@ -815,7 +819,16 @@ async fn delete_timeout_keeps_owned_partial_and_record_until_worker_exits() {
                 Err(DeleteTaskError::Cleanup(_))
             ));
         }
-        assert!(fx.db.load_task_by_id(&id).await.unwrap().is_some());
+        let kept = fx
+            .db
+            .load_task_by_id(&id)
+            .await
+            .unwrap()
+            .expect("record kept");
+        // 超时后不能停在「下载中」却没有 worker：转入暂停，等迟到的 TaskDone 收尾。
+        assert_eq!(kept.status, 2);
+        assert!(!fx.mgr.active_tasks.contains_key(&id));
+        assert!(fx.mgr.pending_pauses.contains_key(&id));
         assert_eq!(
             std::fs::read(fx.dir.join(&partial)).unwrap(),
             b"owned partial"
