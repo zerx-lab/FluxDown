@@ -74,7 +74,11 @@ internal class HostActions(
             return
         }
         if (container.keepCurrentHost(ref)) {
-            onDone(true)
+            if (ref is HostRef.Remote) {
+                scope.launch { onDone(container.switchHost(ref).isSuccess) }
+            } else {
+                onDone(true)
+            }
             return
         }
         switchingId = ref.id

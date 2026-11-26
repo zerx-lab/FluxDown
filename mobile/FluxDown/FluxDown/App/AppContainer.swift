@@ -111,13 +111,14 @@ final class AppContainer {
             serialized { container in
                 let changedHost = ref.id != container.host.id
                 if !forceReconnect, !changedHost, !(container.session is UnavailableSession) {
+                    if remember, !ref.isLocal { container.hostRepo.rememberRemote(ref.id) }
                     continuation.resume(returning: .success(()))
                     return
                 }
                 switch await container.open(ref) {
                 case let .success(session):
                     container.adopt(ref, session)
-                    if remember, changedHost { container.hostRepo.rememberRemote(ref.isLocal ? nil : ref.id) }
+                    if remember, changedHost || !ref.isLocal { container.hostRepo.rememberRemote(ref.isLocal ? nil : ref.id) }
                     continuation.resume(returning: .success(()))
                 case let .failure(error):
                     continuation.resume(returning: .failure(error))

@@ -170,7 +170,7 @@ class AppContainer(context: Context) {
         restoreSuperseded = true
     }
 
-    /** 已选主机可用时只接管本次启动，不改下次启动的选择。 */
+    /** 已选主机可用时立即阻止本次自动恢复。 */
     internal fun keepCurrentHost(ref: HostRef): Boolean {
         if (ref.id != _host.value.id || session is UnavailableSession) return false
         supersedeHostRestore()
@@ -234,9 +234,12 @@ class AppContainer(context: Context) {
         supersedeHostRestore()
         switchLock.withLock {
             val changedHost = ref.id != _host.value.id
-            if (!changedHost && session !is UnavailableSession) return@withLock Result.success(Unit)
-            val result = openOrFail(ref).map { adopt(ref, it) }
-            if (remember && changedHost && result.isSuccess) {
+            val result = if (!changedHost && session !is UnavailableSession) {
+                Result.success(Unit)
+            } else {
+                openOrFail(ref).map { adopt(ref, it) }
+            }
+            if (remember && (changedHost || ref is HostRef.Remote) && result.isSuccess) {
                 try {
                     hostRepo.rememberRemote((ref as? HostRef.Remote)?.id)
                 } catch (e: java.io.IOException) {

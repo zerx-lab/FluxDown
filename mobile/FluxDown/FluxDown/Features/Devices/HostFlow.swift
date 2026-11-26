@@ -17,10 +17,14 @@ enum HostFlow {
         }
     }
 
-    /// 切换到 `ref`；已选主机可用时只接管本次启动，不弹提示或改写下次启动记录。
+    /// 已选主机可用时不弹提示；确认当前远端会保存选择，确认本机只阻止自动恢复。
     @discardableResult
     static func switchTo(_ ref: HostRef, container: AppContainer) async -> Bool {
         if ref.id == container.host.id, !(container.session is UnavailableSession) {
+            if !ref.isLocal {
+                if case .success = await container.switchHost(ref) { return true }
+                return false
+            }
             container.supersedeHostRestore()
             return true
         }

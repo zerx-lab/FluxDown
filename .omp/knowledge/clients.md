@@ -178,7 +178,7 @@ Android 正式 APK 使用 `ANDROID_NATIVE_*` 原生签名，不能覆盖旧 Flut
 - **Android 逐条下发**：每次 RPC 前确认会话仍是提交时的会话；若已切换，停止下发并将未发送的链接留在草稿中。
 - **iOS 设备详情下发**：打开表单时固定目标和来源主机。主机切换后保留已打开的草稿并禁止发送；可直接在表单内切回原主机，连接失败时保留草稿。切回不修改下次启动记录、不自动发送；原主机已移除时明确提示无法发送。
 - **Android 分类偏好**：导入完成后仅向发起导入且仍在用的会话写入分类偏好，主机已切换则跳过写入。
-- **恢复时序**：双端恢复均由应用容器启动，界面重建不取消恢复。iOS 自动采用远端前等待本机会话的默认目录修复；点已选且可用的主机只阻止本次自动恢复，不弹切换提示、不改下次启动记录；同主机重连也不改记录。携带主机的汇总通知先切到来源主机再打开下载页；下载页离线横幅的「重试」重新连接当前主机，不覆盖手选记录。
+- **恢复时序**：双端恢复均由应用容器启动，界面重建不取消恢复。iOS 自动采用远端前等待本机会话的默认目录修复。点已选且可用的主机不重连、不弹提示：本机仅阻止本次恢复，远端则保存为下次启动的选择。通知按来源主机打开下载页，离线横幅「重试」重新连接当前主机，两者不覆盖手选记录。
 - **Android 手选主机**：切换和保存上次选择在应用作用域内串行执行，界面销毁只取消等待，不中断保存。
 - **主机管理**：`AppContainer` 持 `hosts` / `host` / `switchHost` / `addRemoteHost` / `removeHost`；远端主机存 DataStore（可选 `linkFingerprint`），凭据（访问密钥或配对得到的设备控制凭据）经 Android Keystore AES-GCM 加密（换机恢复后需重新输入 / 重新配对）。本机引擎数据 `filesDir/fluxdown`，默认保存目录 `getExternalFilesDir(DIRECTORY_DOWNLOADS)`。切到远端时本机引擎仍在进程内运行，前台服务按本机活动保活。
 - **添加主机（局域网配对，默认模式）**：本机嵌入主机启用 link（只出站：mDNS 发现 + 发起配对，不监听不广播），`feature/devices/{AddHostSheet,HostPairingModel,HostPairContent,LocalLinkChannel}.kt` 始终对**另开的本机会话**调 `agent.link.*`（与当前主机无关）：发现期间持 `MulticastLock` → 选主机 / 手输地址 + 主机显示的配对码 → `pairBegin {requestControl:true}` → 核对 SAS → `pairFinish` 等主机批准 → `controlCredential` → `addRemoteHost(linkFingerprint)`；传入的 endpoint 一律显式带端口（http 补 17800）。已配对且 `controllable` 的主机可直接连接。带指纹的主机被拒（Unauthorized）显示「重新配对」并原地更新同一主机；删除时尽力对本机调 `agent.link.remove` 让主机撤销。访问密钥模式保留。本机主机的「添加设备」视为无网关（不出示本机配对码）。iOS 同流程（`Features/Devices/{AddHostSheet,HostPairingFlow,LanBrowser}.swift`），但发现用 `NWBrowser` 浏览 `_fluxdown._tcp`（Rust mDNS 在 iOS 无 multicast entitlement），选中后解析为 IPv4 `host:port`。
