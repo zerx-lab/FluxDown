@@ -68,7 +68,7 @@ abstract class CargoNdkBuild @Inject constructor(private val exec: ExecOperation
     @get:Internal
     abstract val workspaceRoot: DirectoryProperty
 
-    /** Rust 源码（native 目录树 + 根 Cargo.toml / Cargo.lock + .cargo/config.toml）：up-to-date 判据。 */
+    /** Rust sources and local Cargo patches used to invalidate the native library. */
     @get:InputFiles
     @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val rustSources: ConfigurableFileCollection
@@ -267,7 +267,7 @@ fun CargoNdkBuild.configureCommon() {
     workspaceRoot.set(repoRoot)
     rustSources.from(
         fileTree(repoRoot) {
-            include("Cargo.toml", "Cargo.lock", ".cargo/config.toml", "native/**")
+            include("Cargo.toml", "Cargo.lock", ".cargo/config.toml", "native/**", "third_party/**")
             exclude("**/target/**")
         },
     )
@@ -301,7 +301,7 @@ val cargoHostLib = tasks.register<CargoHostBuild>("cargoHostLib") {
     workspaceRoot.set(repoRoot)
     rustSources.from(
         fileTree(repoRoot) {
-            include("Cargo.toml", "Cargo.lock", ".cargo/config.toml", "native/**")
+            include("Cargo.toml", "Cargo.lock", ".cargo/config.toml", "native/**", "third_party/**")
             exclude("**/target/**")
         },
     )

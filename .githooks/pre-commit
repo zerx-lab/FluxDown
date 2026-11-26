@@ -12,7 +12,10 @@ fi
 bad=()
 # 注意：rustfmt 从 stdin 读入时 --check 发现差异仍返回 0，只能以是否输出 diff 判定。
 while IFS= read -r -d '' file; do
-  if ! out=$(git show ":$file" | rustfmt --edition 2024 --check 2>&1) || [ -n "$out" ]; then
+  edition=2024
+  # Preserve upstream formatting for the vendored reqwest 2021 crate.
+  case "$file" in third_party/reqwest/*) edition=2021 ;; esac
+  if ! out=$(git show ":$file" | rustfmt --edition "$edition" --check 2>&1) || [ -n "$out" ]; then
     bad+=("$file")
   fi
 done < <(git diff --cached --name-only --diff-filter=ACMR -z -- '*.rs')
@@ -20,6 +23,6 @@ done < <(git diff --cached --name-only --diff-filter=ACMR -z -- '*.rs')
 if [ ${#bad[@]} -gt 0 ]; then
   echo "pre-commit: 以下暂存的 Rust 文件未格式化：" >&2
   printf '  %s\n' "${bad[@]}" >&2
-  echo "运行 cargo fmt（或 rustfmt --edition 2024 <文件>）后重新 git add 再提交。" >&2
+  echo "运行 cargo fmt（或按对应 crate 的 edition 运行 rustfmt）后重新暂存再提交。" >&2
   exit 1
 fi

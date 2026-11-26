@@ -1317,6 +1317,9 @@ fn build_client_inner(
         client_builder_for(proxy_config, user_agent, ignore_tls_errors, http)?,
         ignore_tls_errors,
     );
+    if !ignore_tls_errors && http == HttpVersion::Http1 {
+        builder = builder.fluxdown_legacy_tls();
+    }
 
     // --- DNS 钉定（多 CDN 节点池）/ 出口绑定（多网卡聚合）---
     match route {

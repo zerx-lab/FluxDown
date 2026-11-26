@@ -41,7 +41,7 @@ regex = "1"
 # 防 Windows 桌面构建里 agent 打开的 reqwest 默认 native-tls 经 feature 合并抢回默认后端。
 # native roots 保留系统 CA（Windows 证书库 / Linux / macOS）；bundled WebPKI roots 为 Android/iOS
 # 提供公共 CA 兜底，避免系统证书探测返回空库时所有 HTTPS 请求 UnknownIssuer。
-reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls-native-roots", "rustls-tls-webpki-roots", "cookies", "json", "socks", "charset", "http2", "system-proxy", "macos-system-configuration"] }
+reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls-native-roots", "rustls-tls-webpki-roots", "fluxdown-legacy-tls", "cookies", "json", "socks", "charset", "http2", "system-proxy", "macos-system-configuration"] }
 # 与 gpui-shell 同一 Longbridge `quickjs-jit` 分叉（rquickjs API；以 `rquickjs` 名引用）。禁止叠加
 # `rust-alloc` / `allocator`（`set_memory_limit` 会静默失效）；`parallel` 必带（Async* 的 Send/Sync）。
 rquickjs = { package = "quickjs-jit", version = "0.14.1", features = ["full-async", "parallel"], optional = true }
