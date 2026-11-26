@@ -79,6 +79,7 @@ object NotificationIntents {
     fun handle(container: AppContainer, nav: AppNavigator, intent: Intent?): Boolean {
         if (intent?.action != ACTION_OPEN) return false
         val hostId = intent.getStringExtra(EXTRA_HOST).orEmpty()
+        container.hostSelection.prioritizeNotification(hostId)
         val taskId = intent.getStringExtra(EXTRA_TASK).orEmpty()
         container.appScope.launch {
             if (!ensureHost(container, hostId)) return@launch
@@ -97,7 +98,7 @@ object NotificationIntents {
         val ref = withTimeoutOrNull(HOSTS_WAIT_MS) {
             container.hosts.first { list -> list.any { it.id == hostId } }.first { it.id == hostId }
         } ?: return false
-        if (container.switchHost(ref).isFailure) return false
+        if (container.hostSelection.switchHost(ref, remember = false).isFailure) return false
         withTimeoutOrNull(LIVE_WAIT_MS) { container.store.state.first { it.connection == Connection.Live } }
         return true
     }

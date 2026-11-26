@@ -10,8 +10,7 @@ struct FluxDownApp: App {
         let container = AppContainer()
         Format.setFileSizeUnits(container.appearance.fileSizeUnits)
         _container = State(initialValue: container)
-        // 冷启动即设置通知中心代理：点按通知启动 App 时的回调不会丢。
-        _ = NotificationService.shared
+        NotificationService.shared.attach(container: container)
     }
 
     var body: some Scene {

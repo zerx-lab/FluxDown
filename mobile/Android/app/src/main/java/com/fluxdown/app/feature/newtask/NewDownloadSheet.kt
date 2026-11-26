@@ -60,6 +60,7 @@ import com.fluxdown.app.ui.label
 import com.fluxdown.app.ui.launchDocumentPicker
 import com.fluxdown.app.ui.rememberTaskInfoExport
 import com.fluxdown.app.ui.rememberLocalDirectoryPicker
+import com.fluxdown.core.host.HostSession
 import com.fluxdown.core.host.ImportRules
 import com.fluxdown.core.host.groupImportBatches
 import com.fluxdown.core.host.isError
@@ -146,8 +147,16 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
     val actions = LocalTaskActions.current
     val haptics = FluxTheme.haptics
     val context = LocalContext.current
-    val form = remember { NewDownloadState.create(route.prefill, container.store.state.value, route.external, route.targetId) }
     var appliedRoute by remember { mutableStateOf(route) }
+    var draft by remember { mutableStateOf<Pair<String, NewDownloadState>?>(null) }
+    LaunchedEffect(container, visible) {
+        if (visible && draft == null) {
+            val host = container.hostSelection.hostForNewDownloadDraft()
+            appliedRoute = route
+            draft = host.id to NewDownloadState.create(route.prefill, container.store.state.value, route.external, route.targetId)
+        }
+    }
+    val (draftHostId, form) = draft ?: return
     val hostRef by container.host.collectAsStateWithLifecycle()
     val requestedLocalDir = form.saveDir.takeIf { form.hasExternalSaveDir && hostRef is HostRef.Local }
     var localConfirmation by remember(requestedLocalDir) { mutableStateOf<LocalDirectoryConfirmation?>(null) }
@@ -212,11 +221,11 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
         )
     }
 
-    fun rememberMode() {
+    fun rememberMode(session: HostSession) {
         if (target == null) {
-            val session = container.session
             val mode = form.rememberedMode() ?: return
             container.appScope.launch {
+                if (container.session !== session) return@launch
                 try {
                     session.patchPreferences(
                         mapOf(NewDownloadState.LAST_CATEGORY_MODE_KEY to JsonValue.of(mode)),
@@ -231,6 +240,12 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
     fun submit(startPaused: Boolean, queueId: String) {
         if (form.submitting || form.rangeLimitExceeded) return
         val state = container.store.state.value
+        if (container.host.value.id != draftHostId) {
+            haptics.reject()
+            overlays.toast(context.str(R.string.mobileDownloadDraftHostChanged), FluxToastKind.Error)
+            return
+        }
+        val session = container.session
         if (state.isReadOnly) {
             haptics.reject()
             overlays.toast(s.readOnly, FluxToastKind.Error, FluxIcons.WifiOff)
@@ -259,8 +274,8 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
         val batches = groupImportBatches(requests)
         if (requests.size > ImportRules.CHUNK_SIZE) {
             // 多块导入：交给进程级导入中心，进度 / 取消在下载页顶部，关闭本 Sheet 不影响它；汇总提示由 ImportEffects 给出
-            rememberMode()
-            container.imports.start(container.session, batches, startPaused, notify = true)
+            rememberMode(session)
+            container.imports.start(session, batches, startPaused, notify = true)
             haptics.confirm()
             submitted()
             dismiss()
@@ -269,12 +284,12 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
         // 单块导入：Sheet 内联等待（提交中状态）；全部成功才关闭，失败 + 未提交的条目留在表单里供重试
         form.submitting = true
         container.appScope.launch {
-            val summary = container.imports.start(container.session, batches, startPaused, notify = false).await()
+            val summary = container.imports.start(session, batches, startPaused, notify = false).await()
             form.submitting = false
             val notice = summary.notice()
             val text = importNoticeText(context.resources, notice, summary.succeeded, startPaused) { actions.errorText(it) }
             if (summary.succeeded > 0) {
-                rememberMode()
+                rememberMode(session)
                 submitted()
             }
             if (summary.unfinished.isEmpty()) {
@@ -297,6 +312,11 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
             overlays.toast(s.readOnly, FluxToastKind.Error, FluxIcons.WifiOff)
             return
         }
+        if (container.host.value.id != draftHostId) {
+            haptics.reject()
+            overlays.toast(context.str(R.string.mobileDownloadDraftHostChanged), FluxToastKind.Error)
+            return
+        }
         if (form.entries.isEmpty()) {
             haptics.reject()
             form.showEmptyError = true
@@ -316,7 +336,9 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
         form.dispatchFailure = null
         form.dispatchProgress = 0 to items.size
         container.appScope.launch {
-            val summary = Dispatcher.run(items, target, saveDir, session) { done -> form.dispatchProgress = done to items.size }
+            val summary = Dispatcher.run(items, target, saveDir, session, isSessionCurrent = { container.session === session }) { done ->
+                form.dispatchProgress = done to items.size
+            }
             form.dispatchProgress = null
             form.submitting = false
             val outcome = Dispatcher.outcome(context, summary, target)
@@ -348,12 +370,13 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
     ) {
         NewDownloadContent(
             form, targets, target,
+            draftHostId = draftHostId,
             requestedLocalDir = requestedLocalDir,
             localConfirmation = localConfirmation,
             onOpenAdvanced = { advancedOpen = true },
             // 本机建了任务：记住分类模式、拉起前台服务；表单里没有待提交的链接时关闭（同 iOS `importTorrents`）
-            onTorrentImported = {
-                rememberMode()
+            onTorrentImported = { session ->
+                rememberMode(session)
                 submitted()
                 if (form.urlText.isBlank()) dismiss()
             },
@@ -422,10 +445,11 @@ private fun NewDownloadContent(
     form: NewDownloadState,
     targets: List<DispatchTarget>,
     target: DispatchTarget?,
+    draftHostId: String,
     requestedLocalDir: String?,
     localConfirmation: LocalDirectoryConfirmation?,
     onOpenAdvanced: () -> Unit,
-    onTorrentImported: () -> Unit,
+    onTorrentImported: (HostSession) -> Unit,
 ) {
     val container = LocalAppContainer.current
     val overlays = LocalFluxOverlays.current
@@ -481,6 +505,12 @@ private fun NewDownloadContent(
             haptics.reject()
             return@rememberLauncherForActivityResult
         }
+        if (container.host.value.id != draftHostId) {
+            haptics.reject()
+            overlays.toast(context.str(R.string.mobileDownloadDraftHostChanged), FluxToastKind.Error)
+            return@rememberLauncherForActivityResult
+        }
+        val session = container.session
         val saveDir = writableDownloadDirectory(context, container.host.value, form, localConfirmation) ?: run {
             haptics.reject()
             overlays.toast(context.str(R.string.mobileSaveDirNotWritable, "dir" to (localConfirmation?.path ?: form.saveDir.trim())), FluxToastKind.Error)
@@ -493,13 +523,14 @@ private fun NewDownloadContent(
             val created = try {
                 TorrentImport.submit(
                     context, container, overlays, taskActions::errorText, uris, saveDir, queueId, startPaused = false,
+                    session = session,
                 )
             } finally {
                 importingTorrent = false
             }
             if (created > 0) {
                 haptics.confirm()
-                onTorrentImported()
+                onTorrentImported(session)
             } else {
                 haptics.reject()
             }

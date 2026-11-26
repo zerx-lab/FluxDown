@@ -8,6 +8,7 @@ import com.fluxdown.app.R
 import com.fluxdown.app.i18n.str
 import com.fluxdown.core.capture.TorrentFile
 import com.fluxdown.core.host.HostException
+import com.fluxdown.core.host.HostSession
 import com.fluxdown.core.protocol.HostMethod
 import com.fluxdown.core.protocol.callUnit
 import com.fluxdown.fluxui.overlay.FluxOverlayState
@@ -32,6 +33,7 @@ object TorrentImport {
         saveDir: String,
         queueId: String,
         startPaused: Boolean,
+        session: HostSession = container.session,
         beforeCreate: (suspend () -> Boolean)? = null,
     ): Int {
         if (uris.isEmpty()) return 0
@@ -39,6 +41,7 @@ object TorrentImport {
             overlays.toast(context.str(R.string.localServiceDisconnected), FluxToastKind.Error)
             return 0
         }
+        container.hostSelection.supersedeHostRestore()
         val dir = saveDir.trim()
         var created = 0
         for (uri in uris) {
@@ -60,8 +63,13 @@ object TorrentImport {
             }
             val params = TorrentFile.createParams(data, dir, queueId, startPaused)
             if (beforeCreate != null && !beforeCreate()) break
+            // On Main, check after both suspension points and before entering the native session.
+            if (container.session !== session) {
+                overlays.toast(context.str(R.string.mobileDownloadDraftHostChanged), FluxToastKind.Warn)
+                break
+            }
             try {
-                container.session.callUnit(HostMethod.daemonTaskCreate, params)
+                session.callUnit(HostMethod.daemonTaskCreate, params)
                 created++
             } catch (e: HostException) {
                 overlays.toast(

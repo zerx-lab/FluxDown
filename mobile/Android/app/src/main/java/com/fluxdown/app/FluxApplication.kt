@@ -160,6 +160,13 @@ class AppContainer(context: Context) {
     private var localMonitor: Job? = null
 
     private val switchLock = Mutex()
+    internal val hostSelection = HostSelection(
+        appScope, switchLock, hostRepo,
+        currentHost = { _host.value },
+        hasSession = { session !is UnavailableSession },
+        open = ::openOrFail,
+        adopt = ::adopt,
+    )
 
     init {
         appScope.launch {
@@ -173,15 +180,6 @@ class AppContainer(context: Context) {
         appScope.launch(Dispatchers.IO) {
             store.state.map(::connectionSummary).distinctUntilChanged().collect { AppDiagnostics.event("host $it") }
         }
-    }
-
-    /**
-     * 切换主机。打开失败时保持原主机不变并返回失败（[HostException]）。
-     * 切到本机以外时本机引擎继续在进程内运行（由前台服务保活）。
-     */
-    suspend fun switchHost(ref: HostRef): Result<Unit> = switchLock.withLock {
-        if (ref.id == _host.value.id && session !is UnavailableSession) return@withLock Result.success(Unit)
-        openOrFail(ref).map { adopt(ref, it) }
     }
 
     /**
@@ -284,6 +282,7 @@ class AppContainer(context: Context) {
      */
     suspend fun removeHost(id: String) {
         if (id == HostRef.Local.ID) return
+        hostSelection.supersedeHostRestore()
         val fingerprint = (hosts.value.firstOrNull { it.id == id } as? HostRef.Remote)?.linkFingerprint
         switchLock.withLock {
             if (_host.value.id == id) {

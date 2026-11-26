@@ -118,6 +118,7 @@ import com.fluxdown.fluxui.material.fluxBackdropSource
 import com.fluxdown.fluxui.overlay.FluxOverlayHost
 import com.fluxdown.fluxui.overlay.FluxPortalHost
 import com.fluxdown.fluxui.overlay.FluxPortalState
+import com.fluxdown.fluxui.overlay.FluxToastKind
 import com.fluxdown.fluxui.overlay.LocalFluxPortal
 import com.fluxdown.fluxui.overlay.LocalFluxOverlays
 import com.fluxdown.fluxui.overlay.LocalSwipeRevealCoordinator
@@ -142,6 +143,15 @@ fun AppShell() {
     val context = LocalContext.current
     val backdrop = remember { FluxBackdrop() }
     val overlays = rememberFluxOverlayState()
+    LaunchedEffect(container, overlays) {
+        container.hostSelection.restoreLastHost()?.let { name ->
+            val boundaries = android.icu.text.BreakIterator.getCharacterInstance()
+            boundaries.setText(name)
+            val end = boundaries.next(20)
+            val label = if (end in 0 until name.length) name.substring(0, end) + "…" else name
+            overlays.toast(context.str(R.string.hostRestoreFailed, "name" to label), FluxToastKind.Warn)
+        }
+    }
     val swipe = rememberSwipeRevealCoordinator()
     val scope = rememberCoroutineScope()
     val haptics = FluxTheme.haptics
