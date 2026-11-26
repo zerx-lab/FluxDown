@@ -23,8 +23,16 @@ const REUSE_MS = 24 * 3600 * 1000;
 
 const PLAYER_ID_RE = /\/s\/player\/([0-9a-zA-Z_-]{8,})\//;
 
+/**
+ * 求解用的播放器 JS 变体：TV 播放器（yt-dlp 2026-11 起的默认 `player_js_variant=tv`）。同一播放器 id
+ * 的各变体签名 / n 算法相同；网页主变体 `player_ias.vflset/en_US/base.js` 自 2026-11 起换成了
+ * yt-dlp-ejs 0.8.0 解析不了的构建（求解时抛 `addOnDisposeCallback is not a function`）。
+ * 缓存索引按变体区分，换变体时旧变体的预处理缓存随之失效。
+ */
+const PLAYER_VARIANT = "tv";
+
 export function playerUrl(id) {
-  return `${ORIGIN}/s/player/${id}/player_ias.vflset/en_US/base.js`;
+  return `${ORIGIN}/s/player/${id}/tv-player-ias.vflset/tv-player-ias.js`;
 }
 
 /** 播放器 JS 的 signatureTimestamp（yt-dlp 同一正则）。 */
@@ -56,7 +64,9 @@ async function loadIndex() {
   if (!raw) return [];
   try {
     const list = JSON.parse(raw);
-    return Array.isArray(list) ? list.filter((e) => e && typeof e.id === "string" && Number(e.sts) > 0 && e.ejs === EJS_VERSION) : [];
+    return Array.isArray(list)
+      ? list.filter((e) => e && typeof e.id === "string" && Number(e.sts) > 0 && e.ejs === EJS_VERSION && e.variant === PLAYER_VARIANT)
+      : [];
   } catch {
     return [];
   }
@@ -68,7 +78,7 @@ const fileOf = (id) => `${FILE_PREFIX}${id}.js`;
 async function savePlayer(id, sts, code, now) {
   await flux.fs.writeFile(fileOf(id), code);
   const index = (await loadIndex()).filter((e) => e.id !== id);
-  index.unshift({ id, sts, saved: now, ejs: EJS_VERSION });
+  index.unshift({ id, sts, saved: now, ejs: EJS_VERSION, variant: PLAYER_VARIANT });
   const kept = index.slice(0, MAX_CACHED);
   await flux.storage.set(INDEX_KEY, JSON.stringify(kept));
   const keep = new Set(kept.map((e) => fileOf(e.id)));

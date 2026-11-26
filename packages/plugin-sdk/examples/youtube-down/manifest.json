@@ -1,7 +1,7 @@
 {
   "identity": "fluxdown@youtube-down",
   "name": "YouTube 下载 YouTube Down",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "自研解析 YouTube 视频 / Shorts / 直播回放 / 播放列表，无需 yt-dlp 等外部组件（签名求解复用 yt-dlp-ejs，在插件内运行）；直链交回引擎多段下载、音视频自动合并，下载时按清晰度弹框选择。附带浏览器扩展嗅探规则：在 YouTube 播放器上直接出现下载浮钮。",
   "homepage": "https://fluxdown.com/docs/plugins/sdk",
   "resolvers": [
@@ -137,13 +137,13 @@
     {
       "key": "playerClients",
       "title": "播放器客户端（高级）",
-      "description": "依次请求的 InnerTube 客户端，逗号分隔；可选 tv_samsung、tv、tv_downgraded、visionos、web_embedded。留空自动：未登录 tv_samsung,visionos，带登录 Cookie 时 web_embedded,tv_samsung。",
+      "description": "依次请求的 InnerTube 客户端，逗号分隔；可选 tv_samsung、tv、tv_downgraded、visionos、web_embedded。留空自动：未登录 tv_samsung,visionos，带登录 Cookie 时 tv_samsung,web_embedded。",
       "type": "string",
       "pattern": "^[a-z_,]*$",
       "default": "",
       "localizations": {
-        "zh": { "title": "播放器客户端（高级）", "description": "依次请求的 InnerTube 客户端，逗号分隔；可选 tv_samsung、tv、tv_downgraded、visionos、web_embedded。留空自动：未登录 tv_samsung,visionos，带登录 Cookie 时 web_embedded,tv_samsung。" },
-        "en": { "title": "Player clients (advanced)", "description": "Comma-separated InnerTube clients to try in order. Options: tv_samsung, tv, tv_downgraded, visionos, web_embedded. Empty selects automatically: tv_samsung,visionos without login cookies, web_embedded,tv_samsung with login cookies." }
+        "zh": { "title": "播放器客户端（高级）", "description": "依次请求的 InnerTube 客户端，逗号分隔；可选 tv_samsung、tv、tv_downgraded、visionos、web_embedded。留空自动：未登录 tv_samsung,visionos，带登录 Cookie 时 tv_samsung,web_embedded。" },
+        "en": { "title": "Player clients (advanced)", "description": "Comma-separated InnerTube clients to try in order. Options: tv_samsung, tv, tv_downgraded, visionos, web_embedded. Empty selects automatically: tv_samsung,visionos without login cookies, tv_samsung,web_embedded with login cookies." }
       }
     }
   ],

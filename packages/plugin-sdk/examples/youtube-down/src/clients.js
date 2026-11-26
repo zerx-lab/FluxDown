@@ -1,6 +1,7 @@
 // InnerTube 客户端定义，逐字取自 yt-dlp `extractor/youtube/_base.py`（INNERTUBE_CLIENTS，
-// 2026-10 版）。只保留拿 HTTPS 直链不需要 PO Token 的客户端：web / mweb / android / ios 的
-// 直链没有 GVS PO Token 会 403，yt-dlp 自己也会把它们的格式丢掉。
+// 2026-11 版）。只保留拿 HTTPS 直链不需要 PO Token 的客户端：web / mweb / android / ios 的
+// 直链没有 GVS PO Token 会 403，yt-dlp 自己也会把它们的格式丢掉。web_embedded 例外：
+// yt-dlp 自 2026-11 起把它标为需要 GVS PO Token（登录态直链会 403），只排在 tv_samsung 之后兜底。
 
 const SAFARI_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15,gzip(gfe)";
@@ -85,8 +86,11 @@ export const WEB_CLIENT = {
 
 /** 匿名默认：yt-dlp `_DEFAULT_CLIENTS` 去掉强制 SABR 的 web。 */
 export const DEFAULT_CLIENTS = ["tv_samsung", "visionos"];
-/** 登录默认：yt-dlp `_DEFAULT_AUTHED_CLIENTS` 去掉 web（visionos 不接受 Cookie）。 */
-export const DEFAULT_AUTHED_CLIENTS = ["web_embedded", "tv_samsung"];
+/**
+ * 登录默认：yt-dlp `_DEFAULT_AUTHED_CLIENTS` 去掉 web（visionos 不接受 Cookie）。tv_samsung 在前：
+ * 同一格式先请求的客户端优先，web_embedded 的直链缺 PO Token 会 403，只补 tv_samsung 没有的格式。
+ */
+export const DEFAULT_AUTHED_CLIENTS = ["tv_samsung", "web_embedded"];
 
 /** 嵌入式播放器的第三方来源（yt-dlp 同值：任意非 YouTube 地址）。 */
 export const EMBED_URL = "https://www.reddit.com/";
