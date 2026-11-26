@@ -3,7 +3,7 @@ title: 服务器部署
 description: 从源码构建并运行 headless FluxDown 服务器(fluxdown-agent --server + fluxdownd),了解全部环境变量并安全地对外暴露。
 section: headless-server
 order: 1
-sourceHash: "c20e00824b67"
+sourceHash: "09c1dd32afb3"
 ---
 
 headless 服务器 = `fluxdown-agent --server` 加上同级的 `fluxdownd` 下载守护进程:没有桌面界面、托盘或文件关联。它把同一套 Rust 引擎(HTTP/HTTPS、FTP、BitTorrent、HLS、DASH)通过编译进 `fluxdown-agent` 的 Web 界面和 JSON-RPC 端点(`/rpc`,与桌面客户端同一协议)暴露出来,因此你可以把它跑在 NAS、家庭服务器或 VPS 上,在浏览器里远程管理下载。发行版是**同一目录下的两个二进制**——`fluxdown-agent`(内嵌 Web 界面)与 `fluxdownd`。请把它们放在同一目录:agent 会把 `fluxdownd` 作为子进程拉起,并在收到 `SIGTERM`/`SIGINT` 时一并关停它。
@@ -131,7 +131,7 @@ FLUXDOWN_TOKEN='replace-with-strong-key-2026' FLUXDOWN_TOKEN_FORCE=1 ./fluxdown-
 
 ### 重置访问密钥
 
-如果密钥丢失或怀疑已泄露,登录状态下可在 Web 界面(**设置 → 安全与访问**)修改。若已无法登录,用 `FLUXDOWN_TOKEN=<新密钥>` 加 `FLUXDOWN_TOKEN_FORCE=1` 重启一次服务器:环境变量的值会在启动时覆盖库中已存的密钥(须满足上面的密钥规则,否则忽略并打警告)。若希望之后 Web 界面的修改能保留,请随后去掉 `FLUXDOWN_TOKEN_FORCE`。
+如果密钥丢失或怀疑已泄露,登录状态下可在 Web 界面(**设置 → API 服务**)修改。若已无法登录,用 `FLUXDOWN_TOKEN=<新密钥>` 加 `FLUXDOWN_TOKEN_FORCE=1` 重启一次服务器:环境变量的值会在启动时覆盖库中已存的密钥(须满足上面的密钥规则,否则忽略并打警告)。若希望之后 Web 界面的修改能保留,请随后去掉 `FLUXDOWN_TOKEN_FORCE`。
 
 新密钥立即生效,旧密钥同刻失效。
 

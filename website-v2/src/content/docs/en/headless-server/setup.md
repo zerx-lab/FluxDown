@@ -130,7 +130,7 @@ The wizard is not open to the network. While the access key is still empty and `
 
 ### Resetting the access key
 
-If you lose the key or suspect it leaked, change it in the Web UI (**Settings → Security & Access**) while signed in. If you can no longer sign in, restart the server once with `FLUXDOWN_TOKEN=<new key>` and `FLUXDOWN_TOKEN_FORCE=1`: the environment value overwrites the stored key on start-up (it must satisfy the key rules above, otherwise it is ignored with a warning). Remove `FLUXDOWN_TOKEN_FORCE` afterwards if you want Web UI changes to stick.
+If you lose the key or suspect it leaked, change it in the Web UI (**Settings → API Service**) while signed in. If you can no longer sign in, restart the server once with `FLUXDOWN_TOKEN=<new key>` and `FLUXDOWN_TOKEN_FORCE=1`: the environment value overwrites the stored key on start-up (it must satisfy the key rules above, otherwise it is ignored with a warning). Remove `FLUXDOWN_TOKEN_FORCE` afterwards if you want Web UI changes to stick.
 
 The new key takes effect immediately; the old one is invalidated at the same moment.
 
