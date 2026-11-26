@@ -3,7 +3,9 @@
 //! - 主窗口 / 设置窗口 / 进度与完成窗口记「位置 + 尺寸 + 最大化 + 所在显示器」。
 //!   其余可调尺寸的辅助窗口只记尺寸。有主窗口锚点时只取主窗口最近一次有效可还原矩形的中心，
 //!   尺寸与夹取仍在该显示器的 `visible_bounds` 内；不取显示器中央（X11 那是整块虚拟桌面，
-//!   中央会落在已断电的外接输出上），也不把主窗口尺寸当作区域上限。
+//!   中央会落在已断电的外接输出上），也不把主窗口尺寸当作区域上限。本进程没开过主窗口
+//!   （浏览器捕获由 agent 以 `--capture` 拉起的 UI 进程）时，按主窗口自己的恢复规则从已落盘
+//!   记录算出它会出现的矩形当锚点。
 //!   同类窗口共用一条记录：所有任务详情窗口共享一份尺寸。
 //! - gpui 的窗口坐标以「打开时 `display_id` 指定的显示器（缺省主显示器）」为基准解释：macOS
 //!   是相对该显示器的局部坐标，Windows / X11 是全局坐标。位置因此必须连同显示器 UUID（跨重启
@@ -15,24 +17,35 @@
 //! - 只在边界真实变化时写入：gpui 每次窗口激活 / 失焦都会触发边界观察。
 //! - 写设备本地偏好（`sync:false`），同键 500ms 防抖；退出时强制落盘在途值。
 
-use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::Arc, time::Duration};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    rc::Rc,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use gpui::{
-    App, Bounds, Context, DisplayId, Entity, Pixels, PlatformDisplay, Point, Size, Window,
-    WindowBounds, WindowOptions, point, px, size,
+    App, Bounds, Context, Decorations, DisplayId, Entity, Pixels, PlatformDisplay, Point, Size,
+    Window, WindowBounds, WindowOptions, point, px, size,
 };
 use serde_json::{Value, json};
 
-use super::{WindowRegistry, patch_local_preference};
+use super::{WindowRegistry, main::MAIN_WINDOW_SIZE, patch_local_preference};
 use crate::{agent_client::AgentClient, app::Desktop};
 
 const PERSIST_DEBOUNCE: Duration = Duration::from_millis(500);
 /// 持久化记录的合理边长范围（逻辑像素），不是显示器工作区或最小窗口尺寸。
 const MIN_EDGE: f32 = 100.;
 const MAX_EDGE: f32 = 20_000.;
-/// Linux 客户端装饰阴影。观察者挂上时 `client_inset` 可能尚未上报，Cinnamon 仍按这个值
+/// X11 客户端装饰阴影。观察者挂上时 `client_inset` 可能尚未上报，Cinnamon 仍按这个值
 /// 把 `_GTK_FRAME_EXTENTS` 加进 X 窗口，每轴大约扩大两倍。
 const LINUX_CLIENT_INSET: f32 = 20.;
+/// `gpui::App::compositor_name` 在 X11 会话上的返回值。
+const X11_COMPOSITOR: &str = "X11";
+/// 窗口管理器只在窗口刚映射、首次读到 `_GTK_FRAME_EXTENTS` 时扩大一次。只在打开后的这段时间内
+/// 判膨胀；之后任意增量都是用户缩放（交互拖拽每帧都触发边界观察，一帧恰好 +40 很常见）。
+const FRAME_EXTENT_SETTLE: Duration = Duration::from_secs(2);
 /// 帧范围膨胀与请求尺寸的允许误差（逻辑像素）。
 const FRAME_EXTENT_TOLERANCE: f32 = 1.;
 /// 已落盘尺寸任一边超过默认值的这个倍数，视为帧范围反复计入后的污染记录。
@@ -123,13 +136,9 @@ impl WindowRegistry {
             .remembers_position()
             .then(|| stored.as_ref().and_then(parse_frame))
             .flatten();
-        let remembered = frame.as_ref().and_then(|frame| match &frame.display {
-            StoredDisplay::Known(uuid) => cx
-                .displays()
-                .into_iter()
-                .find(|display| display_uuid(display.as_ref()).as_deref() == Some(uuid.as_str())),
-            StoredDisplay::Legacy | StoredDisplay::Unavailable => None,
-        });
+        let remembered = frame
+            .as_ref()
+            .and_then(|frame| remembered_display(frame, cx));
         let preferred = options.display_id.and_then(|id| cx.find_display(id));
         let (display, keep_position) =
             select_display(frame.as_ref(), remembered, preferred, cx.primary_display());
@@ -174,8 +183,8 @@ impl WindowRegistry {
     /// 有主窗口锚点时，以主窗口中心放置 `size`，夹进主窗口所在显示器的可见区域，并返回该显示器。
     /// 窗口尺寸不受主窗口尺寸限制。
     ///
-    /// 没有可用锚点（主窗口未出现过，或锚点所在显示器已断开）时回退到 `fallback_display`
-    /// （缺省主显示器）的可见区域。X11 上那块区域是整块虚拟桌面。
+    /// 没有可用锚点（主窗口未出现过且没有可解释的已落盘记录，或锚点所在显示器已断开）时回退到
+    /// `fallback_display`（缺省主显示器）的可见区域。X11 上那块区域是整块虚拟桌面。
     pub fn place_following_main(
         size: Size<Pixels>,
         fallback_display: Option<DisplayId>,
@@ -206,7 +215,7 @@ impl WindowRegistry {
         let memory = Rc::clone(&cx.global::<Self>().bounds);
         note_main_anchor(which, window, cx, &memory);
         let mut last = capture(which, window, cx);
-        let mut guard = InflationGuard::new(parse_size(&last));
+        let mut guard = InflationGuard::new(parse_size(&last), Instant::now());
         root.update(cx, |_, cx: &mut Context<V>| {
             cx.observe_window_bounds(window, move |_, window, cx| {
                 note_main_anchor(which, window, cx, &memory);
@@ -222,10 +231,11 @@ impl WindowRegistry {
                     return;
                 }
                 last = value.clone();
-                // 合成器把阴影加进 X 窗口后，相对上次大约大 2×inset。这一步不写偏好；
-                // 记位置的窗口同时留下上一次有效的位置和最大化标志。膨胀量由 `guard` 记下，
-                // 之后落盘的尺寸都会扣掉它，同尺寸的移动不会把膨胀后的外框写进去。
-                let Some(value) = guard.admit(which, value, client_inset_px(window)) else {
+                // X11 窗口管理器把阴影加进窗口后，相对上次大约大 2×inset。只在刚打开时判一次，
+                // 这一步不写偏好；记位置的窗口同时留下上一次有效的位置和最大化标志。膨胀量由
+                // `guard` 记下，之后落盘的尺寸都会扣掉它，同尺寸的移动不会把膨胀后的外框写进去。
+                let inset = frame_extent_inset(window, cx);
+                let Some(value) = guard.admit(which, value, inset, Instant::now()) else {
                     log::debug!("ignored frame-extent size inflation {key}: {last}");
                     return;
                 };
@@ -557,10 +567,59 @@ fn parse_display(value: &Value) -> StoredDisplay {
     }
 }
 
-/// 主窗口锚点的中心与所在显示器。
+/// 主窗口锚点的中心与所在显示器。本进程的主窗口锚点不可用时退回已落盘的主窗口记录。
 fn main_anchor_target(cx: &App) -> Option<(Point<Pixels>, Rc<dyn PlatformDisplay>)> {
     let anchor = cx.global::<WindowRegistry>().bounds.borrow().main_anchor;
-    resolve_anchor(anchor, cx)
+    resolve_anchor(anchor, cx).or_else(|| stored_main_target(cx))
+}
+
+/// 本进程还没打开过主窗口：浏览器捕获由 agent 以 `--capture` 拉起的 UI 进程不开主窗口，
+/// 新建下载等窗口按主窗口下次会出现的位置放，而不是 X11 整块虚拟桌面的中央。
+/// 与 [`WindowRegistry::restore_bounds`] 对主窗口的解释一致；记录不可解释时返回 `None`。
+fn stored_main_target(cx: &App) -> Option<(Point<Pixels>, Rc<dyn PlatformDisplay>)> {
+    let key = RememberedWindow::Main.pref_key();
+    let latest = cx
+        .global::<WindowRegistry>()
+        .bounds
+        .borrow()
+        .latest
+        .get(key)
+        .cloned();
+    let frame = parse_frame(&latest.or_else(|| Desktop::pref(cx, key))?)?;
+    let (display, keep_position) = select_display(
+        Some(&frame),
+        remembered_display(&frame, cx),
+        None,
+        cx.primary_display(),
+    );
+    let display = display?;
+    let center = stored_anchor_center(
+        &frame,
+        MAIN_WINDOW_SIZE,
+        keep_position,
+        display.visible_bounds(),
+    )?;
+    Some((center, display))
+}
+
+/// 主窗口按已落盘记录恢复后的中心：与主窗口恢复相同的创建矩形，夹进目标显示器可见区。
+fn stored_anchor_center(
+    frame: &StoredFrame,
+    default_size: Size<Pixels>,
+    keep_position: bool,
+    area: Bounds<Pixels>,
+) -> Option<Point<Pixels>> {
+    remembered_rect(frame, default_size, keep_position)
+        .map(|rect| fit_bounds(rect, area, None).center())
+}
+
+fn remembered_display(frame: &StoredFrame, cx: &App) -> Option<Rc<dyn PlatformDisplay>> {
+    let StoredDisplay::Known(uuid) = &frame.display else {
+        return None;
+    };
+    cx.displays()
+        .into_iter()
+        .find(|display| display_uuid(display.as_ref()).as_deref() == Some(uuid.as_str()))
 }
 
 /// 锚点在主窗口关闭后仍保留，期间外接屏可能被拔掉；平台没报显示器或显示器已不在线时不用锚点。
@@ -592,15 +651,19 @@ fn note_main_anchor(
     });
 }
 
-fn client_inset_px(window: &Window) -> f32 {
-    let reported = window.client_inset().map(f32::from).unwrap_or(0.);
-    if reported > 0. {
-        reported
-    } else if cfg!(target_os = "linux") {
-        LINUX_CLIENT_INSET
-    } else {
-        0.
+/// 只有 X11 上客户端装饰的窗口会被窗口管理器按 `_GTK_FRAME_EXTENTS` 扩大；Wayland、
+/// 服务端装饰与其他平台返回 0，不做膨胀判定。
+fn frame_extent_inset(window: &Window, cx: &App) -> f32 {
+    if cx.compositor_name() != X11_COMPOSITOR
+        || !matches!(window.window_decorations(), Decorations::Client { .. })
+    {
+        return 0.;
     }
+    window
+        .client_inset()
+        .map(f32::from)
+        .filter(|inset| *inset > 0.)
+        .unwrap_or(LINUX_CLIENT_INSET)
 }
 
 /// 合成器把客户端阴影加进窗口后，相对上次观察大约每轴 +2×inset。只拒绝这一步，
@@ -646,33 +709,46 @@ fn near(actual: f32, expected: f32) -> bool {
     (actual - expected).abs() <= FRAME_EXTENT_TOLERANCE
 }
 
-/// 帧范围膨胀的追踪。合成器把客户端阴影加进 X 窗口后，窗口会一直比请求尺寸大这一步：
-/// 被拒绝的步进累计成偏移，之后落盘的尺寸扣掉它，否则下一次同尺寸的移动会把膨胀后的尺寸写进偏好。
+/// 帧范围膨胀的追踪。X11 窗口管理器把客户端阴影加进窗口后，窗口会一直比请求尺寸大这一步：
+/// 被拒绝的步进记成偏移，之后落盘的尺寸扣掉它，否则下一次同尺寸的移动会把膨胀后的尺寸写进偏好。
+/// 只在打开后 [`FRAME_EXTENT_SETTLE`] 内判定、且至多拒绝一次，之后的增量一律当作用户缩放。
 struct InflationGuard {
     /// 上一次观察到的原始（未扣偏移）尺寸。
     observed: Option<Size<Pixels>>,
-    /// 已被拒绝的膨胀累计量，按轴。
+    /// 已被拒绝的膨胀量，按轴。
     offset: Size<Pixels>,
+    /// 仍可判定膨胀的截止时刻；拒绝过一次后清空。
+    armed_until: Option<Instant>,
 }
 
 impl InflationGuard {
-    fn new(initial: Option<Size<Pixels>>) -> Self {
+    fn new(initial: Option<Size<Pixels>>, opened_at: Instant) -> Self {
         Self {
             observed: initial,
             offset: Size::default(),
+            armed_until: opened_at.checked_add(FRAME_EXTENT_SETTLE),
         }
     }
 
-    /// `None`：这一步是帧范围膨胀，不落盘。`Some`：要落盘的值，尺寸已扣掉累计的膨胀量。
-    fn admit(&mut self, which: RememberedWindow, mut value: Value, inset: f32) -> Option<Value> {
+    /// `None`：这一步是帧范围膨胀，不落盘。`Some`：要落盘的值，尺寸已扣掉膨胀量。
+    fn admit(
+        &mut self,
+        which: RememberedWindow,
+        mut value: Value,
+        inset: f32,
+        now: Instant,
+    ) -> Option<Value> {
         let Some(next) = parse_size(&value) else {
             return Some(value);
         };
         let previous = self.observed.replace(next);
-        if let Some(previous) = previous
+        let armed = self.armed_until.is_some_and(|deadline| now <= deadline);
+        if armed
+            && let Some(previous) = previous
             && rejects_frame_extent_step(which, previous, next, inset)
         {
-            self.offset = self.offset + inflated_axes(previous, next, inset);
+            self.offset = inflated_axes(previous, next, inset);
+            self.armed_until = None;
             return None;
         }
         if self.offset != Size::default() {
@@ -711,15 +787,17 @@ fn remembered_size(stored: Size<Pixels>, default_size: Size<Pixels>) -> Size<Pix
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use gpui::{Bounds, DisplayId, WindowBounds, WindowOptions, point, px, size};
     use serde_json::{Value, json};
 
     use super::{
-        InflationGuard, MainAnchor, RememberedWindow, StoredDisplay, StoredFrame, centered_at,
-        centered_in_area, create_size, fit_bounds, fit_size, frame_value,
+        FRAME_EXTENT_SETTLE, InflationGuard, MainAnchor, RememberedWindow, StoredDisplay,
+        StoredFrame, centered_at, centered_in_area, create_size, fit_bounds, fit_size, frame_value,
         is_frame_extent_inflation, is_position_frame_inflation, is_restorable, parse_frame,
         parse_size, remembered_rect, remembered_size, resolve_anchor, resolve_maximized,
-        restore_in_area, restored_window_bounds, select_display, size_value,
+        restore_in_area, restored_window_bounds, select_display, size_value, stored_anchor_center,
     };
 
     #[test]
@@ -1189,8 +1267,13 @@ mod tests {
         let start = size(px(640.), px(530.));
         let grown = |steps: f32| size(px(640. + 40. * steps), px(530. + 40. * steps));
         assert_eq!(
-            persisted_after_observations(start, &[grown(1.), grown(2.)], 20.),
+            persisted_after_observations(start, &[grown(1.)], 20.),
             start
+        );
+        // 窗口管理器每次打开只扩大一次；同一次打开里的第二步 +40 是用户缩放，只扣第一次的膨胀。
+        assert_eq!(
+            persisted_after_observations(start, &[grown(1.), grown(2.)], 20.),
+            grown(1.)
         );
         let resized = size(px(800.), px(620.));
         assert_eq!(
@@ -1207,7 +1290,79 @@ mod tests {
             persisted_after_observations(start, &[grown(1.), grown(1.)], 20.),
             start
         );
+        // 每次打开都按上次落盘的尺寸建窗、再被扩大一次：跨多次打开也不累积。
+        let mut saved = start;
+        for _ in 0..3 {
+            let inflated = size(saved.width + px(40.), saved.height + px(40.));
+            saved = persisted_after_observations(saved, &[inflated], 20.);
+        }
+        assert_eq!(saved, start);
         assert!(!is_frame_extent_inflation(start, grown(2.), 20.));
+    }
+
+    #[test]
+    fn user_resize_steps_of_forty_are_kept_outside_the_open_window() {
+        let opened = Instant::now();
+        let settled = opened + FRAME_EXTENT_SETTLE + Duration::from_millis(1);
+        // 交互拖拽每帧一次观察，某帧恰好 +40：打开期过后照常落盘，且不留下偏移。
+        let mut guard = InflationGuard::new(Some(size(px(1000.), px(700.))), opened);
+        let mut saved = None;
+        for width in [1030., 1070., 1100.] {
+            let value = frame_value(
+                rect(100., 100., width, 700.),
+                false,
+                &StoredDisplay::Unavailable,
+            );
+            saved = guard.admit(RememberedWindow::Main, value, 20., settled);
+        }
+        let saved = parse_frame(&saved.expect("persisted frame")).expect("frame");
+        assert_eq!(saved.bounds.size, size(px(1100.), px(700.)));
+
+        let mut guard = InflationGuard::new(Some(size(px(640.), px(530.))), opened);
+        let mut saved = None;
+        for (w, h) in [(680., 570.), (720., 600.), (760., 650.)] {
+            saved = guard.admit(
+                RememberedWindow::NewDownload,
+                size_value(size(px(w), px(h))),
+                20.,
+                settled,
+            );
+        }
+        assert_eq!(
+            parse_size(&saved.expect("persisted size")),
+            Some(size(px(760.), px(650.)))
+        );
+
+        // 打开期内也至多拒绝一次：随后的 +40 是用户缩放，只扣掉那一次膨胀。
+        let mut guard = InflationGuard::new(Some(size(px(640.), px(530.))), opened);
+        let step = |guard: &mut InflationGuard, w: f32, h: f32| {
+            guard.admit(
+                RememberedWindow::NewDownload,
+                size_value(size(px(w), px(h))),
+                20.,
+                opened,
+            )
+        };
+        assert!(step(&mut guard, 680., 570.).is_none());
+        assert_eq!(
+            step(&mut guard, 720., 610.).as_ref().and_then(parse_size),
+            Some(size(px(680.), px(570.)))
+        );
+
+        // 非 X11 或服务端装饰（inset 为 0）从不判膨胀。
+        let mut guard = InflationGuard::new(Some(size(px(640.), px(530.))), opened);
+        assert_eq!(
+            guard
+                .admit(
+                    RememberedWindow::NewDownload,
+                    size_value(size(px(680.), px(570.))),
+                    0.,
+                    opened,
+                )
+                .as_ref()
+                .and_then(parse_size),
+            Some(size(px(680.), px(570.)))
+        );
     }
 
     fn persisted_after_observations(
@@ -1215,11 +1370,16 @@ mod tests {
         steps: &[gpui::Size<gpui::Pixels>],
         inset: f32,
     ) -> gpui::Size<gpui::Pixels> {
-        let mut guard = InflationGuard::new(Some(start));
+        let opened = Instant::now();
+        let mut guard = InflationGuard::new(Some(start), opened);
         let mut saved = start;
         for &next in steps {
-            if let Some(value) = guard.admit(RememberedWindow::NewDownload, size_value(next), inset)
-            {
+            if let Some(value) = guard.admit(
+                RememberedWindow::NewDownload,
+                size_value(next),
+                inset,
+                opened,
+            ) {
                 saved = parse_size(&value).expect("persisted size");
             }
         }
@@ -1382,7 +1542,8 @@ mod tests {
     }
 
     fn persisted_position_after(start: Observed, steps: &[Observed], inset: f32) -> Observed {
-        let mut guard = InflationGuard::new(Some(start.size));
+        let opened = Instant::now();
+        let mut guard = InflationGuard::new(Some(start.size), opened);
         let mut saved = start;
         for step in steps {
             let value = frame_value(
@@ -1395,7 +1556,7 @@ mod tests {
                 step.maximized,
                 &StoredDisplay::Legacy,
             );
-            if let Some(value) = guard.admit(RememberedWindow::Main, value, inset) {
+            if let Some(value) = guard.admit(RememberedWindow::Main, value, inset, opened) {
                 let frame = parse_frame(&value).expect("persisted frame");
                 saved = Observed {
                     x: f32::from(frame.bounds.origin.x),
@@ -1486,5 +1647,50 @@ mod tests {
             assert!(resolve_anchor(Some(anchor(None)), cx).is_none());
             assert!(resolve_anchor(None, cx).is_none());
         });
+    }
+
+    #[test]
+    fn capture_process_without_main_window_follows_the_stored_main_frame() {
+        // X11：3840 宽虚拟桌面，主窗口上次最大化在左侧笔记本输出 (0,0)，UUID 全零。
+        let desktop = rect(0., 0., 3840., 1080.);
+        let main_default = size(px(1120.), px(760.));
+        let main = parse_frame(&json!({
+            "x": 0.0,
+            "y": 0.0,
+            "w": 1920.0,
+            "h": 1040.0,
+            "maximized": true,
+            "display": "00000000-0000-0000-0000-000000000000",
+        }))
+        .expect("main frame");
+        let (_, keep) = select_display(Some(&main), None::<u8>, None, Some(1));
+        let center =
+            stored_anchor_center(&main, main_default, keep, desktop).expect("stored anchor");
+        assert_eq!(center, point(px(560.), px(380.)));
+        // 新建下载 640×530 落在左侧输出内，而不是跨在 x≈1600–2240 的输出交界上。
+        let wanted = size(px(640.), px(530.));
+        let placed = centered_at(center, wanted, desktop, None);
+        assert!(f32::from(placed.origin.x + placed.size.width) <= 1920.);
+        let old = centered_in_area(wanted, desktop, None);
+        assert!(f32::from(old.origin.x + old.size.width) > 1920.);
+
+        // 普通窗口记录取它恢复后的中心，越界部分先夹回可见区。
+        let windowed = StoredFrame {
+            bounds: rect(3400., 300., 1000., 700.),
+            maximized: false,
+            display: StoredDisplay::Unavailable,
+        };
+        assert_eq!(
+            stored_anchor_center(&windowed, main_default, true, desktop),
+            Some(point(px(3340.), px(650.)))
+        );
+        // 记录所在显示器已断开：旧坐标不可解释，不当锚点。
+        let unplugged = StoredFrame {
+            bounds: rect(2000., 100., 1000., 700.),
+            maximized: false,
+            display: StoredDisplay::Known("display-b".into()),
+        };
+        let (_, keep) = select_display(Some(&unplugged), None::<u8>, None, Some(1));
+        assert!(stored_anchor_center(&unplugged, main_default, keep, desktop).is_none());
     }
 }

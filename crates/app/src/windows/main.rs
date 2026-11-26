@@ -22,7 +22,7 @@ use crate::{
     windows::{RememberedWindow, WindowKey, WindowRegistry, confirm_active_tasks},
 };
 
-const MAIN_WINDOW_SIZE: gpui::Size<gpui::Pixels> = size(px(1120.), px(760.));
+pub(super) const MAIN_WINDOW_SIZE: gpui::Size<gpui::Pixels> = size(px(1120.), px(760.));
 
 /// 显示 / 恢复 / 聚焦主窗口；窗口已关闭时重建。
 pub fn reveal(cx: &mut App) {
