@@ -59,13 +59,13 @@ def is_cjk(ch: str) -> bool:
 
 
 def non_big5_chars(text: str) -> List[str]:
-    """繁中译文里 Big5（含 HKSCS）编码不了的汉字：多半是简体字形或生僻异体。"""
+    """繁中译文里 Big5（cp950）编码不了的汉字：多半是简体字形。现有 zh-TW 译文全部可编码。"""
     bad = []
     for ch in text:
         if not is_cjk(ch):
             continue
         try:
-            ch.encode("big5hkscs")
+            ch.encode("cp950")
         except UnicodeEncodeError:
             bad.append(ch)
     return bad
@@ -318,16 +318,18 @@ def plan_catalog(
             if key in target and lock.get(key) != digest:
                 plan.adopted.append(key)
             continue
-        if copy_key(key) or not has_letters(value):
+        if copy_key(key):
             if target.get(key) != value or lock.get(key) != digest:
                 plan.copies[key] = value
             continue
-        if key not in target:
-            plan.pending.append(key)
+        if key not in target or (key in lock and lock[key] != digest):
+            # 没有可译文字（纯占位符 / 符号）的条目原样复制，不调接口；已有的本地化标点由人工维护。
+            if has_letters(value):
+                plan.pending.append(key)
+            else:
+                plan.copies[key] = value
         elif key not in lock:
             plan.adopted.append(key)
-        elif lock[key] != digest:
-            plan.pending.append(key)
     if limit is not None and len(plan.pending) > limit:
         plan.deferred = len(plan.pending) - limit
         plan.pending = plan.pending[:limit]

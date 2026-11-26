@@ -101,6 +101,7 @@ def sync_surface(
         report.add(surface.name, locale, counts, failures)
         if not (done or plan.copies or plan.adopted or plan.orphans or _stale_lock_keys(surface, lock)):
             continue
+        existing_order = list(target)
         updates = {**plan.copies, **done}
         for key, value in updates.items():
             target[key] = value
@@ -111,7 +112,7 @@ def sync_surface(
             target.pop(key, None)
         for key in _stale_lock_keys(surface, lock):
             lock.pop(key, None)
-        order = merge_order(list(target), list(updates), set(plan.orphans), list(surface.source))
+        order = merge_order(existing_order, list(updates), set(plan.orphans), list(surface.source))
         surface.write(locale, target, order)
         changed = True
     if changed:
@@ -187,7 +188,10 @@ _STR = r'"(?:[^"\\]|\\.)*"'
 _ONE_LINE = re.compile(r'^(\s*)(' + _STR + r'):\s*(' + _STR + r'),?\s*$')
 _KEY_LINE = re.compile(r'^(\s*)(' + _STR + r'):\s*$')
 _VALUE_LINE = re.compile(r'^\s*(' + _STR + r'),?\s*$')
-_OPEN = re.compile(r"^const \w+: Record<MessageKey, string> = \{\s*$")
+# 对象字面量的首尾：`const x: Record<MessageKey, string> = {` / `const zhCN = {`，
+# `};` / `} as const;` / `} as const satisfies Record<MessageKey, string>;`。
+_OPEN = re.compile(r"^const \w+(?::[^=]+)? = \{\s*$")
+_CLOSE = re.compile(r"^\}(?: as const)?(?: satisfies [^;]+)?;\s*$")
 PRINT_WIDTH = 80
 
 
@@ -198,7 +202,6 @@ class TsCatalog:
     lines: List[str]
     spans: Dict[str, Tuple[int, int]]
     values: Dict[str, str]
-    close: int
 
     @classmethod
     def parse(cls, text: str, name: str) -> "TsCatalog":
@@ -212,8 +215,8 @@ class TsCatalog:
         while index < len(lines):
             line = lines[index]
             stripped = line.strip()
-            if stripped == "};":
-                return cls(lines, spans, values, index)
+            if _CLOSE.match(stripped):
+                return cls(lines, spans, values)
             one = _ONE_LINE.match(line)
             key_only = _KEY_LINE.match(line)
             if one:
@@ -295,7 +298,12 @@ def extension_surface() -> Surface:
     def write(locale: str, values: Dict[str, str], order: List[str]) -> None:
         catalog = load(locale)
         changed = {key for key in order if catalog.values.get(key) != values[key]}
-        (EXT_DIR / f"{locale}.ts").write_text(catalog.render(values, order, changed), encoding="utf-8")
+        text = catalog.render(values, order, changed)
+        name = f"fluxDown/utils/locales/{locale}.ts"
+        # 写回前自检：重新解析的结果必须与期望完全一致（键序、值），否则宁可中止也不推坏文件。
+        if list(TsCatalog.parse(text, name).values.items()) != [(key, values[key]) for key in order]:
+            raise ConfigError(f"{name}: 重写结果与期望不一致，已中止写入")
+        (EXT_DIR / f"{locale}.ts").write_text(text, encoding="utf-8")
         cache.pop(locale, None)
 
     locales = sorted(p.stem for p in EXT_DIR.glob("*.ts") if p.stem not in ("en", "zh-CN"))
