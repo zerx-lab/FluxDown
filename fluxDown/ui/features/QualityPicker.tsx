@@ -33,7 +33,9 @@ export function QualityPicker(props: QualityPickerProps): JSX.Element {
         candidateId,
         variantId,
       });
-      if (res?.success) {
+      if (res?.cancelled) {
+        showToast(t("remote.manualCancelled"));
+      } else if (res?.success) {
         props.onDone?.();
       } else {
         showToast(res?.message || t("list.sendFailed"), "error");

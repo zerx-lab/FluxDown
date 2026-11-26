@@ -1,7 +1,7 @@
 import { defineMessages } from "../define";
 
 /** /announcements/gpui-client/: the author's note on the GPUI rewrite (v0.5.0). */
-export const announcementGpui = defineMessages({
+export const announcementGpui = defineMessages("announcementGpui", {
   en: {
     meta: {
       title: "Why I rebuilt FluxDown's interface from scratch — FluxDown",

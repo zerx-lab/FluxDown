@@ -5,14 +5,20 @@ import { useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { fetchPing } from '../lib/access/setup'
 import { useAgentSnapshot, usePref } from '../lib/rpc/hooks'
-import { resolveLocale, translate } from './catalog'
+import { FALLBACK_LOCALE, resolveLocale, translate } from './catalog'
 import { I18nContext, LANGUAGES, LOCALE_PREF_KEY, setCurrentLocale } from './runtime'
 import type { I18nContextValue } from './runtime'
 
 const CACHE_KEY = 'fluxdown.web.locale'
 
+/** 浏览器语言列表里第一个有译文的语言；英文排在前面就是英文，都不支持回退英文。 */
 function browserLocale(): string {
-  return navigator.languages?.[0] ?? navigator.language ?? 'en'
+  const tags = navigator.languages?.length ? navigator.languages : [navigator.language ?? 'en']
+  for (const tag of tags) {
+    const resolved = resolveLocale(tag)
+    if (resolved !== FALLBACK_LOCALE || tag.toLowerCase().startsWith('en')) return resolved
+  }
+  return FALLBACK_LOCALE
 }
 
 function readCache(): string {

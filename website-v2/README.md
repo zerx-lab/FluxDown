@@ -38,6 +38,17 @@ node dist/server/entry.mjs
 - 代理传输、失败映射与 IP 透传在 `src/lib/cloud-proxy.ts`（`callUpstream` / `failureResponse`），环境变量只用 `FLUXCLOUD_API_BASE`（FluxCloud 根地址，无 `/api` 前缀，缺省 `http://127.0.0.1:8720`）。代理响应一律 `Cache-Control: no-store`、`X-Robots-Tag: noindex, nofollow`。
 - 回归：`bun test tests/bt-guard-proxy.test.ts`（替换 FluxCloud fetch，不代表真实上游与 Turnstile 演练）。
 
+## 账户中心
+
+- 页面：`/account/`（账户中心：概览 / 会员 / 设备 / 云端推送 / 账户与安全）与 `/account/login/`、`/account/register/`、`/account/forgot/`（zh 加 `/zh` 前缀），静态外壳 + React island，全部 `noindex` 且不进 sitemap（`astro.config.mjs::noindexPathnames`）。
+- BFF：浏览器只调同源 `/api/account/*`（`src/pages/api/account/[...path].ts` → `src/lib/account/routes.ts` 白名单路由），服务端再调 FluxCloud `/api/v1/*`。请求体只取已知字段重建，响应只回 `src/lib/account/types.ts` 的字段，**任何响应都不含令牌**；失败透传 FluxCloud 状态码与 `code`（文案 `src/i18n/messages/accountErrors.ts`）。
+- 会话（`src/lib/account/session.ts`）：刷新令牌 `fd_acct_rt`（90 天滑动）与访问令牌 `fd_acct_at`（15 分钟，提前 60 秒过期）为 HttpOnly + SameSite=Strict + 生产 Secure，Path `/api/account`；`fd_acct_dev` 是本浏览器的 Web 会话 deviceId（随机 UUID）；`fd_signed_in=1` 是给静态页顶栏用的非 HttpOnly 提示，不作鉴权。访问令牌过期或上游 401 `unauthorized` 时刷新一次再重放；同一刷新令牌并发只刷新一次，结果复用 30 秒（单进程内，多副本依赖 FluxCloud 的轮换重放宽限）。
+- CSRF：`security.checkOrigin` 全站关闭，账户接口自行把关——每个请求必须带 `X-Fluxdown-Account: 1`（跨站带自定义头需 CORS 预检，本站不应答），浏览器给出的 `Sec-Fetch-Site` 必须是 `same-origin`。
+- Web 会话依赖 FluxCloud 把 `devicePlatform: "web"` 的设备与 App 设备隔离（不占 `maxDevices`、不进 `GET /devices`、不能当派发目标、每账号至多 5 个），**部署顺序：先升级 FluxCloud 再上线官网**，否则官网登录会占用 App 设备名额并出现在各端设备列表里。新浏览器首次密码登录照常需要邮箱验证码；登出会删除该 Web 会话的设备信任。
+- 登录后购买复用 `/api/cloud/order*` 公开网页下单端点（`account` = 本人 Origin ID 或邮箱），不新增订单接口；定价页在有登录提示时先取 `/api/account/me` 跳过账号确认步。官网仍不展示 USDT。
+- 环境变量只用既有的 `FLUXCLOUD_API_BASE`；反代须转发 `/api/account/*` 的 Cookie 与 `Set-Cookie`，不缓存其响应。
+- 回归：`bun test tests/account-bff.test.ts`（替换 FluxCloud fetch 与 Cookie，不代表真实上游演练）。
+
 ## 结构
 
 | 位置 | 内容 |
@@ -47,15 +58,15 @@ node dist/server/entry.mjs
 | `src/scripts/motion.ts` | `data-reveal` / `data-scramble` / `data-count`、`.rule` 扫描揭示、`.spot` / `.spot-edge` 聚光与边缘光、`data-magnetic` 按钮磁吸、主题圆形揭示切换、`D` 与 `⌘K` 快捷键 |
 | `src/scripts/particle-stage.ts` | 粒子舞台：canvas 尺寸 / DPR、离屏停帧、`prefers-reduced-motion` 静帧、设计 token 取色（随主题切换）、宿主指针与按下事件、`StrokeBatch` 合批绘制；场景只实现 `Scene` |
 | `src/scripts/idle.ts` | `whenIdle()`：装饰动效（粒子舞台、复刻窗口演示、分段可视化等）统一延后到首帧绘制后的空闲时段，并以动态 `import()` 拆出首屏关键路径；首屏 UI 全部 SSR 直出，首屏（Hero）不挂 `data-reveal`，不等任何脚本 |
-| `src/i18n/` | 语言契约与路由（`config.ts`、`routing.ts`）、`defineMessages` 类型化文案、`messages/<命名空间>.ts` |
-| `src/pages/[...lang]/` | 全部页面：一个文件同时产出 `/x/`（en）与 `/zh/x/`（zh） |
-| `src/pages/docs/` | 文档（`/docs/<lang>/…`，内容在 `src/content/docs/{en,zh}`） |
+| `src/i18n/` | 语言契约与路由（`config.ts`、`routing.ts`）、`defineMessages` 类型化文案、`messages/<命名空间>.ts`；机翻语言的生成模块 `locales/<lang>/<ns>.ts` 与译文库 `locales/<lang>.json` |
+| `src/pages/[...lang]/` | 全部页面：一个文件同时产出 `/x/`（en）与 `/<lang>/x/`（其余语言） |
+| `src/pages/docs/` | 文档（`/docs/<lang>/…`，内容在 `src/content/docs/<lang>`） |
 | `src/pages/api/` | 后端接口（release / download / plugins / pay …，桌面客户端依赖其中部分，契约不随 UI 变动） |
 | `src/components/home/` | 首页分区；`AppReplica.astro` + `app-demo.ts` 是 GPUI 客户端的 DOM 复刻与脚本化演示，`segment-sim.ts` 是动态分段模拟；`flux-field.ts`（首屏数据流粒子，几何与线稿共用 `hero-geometry.ts`）与 `neural-sphere.ts`（收尾 CTA 神经点云球）是两个粒子场景 |
 
 ## 语言
 
-只维护 en + zh。en 在根路径，zh 在 `/zh` 前缀，服务端按 URL 直出，不做客户端语言探测。新增文案：在 `src/i18n/messages/` 用 `defineMessages({ en, zh })` 声明，zh 与 en 结构不一致会在 `astro check` 报错。站内链接一律经 `href(path, lang)` 生成。
+语言集见 `src/i18n/config.ts::LANGS`：en + zh 手写，zh-tw / es / ru / tr 由 qwen-mt 机翻（`.github/workflows/i18n-mt.yml`，本机 `task i18n:mt`）。en 在根路径，其余语言在 `/<lang>` 前缀，服务端按 URL 直出。新增文案：在 `src/i18n/messages/` 用 `defineMessages("<ns>", { en, zh })` 声明，zh 与 en 结构不一致会在 `astro check` 报错；改了 en 结构后跑 `bun run i18n:generate` 刷新机翻语言模块（缺译回退 en），不要手改 `src/i18n/locales/`。站内链接一律经 `href(path, lang)` 生成。
 
 ## 产品短片
 

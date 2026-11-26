@@ -1,22 +1,22 @@
 {
   "format": "fluxdown-sniff-pack",
   "packId": "youtube-down",
-  "sequence": 1,
+  "sequence": 2,
   "engine": 1,
-  "issuedAt": "2026-10-17T00:00:00Z",
+  "issuedAt": "2026-11-26T00:00:00Z",
   "rules": [
     {
       "id": "ignore-googlevideo",
-      "version": 1,
+      "version": 2,
       "tier": "plugin",
       "title": "YouTube 播放分片不作为下载资源",
       "stage": "response",
-      "match": { "host": ["googlevideo.com"], "pageHost": ["youtube.com"] },
+      "match": { "host": ["googlevideo.com"], "pageHost": ["youtube.com", "youtube-nocookie.com"] },
       "action": { "kind": "ignore" }
     },
     {
       "id": "watch-page",
-      "version": 1,
+      "version": 2,
       "tier": "plugin",
       "title": "YouTube 播放页交给桌面端解析",
       "stage": "dom",
@@ -24,14 +24,20 @@
         "pageHost": ["youtube.com"],
         "url": [
           "*://www.youtube.com/watch?*",
+          "*://youtube.com/watch?*",
+          "*://m.youtube.com/watch?*",
           "*://music.youtube.com/watch?*",
           "*://www.youtube.com/shorts/*",
-          "*://www.youtube.com/live/*"
+          "*://youtube.com/shorts/*",
+          "*://m.youtube.com/shorts/*",
+          "*://www.youtube.com/live/*",
+          "*://youtube.com/live/*",
+          "*://m.youtube.com/live/*"
         ]
       },
       "action": {
         "kind": "dom",
-        "selector": "#movie_player video, #shorts-player video",
+        "selector": "#movie_player video, #shorts-player video, .html5-video-player video",
         "attr": "src",
         "emit": { "mode": "resource", "url": "${page}", "type": "video" }
       }

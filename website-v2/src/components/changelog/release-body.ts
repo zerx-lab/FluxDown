@@ -2,16 +2,16 @@
  * Release body 处理:双语区块挑选、安全的 Markdown → HTML(先转义再标记)、纯文本导出、资产归类。
  * 输出的 HTML 只含本文件生成的标签,链接仅放行 http(s)。
  */
-import type { Lang } from "@/i18n/config";
+import { toBaselineLang, type Lang } from "@/i18n/config";
 import type { changelog } from "@/i18n/messages/changelog";
 import type { ChangelogRelease, ReleaseAsset } from "@/lib/release-format";
 
 type T = (typeof changelog)[Lang];
 
-/** 双语 release body 的语言标记(release 工作流翻译步骤写入)。 */
+/** 双语 release body 的语言标记(release 工作流翻译步骤写入;只有 en / zh 两段)。 */
 const LANG_MARKER_RE = /<!--\s*fluxdown:lang:(zh|en)\s*-->/g;
 
-/** 取当前语言区块;无标记(历史版本 / 翻译失败)时原样返回全文。 */
+/** 取当前语言区块(机器翻译语言沿用 en 区块);无标记(历史版本 / 翻译失败)时原样返回全文。 */
 export function pickLocaleBody(body: string, lang: Lang): string {
   const matches = [...body.matchAll(LANG_MARKER_RE)];
   if (matches.length === 0) return body;
@@ -21,7 +21,7 @@ export function pickLocaleBody(body: string, lang: Lang): string {
     const end = matches[i + 1]?.index ?? body.length;
     sections[match[1] as Lang] = body.slice(start, end).trim();
   });
-  return sections[lang] ?? sections.zh ?? body;
+  return sections[toBaselineLang(lang)] ?? sections.zh ?? body;
 }
 
 function escapeHtml(text: string): string {

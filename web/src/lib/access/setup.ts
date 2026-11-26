@@ -1,8 +1,11 @@
 // 未鉴权的 HTTP 探针：`/ping`、首次运行向导 `/api/v1/setup{,/status}`。
+// `POST /api/v1/setup` 在密钥仍空时必须另带一次性引导码，不能匿名落盘。
 
 export interface SetupStatus {
   setupRequired: boolean
   minLength: number
+  /** 密钥仍空且服务端已装入一次性引导码。响应不包含密文。 */
+  needsBootstrap: boolean
 }
 
 export interface PingInfo {
@@ -25,12 +28,12 @@ export async function fetchSetupStatus(signal?: AbortSignal): Promise<SetupStatu
   return (await res.json()) as SetupStatus
 }
 
-/** 提交首次运行访问密钥。400 = 策略拒绝，409 = 已完成初始化；`message` 为服务端稳定英文文案。 */
-export async function submitSetup(token: string): Promise<void> {
+/** 提交首次运行访问密钥。须带上 data_dir 里的一次性引导码。400 = 策略拒绝，401 = 引导码错误，409 = 已完成初始化。 */
+export async function submitSetup(token: string, bootstrap: string): Promise<void> {
   const res = await fetch('/api/v1/setup', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token }),
+    body: JSON.stringify({ token, bootstrap }),
   })
   if (res.ok) return
   let message = `HTTP ${res.status}`

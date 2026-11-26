@@ -1,0 +1,33 @@
+version: "3"
+
+# 本机手动跑 qwen-mt 翻译（与 .github/workflows/i18n-mt.yml 同一脚本 scripts/i18n-mt）。
+# 密钥放仓库根 .env（已被 .gitignore 忽略，建议 chmod 600），字段见 .env.example。
+dotenv: [".env"]
+
+tasks:
+  i18n:mt:
+    desc: "qwen-mt 翻译并写回文件。TARGET=all|app|extension|website|docs，额外参数放 -- 之后（如 -- --locales es,zh-tw --limit 50）"
+    vars:
+      TARGET: '{{.TARGET | default "all"}}'
+    preconditions:
+      - sh: test -n "$DASHSCOPE_API_KEY"
+        msg: "缺少 DASHSCOPE_API_KEY：写进仓库根 .env（格式见 .env.example）"
+      - sh: test -d website-v2/node_modules
+        msg: "官网文案抽取需要 website-v2 依赖：cd website-v2 && bun install"
+    cmds:
+      - python3 scripts/i18n-mt/main.py {{.TARGET}} {{.CLI_ARGS}}
+
+  i18n:mt:dry:
+    desc: "只统计待译条数 / 篇数，不调接口、不写文件（不需要密钥）"
+    vars:
+      TARGET: '{{.TARGET | default "all"}}'
+    preconditions:
+      - sh: test -d website-v2/node_modules
+        msg: "官网文案抽取需要 website-v2 依赖：cd website-v2 && bun install"
+    cmds:
+      - python3 scripts/i18n-mt/main.py {{.TARGET}} --dry-run {{.CLI_ARGS}}
+
+  i18n:mt:test:
+    desc: "翻译脚本离线单测（假翻译器，不调接口）"
+    cmds:
+      - python3 -m unittest discover -s scripts/i18n-mt -p 'test_*.py'

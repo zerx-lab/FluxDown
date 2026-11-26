@@ -309,7 +309,7 @@ jobs:
                 native/engine/*)     APP=true; SERVER=true; MOBILE=true; IOS=true; CLI=true; ENGINE=true ;;
                 # 引擎与 agent 共用的诊断日志文件：消费者同引擎
                 native/logfile/*)    APP=true; SERVER=true; MOBILE=true; IOS=true; CLI=true; ENGINE=true ;;
-                Cargo.toml|Cargo.lock|.cargo/*) APP=true; SERVER=true; MOBILE=true; IOS=true; CLI=true; ENGINE=true ;;
+                Cargo.toml|Cargo.lock|.cargo/*|third_party/*) APP=true; SERVER=true; MOBILE=true; IOS=true; CLI=true; ENGINE=true ;;
                 .dockerignore)       SERVER=true ;;
                 docker/*)            SERVER=true ;;
                 packaging/*|installer/*) APP=true; SERVER=true ;;

@@ -1,7 +1,7 @@
 import { defineMessages } from "../define";
 
 /** /pricing/: plan columns, free-vs-premium comparison, pricing-model notes, web purchase dialog. */
-export const pricing = defineMessages({
+export const pricing = defineMessages("pricing", {
   en: {
     meta: {
       title: "Pricing — FluxDown",
@@ -126,6 +126,10 @@ export const pricing = defineMessages({
       fieldOrigin: "Origin ID",
       fieldPlan: "Current plan",
       notMe: "Not my account",
+      cancel: "Cancel",
+      switchAccount: "Use another account",
+      hasAccount: "Already have an account?",
+      signInToBuy: "Sign in to buy",
       confirmPay: "Confirm & pay",
       wechatBadge: "WeChat Pay",
       scanTitle: "Scan with WeChat to pay",
@@ -321,6 +325,10 @@ export const pricing = defineMessages({
       fieldOrigin: "Origin ID",
       fieldPlan: "当前套餐",
       notMe: "不是我的账号",
+      cancel: "取消",
+      switchAccount: "换一个账号购买",
+      hasAccount: "已有账户？",
+      signInToBuy: "登录后购买",
       confirmPay: "确认并付款",
       wechatBadge: "微信支付",
       scanTitle: "使用微信扫码支付",

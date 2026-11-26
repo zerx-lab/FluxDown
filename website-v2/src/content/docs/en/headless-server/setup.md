@@ -91,9 +91,9 @@ FLUXDOWN_DATA_DIR=/srv/fluxdown/data \
 
 ## First run: set the access key in the Web UI
 
-Fresh installations enable the compatibility API groups (takeover, aria2, management, MCP), with CORS off by default; only `FLUXDOWN_BIND` determines the listener. While no access key is set, `/download`, `/download/batch`, and `/jsonrpc` (POST/WS upgrade) return HTTP 403 (`setup required: set the access key first`); management and MCP also reject an empty key. aria2 and script takeover are therefore unavailable before first setup. The Web page and setup endpoints remain reachable; `GET /api/v1/setup/status` reports `setupRequired` (or 503 until startup is ready). Headless does not apply desktop LAN/CORS automatic token generation.
+Fresh installations enable the compatibility API groups (takeover, aria2, management, MCP), with CORS off by default; only `FLUXDOWN_BIND` determines the listener. While no access key is set, `/download`, `/download/batch`, and `/jsonrpc` (POST/WS upgrade) return HTTP 403 (`setup required: set the access key first`); management and MCP also reject an empty key. aria2 and script takeover are therefore unavailable before first setup. The Web page and `GET /api/v1/setup/status` remain reachable (503 until startup is ready). Headless does not apply desktop LAN/CORS automatic token generation.
 
-Open `http://<server-ip>:17800/`. The login page becomes an **Initialize FluxDown Server** wizard (not a normal sign-in form): enter an access key, confirm it, optionally click the button to random-generate one, optionally check “Remember this device”, then save. You are signed into the main UI immediately — no server restart.
+Open `http://<server-ip>:17800/`. The login page becomes an **Initialize FluxDown Server** wizard (not a normal sign-in form). Paste the one-time setup code from the agent data directory (see below), enter an access key, confirm it, optionally click the button to random-generate one, optionally check “Remember this device”, then save. You are signed into the main UI immediately — no server restart.
 
 Key rules (enforced the same way in the Web UI and the API):
 
@@ -106,11 +106,13 @@ Once saved, the key is stored in the agent's state (`<data dir>/agent`) and surv
 - Sign in to the Web UI (see [Web UI](/docs/en/headless-server/web-ui/)).
 - Authenticate management API calls with `Authorization: Bearer <token>` (see [API Overview](/docs/en/api/overview/)).
 
-This flow (instead of “generate a token and print it once to stderr”) exists because NAS users (Synology, QNAP, Unraid, and similar) often cannot see container or package stderr — a one-shot printed secret effectively locked them out.
+The setup code is written to a file because NAS users (Synology, QNAP, Unraid, and similar) often cannot see container or package stderr. A secret printed only once to stderr would lock them out. The file is the operator channel; the startup log prints the path and value once as a supplement.
+
+NAS and router packages also expose a copy where users can reach it without a shell (set via `FLUXDOWN_SETUP_CODE_COPY=<path>`; the parent directory must exist, and the agent deletes the copy once setup succeeds): Synology and fnOS write `FluxDown-setup-code.txt` into the download shared folder, QNAP into the `Public` share (`/share/Public`), and OpenWrt shows the code in LuCI next to the access key. The copy is a plain file that inherits its folder's permissions, so anyone who can read that folder can read the code until setup completes. Finish the setup before sharing the folder.
 
 ### Unattended deploys
 
-To skip the wizard (docker-compose, Kubernetes, CI), preset the key with `FLUXDOWN_TOKEN`. It is adopted only when the database still has no key:
+To skip the wizard (docker-compose, Kubernetes, CI), preset the key with `FLUXDOWN_TOKEN`. It is adopted only when the database still has no key, and no setup code is created:
 
 ```bash
 FLUXDOWN_TOKEN='replace-with-strong-key-2026' ./fluxdown-agent --server
@@ -124,11 +126,11 @@ FLUXDOWN_TOKEN='replace-with-strong-key-2026' FLUXDOWN_TOKEN_FORCE=1 ./fluxdown-
 
 ### Security note
 
-The setup window is first-come, first-served: whoever reaches the wizard first sets the key. Finish initialization (or preset `FLUXDOWN_TOKEN`) before exposing the server on an untrusted network.
+The wizard is not open to the network. While the access key is still empty and `FLUXDOWN_TOKEN` is not preset, startup writes a one-time setup code to `<data dir>/agent/setup-bootstrap` (mode `0600`) and prints the path and value once in the startup log. `POST /api/v1/setup` requires that code (`bootstrap` in the JSON body, or the `X-FluxDown-Bootstrap` header). A correct code sets the key once and deletes the file; a wrong code does not change anything. Read the file from the host (Docker: `docker exec <container> cat /data/agent/setup-bootstrap`) before exposing the port if you cannot reach the data volume another way. Preset `FLUXDOWN_TOKEN` to skip this step entirely.
 
 ### Resetting the access key
 
-If you lose the key or suspect it leaked, change it in the Web UI (**Settings → Security & Access**) while signed in. If you can no longer sign in, restart the server once with `FLUXDOWN_TOKEN=<new key>` and `FLUXDOWN_TOKEN_FORCE=1`: the environment value overwrites the stored key on start-up (it must satisfy the key rules above, otherwise it is ignored with a warning). Remove `FLUXDOWN_TOKEN_FORCE` afterwards if you want Web UI changes to stick.
+If you lose the key or suspect it leaked, change it in the Web UI (**Settings → API Service**) while signed in. If you can no longer sign in, restart the server once with `FLUXDOWN_TOKEN=<new key>` and `FLUXDOWN_TOKEN_FORCE=1`: the environment value overwrites the stored key on start-up (it must satisfy the key rules above, otherwise it is ignored with a warning). Remove `FLUXDOWN_TOKEN_FORCE` afterwards if you want Web UI changes to stick.
 
 The new key takes effect immediately; the old one is invalidated at the same moment.
 

@@ -4,7 +4,7 @@ import { defineMessages } from "../define";
  * 反馈页 + 共享的 Issue 详情对话框 / 项目看板文案。
  * `issue` 与 `labels` 也被路线图 / 功能投票页的详情对话框复用。
  */
-export const feedback = defineMessages({
+export const feedback = defineMessages("feedback", {
   en: {
     meta: {
       title: "Feedback — FluxDown",

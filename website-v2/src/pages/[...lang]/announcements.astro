@@ -3,6 +3,7 @@ import Layout from "@/layouts/Layout.astro";
 import PageHeader from "@/components/site/PageHeader.astro";
 import { ArrowRight } from "lucide-react";
 import { announcements } from "@/i18n/messages/announcements";
+import { INTL_LOCALE, toBaselineLang } from "@/i18n/config";
 import { langStaticPaths, resolveLang, href } from "@/i18n/routing";
 import { sortedAnnouncements, isAnnouncementLive } from "@/lib/announcements";
 
@@ -10,7 +11,7 @@ export const getStaticPaths = langStaticPaths;
 const lang = resolveLang(Astro.params.lang);
 const t = announcements[lang];
 const items = sortedAnnouncements();
-const dateFormat = new Intl.DateTimeFormat(lang === "zh" ? "zh-CN" : "en-US", {
+const dateFormat = new Intl.DateTimeFormat(INTL_LOCALE[lang], {
   year: "numeric",
   month: "short",
   day: "numeric",
@@ -42,7 +43,7 @@ const dateFormat = new Intl.DateTimeFormat(lang === "zh" ? "zh-CN" : "en-US", {
                         {dateFormat.format(new Date(`${item.date}T00:00:00Z`))}
                       </time>
                     </div>
-                    <p class="text">{item.text[lang]}</p>
+                    <p class="text">{item.text[toBaselineLang(lang)]}</p>
                     {item.link && (
                       <span class="open">
                         {t.open}

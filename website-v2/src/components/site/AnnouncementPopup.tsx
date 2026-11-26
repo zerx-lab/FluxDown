@@ -4,7 +4,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { ArrowUpRight, ShieldAlert } from "lucide-react";
-import type { Lang } from "@/i18n/config";
+import { toBaselineLang, type Lang } from "@/i18n/config";
 import { DISMISSED_KEY, OFFICIAL_SITES, popupAnnouncements, type Announcement } from "@/lib/announcements";
 
 const COPY = {
@@ -32,7 +32,9 @@ function readDismissed(): string[] {
 }
 
 export default function AnnouncementPopup({ lang }: { lang: Lang }) {
-  const t = COPY[lang];
+  // 弹窗文案与公告数据只有 en / zh 手写基线,机器翻译语言沿用 en
+  const copyLang = toBaselineLang(lang);
+  const t = COPY[copyLang];
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [current, setCurrent] = useState<Announcement | null>(null);
 
@@ -84,11 +86,11 @@ export default function AnnouncementPopup({ lang }: { lang: Lang }) {
             <div className="flex flex-col gap-0.5">
               <span className="font-mono text-[11px] tracking-[0.12em] text-subtle uppercase">{current.date}</span>
               <h2 id="announcement-popup-title" className="text-xl font-[560] tracking-[-0.02em]">
-                {popup.title[lang]}
+                {popup.title[copyLang]}
               </h2>
             </div>
           </div>
-          <p className="text-[14.5px] leading-relaxed text-muted">{popup.body[lang]}</p>
+          <p className="text-[14.5px] leading-relaxed text-muted">{popup.body[copyLang]}</p>
 
           <div className="grid gap-px overflow-hidden rounded-[10px] bg-line shadow-[0_0_0_1px_var(--line)]">
             <div className="flex flex-col gap-1 bg-bg px-4 py-3">

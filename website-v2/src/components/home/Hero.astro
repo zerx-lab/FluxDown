@@ -12,14 +12,10 @@ import { BrandIcon } from "../icons/brand";
 import { home } from "../../i18n/messages/home";
 import { common } from "../../i18n/messages/common";
 import { href } from "../../i18n/routing";
-import type { Lang } from "../../i18n/config";
+import { toBaselineLang, type Lang } from "../../i18n/config";
 import { GITHUB_URL } from "../../lib/site-nav";
 import { withBase } from "../../lib/base";
-import {
-  CLOUD_PROMO,
-  cloudPromoCopy,
-  isCloudPromoActive,
-} from "../../lib/cloud-promo";
+import { heroPromoCopy } from "../../lib/cloud-promo";
 
 interface Props {
   lang: Lang;
@@ -27,8 +23,7 @@ interface Props {
 const { lang } = Astro.props;
 const t = home[lang].hero;
 const actions = common[lang].actions;
-const promoOn = isCloudPromoActive();
-const promo = promoOn ? cloudPromoCopy[lang] : null;
+const promoTag = heroPromoCopy[toBaselineLang(lang)].tag;
 
 const osLabels = {
   mac: actions.downloadFor("macOS"),
@@ -60,27 +55,22 @@ const versions = [
     <canvas class="hero-layer hero-particles" aria-hidden="true" data-flux></canvas>
 
     <div class="hero-copy">
-      {
-        promo ? (
-          <a
-            href={href(CLOUD_PROMO.planPath, lang)}
-            class="hero-badge hero-badge--promo"
-            data-cloud-promo
-            data-ends-at={CLOUD_PROMO.endAt}
-            data-promo-fill="heroBadge"
-          >
-            <span class="hero-badge-tag">{promo.badge}</span>
-            <span data-promo-text>{promo.product}</span>
-            <ArrowRight size={13} strokeWidth={2} />
-          </a>
-        ) : (
-          <a href={href("/changelog", lang)} class="hero-badge">
-            <span class="hero-badge-tag">{t.badge}</span>
-            <span>{t.badgeText}</span>
-            <ArrowRight size={13} strokeWidth={2} />
-          </a>
-        )
-      }
+      <a href={href("/changelog", lang)} class="hero-badge" data-hero-news>
+        <span class="hero-badge-tag">{t.badge}</span>
+        <span>{t.badgeText}</span>
+        <ArrowRight size={13} strokeWidth={2} />
+      </a>
+      {/* 促销胶囊:运行期按 FluxCloud 目录有进行中的活动才替换上面的新功能角标(见 lib/cloud-promo) */}
+      <a href={href("/pricing", lang)} class="hero-badge hero-badge--promo" data-hero-promo data-lang={lang} hidden>
+        <span class="hero-badge-tag">{promoTag}</span>
+        <span class="hero-promo-title" data-promo-title></span>
+        <span class="hero-promo-price num">
+          <span class="hero-promo-sale" data-promo-sale></span>
+          <s class="hero-promo-list" data-promo-list></s>
+        </span>
+        <span class="hero-promo-meta mono" data-promo-meta hidden></span>
+        <ArrowRight size={13} strokeWidth={2} />
+      </a>
 
       <h1 class="display hero-title">
         <span class="block">{t.titleA}</span>
@@ -167,6 +157,49 @@ const versions = [
 
 <script>
   import { whenIdle } from "../../scripts/idle";
+  import { withBase } from "../../lib/base";
+  import { heroPromoView, pickHeroPromo } from "../../lib/cloud-promo";
+  import { isLang, DEFAULT_LANG } from "../../i18n/config";
+
+  // 促销胶囊:FluxCloud 目录有进行中的活动才把新功能角标换成促销;拉取失败 / 无活动保持原样
+  const news = document.querySelector<HTMLElement>("[data-hero-news]");
+  const promoEl = document.querySelector<HTMLElement>("[data-hero-promo]");
+  if (news && promoEl) {
+    void (async () => {
+      let plans: unknown;
+      try {
+        const res = await fetch(withBase("/api/cloud/plans"), {
+          headers: { Accept: "application/json" },
+          signal: AbortSignal.timeout(4000),
+        });
+        if (!res.ok) return;
+        plans = await res.json();
+      } catch {
+        return;
+      }
+      const now = Date.now();
+      const promo = pickHeroPromo(plans, now);
+      // 用户正指向 / 聚焦新功能角标时不换,避免点击目标在手下变掉
+      if (!promo || news.matches(":hover, :focus-within")) return;
+      const promoLang = isLang(promoEl.dataset.lang) ? promoEl.dataset.lang : DEFAULT_LANG;
+      const view = heroPromoView(promo, promoLang, now);
+      const fill = (sel: string, text: string) => {
+        const el = promoEl.querySelector<HTMLElement>(sel);
+        if (el) el.textContent = text;
+      };
+      fill("[data-promo-title]", view.title);
+      fill("[data-promo-sale]", view.sale);
+      fill("[data-promo-list]", view.list);
+      const meta = promoEl.querySelector<HTMLElement>("[data-promo-meta]");
+      if (meta && view.meta) {
+        meta.textContent = view.meta;
+        meta.hidden = false;
+      }
+      promoEl.setAttribute("aria-label", view.aria);
+      news.hidden = true;
+      promoEl.hidden = false;
+    })();
+  }
 
   // 按系统改写主按钮文案(不改链接:下载页负责精确匹配架构)
   const btn = document.querySelector<HTMLElement>("[data-hero-download]");
@@ -382,9 +415,64 @@ const versions = [
   .hero-badge:hover :global(svg) {
     transform: translateX(3px);
   }
-  /* 促销角标与默认 badge 同壳，仅文案换价，避免再叠一层实心促销块 */
+  .hero-badge[hidden] {
+    display: none;
+  }
+  /* 促销胶囊与新功能角标同壳同高:替换时不推动下方标题,只淡入 */
   .hero-badge--promo {
-    color: var(--fg-muted);
+    max-width: calc(100vw - 40px);
+    white-space: nowrap;
+    animation: hero-promo-in 420ms var(--ease-out) both;
+  }
+  @keyframes hero-promo-in {
+    from {
+      opacity: 0;
+      transform: translateY(3px);
+    }
+  }
+  .hero-promo-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--fg);
+    font-weight: 500;
+  }
+  .hero-promo-price,
+  .hero-promo-meta {
+    flex: none;
+    padding-left: 10px;
+    line-height: 14px;
+    box-shadow: -1px 0 0 var(--line);
+  }
+  .hero-promo-price {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 6px;
+    font-variant-numeric: tabular-nums;
+  }
+  .hero-promo-sale {
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--accent-ink);
+  }
+  .hero-promo-list {
+    font-size: 12px;
+    color: var(--fg-subtle);
+    text-decoration-thickness: 1px;
+  }
+  .hero-promo-meta {
+    font-size: 11.5px;
+    color: var(--fg-subtle);
+  }
+  .hero-promo-meta[hidden] {
+    display: none;
+  }
+  /* 窄屏只留标签 + 标题 + 现价,原价与余量在定价页 */
+  @media (max-width: 639px) {
+    .hero-promo-list,
+    .hero-promo-meta {
+      display: none;
+    }
   }
   .hero-badge-tag {
     position: relative;
@@ -586,6 +674,7 @@ const versions = [
     .hero-tilt,
     .hero-title .accent-gradient,
     .hero-badge::before,
+    .hero-badge--promo,
     .hero-badge-tag::after {
       animation: none;
     }

@@ -8,6 +8,13 @@
 import { Outlet, useLocation } from '@tanstack/react-router'
 import { useEffect } from 'react'
 import { useT } from '../i18n'
+import { useDaemon } from '../lib/rpc'
+import type { SelectionRequestDto } from '../lib/rpc'
+import { FileConflictDialog } from '../pages/downloads/dialogs/FileConflictDialog'
+import { NewDownloadDialog } from '../pages/downloads/dialogs/NewDownloadDialog'
+import { SeedLocalDialog } from '../pages/downloads/dialogs/SeedLocalDialog'
+import { SelectionHost } from '../pages/downloads/dialogs/SelectionDialogs'
+import { useDialogsState } from '../pages/downloads/dialogs/store'
 import { isPluginEntryActive } from '../pages/plugins/contributions'
 import { usePluginActivityEntries, usePluginShellBridge } from '../pages/plugins/usePluginContributions'
 import { useIsMobile } from '../ui'
@@ -56,6 +63,22 @@ function useExitChromeEditing(mobile: boolean): void {
   }, [editing, mobile])
 }
 
+const EMPTY_SELECTIONS: readonly SelectionRequestDto[] = []
+
+/** Keep task creation and its follow-up dialogs available across shell route changes. */
+function DownloadCreationHost() {
+  const { newDownload, seedLocal } = useDialogsState()
+  const selections = useDaemon((daemon) => daemon.pendingSelections, EMPTY_SELECTIONS)
+  return (
+    <>
+      {newDownload ? <NewDownloadDialog key={newDownload.session} session={newDownload} /> : null}
+      {seedLocal ? <SeedLocalDialog /> : null}
+      <SelectionHost requests={selections} />
+      <FileConflictDialog />
+    </>
+  )
+}
+
 export function AppShell() {
   const defaultTitle = useDefaultTitle()
   const mobile = useIsMobile()
@@ -89,6 +112,7 @@ export function AppShell() {
             {mobile ? null : <ChromeStatusBar />}
           </div>
         </div>
+        <DownloadCreationHost />
         {mobile ? <BottomTabBar /> : null}
         <AccountGuards />
         <PluginNotices />

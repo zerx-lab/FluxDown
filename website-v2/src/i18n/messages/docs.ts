@@ -1,7 +1,7 @@
 import { defineMessages } from "../define";
 
 /** 文档中心(/docs/<lang>/…)与 API 参考页文案。 */
-export const docs = defineMessages({
+export const docs = defineMessages("docs", {
   en: {
     docs: "Docs",
     metaTitle: "Docs - FluxDown",
@@ -26,6 +26,16 @@ export const docs = defineMessages({
       api: "Local HTTP API with aria2-compatible JSON-RPC.",
       plugins: "Extend FluxDown with JavaScript plugins — URL resolvers and task hooks.",
       contributing: "Plugins, themes, sniffing rules, translations and docs — where each contribution goes.",
+    },
+    /** 分区标题(侧栏分组、搜索结果分区标签)。 */
+    sectionLabels: {
+      "getting-started": "Getting Started",
+      protocols: "Protocols",
+      "browser-extension": "Browser Extension",
+      "headless-server": "Headless Server",
+      api: "API",
+      plugins: "Plugin Development",
+      contributing: "Contributing",
     },
     search: {
       label: "Search docs",
@@ -111,6 +121,15 @@ export const docs = defineMessages({
       api: "本机 HTTP API,兼容 aria2 JSON-RPC。",
       plugins: "用 JavaScript 插件扩展 FluxDown —— 链接解析与任务钩子。",
       contributing: "插件、主题、嗅探规则、翻译与文档 —— 每类贡献该去哪里。",
+    },
+    sectionLabels: {
+      "getting-started": "快速上手",
+      protocols: "下载协议",
+      "browser-extension": "浏览器扩展",
+      "headless-server": "Headless 服务器",
+      api: "API",
+      plugins: "插件开发",
+      contributing: "参与贡献",
     },
     search: {
       label: "搜索文档",

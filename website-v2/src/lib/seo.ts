@@ -10,6 +10,7 @@
  * 用法:`buildGraph()` 生成首页/全站实体图;`buildSoftwareOffer()` 复用软件报价片段。
  */
 import { BASE } from "@/lib/base";
+import { HTML_LANG, LANGS } from "@/i18n/config";
 
 /** 站点源(不含挂载前缀);与已带前缀的路径(`href()` / `Astro.url.pathname`)拼接用它。 */
 export const SITE_ORIGIN = "https://fluxdown.com";
@@ -33,7 +34,7 @@ export const TAGLINE =
 
 export const SAME_AS = ["https://github.com/zerx-lab/FluxDown"];
 
-/** 首页双语 meta(Layout 默认值;hreflang 由 Layout 按 URL 自动生成)。 */
+/** 首页双语 meta(Layout 默认值,只有 en / zh 手写基线;hreflang 由 Layout 按 URL 自动生成)。 */
 export const HOME_META = {
   en: {
     title: "FluxDown — The Download Manager, Rebuilt in Rust",
@@ -74,7 +75,7 @@ export function websiteNode(): JsonLdNode {
     name: SITE_NAME,
     url: `${SITE_URL}/`,
     publisher: { "@id": ORG_ID },
-    inLanguage: ["en", "zh-CN"],
+    inLanguage: LANGS.map((lang) => HTML_LANG[lang]),
     potentialAction: {
       "@type": "SearchAction",
       target: {

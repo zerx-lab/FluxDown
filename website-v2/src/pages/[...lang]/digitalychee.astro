@@ -3,10 +3,11 @@ import Layout from "@/layouts/Layout.astro";
 import { langStaticPaths, resolveLang } from "@/i18n/routing";
 import { partner } from "@/i18n/messages/partner";
 import { withBase } from "@/lib/base";
+import { DEFAULT_LANG } from "@/i18n/config";
 
 export const getStaticPaths = langStaticPaths;
 const lang = resolveLang(Astro.params.lang);
-// 证书双语并列:当前语言为主行,另一语言为副行。
+// 证书双语并列:当前语言为主行,副行取 zh(当前为 zh 时取 en)。
 const t = partner[lang];
 const alt = partner[lang === "zh" ? "en" : "zh"];
 const PRODUCTS = ["FluxDown"];
@@ -74,7 +75,7 @@ const rows = [
 
             <footer class="cert-foot mono">
               <span>{t.verify}</span>
-              <span class="url">fluxdown.com{lang === "zh" ? "/zh" : ""}/digitalychee</span>
+              <span class="url">fluxdown.com{lang === DEFAULT_LANG ? "" : `/${lang}`}/digitalychee</span>
             </footer>
           </div>
         </figure>

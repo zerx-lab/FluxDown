@@ -1,7 +1,7 @@
 import { defineMessages } from "../define";
 
 /** 全站外壳文案:导航、页脚、主题/语言切换、命令面板、通用按钮。 */
-export const common = defineMessages({
+export const common = defineMessages("common", {
   en: {
     skip: "Skip to content",
     brandTagline: "The download manager, rebuilt in Rust.",
@@ -38,6 +38,8 @@ export const common = defineMessages({
       faq: "FAQ",
       download: "Download",
       github: "GitHub",
+      account: "Account",
+      signIn: "Sign in",
       menu: "Menu",
       close: "Close",
       newBadge: "New",
@@ -154,6 +156,8 @@ export const common = defineMessages({
       faq: "常见问题",
       download: "下载",
       github: "GitHub",
+      account: "账户",
+      signIn: "登录",
       menu: "菜单",
       close: "关闭",
       newBadge: "新",

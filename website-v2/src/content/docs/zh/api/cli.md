@@ -3,7 +3,7 @@ title: 命令行客户端
 description: fluxdown 命令行客户端 —— aria2c 风格的下载客户端，从终端或脚本驱动管理 API。
 section: api
 order: 2
-sourceHash: "fa193ab09799"
+sourceHash: "fab9241fa0a4"
 ---
 
 FluxDown 提供一个命令行客户端 `fluxdown`，对标 `aria2c`。它有两种工作模式：
@@ -41,7 +41,7 @@ cargo run -p fluxdown_cli -- ping
 
 `url`、`token`、`timeout` 三项的生效值按 **显式 flag > 环境变量 > 持久化配置文件 > 内置默认** 的优先级解析。持久化那一层由 [`config set`](#config)（类似 `go env -w`）写入，因此 token 可以只设一次，不必每次都 export。
 
-token 来自你运行中的实例：桌面应用在**设置 → 本机 API 服务**下；headless 服务器的密钥是你首次打开 Web 界面时自行设置的，也可在**设置 → 安全与访问**查看/更换。详见[鉴权](/docs/zh/api/overview/#鉴权方式)。
+token 来自你运行中的实例：桌面应用在**设置 → API 服务**下；headless 服务器的密钥是你首次打开 Web 界面时自行设置的，也可在**设置 → API 服务**查看/更换。详见[鉴权](/docs/zh/api/overview/#鉴权方式)。
 
 ```bash
 # 方式 A：导出环境变量（仅当前 shell 会话有效）

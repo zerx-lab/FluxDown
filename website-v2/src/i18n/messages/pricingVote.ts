@@ -1,7 +1,7 @@
 import { defineMessages } from "../define";
 
 /** /pricing/vote/: price poll + GitHub-authenticated discussion. */
-export const pricingVote = defineMessages({
+export const pricingVote = defineMessages("pricingVote", {
   en: {
     meta: {
       title: "Pricing Poll — FluxDown",

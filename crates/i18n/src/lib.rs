@@ -207,6 +207,13 @@ impl I18nCatalog {
         &self.available
     }
 
+    /// `locale` 能解析到专门的语言表（英文本身，或不回退到英文的其他语言）。
+    fn has_translation(&self, locale: &str) -> bool {
+        let primary = normalize_locale(locale);
+        primary.split('-').next() == Some(FALLBACK_LOCALE)
+            || self.resolve_locale(locale) != FALLBACK_LOCALE
+    }
+
     /// 把系统或用户 locale 解析为实际可用代码。只比对 locale 代码，不解析语言表。
     pub fn resolve_locale<'catalog>(&'catalog self, locale: &str) -> &'catalog str {
         let normalized = normalize_locale(locale);
@@ -215,7 +222,11 @@ impl I18nCatalog {
         }
 
         let mut subtags = normalized.split('-');
-        let prefix = subtags.next().unwrap_or(&normalized);
+        let prefix = match subtags.next().unwrap_or(&normalized) {
+            // ISO 639 废弃码：旧版 Java / Android 仍上报 `in`（= `id` 印尼语）。
+            "in" => "id",
+            other => other,
+        };
         if prefix == "zh" {
             let preferred = match subtags.next() {
                 Some("hant" | "tw" | "hk" | "mo") => "zh-tw",
@@ -342,25 +353,35 @@ impl Translator {
     }
 }
 
-/// 系统界面语言：`LC_ALL` → `LC_MESSAGES` → `LANG` 中第一个非空值（去掉编码后缀）优先，
-/// 便于 Unix 用户显式覆盖；三者都未设置或为 `C` / `POSIX` 时回退系统 API
-/// （Windows、从 Finder 启动的 macOS），仍取不到为 `en`。偏好 `general.locale` 为
-/// `system` 时使用，桌面、设置页与 agent 托盘共用同一推导，保证文案同语言。
+/// 系统界面语言：取操作系统的首选语言列表（macOS / iOS 的「语言与地区」、Windows 的显示语言；
+/// Linux 等其他 Unix 按 gettext 惯例读 `LANGUAGE` → `LC_ALL` → `LC_MESSAGES` → `LANG`），
+/// 选第一个有译文的语言（英文排在前面即英文，首选语言不支持时继续看下一个），都不支持取第一项，
+/// 列表为空为 `en`。macOS / Windows 不读 `LANG` 等变量：终端、IDE 常注入 `en_US.UTF-8`，与系统界面
+/// 语言无关，原生应用也都忽略它们。偏好 `general.locale` 为 `system` 时使用，桌面、设置页与
+/// agent 托盘共用同一推导，保证文案同语言。
 #[must_use]
 pub fn system_locale() -> String {
-    resolve_system_locale(|key| std::env::var(key).ok(), sys_locale::get_locale)
+    resolve_system_locale(sys_locale::get_locales(), |locale| {
+        // 嵌入目录登记失败时 `I18nCatalog::load_embedded` 会在启动时报错；这里只影响候选筛选。
+        EMBEDDED_CATALOG
+            .as_ref()
+            .map_or(true, |catalog| catalog.has_translation(locale))
+    })
 }
 
 fn resolve_system_locale(
-    env: impl Fn(&str) -> Option<String>,
-    system: impl FnOnce() -> Option<String>,
+    preferred: impl IntoIterator<Item = String>,
+    supported: impl Fn(&str) -> bool,
 ) -> String {
-    ["LC_ALL", "LC_MESSAGES", "LANG"]
+    let candidates: Vec<String> = preferred
         .into_iter()
-        .filter_map(env)
-        .find(|value| !value.trim().is_empty())
-        .and_then(|value| clean_locale(&value))
-        .or_else(|| system().and_then(|value| clean_locale(&value)))
+        .filter_map(|value| clean_locale(&value))
+        .collect();
+    candidates
+        .iter()
+        .find(|locale| supported(locale))
+        .or_else(|| candidates.first())
+        .cloned()
         .unwrap_or_else(|| "en".to_owned())
 }
 
@@ -387,28 +408,38 @@ mod tests {
 
     use super::{I18nCatalog, I18nError, embedded, parse_table, resolve_system_locale};
 
-    fn env_of<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
-        move |key| {
-            pairs
-                .iter()
-                .find(|(k, _)| *k == key)
-                .map(|(_, v)| (*v).to_owned())
-        }
+    fn owned(list: &[&str]) -> Vec<String> {
+        list.iter().map(|tag| (*tag).to_owned()).collect()
     }
 
     #[test]
-    fn system_locale_prefers_env_then_system_api() {
-        let sys = || Some("zh-Hans-CN".to_owned());
-        assert_eq!(
-            resolve_system_locale(env_of(&[("LANG", "fr_FR.UTF-8")]), sys),
-            "fr_FR"
-        );
-        assert_eq!(
-            resolve_system_locale(env_of(&[("LC_ALL", ""), ("LANG", "C")]), sys),
-            "zh-Hans-CN"
-        );
-        assert_eq!(resolve_system_locale(env_of(&[]), sys), "zh-Hans-CN");
-        assert_eq!(resolve_system_locale(env_of(&[]), || None), "en");
+    fn system_locale_skips_c_posix_and_empty_lists() {
+        let any = |_: &str| true;
+        // Linux：`LC_MESSAGES=C` 不能挡住后面的 `LANG=zh_CN.UTF-8`。
+        assert_eq!(resolve_system_locale(owned(&["C", "zh-CN"]), any), "zh-CN");
+        assert_eq!(resolve_system_locale(owned(&["POSIX"]), any), "en");
+        assert_eq!(resolve_system_locale(Vec::new(), any), "en");
+    }
+
+    #[test]
+    fn system_locale_skips_unsupported_preferred_languages() -> Result<(), I18nError> {
+        let catalog = I18nCatalog::load_embedded()?;
+        let pick = |list: &[&str]| {
+            let locale =
+                resolve_system_locale(owned(list), |locale| catalog.has_translation(locale));
+            catalog.resolve_locale(&locale).to_owned()
+        };
+        // macOS 首选简体中文：直接中文。
+        assert_eq!(pick(&["zh-Hans-CN"]), "zh");
+        // 首选瑞典语（无译文）→ 用下一个日语；英文排前面 → 英文；全不支持 → 英文回退。
+        assert_eq!(pick(&["sv-SE", "ja-JP", "en-US"]), "ja");
+        assert_eq!(pick(&["en-US", "ja-JP"]), "en");
+        assert_eq!(pick(&["sv-SE", "fi-FI"]), "en");
+        // 地区变体与旧代码：pt-PT → pt-BR、旧 Java 的 in → id、zh-HK → zh-TW。
+        assert_eq!(pick(&["pt-PT"]), "pt-br");
+        assert_eq!(pick(&["in-ID"]), "id");
+        assert_eq!(pick(&["zh-Hant-HK"]), "zh-tw");
+        Ok(())
     }
 
     #[test]

@@ -7,12 +7,12 @@
  * 未提及该能力(脚注说明)。FluxDown 一侧以本仓源码与本站文档为准。
  */
 import { ArrowUpRight, Check, CircleDashed, Info, X } from "lucide-react";
-import type { DocsLang } from "@/lib/docs-nav";
+import { toBaselineLang, type Lang } from "@/i18n/config";
 import { MAIN_REPO, githubUrl } from "@/lib/ecosystem";
 import { docsCompare } from "@/i18n/messages/docsCompare";
 
 interface Props {
-  lang: DocsLang;
+  lang: Lang;
 }
 const { lang } = Astro.props;
 const t = docsCompare[lang];
@@ -22,7 +22,8 @@ type RowId = keyof typeof t.rows;
 type GroupId = keyof typeof t.groups;
 type Source = { docs: string } | { repo: string } | null;
 
-const GD_DOCS = `https://gd.xychr.com/${lang}/docs/`;
+// Ghost Downloader 官网只有 en / zh 两种文档,机器翻译语言指向 en。
+const GD_DOCS = `https://gd.xychr.com/${toBaselineLang(lang)}/docs/`;
 const GD_REPO = githubUrl("XiaoYouChR/Ghost-Downloader-3");
 const FD_REPO = githubUrl(MAIN_REPO);
 

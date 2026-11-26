@@ -6,7 +6,7 @@ import { defineMessages } from "../define";
  * 证书正文按惯例中英双语并列:页面以当前语言为主行、另一语言为副行,
  * 所以两支都要完整给出证书条目。
  */
-export const partner = defineMessages({
+export const partner = defineMessages("partner", {
   en: {
     meta: {
       title: "Authorization Certificate — FluxDown",

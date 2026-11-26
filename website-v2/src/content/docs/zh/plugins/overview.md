@@ -3,7 +3,7 @@ title: 插件系统概览
 description: FluxDown 插件能做什么、如何选择开发路线（纯 JavaScript 或 TypeScript SDK）、怎么运行、怎么安装，以及各客户端的支持情况。
 section: plugins
 order: 1
-sourceHash: "51d8d7d98214"
+sourceHash: "874c42550a40"
 ---
 
 FluxDown 插件是一个文件夹（或这个文件夹打成的 `.fxplug` zip 包），里面有一份 `manifest.json` 和若干 JavaScript 文件。manifest 声明插件贡献了什么，脚本则由 FluxDown 在后台服务的沙箱里，于合适的时机调用。
@@ -97,7 +97,8 @@ hooks 是发出即不管的通知：
 
 | 限制 | 值 |
 |---|---|
-| resolve / 订阅超时 | 默认 10 秒；入口上的 `timeoutMs` 可调整，硬顶 30 秒 |
+| resolve 超时 | 默认 10 秒；入口上的 `timeoutMs` 可调整，硬顶 120 秒（0.6.8 及更早：30 秒） |
+| 订阅超时 | 默认 10 秒；入口上的 `timeoutMs` 可调整，硬顶 30 秒 |
 | auth 超时 | 默认 30 秒；`auth.timeoutMs` 可调整，硬顶 30 秒 |
 | 拦截器超时 | 默认 5 秒；`interceptors.timeoutMs` 可调整，硬顶 30 秒。`liveSegments` 上限 2 秒，`refresh` 上限 5 秒。带 `ffmpeg` 或 `ytdlp` 权限的插件，其 `finalize` 使用与 hooks 相同的外部工具长预算 |
 | resolve、auth、订阅、拦截器内存 | 64 MB |

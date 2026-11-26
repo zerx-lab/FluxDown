@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { CircleCheck, Coins, CreditCard, LoaderCircle } from "lucide-react";
 import type { Lang } from "@/i18n/config";
 import { pricing } from "@/i18n/messages/pricing";
@@ -7,10 +7,15 @@ import { QrTile, WechatBadge, WechatPayMark } from "@/components/pay/WechatQr";
 import { estimateUsdtMicros, formatMinor, formatUsdt } from "@/components/pay/money";
 import type { PlanBrief } from "./types";
 import { withBase } from "@/lib/base";
+import { accountApi, accountHref, currentPath, hasSignedInHint } from "@/lib/account/client";
+import type { AccountMe } from "@/lib/account/types";
 
-/** Web purchase from a plan card: account lookup → confirm (optional referral code) → WeChat QR → poll until paid. */
+/**
+ * Web purchase from a plan card: account lookup → confirm (optional referral code) → pay → poll until paid.
+ * Signed in (account center `signedIn`, or a pricing-page visitor with a live session) → the account step is skipped.
+ */
 
-interface Identity {
+export interface Identity {
   nickname: string;
   emailMasked: string;
   originId: number | null;
@@ -18,6 +23,38 @@ interface Identity {
   planName: string;
   purchaseCreditMinor: number;
 }
+
+/** The signed-in buyer: `account` is what the public order endpoints accept (Origin ID, else email). */
+export interface SignedInAccount {
+  account: string;
+  identity: Identity;
+}
+
+export function signedInFromMe(me: AccountMe): SignedInAccount {
+  return {
+    account: String(me.originId ?? me.email),
+    identity: {
+      nickname: me.nickname,
+      emailMasked: me.email,
+      originId: me.originId,
+      planCode: me.plan,
+      planName: me.currentPlan?.name ?? me.plan,
+      purchaseCreditMinor: me.purchaseCreditMinor,
+    },
+  };
+}
+
+interface Props {
+  plan: PlanBrief;
+  lang: Lang;
+  /** Provided → skip the account step; "not my account" becomes "cancel". */
+  signedIn?: SignedInAccount;
+  /** Called once the success view is dismissed after a paid order. */
+  onPaid?: () => void;
+  /** Overrides the trigger button label. */
+  buttonLabel?: string;
+}
+
 interface WebOrder {
   orderNo: string;
   planName: string;
@@ -103,7 +140,7 @@ function openCheckout(url: string) {
   window.open(url, "_blank", "noopener,noreferrer");
 }
 
-export default function WebPurchase({ plan, lang }: { plan: PlanBrief; lang: Lang }) {
+export default function WebPurchase({ plan, lang, signedIn, onPaid, buttonLabel }: Props) {
   const t = pricing[lang].webbuy;
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState<Step>("account");
@@ -117,6 +154,11 @@ export default function WebPurchase({ plan, lang }: { plan: PlanBrief; lang: Lan
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [payMethod, setPayMethod] = useState<PayMethod>("wxpay");
+  // Pricing page without `signedIn`: a visitor who looks signed in is probed (`GET me`) when the dialog opens.
+  const [probed, setProbed] = useState<SignedInAccount | null>(null);
+  const [probing, setProbing] = useState(false);
+  const probeSeq = useRef(0);
+  const session = signedIn ?? probed;
 
   const reset = useCallback(() => {
     setStep("account");
@@ -130,11 +172,47 @@ export default function WebPurchase({ plan, lang }: { plan: PlanBrief; lang: Lan
   }, []);
 
   const close = useCallback(() => {
+    probeSeq.current += 1; // drop an in-flight probe
+    setProbing(false);
+    setProbed(null);
     setOpen(false);
     reset();
     setAccount("");
     setReferralCode("");
-  }, [reset]);
+    // The success view is the last thing a purchase shows: let the host refresh once it is dismissed.
+    if (step === "success") onPaid?.();
+  }, [reset, step, onPaid]);
+
+  function enter(s: SignedInAccount) {
+    setAccount(s.account);
+    setIdentity(s.identity);
+    setStep("confirm");
+  }
+
+  function openDialog() {
+    setOpen(true);
+    if (signedIn) {
+      enter(signedIn);
+      return;
+    }
+    if (!hasSignedInHint()) return;
+    const seq = ++probeSeq.current;
+    setProbing(true);
+    void accountApi<AccountMe>("me").then((res) => {
+      if (seq !== probeSeq.current) return;
+      setProbing(false);
+      if (!res.ok) return; // not signed in after all: the regular account lookup
+      const found = signedInFromMe(res.data);
+      setProbed(found);
+      enter(found);
+    });
+  }
+
+  function switchAccount() {
+    setProbed(null);
+    setAccount("");
+    reset();
+  }
 
   async function lookup() {
     const trimmed = account.trim();
@@ -287,37 +365,45 @@ export default function WebPurchase({ plan, lang }: { plan: PlanBrief; lang: Lan
     },
   };
 
+  // A signed-in buyer never sees the account step: the progress strip starts at "Confirm".
+  const steps = session ? t.steps.slice(1) : t.steps;
+  const current = STEP_INDEX[step] - (session ? 1 : 0);
+
   return (
     <>
-      <button type="button" onClick={() => setOpen(true)} className="btn btn-primary w-full">
-        {t.button}
+      <button type="button" onClick={openDialog} className="btn btn-primary w-full">
+        {buttonLabel ?? t.button}
       </button>
 
       <Dialog open={open} onClose={close} title={t.title(plan.name)} closeLabel={t.close} dismissible={step !== "pay"}>
-        {step !== "success" && (
+        {step !== "success" && !probing && (
           <ol className="mb-6 flex items-center gap-2 font-mono text-[10.5px] uppercase tracking-[0.1em]">
-            {t.steps.map((label, i) => {
-              const current = STEP_INDEX[step];
-              return (
-                <li
-                  key={label}
-                  aria-current={i === current ? "step" : undefined}
-                  className={`flex items-center gap-2 last:flex-none ${i < t.steps.length - 1 ? "flex-1" : ""} ${
-                    i > current ? "text-subtle" : i === current ? "text-accent-ink" : "text-muted"
-                  }`}
-                >
-                  <span className="num">{String(i + 1).padStart(2, "0")}</span>
-                  <span className="truncate">{label}</span>
-                  {i < t.steps.length - 1 && (
-                    <span aria-hidden className={`h-px min-w-3 flex-1 ${i < current ? "bg-accent" : "bg-line-strong"}`} />
-                  )}
-                </li>
-              );
-            })}
+            {steps.map((label, i) => (
+              <li
+                key={label}
+                aria-current={i === current ? "step" : undefined}
+                className={`flex items-center gap-2 last:flex-none ${i < steps.length - 1 ? "flex-1" : ""} ${
+                  i > current ? "text-subtle" : i === current ? "text-accent-ink" : "text-muted"
+                }`}
+              >
+                <span className="num">{String(i + 1).padStart(2, "0")}</span>
+                <span className="truncate">{label}</span>
+                {i < steps.length - 1 && (
+                  <span aria-hidden className={`h-px min-w-3 flex-1 ${i < current ? "bg-accent" : "bg-line-strong"}`} />
+                )}
+              </li>
+            ))}
           </ol>
         )}
 
-        {step === "account" && (
+        {probing && (
+          <p role="status" className="flex items-center justify-center gap-2 py-8 text-[13px] text-muted">
+            <LoaderCircle size={15} className="animate-spin" aria-hidden />
+            {t.loading}
+          </p>
+        )}
+
+        {step === "account" && !probing && (
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -346,6 +432,12 @@ export default function WebPurchase({ plan, lang }: { plan: PlanBrief; lang: Lan
               {busy && <LoaderCircle size={15} className="animate-spin" aria-hidden />}
               {busy ? t.loading : t.next}
             </button>
+            <p className="mt-4 text-center text-[13px] text-muted">
+              {t.hasAccount}{" "}
+              <a href={accountHref(lang, "login", currentPath())} className="link">
+                {t.signInToBuy}
+              </a>
+            </p>
           </form>
         )}
 
@@ -474,8 +566,8 @@ export default function WebPurchase({ plan, lang }: { plan: PlanBrief; lang: Lan
             </dl>
             <ErrorLine text={error} />
             <div className="mt-6 grid grid-cols-2 gap-3">
-              <button type="button" onClick={reset} className="btn btn-secondary">
-                {t.notMe}
+              <button type="button" onClick={signedIn ? close : probed ? switchAccount : reset} className="btn btn-secondary">
+                {signedIn ? t.cancel : probed ? t.switchAccount : t.notMe}
               </button>
               <button type="button" disabled={busy} onClick={() => void createOrder()} className="btn btn-primary disabled:opacity-50">
                 {busy && <LoaderCircle size={15} className="animate-spin" aria-hidden />}

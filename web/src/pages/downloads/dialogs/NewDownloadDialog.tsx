@@ -1,6 +1,6 @@
 // 新建下载：字段、顺序与提交语义对齐 GPUI `pages/new_download.rs`（纯规则见 `model.ts`）。
 //
-// - 链接文本框（一行一条，`out=` / `checksum=` 选项行；默认收起约 3 行，标签行右侧可展开，批量输入自动展开）、打开 .torrent（浏览器选文件 → blob 上传）、导入 TXT（浏览器端读取）；
+// - 固定高度的多行链接框（一行一条，支持 `out=` / `checksum=` 选项行）、打开 .torrent（浏览器选文件 → blob 上传）、导入 TXT 文件；
 // - 保存目录 + 服务端目录选择器；文件名、线程数各占一行；「高级」折叠区（HTTP 认证 / 代理 / UA / Cookie / 校验 / 请求头 / 忽略 TLS）；
 // - 底栏：取消、「稍后下载」分体按钮（队列菜单）、主按钮「开始下载」分体按钮（队列菜单）；
 // - 单条 http(s) 链接先 `daemon.group.resolvePreview` 探测插件多文件清单，命中则进入清单选择建任务组；
@@ -26,14 +26,14 @@ import { FsPickerDialog } from './FsPickerDialog'
 import { ManifestSelectDialog } from './ManifestSelectDialog'
 import type { ManifestBaseOptions } from './ManifestSelectDialog'
 import { DEFAULT_HASH_ALGORITHM, HASH_ALGORITHMS, MAX_THREADS, PROXY_CHOICES, THREAD_PRESETS } from './model'
-import type { DraftOptions, ProxyChoice, ThreadChoice, UrlEntry } from './model'
-import { appendEntries, batchExportRow, buildBatch, buildRequests, captureEntry, capturedReferrer, checksumSpec, customSegments, entryToText, isHttpUrl, isMagnetUrl, manualProxyUrl, parseEntries, parseInput, proxyWire, threadChoiceFromSegments } from './model'
+import type { DraftOptions, ProxyChoice, ThreadChoice, UrlDraft, UrlEntry } from './model'
+import { appendLiteralEntries, batchExportRow, buildBatch, buildRequests, captureEntry, capturedReferrer, checksumSpec, customSegments, entryToText, isHttpUrl, isMagnetUrl, manualProxyUrl, parseEntries, parseManualInput, proxyWire, threadChoiceFromSegments } from './model'
 import { applyHints, emptyHints, emptyTracking, hintsEqual, planFieldFill } from './aria2c'
 import type { FillTracking, RequestHints } from './aria2c'
 import { IMPORT_CHUNK_SIZE, importNotice, runImport } from './importRunner'
 import type { ImportProgress } from './importRunner'
 import { SplitButton } from './SplitButton'
-import { capturesShown, closeNewDownload, openSeedLocal } from './store'
+import { capturesShown, closeNewDownload, openNewDownload, openSeedLocal } from './store'
 import type { NewDownloadSession } from './store'
 import { isTorrentFile, submitTorrentFiles } from './torrents'
 import { SaveDirCombo } from './SaveDirCombo'
@@ -49,7 +49,7 @@ import {
   saveDirChoices,
 } from '../../../lib/saveDirHistory'
 import { accountErrorKey } from '../../settings/sections/account/errorText'
-import { buildRemoteTargets, checkRemoteSaveDir, dispatchRoute, LOCAL_TARGET, linkDispatchParams, pathExample, remoteDispatchParams, resolveTargetValue, summarizeDispatch } from './target'
+import { buildRemoteTargets, checkRemoteSaveDir, dispatchRoute, dispatchSequentially, LOCAL_TARGET, linkDispatchParams, pathExample, remoteDispatchParams, resolveTargetValue } from './target'
 import type { RemoteTarget } from './target'
 import { queueLabel } from './utils'
 
@@ -59,8 +59,6 @@ const SITE_AUTH_LOOKUP_DEBOUNCE_MS = 250
 const DUPLICATE_FILE_CHECK_DEBOUNCE_MS = 250
 /** 失败原因最多渲染的行数（超出的只显示计数，避免上万行 DOM）。 */
 const MAX_FAILURE_ROWS = 50
-/** 链接输入框随内容自增高的上限（行）；超出后框内滚动。与 GPUI `URLS_MAX_ROWS` 一致。 */
-const URLS_MAX_ROWS = 10
 
 const EMPTY_CAPTURES: readonly PendingCaptureDto[] = []
 const EMPTY_QUEUES: readonly QueueDto[] = []
@@ -119,7 +117,10 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   const categoryHistoryValue = useAgent((snapshot) => snapshot.preferences.values[CATEGORY_SAVE_DIR_HISTORY_PREF], undefined)
   const categoryHistory = useMemo(() => readCategorySaveDirHistory(categoryHistoryValue), [categoryHistoryValue])
 
-  const [text, setText] = useState(() => session.initialUrls.join('\n'))
+  const [{ text, literalUrls }, setUrlDraft] = useState<UrlDraft>(() => ({
+    text: session.initialUrls.join('\n'),
+    literalUrls: new Set(session.initialUrls),
+  }))
   const [captures, setCaptures] = useState<PendingCaptureDto[]>([])
   const [saveDir, setSaveDir] = useState(context.saveDir)
   const [threads, setThreads] = useState<ThreadChoice>(() => threadChoiceFromSegments(context.segments))
@@ -147,6 +148,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   const [progress, setProgress] = useState<ImportProgress | null>(null)
   const [cancelling, setCancelling] = useState(false)
   const importAbort = useRef<AbortController | null>(null)
+  const remoteAbort = useRef<AbortController | null>(null)
   const [manifest, setManifest] = useState<{ preview: ResolvePreviewResponse; sourceUrl: string; base: ManifestBaseOptions } | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [busyFiles, setBusyFiles] = useState(false)
@@ -154,7 +156,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   const txtInput = useRef<HTMLInputElement>(null)
   const resolveToken = useRef(0)
 
-  const parsed = useMemo(() => parseInput(text, false), [text])
+  const parsed = useMemo(() => parseManualInput(text, literalUrls), [text, literalUrls])
   const entries = parsed.entries
 
   // aria2c 命令带出的 Cookie / UA / 请求头回填到高级字段（规则同桌面端，见 `aria2c.ts`）：
@@ -203,7 +205,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   const allMagnet = count > 0 && entries.every((entry) => isMagnetUrl(entry.url))
   const busy = phase !== 'idle' || busyFiles
   const remoteDirCheck = target ? checkRemoteSaveDir(remoteSaveDir, target.pathStyle) : 'ok'
-  const canSubmit = !busy && count > 0 && (target ? remoteDirCheck === 'ok' : saveDir.trim() !== '')
+  const canSubmit = !busy && !parsed.rangeLimitExceeded && count > 0 && (target ? remoteDirCheck === 'ok' : saveDir.trim() !== '')
 
   // Task matches take precedence, using the complete host table rather than the visible download rows.
   const tasksLoading = useTasksLoading()
@@ -315,6 +317,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   const capturesRef = useRef<PendingCaptureDto[]>([])
   capturesRef.current = captures
   const injectionsDone = useRef(0)
+  const pendingTorrentInjections = useRef<File[][]>([])
   const textRef = useRef(text)
   textRef.current = text
 
@@ -333,7 +336,15 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
           setSaveDir(dir)
         }
       }
-      setText(appendEntries(current, fresh.map((capture) => captureEntry(capture.url, capture.fileName))))
+      setUrlDraft((current) => {
+        const draft = appendLiteralEntries(current, fresh.map((capture) => captureEntry(capture.url, capture.fileName)))
+        // An existing URL line can also be used to confirm this newly arrived capture.
+        const literalUrls = new Set(draft.literalUrls)
+        for (const capture of fresh) {
+          if (capture.url.includes('[')) literalUrls.add(capture.url)
+        }
+        return { ...draft, literalUrls }
+      })
       setCaptures((prev) => [...prev, ...fresh])
     }
     // 只保留 agent 仍在等待确认的捕获（其余已在别处处理 / agent 重启丢失）；对应链接行保留为普通链接。
@@ -353,23 +364,32 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
     [],
   )
 
+  useEffect(() => () => {
+    const active = remoteAbort.current
+    remoteAbort.current = null
+    active?.abort()
+  }, [])
+
   // ── 会话期间追加的链接 / 种子 ──
   useEffect(() => {
     for (const injection of session.injections) {
       if (injection.id <= injectionsDone.current) continue
       injectionsDone.current = injection.id
       if (injection.urls.length > 0) {
-        setText((current) => {
-          const existing = new Set(current.split('\n').map((line) => line.trim()))
-          const add = injection.urls.filter((url) => !existing.has(url))
-          return add.length === 0 ? current : `${current.replace(/\s+$/, '')}${current.trim() === '' ? '' : '\n'}${add.join('\n')}`
-        })
+        setUrlDraft((current) => appendLiteralEntries(current, injection.urls.map((url) => ({ url, fileName: '', checksum: '' }))))
       }
       if (injection.torrentFiles.length > 0) {
-        void submitTorrentFiles(injection.torrentFiles, { saveDir: saveDir.trim(), queueId: context.queueId })
+        if (parsed.rangeLimitExceeded) toast.key('urlRangeLimit', 'error')
+        pendingTorrentInjections.current.push(injection.torrentFiles)
       }
     }
-  }, [session.injections, saveDir, context.queueId])
+    if (parsed.rangeLimitExceeded || target !== null || busy) return
+    const pending = pendingTorrentInjections.current
+    pendingTorrentInjections.current = []
+    for (const files of pending) {
+      void submitTorrentFiles(files, { saveDir: saveDir.trim(), queueId: context.queueId })
+    }
+  }, [session.injections, saveDir, context.queueId, parsed.rangeLimitExceeded, target, busy])
 
   // ── 站点凭据自动回填 ──
   const authDirty = useRef(false)
@@ -485,34 +505,58 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
     void rpc.agent.preferences.patch({ values: { [LAST_CATEGORY_MODE_PREF]: categoryModePreference(categoryMode) }, sync: false }).catch(() => undefined)
   }
 
+  // Retry entries are already resolved: a command or captured URL with brackets must stay literal.
+  const retryEntries = (retained: readonly UrlEntry[]) => {
+    if (batch) {
+      // A batch shrinking to one failed entry must not revive unused single-file overrides.
+      setRename('')
+      setChecksum('')
+    }
+    setUrlDraft({
+      text: retained.map(entryToText).join('\n'),
+      literalUrls: new Set(retained.map((entry) => entry.url)),
+    })
+  }
+
   /** 逐条下发到云账号设备 / 已配对设备；成功的从文本框移除，失败的保留并逐条显示原因。 */
   const submitRemote = async (remote: RemoteTarget) => {
+    setNotice(null)
+    setFailureOverflow(0)
     setFailures([])
     setPhase('submitting')
     const renamed = entries.length === 1 ? rename.trim() : ''
     const route = dispatchRoute(remote)
-    const results = await Promise.allSettled(
-      entries.map((entry) => {
-        const input = { url: entry.url, fileName: renamed !== '' ? renamed : entry.fileName }
-        return route.via === 'cloud'
-          ? rpc.agent.remote.dispatch(remoteDispatchParams(remote.id, input, remoteSaveDir))
-          : rpc.agent.link.dispatch(linkDispatchParams(route.fingerprint, input, remoteSaveDir))
-      }),
-    )
-    const summary = summarizeDispatch(results)
-    if (summary.failed === 0) {
+    const controller = new AbortController()
+    remoteAbort.current = controller
+    setCancelling(false)
+    setProgress({ total: entries.length, done: 0, failed: 0, retry: null })
+    const summary = await dispatchSequentially(entries, (entry) => {
+      const input = { url: entry.url, fileName: renamed !== '' ? renamed : entry.fileName }
+      return route.via === 'cloud'
+        ? rpc.agent.remote.dispatch(remoteDispatchParams(remote.id, input, remoteSaveDir))
+        : rpc.agent.link.dispatch(linkDispatchParams(route.fingerprint, input, remoteSaveDir))
+    }, controller.signal, (done, failed) => {
+      if (remoteAbort.current === controller) setProgress({ total: entries.length, done, failed, retry: null })
+    })
+    if (remoteAbort.current !== controller) return
+    remoteAbort.current = null
+    setProgress(null)
+    if (summary.unsent.length > 0) {
+      setNotice(t('importCancelled', { added: summary.ok.toLocaleString(), total: entries.length.toLocaleString() }))
+    }
+    if (summary.failed.length === 0 && summary.unsent.length === 0) {
       if (route.via === 'link') toast.key('linkDispatchedToDevice', 'success', { device: remote.name })
       else toast.key(remote.online === false ? 'downloadToDispatchedOffline' : 'downloadToDispatched', 'success', { count: summary.ok, device: remote.name })
       closeNewDownload()
       return
     }
-    const failed: { entry: UrlEntry; key: string }[] = []
-    results.forEach((result, index) => {
-      if (result.status === 'rejected') failed.push({ entry: entries[index], key: accountErrorKey(result.reason) })
-    })
-    if (summary.ok > 0) toast.key('downloadToPartial', 'warning', { ok: summary.ok, failed: summary.failed, device: remote.name })
-    setText(failed.map((item) => entryToText(item.entry)).join('\n'))
-    setFailures(failed.map((item) => ({ url: item.entry.url, message: t(item.key) })))
+    const failed = summary.failed.map(({ item, reason }) => ({ entry: item, key: accountErrorKey(reason) }))
+    if (summary.unsent.length === 0 && summary.ok > 0) {
+      toast.key('downloadToPartial', 'warning', { ok: summary.ok, failed: failed.length, device: remote.name })
+    }
+    retryEntries([...failed.map((item) => item.entry), ...summary.unsent])
+    setFailures(failed.slice(0, MAX_FAILURE_ROWS).map((item) => ({ url: item.entry.url, message: t(item.key) })))
+    setFailureOverflow(Math.max(0, failed.length - MAX_FAILURE_ROWS))
     setPhase('idle')
   }
 
@@ -665,7 +709,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
     }
     // 保留未成功的行（含选项行），成功的从文本框移除；失败原因只渲染前若干条。
     retained.sort((a, b) => a.index - b.index)
-    setText(retained.map((item) => entryToText(entries[item.index])).join('\n'))
+    retryEntries(retained.map((item) => entries[item.index]))
     const withReason = retained.filter((item) => item.error !== null)
     setFailures(withReason.slice(0, MAX_FAILURE_ROWS).map((item) => ({ url: entries[item.index].url, message: describeUploadError(item.error, t) })))
     setFailureOverflow(Math.max(0, withReason.length - MAX_FAILURE_ROWS))
@@ -676,7 +720,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   const pickTorrents = async (event: ChangeEvent<HTMLInputElement>) => {
     const files = [...(event.target.files ?? [])].filter(isTorrentFile)
     event.target.value = ''
-    if (files.length === 0) return
+    if (files.length === 0 || parsed.rangeLimitExceeded) return
     setBusyFiles(true)
     try {
       const created = await submitTorrentFiles(files, { saveDir: saveDir.trim(), queueId: context.queueId })
@@ -710,7 +754,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
         toast.key('importTxtNoUrls', 'warning')
         return
       }
-      setText((current) => appendEntries(current, imported))
+      setUrlDraft((current) => appendLiteralEntries(current, imported))
       toast.key('importTxtFound', 'success', { count: imported.length })
     } finally {
       setBusyFiles(false)
@@ -752,7 +796,8 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
 
   const cancelImport = () => {
     setCancelling(true)
-    importAbort.current?.abort()
+    const active = remoteAbort.current ?? importAbort.current
+    active?.abort()
   }
   const progressLabel = !progress
     ? ''
@@ -769,6 +814,22 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
         onOpenChange={(open) => !open && !busy && closeNewDownload()}
         size="lg"
         modalLocked={phase === 'submitting'}
+        onDropFiles={(files) => {
+          const torrentFiles = files.filter(isTorrentFile)
+          if (torrentFiles.length > 0) {
+            if (busy) {
+              toast.key('torrentDropBusy', 'warning')
+              return
+            }
+            if (target !== null) {
+              toast.key('downloadToTorrentLocalOnly', 'warning')
+              return
+            }
+            openNewDownload({ torrentFiles })
+          } else if (files.length > 0) {
+            toast.info(t('unsupportedTorrentDropHint'))
+          }
+        }}
         title={t('newDownload')}
         description={t('batchDownloadDesc')}
         footer={
@@ -854,21 +915,42 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
             </div>
             <Textarea
               id="new-download-urls"
-              maxAutoRows={URLS_MAX_ROWS}
+              rows={3}
               value={text}
+              readOnly={phase === 'submitting'}
               spellCheck={false}
               autoFocus
               placeholder={t('newDownloadUrlPlaceholder')}
-              onChange={(event) => setText(event.target.value)}
+              onChange={(event) => {
+                const value = event.target.value
+                setUrlDraft((current) => {
+                  if (current.literalUrls.size === 0) return { ...current, text: value }
+                  const present = new Set(parseEntries(value, false).map((item) => item.url))
+                  return { text: value, literalUrls: new Set([...current.literalUrls].filter((url) => present.has(url))) }
+                })
+              }}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
                   event.preventDefault()
                   void submit(false)
                 }
               }}
-              className="font-mono text-xs"
+              className="resize-none overflow-y-auto font-mono text-xs"
             />
-            {text.trim() !== '' && count === 0 ? <FieldError>{t('newDownloadNoValidUrl')}</FieldError> : null}
+            <FieldHint>{t('urlRangeHint')}</FieldHint>
+            {parsed.rangePreview ? (
+              <FieldHint className="min-w-0 font-mono">
+                <div className="truncate whitespace-pre" title={parsed.rangePreview.first}>{parsed.rangePreview.first}</div>
+                {parsed.rangePreview.first !== parsed.rangePreview.last ? (
+                  <>
+                    <div aria-hidden="true">…</div>
+                    <div className="truncate whitespace-pre" title={parsed.rangePreview.last}>{parsed.rangePreview.last}</div>
+                  </>
+                ) : null}
+              </FieldHint>
+            ) : null}
+            {parsed.rangeLimitExceeded ? <FieldError>{t('urlRangeLimit')}</FieldError> : null}
+            {!parsed.rangeLimitExceeded && text.trim() !== '' && count === 0 ? <FieldError>{t('newDownloadNoValidUrl')}</FieldError> : null}
             {duplicateHint ? (
               <div role="status" className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/8 px-3 py-2 text-sm text-warning">
                 <Icon icon={TriangleAlert} size="md" className="shrink-0" />
@@ -884,7 +966,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
             ))}
             {failureOverflow > 0 ? <FieldHint>… +{failureOverflow.toLocaleString()}</FieldHint> : null}
             <div className="flex flex-wrap gap-2">
-              <Button variant="ghost" icon={FolderOpen} disabled={busy || target !== null} onClick={() => torrentInput.current?.click()}>
+              <Button variant="ghost" icon={FolderOpen} disabled={busy || parsed.rangeLimitExceeded || target !== null} onClick={() => torrentInput.current?.click()}>
                 {t('openTorrentFile')}
               </Button>
               <Button

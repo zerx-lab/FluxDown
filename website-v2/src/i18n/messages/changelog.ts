@@ -1,7 +1,7 @@
 import { defineMessages } from "../define";
 
 /** 更新日志页(/changelog)。 */
-export const changelog = defineMessages({
+export const changelog = defineMessages("changelog", {
   en: {
     meta: {
       title: "Changelog — FluxDown",

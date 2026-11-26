@@ -28,7 +28,7 @@ function fakeYouTube(state: { player: string; byClient: Record<string, unknown> 
       req.url.endsWith("/iframe_api")
         ? { status: 200, body: `var scriptUrl = 'https:\\/\\/www.youtube.com\\/s\\/player\\/${state.player}\\/www-widgetapi.vflset\\/www-widgetapi.js';` }
         : undefined,
-    (req) => (/\/s\/player\/\w+\/player_ias/.test(req.url) ? { status: 200, body: `var x={signatureTimestamp:20746};// ${req.url}` } : undefined),
+    (req) => (/\/s\/player\/\w+\/tv-player-ias\.vflset\//.test(req.url) ? { status: 200, body: `var x={signatureTimestamp:20746};// ${req.url}` } : undefined),
     (req) =>
       req.url.includes("/embed/")
         ? {
@@ -142,12 +142,16 @@ describe("video resolve", () => {
   });
 
   test("login cookies switch to cookie-capable clients with SAPISIDHASH auth", async () => {
-    const shim = installFlux(fakeYouTube({ player: "abcd1234", byClient: { TVHTML5: okResponse } }), { quality: "best" });
-    await resolve({ url: `https://youtu.be/${VIDEO}`, cookies: "LOGIN_INFO=l; SAPISID=s; SID=x" });
+    // 两个客户端给出同一格式时用 tv_samsung 的直链：web_embedded 的直链缺 PO Token 会 403。
+    const embeddedResponse = JSON.parse(JSON.stringify(okResponse).replaceAll("nA", "nE"));
+    const shim = installFlux(fakeYouTube({ player: "abcd1234", byClient: { TVHTML5: okResponse, WEB_EMBEDDED_PLAYER: embeddedResponse } }), { quality: "best" });
+    const out = await resolve({ url: `https://youtu.be/${VIDEO}`, cookies: "LOGIN_INFO=l; SAPISID=s; SID=x" });
     expect(clientsOf(shim.requests).sort()).toEqual(["TVHTML5", "WEB_EMBEDDED_PLAYER"]);
-    // 会话字段与播放器版本都取自嵌入页（只下载一次），不再拉 1.5 MB 的播放页，也不问 iframe_api。
+    expect(urlParam(out!.url, "n")).toBe("N(nA)");
+    expect(urlParam(out!.audioUrl, "n")).toBe("N(nA)");
+    // 会话字段与播放器版本都取自嵌入页（只下载一次），不再拉 1.5 MB 的播放页，也不问 iframe_api；求解用同一 id 的 TV 变体播放器。
     const pages = shim.requests.filter((r) => r.method === "GET").map((r) => r.url.replace(/\?.*$/, ""));
-    expect(pages).toEqual([`https://www.youtube.com/embed/${VIDEO}`, "https://www.youtube.com/s/player/embd5678/player_ias.vflset/en_US/base.js"]);
+    expect(pages).toEqual([`https://www.youtube.com/embed/${VIDEO}`, "https://www.youtube.com/s/player/embd5678/tv-player-ias.vflset/tv-player-ias.js"]);
     const tv = shim.requests.find((r) => r.url.includes("/youtubei/v1/player") && r.headers["X-YouTube-Client-Name"] === "7")!;
     expect(tv.headers.Authorization).toMatch(/^SAPISIDHASH \d+_[0-9a-f]{40}_u$/);
     expect(tv.headers["X-Goog-AuthUser"]).toBe("0");

@@ -163,6 +163,8 @@ struct DomainRulesTests {
         #expect(L10n.resolve(preferred: ["zh-Hant", "en-GB"], available: ["en"]) == "en")
         #expect(L10n.resolve(preferred: [], available: available) == "en")
         #expect(L10n.resolve(preferred: ["xx-YY"], available: available) == "en")
+        #expect(L10n.resolve(preferred: ["sv-SE", "ja-JP", "en"], available: ["en", "ja", "pt-BR"]) == "ja")
+        #expect(L10n.resolve(preferred: ["pt-PT"], available: ["en", "ja", "pt-BR"]) == "pt-BR")
         #expect(L10n(locale: "xx-YY")("cancel") == "Cancel")
     }
 

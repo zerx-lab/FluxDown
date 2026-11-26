@@ -3,7 +3,8 @@
 //! 与桌面形态共用同一条 daemon 监管 / UI Gateway / `/rpc` 链路，差异只在这里：
 //! - 监听地址只由 `FLUXDOWN_BIND` 决定（允许非回环，不看 `lan_enabled`）；
 //! - 访问密钥 = `AgentState.gateway_user_token`，策略同旧 `validate_access_key`；
-//! - 浏览器鉴权：`/rpc` 子协议携带密钥、Origin 同源校验、`/api/v1/setup*` 首次初始化；
+//! - 浏览器鉴权：`/rpc` 子协议携带密钥、Origin 同源校验；`POST /api/v1/setup` 在密钥仍空时
+//!   必须出示一次性引导码（`<agent data_dir>/setup-bootstrap`），不能由远端抢注；
 //! - 浏览器文件面 `/api/web/*`：把上传 / 下载流式转发到 daemon 的 loopback HTTP；
 //! - SPA 托管（内嵌或 `FLUXDOWN_WEBROOT`）与演示模式 `/demo/file`；
 //! - 桌面专属集成（NMH、开机自启迁移、托盘 / 剪贴板）关闭；`agent.platform.*` 只对
@@ -14,7 +15,7 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -52,8 +53,17 @@ pub const ACCESS_KEY_MAX_LEN: usize = 128;
 pub const DEFAULT_BIND: &str = "[::]:17800";
 /// daemon `/blobs/*` 请求体上限（与 `fluxdown_daemon::http::REQUEST_BODY_LIMIT` 一致）。
 const BLOB_UPLOAD_LIMIT: usize = 4 * 1024 * 1024;
-/// 初始化请求体上限：只含一个密钥。
+/// 初始化请求体上限：访问密钥 + 一次性引导码。
 const SETUP_BODY_LIMIT: usize = 4 * 1024;
+/// 首次设置一次性引导码文件（`<agent data_dir>/setup-bootstrap`）。
+pub const SETUP_BOOTSTRAP_FILE: &str = "setup-bootstrap";
+/// `POST /api/v1/setup` 可携带引导码的请求头（body 字段 `bootstrap` 等价）。
+pub const SETUP_BOOTSTRAP_HEADER: &str = "x-fluxdown-bootstrap";
+/// 引导码长度：两个 UUID v4 的 simple 编码，244 bit，可从文件原样粘贴。
+const SETUP_BOOTSTRAP_LEN: usize = 64;
+/// 错误引导码的进程内节流。正确值始终接受，避免攻击者把操作者锁在外面。
+const BOOTSTRAP_MAX_FAILURES: u32 = 8;
+const BOOTSTRAP_WINDOW: Duration = Duration::from_secs(60);
 /// 首次设置 / 状态接口等待 daemon 就绪与 legacy 迁移完成的上限（略长于 daemon 就绪等待）。
 const READY_WAIT: Duration = Duration::from_secs(35);
 
@@ -90,6 +100,9 @@ pub struct ServerConfig {
     /// `FLUXDOWN_ALLOW_LOCAL_PLATFORM` 为真：所有已鉴权 `/rpc` 连接都可在服务器主机上打开 /
     /// 定位任务产物（显式越权开关，默认关）。
     pub allow_local_platform: bool,
+    /// `FLUXDOWN_SETUP_CODE_COPY`：引导码额外写一份到该路径（NAS 套件指向用户可见的共享目录）。
+    /// 父目录必须已存在；副本按父目录默认权限创建，设置成功后删除。
+    pub setup_code_copy: Option<PathBuf>,
 }
 
 impl ServerConfig {
@@ -108,6 +121,7 @@ impl ServerConfig {
     /// | `FLUXDOWN_LANG` | `/ping` 语言回退，`zh-CN` → `zh` |
     /// | `FLUXDOWN_DEMO` / `FLUXDOWN_DEMO_URL` | 演示模式 |
     /// | `FLUXDOWN_ALLOW_LOCAL_PLATFORM` | 所有已鉴权连接都可在服务器主机上打开 / 定位任务产物 |
+    /// | `FLUXDOWN_SETUP_CODE_COPY` | 首次设置引导码的用户可见副本路径（NAS 套件用） |
     pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Result<Self, ServerConfigError> {
         let bind_text = get("FLUXDOWN_BIND")
             .map(|value| value.trim().to_owned())
@@ -155,6 +169,9 @@ impl ServerConfig {
                 "FLUXDOWN_ALLOW_LOCAL_PLATFORM is on: every authenticated client may open downloaded files on this host"
             );
         }
+        let setup_code_copy = get("FLUXDOWN_SETUP_CODE_COPY")
+            .map(|value| PathBuf::from(value.trim()))
+            .filter(|path| !path.as_os_str().is_empty());
         Ok(Self {
             bind,
             token,
@@ -163,6 +180,7 @@ impl ServerConfig {
             language,
             demo,
             allow_local_platform,
+            setup_code_copy,
         })
     }
 
@@ -615,6 +633,279 @@ impl AuthThrottle {
 }
 
 // ---------------------------------------------------------------------------
+// 首次设置一次性引导码
+// ---------------------------------------------------------------------------
+
+/// 密钥仍空时的一次性引导码。文件才是操作者通道；启动日志只补充打印一次。
+///
+/// 在 daemon 迁移与 `FLUXDOWN_TOKEN` 采纳之后、放行 setup 之前装入。成功设置后删除文件并作废
+/// 内存中的值。未装入时 setup 一律拒绝，不能退回匿名落盘。
+pub struct SetupGate {
+    path: PathBuf,
+    /// 用户可见副本（[`ServerConfig::setup_code_copy`]）；只写不读，核对只认私有文件。
+    copy: Option<PathBuf>,
+    secret: tokio::sync::RwLock<Option<String>>,
+    failures: std::sync::Mutex<BootstrapFailures>,
+}
+
+#[derive(Default)]
+struct BootstrapFailures {
+    count: u32,
+    window_started: Option<std::time::Instant>,
+}
+
+impl SetupGate {
+    #[must_use]
+    pub fn new(data_dir: &Path) -> Self {
+        Self {
+            path: data_dir.join(SETUP_BOOTSTRAP_FILE),
+            copy: None,
+            secret: tokio::sync::RwLock::new(None),
+            failures: std::sync::Mutex::new(BootstrapFailures::default()),
+        }
+    }
+
+    /// 额外维护一份用户可见副本（NAS 套件的共享目录）。
+    #[must_use]
+    pub fn with_copy(mut self, copy: Option<PathBuf>) -> Self {
+        self.copy = copy;
+        self
+    }
+
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// `access_key_set` 时删除残留文件并不装入。否则复用仍私有的文件，或生成新值。
+    /// 空密钥却写不出文件时返回错误：调用方不得放行 setup。
+    pub async fn prepare(&self, access_key_set: bool) -> std::io::Result<()> {
+        if access_key_set {
+            self.disarm().await;
+            self.delete_files("could not delete a leftover setup bootstrap file")
+                .await;
+            return Ok(());
+        }
+        let secret = load_or_create_bootstrap(&self.path).await?;
+        if let Some(copy) = &self.copy {
+            // 副本只是额外通道：写不出时私有文件与日志仍可用，不阻止启动。
+            if let Err(error) = write_bootstrap_copy(copy, &secret).await {
+                tracing::warn!(
+                    path = %copy.display(),
+                    error = %error,
+                    "could not write the setup bootstrap copy"
+                );
+            }
+        }
+        tracing::info!(
+            path = %self.path.display(),
+            copy = ?self.copy.as_deref().map(Path::display),
+            bootstrap = %secret,
+            "first-run setup requires this one-time bootstrap; read the file if this log is not visible"
+        );
+        *self.secret.write().await = Some(secret);
+        Ok(())
+    }
+
+    async fn delete_files(&self, message: &'static str) {
+        for path in std::iter::once(&self.path).chain(self.copy.as_ref()) {
+            if let Err(error) = delete_bootstrap_file(path).await {
+                tracing::error!(path = %path.display(), error = %error, "{message}");
+            }
+        }
+    }
+
+    pub async fn is_armed(&self) -> bool {
+        self.secret.read().await.is_some()
+    }
+
+    /// 常量时间核对。错误值不消耗正确值。未装入时一律拒绝。
+    /// 正确值即使处于失败节流窗口也接受，避免攻击者把操作者锁在外面。
+    pub async fn authorize(&self, presented: &str) -> Result<(), StatusCode> {
+        let expected = self.secret.read().await.clone();
+        if expected
+            .as_deref()
+            .is_some_and(|secret| !presented.is_empty() && constant_time_eq(presented, secret))
+        {
+            self.clear_failures();
+            return Ok(());
+        }
+        if self.record_failure() {
+            Err(StatusCode::TOO_MANY_REQUESTS)
+        } else {
+            Err(StatusCode::UNAUTHORIZED)
+        }
+    }
+
+    /// 设置成功后作废。先清内存再删文件；删文件失败只记日志，下次启动因密钥已设会再删。
+    pub async fn consume(&self) {
+        self.disarm().await;
+        self.delete_files("could not delete the setup bootstrap file after a successful setup")
+            .await;
+    }
+
+    async fn disarm(&self) {
+        *self.secret.write().await = None;
+        self.clear_failures();
+    }
+
+    fn failures(&self) -> std::sync::MutexGuard<'_, BootstrapFailures> {
+        self.failures
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn clear_failures(&self) {
+        *self.failures() = BootstrapFailures::default();
+    }
+
+    /// 窗口内错误次数达到上限后返回 true（本次计入）。
+    fn record_failure(&self) -> bool {
+        let mut failures = self.failures();
+        let now = std::time::Instant::now();
+        match failures.window_started {
+            Some(started) if now.duration_since(started) < BOOTSTRAP_WINDOW => {
+                failures.count = failures.count.saturating_add(1);
+            }
+            _ => {
+                failures.window_started = Some(now);
+                failures.count = 1;
+            }
+        }
+        failures.count > BOOTSTRAP_MAX_FAILURES
+    }
+
+    #[cfg(test)]
+    async fn install_for_test(&self, secret: &str) {
+        write_bootstrap(&self.path, secret)
+            .await
+            .expect("write setup bootstrap for test");
+        *self.secret.write().await = Some(secret.to_owned());
+    }
+}
+
+fn generate_bootstrap() -> String {
+    format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    )
+}
+
+fn is_bootstrap_secret(value: &str) -> bool {
+    value.len() == SETUP_BOOTSTRAP_LEN && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+async fn load_or_create_bootstrap(path: &Path) -> std::io::Result<String> {
+    if let Some(existing) = read_private_bootstrap(path).await? {
+        set_bootstrap_private(path).await?;
+        return Ok(existing);
+    }
+    let secret = generate_bootstrap();
+    write_bootstrap(path, &secret).await?;
+    Ok(secret)
+}
+
+async fn read_private_bootstrap(path: &Path) -> std::io::Result<Option<String>> {
+    let bytes = match tokio::fs::read(path).await {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if !bootstrap_file_is_private(path).await? {
+        tracing::warn!(
+            path = %path.display(),
+            "setup bootstrap file is not private; replacing it"
+        );
+        return Ok(None);
+    }
+    let text = String::from_utf8(bytes)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| is_bootstrap_secret(value));
+    if text.is_none() {
+        tracing::warn!(
+            path = %path.display(),
+            "setup bootstrap file is unusable; replacing it"
+        );
+    }
+    Ok(text)
+}
+
+#[cfg(unix)]
+async fn bootstrap_file_is_private(path: &Path) -> std::io::Result<bool> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = tokio::fs::metadata(path).await?.permissions().mode() & 0o777;
+    Ok(mode == 0o600)
+}
+
+#[cfg(not(unix))]
+async fn bootstrap_file_is_private(path: &Path) -> std::io::Result<bool> {
+    Ok(tokio::fs::metadata(path).await.is_ok())
+}
+
+async fn set_bootstrap_private(path: &Path) -> std::io::Result<()> {
+    crate::state::set_private_file_permissions(path).await?;
+    crate::state::apply_windows_acl(path)
+        .await
+        .map_err(|error| std::io::Error::other(error.to_string()))
+}
+
+async fn write_bootstrap(path: &Path, secret: &str) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or(Path::new("."));
+    tokio::fs::create_dir_all(parent).await?;
+    crate::state::set_private_dir_permissions(parent).await?;
+    let temp = parent.join(format!(".setup-bootstrap.{}.tmp", uuid::Uuid::new_v4()));
+    let result = write_bootstrap_temp(&temp, path, secret).await;
+    if result.is_err()
+        && let Err(error) = tokio::fs::remove_file(&temp).await
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(
+            path = %temp.display(),
+            error = %error,
+            "could not remove a failed setup bootstrap temp file"
+        );
+    }
+    result
+}
+
+async fn write_bootstrap_temp(
+    temp: &Path,
+    destination: &Path,
+    secret: &str,
+) -> std::io::Result<()> {
+    use tokio::io::AsyncWriteExt;
+    let mut file = tokio::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(temp)
+        .await?;
+    crate::state::set_private_file_permissions(temp).await?;
+    crate::state::apply_windows_acl(temp)
+        .await
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    file.write_all(secret.as_bytes()).await?;
+    file.write_all(b"\n").await?;
+    file.sync_all().await?;
+    drop(file);
+    tokio::fs::rename(temp, destination).await
+}
+
+async fn delete_bootstrap_file(path: &Path) -> std::io::Result<()> {
+    match tokio::fs::remove_file(path).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+/// 用户可见副本：不收紧权限（共享目录按其 ACL 继承），父目录不存在即失败，不代建。
+async fn write_bootstrap_copy(path: &Path, secret: &str) -> std::io::Result<()> {
+    tokio::fs::write(path, format!("{secret}\n")).await
+}
+
+// ---------------------------------------------------------------------------
 // 运行期句柄与 HTTP 路由
 // ---------------------------------------------------------------------------
 
@@ -635,6 +926,8 @@ pub struct ServerHandleParts {
     /// 互联服务：接受局域网配对签发的设备控制凭据（`/rpc` 与 `/api/web/*`）。
     pub link: Option<Arc<LinkService>>,
     pub diagnostics: Arc<crate::diagnostics::DiagnosticsService>,
+    /// 首次设置一次性引导码。与 readiness 任务共享，在放行 setup 前装入。
+    pub setup_gate: Arc<SetupGate>,
 }
 
 /// server 模式在 Gateway 中的共享句柄。
@@ -652,6 +945,7 @@ pub struct ServerHandle {
     allow_local_platform: bool,
     link: Option<Arc<LinkService>>,
     throttle: AuthThrottle,
+    setup_gate: Arc<SetupGate>,
 }
 
 /// 首次设置结果。
@@ -679,6 +973,7 @@ impl ServerHandle {
             allow_local_platform: parts.allow_local_platform,
             link: parts.link,
             throttle: AuthThrottle::default(),
+            setup_gate: parts.setup_gate,
         })
     }
 
@@ -985,6 +1280,7 @@ async fn setup_status(State(handle): State<Arc<ServerHandle>>) -> Response {
         serde_json::json!({
             "setupRequired": handle.token.is_empty(),
             "minLength": ACCESS_KEY_MIN_LEN,
+            "needsBootstrap": handle.setup_gate.is_armed().await,
         }),
     )
 }
@@ -992,10 +1288,41 @@ async fn setup_status(State(handle): State<Arc<ServerHandle>>) -> Response {
 #[derive(Deserialize)]
 struct SetupBody {
     token: String,
+    #[serde(default)]
+    bootstrap: Option<String>,
+}
+
+fn presented_bootstrap<'a>(headers: &'a HeaderMap, body: &'a SetupBody) -> &'a str {
+    let header = headers
+        .get(HeaderName::from_static(SETUP_BOOTSTRAP_HEADER))
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let field = body
+        .bootstrap
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match (header, field) {
+        (Some(header), Some(field)) if !constant_time_eq(header, field) => "",
+        (Some(header), _) => header,
+        (None, Some(field)) => field,
+        (None, None) => "",
+    }
+}
+
+fn bootstrap_rejected(status: StatusCode) -> Response {
+    let error = if status == StatusCode::TOO_MANY_REQUESTS {
+        "too many setup attempts"
+    } else {
+        "setup bootstrap required"
+    };
+    json_response(status, serde_json::json!({ "error": error }))
 }
 
 async fn setup_submit(
     State(handle): State<Arc<ServerHandle>>,
+    headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
     if !handle.wait_ready().await {
@@ -1014,8 +1341,18 @@ async fn setup_submit(
             serde_json::json!({ "error": "invalid request body" }),
         );
     };
+    if let Err(status) = handle
+        .setup_gate
+        .authorize(presented_bootstrap(&headers, &body))
+        .await
+    {
+        return bootstrap_rejected(status);
+    }
     match handle.setup(&body.token).await {
-        SetupOutcome::Done => json_response(StatusCode::OK, serde_json::json!({ "ok": true })),
+        SetupOutcome::Done => {
+            handle.setup_gate.consume().await;
+            json_response(StatusCode::OK, serde_json::json!({ "ok": true }))
+        }
         SetupOutcome::Invalid(reason) => json_response(
             StatusCode::BAD_REQUEST,
             serde_json::json!({ "error": reason }),
@@ -1703,6 +2040,7 @@ mod tests {
                     demo: false,
                     allow_local_platform,
                     link: None,
+                    setup_gate: Arc::new(SetupGate::new(&dir)),
                 })
                 .unwrap(),
             );
@@ -1778,12 +2116,55 @@ mod tests {
         explicit.finish().await;
     }
 
+    const TEST_BOOTSTRAP: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
     #[tokio::test]
-    async fn setup_endpoint_moves_empty_to_set_to_conflict() {
-        let mut harness = Harness::new("setup", "").await;
+    async fn setup_rejects_missing_and_wrong_bootstrap_without_persisting() {
+        let mut harness = Harness::new("setup_denied", "").await;
         let base = harness.serve().await;
         let client = reqwest::Client::new();
+        let post = |body: &str| {
+            client
+                .post(format!("{base}/api/v1/setup"))
+                .header("content-type", "application/json")
+                .body(body.to_owned())
+                .send()
+        };
 
+        let missing = post(r#"{"token":"flux2026"}"#).await.unwrap();
+        assert_eq!(missing.status(), 401);
+        assert!(harness.handle.access_key().is_empty());
+        assert!(harness.state.lock().await.gateway_user_token.is_empty());
+
+        harness
+            .handle
+            .setup_gate
+            .install_for_test(TEST_BOOTSTRAP)
+            .await;
+        let wrong = post(r#"{"token":"flux2026","bootstrap":"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"}"#)
+            .await
+            .unwrap();
+        assert_eq!(wrong.status(), 401);
+        assert!(harness.handle.access_key().is_empty());
+        assert_eq!(harness.store.load().await.unwrap().gateway_user_token, "");
+        assert!(harness.handle.setup_gate.path().is_file());
+        assert_eq!(
+            harness.handle.setup_gate.authorize(TEST_BOOTSTRAP).await,
+            Ok(())
+        );
+        harness.finish().await;
+    }
+
+    #[tokio::test]
+    async fn setup_accepts_bootstrap_once_then_conflicts_and_forgets_it() {
+        let mut harness = Harness::new("setup_once", "").await;
+        harness
+            .handle
+            .setup_gate
+            .install_for_test(TEST_BOOTSTRAP)
+            .await;
+        let base = harness.serve().await;
+        let client = reqwest::Client::new();
         let status: serde_json::Value = client
             .get(format!("{base}/api/v1/setup/status"))
             .send()
@@ -1794,7 +2175,11 @@ mod tests {
             .unwrap();
         assert_eq!(
             status,
-            serde_json::json!({ "setupRequired": true, "minLength": 8 })
+            serde_json::json!({
+                "setupRequired": true,
+                "minLength": 8,
+                "needsBootstrap": true,
+            })
         );
 
         let post = |body: &str| {
@@ -1804,35 +2189,44 @@ mod tests {
                 .body(body.to_owned())
                 .send()
         };
-        let weak = post(r#"{"token":"short"}"#).await.unwrap();
+        let weak = post(&format!(
+            r#"{{"token":"short","bootstrap":"{TEST_BOOTSTRAP}"}}"#
+        ))
+        .await
+        .unwrap();
         assert_eq!(weak.status(), 400);
-        let weak: serde_json::Value = weak.json().await.unwrap();
-        assert_eq!(
-            weak,
-            serde_json::json!({ "error": "access key must be at least 8 characters" })
-        );
-        assert_eq!(post("not json").await.unwrap().status(), 400);
         assert!(harness.handle.access_key().is_empty());
+        assert!(harness.handle.setup_gate.path().is_file());
 
-        let done = post(r#"{"token":"flux2026"}"#).await.unwrap();
-        assert_eq!(done.status(), 200);
-        let done: serde_json::Value = done.json().await.unwrap();
-        assert_eq!(done, serde_json::json!({ "ok": true }));
+        let header = client
+            .post(format!("{base}/api/v1/setup"))
+            .header("content-type", "application/json")
+            .header(SETUP_BOOTSTRAP_HEADER, TEST_BOOTSTRAP)
+            .body(r#"{"token":"flux2026"}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(header.status(), 200);
         assert_eq!(&*harness.handle.access_key().get(), "flux2026");
         assert_eq!(harness.state.lock().await.gateway_user_token, "flux2026");
-        assert!(harness.state.lock().await.gateway.user_token_configured);
-        let persisted = harness.store.load().await.unwrap();
-        assert_eq!(persisted.gateway_user_token, "flux2026");
-
-        let again = post(r#"{"token":"other2026"}"#).await.unwrap();
-        assert_eq!(again.status(), 409);
-        let again: serde_json::Value = again.json().await.unwrap();
         assert_eq!(
-            again,
-            serde_json::json!({ "error": "setup already completed" })
+            harness.store.load().await.unwrap().gateway_user_token,
+            "flux2026"
         );
-        assert_eq!(&*harness.handle.access_key().get(), "flux2026");
+        assert!(!harness.handle.setup_gate.path().exists());
+        assert!(!harness.handle.setup_gate.is_armed().await);
+        assert_eq!(
+            harness.handle.setup_gate.authorize(TEST_BOOTSTRAP).await,
+            Err(StatusCode::UNAUTHORIZED)
+        );
 
+        let again = post(&format!(
+            r#"{{"token":"other2026","bootstrap":"{TEST_BOOTSTRAP}"}}"#
+        ))
+        .await
+        .unwrap();
+        assert_eq!(again.status(), 409);
+        assert_eq!(&*harness.handle.access_key().get(), "flux2026");
         let status: serde_json::Value = client
             .get(format!("{base}/api/v1/setup/status"))
             .send()
@@ -1842,7 +2236,156 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(status["setupRequired"], false);
+        assert_eq!(status["needsBootstrap"], false);
         harness.finish().await;
+    }
+
+    #[tokio::test]
+    async fn setup_with_existing_or_preset_key_conflicts() {
+        let mut harness = Harness::new("setup_set", "preset2026").await;
+        let base = harness.serve().await;
+        let client = reqwest::Client::new();
+        let status: serde_json::Value = client
+            .get(format!("{base}/api/v1/setup/status"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(status["setupRequired"], false);
+        assert_eq!(status["needsBootstrap"], false);
+        let conflict = client
+            .post(format!("{base}/api/v1/setup"))
+            .header("content-type", "application/json")
+            .header(SETUP_BOOTSTRAP_HEADER, TEST_BOOTSTRAP)
+            .body(r#"{"token":"other2026"}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(conflict.status(), 409);
+        assert_eq!(&*harness.handle.access_key().get(), "preset2026");
+        harness.finish().await;
+    }
+
+    #[tokio::test]
+    async fn wrong_bootstrap_is_throttled_without_consuming_the_real_one() {
+        let mut harness = Harness::new("setup_throttle", "").await;
+        harness
+            .handle
+            .setup_gate
+            .install_for_test(TEST_BOOTSTRAP)
+            .await;
+        let base = harness.serve().await;
+        let client = reqwest::Client::new();
+        let wrong = || {
+            client
+                .post(format!("{base}/api/v1/setup"))
+                .header("content-type", "application/json")
+                .body(
+                    r#"{"token":"flux2026","bootstrap":"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"}"#,
+                )
+                .send()
+        };
+        for _ in 0..BOOTSTRAP_MAX_FAILURES {
+            assert_eq!(wrong().await.unwrap().status(), 401);
+        }
+        assert_eq!(wrong().await.unwrap().status(), 429);
+        assert!(harness.handle.access_key().is_empty());
+        let done = client
+            .post(format!("{base}/api/v1/setup"))
+            .header("content-type", "application/json")
+            .body(format!(
+                r#"{{"token":"flux2026","bootstrap":"{TEST_BOOTSTRAP}"}}"#
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(done.status(), 200);
+        assert!(!harness.handle.setup_gate.path().exists());
+        harness.finish().await;
+    }
+    #[tokio::test]
+    async fn bootstrap_copy_mirrors_the_code_and_is_removed_after_setup() {
+        let dir = std::env::temp_dir().join(format!(
+            "fluxdown_bootstrap_copy_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let share = dir.join("share");
+        tokio::fs::create_dir_all(&share).await.unwrap();
+        let copy = share.join("FluxDown-setup-code.txt");
+        let gate = SetupGate::new(&dir.join("agent")).with_copy(Some(copy.clone()));
+        gate.prepare(false).await.unwrap();
+        let secret = tokio::fs::read_to_string(gate.path()).await.unwrap();
+        assert_eq!(tokio::fs::read_to_string(&copy).await.unwrap(), secret);
+        assert!(gate.authorize(secret.trim()).await.is_ok());
+        gate.consume().await;
+        assert!(!copy.exists());
+        assert!(!gate.path().exists());
+
+        // 副本目录不存在：只告警，私有文件照常生成并可用。
+        let missing = SetupGate::new(&dir.join("agent2"))
+            .with_copy(Some(dir.join("absent").join("code.txt")));
+        missing.prepare(false).await.unwrap();
+        assert!(missing.is_armed().await);
+        tokio::fs::remove_dir_all(&dir).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn bootstrap_file_is_private_reused_and_dropped_once_a_key_exists() {
+        let dir = std::env::temp_dir().join(format!(
+            "fluxdown_bootstrap_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let gate = SetupGate::new(&dir);
+        gate.prepare(false).await.unwrap();
+        let first = tokio::fs::read_to_string(gate.path()).await.unwrap();
+        assert!(is_bootstrap_secret(first.trim()));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(gate.path()).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        gate.prepare(false).await.unwrap();
+        assert_eq!(tokio::fs::read_to_string(gate.path()).await.unwrap(), first);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(gate.path(), std::fs::Permissions::from_mode(0o644)).unwrap();
+            gate.prepare(false).await.unwrap();
+            let replaced = tokio::fs::read_to_string(gate.path()).await.unwrap();
+            assert_ne!(first.trim(), replaced.trim());
+            assert_eq!(
+                std::fs::metadata(gate.path()).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+
+        let mut state = AgentState::default();
+        assert!(apply_bootstrap(
+            &mut state,
+            true,
+            &TokenSeed {
+                preset: Some("preset2026".to_owned()),
+                force: false,
+            },
+        ));
+        gate.prepare(!state.gateway_user_token.trim().is_empty())
+            .await
+            .unwrap();
+        assert!(!gate.path().exists());
+        assert!(!gate.is_armed().await);
+        if let Err(error) = tokio::fs::remove_dir_all(&dir).await {
+            tracing::warn!(
+                path = %dir.display(),
+                error = %error,
+                "remove bootstrap test directory"
+            );
+        }
     }
 
     #[tokio::test]

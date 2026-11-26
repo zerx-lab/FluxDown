@@ -3,7 +3,7 @@ title: API 总览
 description: FluxDown 的 HTTP API——五组路由、鉴权方式,以及它与 headless 服务器的关系。
 section: api
 order: 1
-sourceHash: "5361a8e27802"
+sourceHash: "7ca8ba422052"
 ---
 
 FluxDown 的 HTTP API 供扩展、用户脚本、aria2 客户端与自动化工具使用；不要把 aria2 的 `/jsonrpc` 与官方客户端的 `/rpc` 混为一谈。
@@ -23,7 +23,7 @@ FluxDown 的 HTTP API 供扩展、用户脚本、aria2 客户端与自动化工�
 
 headless 首次设置完成前，`/download`、`/download/batch` 与 `/jsonrpc`（POST 和 WS 升级）返回 **HTTP 403**，消息为 `setup required: set the access key first`，名单方法也不能绕过；管理 API 与 MCP 同样拒绝空密钥。Web 页面、探活与首次设置接口仍可访问（启动就绪前 setup 接口可能返回 503）。完成初始化或用合规的 `FLUXDOWN_TOKEN` 预置密钥后，兼容入口才按各自开关工作。
 
-管理分组开启时可取 `GET /api/v1/openapi.json`（免鉴权的纯接口描述）。旧 `fluxdown-server` 的扩展 REST（`/api/v1/config`、队列增删改、stats、fs/list、components、webhooks、logs、`/api/v1/ws`、`/api/v1/token/regenerate`）已不在新宿主提供；请使用 Web 界面或 `/rpc`。免鉴权的 `GET /api/v1/setup/status` 与 `POST /api/v1/setup` 仅负责首次初始化，后者只在密钥尚未设置时接受。
+管理分组开启时可取 `GET /api/v1/openapi.json`（免鉴权的纯接口描述）。旧 `fluxdown-server` 的扩展 REST（`/api/v1/config`、队列增删改、stats、fs/list、components、webhooks、logs、`/api/v1/ws`、`/api/v1/token/regenerate`）已不在新宿主提供；请使用 Web 界面或 `/rpc`。`GET /api/v1/setup/status` 免鉴权，且不回传初始化口令。`POST /api/v1/setup` 只在密钥尚未设置时接受，并且必须带上 `<数据目录>/agent/setup-bootstrap` 里的一次性口令。
 
 BT 防吸血路由位于同一管理分组的 `/api/v1/bt/guard/{state,entries,events}`,见 [BT 防吸血](/docs/zh/protocols/bt-guard/#rest-api)。
 

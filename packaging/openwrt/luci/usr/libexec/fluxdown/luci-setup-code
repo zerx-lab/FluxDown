@@ -1,0 +1,15 @@
+#!/bin/sh
+# 只输出 FluxDown 首次设置的一次性引导码（<data_dir>/agent/setup-bootstrap）。
+# 仅在访问密钥仍为空时输出；密钥已设置、文件缺失或不可读时输出空。
+data_dir=$(uci -q get fluxdown.main.data_dir)
+[ -n "$data_dir" ] || data_dir=/etc/fluxdown
+agent_dir="$data_dir/agent"
+code_file="$agent_dir/setup-bootstrap"
+state="$agent_dir/agent-state.json"
+[ -r "$code_file" ] || exit 0
+if [ -r "$state" ]; then
+	token=$(jsonfilter -i "$state" -e '@.gatewayUserToken' 2>/dev/null)
+	[ -z "$token" ] || exit 0
+fi
+tr -d '\r\n' < "$code_file"
+exit 0

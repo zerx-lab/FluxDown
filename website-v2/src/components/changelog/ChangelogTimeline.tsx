@@ -4,7 +4,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowUpRight, ChevronDown, Loader2 } from "lucide-react";
-import type { Lang } from "@/i18n/config";
+import { INTL_LOCALE, type Lang } from "@/i18n/config";
 import { changelog } from "@/i18n/messages/changelog";
 import { versionAnchor, type ChangelogRelease } from "@/lib/release-format";
 import { GITHUB_URL } from "@/lib/site-nav";
@@ -33,7 +33,7 @@ export default function ChangelogTimeline({ lang }: { lang: Lang }) {
   const hashRef = useRef<string | null>(null);
   const hashPagesRef = useRef(0);
 
-  const locale = lang === "zh" ? "zh-CN" : "en-US";
+  const locale = INTL_LOCALE[lang];
   const dateFormat = new Intl.DateTimeFormat(locale, { year: "numeric", month: "long", day: "numeric", timeZone: "Asia/Shanghai" });
   const relative = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
   // 按上海时区的日历日相减，与 dateFormat 同口径；按毫秒差四舍五入会把「昨天晚上」算成「今天」。

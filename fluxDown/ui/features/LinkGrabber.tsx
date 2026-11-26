@@ -14,7 +14,6 @@ import "./features.css";
 
 type Group = "video" | "audio" | "archive" | "document" | "image" | "executable" | "other";
 const GROUPS: Group[] = ["video", "audio", "archive", "document", "image", "executable", "other"];
-const MAX_PER_BATCH = 1000;
 
 function groupOf(type: ResourceType): Group {
   if (type === "stream") return "video";
@@ -67,23 +66,15 @@ export function LinkGrabber(props: { tabId: number; pageUrl: string }): JSX.Elem
     setBusy(true);
     try {
       const urls = selected.map((l) => l.url);
-      let ok = true;
-      let message: string | undefined;
-      for (let i = 0; i < urls.length; i += MAX_PER_BATCH) {
-        const res = await sendAction<"downloadUrls">({
-          action: "downloadUrls",
-          urls: urls.slice(i, i + MAX_PER_BATCH),
-          referrer: props.pageUrl,
-          tabId: props.tabId,
-        });
-        if (!res?.success) {
-          ok = false;
-          message = res?.message;
-          break;
-        }
-      }
-      if (ok) showToast(t("links.sent", { count: String(urls.length) }), "success");
-      else showToast(message || t("list.sendFailed"), "error");
+      const res = await sendAction<"downloadUrls">({
+        action: "downloadUrls",
+        urls,
+        referrer: props.pageUrl,
+        tabId: props.tabId,
+      });
+      if (res?.cancelled) showToast(t("remote.manualCancelled"));
+      else if (res?.success) showToast(t("links.sent", { count: String(urls.length) }), "success");
+      else showToast(res?.message || t("list.sendFailed"), "error");
     } catch {
       showToast(t("list.sendFailed"), "error");
     } finally {

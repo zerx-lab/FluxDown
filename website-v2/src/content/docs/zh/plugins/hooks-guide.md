@@ -3,7 +3,7 @@ title: 钩子指南
 description: 响应下载生命周期事件：通知、重试、用 ffmpeg 后处理、取消时清理，以及调用 yt-dlp。
 section: plugins
 order: 4
-sourceHash: "a0b447389afe"
+sourceHash: "e0a7561ab0fe"
 ---
 
 钩子（hook）是 FluxDown 在下载发生变化时运行的小脚本：任务开始、元数据探测完成、下载完成、下载失败、任务被取消。钩子不能修改任务本身，但可以做出反应——发送通知、安排重试、用 ffmpeg 转换成品文件，或者释放临时资源。
@@ -545,7 +545,7 @@ async function onCancel(ctx) {
 - **一律不允许：** 任何会运行程序、加载配置或插件、读取其他凭据的开关，例如 `--exec`、`--exec-before-download`、`--downloader`、`--external-downloader`、`--config-locations`、`--plugin-dirs`、`--ffmpeg-location`、`--batch-file`、`--load-info-json`、`--netrc`、`--cookies-from-browser`、`--use-postprocessor`、`--alias`。
 - 其他限制：最多 512 个参数，每个最长 8 KB，不能含 NUL 字节；`args` 不能为空。
 
-宿主会在你的参数之前自动加上 `--ignore-config`、`--ffmpeg-location`（指向它自己的 ffmpeg）和 `--cache-dir <临时目录>/.cache`（你自己传的 `--cache-dir` 会覆盖它，但仍限制在该目录内）；如果用户在 FluxDown 里配置了代理，还会在你的参数之后追加 `--proxy`，此时它优先于你自己写的。`timeoutMs` 默认 300 000，上限 3 600 000；调用还受脚本自身墙钟限制——resolver 里约 30 秒，钩子里约 30 分钟。全局同时最多运行两个 yt-dlp 进程。`stdout` 默认截断到 16 MB（用 `truncatedStdout` 判断），`stderr` 截断到 256 KB。完整细节见 [API 参考](/docs/zh/plugins/api-reference/)。
+宿主会在你的参数之前自动加上 `--ignore-config`、`--ffmpeg-location`（指向它自己的 ffmpeg）和 `--cache-dir <临时目录>/.cache`（你自己传的 `--cache-dir` 会覆盖它，但仍限制在该目录内）；如果用户在 FluxDown 里配置了代理，还会在你的参数之后追加 `--proxy`，此时它优先于你自己写的。`timeoutMs` 默认 300 000，上限 3 600 000；调用还受脚本自身墙钟限制——resolver 里是 resolver 自己的预算（默认 10 秒，最多 120 秒），钩子里约 30 分钟。全局同时最多运行两个 yt-dlp 进程。`stdout` 默认截断到 16 MB（用 `truncatedStdout` 判断），`stderr` 截断到 256 KB。完整细节见 [API 参考](/docs/zh/plugins/api-reference/)。
 
 ### 一个用 yt-dlp 的 resolver，加一个负责重试的钩子
 
@@ -581,7 +581,7 @@ async function onCancel(ctx) {
 }
 ```
 
-resolver 预算默认是 10 秒；`timeoutMs: 30000` 把它提高到 30 秒的上限，这样给 yt-dlp 的 25 秒（见下）才有空间。
+resolver 预算默认是 10 秒；`timeoutMs: 30000` 把它提高到 30 秒（上限是 120 秒；FluxDown 0.6.8 及更早版本钳在 30 秒），这样给 yt-dlp 的 25 秒（见下）才有空间。
 
 `resolve.js`
 

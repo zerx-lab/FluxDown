@@ -9,6 +9,7 @@ import { REMOTE_MANAGEMENT_UNAVAILABLE } from "@/utils/remote-server";
 import { verifyRemoteSettings, type RemoteMode } from "@/utils/settings";
 import { refreshSettings, settings, updateSettings } from "../lib/store";
 import { PanelShell, SettingRow } from "../parts";
+import { ManualServers } from "./ManualServers";
 
 export function RemotePanel(): JSX.Element | null {
   const t = useT();
@@ -128,6 +129,7 @@ export function RemotePanel(): JSX.Element | null {
           </option>
         </select>
       </SettingRow>
+      <ManualServers />
     </PanelShell>
   );
 }

@@ -30,6 +30,9 @@ start_server() {
 	mkdir -p "$TRIM_PKGVAR" || fail "Cannot create data directory: $TRIM_PKGVAR"
 	# 多个 data-share 以 : 分隔；本包只声明一个（fluxdown），取第一个。
 	save_dir="${TRIM_DATA_SHARE_PATHS%%:*}"
+	# 首次设置引导码的用户可见副本：放进下载共享目录，文件管理器里可直接打开；设置成功后 agent 删除。
+	setup_code_copy=""
+	[ -n "$save_dir" ] && setup_code_copy="${save_dir}/FluxDown-setup-code.txt"
 	# FLUXDOWN_INSTALL_SOURCE：二进制归应用中心管理，应用内更新只提示安装新 fpk。
 	# [::] = IPv4 + IPv6 双栈：FN Connect 经 [::1] 转发、DDNS 常解析到 IPv6；无 IPv6 时 agent 退回 0.0.0.0。
 	# MIMALLOC_PURGE_DELAY=0：释放的内存立即归还系统（daemon 继承）。
@@ -37,6 +40,7 @@ start_server() {
 	FLUXDOWN_BIND="[::]:${PORT}" \
 	FLUXDOWN_INSTALL_SOURCE=fnos \
 	FLUXDOWN_SAVE_DIR="$save_dir" \
+	FLUXDOWN_SETUP_CODE_COPY="$setup_code_copy" \
 	MIMALLOC_PURGE_DELAY=0 \
 		"$BIN_DIR/fluxdown-agent" --server >> "$LOG_FILE" 2>&1 &
 	echo "$!" > "$PID_FILE"

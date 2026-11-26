@@ -33,21 +33,24 @@ export function docsRepoTree(): string {
   return `${GITHUB_URL}/tree/main/${DOCS_SOURCE}`;
 }
 
-/** 某语言某页的 GitHub 编辑 / 历史 / 新建译文链接。 */
-export function docsSourceLinks(srcLang: Lang, slug: string, needsTranslation: boolean) {
+/**
+ * 某语言某页的 GitHub 编辑 / 历史 / 新建译文链接。
+ * `translateTo` 仅在页面缺译(回退页)时传入,指向该语言译文目录的新建链接。
+ */
+export function docsSourceLinks(srcLang: Lang, slug: string, translateTo?: Lang) {
   const file = `${DOCS_SOURCE}/${srcLang}/${slug}.md`;
   return {
     edit: `${GITHUB_URL}/edit/main/${file}`,
     history: `${GITHUB_URL}/commits/main/${file}`,
     // GitHub /new?filename= 会忽略 URL 路径末级目录,目录必须拼进 filename
-    translate: needsTranslation
-      ? `${GITHUB_URL}/new/main/${DOCS_SOURCE}/zh?filename=${encodeURIComponent(`${slug}.md`)}`
+    translate: translateTo
+      ? `${GITHUB_URL}/new/main/${DOCS_SOURCE}/${translateTo}?filename=${encodeURIComponent(`${slug}.md`)}`
       : undefined,
   };
 }
 
 /**
- * docs 的 hreflang 簇:`/docs/en/x/` ↔ `/docs/zh/x/`,x-default = en。
+ * docs 的 hreflang 簇:`/docs/en/x/` ↔ `/docs/zh/x/` ↔ `/docs/zh-tw/x/` …,x-default = en。
  * `langs` 为真实存在译文的语言(回退页传空数组,不输出任何 alternate)。
  */
 export function docsAlternates(path: string, langs: readonly Lang[]) {

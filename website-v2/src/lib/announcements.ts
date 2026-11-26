@@ -5,10 +5,10 @@
  * - 顶部公告条显示最新一条 active 且非弹窗的公告;弹窗显示 active 且带 `popup` 的公告。
  * - 关闭记录存 localStorage[`DISMISSED_KEY`](id 数组),与旧站同键,旧的关闭记录继续有效。
  */
-import type { Lang } from "@/i18n/config";
-import { CLOUD_PROMO, cloudPromoCopy } from "@/lib/cloud-promo";
+import type { BaselineLang } from "@/i18n/config";
 
-export type Localized = Record<Lang, string>;
+/** 公告数据只有 en / zh 手写基线;机器翻译语言展示时沿用 en(见 `toBaselineLang`)。 */
+export type Localized = Record<BaselineLang, string>;
 
 export interface AnnouncementPopup {
   title: Localized;
@@ -41,14 +41,14 @@ export const OFFICIAL_SITES = ["https://fluxdown.com", "https://www.fluxdown.com
 
 export const ANNOUNCEMENTS: Announcement[] = [
   {
-    id: CLOUD_PROMO.announcementId,
+    id: "pro-promo-129-99",
     date: "2026-11-04",
     active: true,
-    endsAt: CLOUD_PROMO.endAt,
-    link: CLOUD_PROMO.planPath,
+    endsAt: "2026-11-10T15:59:59.000Z",
+    link: "/pricing",
     text: {
-      en: cloudPromoCopy.en.annText,
-      zh: cloudPromoCopy.zh.annText,
+      en: "Cloud Pro permanent is on a limited offer — see Pricing.",
+      zh: "云端专业版永久限时优惠，详见定价页。",
     },
   },
   {
@@ -154,14 +154,9 @@ export function sortedAnnouncements(nowMs = Date.now()): Announcement[] {
   });
 }
 
-/** 公告条候选:最新一条进行中、非弹窗、未过 endsAt；促销由 CloudPromoBanner 独占顶栏下一条，避免双层同文。 */
+/** 公告条候选:最新一条进行中、非弹窗、未过 endsAt 的公告。 */
 export function barAnnouncement(nowMs = Date.now()): Announcement | undefined {
-  return ANNOUNCEMENTS.filter(
-    (a) =>
-      isAnnouncementLive(a, nowMs) &&
-      !a.popup &&
-      a.id !== CLOUD_PROMO.announcementId,
-  ).sort(byDateDesc)[0];
+  return ANNOUNCEMENTS.filter((a) => isAnnouncementLive(a, nowMs) && !a.popup).sort(byDateDesc)[0];
 }
 
 /** 弹窗候选:进行中且带 popup 的公告(按日期倒序,客户端再排除已关闭的)。 */

@@ -1,7 +1,7 @@
 import { defineMessages } from "../define";
 
 /** 下载页文案(/download)。客户端脚本同样引用本模块,按服务端下发的 data-lang 取值。 */
-export const download = defineMessages({
+export const download = defineMessages("download", {
   en: {
     meta: {
       title: "Download FluxDown — Windows, macOS, Linux, server & CLI",

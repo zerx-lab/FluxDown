@@ -25,6 +25,7 @@
 //! `jsonrpc` 面向 aria2 客户端（方法名 `aria2.*`），`mcp` 面向 AI 客户端
 //! （方法名 `tools/call` 等）。不共享方法集，各自独立派发。
 
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::service::ApiHost;
@@ -111,7 +112,8 @@ fn tool_definitions() -> Value {
                     "queueId": str_prop("Named queue to place the task in; see queue_list. Empty = the default queue."),
                     "checksum": str_prop("Expected checksum in `algo=hexhash` form, e.g. `sha256=ab12...`. Empty = skip verification.")
                 },
-                "required": ["url"]
+                "required": ["url"],
+                "additionalProperties": false
             }
         },
         {
@@ -226,19 +228,78 @@ async fn tools_call(id: &Value, params: &Value, host: &dyn ApiHost) -> Value {
     }
 }
 
+/// `download_add` 接受的参数，与 [`tool_definitions`] 里该工具的 `inputSchema` 一一对应。
+///
+/// 管理 API 的 [`CreateTaskRequest`] 还带 HTTP method / body / headers、站点凭据、
+/// `ignoreTlsErrors`、种子字节等。MCP 不声明这些字段，因此这里拒绝未知字段，
+/// 而不是把整份建任务 DTO 反序列化后静默执行。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DownloadAddArgs {
+    url: String,
+    #[serde(default)]
+    file_name: String,
+    #[serde(default)]
+    save_dir: String,
+    #[serde(default)]
+    segments: i32,
+    #[serde(default)]
+    proxy_url: String,
+    #[serde(default)]
+    cookies: String,
+    #[serde(default)]
+    referrer: String,
+    #[serde(default)]
+    user_agent: String,
+    #[serde(default)]
+    queue_id: String,
+    #[serde(default)]
+    checksum: String,
+}
+
+impl DownloadAddArgs {
+    /// 映射为建任务请求。未在 MCP schema 中声明的字段保持默认，不从参数带入。
+    fn into_create_task(self) -> CreateTaskRequest {
+        CreateTaskRequest {
+            url: self.url,
+            file_name: self.file_name,
+            save_dir: self.save_dir,
+            segments: self.segments,
+            cookies: self.cookies,
+            referrer: self.referrer,
+            proxy_url: self.proxy_url,
+            user_agent: self.user_agent,
+            queue_id: self.queue_id,
+            checksum: self.checksum,
+            ignore_tls_errors: false,
+            headers: None,
+            torrent_b64: None,
+            method: None,
+            body: None,
+            audio_url: None,
+            start_paused: false,
+            http_user: String::new(),
+            http_password: String::new(),
+            save_site_auth: false,
+        }
+    }
+}
+
 /// 执行单个工具，返回结构化载荷（`Ok`）或错误消息（`Err`）。
 ///
 /// 载荷会被 [`tool_result`] 序列化为文本内容返回给客户端。
 async fn call_tool(name: &str, args: &Value, host: &dyn ApiHost) -> Result<Value, String> {
     match name {
         "download_add" => {
-            // args 与 CreateTaskRequest 同为 camelCase，直接反序列化。
-            let req: CreateTaskRequest = serde_json::from_value(args.clone())
+            let req: DownloadAddArgs = serde_json::from_value(args.clone())
                 .map_err(|e| format!("invalid arguments: {e}"))?;
             if req.url.trim().is_empty() {
                 return Err("url is required".to_string());
             }
-            let task_id = host.create_task(req).await.map_err(|e| e.to_string())?;
+            let task_id = host
+                .create_task(req.into_create_task())
+                .await
+                .map_err(|e| e.to_string())?;
             Ok(json!({ "taskId": task_id }))
         }
         "download_list" => {
@@ -554,6 +615,60 @@ mod tests {
         assert!(tools.iter().any(|t| t["name"] == "download_add"));
         // 每个工具都必须带 inputSchema。
         assert!(tools.iter().all(|t| t["inputSchema"].is_object()));
+    }
+
+    #[tokio::test]
+    async fn tools_list_download_add_schema_is_the_documented_subset() {
+        let host = FakeHost::default();
+        let resp = call(&host, r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#)
+            .await
+            .unwrap();
+        let tools = resp["result"]["tools"].as_array().unwrap();
+        let tool = tools
+            .iter()
+            .find(|t| t["name"] == "download_add")
+            .expect("download_add");
+        let mut keys: Vec<_> = tool["inputSchema"]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![
+                "checksum",
+                "cookies",
+                "fileName",
+                "proxyUrl",
+                "queueId",
+                "referrer",
+                "saveDir",
+                "segments",
+                "url",
+                "userAgent",
+            ]
+        );
+        assert_eq!(
+            tool["inputSchema"]["additionalProperties"],
+            Value::Bool(false)
+        );
+    }
+
+    #[tokio::test]
+    async fn tools_call_download_add_rejects_undeclared_fields() {
+        let host = FakeHost::default();
+        let resp = call(
+            &host,
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"download_add","arguments":{"url":"http://127.0.0.1:9099/x","method":"POST","body":{"kind":"urlencoded","raw":"a=1&b=2"},"headers":{"Authorization":"Bearer zzz","X-Internal":"1"},"httpUser":"u","httpPassword":"p","saveSiteAuth":true,"ignoreTlsErrors":true,"torrentB64":"AAAA","audioUrl":"http://127.0.0.1:9099/a","startPaused":true,"fileName":"x.bin","saveDir":"/tmp/fluxdown-verify/c003-out"}}}"#,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("invalid arguments"), "error text was {text}");
+        assert!(host.calls.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

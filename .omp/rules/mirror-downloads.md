@@ -3,7 +3,7 @@ description: GPUI 下载页纯模型（新建/菜单/排序/任务组/来源构�
 condition: '[\s\S]'
 scope: "tool:edit, tool:write"
 globs:
-  - '**/crates/downloads/src/model/{new_download,aria2c,save_dir_history,speed_limit_recent,dispatch,mod,view_prefs,row_order,group_tree,directory_tree,series_title,source_composition,devices,file_rescan,bt_trackers,file_hash}.rs'
+  - '**/crates/downloads/src/model/{new_download,url_range,aria2c,save_dir_history,speed_limit_recent,dispatch,mod,view_prefs,row_order,group_tree,directory_tree,series_title,source_composition,devices,file_rescan,bt_trackers,file_hash}.rs'
   - '**/crates/downloads/src/components/{task_table,task_table_groups,task_table_directories,selection_bar}.rs'
   - '**/crates/downloads/src/model/manifest.rs'
   - '**/mobile/Android/app/src/main/java/com/fluxdown/app/ui/TaskInfoExport.kt'
@@ -49,7 +49,11 @@ interruptMode: never
 
 ## `crates/downloads/src/model/new_download.rs::parse_entries` / `parse_input` + `model/aria2c.rs`（aria2c 命令切词 / 续行合并 / 镜像 URI 只取首个、`-Z` 拆分 / 带值选项表 / 头部回填 `plan_field_fill`）
 
-→ `web/src/pages/downloads/dialogs/model.ts::parseEntries` + `aria2c.ts`（`parseCommand` / `joinContinuations` / `planFieldFill`）逐条对齐，`aria2c.test.ts` 覆盖同组行为；TXT 导入两端都用「原文保留、按 URL 去重追加」（`append_entries` ↔ `appendEntries`）
+→ `web/src/pages/downloads/dialogs/model.ts::parseEntries` + `aria2c.ts`（`parseCommand` / `joinContinuations` / `planFieldFill`）逐条对齐，`aria2c.test.ts` 覆盖同组行为；TXT 导入两端都用「原文保留、按 URL 去重追加」（`append_entries` ↔ `appendLiteralEntries`）
+
+## `crates/downloads/src/model/new_download.rs::parse_manual_input` + `model/url_range.rs`（手写文件名范围）
+
+→ Web `dialogs/model.ts::parseManualInput`、Android `feature/newtask/LinkParser.kt::parseManualEntries`：只展开手工 HTTP(S) 链接文件名中的单个 `[起-止]`，保留起点位宽和原查询串；多行合计最多生成 1000 条，超限整批不提交。捕获、TXT 和命令不展开；多项不复制单文件名或校验和。预览取实际生成的首尾项，不取混排中的普通链接。
 
 ## `crates/downloads/src/components/task_table.rs::TaskMenuFacts::{can_rename, can_change_url, can_change_segments, can_verify_integrity}`（`task_menu_facts_for` 为右键 / 应用菜单与详情常规页按钮共用事实源；应用菜单项不置灰，`on_rename_selected` 等入口按同一事实源再判）+ `pages/task_edit.rs`（`open_change_url_dialog` / `open_change_segments_dialog`，下载页与 `task_detail.rs` 常规页共用；失败任务换链 / 改线程数成功后串行 Resume）+ `pages/task_verify.rs`（BT 完整性校验结果通知：损坏文件列前 3 个、其余折叠计数，`conflict` = 已在校验）
 

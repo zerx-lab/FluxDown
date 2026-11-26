@@ -180,6 +180,23 @@ jobs:
       - name: release desktop build combination (check)
         run: cargo check --locked -p fluxdown_ui_app -p fluxdown_agent -p fluxdown_daemon -p fluxdown_nmh --features fluxdown_agent/desktop --bins
 
+  windows-tls:
+    name: Windows download TLS (${{ matrix.runner }})
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-latest, windows-11-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-windows-tls
+      - run: cargo test --locked -p fluxdown_engine --test engine tls_client_hello
+
   rust-test:
     name: Test (${{ matrix.name }})
     needs: changes

@@ -1317,6 +1317,9 @@ fn build_client_inner(
         client_builder_for(proxy_config, user_agent, ignore_tls_errors, http)?,
         ignore_tls_errors,
     );
+    if !ignore_tls_errors && http == HttpVersion::Http1 {
+        builder = builder.fluxdown_legacy_tls();
+    }
 
     // --- DNS 钉定（多 CDN 节点池）/ 出口绑定（多网卡聚合）---
     match route {
@@ -3169,6 +3172,18 @@ pub(crate) fn filename_looks_like_html(name: &str) -> bool {
 pub(crate) const UNEXPECTED_HTML_PREFIX: &str = "server returned HTML page (Content-Type: ";
 pub(crate) const HTML_RESPONSE_CHANGED_MESSAGE: &str =
     "the server did not return a complete HTML page; nothing was saved";
+/// YouTube 播放器的 UMP 流分片（`googlevideo.com/videoplayback?…&rn=…`）只是播放协议的一帧，
+/// 不是可下载的文件；照常保存会得到几十字节、却显示「已完成」的坏文件。
+pub(crate) const YOUTUBE_STREAM_FRAGMENT_MESSAGE: &str = "server returned a YouTube streaming \
+     fragment (Content-Type: application/vnd.yt-ump), not a downloadable file; add the YouTube \
+     video page URL instead so a resolver plugin can parse it";
+
+fn is_youtube_stream_fragment(content_type: &str) -> bool {
+    content_type
+        .split(';')
+        .next()
+        .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/vnd.yt-ump"))
+}
 
 // Keep the diagnostic prefix for localization, but only successful-response
 // rejections (not 401/403 login pages) qualify for saving.
@@ -4678,6 +4693,9 @@ async fn run_download_inner(
             evidence.detail(),
             html_response_hint(&p.url, probe_final_url.as_ref(), &p.spec.method)
         )));
+    }
+    if p.hint_file_size == 0 && is_youtube_stream_fragment(&info.content_type) {
+        return Err(DownloadError::Other(YOUTUBE_STREAM_FRAGMENT_MESSAGE.into()));
     }
 
     // 早期取消检查：probe 完成后、创建文件之前检测 pause/delete，
@@ -6561,11 +6579,22 @@ async fn download_single_once(
         file = tokio::io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, raw_file);
     } else {
         downloaded = 0;
-        file = tokio::io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, File::create(dest).await?);
-        // Reset DB progress so the UI doesn't show stale values
-        if let Some(db) = checkpoint {
-            db.update_task_progress(task_id, 0).await?;
-        }
+        let raw_file = if let Some(db) = checkpoint {
+            // Claim only an opened file, and preserve its contents if the checkpoint reset fails.
+            let raw_file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(dest)
+                .await?;
+            db.record_http_partial(task_id, output::file_name(dest)?)
+                .await?;
+            raw_file.set_len(0).await?;
+            raw_file
+        } else {
+            File::create(dest).await?
+        };
+        file = tokio::io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, raw_file);
     }
 
     // 注：旧版本会从实际下载响应的 Content-Disposition 中提取"更好的文件名"，
@@ -11345,6 +11374,78 @@ mod single_resume_tests {
         {
             tracing::warn!(%error, "test directory cleanup failed");
         }
+    }
+
+    #[tokio::test]
+    async fn single_stream_claims_partial_after_open_and_truncates_after_checkpoint() {
+        let dir =
+            std::env::temp_dir().join(format!("fluxdown_single_claim_{}", uuid::Uuid::new_v4()));
+        let dest = dir.join("f.bin.fdownloading");
+        let foreign_file = dest.join("payload");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(&foreign_file, b"foreign").unwrap();
+        let db = Db::connect("sqlite::memory:").await.unwrap();
+        let port = spawn_http(|_| response("200 OK", "", b"finished download")).await;
+        let url = format!("http://127.0.0.1:{port}/f.bin");
+        db.insert_task(
+            "t1",
+            &url,
+            "f.bin",
+            dir.to_str().unwrap(),
+            1,
+            0,
+            "",
+            "",
+            "",
+            0,
+        )
+        .await
+        .unwrap();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        let cancel = CancellationToken::new();
+        let limiter = SpeedLimiter::new(0);
+        let spec = super::DownloadSpec::new(RequestSpec {
+            method: reqwest::Method::GET,
+            ..Default::default()
+        });
+        let attempt = || {
+            download_single(
+                "t1", &url, &dest, 17, false, &client, &db, &NoopSink, &tx, &cancel, &limiter,
+                &spec, "", "", false,
+            )
+        };
+
+        let open_error = attempt().await;
+        let after_open = db.load_cleanup_task("t1").await.unwrap().unwrap();
+        let foreign_contents = std::fs::read(&foreign_file).unwrap();
+
+        std::fs::remove_dir_all(&dest).unwrap();
+        let partial = b"existing partial data";
+        std::fs::write(&dest, partial).unwrap();
+        db.update_task_progress("t1", partial.len() as i64)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TRIGGER fail_partial_registration BEFORE UPDATE OF http_partial_name ON tasks
+             BEGIN SELECT RAISE(ABORT, 'checkpoint rejected'); END",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+        let registration_error = attempt().await;
+        let after_registration = db.load_cleanup_task("t1").await.unwrap().unwrap();
+        let retained = std::fs::read(&dest).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert!(matches!(open_error, Err(DownloadError::Io(_))));
+        assert!(after_open.http_partial_name.is_empty());
+        assert_eq!(after_open.downloaded_bytes, 0);
+        assert_eq!(foreign_contents, b"foreign");
+        assert!(matches!(registration_error, Err(DownloadError::Db(_))));
+        assert!(after_registration.http_partial_name.is_empty());
+        assert_eq!(after_registration.downloaded_bytes, partial.len() as i64);
+        assert_eq!(retained, partial);
     }
 
     #[tokio::test]

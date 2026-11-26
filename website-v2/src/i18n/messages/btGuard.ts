@@ -1,7 +1,7 @@
 import { defineMessages } from "../define";
 
 /** BT 防吸血名单自查与申诉页：/bt-guard 与 /zh/bt-guard。 */
-export const btGuard = defineMessages({
+export const btGuard = defineMessages("btGuard", {
   en: {
     meta: {
       title: "BT leech protection — check your IP and appeal",

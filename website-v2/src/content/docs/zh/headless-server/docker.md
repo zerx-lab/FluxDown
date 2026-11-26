@@ -3,7 +3,7 @@ title: Docker 与 NAS
 description: 用预编译 Docker 镜像运行 headless FluxDown 服务器，支持 Docker Compose、CasaOS/ZimaOS、Unraid 与群晖 DSM 原生套件。
 section: headless-server
 order: 2
-sourceHash: "fb5581607fd9"
+sourceHash: "198ea8071296"
 ---
 
 运行 headless 服务器最快的方式是使用预编译 Docker 镜像——无需 Cargo 构建，也无需单独构建 Web 界面。镜像内置 `fluxdown-agent`（内嵌 Web 界面）与 `fluxdownd`，由 `tini` 作为 PID 1 拉起（agent 以子进程启动 daemon，`docker stop` 时一并关停），全部通过一个端口（`17800`）暴露，并把数据库、日志和访问密钥持久化到卷。
@@ -27,10 +27,10 @@ docker run -d \
 - `/data` 存放数据库、日志和访问密钥——请放在持久化卷上。从旧镜像升级时沿用同一个卷即可：数据与访问密钥都会保留。
 - `/root/Downloads` 是容器内的默认下载目录（`HOME=/root`）；绑定到你希望写入文件的宿主机路径。
 
-首次访问 `http://<host>:17800/` 时，Web 界面会进入初始化向导，由你自行设置访问密钥（至少 8 位，须同时包含字母和数字）。用该密钥登录 Web 界面，以及为 HTTP API、MCP 端点（`Authorization: Bearer <token>`）和 `/rpc` JSON-RPC 端点鉴权。
+首次访问 `http://<host>:17800/` 时，Web 界面会进入初始化向导。向导要求一次性初始化口令，以及你要长期使用的访问密钥（至少 8 位，须同时包含字母和数字）。口令在数据卷的 `/data/agent/setup-bootstrap`（权限 `0600`）；启动日志也会打印一次路径和口令。用 `docker exec fluxdown-server cat /data/agent/setup-bootstrap` 读取。没有这串口令，远端调用者不能设置密钥。用你设定的密钥登录 Web 界面，以及为 HTTP API、MCP 端点（`Authorization: Bearer <token>`）和 `/rpc` JSON-RPC 端点鉴权。
 
-首次设置完成前 `/download`、`/download/batch` 与 `/jsonrpc`（POST/WS 升级）返回 HTTP 403（`setup required: set the access key first`）；aria2 客户端和脚本接管不可用。Web 初始化页面与 setup 接口仍可访问，保存合规密钥后无需重启即可按开关使用兼容 API。
-在 docker-compose 或其它编排场景中，可用 `FLUXDOWN_TOKEN` 预置密钥并跳过向导。仅在实例尚未设置过密钥时生效；若还设置了 `FLUXDOWN_TOKEN_FORCE=1`，则每次重启都会用它覆盖库中已存的密钥（见[环境变量](/docs/zh/headless-server/setup/#环境变量)）：
+首次设置完成前 `/download`、`/download/batch` 与 `/jsonrpc`（POST/WS 升级）返回 HTTP 403（`setup required: set the access key first`）；aria2 客户端和脚本接管不可用。Web 初始化页面与 `GET /api/v1/setup/status` 仍可访问，保存合规密钥后无需重启即可按开关使用兼容 API。
+在 docker-compose 或其它编排场景中，可用 `FLUXDOWN_TOKEN` 预置密钥并跳过向导（不会生成初始化口令）。仅在实例尚未设置过密钥时生效；若还设置了 `FLUXDOWN_TOKEN_FORCE=1`，则每次重启都会用它覆盖库中已存的密钥（见[环境变量](/docs/zh/headless-server/setup/#环境变量)）：
 
 ```bash
 docker run -d \
@@ -108,7 +108,7 @@ Unraid Community Applications 模板见 [zerx-lab/unraid-templates](https://gith
 
 ### 首次运行访问密钥
 
-首次打开 Web 界面（`http://<NAS-IP>:17800`）时，初始化向导会要求你自行设置访问密钥（至少 8 位，须同时包含字母和数字）。密钥持久化在套件自己的数据库里，重启与升级后依然有效。之后可在**设置 → 安全与访问**查看或更换。
+首次打开 Web 界面（`http://<NAS-IP>:17800`）时，初始化向导会先要求输入一次性初始化口令，再要求你自行设置访问密钥（至少 8 位，须同时包含字母和数字）。口令在安装向导里选定的下载共享文件夹的 `FluxDown-setup-code.txt` 中——在 File Station 里打开并粘贴其内容即可。设置成功后该文件会被删除（私有原件仍在 `/var/packages/FluxDown/var/agent/setup-bootstrap`）。若没有解析到共享文件夹，则需通过 SSH 读取该私有文件。密钥持久化在套件自己的数据库里，重启与升级后依然有效。之后可在**设置 → API 服务**查看或更换。
 
 ### 权限与数据位置
 
@@ -133,7 +133,7 @@ Unraid Community Applications 模板见 [zerx-lab/unraid-templates](https://gith
 
 1. 打开**应用中心 → 手动安装**，选择对应架构的 `.fpk`，按提示完成安装（手动安装的第三方应用未经飞牛应用中心审核）。
 2. 安装后启动应用，点击桌面上的 **FluxDown** 图标——在新标签页打开端口 `17800` 的 Web 界面（`http://<NAS-IP>:17800`）。
-3. 首次打开时设置访问密钥（至少 8 位，须同时包含字母和数字），之后可在**设置 → 安全与访问**更换。
+3. 首次打开时，向导会先要求输入一次性初始化口令：在文件管理器里打开 `fluxdown` 共享文件夹中的 `FluxDown-setup-code.txt`，粘贴其内容，再设置访问密钥（至少 8 位，须同时包含字母和数字）。设置成功后该文件会被删除。之后可在**设置 → API 服务**更换密钥。
 
 ### 权限与数据位置
 

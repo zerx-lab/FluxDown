@@ -37,8 +37,9 @@ const jsonLdNodes = [
 
 <script>
   // 更新日志里的 /api/download 链接同样先过验证码才拿大陆镜像（见 src/lib/download-captcha.ts）。
+  // 验证码与 dl-cn 同属大陆简体中文受众:只有简体中文站(html lang = zh-CN)用中文界面,繁体 / 其余语言走英文。
   import { installDownloadCaptcha } from "@/lib/download-captcha";
-  installDownloadCaptcha(document.documentElement.lang.startsWith("zh") ? "zh" : "en");
+  installDownloadCaptcha(document.documentElement.lang === "zh-CN" ? "zh" : "en");
 </script>
 
 <style is:global>

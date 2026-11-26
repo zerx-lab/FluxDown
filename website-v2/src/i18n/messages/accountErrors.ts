@@ -1,0 +1,56 @@
+import { defineMessages } from "../define";
+
+/**
+ * 账户中心共用的错误文案：键是 FluxCloud / 官网 BFF 返回的 `code`（snake_case 原样），
+ * 未登记的 code 一律落到 `fallback`。按 code 取文案用 `src/lib/account/client.ts::accountErrorText`。
+ */
+export const accountErrors = defineMessages("accountErrors", {
+  en: {
+    invalid_credentials: "Incorrect account or password",
+    invalid_code: "The verification code is wrong or has expired",
+    rate_limited: "Too many attempts — please wait a moment and try again",
+    email_taken: "This email is already registered — sign in instead",
+    account_disabled: "This account has been disabled",
+    registration_closed: "New registrations are currently closed",
+    registration_incomplete: "This account hasn't finished email verification yet — register again to get a new code",
+    mail_not_configured: "Email delivery is unavailable right now, please try again later",
+    mail_send_failed: "We couldn't send the email, please try again later",
+    validation_error: "Please check what you entered",
+    wrong_password: "The current password is incorrect",
+    device_limit: "This account has reached its device limit",
+    not_found: "Not found — it may already have been removed",
+    unauthorized: "Your session has expired, please sign in again",
+    forbidden: "The request was blocked, please reload the page and try again",
+    bad_request: "The request was invalid, please reload the page and try again",
+    not_configured: "Account service is not available on this site",
+    upstream_unreachable: "Account service is unreachable, please try again later",
+    upstream_error: "Account service error, please try again later",
+    upstream_invalid: "Account service returned an unexpected response, please try again later",
+    network: "Network error, please check your connection and try again",
+    fallback: "Something went wrong, please try again",
+  },
+  zh: {
+    invalid_credentials: "账号或密码不正确",
+    invalid_code: "验证码错误或已过期",
+    rate_limited: "尝试次数过多，请稍后再试",
+    email_taken: "该邮箱已注册，请直接登录",
+    account_disabled: "该账户已被停用",
+    registration_closed: "暂未开放新用户注册",
+    registration_incomplete: "该账户尚未完成邮箱验证，请重新注册以获取新的验证码",
+    mail_not_configured: "邮件服务暂不可用，请稍后再试",
+    mail_send_failed: "邮件发送失败，请稍后再试",
+    validation_error: "请检查填写的内容",
+    wrong_password: "当前密码不正确",
+    device_limit: "该账户的设备数已达上限",
+    not_found: "未找到，可能已被移除",
+    unauthorized: "登录已失效，请重新登录",
+    forbidden: "请求被拦截，请刷新页面后重试",
+    bad_request: "请求无效，请刷新页面后重试",
+    not_configured: "本站暂未启用账户服务",
+    upstream_unreachable: "账户服务暂时无法连接，请稍后再试",
+    upstream_error: "账户服务出错，请稍后再试",
+    upstream_invalid: "账户服务响应异常，请稍后再试",
+    network: "网络错误，请检查网络后重试",
+    fallback: "出了点问题，请重试",
+  },
+});

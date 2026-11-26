@@ -40,7 +40,7 @@ Every command accepts these global options; the two that matter most also read e
 
 Each of `url`, `token`, and `timeout` is resolved with the precedence **explicit flag > environment variable > persisted config file > built-in default**. The persisted layer is written by [`config set`](#config) (like `go env -w`), so you can save the token once instead of exporting it every time.
 
-The token comes from your running instance: on the desktop app it's under **Settings → Local API service**; on the headless server it's the key you set yourself the first time you open the Web UI, and you can view or change it later under **Settings → Security & Access**. See [Authentication](/docs/en/api/overview/#authentication).
+The token comes from your running instance: on the desktop app it's under **Settings → API Service**; on the headless server it's the key you set yourself the first time you open the Web UI, and you can view or change it later under **Settings → API Service**. See [Authentication](/docs/en/api/overview/#authentication).
 
 ```bash
 # Option A: export environment variables (per shell session)

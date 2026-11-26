@@ -3,7 +3,7 @@ title: Manifest 参考
 description: manifest.json 全部字段及校验规则、设置项 widget 矩阵、URL pattern 规则，以及安装与加载时的检查方式。
 section: plugins
 order: 10
-sourceHash: "d28b2970cb47"
+sourceHash: "3b180b4f1320"
 ---
 
 `manifest.json` 位于插件包根部，声明插件是什么、带有哪些入口脚本、向界面贡献什么，以及需要哪些能力。所有键名使用 camelCase。**未知键会被拒绝**——写错字段名会让整份 manifest 校验失败，而不是被静默忽略。
@@ -104,7 +104,7 @@ resolver 把一个页面 URL 解析成一个或多个可下载文件。
 |---|---|---|
 | `match.urls` | 是 | 非空的 URL pattern 列表（规则见 [URL pattern 规则](#url-pattern-规则)）。 |
 | `entry` | 是 | 脚本文件，安全相对路径。必须定义 `globalThis.resolve`。 |
-| `timeoutMs` | 否 | 单次调用超时（毫秒），不能是 `0`。它替换默认的 10 秒，但无论写多大都被 30 秒硬顶封住。 |
+| `timeoutMs` | 否 | 单次调用超时（毫秒），不能是 `0`。它替换默认的 10 秒，无论写多大都被钳到 120 秒硬顶。FluxDown 0.6.8 及更早版本的硬顶是 30 秒，需要超过 30 秒的插件必须能容忍旧版应用。 |
 | `memoryLimitMb` | 否 | 单次调用的 QuickJS 堆上限（MiB），不能是 `0`。它替换默认的 64 MiB，超过 512 MiB 按 512 MiB 封顶。只给确实要在脚本里处理大体量数据的 resolver 用（例如把几 MB 的站点脚本解析成语法树）；上限只是天花板，不会预先占用内存。 |
 | `multi` | 否 | 布尔值，默认 `false`。`true` 声明该 resolver 可能返回多文件清单，并参与**前置预解析**（创建任务之前先列出文件清单的预览）。`false` 时，单文件 resolver 不会为了预览被白白提前执行一次；如果它在任务开始时返回了多文件清单，引擎仍会把它拆成多个任务，所以 `multi` 只是前置预解析的声明，不是返回清单的前提。 |
 

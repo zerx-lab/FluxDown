@@ -1,24 +1,33 @@
 ---
 /**
  * 全站唯一 404(Astro 只支持一个根级 404)。页面静态预渲染,语言无法从 URL 得知,
- * 因此两种语言都直出,首帧前由内联脚本按 `/zh` 前缀(先去掉站点挂载前缀)切换可见语言(并同步 <html lang> 与标题)。
+ * 因此所有语言都直出,首帧前由内联脚本按语言前缀(先去掉站点挂载前缀)切换可见语言(并同步 <html lang> 与标题)。
  */
 import Layout from "@/layouts/Layout.astro";
 import BrokenDownload from "@/components/info/BrokenDownload.astro";
-import { LANGS } from "@/i18n/config";
+import { DEFAULT_LANG, HTML_LANG, LANGS } from "@/i18n/config";
 import { href } from "@/i18n/routing";
 import { guides } from "@/i18n/messages/guides";
 import { docsPath } from "@/lib/site-nav";
 import { BASE } from "@/lib/base";
+
+// 非默认语言的前缀集合与各语言的 <html lang> / 标题,交给首帧内联脚本(无法 import)
+const prefixLangs = LANGS.filter((lang) => lang !== DEFAULT_LANG);
+const titles = Object.fromEntries(LANGS.map((lang) => [lang, `404 - ${guides[lang].notFound.title} - FluxDown`]));
 ---
 
 <Layout lang="en" title="404 - FluxDown" description="Page not found." noindex alternates={[]}>
-  <script is:inline define:vars={{ base: BASE }}>
+  <script is:inline define:vars={{ base: BASE, prefixLangs, htmlLang: HTML_LANG, titles }}>
     const sitePath = base && location.pathname.startsWith(base) ? location.pathname.slice(base.length) : location.pathname;
-    if (/^\/zh(\/|$)/.test(sitePath)) {
-      document.documentElement.classList.add("nf-zh");
-      document.documentElement.lang = "zh-CN";
-      document.title = "404 - 页面未找到 - FluxDown";
+    const prefix = sitePath.match(/^\/([^/]+)(?:\/|$)/);
+    const lang = prefix && prefixLangs.includes(prefix[1]) ? prefix[1] : null;
+    if (lang) {
+      // 脚本先于文案节点执行:追加样式即可让目标语言在首帧直接可见
+      const style = document.createElement("style");
+      style.textContent = `html .nf-copy{display:none}html .nf-copy[data-l="${lang}"]{display:block}`;
+      document.head.append(style);
+      document.documentElement.lang = htmlLang[lang];
+      document.title = titles[lang];
     }
   </script>
 
@@ -31,7 +40,7 @@ import { BASE } from "@/lib/base";
           LANGS.map((lang) => {
             const t = guides[lang].notFound;
             return (
-              <div class="nf-copy" data-l={lang} lang={lang === "zh" ? "zh-CN" : "en"}>
+              <div class="nf-copy" data-l={lang} data-default={lang === DEFAULT_LANG ? "" : undefined} lang={HTML_LANG[lang]}>
                 <h1 class="h3">{t.title}</h1>
                 <p class="lede mt-3 max-w-[46ch]">{t.desc}</p>
                 <div class="mt-8 flex flex-wrap gap-3">
@@ -67,13 +76,8 @@ import { BASE } from "@/lib/base";
     letter-spacing: -0.06em;
     user-select: none;
   }
-  .nf-copy[data-l="zh"] {
+  /* 默认语言直出;其余语言由内联脚本按 URL 前缀追加的样式显示 */
+  .nf-copy:not([data-default]) {
     display: none;
-  }
-  :global(html.nf-zh) .nf-copy[data-l="en"] {
-    display: none;
-  }
-  :global(html.nf-zh) .nf-copy[data-l="zh"] {
-    display: block;
   }
 </style>

@@ -3,7 +3,7 @@ title: 拦截器指南
 description: 读取并修改运行中的下载——改写请求、设置连接数、选择流媒体画质、过滤分片、在完成前处理文件并决定是否重试。
 section: plugins
 order: 4.5
-sourceHash: "4bcd9e13155e"
+sourceHash: "7d7182bd540e"
 ---
 
 拦截器让插件能够“深入”引擎的任务流水线。[事件钩子](/docs/zh/plugins/hooks-guide/)只能在事后做出反应，而拦截器可以看到引擎持有的任务信息，并在引擎使用之前修改它：请求（URL、method、body、请求头、Cookie、Referer、User-Agent、按站点请求头）、连接数、流媒体画质、单个分片、已下载完成的文件，以及失败任务是否重试。
@@ -87,20 +87,20 @@ defineInterceptors({
 
 | 字段 | 规则 |
 |---|---|
-| `url` | 不超过 8 KiB，合法 URL，**主机必须与原来相同**，且**协议类别不得改变**（HTTP 仍是 HTTP，HLS 仍是 HLS……）。跨站改写请用 resolver。 |
-| `method` | 仅 HTTP 任务；大小写不敏感；拒绝 `OPTIONS`。 |
-| `body` / `clearBody` | 仅 HTTP 任务。`body` 为 `{kind:"formData",fields}`、`{kind:"urlencoded",raw}` 或 `{kind:"raw",bytesB64,contentType?}`；`clearBody: true` 清除请求体。 |
-| `cookies` | 替换 Cookie 字符串，并移除已有的 `Cookie` 请求头。 |
-| `referrer` | 空串或 http(s) 链接。会锁定 Referer，引擎自带的 Referer 推断不再改动它。 |
-| `userAgent` | 非空且不含控制字符。会锁定 User-Agent：引擎的反爬 UA 切换、探测被拒的自适应和机器人挑战逃逸都不再改动它。 |
-| `setHeaders` / `removeHeaders` | 名称大小写不敏感。引擎管理的请求头（如 `Range`、`Host`、`Content-Length`）不可设置。设置或删除 `User-Agent` / `Referer` 会将其锁定。 |
-| `originHeaders` | `[{origin, headers}]`——只对站点（`scheme://host[:port]`）等于 `origin` 的请求附加的额外请求头，例如分片所在主机。至多 32 条，按 origin 合并。 |
-| `segments` | `0..=512`；**覆盖本次运行的用户线程数**（0 = 自动）。 |
-| `maxConnections` | `1..=512`；始终生效的硬上限。 |
-| `maxRangeBytes` | 仅 HTTP 任务；整数，单位字节，`>= 65536`（64 KiB）。限制该任务**每一个**数据请求的 `Range` 跨度，适用于拒绝大区间的直链（例如网盘 CDN 单次请求超过约 5 MiB 就返回 403——请设为不超过该上限的值，如 `4 * 1024 * 1024`）。分段 worker 在各自区间内按不超过该值的窗口逐个请求并复用连接；单流与回退单流只发不超过该值的有界 `Range` 请求（绝不发无 Range 的 GET 或开放式 `bytes=N-`）；与 `ephemeral` 同用时，首个连接也带 `Range`。需要已知大小（`totalBytes` 或探测结果）且服务器支持 `Range`，否则无法生效。元数据探测（`HEAD`、`Range: bytes=0-0`）不受影响。FTP / HLS / DASH 任务会拒绝该字段。 |
-| `ephemeral` | 仅 HTTP 任务。与 resolver 返回值同义：本次运行跳过元数据探测，避免一次性凭据被探测消耗。 |
-| `totalBytes` / `rangeSupported` | 仅 HTTP，且必须与 `ephemeral: true` 同用。`totalBytes`（> 0）是代替探测使用的大小；`rangeSupported` 表示服务器已知支持 Range（首次运行默认 `false`）。 |
-| `fileName` | 不含路径分隔符、`..` 与控制字符。**仅在首次运行（下载开始前）生效**；之后的运行会忽略并记一条说明。 |
+| `url` | 最多 8 KiB，有效 URL，**同主机**，且**协议分类不得更改**（HTTP 保持为 HTTP，HLS 保持为 HLS……）。对于跨站重写，请使用解析器。 |
+| `method` | 仅限 HTTP 任务；不区分大小写；`OPTIONS` 被拒绝。 |
+| `body` / `clearBody` | 仅限 HTTP 任务。`body` 是 `{kind:"formData",fields}`、`{kind:"urlencoded",raw}` 或 `{kind:"raw",bytesB64,contentType?}`；`clearBody: true` 会将其移除。 |
+| `cookies` | 替换 cookie 字符串，并丢弃任何 `Cookie` 头。 |
+| `referrer` | 为空，或一个 http(s) URL。固定 Referer，使引擎自身的 Referer 推断功能不再修改它。 |
+| `userAgent` | 非空，不含控制字符。固定 User-Agent：引擎的反机器人 UA 切换、探测拒绝适配和机器人挑战规避功能将不再更改它。 |
+| `setHeaders` / `removeHeaders` | 名称不区分大小写。引擎管理的头字段（如 `Range`、`Host`、`Content-Length`）无法设置。设置或移除 `User-Agent` / `Referer` 会将其固定。 |
+| `originHeaders` | `[{origin, headers}]` — 仅应用于站点 (`scheme://host[:port]`) 等于 `origin` 的请求的额外标头，例如用于分段主机。最多 32 条规则；按源合并。 |
+| `segments` | `0..=512`; **覆盖本次运行的用户线程数**（0 = 自动）。 |
+| `maxConnections` | `1..=512`；一个始终生效的硬性上限。 |
+| `maxRangeBytes` | 仅限 HTTP 任务；以字节为单位的整数，`>= 65536`（64 KiB）。对任务的**每个**数据请求的`Range`跨度进行限制，适用于拒绝大范围请求的直连链接（例如，超过每请求 ~5 MiB 时返回 403 的云盘 CDN — 将其设置为等于或低于该限制，如 `4 * 1024 * 1024`）。分段工作进程以不超过此大小的窗口请求各自份额，并复用连接；单流下载和回退下载仅发送不超过此大小的有界`Range`请求（绝不会发出普通的 GET 或无限制的`bytes=N-`）；启用`ephemeral`后，首次连接还会携带一个`Range`。它需要已知的文件大小（`totalBytes`，或探测结果）以及支持`Range`的服务器——否则无法应用。元数据探测（`HEAD`、`Range: bytes=0-0`）不受影响。FTP / HLS / DASH 任务不支持此功能。 |
+| `ephemeral` | 仅限 HTTP 任务。与解析器结果中的含义相同：本次运行跳过元数据探测，因此不会为此消耗一次性凭据。 |
+| `totalBytes` / `rangeSupported` | 仅限 HTTP，且仅与 `ephemeral: true` 一起使用。`totalBytes`（> 0）是用于替代探测的大小；`rangeSupported` 表示服务器是否已知接受范围请求（首次运行时默认为 `false`）。 |
+| `fileName` | 不允许使用路径分隔符、`..` 或控制字符。**仅在首次运行时生效**，下载开始前；后续运行会忽略此设置并予以记录。 |
 
 所有字段通用的规则：
 
@@ -123,12 +123,12 @@ defineInterceptors({
 
 限制：
 
-- **连续 5 次**换发后都没换来任何成功响应（凭据始终无效）即停止刷新。被拒的凭据此前成功用过至少一次属于正常消耗，会让计数归零——因此「每请求一个令牌」的方案可以按需反复刷新。
-- 并发被拒会**单飞合并**：一次插件调用服务所有请求；用旧身份发出的请求直接用当前身份重发。插件未做任何改动时，该身份代际被标记为已拒绝，不再重复询问。
-- 刷新得到的凭据**不落库**；下次运行从 `prepare` 重新开始。
-- 非 HTTP 任务不能刷新 `url`（其他凭据字段可以）。`refresh` 不能改写 `method`、`body`、`segments`、`maxConnections`、`maxRangeBytes`、`fileName`、`ephemeral`。
-- `failed` 重试有独立的 5 次额度，**不受**自动重试开关影响。
-- 锁定 User-Agent / Referer 之后，探测的自适应不再重发相同的请求。
+- 在**连续 5 次刷新均未产生成功响应**（即令牌始终无效）后，刷新将停止。如果某个令牌在被拒绝之前至少成功过一次，则被视为正常使用，这会重置计数器——因此，每次请求使用一个令牌的方案可以按需频繁刷新。
+- 并发拒绝是**单次完成的**：一次插件调用即可处理所有拒绝；已使用过时身份发送的请求会直接以当前身份重新发送。如果插件未做任何更改，则该身份生成会被标记为已拒绝，且不会再次被询问。
+- 刷新后的凭据**不会被持久化**；下次运行时将从 `prepare` 重新开始。
+- 非 HTTP 任务无法刷新 `url`（其他凭据字段可用）。`refresh` 无法更改 `method`、`body`、`segments`、`maxConnections`、`maxRangeBytes`、`fileName` 或 `ephemeral`。
+- `failed` 次重试有其自身的 5 次配额，并且 **不受** 自动重试开关的影响。
+- 一旦 User-Agent/Referer 被固定，探测自适应将不再重新发送相同的请求。
 
 ## 改写在重试中持续生效，且不落库
 

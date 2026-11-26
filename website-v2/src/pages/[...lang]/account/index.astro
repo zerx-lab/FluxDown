@@ -1,0 +1,23 @@
+---
+/**
+ * 账户中心首页(en → /account/,zh → /zh/account/):身份条 + 五个分区(概览 / 会员 / 设备 / 云端推送 / 账户与安全)。
+ * 数据全部由 AccountDashboard 岛经同源 BFF `/api/account/*` 按需拉取;未登录由岛跳去登录页。
+ */
+import Layout from "@/layouts/Layout.astro";
+import AccountDashboard from "@/components/account/dashboard/AccountDashboard";
+import { account } from "@/i18n/messages/account";
+import { langStaticPaths, resolveLang } from "@/i18n/routing";
+
+export const getStaticPaths = langStaticPaths;
+const lang = resolveLang(Astro.params.lang);
+const t = account[lang];
+---
+
+<Layout lang={lang} title={t.meta.title} description={t.meta.description} noindex>
+  <section class="frame">
+    <div class="section-tight">
+      <h1 class="sr-only">{t.pageTitle}</h1>
+      <AccountDashboard client:load lang={lang} />
+    </div>
+  </section>
+</Layout>

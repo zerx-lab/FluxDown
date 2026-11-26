@@ -1,0 +1,135 @@
+name: i18n MT
+
+# qwen-mt 自动翻译（scripts/i18n-mt）：en 原文 / 术语表变化后补齐非基线语言并直接推回 main。
+# - assets/i18n 非基线语言（GPUI / Web / Android / iOS）：来源锁 i18n/source-lock.json
+# - 浏览器扩展 fluxDown/utils/locales 的 ru / zh-TW：来源锁 i18n/extension-lock.json
+# - 官网界面文案 website-v2/src/i18n/messages → src/i18n/locales/<lang>.json（来源锁 i18n/website-lock.json），
+#   再由 website-v2/scripts/i18n-messages.ts 生成 src/i18n/locales/<lang>/<ns>.ts
+# - 官网文档 website-v2/src/content/docs/<lang>（zh 及全部机翻语言）：frontmatter sourceHash，块级增量
+# Secrets：DASHSCOPE_API_KEY（必填）、I18N_BOT_TOKEN（可选，PAT / App token；用它推送才会触发
+# 后续 CI，且 main 有保护规则时须具备绕过权限）。Variables：QWEN_MT_MODEL、DASHSCOPE_BASE_URL（可选）。
+on:
+  push:
+    branches: [main]
+    paths:
+      - "assets/i18n/en.json"
+      - "assets/i18n/zh.json"
+      - "fluxDown/utils/locales/en.ts"
+      - "fluxDown/utils/locales/zh-CN.ts"
+      - "website-v2/src/content/docs/en/**"
+      - "website-v2/src/i18n/messages/**"
+      - "website-v2/src/i18n/config.ts"
+      - "website-v2/scripts/i18n-messages.ts"
+      - "i18n/glossary/**"
+      - "scripts/i18n-mt/**"
+      - ".github/workflows/i18n-mt.yml"
+  schedule:
+    # 每日 06:30（UTC+8）补跑：重试上轮失败 / 顺延的条目。
+    - cron: "30 22 * * *"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 同步范围
+        type: choice
+        options: [all, app, extension, website, docs]
+        default: all
+      locales:
+        description: 只处理这些语言（逗号分隔，留空 = 全部）
+        type: string
+        default: ""
+      limit:
+        description: 每种语言每轮最多翻译条数 / 文档篇数
+        type: number
+        default: 1500
+      dry_run:
+        description: 只统计待译，不调接口、不提交
+        type: boolean
+        default: false
+
+concurrency:
+  group: i18n-mt
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  translate:
+    if: github.repository == 'zerx-lab/FluxDown'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          # 文档增量翻译要在 en 历史里找 sourceHash 对应的旧版本。
+          fetch-depth: 0
+          token: ${{ secrets.I18N_BOT_TOKEN || github.token }}
+
+      # 官网界面文案的抽取 / 生成用 website-v2 的 typescript 编译器 API。
+      - uses: oven-sh/setup-bun@v2
+      - name: Install website deps
+        working-directory: website-v2
+        run: bun install --frozen-lockfile
+
+      - name: Unit tests (offline)
+        run: python3 -m unittest discover -s scripts/i18n-mt -p 'test_*.py'
+
+      - name: Translate
+        env:
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          QWEN_MT_MODEL: ${{ vars.QWEN_MT_MODEL }}
+          DASHSCOPE_BASE_URL: ${{ vars.DASHSCOPE_BASE_URL }}
+          TARGET: ${{ inputs.target || 'all' }}
+          LOCALES: ${{ inputs.locales || '' }}
+          LIMIT: ${{ inputs.limit || 1500 }}
+          DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+        run: |
+          args=("$TARGET" --locales "$LOCALES" --limit "$LIMIT" --summary "$GITHUB_STEP_SUMMARY")
+          if [ "$DRY_RUN" = true ]; then args+=(--dry-run); fi
+          python3 scripts/i18n-mt/main.py "${args[@]}"
+
+      - name: Detect changes
+        id: changes
+        run: |
+          git add -A assets/i18n i18n fluxDown/utils/locales website-v2/src/content/docs website-v2/src/i18n/locales
+          if git diff --cached --quiet; then echo "any=false" >> "$GITHUB_OUTPUT"; else echo "any=true" >> "$GITHUB_OUTPUT"; fi
+          if git diff --cached --quiet -- assets/i18n; then echo "app=false" >> "$GITHUB_OUTPUT"; else echo "app=true" >> "$GITHUB_OUTPUT"; fi
+          if git diff --cached --quiet -- website-v2; then echo "site=false" >> "$GITHUB_OUTPUT"; else echo "site=true" >> "$GITHUB_OUTPUT"; fi
+          git diff --cached --stat
+
+      # 直接推 main 前跑契约守卫：非基线语言占位符不越界（与 ci.yml 同一单测）。
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.changes.outputs.app == 'true'
+      - uses: Swatinem/rust-cache@v2
+        if: steps.changes.outputs.app == 'true'
+        with:
+          key: i18n-mt
+          cache-on-failure: true
+      - name: Placeholder contract
+        if: steps.changes.outputs.app == 'true'
+        run: cargo test -p fluxdown_ui_i18n --lib translated_locales_keep_baseline_placeholders
+
+      # 官网：文档安全 lint + astro check（生成模块与 en 结构不符、文档 frontmatter 不合 schema 都会在这里拦下）。
+      - name: Website check
+        if: steps.changes.outputs.site == 'true'
+        working-directory: website-v2
+        run: |
+          node scripts/docs-lint.mjs
+          bun run check
+
+      - name: Commit and push
+        if: steps.changes.outputs.any == 'true'
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git commit -q -m "chore(i18n): qwen-mt 自动翻译同步" -m "- 来源：$RUN_URL"
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then exit 0; fi
+            sleep $((attempt * 5))
+            git pull --rebase origin main
+          done
+          echo "::error::推送 main 失败（3 次），下一轮会重新计算待译"
+          exit 1

@@ -1,0 +1,21 @@
+---
+/**
+ * 账户登录(en → /account/login,zh → /zh/account/login):密码登录 / 验证码登录,
+ * 新浏览器首次密码登录需邮箱验证码。会话令牌只在 HttpOnly Cookie 里,见 `src/lib/account/`。
+ */
+import Layout from "@/layouts/Layout.astro";
+import AuthShell from "@/components/account/auth/AuthShell.astro";
+import LoginForm from "@/components/account/auth/LoginForm";
+import { accountAuth } from "@/i18n/messages/accountAuth";
+import { langStaticPaths, resolveLang } from "@/i18n/routing";
+
+export const getStaticPaths = langStaticPaths;
+const lang = resolveLang(Astro.params.lang);
+const t = accountAuth[lang].login;
+---
+
+<Layout lang={lang} title={t.meta.title} description={t.meta.description} noindex>
+  <AuthShell lang={lang} eyebrow={t.head.eyebrow} title={t.head.title} lede={t.head.lede}>
+    <LoginForm client:load lang={lang} />
+  </AuthShell>
+</Layout>

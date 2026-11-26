@@ -44,6 +44,7 @@ pub(crate) struct DownloadStrings {
     pub(crate) clear_task_file_confirmation: SharedString,
     delete_confirm_with_file: SharedString,
     delete_confirm_keep_file: SharedString,
+    group_delete_confirm_keep_file: SharedString,
     batch_delete_confirm_with_file: SharedString,
     batch_delete_confirm_keep_file: SharedString,
     pub(crate) too_many_windows_hint: SharedString,
@@ -284,6 +285,9 @@ impl DownloadStrings {
             ),
             delete_confirm_with_file: shared(translator.text("deleteConfirmDescWithFile")),
             delete_confirm_keep_file: shared(translator.text("deleteConfirmDescKeepFile")),
+            group_delete_confirm_keep_file: shared(
+                translator.text("groupDeleteConfirmDescKeepFile"),
+            ),
             batch_delete_confirm_with_file: shared(
                 translator.text("batchDeleteConfirmDescWithFile"),
             ),
@@ -476,6 +480,16 @@ impl DownloadStrings {
             &self.delete_confirm_keep_file
         };
         SharedString::from(template.replace("{fileName}", name))
+    }
+
+    pub(crate) fn delete_group_description(&self, name: &str, delete_files: bool) -> SharedString {
+        if delete_files {
+            return self.delete_task_description(name, true);
+        }
+        SharedString::from(
+            self.group_delete_confirm_keep_file
+                .replace("{fileName}", name),
+        )
     }
 
     /// 组计数行各段（调用方以 ` · ` 连接）：总数恒在，其余为 0 的段省略；剩余时间只在
@@ -743,6 +757,8 @@ pub(crate) struct NewDownloadStrings {
     pub(crate) url_label: SharedString,
     pub(crate) url_placeholder: SharedString,
     url_count: SharedString,
+    pub(crate) url_range_hint: SharedString,
+    pub(crate) url_range_limit: SharedString,
     pub(crate) probe_checking: SharedString,
     probe_found: SharedString,
     probe_size_unknown: SharedString,
@@ -851,6 +867,8 @@ impl NewDownloadStrings {
             url_label: shared(translator.text("downloadUrl")),
             url_placeholder: shared(translator.text("newDownloadUrlPlaceholder")),
             url_count: shared(translator.text("urlCount")),
+            url_range_hint: shared(translator.text("urlRangeHint")),
+            url_range_limit: shared(translator.text("urlRangeLimit")),
             probe_checking: shared(translator.text("newDownloadProbeChecking")),
             probe_found: shared(translator.text("newDownloadProbeFound")),
             probe_size_unknown: shared(translator.text("newDownloadProbeSizeUnknown")),
@@ -1141,6 +1159,7 @@ pub(crate) fn error_text(
         ErrorReason::TaskFilesNotDeleted => Some("errReasonTaskFilesNotDeleted"),
         ErrorReason::TaskFileClearPending => Some("errReasonTaskFileClearPending"),
         ErrorReason::BrowserRequestRequired => Some("taskErrorPostOnlyResume"),
+        ErrorReason::TaskRestartTimeout => Some("errReasonTaskRestartTimeout"),
         ErrorReason::CloudUnreachable => Some("accountErrorNetwork"),
         ErrorReason::SessionExpired => Some("errReasonSessionExpired"),
         ErrorReason::DeviceUntrusted => Some("accountSessionRevokedUntrusted"),
@@ -1257,6 +1276,23 @@ mod tests {
     use chrono::{Local, TimeZone};
 
     use super::DownloadStrings;
+
+    #[test]
+    fn group_record_delete_names_the_group_and_its_member_records() {
+        let catalog =
+            fluxdown_ui_i18n::I18nCatalog::load_embedded().expect("embedded translations");
+        for (locale, expected_prefix) in [
+            ("en", "Remove the task records in \"Example\"?"),
+            ("zh", "确定要删除「Example」组内的任务记录吗？"),
+        ] {
+            let strings = DownloadStrings::from_translator(&catalog.translator(locale));
+            assert!(
+                strings
+                    .delete_group_description("Example", false)
+                    .starts_with(expected_prefix)
+            );
+        }
+    }
 
     #[test]
     fn only_successful_html_failure_is_eligible_for_saving() {

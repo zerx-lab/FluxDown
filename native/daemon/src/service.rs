@@ -3079,6 +3079,13 @@ fn actor_error(error: ActorCallError) -> RpcErrorObject {
                     .with_reason(fluxdown_protocol::ErrorReason::BrowserRequestRequired),
             )
         }
+        ActorCallError::Operation(error @ ActorError::TaskRestartTimeout) => {
+            RpcErrorObject::application(
+                error.to_string(),
+                RpcErrorData::new(ApplicationErrorCode::Conflict, false)
+                    .with_reason(fluxdown_protocol::ErrorReason::TaskRestartTimeout),
+            )
+        }
         ActorCallError::Operation(ActorError::TaskStateConflict(message)) => {
             RpcErrorObject::application(
                 message,

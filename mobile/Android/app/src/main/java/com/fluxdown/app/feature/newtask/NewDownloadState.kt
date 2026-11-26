@@ -105,7 +105,17 @@ internal class NewDownloadState(
     rememberedMode: String = "auto",
     private val externalSaveDir: String? = null,
 ) {
-    var urlText by mutableStateOf(prefill)
+    private var text by mutableStateOf(prefill)
+    private var literalUrls by mutableStateOf(emptySet<String>())
+    var urlText: String
+        get() = text
+        set(value) {
+            if (literalUrls.isNotEmpty()) {
+                val previous = literalUrls
+                literalUrls = parseEntries(value).mapNotNullTo(HashSet()) { it.url.takeIf(previous::contains) }
+            }
+            text = value
+        }
     var saveDir by mutableStateOf(defaultSaveDir)
         private set
     var rename by mutableStateOf("")
@@ -149,7 +159,11 @@ internal class NewDownloadState(
         private set
     private val initialQueueId = defaultQueueId
 
-    val entries: List<UrlEntry> by derivedStateOf { parseEntries(urlText).dedupe() }
+    private val parsed by derivedStateOf { parseManualEntries(text, literalUrls) }
+    val entries: List<UrlEntry> get() = parsed.entries
+    val hasUrlRanges: Boolean get() = parsed.generatedCount > 0
+    val rangePreview: List<UrlEntry> get() = parsed.rangePreview
+    val rangeLimitExceeded: Boolean get() = parsed.rangeLimitExceeded
     val single: Boolean by derivedStateOf { entries.size == 1 }
     val singleHttp: Boolean by derivedStateOf {
         entries.singleOrNull()?.let { protocolOf(it.url).let { p -> p == TaskProtocol.Http || p == TaskProtocol.Hls } } == true
@@ -198,14 +212,34 @@ internal class NewDownloadState(
 
     /** 只保留这些链接（下发部分失败时留下失败项以便重试，成功的不会被重复下发）。 */
     fun retain(kept: List<UrlEntry>) {
-        urlText = kept.joinToString("\n") { it.toText() }
+        if (hasUrlRanges && !single) {
+            // These overrides were not used by the batch. Do not attach them to a lone retry.
+            rename = ""
+            advanced.checksumHex = ""
+        }
+        // Command continuations are rendered as plain URLs on retry; keep those filenames literal.
+        literalUrls = kept.mapNotNullTo(HashSet()) { it.url.takeIf { url -> '[' in url } }
+        text = kept.joinToString("\n") { it.toText() }
     }
 
-    /** 追加文本（粘贴 / 导入）；已有内容逐字保留。 */
-    fun appendText(text: String) {
-        val t = text.trim()
-        if (t.isEmpty()) return
-        urlText = if (urlText.isBlank()) t else urlText.trimEnd() + "\n" + t
+    /** 追加手工粘贴的内容。 */
+    fun appendText(value: String) {
+        val trimmed = value.trim()
+        if (trimmed.isEmpty()) return
+        text = if (text.isBlank()) trimmed else text.trimEnd() + "\n" + trimmed
+    }
+
+    /** Deduplication must not turn an existing manual template into a literal import. */
+    fun addImported(entries: List<UrlEntry>): Int {
+        val (merged, added) = appendEntries(text, entries)
+        if (added.any { '[' in it.url }) {
+            literalUrls = buildSet {
+                addAll(literalUrls)
+                for (entry in added) if ('[' in entry.url) add(entry.url)
+            }
+        }
+        text = merged
+        return added.size
     }
 
     /**
@@ -327,6 +361,7 @@ internal class NewDownloadState(
     fun addExternal(request: ExternalDownload) {
         if (request.url.isEmpty() || external.containsKey(request.url)) return
         external[request.url] = request
+        if ('[' in request.url) literalUrls = literalUrls + request.url
         if (primaryUrl == null) {
             primaryUrl = request.url
             val adv = advanced
@@ -345,7 +380,7 @@ internal class NewDownloadState(
                 }
             }
         }
-        urlText = appendEntries(urlText, listOf(UrlEntry(request.url))).first
+        text = appendEntries(text, listOf(UrlEntry(request.url))).first
         syncAuto()
     }
 

@@ -544,7 +544,7 @@ The rules are an **allow-list**, so anything not listed is refused, including ab
 - **Never allowed:** anything that runs programs, loads config or plugins, or reads other credentials — for example `--exec`, `--exec-before-download`, `--downloader`, `--external-downloader`, `--config-locations`, `--plugin-dirs`, `--ffmpeg-location`, `--batch-file`, `--load-info-json`, `--netrc`, `--cookies-from-browser`, `--use-postprocessor`, `--alias`.
 - Limits: at most 512 arguments, each at most 8 KB, no NUL bytes; `args` must not be empty.
 
-The host prepends `--ignore-config`, `--ffmpeg-location` (its own ffmpeg) and `--cache-dir <scratch>/.cache` (your `--cache-dir` overrides it, still inside the folder), and appends `--proxy` when the user configured a proxy in FluxDown, which then wins over your own. `timeoutMs` defaults to 300 000 and is capped at 3 600 000; the call is also bounded by the script's own wall clock — about 30 s in a resolver, about 30 minutes in a hook. At most two yt-dlp processes run at once across all plugins. `stdout` is cut at 16 MB by default (`truncatedStdout` tells you); `stderr` at 256 KB. The full details are in the [API reference](/docs/en/plugins/api-reference/).
+The host prepends `--ignore-config`, `--ffmpeg-location` (its own ffmpeg) and `--cache-dir <scratch>/.cache` (your `--cache-dir` overrides it, still inside the folder), and appends `--proxy` when the user configured a proxy in FluxDown, which then wins over your own. `timeoutMs` defaults to 300 000 and is capped at 3 600 000; the call is also bounded by the script's own wall clock — the resolver's own budget (10 s by default, up to 120 s) in a resolver, about 30 minutes in a hook. At most two yt-dlp processes run at once across all plugins. `stdout` is cut at 16 MB by default (`truncatedStdout` tells you); `stderr` at 256 KB. The full details are in the [API reference](/docs/en/plugins/api-reference/).
 
 ### A yt-dlp resolver with a retrying hook
 
@@ -580,7 +580,7 @@ The host prepends `--ignore-config`, `--ffmpeg-location` (its own ffmpeg) and `-
 }
 ```
 
-The resolver budget defaults to 10 s; `timeoutMs: 30000` raises it to the 30 s ceiling so yt-dlp (given 25 s below) has room.
+The resolver budget defaults to 10 s; `timeoutMs: 30000` raises it to 30 s (the ceiling is 120 s; FluxDown 0.6.8 and earlier clamp at 30 s) so yt-dlp (given 25 s below) has room.
 
 `resolve.js`
 

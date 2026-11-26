@@ -19,7 +19,8 @@
 
 var DESC = 'Blazing fast multi-protocol download manager (HTTP/FTP/BitTorrent/HLS). ' +
 	'Manage downloads in the full web interface after the service is running.';
-var TOKEN_HELP = 'Leave empty to set the key on first visit of the web interface. ' +
+var TOKEN_HELP = 'Leave empty: the first visit of the web interface asks for the one-time setup code ' +
+	'shown here (also in /etc/fluxdown/agent/setup-bootstrap) before you set the key. ' +
 	'When filled in, it overrides the stored key on every start. ' +
 	'8–128 printable ASCII characters, containing both letters and digits.';
 
@@ -41,7 +42,11 @@ var ZH = {
 		'访问密钥只能包含可见 ASCII 字符，不能含空格。',
 	'Access key must contain both letters and digits.': '访问密钥必须同时包含字母和数字。',
 	'Current access key': '当前访问密钥',
-	'Not set yet — open the web interface to set one.': '尚未设置——请打开 Web 界面进行设置。',
+	'Not set yet — open the web interface and enter the setup code to set one.':
+		'尚未设置——请打开 Web 界面并输入引导码进行设置。',
+	'Setup code': '引导码',
+	'Enter this one-time code on the first visit of the web interface to set the access key.':
+		'首次访问 Web 界面时输入此一次性引导码，即可设置访问密钥。',
 	'Unable to read the access key.': '无法读取访问密钥。',
 	'Show': '显示',
 	'Hide': '隐藏',
@@ -51,7 +56,8 @@ var ZH = {
 	'Open FluxDown': '打开 FluxDown'
 };
 ZH[DESC] = '极速多协议下载管理器（HTTP/FTP/BitTorrent/HLS）。服务运行后，请在完整的 Web 界面中管理下载任务。';
-ZH[TOKEN_HELP] = '留空则在首次访问 Web 界面时设置。填写后，每次启动都以此为准并覆盖已保存的密钥。' +
+ZH[TOKEN_HELP] = '留空则首次访问 Web 界面时需要输入此处显示的一次性引导码（也可在 /etc/fluxdown/agent/setup-bootstrap 中查看）来设置密钥。' +
+	'填写后，每次启动都以此为准并覆盖已保存的密钥。' +
 	'需为 8–128 位可见 ASCII 字符，且同时包含字母和数字。';
 
 var IS_ZH = /^zh/i.test(document.documentElement.getAttribute('lang') || '');
@@ -160,7 +166,7 @@ function renderToken(node, token) {
 		return;
 	}
 	if (token === '') {
-		node.appendChild(E('em', {}, T('Not set yet — open the web interface to set one.')));
+		node.appendChild(E('em', {}, T('Not set yet — open the web interface and enter the setup code to set one.')));
 		return;
 	}
 	span = E('code', {}, '••••••••');
@@ -194,6 +200,32 @@ function renderToken(node, token) {
 	node.appendChild(copyBtn);
 }
 
+function loadSetupCode() {
+	return fs.exec_direct('/usr/libexec/fluxdown/luci-setup-code').then(function(out) {
+		return String(out || '').trim();
+	}).catch(function() {
+		return '';
+	});
+}
+
+function renderSetupCode(node, code) {
+	var copyBtn;
+	node.textContent = '';
+	copyBtn = E('button', {
+		'class': 'cbi-button',
+		'style': 'margin-left:.5em',
+		'click': function(ev) {
+			ev.preventDefault();
+			copyText(code).then(function() {
+				copyBtn.textContent = T('Copied');
+				window.setTimeout(function() { copyBtn.textContent = T('Copy'); }, 1500);
+			}).catch(function() {});
+		}
+	}, T('Copy'));
+	node.appendChild(E('code', {}, code));
+	node.appendChild(copyBtn);
+}
+
 function loadToken() {
 	return fs.exec_direct('/usr/libexec/fluxdown/luci-token').then(function(out) {
 		return String(out || '').trim();
@@ -207,7 +239,8 @@ return view.extend({
 		return Promise.all([
 			uci.load('fluxdown'),
 			callServiceList('fluxdown').then(parseRunning).catch(function() { return false; }),
-			loadToken()
+			loadToken(),
+			loadSetupCode()
 		]);
 	},
 
@@ -261,6 +294,17 @@ return view.extend({
 		o = s.option(form.DummyValue, '_current_token', T('Current access key'));
 		o.cfgvalue = function() { return ''; };
 		o.renderWidget = function() { return E('div', {}, tokenNode); };
+
+		if (data[3] !== '') {
+			o = s.option(form.DummyValue, '_setup_code', T('Setup code'),
+				T('Enter this one-time code on the first visit of the web interface to set the access key.'));
+			o.cfgvalue = function() { return ''; };
+			o.renderWidget = function() {
+				var setupCodeNode = E('span');
+				renderSetupCode(setupCodeNode, data[3]);
+				return E('div', {}, setupCodeNode);
+			};
+		}
 
 		o = s.option(form.Button, '_webui', T('Web interface'));
 		o.inputtitle = T('Open FluxDown');

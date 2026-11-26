@@ -4,10 +4,10 @@
  */
 import { useRef, type CSSProperties, type ReactNode } from "react";
 import { CircleAlert, CircleCheck, CircleDot, CircleSlash, Copy, Loader2, type LucideIcon } from "lucide-react";
-import type { Lang } from "@/i18n/config";
+import { INTL_LOCALE, type Lang } from "@/i18n/config";
 import { cn } from "@/lib/utils";
 
-export const intlLocale = (lang: Lang) => (lang === "zh" ? "zh-CN" : "en-US");
+export const intlLocale = (lang: Lang) => INTL_LOCALE[lang];
 
 /** "3d ago" / "3 天前"。 */
 export function timeAgo(dateStr: string, lang: Lang): string {

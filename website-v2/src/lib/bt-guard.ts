@@ -8,6 +8,7 @@
  * - `POST /api/v1/bt-guard/public/appeal { detail, contact?, turnstileToken? }` → 204；
  *   失败 `{ code, message }`：429 `rate_limited` / 403|400 `turnstile_required|turnstile_failed` / 409 `appeal_pending` / 404 `not_listed`。
  */
+import { INTL_LOCALE, type Lang } from "@/i18n/config";
 import { isRecord } from "./is-record";
 
 /** Cloudflare Turnstile token 上限 2048 字符。 */
@@ -178,10 +179,10 @@ export function btGuardErrorKey(status: number, code: string | undefined): BtGua
 }
 
 /** unix 秒 → 本地化日期时间；非法值返回 "—"。 */
-export function formatExpiry(unixSecs: number, lang: "en" | "zh"): string {
+export function formatExpiry(unixSecs: number, lang: Lang): string {
   const date = new Date(unixSecs * 1000);
   if (!Number.isFinite(date.getTime())) return "—";
-  return new Intl.DateTimeFormat(lang === "zh" ? "zh-CN" : "en-US", {
+  return new Intl.DateTimeFormat(INTL_LOCALE[lang], {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(date);

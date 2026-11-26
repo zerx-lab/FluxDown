@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LoaderCircle } from "lucide-react";
 import { withBase } from "@/lib/base";
+import type { Lang } from "@/i18n/config";
 import {
   btGuardErrorKey,
   formatExpiry,
@@ -69,7 +70,7 @@ async function errorKeyOf(response: Response): Promise<BtGuardErrorKey> {
 
 const EMAIL_RE = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/;
 
-export default function BtGuardSelfCheck({ lang, labels }: { lang: "en" | "zh"; labels: BtGuardLabels }) {
+export default function BtGuardSelfCheck({ lang, labels }: { lang: Lang; labels: BtGuardLabels }) {
   const [state, setState] = useState<State>({ kind: "loading" });
   const [detail, setDetail] = useState("");
   const [contact, setContact] = useState("");

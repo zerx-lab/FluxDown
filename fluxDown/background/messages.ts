@@ -24,14 +24,20 @@ import { parseDashJson } from "@/utils/dash-manifest";
 import { normalizeHlsPlaylist } from "@/utils/hls-playlist";
 import { buildMediaCandidates } from "@/utils/media-candidates";
 import { buildResourceDebugLog } from "@/utils/resource-debug-log";
+import { loadManualServers, MANUAL_SERVERS_KEY } from "@/utils/manual-servers";
 import { profileFor } from "@/utils/site-profiles";
 import { armBypassClick, hasActiveBypass, isAppKnownDown, markAppUp, setBypassKeyHeld } from "./breaker";
 import {
   downloadCandidate,
+  downloadInterceptedMagnet,
+  downloadManualUrls,
   downloadResources,
-  downloadUrls,
+  downloadSelection,
   handoffPage,
 } from "./downloads";
+import { CANCELLED_SELECTION } from "./manual-batches";
+import { createManualServerWriter } from "./manual-server-writes";
+import { chooseManualTarget } from "./manual-target";
 import { showBrowserDownload } from "./browser-downloads";
 import { getCapabilities } from "./host";
 import { isInterceptActive, markPreempted } from "./intercept";
@@ -184,6 +190,10 @@ async function collectFrameLinks(tabId: number, frameId: number): Promise<PageLi
   }
   return [];
 }
+
+const updateManualServers = createManualServerWriter(loadManualServers, (settings) =>
+  browser.storage.local.set({ [MANUAL_SERVERS_KEY]: settings }),
+);
 
 const handlers: { [A in MessageAction]: Handler<A> } = {
   async getPageConfig(req, sender) {
@@ -404,17 +414,33 @@ const handlers: { [A in MessageAction]: Handler<A> } = {
   async downloadCandidate(req, sender) {
     const tabId = await resolveTabId(sender, req.tabId);
     if (tabId === undefined) return { success: false, message: "No tab" };
-    return downloadCandidate(tabId, req.candidateId, req.variantId, req.channel);
+    const channel = await chooseManualTarget(req.channel);
+    if (channel === null) return CANCELLED_SELECTION;
+    return downloadCandidate(tabId, req.candidateId, req.variantId, channel);
   },
 
   async downloadResources(req, sender) {
     const tabId = await resolveTabId(sender, req.tabId);
     if (tabId === undefined) return { success: false, message: "No tab" };
-    return downloadResources(tabId, req.resourceIds, req.channel);
+    const channel = await chooseManualTarget(req.channel);
+    if (channel === null) return CANCELLED_SELECTION;
+    return downloadResources(tabId, req.resourceIds, channel);
+  },
+
+  async downloadSelection(req, sender) {
+    const tabId = await resolveTabId(sender, req.tabId);
+    if (tabId === undefined) return { success: false, message: "No tab" };
+    return downloadSelection(tabId, req.candidates, req.resourceIds);
   },
 
   async downloadUrls(req, sender) {
-    return downloadUrls(req.urls, req.referrer, await resolveTabId(sender, req.tabId), req.channel);
+    const tabId = await resolveTabId(sender, req.tabId);
+    return downloadManualUrls(req.urls, req.referrer, tabId, req.channel);
+  },
+
+  async interceptMagnet(req, sender) {
+    if (typeof req.url !== "string" || !/^magnet:/i.test(req.url)) return { success: false };
+    return downloadInterceptedMagnet(req.url, req.referrer, await resolveTabId(sender));
   },
 
   async handoffPage(req) {
@@ -565,6 +591,11 @@ const handlers: { [A in MessageAction]: Handler<A> } = {
       ),
       key,
     });
+  },
+
+  async updateManualServers(req, sender) {
+    if (!isExtensionPage(sender)) return { ok: false };
+    return { ok: await updateManualServers(req.change) };
   },
 
   // 页面脚本管理：只接受扩展页（选项页 / popup），网页上下文的内容脚本消息一律拒绝。

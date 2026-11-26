@@ -11,6 +11,9 @@
 import { browser } from "wxt/browser";
 import type { Browser } from "wxt/browser";
 import { t } from "@/utils/i18n";
+import { MANUAL_SERVERS_KEY, loadManualServers } from "@/utils/manual-servers";
+import type { DispatchTarget } from "@/utils/download-dispatch";
+import { chooseManualTarget } from "./manual-target";
 import { downloadCandidate } from "./downloads";
 import { canCaptureLinkViaBrowser } from "./intercept";
 import { linkCapture } from "./link-capture";
@@ -100,7 +103,8 @@ async function rebuildContextMenus(): Promise<void> {
   try {
     // 先读设置：removeAll 与 create 之间不再隔着存储读取，缩小与菜单恢复交错的窗口。
     const settings = await getCachedSettings();
-    const errors = await rebuildMenus(browserMenus, menuItems(settings));
+    const { enabled } = await loadManualServers();
+    const errors = await rebuildMenus(browserMenus, menuItems(settings, enabled));
     if (errors.length > 0) logWarn("[FluxDown] Failed to create context menus:", errors.join("; "));
   } catch (e) {
     logWarn("[FluxDown] Failed to create context menus:", e);
@@ -108,12 +112,12 @@ async function rebuildContextMenus(): Promise<void> {
 }
 
 /** 按设置列出全部菜单项：关闭右键菜单时为空；已验证远程服务器时每项下挂「本机 / 远程」子项。 */
-function menuItems(settings: FluxDownSettings): MenuItemSpec[] {
+function menuItems(settings: FluxDownSettings, chooseEachTime: boolean): MenuItemSpec[] {
   if (!settings.contextMenuEnabled) return [];
   const items: MenuItemSpec[] = [];
   for (const def of MENUS) {
     items.push({ id: def.id, title: t(def.titleKey), contexts: def.contexts });
-    if (settings.remoteVerified) {
+    if (settings.remoteVerified && !chooseEachTime) {
       items.push({ id: `${def.id}-local`, parentId: def.id, title: t("menu.sendLocal"), contexts: def.contexts });
       items.push({ id: `${def.id}-remote`, parentId: def.id, title: t("menu.sendRemote"), contexts: def.contexts });
     }
@@ -136,7 +140,7 @@ function notifyVideoUnavailable(): void {
 }
 
 /** #407：用右键命中的元素下载其首个可下载候选；没有则返回 false。 */
-async function downloadContextElement(tabId: number, channel: SendChannel | undefined): Promise<boolean> {
+async function downloadContextElement(tabId: number, channel: DispatchTarget | undefined): Promise<boolean> {
   const elementKey = getContextTarget(tabId);
   if (!elementKey) return false;
   const view = await buildTabView(tabId, { withHandoff: false });
@@ -150,7 +154,9 @@ async function downloadContextElement(tabId: number, channel: SendChannel | unde
 async function handleMenuClick(info: Browser.contextMenus.OnClickData, tab?: Browser.tabs.Tab): Promise<void> {
   const parsed = parseMenuId(info.menuItemId);
   if (!parsed) return; // 非 FluxDown 菜单项，忽略
-  const { base, channel } = parsed;
+  const { base } = parsed;
+  const channel = await chooseManualTarget(parsed.channel);
+  if (channel === null) return;
   const referrer = tab?.url || info.pageUrl || "";
 
   let downloadUrl: string | undefined;
@@ -237,5 +243,8 @@ export function installMenus(): void {
   // contextMenuEnabled / remoteVerified 变化后重建。
   onSettingsChanged(() => {
     void createContextMenus();
+  });
+  browser.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && MANUAL_SERVERS_KEY in changes) void createContextMenus();
   });
 }

@@ -26,6 +26,7 @@ import {
 import { installLinkCapture } from "./link-capture";
 import { createContextMenus, installMenus } from "./menus";
 import { downloadPlayingMedia } from "./downloads";
+import { installManualTarget } from "./manual-target";
 import { installMessages } from "./messages";
 import { installPageScripts } from "./page-scripts";
 import { notify } from "./notify";
@@ -92,6 +93,7 @@ export function startBackground(): void {
   installBrowserDownloadNotices();
   installCaptureTracker();
   installMessages();
+  installManualTarget();
   // 页面脚本管理器：onUserScriptMessage / onInstalled 等监听器必须在顶层同步注册。
   installPageScripts();
   installPorts();

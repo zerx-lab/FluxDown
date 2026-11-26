@@ -85,7 +85,7 @@ def install_sections(present: list[str], version: str, repo: str, owner: str) ->
 
 解压后运行 `fluxdown-agent --server`（Windows 为 `fluxdown-agent.exe --server`），浏览器访问 `http://127.0.0.1:17800`。
 **包内两个可执行文件必须放在同一目录**：`fluxdown-agent`（含 Web 控制台，已编译进二进制）与 `fluxdownd`（下载 daemon，由 agent 自动拉起、退出时一并关停），无需附带任何静态资源目录。
-首次启动请在浏览器里完成「初始化 FluxDown Server」向导设置访问密钥（无人值守部署可用 `FLUXDOWN_TOKEN` 预置）。
+首次启动请在浏览器里完成「初始化 FluxDown Server」向导。向导需要数据目录 `agent/setup-bootstrap` 里的一次性口令（Docker 为 `/data/agent/setup-bootstrap`）；无人值守部署可用 `FLUXDOWN_TOKEN` 预置并跳过向导。
 
 **OpenWrt**：24.10 及更早用 `opkg install fluxdown-server_*.ipk luci-app-fluxdown_*.ipk`；25.12 起用 `apk add --allow-untrusted fluxdown-server_*.apk luci-app-fluxdown_*.apk`（包未用 OpenWrt 官方密钥签名）。`<arch>` 取路由器 `/etc/apk/arch`（或 `opkg print-architecture`）中的架构名。LuCI「服务 → FluxDown」页管理，Web 界面在 `http://路由器IP:17800`。agent 二进制含完整 Web UI，另附 fluxdownd，需 overlay 空间充足的软路由设备。
 **QNAP**：App Center → 手动安装 `.qpkg`（需在设置中允许安装未经验证的应用），装完点应用图标直达 Web 界面。
@@ -100,7 +100,7 @@ docker run -d -p 17800:17800 -v fluxdown-data:/data \\
   ghcr.io/{owner}/fluxdown-server:{version}
 ```
 
-Compose 部署见仓库 `docker/docker-compose.yml`。首次打开 Web 界面时按向导设置访问密钥，或用 `-e FLUXDOWN_TOKEN=...` 预置。
+Compose 部署见仓库 `docker/docker-compose.yml`。首次打开 Web 界面时按向导设置访问密钥（须先读取数据卷里的 `agent/setup-bootstrap`），或用 `-e FLUXDOWN_TOKEN=...` 预置。
 """
         )
     if "cli" in present:

@@ -6,7 +6,7 @@ import { defineMessages } from "../define";
  * 每格结论必须有出处:GD 侧引自其官方文档 / README(行级出处见 `DocsCompareGd.astro` 的 `src`),
  * FluxDown 侧以本仓源码与本站文档为准。改任一行先重新核对两侧,并同步更新 `checked`。
  */
-export const docsCompare = defineMessages({
+export const docsCompare = defineMessages("docsCompare", {
   en: {
     eyebrow: "Comparison",
     title: "FluxDown vs <em>Ghost Downloader</em>",

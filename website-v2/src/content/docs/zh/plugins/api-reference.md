@@ -3,7 +3,7 @@ title: 插件 API 参考
 description: 全部入口函数、flux.* 接口、JavaScript 运行环境、运行时限制，以及插件会遇到的错误信息。
 section: plugins
 order: 11
-sourceHash: "52650f0474a9"
+sourceHash: "531db1d063e1"
 ---
 
 本页列出插件脚本能看到的一切：FluxDown 会调用的入口函数、注入的 `flux` 对象、JavaScript 运行环境、运行时限制，以及开发中会遇到的错误信息。这是一份参考手册；分步教程请看[你的第一个插件](/docs/zh/plugins/your-first-plugin/)、[TypeScript 项目](/docs/zh/plugins/typescript-project/)、[事件钩子指南](/docs/zh/plugins/hooks-guide/)、[账号登录指南](/docs/zh/plugins/auth-guide/)、[订阅源指南](/docs/zh/plugins/subscription-guide/)、[可移植界面指南](/docs/zh/plugins/ui-guide/)和[桌面原生界面指南](/docs/zh/plugins/desktop-ui-guide/)。
@@ -607,7 +607,7 @@ globalThis.resolve = async (ctx) => {
 };
 ```
 
-在 `resolve` 里，脚本整体的时间预算（默认 10 秒，至多 30 秒）同样约束这次调用，所以超过它的 `timeoutMs` 在那里没有意义。
+在 `resolve` 里，脚本整体的时间预算（默认 10 秒，至多 120 秒）同样约束这次调用，所以超过它的 `timeoutMs` 在那里没有意义。
 
 ### 仅 main 可用的接口
 
@@ -649,7 +649,7 @@ globalThis.resolve = async (ctx) => {
 
 | 入口 | 墙钟 | CPU 预算 | 内存 |
 |---|---|---|---|
-| `resolve` | 默认 10 秒；`resolvers[0].timeoutMs` 会替换它，**硬上限 30 秒** | 同一数值，≤ 30 秒 | 默认 64 MB；`resolvers[0].memoryLimitMb` 会替换它，上限 512 MB |
+| `resolve` | 默认 10 秒；`resolvers[0].timeoutMs` 会替换它，**硬上限 120 秒**（0.6.8 及更早：30 秒） | 同一数值，≤ 120 秒 | 默认 64 MB；`resolvers[0].memoryLimitMb` 会替换它，上限 512 MB |
 | `subscribe` | 默认 10 秒；`subscriptions[0].timeoutMs` 会替换它，上限 30 秒 | 相同 | 64 MB |
 | `authenticate` | 默认 30 秒；`auth.timeoutMs` 会替换它，上限 30 秒 | 相同 | 64 MB |
 | 钩子 | 5 秒 | 5 秒 | 32 MB |

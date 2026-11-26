@@ -3,7 +3,7 @@ title: 认证指南
 description: 让用户在插件里登录站点：authenticate 入口、二维码与账号密码登录，以及在 resolver 中复用登录凭据。
 section: plugins
 order: 5
-sourceHash: "02aa234e9ce7"
+sourceHash: "34ecd8c7845d"
 ---
 
 很多站点只对已登录用户提供文件。**认证插件**负责教会 FluxDown 如何登录这样的站点：用户在插件所在行里登录一次，FluxDown 保存得到的凭据，之后自动附加到该插件的后续请求上，你的 resolver 完全不必接触密码，也不必反复登录。
@@ -56,7 +56,7 @@ sourceHash: "02aa234e9ce7"
 
 ## 自定义登录界面
 
-默认情况下，**登录**按钮打开上文所述的固定对话框。插件可以声明一个 `location: "auth"` 的视图，用自己的界面替换整个对话框内容：
+默认情况下，「登录」按钮会打开上述固定对话框。插件可以通过声明一个带有 `location: "auth"` 的视图，用自定义界面替换整个对话框内容：
 
 ```json
 {
@@ -69,13 +69,13 @@ sourceHash: "02aa234e9ce7"
 }
 ```
 
-- 每个插件至多一个 `auth` 视图，并且要求顶层声明 `auth`（因而需要 `auth` 权限）。视图可以是可移植视图（由 `main` 用 `flux.ui.view` 渲染），也可以是[桌面脚本](/docs/zh/plugins/desktop-ui-guide/)；桌面端优先使用桌面脚本，Web 端只显示可移植视图。
-- 插件已启用、已加载且没有待授权项时，对话框只承载你的视图。标题仍为「登录 <插件名>」，不再显示「站点 / 登录信息」表单与固定按钮；否则，以及在移动端，使用默认对话框。仅有桌面脚本实现、而插件包不在本机（连接远端主机）时，桌面端同样回退到默认对话框。只要插件声明了 `auth.entry`，按钮就照常显示。
-- 登录由视图自己驱动：调用你自己的 `flux.rpc.handle` 处理函数，或在 `main` 里完成流程，用 `flux.auth.save` 保存结果，再调用 `ctx.close()` 关闭对话框（桌面脚本用 `fluxdown.close()`）。已经登录时可以直接在 `init` 里调用 `ctx.close()`。
-- 不认识该 location 的旧版本应用会拒绝此 manifest，请把 `minAppVersion` 设为下一个版本或更高。
+- 每个插件最多只能有一个 `auth` 视图，并且它需要顶层的 `auth` 声明（因此也需要 `auth` 权限）。该视图可以是可移植的（使用 `main` 和 `flux.ui.view` 渲染）或一个 [桌面脚本](/docs/zh/plugins/desktop-ui-guide/)；桌面应用更倾向于使用桌面脚本，而 Web UI 仅显示可移植视图。
+- 当插件已启用、已加载且无待处理的同意时，对话框仅显示你的视图。标题仍为“登录 <plugin>”；站点/登录信息表单和固定按钮不会显示。否则，以及在移动应用中，将使用默认对话框。桌面应用在以下情况下也会回退到默认对话框：当视图仅包含桌面脚本且插件包不在本机（远程主机）上时。只要插件具有 `auth.entry`，按钮始终会显示。
+- 从视图中驱动登录：调用你自己的 `flux.rpc.handle` 处理程序，或在 `main` 中运行流程，将结果存储于 `flux.auth.save`，然后调用 `ctx.close()` 来关闭对话框（桌面脚本：`fluxdown.close()`）。如果用户已登录，你可以直接从 `init` 调用 `ctx.close()`。
+- 在此位置之前发布的应用会拒绝该清单，因此请将 `minAppVersion` 设置为下一个版本或更高版本。
 
 ```js
-// main.js — 插件自绘的二维码登录
+// main.js — QR login drawn by the plugin
 const { h } = flux.ui;
 
 flux.ui.view("login", {
@@ -107,7 +107,7 @@ flux.ui.view("login", {
 });
 ```
 
-示例假设登录服务直接返回二维码图片和确认后的 Cookie，请按你的站点调整请求（`Set-Cookie` 的读取方式见[完整示例](#完整示例二维码登录)）。没有声明 `auth` 视图时一切照旧：默认的表单对话框与 `authenticate` 各 action 的行为完全不变。
+该示例假定登录服务会直接返回二维码图像和已确认的 cookies；请根据你的站点调整请求（从 `Set-Cookie` 读取的 cookies 如 [完整示例](#完整示例二维码登录) 中所示）。如果没有 `auth` 视图，一切都不会改变：默认的表单对话框和 `authenticate` 操作的行为与之前完全相同。
 
 ## `authenticate` 入口
 

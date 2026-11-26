@@ -58,6 +58,7 @@ function input(overrides: Partial<ViewModelInput>): ViewModelInput {
     engine,
     showLowConfidence: false,
     handoff: { kind: "no-match", installed: 0 },
+    chooseManualTarget: false,
     site: { host: "www.bilibili.com", profileKey: null, profile: { intercept: "default", sniff: true, pageDot: true, floatButton: true, saveDir: "" } },
     probe: "live",
     lateFrames: new Set(),
