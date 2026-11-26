@@ -364,9 +364,9 @@ async fn run_agent(
         (config, switches, token)
     };
     let (ready_tx, ready_rx) = tokio::sync::watch::channel(false);
-    let setup_gate = server_config
-        .is_some()
-        .then(|| Arc::new(SetupGate::new(store.data_dir())));
+    let setup_gate = server_config.as_ref().map(|config| {
+        Arc::new(SetupGate::new(store.data_dir()).with_copy(config.setup_code_copy.clone()))
+    });
     let bootstrap = server_config
         .zip(setup_gate.clone())
         .map(|(config, setup_gate)| ServerBootstrap {
@@ -807,7 +807,14 @@ async fn await_daemon_ready(readiness: DaemonReadiness) -> AgentResult {
         };
         // 引导码必须在放行 setup 之前就位。写失败则不放行，避免退回匿名抢注。
         if let Some(server) = &server {
-            server.setup_gate.prepare(token_set).await?;
+            if let Err(error) = server.setup_gate.prepare(token_set).await {
+                tracing::error!(
+                    path = %server.setup_gate.path().display(),
+                    error = %error,
+                    "could not prepare the first-run setup bootstrap file"
+                );
+                return Err(error.into());
+            }
             if server.ready.send(true).is_err() {
                 tracing::debug!("server readiness receiver closed during shutdown");
             }

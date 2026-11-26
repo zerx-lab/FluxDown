@@ -100,6 +100,9 @@ pub struct ServerConfig {
     /// `FLUXDOWN_ALLOW_LOCAL_PLATFORM` 为真：所有已鉴权 `/rpc` 连接都可在服务器主机上打开 /
     /// 定位任务产物（显式越权开关，默认关）。
     pub allow_local_platform: bool,
+    /// `FLUXDOWN_SETUP_CODE_COPY`：引导码额外写一份到该路径（NAS 套件指向用户可见的共享目录）。
+    /// 父目录必须已存在；副本按父目录默认权限创建，设置成功后删除。
+    pub setup_code_copy: Option<PathBuf>,
 }
 
 impl ServerConfig {
@@ -118,6 +121,7 @@ impl ServerConfig {
     /// | `FLUXDOWN_LANG` | `/ping` 语言回退，`zh-CN` → `zh` |
     /// | `FLUXDOWN_DEMO` / `FLUXDOWN_DEMO_URL` | 演示模式 |
     /// | `FLUXDOWN_ALLOW_LOCAL_PLATFORM` | 所有已鉴权连接都可在服务器主机上打开 / 定位任务产物 |
+    /// | `FLUXDOWN_SETUP_CODE_COPY` | 首次设置引导码的用户可见副本路径（NAS 套件用） |
     pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Result<Self, ServerConfigError> {
         let bind_text = get("FLUXDOWN_BIND")
             .map(|value| value.trim().to_owned())
@@ -165,6 +169,9 @@ impl ServerConfig {
                 "FLUXDOWN_ALLOW_LOCAL_PLATFORM is on: every authenticated client may open downloaded files on this host"
             );
         }
+        let setup_code_copy = get("FLUXDOWN_SETUP_CODE_COPY")
+            .map(|value| PathBuf::from(value.trim()))
+            .filter(|path| !path.as_os_str().is_empty());
         Ok(Self {
             bind,
             token,
@@ -173,6 +180,7 @@ impl ServerConfig {
             language,
             demo,
             allow_local_platform,
+            setup_code_copy,
         })
     }
 
@@ -634,6 +642,8 @@ impl AuthThrottle {
 /// 内存中的值。未装入时 setup 一律拒绝，不能退回匿名落盘。
 pub struct SetupGate {
     path: PathBuf,
+    /// 用户可见副本（[`ServerConfig::setup_code_copy`]）；只写不读，核对只认私有文件。
+    copy: Option<PathBuf>,
     secret: tokio::sync::RwLock<Option<String>>,
     failures: std::sync::Mutex<BootstrapFailures>,
 }
@@ -649,9 +659,17 @@ impl SetupGate {
     pub fn new(data_dir: &Path) -> Self {
         Self {
             path: data_dir.join(SETUP_BOOTSTRAP_FILE),
+            copy: None,
             secret: tokio::sync::RwLock::new(None),
             failures: std::sync::Mutex::new(BootstrapFailures::default()),
         }
+    }
+
+    /// 额外维护一份用户可见副本（NAS 套件的共享目录）。
+    #[must_use]
+    pub fn with_copy(mut self, copy: Option<PathBuf>) -> Self {
+        self.copy = copy;
+        self
     }
 
     #[must_use]
@@ -664,23 +682,37 @@ impl SetupGate {
     pub async fn prepare(&self, access_key_set: bool) -> std::io::Result<()> {
         if access_key_set {
             self.disarm().await;
-            if let Err(error) = delete_bootstrap_file(&self.path).await {
-                tracing::error!(
-                    path = %self.path.display(),
-                    error = %error,
-                    "could not delete a leftover setup bootstrap file"
-                );
-            }
+            self.delete_files("could not delete a leftover setup bootstrap file")
+                .await;
             return Ok(());
         }
         let secret = load_or_create_bootstrap(&self.path).await?;
+        if let Some(copy) = &self.copy {
+            // 副本只是额外通道：写不出时私有文件与日志仍可用，不阻止启动。
+            if let Err(error) = write_bootstrap_copy(copy, &secret).await {
+                tracing::warn!(
+                    path = %copy.display(),
+                    error = %error,
+                    "could not write the setup bootstrap copy"
+                );
+            }
+        }
         tracing::info!(
             path = %self.path.display(),
+            copy = ?self.copy.as_deref().map(Path::display),
             bootstrap = %secret,
             "first-run setup requires this one-time bootstrap; read the file if this log is not visible"
         );
         *self.secret.write().await = Some(secret);
         Ok(())
+    }
+
+    async fn delete_files(&self, message: &'static str) {
+        for path in std::iter::once(&self.path).chain(self.copy.as_ref()) {
+            if let Err(error) = delete_bootstrap_file(path).await {
+                tracing::error!(path = %path.display(), error = %error, "{message}");
+            }
+        }
     }
 
     pub async fn is_armed(&self) -> bool {
@@ -708,13 +740,8 @@ impl SetupGate {
     /// 设置成功后作废。先清内存再删文件；删文件失败只记日志，下次启动因密钥已设会再删。
     pub async fn consume(&self) {
         self.disarm().await;
-        if let Err(error) = delete_bootstrap_file(&self.path).await {
-            tracing::error!(
-                path = %self.path.display(),
-                error = %error,
-                "could not delete the setup bootstrap file after a successful setup"
-            );
-        }
+        self.delete_files("could not delete the setup bootstrap file after a successful setup")
+            .await;
     }
 
     async fn disarm(&self) {
@@ -871,6 +898,11 @@ async fn delete_bootstrap_file(path: &Path) -> std::io::Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
     }
+}
+
+/// 用户可见副本：不收紧权限（共享目录按其 ACL 继承），父目录不存在即失败，不代建。
+async fn write_bootstrap_copy(path: &Path, secret: &str) -> std::io::Result<()> {
+    tokio::fs::write(path, format!("{secret}\n")).await
 }
 
 // ---------------------------------------------------------------------------
@@ -2273,6 +2305,33 @@ mod tests {
         assert!(!harness.handle.setup_gate.path().exists());
         harness.finish().await;
     }
+    #[tokio::test]
+    async fn bootstrap_copy_mirrors_the_code_and_is_removed_after_setup() {
+        let dir = std::env::temp_dir().join(format!(
+            "fluxdown_bootstrap_copy_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let share = dir.join("share");
+        tokio::fs::create_dir_all(&share).await.unwrap();
+        let copy = share.join("FluxDown-setup-code.txt");
+        let gate = SetupGate::new(&dir.join("agent")).with_copy(Some(copy.clone()));
+        gate.prepare(false).await.unwrap();
+        let secret = tokio::fs::read_to_string(gate.path()).await.unwrap();
+        assert_eq!(tokio::fs::read_to_string(&copy).await.unwrap(), secret);
+        assert!(gate.authorize(secret.trim()).await.is_ok());
+        gate.consume().await;
+        assert!(!copy.exists());
+        assert!(!gate.path().exists());
+
+        // 副本目录不存在：只告警，私有文件照常生成并可用。
+        let missing = SetupGate::new(&dir.join("agent2"))
+            .with_copy(Some(dir.join("absent").join("code.txt")));
+        missing.prepare(false).await.unwrap();
+        assert!(missing.is_armed().await);
+        tokio::fs::remove_dir_all(&dir).await.unwrap();
+    }
+
     #[tokio::test]
     async fn bootstrap_file_is_private_reused_and_dropped_once_a_key_exists() {
         let dir = std::env::temp_dir().join(format!(
