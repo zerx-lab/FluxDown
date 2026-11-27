@@ -4348,5 +4348,9 @@
   "aria2AdvancedInvalid": "Ungültige Option",
   "aria2AdvancedExported": "Aktueller Entwurf in die Zwischenablage exportiert.",
   "aria2AdvancedOpenHint": "Alle unterstützten Optionen werden angezeigt. Bearbeiten Sie den Entwurf und klicken Sie auf Anwenden, um zu speichern, oder exportieren Sie den aktuellen Entwurf.",
-  "aria2AdvancedBusy": "Eine Anfrage für erweiterte Optionen ist bereits im Gange."
+  "aria2AdvancedBusy": "Eine Anfrage für erweiterte Optionen ist bereits im Gange.",
+  "hostRestoreFailed": "Dieses Gerät wird verwendet. „{name}“ konnte nicht erreicht werden.",
+  "mobileDownloadDraftHostChanged": "Der Host wurde gewechselt. Wechsle zurück oder öffne dieses Formular erneut, bevor du es absendest.",
+  "mobileDispatchReturnToSourceHost": "Zum Quell-Host zurückwechseln",
+  "mobileDispatchSourceHostMissing": "Der Quell-Host wurde entfernt. Dieser Entwurf kann nicht gesendet werden; beim Schließen dieses Formulars wird er verworfen."
 }

@@ -4345,5 +4345,12 @@
   "cleanUnfinishedSelectionDesc": "移除所選的 {count} 個本機暫停或失敗任務，並刪除可確認歸屬的下載殘片？成品及歸屬不明的殘片會保留。",
   "cleanFinishedLocalDesc": "移除本機的 {count} 個已完成任務？保留下載檔案，以及正在做種或等待做種的任務。",
   "urlRangeHint": "連續編號的檔案可在檔名中手寫範圍，例如 https://example.com/comic/[001-215].webp",
-  "urlRangeLimit": "這些範圍合計超過 1000 個連結，請縮小範圍後再提交。"
+  "urlRangeLimit": "這些範圍合計超過 1000 個連結，請縮小範圍後再提交。",
+  "webSetupBootstrapWrong": "初始化口令不正確，請從口令檔案重新複製。",
+  "webSetupTooManyAttempts": "錯誤嘗試次數過多，請稍等幾分鐘後再試。",
+  "errReasonTaskRestartTimeout": "上一次下載未能及時停止，無法重新下載。已保留任務和檔案，請稍後重試。",
+  "hostRestoreFailed": "已切換到本機。無法連線「{name}」。",
+  "mobileDownloadDraftHostChanged": "主機已切換。請切回原主機，或重新開啟此表單後再提交。",
+  "mobileDispatchReturnToSourceHost": "切回原主機",
+  "mobileDispatchSourceHostMissing": "原主機已移除，無法派送此草稿。關閉表單將捨棄草稿。"
 }

@@ -4348,5 +4348,9 @@
   "aria2AdvancedInvalid": "Nieprawidłowa opcja",
   "aria2AdvancedExported": "Bieżąca wersja robocza została wyeksportowana do schowka.",
   "aria2AdvancedOpenHint": "Wyświetlane są wszystkie obsługiwane opcje. Edytuj wersję roboczą i Zastosuj, aby zapisać, lub wyeksportuj bieżącą wersję roboczą.",
-  "aria2AdvancedBusy": "Żądanie zaawansowanych opcji już trwa."
+  "aria2AdvancedBusy": "Żądanie zaawansowanych opcji już trwa.",
+  "hostRestoreFailed": "Używane jest to urządzenie. Nie udało się połączyć z „{name}”.",
+  "mobileDownloadDraftHostChanged": "Host został zmieniony. Przełącz z powrotem lub otwórz ponownie ten formularz przed wysłaniem.",
+  "mobileDispatchReturnToSourceHost": "Wróć do hosta źródłowego",
+  "mobileDispatchSourceHostMissing": "Host źródłowy został usunięty. Tego szkicu nie można wysłać; zamknięcie tego formularza go porzuca."
 }

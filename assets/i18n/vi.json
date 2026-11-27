@@ -4348,5 +4348,9 @@
   "aria2AdvancedInvalid": "Tùy chọn không hợp lệ",
   "aria2AdvancedExported": "Bản nháp hiện tại đã được xuất vào khay nhớ tạm.",
   "aria2AdvancedOpenHint": "Hiển thị tất cả các tùy chọn được hỗ trợ. Chỉnh sửa bản nháp và Áp dụng để lưu, hoặc xuất bản nháp hiện tại.",
-  "aria2AdvancedBusy": "Yêu cầu tùy chọn nâng cao đang được xử lý."
+  "aria2AdvancedBusy": "Yêu cầu tùy chọn nâng cao đang được xử lý.",
+  "hostRestoreFailed": "Đang dùng thiết bị này. Không thể kết nối tới “{name}”.",
+  "mobileDownloadDraftHostChanged": "Host đã thay đổi. Hãy chuyển lại hoặc mở lại biểu mẫu này trước khi gửi.",
+  "mobileDispatchReturnToSourceHost": "Chuyển lại host nguồn",
+  "mobileDispatchSourceHostMissing": "Host nguồn đã bị gỡ bỏ. Không thể gửi bản nháp này; đóng biểu mẫu sẽ hủy nó."
 }

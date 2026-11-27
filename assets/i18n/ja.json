@@ -4348,5 +4348,9 @@
   "aria2AdvancedInvalid": "無効なオプションです",
   "aria2AdvancedExported": "現在の下書きがクリップボードにエクスポートされました。",
   "aria2AdvancedOpenHint": "サポートされているすべてのオプションが表示されています。下書きを編集して適用で保存するか、現在の下書きをエクスポートしてください。",
-  "aria2AdvancedBusy": "詳細設定のリクエストはすでに進行中です。"
+  "aria2AdvancedBusy": "詳細設定のリクエストはすでに進行中です。",
+  "hostRestoreFailed": "このデバイスを使用中です。「{name}」に接続できませんでした。",
+  "mobileDownloadDraftHostChanged": "ホストが切り替わりました。送信する前に元のホストに戻るか、このフォームを開き直してください。",
+  "mobileDispatchReturnToSourceHost": "元のホストに戻る",
+  "mobileDispatchSourceHostMissing": "元のホストが削除されました。この下書きは送信できません。フォームを閉じると破棄されます。"
 }

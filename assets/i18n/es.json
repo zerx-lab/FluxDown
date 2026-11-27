@@ -4348,5 +4348,9 @@
   "cleanUnfinishedSelectionDesc": "¿Eliminar {count} tareas locales en pausa o fallidas seleccionadas y borrar los datos parciales que se les puedan atribuir? Se conservarán los archivos finalizados y los datos parciales de propiedad desconocida.",
   "cleanFinishedLocalDesc": "¿Eliminar {count} tarea(s) local(es) completada(s)? Se conservarán los archivos y las tareas que estén sembrando o en cola para sembrar.",
   "urlRangeHint": "Para archivos numerados, escribe un rango en el nombre de archivo: https://example.com/comic/[001-215].webp",
-  "urlRangeLimit": "Estos rangos generan más de 1000 enlaces. Acórtalos antes de enviarlos."
+  "urlRangeLimit": "Estos rangos generan más de 1000 enlaces. Acórtalos antes de enviarlos.",
+  "hostRestoreFailed": "Usando este dispositivo. No se pudo conectar a “{name}”.",
+  "mobileDownloadDraftHostChanged": "El host ha cambiado. Vuelve al original o reabre este formulario antes de enviarlo.",
+  "mobileDispatchReturnToSourceHost": "Volver al host de origen",
+  "mobileDispatchSourceHostMissing": "Se ha eliminado el host de origen. No se puede enviar este borrador; al cerrar este formulario se descarta."
 }
