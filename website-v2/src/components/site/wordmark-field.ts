@@ -1,9 +1,11 @@
 /**
- * 页脚「FluxDown」巨型字标的粒子版:把字标按页面实际排版栅格化后采样成粒子。
+ * 页脚「FluxDown」巨型字标的粒子版:把字标按页面实际排版栅格化后高密度采样成粒子。
  *
- * - 首次进入视口:粒子从下方散落处汇流成字。
- * - 轮廓粒子较亮(延续原描边字标的观感),字腔内部是淡淡的强调色填充;自下而上渐隐,同原遮罩。
- * - 指针:像一枚放大镜/聚光灯——光标附近的粒子被点亮成强调色 / cyan,并向外轻微鼓起几像素
+ * - 首次进入视口:粒子自左向右依次从下方散落处汇流成字。
+ * - 着色:字腔填充按横向位置从强调色渐变到 cyan,轮廓粒子更大更亮,保证字形清晰可读;
+ *   自下而上渐隐,同原遮罩。
+ * - 扫光:每隔几秒一道斜向光带掠过字标,经过处粒子点亮并带辉光。
+ * - 指针:像一枚放大镜/聚光灯——光标附近的粒子被点亮并向外轻微鼓起几像素
  *   (按归位坐标计算,字形始终可读,不会被搅散);移开后余辉慢慢冷却,留下一道淡淡的光痕。
  * - 按下:从按下点扩散出一圈涟漪,波前经过处粒子短暂发亮并沿径向轻轻起伏,随距离与时间衰减。
  * - 空闲时随机零星闪烁。
@@ -22,6 +24,8 @@ interface Grain {
   cyan: boolean;
   /** 自下而上渐隐系数(按归位坐标,0..1) */
   fade: number;
+  /** 入场剩余等待(秒):到时才开始汇流 */
+  delay: number;
 }
 
 interface Ripple {
@@ -33,7 +37,7 @@ interface Ripple {
 
 const SPRING = 60;
 /** 透镜半径与最大鼓起位移(px) */
-const LENS_R = 140;
+const LENS_R = 170;
 const LENS_PUSH = 7;
 /** 涟漪波前速度(px/s)、波带半宽(px)、最大径向起伏(px)、寿命(s) */
 const RIPPLE_SPEED = 560;
@@ -41,6 +45,13 @@ const RIPPLE_BAND = 46;
 const RIPPLE_PUSH = 5;
 const RIPPLE_LIFE = 1.8;
 const MAX_RIPPLES = 4;
+/** 扫光:周期(s)、单次掠过时长(s)、光带半宽(px)、斜率(y 对 x 的贡献) */
+const SWEEP_PERIOD = 5.5;
+const SWEEP_DURATION = 1.6;
+const SWEEP_BAND = 70;
+const SWEEP_SLANT = 0.45;
+/** 入场:自左向右的最大错峰(s) */
+const INTRO_STAGGER = 0.7;
 
 export class WordmarkField implements Scene {
   private grains: Grain[] = [];
@@ -48,10 +59,13 @@ export class WordmarkField implements Scene {
   private width = 0;
   private height = 0;
   private introPending = true;
+  /** 入场完成后才开始计时扫光,避免与汇流叠在一起 */
+  private clock = -1.2;
 
-  private readonly edgeBatch = new StrokeBatch(1.8);
-  private readonly fillBatch = new StrokeBatch(1.5);
-  private readonly hotBatch = new StrokeBatch(2.6);
+  private readonly fillBatch = new StrokeBatch(2);
+  private readonly edgeBatch = new StrokeBatch(2.4);
+  private readonly glowBatch = new StrokeBatch(7);
+  private readonly hotBatch = new StrokeBatch(3);
 
   constructor(
     private readonly text: HTMLElement,
@@ -95,7 +109,8 @@ export class WordmarkField implements Scene {
       return (data[(iy * off.width + ix) * 4 + 3] ?? 0) > 110;
     };
 
-    const step = Math.max(4, Math.round(size / 42));
+    // 栅格足够细才能看清字形笔画(窄屏字号小,下限 3px)
+    const step = Math.max(3, Math.round(size / 62));
     const probe = step * 0.75;
     const grains: Grain[] = [];
     for (let y = step / 2; y < height; y += step) {
@@ -111,8 +126,10 @@ export class WordmarkField implements Scene {
           vy: 0,
           heat: 0,
           edge,
-          cyan: Math.random() < 0.15 + 0.6 * (x / width),
-          fade: 1 - smoothstep(0.3 * height, height, y),
+          // 横向强调色 → cyan 渐变:按位置抖动取色,整体呈平滑过渡
+          cyan: Math.random() < smoothstep(0.1, 0.9, x / width),
+          fade: 1 - smoothstep(0.45 * height, 1.05 * height, y),
+          delay: 0,
         });
       }
     }
@@ -127,22 +144,24 @@ export class WordmarkField implements Scene {
   frame(ctx: CanvasRenderingContext2D, dt: number, p: Pointer, pal: Palette) {
     if (!this.grains.length) return;
     if (dt > 0 && this.introPending) {
-      // 汇流入场:从下方散落处飞回字形
+      // 汇流入场:自左向右依次从下方散落处飞回字形
       this.introPending = false;
       for (const g of this.grains) {
-        g.x = g.hx + (Math.random() - 0.5) * this.width * 0.5;
+        g.x = g.hx + (Math.random() - 0.5) * this.width * 0.3;
         g.y = this.height + 20 + Math.random() * 160;
         g.vx = g.vy = 0;
+        g.delay = (g.hx / this.width) * INTRO_STAGGER + Math.random() * 0.15;
       }
     }
 
     const damp = Math.exp(-7 * dt);
-    const cool = Math.exp(-1.4 * dt);
+    const cool = Math.exp(-1.6 * dt);
     if (dt > 0) {
+      this.clock += dt;
       // 空闲闪烁
-      for (let i = 0; i < 3; i++) {
+      for (let i = 0; i < 5; i++) {
         const g = this.grains[Math.floor(Math.random() * this.grains.length)];
-        if (g) g.heat = Math.max(g.heat, 0.55);
+        if (g) g.heat = Math.max(g.heat, 0.6);
       }
       let alive = 0;
       for (const r of this.ripples) {
@@ -151,7 +170,16 @@ export class WordmarkField implements Scene {
       }
       this.ripples.length = alive;
 
+      // 扫光波前(沿 u = x + SWEEP_SLANT * y 推进);不在掠过阶段时为 null
+      const phase = this.clock > 0 ? this.clock % SWEEP_PERIOD : -1;
+      const span = this.width + SWEEP_SLANT * this.height + 2 * SWEEP_BAND;
+      const sweep = phase >= 0 && phase < SWEEP_DURATION ? smoothstep(0, 1, phase / SWEEP_DURATION) * span - SWEEP_BAND : null;
+
       for (const g of this.grains) {
+        if (g.delay > 0) {
+          g.delay -= dt;
+          continue;
+        }
         // 目标位置 = 归位点 + 透镜鼓起 + 涟漪起伏;位移只按归位坐标算,避免与当前位置互相反馈抖动
         let tx = g.hx;
         let ty = g.hy;
@@ -165,8 +193,12 @@ export class WordmarkField implements Scene {
             const push = LENS_PUSH * Math.sin(Math.PI * t) * p.presence;
             tx += (dx / d) * push;
             ty += (dy / d) * push;
-            g.heat = Math.max(g.heat, smoothstep(1, 0, t) * 0.9 * p.presence);
+            g.heat = Math.max(g.heat, smoothstep(1, 0, t) * p.presence);
           }
+        }
+        if (sweep !== null) {
+          const band = 1 - Math.abs(g.hx + SWEEP_SLANT * g.hy - sweep) / SWEEP_BAND;
+          if (band > 0) g.heat = Math.max(g.heat, band * band * 0.85);
         }
         for (const r of this.ripples) {
           const dx = g.hx - r.x;
@@ -187,25 +219,29 @@ export class WordmarkField implements Scene {
       }
     }
 
-    const tone = pal.dark ? 1 : 0.9;
+    const tone = pal.dark ? 1 : 0.92;
     for (const g of this.grains) {
       const moving = Math.abs(g.vx) + Math.abs(g.vy) > 30;
-      const x0 = moving ? g.x - g.vx * 0.016 : g.x;
-      const y0 = moving ? g.y - g.vy * 0.016 : g.y;
+      // 运动中拖出短尾迹(入场汇流时形成流星感)
+      const x0 = moving ? g.x - g.vx * 0.022 : g.x;
+      const y0 = moving ? g.y - g.vy * 0.022 : g.y;
       const x1 = moving ? g.x : g.x + 0.01;
       // 运动中的粒子(入场汇流)不受渐隐影响太多,保证入场可见
-      const fade = Math.max(g.fade, moving ? 0.5 : 0);
-      if (g.heat > 0.35) {
-        this.hotBatch.line(pal, g.cyan ? "cyan" : "accent", (0.45 + 0.55 * g.heat) * fade * tone, x0, y0, x1, g.y);
+      const fade = Math.max(g.fade, moving ? 0.6 : 0) * tone;
+      const hue = g.cyan ? "cyan" : "accent";
+      if (g.heat > 0.3) {
+        this.glowBatch.line(pal, hue, (pal.dark ? 0.22 : 0.14) * g.heat * fade, x0, y0, x1, g.y);
+        this.hotBatch.line(pal, hue, (0.55 + 0.45 * g.heat) * fade, x0, y0, x1, g.y);
       } else if (g.edge) {
-        this.edgeBatch.line(pal, g.heat > 0.12 ? "accent" : "subtle", (0.6 + 0.4 * g.heat) * fade * tone, x0, y0, x1, g.y);
+        this.edgeBatch.line(pal, hue, (0.78 + 0.6 * g.heat) * fade, x0, y0, x1, g.y);
       } else {
-        this.fillBatch.line(pal, g.cyan ? "cyan" : "accent", (0.14 + 0.6 * g.heat) * fade * tone, x0, y0, x1, g.y);
+        this.fillBatch.line(pal, hue, (0.3 + 0.8 * g.heat) * fade, x0, y0, x1, g.y);
       }
     }
     this.fillBatch.flush(ctx);
     this.edgeBatch.flush(ctx);
     if (pal.dark) ctx.globalCompositeOperation = "lighter";
+    this.glowBatch.flush(ctx);
     this.hotBatch.flush(ctx);
     ctx.globalCompositeOperation = "source-over";
   }
