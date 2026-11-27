@@ -2,6 +2,7 @@
 //!
 //! 两端 crate 保持彼此独立；宿主只在边界调用本 crate 的命名函数。
 
+mod net_diag;
 mod task_edit;
 use fluxdown_engine::downloader::CapturedRequestBody;
 use fluxdown_engine::model::{
@@ -19,6 +20,7 @@ use fluxdown_protocol::daemon::{
 #[cfg(feature = "components")]
 use fluxdown_protocol::daemon::{ComponentFfmpegStatus, ComponentVersions, ComponentYtdlpStatus};
 use fluxdown_protocol::task_activity::HlsFragmentProgress;
+pub use net_diag::{net_interfaces_to_dto, net_measure_request, net_measure_to_dto};
 pub use task_edit::{task_edit_snapshot_to_dto, task_edit_to_engine, task_properties_to_dto};
 
 /// 将捕获请求体转换为引擎请求体。

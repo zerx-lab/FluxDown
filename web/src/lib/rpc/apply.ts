@@ -2,6 +2,7 @@
 // `apply_engine_message` 逐条移植。全部为不可变更新（返回新对象，未变化的分支保持引用不变），
 // 以便 React 选择器按引用比较。一批事件走 `DaemonDraft`：大集合整批只复制一次，见该类说明。
 
+import { EMPTY_ASSISTANT_STATE } from './protocol'
 import type {
   AgentEvent,
   AgentSnapshot,
@@ -910,6 +911,7 @@ function applyNonDaemonAgentEvent(snapshot: AgentSnapshot, event: Exclude<AgentE
             cloudDevices: [],
             remoteTasks: [],
             cloudConnection: { state: 'disconnected' },
+            assistant: EMPTY_ASSISTANT_STATE,
             cloudNotify: snapshot.cloudNotify
               ? {
                   ...snapshot.cloudNotify,
@@ -957,6 +959,8 @@ function applyNonDaemonAgentEvent(snapshot: AgentSnapshot, event: Exclude<AgentE
       return { ...snapshot, power: event.data }
     case 'cloudNotifyChanged':
       return { ...snapshot, cloudNotify: event.data }
+    case 'assistantChanged':
+      return { ...snapshot, assistant: event.data }
     case 'captureTasksStarted':
     case 'captureTasksResumed':
     case 'sessionRevoked':

@@ -22,7 +22,7 @@ const EVENT_KEYS: Record<string, readonly string[]> = {
   toolFinished: ["callId", "name", "kind", "isError", "durationMs"],
   issueDraft: [],
   done: ["status", "messageId", "text"],
-  error: ["status", "message"],
+  error: ["status", "reason", "message"],
 };
 
 /** 一个上游事件 → 转发给浏览器的事件；不在白名单里或形状不对时返回 null。 */

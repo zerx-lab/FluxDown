@@ -776,8 +776,23 @@ impl CloudClient {
         path: &str,
         epoch: RequestEpoch,
     ) -> Result<reqwest::Response, CloudError> {
+        self.authenticated_stream_request_epoch(Method::GET, path, None::<&Value>, epoch)
+            .await
+    }
+
+    /// 与 [`Self::authenticated_stream_epoch`] 同构，但可指定方法与 JSON 请求体（「POST 即返回 SSE」的
+    /// 端点，如 AI 助手提问）。401 单飞刷新后带同一请求体重放一次。
+    pub(crate) async fn authenticated_stream_request_epoch<P: Serialize + ?Sized>(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&P>,
+        epoch: RequestEpoch,
+    ) -> Result<reqwest::Response, CloudError> {
         let access_token = self.fresh_access_token(epoch).await?;
-        let response = self.send_stream_once(path, &access_token, epoch).await?;
+        let response = self
+            .send_stream_once(method.clone(), path, body, &access_token, epoch)
+            .await?;
         if response.status() != StatusCode::UNAUTHORIZED {
             let result = ensure_success(response).await;
             drop(self.lock_epoch(epoch).await?);
@@ -785,7 +800,11 @@ impl CloudClient {
         }
         let replay_token = self.refreshed_access_token(&access_token, epoch).await?;
         drop(self.lock_epoch(epoch).await?);
-        let result = ensure_success(self.send_stream_once(path, &replay_token, epoch).await?).await;
+        let result = ensure_success(
+            self.send_stream_once(method, path, body, &replay_token, epoch)
+                .await?,
+        )
+        .await;
         drop(self.lock_epoch(epoch).await?);
         result
     }
@@ -916,9 +935,11 @@ impl CloudClient {
         self.session_generation.subscribe()
     }
 
-    async fn send_stream_once(
+    async fn send_stream_once<P: Serialize + ?Sized>(
         &self,
+        method: Method,
         path: &str,
+        body: Option<&P>,
         bearer: &str,
         epoch: RequestEpoch,
     ) -> Result<reqwest::Response, CloudError> {
@@ -929,15 +950,18 @@ impl CloudClient {
             .await
             .map_err(|error| CloudError::local(format!("cloud stream client: {error:#}")))?;
         drop(self.lock_epoch(epoch).await?);
-        let request = client
-            .get(format!("{}{}", self.current_base_url(), path))
+        let mut request = client
+            .request(method, format!("{}{}", self.current_base_url(), path))
             .bearer_auth(bearer)
             .header("Accept", "text/event-stream")
             .header("X-FluxDown-Device-Id", device_id)
             .header("X-FluxDown-Device-Name", device_name)
             .header("X-FluxDown-Platform", platform)
-            .header("X-FluxDown-Version", fluxdown_protocol::APP_VERSION)
-            .send();
+            .header("X-FluxDown-Version", fluxdown_protocol::APP_VERSION);
+        if let Some(body) = body {
+            request = request.json(body);
+        }
+        let request = request.send();
         let sent_at = unix_ms();
         // 仅限制响应头，不给无限 SSE body 加总寿命；包括成功 TCP 后不回头的反代。
         let response = tokio::time::timeout(Duration::from_secs(15), request)

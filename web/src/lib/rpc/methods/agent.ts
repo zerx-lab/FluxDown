@@ -4,6 +4,18 @@
 import { call } from '../client';
 import { METHOD } from '../protocol';
 import type {
+  AssistantAskParams,
+  AssistantAskResult,
+  AssistantClearedSessions,
+  AssistantConfirmParams,
+  AssistantIssueDto,
+  AssistantIssueParams,
+  AssistantRateParams,
+  AssistantSessionDetail,
+  AssistantSessionIdParams,
+  AssistantSessionPage,
+  AssistantSessionsParams,
+  AssistantStateDto,
   CloudNotifyChannelCreateParams,
   CloudNotifyChannelDto,
   CloudNotifyChannelIdParams,
@@ -341,6 +353,29 @@ const cloudNotify = {
     call<OkResult>(METHOD.AGENT_CLOUD_NOTIFY_VERIFY_EMAIL, params),
 };
 
+/** AI 助手（FluxCloud 代理的模型对话）：执行经 `assistantChanged` 推送，历史会话按需从云端读取。 */
+const assistant = {
+  /** 读本机缓存；配置过期时 agent 后台刷新并经 `assistantChanged` 推送。 */
+  get: () => call<AssistantStateDto>(METHOD.AGENT_ASSISTANT_GET),
+  /** 立即向 FluxCloud 拉取配置。 */
+  refresh: () => call<AssistantStateDto>(METHOD.AGENT_ASSISTANT_REFRESH),
+  sessions: (params?: AssistantSessionsParams) => call<AssistantSessionPage>(METHOD.AGENT_ASSISTANT_SESSIONS, params),
+  session: (params: AssistantSessionIdParams) => call<AssistantSessionDetail>(METHOD.AGENT_ASSISTANT_SESSION, params),
+  /** 删除会话（只在用户侧隐藏，云端保留；进行中的执行先取消）。 */
+  deleteSession: (params: AssistantSessionIdParams) => call<OkResult>(METHOD.AGENT_ASSISTANT_DELETE_SESSION, params),
+  /** 清空本人全部会话（只在用户侧隐藏，云端保留；进行中的执行先取消）。 */
+  clearSessions: () => call<AssistantClearedSessions>(METHOD.AGENT_ASSISTANT_CLEAR_SESSIONS),
+  /** 提问：`channel` 由调用方显式给出（Web 为 `web`）；执行随后经 `assistantChanged` 推送。 */
+  ask: (params: AssistantAskParams) => call<AssistantAskResult>(METHOD.AGENT_ASSISTANT_ASK, params),
+  cancel: (params: AssistantSessionIdParams) => call<OkResult>(METHOD.AGENT_ASSISTANT_CANCEL, params),
+  /** 批准 / 拒绝一次非只读客户端工具调用。 */
+  confirm: (params: AssistantConfirmParams) => call<OkResult>(METHOD.AGENT_ASSISTANT_CONFIRM, params),
+  rate: (params: AssistantRateParams) => call<OkResult>(METHOD.AGENT_ASSISTANT_RATE, params),
+  /** 确认提交云端起草的问题单（可改标题与正文）。 */
+  confirmIssue: (params: AssistantIssueParams) => call<AssistantIssueDto>(METHOD.AGENT_ASSISTANT_CONFIRM_ISSUE, params),
+  discardIssue: (params: AssistantIssueParams) => call<OkResult>(METHOD.AGENT_ASSISTANT_DISCARD_ISSUE, params),
+};
+
 
 // 桌面集成：在 agent 所在主机上打开 / 定位任务产物。仅当本连接的 hello 带
 // `agent.openTaskFiles` 能力时可用（见 downloads/model/actions.ts）；否则 agent 返回 Unsupported。
@@ -374,5 +409,6 @@ export const agent = {
   update,
   power,
   cloudNotify,
+  assistant,
   platform,
 };

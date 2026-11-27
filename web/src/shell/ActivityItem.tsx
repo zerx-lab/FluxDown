@@ -1,4 +1,4 @@
-// 活动入口按钮（路由 / 账户）：可放在活动栏（纯图标 + 右侧气泡）或标题栏 / 状态栏（紧凑图标按钮）。
+// 活动入口按钮（路由 / 动作 / 账户）：可放在活动栏（纯图标 + 右侧气泡）或标题栏 / 状态栏（紧凑图标按钮）。
 // 选中项：中性底 `navSelected` + 图标 `navSelectedIcon`（强调色只落在图标上）。
 
 import { Link, useLocation } from '@tanstack/react-router'
@@ -14,9 +14,10 @@ import { useAccountAvatar } from './accountAvatarState'
 import { AccountMenu } from './AccountMenu'
 import { isActivityActive } from './activity'
 import type { ActivityEntry } from './activity'
+import { toggleAssistantPanel, useAssistantPanel } from './assistantPanelStore'
 
 /** 选中项悬停不变色（GPUI `activity_button`：选中态 hover 与常态一致）。 */
-const BUTTON_ACTIVE = 'bg-nav-selected text-nav-selected-foreground hover:bg-nav-selected hover:text-nav-selected-foreground'
+export const BUTTON_ACTIVE = 'bg-nav-selected text-nav-selected-foreground hover:bg-nav-selected hover:text-nav-selected-foreground'
 
 export function RouteItem({ entry, orientation = 'horizontal', side }: WidgetProps & { entry: ActivityEntry }) {
   const t = useT()
@@ -34,6 +35,27 @@ export function RouteItem({ entry, orientation = 'horizontal', side }: WidgetPro
       >
         <Icon icon={entry.icon} size={rail ? 'xl' : 'lg'} className={cn(active && 'text-nav-selected-icon')} />
       </Link>
+    </Tooltip>
+  )
+}
+
+/** AI 助手入口：不是路由，点击开关窗口右侧面板；面板打开时呈选中态。 */
+export function AssistantPanelItem({ entry, orientation = 'horizontal', side }: WidgetProps & { entry: ActivityEntry }) {
+  const t = useT()
+  const { open } = useAssistantPanel()
+  const rail = orientation === 'rail'
+  const label = t(entry.labelKey)
+  return (
+    <Tooltip content={label} side={resolveSide(orientation, side)}>
+      <button
+        type="button"
+        aria-label={label}
+        aria-pressed={open}
+        className={cn(rail ? RAIL_BUTTON : ACTION_BUTTON, open && BUTTON_ACTIVE)}
+        onClick={toggleAssistantPanel}
+      >
+        <Icon icon={entry.icon} size={rail ? 'xl' : 'lg'} className={cn(open && 'text-nav-selected-icon')} />
+      </button>
     </Tooltip>
   )
 }

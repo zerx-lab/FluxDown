@@ -1801,6 +1801,24 @@ impl DaemonService {
                     .map_err(|error| internal_error(format!("{error:#}")))?;
                 to_value(fluxdown_engine_protocol::egress_plan_to_dto(plan))
             }
+            method::DAEMON_NET_INTERFACES => {
+                to_value(fluxdown_engine_protocol::net_interfaces_to_dto(
+                    fluxdown_engine::net_iface::collect().await,
+                ))
+            }
+            method::DAEMON_NET_MEASURE_ROUTES => {
+                let params = parse_params::<fluxdown_protocol::NetMeasureParams>(params)?;
+                let request = fluxdown_engine_protocol::net_measure_request(params);
+                match self
+                    .actor
+                    .execute(ActorOperation::MeasureRoutes { request })
+                    .await
+                {
+                    Ok(ActorResult::NetMeasure(result)) => to_value(result),
+                    Ok(_) => Err(internal_error("unexpected actor result".to_owned())),
+                    Err(error) => Err(actor_error(error)),
+                }
+            }
             #[cfg(feature = "bt")]
             method::DAEMON_BT_GUARD_STATE
             | method::DAEMON_BT_GUARD_ENTRIES_LIST

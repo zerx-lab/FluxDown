@@ -176,6 +176,9 @@ export interface AiConfig {
   maxImageBytes: number;
 }
 
+/** 对一条回答的评价。 */
+export type AiRating = "up" | "down";
+
 export type AiSessionKind = "ask" | "feedback";
 
 export interface AiSession {
@@ -186,7 +189,8 @@ export interface AiSession {
   /** 首条提问的首行（空 = 尚未提问）。 */
   title: string;
   messageCount: number;
-  rating: "up" | "down" | null;
+  /** 会话汇总：最近一次回答评价（界面按回答评价，不用它表示某条回答的状态）。 */
+  rating: AiRating | null;
   /** 正在回答中。 */
   active: boolean;
   /** RFC 3339 */
@@ -209,6 +213,9 @@ export interface AiMessage {
   content: string;
   /** 提问附带的图片 id（只有用户消息可能非空），经 `/api/account/ai/attachments/<id>` 取。 */
   images: string[];
+  /** 对这条回答的评价（只有助手消息有值；旧版 FluxCloud 不带）。 */
+  rating?: AiRating | null;
+  ratingComment?: string | null;
   /** RFC 3339 */
   createdAt: string;
 }
@@ -244,6 +251,9 @@ export interface AiSessionDetail {
 
 export type AiToolKind = "client" | "server" | "mcp";
 
+/** 异常结束的原因：轮数用尽 / 无回答 / 超时 / 取消 / 其它失败。旧版 FluxCloud 不带。 */
+export type AiFailReason = "maxTurns" | "noAnswer" | "timeout" | "canceled" | "error";
+
 /** `POST /api/account/ai/sessions/{id}/messages` 的 SSE 事件（每帧 `data` 一个）。 */
 export type AiStreamEvent =
   | { type: "run"; runId: string; sessionId: string }
@@ -254,4 +264,4 @@ export type AiStreamEvent =
   | { type: "toolFinished"; callId: string; name: string; kind: AiToolKind; isError: boolean; durationMs: number | null }
   | { type: "issueDraft"; issue: AiIssue }
   | { type: "done"; status: "completed" | "replied"; messageId: string | null; text: string }
-  | { type: "error"; status: "failed" | "canceled"; message: string };
+  | { type: "error"; status: "failed" | "canceled"; reason?: AiFailReason; message: string };

@@ -178,6 +178,15 @@ test("ask: images must be at most 4 bitmap data URLs; bad ones never reach FluxC
   expect(seen).toHaveLength(1);
 });
 
+test("ask: forwards the current site locale; malformed locales never reach FluxCloud", async () => {
+  reply = () => sse([]);
+  const ask = (locale: unknown) => call(`ai/sessions/${SESSION_ID}/messages`, { method: "POST", body: { text: "hi", locale } });
+  expect((await ask("pt-BR")).status).toBe(200);
+  expect(seen[0]?.body).toEqual({ text: "hi", locale: "pt-BR" });
+  for (const bad of ["english", "en US", 42, "en-"]) expect((await ask(bad)).status).toBe(400);
+  expect(seen).toHaveLength(1);
+});
+
 test("attachments: plain <img> GETs are proxied with a locked-down image response", async () => {
   const png = Uint8Array.from(atob(PNG_URL.split(",")[1] ?? ""), (c) => c.charCodeAt(0));
   reply = () => new Response(png, { headers: { "Content-Type": "image/png" } });
@@ -228,6 +237,54 @@ test("sessions: list clamps paging and detail drops tool messages but keeps imag
   expect(detail.messages).toEqual([
     { id: "m1", runId: "r1", seq: 1, role: "user", content: "Q", createdAt: "t", images: ["a1", "a2"] },
     { id: "m4", runId: "r1", seq: 4, role: "assistant", content: "A", createdAt: "t", images: [] },
+  ]);
+});
+
+test("rating: PUT per answer forwards to the message route; the old per-session route is gone", async () => {
+  reply = () => new Response(null, { status: 204 });
+  const rate = (messageId: string, body: unknown) => call(`ai/sessions/${SESSION_ID}/messages/${messageId}/rating`, { method: "PUT", body });
+
+  expect((await rate("m4", { rating: "up", comment: " too long ", extra: 1 })).status).toBe(204);
+  expect(seen[0]?.method).toBe("PUT");
+  expect(seen[0]?.url).toBe(`http://cloud.test/api/v1/ai/sessions/${SESSION_ID}/messages/m4/rating`);
+  expect(seen[0]?.body).toEqual({ rating: "up", comment: "too long" });
+
+  // 清除评价：不转发评论；踩不带评论时只有 rating
+  expect((await rate("m4", { rating: null, comment: "x" })).status).toBe(204);
+  expect(seen[1]?.body).toEqual({ rating: null });
+  expect((await rate("m4", { rating: "down" })).status).toBe(204);
+  expect(seen[2]?.body).toEqual({ rating: "down" });
+
+  // 非法评价 / 评论过长 / 非法消息 ID 都到不了 FluxCloud
+  expect((await rate("m4", { rating: "meh" })).status).toBe(400);
+  expect((await rate("m4", {})).status).toBe(400);
+  expect((await rate("m4", { rating: "up", comment: "x".repeat(501) })).status).toBe(400);
+  expect((await rate("m4%2F..", { rating: "up" })).status).toBe(400);
+  expect(seen).toHaveLength(3);
+
+  // 旧的会话级评价路由已删除：不会被转发
+  const old = await call(`ai/sessions/${SESSION_ID}/rating`, { method: "PUT", body: { rating: "up" } });
+  expect(old.status).toBeGreaterThanOrEqual(400);
+  expect(old.status).toBeLessThan(500);
+  expect(seen).toHaveLength(3);
+});
+
+test("sessions: detail keeps per-answer rating fields on assistant messages only", async () => {
+  reply = () =>
+    Response.json({
+      session: { id: SESSION_ID, channel: "website", kind: "ask", title: "Q", messageCount: 3, rating: "down", active: false, createdAt: "t", updatedAt: "t" },
+      messages: [
+        { id: "m1", runId: "r1", seq: 1, role: "user", content: "Q", images: [], createdAt: "t" },
+        { id: "m2", runId: "r1", seq: 2, role: "assistant", content: "A", images: [], rating: "down", ratingComment: "wrong", createdAt: "t", secret: 1 },
+        { id: "m3", runId: "r2", seq: 3, role: "assistant", content: "B", images: [], rating: null, ratingComment: null, createdAt: "t" },
+      ],
+      issues: [],
+    });
+  const detail = (await (await call(`ai/sessions/${SESSION_ID}`)).json()) as { messages: unknown[] };
+  expect(detail.messages).toEqual([
+    { id: "m1", runId: "r1", seq: 1, role: "user", content: "Q", createdAt: "t", images: [] },
+    { id: "m2", runId: "r1", seq: 2, role: "assistant", content: "A", rating: "down", ratingComment: "wrong", createdAt: "t", images: [] },
+    { id: "m3", runId: "r2", seq: 3, role: "assistant", content: "B", rating: null, ratingComment: null, createdAt: "t", images: [] },
   ]);
 });
 

@@ -2,6 +2,8 @@
 /**
  * 站点顶栏:沿页面导轨(rails)延伸的细线外框;下拉菜单纯 CSS(hover / focus-within),
  * 移动端菜单使用原生 Popover API(零 JS)。`D` 快捷键命中 `data-shortcut="d"` 的下载按钮。
+ * 导航与操作区文字一律不换行;放不下时由内联脚本按 `data-compact` 逐级收起
+ * (搜索文字 → 赞助文字 → 账户文字 → 整个桌面导航改汉堡菜单),适配任意语言的文案宽度。
  */
 import { ArrowRight, ChevronDown, Menu, Moon, Search, Sun, UserRound, X, Languages } from "lucide-react";
 import { BrandIcon } from "../icons/brand";
@@ -71,11 +73,11 @@ const isActive = (links: typeof PRODUCT_LINKS) =>
 
 <header class="site-header">
   <div class="frame header-inner">
-    <a href={href("/", lang)} class="flex items-center rounded-md" aria-label="FluxDown">
+    <a href={href("/", lang)} class="header-logo flex items-center rounded-md" aria-label="FluxDown">
       <Logo size={22} />
     </a>
 
-    <nav class="hidden items-center gap-0.5 lg:flex" aria-label="Main">
+    <nav class="header-nav" aria-label="Main">
       {
         menus.map((menu) => (
           <div class="nav-item">
@@ -143,15 +145,15 @@ const isActive = (links: typeof PRODUCT_LINKS) =>
         ))
       }
       <a href={sponsor.href} class="nav-link nav-sponsor" data-active={sponsor.active || undefined}>
-        <SPONSOR_LINK.icon size={14} strokeWidth={2} className="nav-sponsor-icon" />
-        {sponsor.label}
+        <SPONSOR_LINK.icon size={14} strokeWidth={2} className="nav-sponsor-icon" aria-hidden="true" />
+        <span class="nav-sponsor-label">{sponsor.label}</span>
       </a>
     </nav>
 
-    <div class="ml-auto flex items-center gap-1.5">
+    <div class="header-actions ml-auto flex items-center gap-1.5">
       <button type="button" class="search-trigger hidden md:inline-flex" data-palette-open aria-label={t.search.open}>
         <Search size={14} strokeWidth={2} />
-        <span class="text-[13px]">{t.search.open}</span>
+        <span class="search-label text-[13px]">{t.search.open}</span>
         <span class="kbd ml-3">⌘K</span>
       </button>
       <a href={GITHUB_URL} class="icon-btn hidden sm:inline-grid" aria-label={t.nav.github} target="_blank" rel="noopener">
@@ -200,12 +202,37 @@ const isActive = (links: typeof PRODUCT_LINKS) =>
         {t.nav.download}
         <span class="kbd hidden sm:inline-grid">D</span>
       </a>
-      <button type="button" class="icon-btn lg:hidden" popovertarget="mobile-nav" aria-label={t.nav.menu}>
+      <button type="button" class="icon-btn header-menu-btn" popovertarget="mobile-nav" aria-label={t.nav.menu}>
         <Menu size={18} strokeWidth={1.75} />
       </button>
     </div>
   </div>
 </header>
+
+<!--
+  顶栏自适应:文字不换行,溢出时按步骤逐级收起(写入 header 的 data-compact,空格分隔、累积)。
+  内联同步执行,首帧前完成;窗口宽度或字体加载变化时重算。无 JS 时退化为不换行 + lg 断点切换。
+-->
+<script is:inline>
+  (function () {
+    var header = document.querySelector(".site-header");
+    var inner = header && header.querySelector(".header-inner");
+    if (!inner) return;
+    var steps = ["search", "sponsor", "account", "nav"];
+    function fit() {
+      var applied = [];
+      header.setAttribute("data-compact", "");
+      for (var i = 0; i < steps.length && inner.scrollWidth > inner.clientWidth; i++) {
+        applied.push(steps[i]);
+        header.setAttribute("data-compact", applied.join(" "));
+      }
+    }
+    fit();
+    if ("ResizeObserver" in window) new ResizeObserver(fit).observe(inner);
+    else window.addEventListener("resize", fit);
+    if (document.fonts) document.fonts.ready.then(fit);
+  })();
+</script>
 
 <div id="mobile-nav" popover class="mobile-nav">
   <div class="flex h-[var(--header-h)] items-center justify-between border-b border-line px-5">
@@ -361,17 +388,58 @@ const isActive = (links: typeof PRODUCT_LINKS) =>
         display: none;
       }
     }
+    .header-logo,
+    .header-actions {
+      flex: none;
+    }
+    .header-nav {
+      display: none;
+      flex: none;
+      align-items: center;
+      gap: 2px;
+    }
+    @media (min-width: 1024px) {
+      .header-nav {
+        display: flex;
+      }
+    }
+    .site-header[data-compact~="nav"] .header-nav {
+      display: none;
+    }
+    /* 收起的文字仍留给读屏:视觉隐藏而非 display:none,绝对定位也不占 flex gap */
+    .site-header[data-compact~="search"] .search-label,
+    .site-header[data-compact~="sponsor"] .nav-sponsor-label,
+    .site-header[data-compact~="account"] .account-btn [data-account-text] {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
+    }
+    .site-header[data-compact~="search"] .search-trigger .kbd {
+      display: none;
+    }
+    .site-header[data-compact~="search"] .search-trigger,
+    .site-header[data-compact~="account"] .account-btn {
+      justify-content: center;
+      width: 32px;
+      padding-inline: 0;
+    }
     .nav-item {
       position: relative;
+      flex: none;
     }
     .nav-link {
       display: inline-flex;
+      flex: none;
       align-items: center;
       gap: 4px;
       height: 32px;
       padding-inline: 10px;
       border-radius: 7px;
       font-size: 13.5px;
+      white-space: nowrap;
       color: var(--fg-muted);
       transition:
         color 150ms,
@@ -586,6 +654,17 @@ const isActive = (links: typeof PRODUCT_LINKS) =>
       color: var(--fg);
       background: var(--bg-inset);
     }
+    .header-menu-btn {
+      flex: none;
+    }
+    @media (min-width: 1024px) {
+      .header-menu-btn {
+        display: none;
+      }
+    }
+    .site-header[data-compact~="nav"] .header-menu-btn {
+      display: inline-grid;
+    }
     /* 语言菜单:与 .nav-panel 同一套 hover / focus-within 展开,右对齐 */
     .lang-menu {
       position: relative;
@@ -679,6 +758,8 @@ const isActive = (links: typeof PRODUCT_LINKS) =>
       margin-left: auto;
     }
     .search-trigger {
+      flex: none;
+      white-space: nowrap;
       align-items: center;
       gap: 8px;
       height: 32px;

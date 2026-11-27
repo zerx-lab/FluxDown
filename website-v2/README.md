@@ -56,6 +56,7 @@ node dist/server/entry.mjs
 - BFF 挂在账户 BFF 下（`src/lib/account/ai-routes.ts`，`/api/account/ai/*` → FluxCloud `/api/v1/ai/*`），复用会话 Cookie、刷新与 CSRF 闸：`config`、`sessions`（列表 / 新建 / 详情 / 删除 / 评价 / 提问 / 取消）、`issues/{id}/confirm|discard`、`attachments/{id}`。会话固定 `channel: "website"`、不声明客户端工具；详情只回用户 / 助手消息（用户消息带图片 id）。来自桌面 / Web 的会话只读。
 - 带图提问：`ai/config` 的 `imagesSupported` 为真时输入框可粘贴、拖入或选择图片（PNG / JPEG / GIF / WebP，张数与单张上限取 `maxImages` / `maxImageBytes`）；超限的静态图在浏览器里缩放重编码（`src/components/assistant/attachments.ts`），GIF 超限直接拒绝。提问请求体上限与 FluxCloud `MAX_ASK_BODY_BYTES` 同口径（约 28 MiB），**反代须放开 `/api/account/ai/sessions/*/messages` 的请求体大小**（如 nginx `client_max_body_size 32m`）。已存图片经 `GET /api/account/ai/attachments/{id}` 取：路由标 `simpleGet`，`<img src>` 不带自定义头也放行（仍要求 `Sec-Fetch-Site` 同源，会话 Cookie 为 SameSite=Strict），只转发四种位图类型并带 `nosniff` 与 `sandbox` CSP。
 - 提问是 SSE：`callAuthedStream` → `openUpstreamStream`（响应头 10 秒内到达，正文不设总时限，访客断开即中止上游，FluxCloud 随之取消执行），逐帧经 `ai-stream.ts` 白名单裁剪（丢弃分诊 / 路由 / 思考过程 / 客户端工具调用 / token 用量）。反代须对 `/api/account/ai/sessions/*/messages` 关闭响应缓冲（BFF 已回 `X-Accel-Buffering: no`）。
+- 回答语言跟随站点语言：建会话与每次提问都带当前页面的 `HTML_LANG`（如 `en`、`zh-TW`、`pt-BR`）作 `locale`，BFF 校验形状后转发；FluxCloud 据此在系统提示里注入「回复语言」指令，并把后台的中文固定回复翻译成该语言（见 FluxCloud README「回复语言」）。用户在对话里明确要求换语言时以用户为准；会话中途切换站点语言，下一次提问即按新语言回答。
 - 回答用 `src/components/assistant/md-parse.ts` 解析成结构化节点再由 `Markdown.tsx` 以 React 元素渲染（不注入 HTML；链接只放行 http(s) / mailto / 站内路径）。
 - 部署顺序：FluxCloud AI 模块先上线并在后台开放 `mode`，官网才有可用的入口。
 - 回归：`bun test tests/assistant-bff.test.ts`（替换 FluxCloud fetch，不代表真实模型与上游演练）。

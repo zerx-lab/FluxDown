@@ -44,6 +44,7 @@ export function GeneralSettings() {
       <SettingsSection title={t('activityBarSection')} subtitle={t('activityBarSectionDesc')}>
         <PrefSwitchRow prefKey="ui.show_activity_rss" fallback titleKey="showActivityRss" descKey="showActivityRssDesc" />
         <PrefSwitchRow prefKey="ui.show_activity_webhooks" fallback titleKey="showActivityWebhooks" descKey="showActivityWebhooksDesc" />
+        <PrefSwitchRow prefKey="ui.show_activity_assistant" fallback titleKey="showActivityAssistant" descKey="showActivityAssistantDesc" />
         <PrefSwitchRow prefKey="ui.show_activity_account" fallback titleKey="showActivityAccount" descKey="showActivityAccountDesc" />
       </SettingsSection>
     </SettingsPage>

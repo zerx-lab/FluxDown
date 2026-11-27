@@ -39,7 +39,7 @@ const CONFIG_KEYS = [
 const SESSION_KEYS = [
   "id", "channel", "kind", "title", "messageCount", "rating", "active", "createdAt", "updatedAt",
 ] as const;
-const MESSAGE_KEYS = ["id", "runId", "seq", "role", "content", "createdAt"] as const;
+const MESSAGE_KEYS = ["id", "runId", "seq", "role", "content", "rating", "ratingComment", "createdAt"] as const;
 const SHOWN_ROLES: Record<string, true> = { user: true, assistant: true };
 
 const SSE_HEADERS = {
@@ -74,6 +74,13 @@ function askImages(body: Body): string[] | null {
   if (!Array.isArray(images) || images.length > MAX_IMAGES) return null;
   const ok = images.every((url) => typeof url === "string" && url.length <= MAX_IMAGE_URL_CHARS && IMAGE_URL_RE.test(url));
   return ok ? (images as string[]) : null;
+}
+
+/** 界面语言（BCP 47）：缺省为 undefined；否则须合形。null = 不合法。 */
+function askLocale(body: Body): string | undefined | null {
+  if (body.locale === undefined) return undefined;
+  const locale = text(body, "locale", 35);
+  return locale !== null && LOCALE_RE.test(locale) ? locale : null;
 }
 
 function detailOf(body: unknown): Body | null {
@@ -134,10 +141,10 @@ export const AI_ROUTES: Route[] = [
     async handle(ctx, body) {
       const kind = body.kind === undefined ? "ask" : body.kind;
       if (kind !== "ask" && kind !== "feedback") return validationError();
-      const locale = body.locale === undefined ? null : text(body, "locale", 35);
-      if (body.locale !== undefined && (locale === null || !LOCALE_RE.test(locale))) return validationError();
+      const locale = askLocale(body);
+      if (locale === null) return validationError();
       const client: Body = { clientTools: [] };
-      if (locale !== null) client.locale = locale;
+      if (locale !== undefined) client.locale = locale;
       const res = await callAuthed(ctx, "/api/v1/ai/sessions", jsonInit("POST", { channel: "website", kind, client }));
       return mapped(res, sessionOf);
     },
@@ -162,16 +169,16 @@ export const AI_ROUTES: Route[] = [
   },
   {
     method: "PUT",
-    path: /^ai\/sessions\/([^/]+)\/rating$/,
+    path: /^ai\/sessions\/([^/]+)\/messages\/([^/]+)\/rating$/,
     json: true,
-    async handle(ctx, body, [id]) {
+    async handle(ctx, body, [id, messageId]) {
       const rating = body.rating;
-      if (!validId(id) || (rating !== null && rating !== "up" && rating !== "down")) return validationError();
+      if (!validId(id) || !validId(messageId) || (rating !== null && rating !== "up" && rating !== "down")) return validationError();
       const hasComment = typeof body.comment === "string" && body.comment.trim() !== "";
       const comment = hasComment ? text(body, "comment", MAX_RATING_COMMENT_CHARS) : null;
       if (hasComment && comment === null) return validationError();
       const payload: Body = comment === null || rating === null ? { rating } : { rating, comment };
-      return noContent(ctx, sessionPath(id, "/rating"), jsonInit("PUT", payload));
+      return noContent(ctx, sessionPath(id, `/messages/${encodeURIComponent(messageId)}/rating`), jsonInit("PUT", payload));
     },
   },
   {
@@ -182,8 +189,10 @@ export const AI_ROUTES: Route[] = [
     async handle(ctx, body, [id]) {
       const question = text(body, "text", MAX_ASK_CHARS);
       const images = askImages(body);
-      if (!validId(id) || question === null || images === null) return validationError();
+      const locale = askLocale(body);
+      if (!validId(id) || question === null || images === null || locale === null) return validationError();
       const payload: Body = images.length > 0 ? { text: question, images } : { text: question };
+      if (locale !== undefined) payload.locale = locale;
       const res = await callAuthedStream(ctx, sessionPath(id, "/messages"), jsonInit("POST", payload));
       if (!res.ok) return failureResponse(res);
       return new Response(res.body.pipeThrough(aiEventFilter()), { status: 200, headers: SSE_HEADERS });

@@ -102,7 +102,8 @@ object SyncRules {
             SyncGroupId.Ui, "syncScopeUi",
             listOf(
                 "ui.show_sidebar_status", "ui.show_sidebar_queues", "ui.show_sidebar_category", "ui.show_sidebar_rss",
-                "ui.show_activity_rss", "ui.show_activity_webhooks", "ui.show_activity_theme", "ui.show_activity_account",
+                "ui.show_activity_rss", "ui.show_activity_webhooks", "ui.show_activity_assistant",
+                "ui.show_activity_theme", "ui.show_activity_account",
                 "ui.show_titlebar_pause_all", "ui.show_titlebar_resume_all", "ui.show_titlebar_settings",
                 "ui.show_titlebar_theme",
             ),

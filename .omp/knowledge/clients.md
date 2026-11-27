@@ -146,6 +146,14 @@ PC 与 Web SPA 都消费 agent 的 `AgentSnapshot.cloud_connection` / `CloudConn
 - 设备区在云通道不健康时调用 `agent.remote.reconnect` 后刷新名册；响应 `{accepted:true}` 仅表示已请求重连，最终状态由事件驱动。健康时普通刷新不重建 SSE。
 - 云设备离线或未知仍可下发排队任务，不据此禁用目标。顶部账户刷新仍只是资料/名册刷新。
 
+### AI 助手（`crates/assistant` · Web `pages/assistant` · agent `native/agent/src/assistant/`）
+
+- agent 以账号身份调 FluxCloud `/api/v1/ai/*`，消费提问 SSE，在本机执行云端下发的客户端工具（`fd_*`）；网络 / 写入类工具须用户在 UI 确认卡片允许（`agent.assistant.confirm`），状态整体经 `AgentEvent::AssistantChanged` / `AgentSnapshot.assistant` 推送。wire 见 `native/protocol/src/assistant.rs`。
+- 评价按条：每条回答（`assistant` 消息 / `AssistantRunDto.message_id`）各一组赞踩，`agent.assistant.rate` 必带 `messageId`；`AssistantSessionDto.rating` 只是会话汇总，UI 不用它表示某条回答。选中态只让图标变色，不加边框。
+- 图片附件：提问文本在插图处写 `assistant_image_placeholder(n)`（`[Image #N]`，对应 `images[N-1]`），云端把图紧跟在占位符后发给模型；移除图片要同步删占位符并重排后续编号（GPUI `model.rs` 的 `remove_placeholder`、Web `composer.ts`）。只在 `config.imagesSupported` 时显示入口，受 `maxImages` / `maxImageBytes` 约束；非 png/jpeg/gif/webp（如 macOS 剪贴板 TIFF）先转 PNG。
+- 删除会话（`agent.assistant.deleteSession`）与清空全部（`agent.assistant.clearSessions`）在云端都只对用户隐藏（`ai_sessions.user_deleted_at`），数据留给后台；UI 两者都是「原位二次点击」确认：按钮同一位置变危险态，再点执行，鼠标移出即取消，不弹出另一行确认按钮。
+- 入口是窗口右侧全高面板，不是路由页：GPUI 由 shell `ShellSidePanel`（`with_side_panel` / `ShellAction::side_panel_toggle`）承载，面板顶栏与主区顶栏同高，打开时 Windows / Linux 窗口按钮移到面板顶栏（主区改用 `CustomTitleBar::without_controls`）；面板左缘可拖动调宽（默认 400，320–720，主区至少 360），收起后对话状态保留。开关是 chrome 条目 `assistantPanel`（默认状态栏右侧、版本号左边，Web `chromeCatalog.ts` 同 id 同位置）；⌘K / Ctrl+K 命令面板查询词兜底行「问 AI 助手：…」（`PaletteQueryAction`）开新对话直接提问。显示偏好 `ui.show_activity_assistant`（已进规范设置目录，Android / Web 镜像；移动端不提供助手）。
+
 ## 历史数据与主题兼容
 
 旧 Flutter 客户端及 Rinf/hub 工程已退役，不再有 Dart 开发、构建或镜像同步要求。现有 GPUI / Web 消费的旧偏好、数据目录、主题 `FluxThemeJson` 与升级兼容仍保留；官网旧主题编辑器继续服务已有主题文件。共享 `assets/` 不属于退役范围。

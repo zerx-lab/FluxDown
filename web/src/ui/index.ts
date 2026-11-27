@@ -9,6 +9,7 @@ export type { CheckState } from './Checkbox'
 export { confirmDialog } from './confirm'
 export { ConfirmHost } from './ConfirmHost'
 export type { ConfirmOptions } from './confirm'
+export { ColumnResizer } from './ColumnResizer'
 export { ConfirmFooter, Dialog, DialogFooter } from './Dialog'
 export type { DialogIntent, DialogProps, DialogSize } from './Dialog'
 export {

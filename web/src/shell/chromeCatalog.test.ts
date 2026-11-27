@@ -32,3 +32,23 @@ describe('dynamic chrome catalog', () => {
     setPluginChromeSpecs([])
   })
 })
+
+describe('static chrome catalog', () => {
+  test('assistantPanel 默认落在状态栏右侧、紧挨 appVersion 之前，且没有旧 assistant 路由条目', () => {
+    const ids = CHROME_CATALOG.map((spec) => spec.id)
+    expect(ids.includes('assistant')).toBe(false)
+    expect(ids.indexOf('assistantPanel')).toBe(ids.indexOf('appVersion') - 1)
+    const spec = CHROME_CATALOG.find((item) => item.id === 'assistantPanel')
+    expect(spec?.defaultZone).toBe('statusTrailing')
+    expect(spec?.families).toEqual(['rail', 'title', 'status'])
+    expect(spec?.fixed).toBeUndefined()
+    const layout = normalizeLayout(null, CHROME_CATALOG)
+    expect(layout.statusTrailing.slice(-2)).toEqual(['assistantPanel', 'appVersion'])
+  })
+
+  test('旧布局里存的 assistant 被丢弃，assistantPanel 落到默认位置', () => {
+    const layout = normalizeLayout({ railTop: ['downloads', 'assistant', 'rss'] }, CHROME_CATALOG)
+    expect(layout.railTop.includes('assistant')).toBe(false)
+    expect(layout.statusTrailing.includes('assistantPanel')).toBe(true)
+  })
+})

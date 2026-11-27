@@ -7,9 +7,13 @@ import {
   applyDaemonEvents,
   applyQueueOrder,
 } from './apply'
+import { EMPTY_ASSISTANT_STATE } from './protocol'
 import type {
   AgentEvent,
+  AgentSessionDto,
   AgentSnapshot,
+  AssistantRunDto,
+  AssistantStateDto,
   DaemonEvent,
   DaemonSnapshot,
   QueuePositionDto,
@@ -301,6 +305,80 @@ describe('apply cloud notify', () => {
       recentDeliveries: [],
       recentNextCursor: null,
     })
+  })
+})
+
+describe('apply assistant', () => {
+  const run = (status: 'running' | 'completed', text: string): AssistantRunDto => ({
+    sessionId: 's1',
+    runId: 'r1',
+    status,
+    question: 'q',
+    startedAtUnixMs: 1,
+    items: [{ type: 'text', text }],
+  })
+  const state = (runs: AssistantRunDto[]): AssistantStateDto => ({
+    config: {
+      available: true,
+      maxMessageChars: 4000,
+      imagesSupported: false,
+      maxImages: 0,
+      maxImageBytes: 0,
+      dailyLimit: 20,
+      usedToday: 3,
+      toolsEnabled: true,
+    },
+    loading: false,
+    lastErrorReason: null,
+    lastErrorMessage: null,
+    runs,
+  })
+
+  test('assistantChanged replaces the whole state; later pushes win over earlier ones', () => {
+    const initial = { daemon: daemon([]) } as unknown as AgentSnapshot
+    const first = state([run('running', 'par')])
+    const second = state([run('completed', 'partial answer')])
+    const afterFirst = applyAgentEvent(initial, { type: 'assistantChanged', data: first })
+    expect(afterFirst.assistant).toBe(first)
+    const afterSecond = applyAgentEvent(afterFirst, { type: 'assistantChanged', data: second })
+    expect(afterSecond.assistant).toBe(second)
+    // 整体替换：不合并 runs。
+    expect(afterSecond.assistant?.runs).toHaveLength(1)
+    expect(afterSecond.assistant?.runs[0]?.status).toBe('completed')
+    // 其余子树保持引用不变。
+    expect(afterSecond.daemon).toBe(initial.daemon)
+  })
+
+  test('a batch keeps the last assistant state and interleaves with daemon events', () => {
+    const initial = { daemon: daemon([]) } as unknown as AgentSnapshot
+    const first = state([run('running', 'a')])
+    const second = state([run('running', 'ab')])
+    const next = applyAgentEvents(initial, [
+      { type: 'assistantChanged', data: first },
+      { type: 'daemon', data: { type: 'taskChanged', data: task('t1', 1) } },
+      { type: 'assistantChanged', data: second },
+    ])
+    expect(next.assistant).toBe(second)
+    expect(next.daemon.tasks.map((item) => item.taskId)).toEqual(['t1'])
+  })
+
+  test('session end resets the assistant to the empty state (config, runs and errors)', () => {
+    const snapshot = {
+      assistant: { ...state([run('running', 'x')]), lastErrorReason: 'cloudUnreachable', lastErrorMessage: 'down' },
+      cloudDevices: [],
+      remoteTasks: [],
+    } as unknown as AgentSnapshot
+    const next = applyAgentEvent(snapshot, { type: 'sessionChanged', data: null })
+    expect(next.assistant).toEqual({ config: null, loading: false, lastErrorReason: null, lastErrorMessage: null, runs: [] })
+    // 登出前缺少该字段的旧快照同样回到空状态。
+    const legacy = applyAgentEvent({ cloudDevices: [], remoteTasks: [] } as unknown as AgentSnapshot, { type: 'sessionChanged', data: null })
+    expect(legacy.assistant).toEqual(EMPTY_ASSISTANT_STATE)
+  })
+
+  test('a new session keeps the assistant state untouched', () => {
+    const snapshot = { assistant: state([]), cloudDevices: [], remoteTasks: [] } as unknown as AgentSnapshot
+    const next = applyAgentEvent(snapshot, { type: 'sessionChanged', data: { userId: 'u' } as unknown as AgentSessionDto })
+    expect(next.assistant).toBe(snapshot.assistant)
   })
 })
 

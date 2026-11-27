@@ -285,6 +285,10 @@ pub enum ActorOperation {
         username: String,
         password: String,
     },
+    /// 按真实下载出口测量来源吞吐（准备在 actor 内、传输在 actor 外）。
+    MeasureRoutes {
+        request: fluxdown_engine::net_probe::MeasureRequest,
+    },
     PatchConfig {
         expected_revision: u64,
         values: BTreeMap<String, String>,
@@ -412,6 +416,7 @@ pub enum ActorResult {
     ResolvePreview(ResolvePreviewOutcome),
     RssValidation(Box<RssValidateOutcome>),
     LinkProbe(fluxdown_protocol::LinkProbeResult),
+    NetMeasure(fluxdown_protocol::NetMeasureResultDto),
     RssSources(Vec<RssSourceInfo>),
     WebhookDeliveries(Vec<fluxdown_engine::webhook::WebhookDelivery>),
     WebhookSimulation(usize),
@@ -1189,6 +1194,33 @@ async fn dispatch_operation(
                     tracing::debug!("link probe caller disconnected before result");
                 }
             });
+        }
+        ActorOperation::MeasureRoutes { request } => {
+            match engine.manager.measure_routes_future(request).await {
+                Ok(future) => {
+                    // 测量最长数分钟且不再读写引擎状态，不能占用 actor 循环；调用方断开
+                    // （RPC 取消、AI 执行被取消）即停止，不再继续消耗流量。
+                    let mut ack = ack;
+                    tokio::spawn(async move {
+                        let report = tokio::select! {
+                            report = future => report,
+                            () = ack.closed() => {
+                                tracing::debug!("route measurement caller disconnected; measurement stopped");
+                                return;
+                            }
+                        };
+                        let result = fluxdown_engine_protocol::net_measure_to_dto(report);
+                        if ack.send(Ok(ActorResult::NetMeasure(result))).is_err() {
+                            tracing::debug!("route measurement caller disconnected before result");
+                        }
+                    });
+                }
+                Err(error) => {
+                    if ack.send(Err(measure_error(error))).is_err() {
+                        tracing::debug!("route measurement caller disconnected before rejection");
+                    }
+                }
+            }
         }
         #[cfg_attr(not(feature = "bt"), allow(unused_variables))]
         ActorOperation::VerifyTask { task_id } => {
@@ -2171,6 +2203,7 @@ async fn execute_operation(
         | ActorOperation::HashTask { .. }
         | ActorOperation::WebhookTest { .. }
         | ActorOperation::TestProxy { .. }
+        | ActorOperation::MeasureRoutes { .. }
         | ActorOperation::MoveTaskStorage { .. } => unreachable!("handled off actor"),
         ActorOperation::EditTask(_) => {
             return Err(ActorError::Operation(
@@ -2794,6 +2827,16 @@ fn file_hash_error(error: fluxdown_engine::file_hash::FileHashError) -> ActorErr
             ActorError::TaskStateConflict(error.to_string())
         }
         FileHashError::Failed(_) => ActorError::Operation(error.to_string()),
+    }
+}
+
+fn measure_error(error: fluxdown_engine::net_probe::MeasureError) -> ActorError {
+    use fluxdown_engine::net_probe::MeasureError;
+    match error {
+        MeasureError::NotFound => ActorError::NotFound,
+        MeasureError::InvalidArgument(message) => ActorError::InvalidArgument(message),
+        MeasureError::Busy => ActorError::Conflict(error.to_string()),
+        MeasureError::Failed(message) => ActorError::Operation(message),
     }
 }
 

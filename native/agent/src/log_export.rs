@@ -430,7 +430,7 @@ fn is_secret_key(key: &str) -> bool {
             .any(|needle| key.contains(needle))
 }
 
-fn redact_secret_values(value: &mut serde_json::Value) {
+pub(crate) fn redact_secret_values(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(map) => {
             for (key, child) in map.iter_mut() {

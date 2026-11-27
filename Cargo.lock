@@ -3773,6 +3773,7 @@ dependencies = [
  "fluxdown_logfile",
  "fluxdown_protocol",
  "fluxdown_ui_account",
+ "fluxdown_ui_assistant",
  "fluxdown_ui_command_palette",
  "fluxdown_ui_components",
  "fluxdown_ui_downloads",
@@ -3806,6 +3807,22 @@ dependencies = [
  "tracing-subscriber",
  "windows 0.62.2",
  "winresource",
+]
+
+[[package]]
+name = "fluxdown_ui_assistant"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "fluxdown_protocol",
+ "fluxdown_ui_components",
+ "fluxdown_ui_i18n",
+ "fluxdown_ui_theme",
+ "gpui-component",
+ "gpui-fast",
+ "image",
+ "log",
+ "serde_json",
 ]
 
 [[package]]

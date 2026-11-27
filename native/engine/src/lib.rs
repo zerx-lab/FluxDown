@@ -84,6 +84,10 @@ pub mod multi_nic;
 pub mod naming;
 /// 网络传输失败的类型化分类（换路 / 自动重试的唯一判据，平台与语言无关）。
 pub mod net_failure;
+/// 本机网卡事实：类型、链路速率、MTU、默认路由与 DNS 服务器（网络诊断用，不含地址）。
+pub mod net_iface;
+/// 按真实下载出口测量来源吞吐（网络诊断用，数据读入内存即丢弃）。
+pub mod net_probe;
 pub(crate) mod output;
 /// 系统 PAC：脚本获取与缓存、按下载链接决策、失败代理记忆。
 pub(crate) mod pac;

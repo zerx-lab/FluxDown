@@ -49,6 +49,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 fluxdown_logfile = { version = "0.1.0", path = "../../native/logfile" }
 base64 = "0.22"
 fluxdown_ui_plugin_ui = { version = "0.1.0", path = "../plugin_ui" }
+fluxdown_ui_assistant = { version = "0.1.0", path = "../assistant" }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

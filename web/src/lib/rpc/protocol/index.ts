@@ -1,6 +1,7 @@
 // 本机服务 JSON-RPC 协议类型（手写镜像 native/protocol，wire 为 camelCase JSON）。
 
 export * from './agent';
+export * from './assistant';
 export * from './btGuard';
 export * from './cloudNotify';
 export * from './common';

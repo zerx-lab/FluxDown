@@ -11878,6 +11878,53 @@ impl DownloadManager {
         Ok(egress)
     }
 
+    /// 测速（[`crate::net_probe`]）用的「当前出口」：与任务起跑同一套选择（站点规则 / 协议代理 /
+    /// Auto 决策 / 任务级代理），返回 client、出口配置、路由标签与逐跳规则路由器。
+    /// 不消费一次性备用链路，不落库、不广播。
+    pub(crate) fn probe_egress(
+        &self,
+        url: &str,
+        proxy_url: &str,
+        user_agent: &str,
+        queue_id: &str,
+        ignore_tls_errors: bool,
+    ) -> Result<crate::net_probe::ProbeEgress, downloader::DownloadError> {
+        let egress = self.task_http_context(
+            (url, DownloadProtocol::for_http_family(url, false), None),
+            proxy_url,
+            user_agent,
+            queue_id,
+            ignore_tls_errors,
+            None,
+        )?;
+        Ok(crate::net_probe::ProbeEgress {
+            client: egress.client,
+            proxy: egress.proxy,
+            route_label: egress.route.to_owned(),
+            router: egress.router,
+        })
+    }
+
+    /// 设置里填写的手动代理（与当前全局模式无关），不含站点规则。
+    pub(crate) fn manual_proxy_config(&self) -> ProxyConfig {
+        ProxyConfig {
+            mode: ProxyMode::Manual,
+            no_proxy_list: String::new(),
+            rules: None,
+            ..self.proxy_config.clone()
+        }
+    }
+
+    /// 引擎数据库句柄（同 crate 内的只读查询用，如测速读取任务请求上下文）。
+    pub(crate) fn database(&self) -> &Db {
+        &self.db
+    }
+
+    /// 测速用：按任务 → 队列 → 全局的顺序解析生效的 User-Agent。
+    pub(crate) fn probe_user_agent(&self, user_agent: &str, queue_id: &str) -> String {
+        self.resolved_task_ua(user_agent, queue_id).to_owned()
+    }
+
     /// hint 任务（不得发探测请求）的占位名：名字为空时按 URL（含预签名 URL 的
     /// `response-content-disposition`）推断并以推断名落库，供排队期间 UI 显示；HTTP
     /// 完成期按实际 GET 响应精修。无网络 I/O。

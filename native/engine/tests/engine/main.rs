@@ -19,6 +19,7 @@ mod fxplug_install;
 mod hls_live_recording;
 mod max_range_bytes;
 mod multi_cdn;
+mod net_measure;
 mod pause_resume_repro;
 mod plugin_ffmpeg;
 mod plugin_host;

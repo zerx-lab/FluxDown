@@ -142,6 +142,10 @@ pub const DAEMON_SITE_AUTH_MATCH: &str = "daemon.siteAuth.match";
 pub const DAEMON_RUNTIME_STATS: &str = "daemon.runtime.stats";
 pub const DAEMON_FS_LIST: &str = "daemon.fs.list";
 pub const DAEMON_FS_DEFAULT_FILE_EXISTS: &str = "daemon.fs.defaultFileExists";
+/// `{}` → `NetInterfacesDto`：下载服务所在主机的网卡、链路速率、MTU、默认路由与 DNS 服务器（不含地址）。
+pub const DAEMON_NET_INTERFACES: &str = "daemon.net.interfaces";
+/// `NetMeasureParams` → `NetMeasureResultDto`：按真实下载出口逐条路线测量来源吞吐，数据读入内存即丢弃。
+pub const DAEMON_NET_MEASURE_ROUTES: &str = "daemon.net.measureRoutes";
 
 pub const DAEMON_RSS_LIST_SOURCES: &str = "daemon.rss.listSources";
 pub const DAEMON_RSS_GET_ITEMS: &str = "daemon.rss.getItems";
@@ -405,6 +409,31 @@ pub const AGENT_CLOUD_NOTIFY_SEND_EMAIL_CODE: &str = "agent.cloudNotify.sendEmai
 /// `CloudNotifyEmailVerifyParams` → `{ "ok": true }`：校验验证码，把地址记为本账号已验证的通知邮箱。
 pub const AGENT_CLOUD_NOTIFY_VERIFY_EMAIL: &str = "agent.cloudNotify.verifyEmail";
 
+/// `{}` → `AssistantStateDto`：AI 助手本机状态（读缓存；配置过期时后台刷新并经 `AssistantChanged` 推送）。
+pub const AGENT_ASSISTANT_GET: &str = "agent.assistant.get";
+/// 立即向 FluxCloud 拉取助手配置 → `AssistantStateDto`。
+pub const AGENT_ASSISTANT_REFRESH: &str = "agent.assistant.refresh";
+/// `AssistantSessionsParams` → `AssistantSessionPage`：本人的云端会话，最近更新在前。
+pub const AGENT_ASSISTANT_SESSIONS: &str = "agent.assistant.sessions";
+/// `AssistantSessionIdParams` → `AssistantSessionDetail`。
+pub const AGENT_ASSISTANT_SESSION: &str = "agent.assistant.session";
+/// `AssistantSessionIdParams` → `{ "ok": true }`：删除会话（进行中的执行先取消）。只在用户侧隐藏，云端保留数据。
+pub const AGENT_ASSISTANT_DELETE_SESSION: &str = "agent.assistant.deleteSession";
+/// 无参数 → `AssistantClearedSessions`：清空本人全部会话（同样只在用户侧隐藏，进行中的执行先取消）。
+pub const AGENT_ASSISTANT_CLEAR_SESSIONS: &str = "agent.assistant.clearSessions";
+/// `AssistantAskParams` → `AssistantAskResult`：提问；执行经 `AssistantChanged` 推送。
+pub const AGENT_ASSISTANT_ASK: &str = "agent.assistant.ask";
+/// `AssistantSessionIdParams` → `{ "ok": true }`：取消会话中进行中的执行。
+pub const AGENT_ASSISTANT_CANCEL: &str = "agent.assistant.cancel";
+/// `AssistantConfirmParams` → `{ "ok": true }`：批准 / 拒绝一次非只读客户端工具调用。
+pub const AGENT_ASSISTANT_CONFIRM: &str = "agent.assistant.confirm";
+/// `AssistantRateParams` → `{ "ok": true }`。
+pub const AGENT_ASSISTANT_RATE: &str = "agent.assistant.rate";
+/// `AssistantIssueParams` → `AssistantIssueDto`：确认提交云端起草的问题单。
+pub const AGENT_ASSISTANT_CONFIRM_ISSUE: &str = "agent.assistant.confirmIssue";
+/// `AssistantIssueParams` → `{ "ok": true }`：放弃云端起草的问题单。
+pub const AGENT_ASSISTANT_DISCARD_ISSUE: &str = "agent.assistant.discardIssue";
+
 pub const AGENT_PLATFORM_OPEN_TASK: &str = "agent.platform.openTask";
 pub const AGENT_PLATFORM_REVEAL_TASK: &str = "agent.platform.revealTask";
 /// `PlatformCopyTaskFilesParams` → `{ "ok": true }`：把已完成任务的产物以文件形式写入 agent 所在主机的
@@ -569,6 +598,8 @@ pub const ALL_METHODS: &[&str] = &[
     DAEMON_CONFIG_CONN_POLICY,
     DAEMON_CONFIG_CLEAR_CONN_POLICY,
     DAEMON_CONFIG_SYSTEM_PROXY,
+    DAEMON_NET_INTERFACES,
+    DAEMON_NET_MEASURE_ROUTES,
     DAEMON_SITE_AUTH_LIST,
     DAEMON_SITE_AUTH_DELETE,
     DAEMON_SITE_AUTH_GET,
@@ -740,6 +771,18 @@ pub const ALL_METHODS: &[&str] = &[
     AGENT_CLOUD_NOTIFY_DELIVERIES,
     AGENT_CLOUD_NOTIFY_SEND_EMAIL_CODE,
     AGENT_CLOUD_NOTIFY_VERIFY_EMAIL,
+    AGENT_ASSISTANT_GET,
+    AGENT_ASSISTANT_REFRESH,
+    AGENT_ASSISTANT_SESSIONS,
+    AGENT_ASSISTANT_SESSION,
+    AGENT_ASSISTANT_DELETE_SESSION,
+    AGENT_ASSISTANT_CLEAR_SESSIONS,
+    AGENT_ASSISTANT_ASK,
+    AGENT_ASSISTANT_CANCEL,
+    AGENT_ASSISTANT_CONFIRM,
+    AGENT_ASSISTANT_RATE,
+    AGENT_ASSISTANT_CONFIRM_ISSUE,
+    AGENT_ASSISTANT_DISCARD_ISSUE,
     AGENT_PLATFORM_OPEN_TASK,
     AGENT_PLATFORM_REVEAL_TASK,
     AGENT_PLATFORM_COPY_TASK_FILES,
@@ -819,6 +862,8 @@ pub const SLOW_DAEMON_METHODS: &[&str] = &[
     DAEMON_TASK_RESTART_FILE,
     DAEMON_TASK_EDIT,
     DAEMON_EGRESS_PLAN,
+    DAEMON_NET_INTERFACES,
+    DAEMON_NET_MEASURE_ROUTES,
 ];
 
 /// 是否属于 [`SLOW_DAEMON_METHODS`]。

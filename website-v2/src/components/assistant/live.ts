@@ -2,7 +2,7 @@
  * 进行中的一次提问：SSE 事件 → 展示状态的纯归约（事件契约见 `src/lib/account/types.ts::AiStreamEvent`）。
  */
 import { isRecord } from "@/lib/is-record";
-import type { AiIssue, AiStreamEvent } from "@/lib/account/types";
+import type { AiFailReason, AiIssue, AiStreamEvent } from "@/lib/account/types";
 
 export type Segment =
   | { kind: "text"; text: string }
@@ -20,12 +20,16 @@ export interface LiveRun {
   segments: Segment[];
   issues: AiIssue[];
   phase: LivePhase;
+  /** `failed` / `stopped` 时云端给出的原因（旧版 FluxCloud 不带）。 */
+  failReason: AiFailReason | null;
+  /** `done` 时这次回答的消息 ID（可对它评价；`replied` 等无落库消息时为 null）。 */
+  messageId: string | null;
   /** 收到过任何事件（区分「请求被拒」与「中途断开」）。 */
   started: boolean;
 }
 
 export function startRun(sessionId: string, question: string, images: string[] = []): LiveRun {
-  return { sessionId, question, images, segments: [], issues: [], phase: "streaming", started: false };
+  return { sessionId, question, images, segments: [], issues: [], phase: "streaming", failReason: null, messageId: null, started: false };
 }
 
 /** BFF 已按白名单裁剪，这里只确认是带 `type` 的对象。 */
@@ -64,20 +68,28 @@ export function applyEvent(run: LiveRun, event: AiStreamEvent): LiveRun {
       return next;
     case "done":
       next.phase = "done";
+      next.messageId = event.messageId;
       if (!run.segments.some((segment) => segment.kind === "text") && event.text.trim() !== "") {
         next.segments = [...run.segments, { kind: "text", text: event.text }];
       }
       return next;
     case "error":
       next.phase = event.status === "canceled" ? "stopped" : "failed";
+      next.failReason = event.reason ?? null;
+      next.segments = abandonTools(run.segments);
       return next;
   }
+}
+
+/** 没跑完的工具不会再有结果：异常结束时标为失败，不再转圈。 */
+function abandonTools(segments: Segment[]): Segment[] {
+  return segments.map((segment) => (segment.kind === "tool" && segment.state === "running" ? { ...segment, state: "error" } : segment));
 }
 
 /** 流结束（或中断）后的最终阶段：没收到终止事件即为中断，用户中止为停止。 */
 export function settle(run: LiveRun, aborted: boolean): LiveRun {
   if (run.phase !== "streaming") return run;
-  return { ...run, phase: aborted ? "stopped" : "interrupted" };
+  return { ...run, phase: aborted ? "stopped" : "interrupted", segments: abandonTools(run.segments) };
 }
 
 export type ToolLabel = "source" | "github" | "issue" | "other";

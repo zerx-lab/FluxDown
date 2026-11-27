@@ -603,6 +603,7 @@ impl ShellView {
     }
 
     /// 动作按钮：标准图标按钮按给定尺寸绘制；自绘视图（账户头像）保持自身尺寸。
+    /// 右侧面板开关在面板打开时呈选中态（强调色图标 + 中性选中底）。
     fn action_element(
         &self,
         action: &ShellAction,
@@ -611,30 +612,57 @@ impl ShellView {
         icon_size: Pixels,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (tooltip_id, icon, handler) = match &action.content {
-            ShellActionContent::View(view) => return frame.child(view.clone()).into_any_element(),
-            ShellActionContent::Button {
-                tooltip_id,
-                icon,
-                handler,
-            } => (*tooltip_id, Icon::clone(icon), Rc::clone(handler)),
-        };
+        let (tooltip_id, icon, selected, handler): (_, _, _, crate::view::ShellActionHandler) =
+            match &action.content {
+                ShellActionContent::View(view) => {
+                    return frame.child(view.clone()).into_any_element();
+                }
+                ShellActionContent::Button {
+                    tooltip_id,
+                    icon,
+                    handler,
+                } => (*tooltip_id, Icon::clone(icon), false, Rc::clone(handler)),
+                ShellActionContent::SidePanelToggle { tooltip_id, icon } => {
+                    let shell = cx.entity().downgrade();
+                    let toggle = move |_: &mut Window, cx: &mut App| {
+                        let Ok(()) = shell.update(cx, |shell, cx| shell.toggle_side_panel(cx))
+                        else {
+                            // 窗口已关闭，无需切换。
+                            return;
+                        };
+                    };
+                    (
+                        *tooltip_id,
+                        Icon::clone(icon),
+                        self.is_side_panel_open(),
+                        Rc::new(toggle),
+                    )
+                }
+            };
         let label = self.label(action.label_key, cx);
         let tooltip_label = label.clone();
-        let icon_color = active_theme(cx).tokens().colors.muted_foreground;
+        let theme = active_theme(cx);
+        let radius = theme.components().nav_item_radius;
+        let selected_bg = theme.extended().colors.nav_selected;
+        let icon_color = nav_icon_color(selected, cx);
         frame
             .id(tooltip_id)
             .tooltip(move |window, cx| tooltip_view(tooltip_label.clone(), window, cx))
             .child(
-                activity_button(
-                    action.button_id,
-                    label,
-                    icon.size(icon_size).text_color(icon_color),
-                    false,
-                    button_size,
-                    cx,
-                )
-                .on_click(move |_, window, cx| handler(window, cx)),
+                div()
+                    .rounded(radius)
+                    .when(selected, |this| this.bg(selected_bg))
+                    .child(
+                        activity_button(
+                            action.button_id,
+                            label,
+                            icon.size(icon_size).text_color(icon_color),
+                            selected,
+                            button_size,
+                            cx,
+                        )
+                        .on_click(move |_, window, cx| handler(window, cx)),
+                    ),
             )
             .into_any_element()
     }

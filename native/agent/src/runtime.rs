@@ -500,6 +500,11 @@ async fn run_agent(
     if server.is_none() {
         update.start_silent_updates(shell.clone(), cancel.clone());
     }
+    let assistant = Arc::new(crate::assistant::AssistantService::new(
+        cloud_api.clone(),
+        events.clone(),
+        cancel.clone(),
+    ));
     let cloud = Arc::new(cloud_api);
     let gateway = GatewayService::new(
         daemon.clone(),
@@ -526,8 +531,12 @@ async fn run_agent(
     )
     .with_server_mode(server.is_some())
     .with_logging_dir(paths.daemon_data_dir.clone())
-    .with_link(link.clone());
+    .with_link(link.clone())
+    .with_assistant(assistant.clone());
     let gateway_service = Arc::new(gateway);
+    // 助手的本机工具经网关调用 daemon / agent；账号登出 / 切换时由它的后台循环清空状态。
+    assistant.attach_tools(gateway_service.clone());
+    let assistant_task = tokio::spawn(assistant.run());
     let shell_task = tokio::spawn(crate::shell::run_controller(
         ShellServices {
             state: shell.clone(),
@@ -651,6 +660,7 @@ async fn run_agent(
         ("CDN", cdn_task),
         ("BT guard", bt_guard_task),
         ("cloud notify", notify_task),
+        ("assistant", assistant_task),
         ("cloud sync", sync_task),
         ("remote tasks", remote_task),
         ("device link", link_task),

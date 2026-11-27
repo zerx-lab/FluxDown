@@ -187,6 +187,8 @@ function WidgetChat({ lang, t, guard, config, frame }: { lang: Lang; t: Assistan
         issues={s.detail.data?.issues ?? []}
         live={live}
         notice={s.notice?.sessionId === s.selectedId ? s.notice : null}
+        ratings={s.ratings}
+        onRate={s.rate}
         onIssueChange={s.updateIssue}
       />
     );

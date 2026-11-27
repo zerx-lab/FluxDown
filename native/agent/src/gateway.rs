@@ -34,6 +34,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::api_host::AgentApiHost;
+use crate::assistant::{AssistantError, AssistantService};
 use crate::capture::{BlobError, BlobKind, CaptureError, CaptureService, DaemonBlobClient};
 use crate::cloud::{CloudApi, CloudAuthService, CloudError};
 use crate::cloud_notify::CloudNotifyService;
@@ -73,6 +74,8 @@ pub struct GatewayService {
     sync: Arc<SyncService>,
     remote: Arc<RemoteTaskService>,
     notify: Arc<CloudNotifyService>,
+    /// AI 助手；嵌入式宿主不装配（`agent.assistant.*` 返回 Unsupported）。
+    assistant: Option<Arc<AssistantService>>,
     capture: Arc<CaptureService>,
     blobs: Arc<DaemonBlobClient>,
     private_plugins: PrivatePluginService,
@@ -134,6 +137,7 @@ impl GatewayService {
             sync,
             remote,
             notify,
+            assistant: None,
             capture,
             blobs,
             private_plugins,
@@ -197,6 +201,19 @@ impl GatewayService {
             self.hello.capabilities.push(capability);
         }
         self
+    }
+
+    /// 装配 AI 助手（`agent.assistant.*`）。
+    #[must_use]
+    pub(crate) fn with_assistant(mut self, assistant: Arc<AssistantService>) -> Self {
+        self.assistant = Some(assistant);
+        self
+    }
+
+    fn assistant(&self) -> Result<&Arc<AssistantService>, RpcErrorData> {
+        self.assistant
+            .as_ref()
+            .ok_or_else(|| RpcErrorData::new(ApplicationErrorCode::Unsupported, false))
     }
 
     /// 构造 RPC 响应，并把连接级上下文（「本机来源」判定、会话凭据）透传给 [`Self::dispatch_with`]。
@@ -589,6 +606,55 @@ impl GatewayService {
                 let params =
                     parse_params::<fluxdown_protocol::CloudNotifyDeliveriesParams>(request.params)?;
                 cloud_value(self.notify.deliveries(&params).await)
+            }
+            method::AGENT_ASSISTANT_GET => to_value(self.assistant()?.get().await),
+            method::AGENT_ASSISTANT_REFRESH => assistant_value(self.assistant()?.refresh().await),
+            method::AGENT_ASSISTANT_SESSIONS => {
+                let params =
+                    parse_params::<fluxdown_protocol::AssistantSessionsParams>(request.params)?;
+                assistant_value(self.assistant()?.sessions(params).await)
+            }
+            method::AGENT_ASSISTANT_SESSION => {
+                let params =
+                    parse_params::<fluxdown_protocol::AssistantSessionIdParams>(request.params)?;
+                assistant_value(self.assistant()?.session(params).await)
+            }
+            method::AGENT_ASSISTANT_DELETE_SESSION => {
+                let params =
+                    parse_params::<fluxdown_protocol::AssistantSessionIdParams>(request.params)?;
+                assistant_ok(self.assistant()?.delete_session(params).await)
+            }
+            method::AGENT_ASSISTANT_CLEAR_SESSIONS => {
+                assistant_value(self.assistant()?.clear_sessions().await)
+            }
+            method::AGENT_ASSISTANT_ASK => {
+                let params = parse_params::<fluxdown_protocol::AssistantAskParams>(request.params)?;
+                assistant_value(self.assistant()?.ask(params).await)
+            }
+            method::AGENT_ASSISTANT_CANCEL => {
+                let params =
+                    parse_params::<fluxdown_protocol::AssistantSessionIdParams>(request.params)?;
+                assistant_ok(self.assistant()?.cancel(params).await)
+            }
+            method::AGENT_ASSISTANT_CONFIRM => {
+                let params =
+                    parse_params::<fluxdown_protocol::AssistantConfirmParams>(request.params)?;
+                assistant_ok(self.assistant()?.confirm(params).await)
+            }
+            method::AGENT_ASSISTANT_RATE => {
+                let params =
+                    parse_params::<fluxdown_protocol::AssistantRateParams>(request.params)?;
+                assistant_ok(self.assistant()?.rate(params).await)
+            }
+            method::AGENT_ASSISTANT_CONFIRM_ISSUE => {
+                let params =
+                    parse_params::<fluxdown_protocol::AssistantIssueParams>(request.params)?;
+                assistant_value(self.assistant()?.confirm_issue(params).await)
+            }
+            method::AGENT_ASSISTANT_DISCARD_ISSUE => {
+                let params =
+                    parse_params::<fluxdown_protocol::AssistantIssueParams>(request.params)?;
+                assistant_ok(self.assistant()?.discard_issue(params).await)
             }
             method::AGENT_SYNC_GET => to_value(self.sync.status().await),
             method::AGENT_SYNC_ENABLE => sync_value(self.sync.set_enabled(true).await),
@@ -1974,6 +2040,29 @@ fn cloud_error_data(error: CloudError) -> RpcErrorData {
     error.to_rpc_error()
 }
 
+fn assistant_value<T: serde::Serialize>(
+    result: Result<T, AssistantError>,
+) -> Result<serde_json::Value, RpcErrorData> {
+    result.map_err(assistant_error_data).and_then(to_value)
+}
+
+fn assistant_ok(result: Result<(), AssistantError>) -> Result<serde_json::Value, RpcErrorData> {
+    result
+        .map(|()| serde_json::json!({ "ok": true }))
+        .map_err(assistant_error_data)
+}
+
+/// 助手错误 → RPC 错误。RPC 错误体不带文本：可读原因进日志;提问 / 刷新配置失败另记入
+/// `AssistantStateDto.last_error_message`,由 UI 展示。
+fn assistant_error_data(error: AssistantError) -> RpcErrorData {
+    tracing::debug!(
+        code = ?error.data.code,
+        message = %error.message,
+        "assistant request failed"
+    );
+    error.data
+}
+
 fn sync_value(
     result: Result<(), crate::sync::SyncError>,
 ) -> Result<serde_json::Value, RpcErrorData> {
@@ -2640,9 +2729,10 @@ enum Lane {
     Cloud,
     /// 透传给 daemon 的下载命令与设置写入，同通道串行以保持命令顺序。
     Daemon,
-    /// 透传给 daemon 的长耗时方法（组件安装、插件市场、连通性测试等，清单见
-    /// `fluxdown_protocol::method::SLOW_DAEMON_METHODS`）：daemon 本就按请求并发处理，
-    /// 这里同样并发下发，不堵住普通 daemon 命令，也不被彼此堵住。
+    /// 并发下发的通道：透传给 daemon 的长耗时方法（组件安装、插件市场、连通性测试等，清单见
+    /// `fluxdown_protocol::method::SLOW_DAEMON_METHODS`）与 `agent.assistant.*`（提问期间的取消 /
+    /// 确认必须能越过在途请求）。daemon 本就按请求并发处理，这里同样并发下发，不堵住普通
+    /// daemon 命令，也不被彼此堵住。
     DaemonSlow,
     /// 其余本机操作。
     Local,
@@ -2665,6 +2755,11 @@ fn lane_for(method_name: &str) -> Lane {
         } else {
             Lane::Daemon
         };
+    }
+    // 助手方法是云端往返(建会话、提问等响应头),且 `cancel` / `confirm` 必须能越过在途的提问:
+    // 与慢 daemon 调用同道并发下发,不占用串行的 Local / Cloud 通道。
+    if method_name.starts_with("agent.assistant.") {
+        return Lane::DaemonSlow;
     }
     // 私有包安装 = 云端目录 + 下载（分钟级）+ daemon 安装：与慢 daemon 调用同道并发下发，
     // 不占用串行的 Cloud 通道（登录 / 设备 / 同步等不能被它堵住）。目录 `list` 仍走 Cloud。
@@ -3313,6 +3408,11 @@ mod tests {
             api_config.token = api_token.clone();
             api_config.lan_enabled = !bound.ip().is_loopback();
             api_config.enforce_loopback_host = bound.ip().is_loopback();
+            let assistant = Arc::new(crate::assistant::AssistantService::new(
+                cloud_api.clone(),
+                events.clone(),
+                tokio_util::sync::CancellationToken::new(),
+            ));
             let mut gateway = GatewayService::new(
                 daemon,
                 events.clone(),
@@ -3331,7 +3431,8 @@ mod tests {
                 api_token.clone(),
                 local,
             )
-            .with_server_mode(server_mode);
+            .with_server_mode(server_mode)
+            .with_assistant(assistant);
             if attach_link {
                 gateway = gateway.with_link(link.clone());
             }
@@ -5033,6 +5134,14 @@ mod tests {
             Lane::Slow
         ));
         assert!(matches!(lane_for("agent.remote.reconnect"), Lane::Local));
+        // 助手的取消 / 确认要能越过在途的提问：并发通道，不与串行的 Local / Cloud 共道。
+        for name in [
+            fluxdown_protocol::method::AGENT_ASSISTANT_ASK,
+            fluxdown_protocol::method::AGENT_ASSISTANT_CANCEL,
+            fluxdown_protocol::method::AGENT_ASSISTANT_CONFIRM,
+        ] {
+            assert!(matches!(lane_for(name), Lane::DaemonSlow), "{name}");
+        }
         for name in [
             fluxdown_protocol::method::AGENT_PLUGIN_FAVORITE_LIST,
             fluxdown_protocol::method::AGENT_PLUGIN_FAVORITE_SET,

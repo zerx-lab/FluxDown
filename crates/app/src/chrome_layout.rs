@@ -22,24 +22,29 @@ use crate::activity::{ActivityEntry, DOWNLOADS_ROUTE};
 /// 主窗口 chrome 布局偏好键（设备本地）。
 pub(crate) const CHROME_LAYOUT_PREF: &str = "ui.chrome_layout";
 
-/// 布局目录：活动栏条目在前（路由在上、动作在下），随后是下载控件（状态栏自左向右）与
-/// 版本条目（默认状态栏最右，有更新时兼作更新入口），最后是下载页顶栏控件。下载页与设置是
-/// 固定入口：可移动、不可隐藏。
+/// 布局目录：活动栏条目在前（路由在上、动作在下），随后是下载控件（状态栏自左向右）、
+/// AI 助手面板开关与版本条目（默认状态栏最右，有更新时兼作更新入口），最后是下载页顶栏控件。
+/// 下载页与设置是固定入口：可移动、不可隐藏。
 pub(crate) fn catalog() -> Vec<ChromeItemSpec> {
-    let activity = ActivityEntry::ALL.into_iter().map(|entry| {
+    let activity = ActivityEntry::ALL.into_iter().filter_map(|entry| {
         let (zone, families) = match entry {
             ActivityEntry::Downloads | ActivityEntry::Rss | ActivityEntry::Webhooks => {
                 (ChromeZone::RailTop, ChromeFamilies::ALL)
             }
+            // AI 助手开关默认紧挨版本号左侧，在下方 `assistant` 处按序登记。
+            ActivityEntry::Assistant => return None,
             // 账户头像是固定 32px 的自绘视图，高于状态栏。
             ActivityEntry::Account => (ChromeZone::RailBottom, ChromeFamilies::RAIL_TITLE),
             ActivityEntry::Settings => (ChromeZone::RailBottom, ChromeFamilies::ALL),
         };
         let spec = ChromeItemSpec::new(entry.layout_id(), zone, families);
-        match entry {
+        Some(match entry {
             ActivityEntry::Downloads | ActivityEntry::Settings => spec.fixed(),
-            ActivityEntry::Rss | ActivityEntry::Webhooks | ActivityEntry::Account => spec,
-        }
+            ActivityEntry::Rss
+            | ActivityEntry::Webhooks
+            | ActivityEntry::Assistant
+            | ActivityEntry::Account => spec,
+        })
     });
     let widgets = DownloadWidget::ALL.into_iter().map(|widget| {
         let zone = match widget {
@@ -75,6 +80,12 @@ pub(crate) fn catalog() -> Vec<ChromeItemSpec> {
             ChromeFamilies::TITLE,
         )
     });
+    // AI 助手开关紧挨版本号左侧：目录顺序决定默认区域内的先后。
+    let assistant = ChromeItemSpec::new(
+        ActivityEntry::Assistant.layout_id(),
+        ChromeZone::StatusTrailing,
+        ChromeFamilies::ALL,
+    );
     // 版本号是文字条目，放不进窄活动栏。
     let version = ChromeItemSpec::new(
         VERSION_WIDGET_ID,
@@ -83,7 +94,7 @@ pub(crate) fn catalog() -> Vec<ChromeItemSpec> {
     );
     activity
         .chain(widgets)
-        .chain([version])
+        .chain([assistant, version])
         .chain(page_widgets)
         .collect()
 }

@@ -21,6 +21,8 @@ export const CHROME_CATALOG: readonly ChromeItemSpec[] = [
   { id: 'proxy', defaultZone: 'statusTrailing', families: ['rail', 'title', 'status'] },
   // 剩余空间默认隐藏（状态栏右侧留给版本条目），可在自定义布局里显示。
   { id: 'diskFree', defaultZone: 'statusTrailing', families: ['title', 'status'], defaultHidden: true },
+  // AI 助手入口（非路由，开关窗口右侧全高面板）：默认状态栏右侧，紧挨版本条目之前；显示与否另受偏好 `ui.show_activity_assistant` 控制。
+  { id: 'assistantPanel', defaultZone: 'statusTrailing', families: ['rail', 'title', 'status'] },
   // 版本号（有更新时兼作更新入口）：默认状态栏最右；文字条目，放不进活动栏。
   { id: 'appVersion', defaultZone: 'statusTrailing', families: ['title', 'status'] },
 ]

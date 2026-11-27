@@ -6,10 +6,12 @@ import type { ActivityEntry } from './activity'
 export function useActivityEntryVisible(): (entry: ActivityEntry) => boolean {
   const rss = usePrefBool('ui.show_activity_rss', true)
   const webhooks = usePrefBool('ui.show_activity_webhooks', true)
+  const assistant = usePrefBool('ui.show_activity_assistant', true)
   const account = usePrefBool('ui.show_activity_account', true)
   const visible: Record<string, boolean> = {
     'ui.show_activity_rss': rss,
     'ui.show_activity_webhooks': webhooks,
+    'ui.show_activity_assistant': assistant,
     'ui.show_activity_account': account,
   }
   return (entry) => entry.prefKey === undefined || visible[entry.prefKey] !== false

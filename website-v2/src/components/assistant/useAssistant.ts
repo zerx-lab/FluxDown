@@ -2,10 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { HTML_LANG, type Lang } from "@/i18n/config";
 import { accountApi, accountStream } from "@/lib/account/client";
 import type {
-  AiConfig, AiIssue, AiSession, AiSessionDetail, AiSessionKind, AiSessionPage,
+  AiConfig, AiFailReason, AiIssue, AiRating, AiSession, AiSessionDetail, AiSessionKind, AiSessionPage,
 } from "@/lib/account/types";
 import type { Failure, Guard } from "@/components/account/dashboard/resource";
-import { applyEvent, asStreamEvent, settle, startRun, type LiveRun } from "./live";
+import { applyEvent, asStreamEvent, settle, startRun, type LiveRun, type Segment } from "./live";
 
 const PAGE_SIZE = 30;
 
@@ -23,10 +23,23 @@ export interface DetailState {
   errorCode: string | null;
 }
 
-/** 非 done 收尾的提示（停止 / 失败 / 中断），显示在该会话末尾直到下一次提问或切换会话。 */
+/**
+ * 非 done 收尾的提示（停止 / 失败 / 中断），显示在该会话末尾直到下一次提问或切换会话。
+ * 失败的回答不落库，`segments` 保留这次已经显示的过程（工具步骤与中间文本）。
+ */
 export interface RunNotice {
   sessionId: string;
   phase: "stopped" | "failed" | "interrupted";
+  reason: AiFailReason | null;
+  segments: Segment[];
+}
+
+/** 本地已知的回答评价：消息 ID → 评价（`null` = 已清除）。 */
+export type Ratings = ReadonlyMap<string, AiRating | null>;
+
+/** 一条回答当前的评价：本地覆盖优先，否则用消息自带的。 */
+export function ratingOf(ratings: Ratings, messageId: string, saved: AiRating | null | undefined): AiRating | null {
+  return ratings.has(messageId) ? (ratings.get(messageId) ?? null) : (saved ?? null);
 }
 
 export interface AssistantState {
@@ -38,6 +51,8 @@ export interface AssistantState {
   detail: DetailState;
   live: LiveRun | null;
   notice: RunNotice | null;
+  /** 本地已知的回答评价（消息 ID → 评价，`null` = 已清除），盖在详情消息自带的 `rating` 之上；用 `ratingOf` 读取。 */
+  ratings: Ratings;
   /** 最近一次提问在开始回答前被拒的原因。 */
   sendError: Failure | null;
   select: (sessionId: string | null) => void;
@@ -48,7 +63,8 @@ export interface AssistantState {
   send: (text: string, kind: AiSessionKind, images?: string[]) => Promise<boolean>;
   stop: () => void;
   remove: (sessionId: string) => Promise<string | null>;
-  rate: (session: AiSession, rating: "up" | "down" | null) => Promise<string | null>;
+  /** 评价一条回答（assistant 消息 ID）；`null` 清除。失败返回错误码（已回滚）。 */
+  rate: (messageId: string, rating: AiRating | null) => Promise<string | null>;
   updateIssue: (issue: AiIssue) => void;
 }
 
@@ -69,6 +85,9 @@ export function useAssistant(lang: Lang, guard: Guard, initialConfig: AiConfig, 
   const [live, setLive] = useState<LiveRun | null>(null);
   const [notice, setNotice] = useState<RunNotice | null>(null);
   const [sendError, setSendError] = useState<Failure | null>(null);
+  const [ratings, setRatings] = useState<Ratings>(new Map());
+  const ratingsRef = useRef(ratings);
+  const ratingBusy = useRef(new Set<string>());
 
   const guardRef = useRef(guard);
   guardRef.current = guard;
@@ -157,9 +176,9 @@ export function useAssistant(lang: Lang, guard: Guard, initialConfig: AiConfig, 
     [loadDetail],
   );
 
-  const replaceSession = useCallback((session: AiSession) => {
-    setSessions((s) => ({ ...s, items: s.items.map((item) => (item.id === session.id ? session : item)) }));
-    setDetail((d) => (d.data?.session.id === session.id ? { ...d, data: { ...d.data, session } } : d));
+  const putRatings = useCallback((next: Ratings) => {
+    ratingsRef.current = next;
+    setRatings(next);
   }, []);
 
   /** 发送一条提问；请求被拒（未开始回答）时返回 false，调用方把文字与图片放回输入框。 */
@@ -169,10 +188,12 @@ export function useAssistant(lang: Lang, guard: Guard, initialConfig: AiConfig, 
       streamingRef.current = true;
       setSendError(null);
       setNotice(null);
+      // 每次提问都带当前站点语言：会话中途切换语言后，云端按新语言回答。
+      const locale = HTML_LANG[lang];
       try {
         let sessionId = selectedRef.current;
         if (sessionId === null) {
-          const created = await accountApi<AiSession>("ai/sessions", { body: { kind, locale: HTML_LANG[lang] } });
+          const created = await accountApi<AiSession>("ai/sessions", { body: { kind, locale } });
           if (!created.ok) {
             if (!guardRef.current(created)) setSendError(created);
             return false;
@@ -191,7 +212,7 @@ export function useAssistant(lang: Lang, guard: Guard, initialConfig: AiConfig, 
         setLive(run);
         const res = await accountStream(
           `ai/sessions/${encodeURIComponent(sessionId)}/messages`,
-          images.length > 0 ? { text, images } : { text },
+          images.length > 0 ? { text, images, locale } : { text, locale },
           (raw) => {
             const event = asStreamEvent(raw);
             if (!event) return;
@@ -214,7 +235,7 @@ export function useAssistant(lang: Lang, guard: Guard, initialConfig: AiConfig, 
         const [loaded] = await Promise.all([loadDetail(sessionId, true), loadSessions(), refreshConfig()]);
         if (loaded) setLive((current) => (current === finished ? null : current));
         if (finished.phase !== "done" && finished.phase !== "streaming") {
-          setNotice({ sessionId, phase: finished.phase });
+          setNotice({ sessionId, phase: finished.phase, reason: finished.failReason, segments: finished.segments });
         }
         return true;
       } finally {
@@ -242,15 +263,35 @@ export function useAssistant(lang: Lang, guard: Guard, initialConfig: AiConfig, 
     [select],
   );
 
-  /** 评价会话；失败返回错误码。 */
+  /**
+   * 评价一条回答（`rating` = null 清除）；乐观更新，失败回滚并返回错误码。
+   * 同一条回答的上一次请求未结束时忽略新的点击。
+   */
   const rate = useCallback(
-    async (session: AiSession, rating: "up" | "down" | null): Promise<string | null> => {
-      const res = await accountApi(`ai/sessions/${encodeURIComponent(session.id)}/rating`, { method: "PUT", body: { rating } });
-      if (!res.ok) return guardRef.current(res) ? null : res.code;
-      replaceSession({ ...session, rating });
-      return null;
+    async (messageId: string, rating: AiRating | null): Promise<string | null> => {
+      const sessionId = selectedRef.current;
+      if (sessionId === null) return "fallback";
+      if (ratingBusy.current.has(messageId)) return null;
+      ratingBusy.current.add(messageId);
+      const previous = ratingsRef.current;
+      putRatings(new Map(previous).set(messageId, rating));
+      try {
+        const res = await accountApi(
+          `ai/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/rating`,
+          { method: "PUT", body: { rating } },
+        );
+        if (res.ok) return null;
+        // 回滚只撤销这一条回答的覆盖，不动期间其它回答的评价
+        const next = new Map(ratingsRef.current);
+        if (previous.has(messageId)) next.set(messageId, previous.get(messageId) ?? null);
+        else next.delete(messageId);
+        putRatings(next);
+        return guardRef.current(res) ? null : res.code;
+      } finally {
+        ratingBusy.current.delete(messageId);
+      }
     },
-    [replaceSession],
+    [putRatings],
   );
 
   /** 问题单确认 / 放弃后的最新状态写回详情与进行中的展示。 */
@@ -261,7 +302,7 @@ export function useAssistant(lang: Lang, guard: Guard, initialConfig: AiConfig, 
   }, []);
 
   return {
-    config, sessions, selectedId, detail, live, notice, sendError,
+    config, sessions, selectedId, detail, live, notice, sendError, ratings,
     select, loadSessions, loadMore, loadDetail, send, stop, remove, rate, updateIssue,
   };
 }

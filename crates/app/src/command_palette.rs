@@ -6,7 +6,9 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use fluxdown_ui_command_palette::{PaletteConfig, PaletteItem, PaletteItemKind, UsageStats};
+use fluxdown_ui_command_palette::{
+    PaletteConfig, PaletteItem, PaletteItemKind, PaletteQueryAction, UsageStats,
+};
 use fluxdown_ui_components::FluxIcon;
 use fluxdown_ui_downloads::PageCommand;
 use fluxdown_ui_downloads::actions as dl;
@@ -80,10 +82,20 @@ fn build_config(translator: &Translator, cx: &mut App) -> PaletteConfig {
     items.extend(settings_items(&labels, cx));
 
     let usage = UsageStats::from_value(Desktop::preferences(cx).get(USAGE_PREF_KEY));
+    let ask_translator = translator.clone();
     PaletteConfig {
         items,
         usage,
         on_usage: Rc::new(|usage, cx| Desktop::set_pref(cx, USAGE_PREF_KEY, usage.to_value())),
+        query_action: Some(PaletteQueryAction::new(
+            Icon::new(FluxIcon::Sparkles),
+            move |query| {
+                SharedString::from(
+                    ask_translator.text_with("commandPaletteAskAssistant", &[("query", query)]),
+                )
+            },
+            |query, _, cx| crate::activity::ask_assistant(cx, query),
+        )),
     }
 }
 
@@ -282,6 +294,12 @@ fn commands(labels: &Labels, cx: &App) -> Vec<PaletteItem> {
                     .keywords([page.to_owned()]),
                 );
             }
+            ActivityEntry::Assistant => items.push(labels.command(
+                "cmd.toggle_assistant",
+                "assistantPanelToggle",
+                FluxIcon::Sparkles,
+                |_, cx| crate::activity::toggle_assistant(cx),
+            )),
             ActivityEntry::Account => items.push(labels.command(
                 "cmd.open_account",
                 label_key,

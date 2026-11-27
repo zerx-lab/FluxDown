@@ -1,19 +1,21 @@
 use std::{collections::HashSet, rc::Rc};
 
-use fluxdown_ui_components::{SidebarState, sidebar_toggle_button};
+use fluxdown_ui_components::{
+    FluxIcon, SidebarState, sidebar_toggle_button, toolbar_action_button, tooltip_view,
+};
 use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_theme::active_theme;
 use gpui::{
-    AnyElement, AnyView, AnyWindowHandle, App, Context, Entity, FontWeight,
-    InteractiveElement as _, IntoElement, MouseButton, ParentElement, Pixels, Render, SharedString,
-    Styled, Window, div, img, px,
+    AnyElement, AnyView, AnyWindowHandle, App, AppContext as _, Context, DragMoveEvent, Empty,
+    Entity, FontWeight, InteractiveElement as _, IntoElement, MouseButton, ParentElement, Pixels,
+    Render, SharedString, StatefulInteractiveElement as _, Styled, Window, div, img, px,
 };
 use gpui_component::{Icon, TitleBar, h_flex, menu::AppMenuBar, v_flex};
 use serde_json::Value;
 
 use crate::assets::app_logo_source;
 use crate::chrome::{ACTIVITY_BUTTON_SIZE, LayoutChangeHandler, ShellChrome, ShellWidget};
-use crate::window_controls::FixedSizeTitleBar;
+use crate::window_controls::CustomTitleBar;
 use crate::{ChromeFamilies, ChromeItemSpec, ChromeLayout, ChromeZone};
 
 /// 动态（插件）路由 id 的固定前缀；只有该前缀的路由由 [`ShellView::set_dynamic_routes`] 管理。
@@ -147,14 +149,19 @@ impl ShellRoute {
     }
 }
 
-type ShellActionHandler = Rc<dyn Fn(&mut Window, &mut App)>;
+pub(crate) type ShellActionHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 
-/// 活动栏动作的呈现：标准图标按钮，或由 app 注入的自绘视图（如账户头像）。
+/// 活动栏动作的呈现：标准图标按钮、右侧面板开关，或由 app 注入的自绘视图（如账户头像）。
 pub(crate) enum ShellActionContent {
     Button {
         tooltip_id: &'static str,
         icon: Box<Icon>,
         handler: ShellActionHandler,
+    },
+    /// 开关 [`ShellView::with_side_panel`] 注入的右侧面板；面板打开时呈选中态。
+    SidePanelToggle {
+        tooltip_id: &'static str,
+        icon: Box<Icon>,
     },
     /// 自绘视图自带悬浮提示与点击行为；shell 只提供按钮位。
     View(AnyView),
@@ -209,6 +216,26 @@ impl ShellAction {
         }
     }
 
+    /// 右侧面板开关：点击开关面板，面板打开时按钮呈选中态。
+    pub fn side_panel_toggle(
+        button_id: &'static str,
+        tooltip_id: &'static str,
+        label_key: &'static str,
+        icon: Icon,
+    ) -> Self {
+        Self {
+            button_id,
+            layout_id: button_id,
+            label_key,
+            content: ShellActionContent::SidePanelToggle {
+                tooltip_id,
+                icon: Box::new(icon),
+            },
+            optional: false,
+            visible: true,
+        }
+    }
+
     /// 设置 chrome 布局里的条目 id。
     pub fn layout_id(mut self, layout_id: &'static str) -> Self {
         self.layout_id = layout_id;
@@ -218,6 +245,62 @@ impl ShellAction {
     /// 标记该动作是否为「可选」：活动栏在没有任何可见可选项时整体收起。
     pub fn optional(mut self, optional: bool) -> Self {
         self.optional = optional;
+        self
+    }
+}
+
+/// 右侧面板默认宽度与可拖动范围；主区始终至少保留 [`SIDE_PANEL_MAIN_MIN_WIDTH`]。
+const SIDE_PANEL_WIDTH: Pixels = px(400.);
+const SIDE_PANEL_MIN_WIDTH: Pixels = px(320.);
+const SIDE_PANEL_MAX_WIDTH: Pixels = px(720.);
+const SIDE_PANEL_MAIN_MIN_WIDTH: Pixels = px(360.);
+/// 面板左缘拖动调宽的命中区宽度（骑在分界线上）。
+const SIDE_PANEL_RESIZER_WIDTH: f32 = 6.;
+
+/// 面板宽度夹在可拖动范围内，且不把主区挤到最小宽度以下（窗口过窄时让面板退到最小宽度）。
+fn clamp_side_panel_width(width: Pixels, viewport: Pixels) -> Pixels {
+    let max = SIDE_PANEL_MAX_WIDTH
+        .min(viewport - SIDE_PANEL_MAIN_MIN_WIDTH)
+        .max(SIDE_PANEL_MIN_WIDTH);
+    width.clamp(SIDE_PANEL_MIN_WIDTH, max)
+}
+
+/// 面板左缘拖动调宽的拖拽载荷。
+struct SidePanelResize;
+
+/// 窗口右侧的全高面板（如 AI 助手），由宿主装配后经 [`ShellView::with_side_panel`] 注入。
+///
+/// 面板顶栏与主区顶栏同高同底，shell 在宿主插槽右侧追加「收起」按钮；面板占据窗口右上角，
+/// 因此 Windows / Linux 的窗口按钮在面板打开时画在面板顶栏，主区顶栏不再画。
+pub struct ShellSidePanel {
+    /// 面板顶栏插槽（标题与面板自己的按钮）。插槽内可交互元素须自行拦截左键 `mouse_down`
+    /// 冒泡，空白处保持窗口拖拽 / 双击。
+    header: AnyView,
+    content: AnyView,
+    /// 「收起」按钮的提示 / 无障碍文案键。
+    close_label_key: &'static str,
+    /// 面板被打开时调用（经 `cx.defer`，如把焦点交给输入框）。
+    on_open: Option<ShellActionHandler>,
+}
+
+impl ShellSidePanel {
+    pub fn new(
+        header: impl Into<AnyView>,
+        content: impl Into<AnyView>,
+        close_label_key: &'static str,
+    ) -> Self {
+        Self {
+            header: header.into(),
+            content: content.into(),
+            close_label_key,
+            on_open: None,
+        }
+    }
+
+    /// 面板被打开时的回调（在 `cx.defer` 中执行）。
+    #[must_use]
+    pub fn on_open(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_open = Some(Rc::new(handler));
         self
     }
 }
@@ -309,7 +392,7 @@ impl AuxiliaryWindowView {
     ///
     /// 标题行以绝对定位铺满拖动区、不参与内容宽度：gpui-component 的拖动区不允许收缩，
     /// 在流内的单行标题会按其不换行的最小宽度把右侧窗口控制按钮挤出窗口。
-    /// 不可调尺寸的窗口在 Windows / Linux 改用 [`FixedSizeTitleBar`]（无最大化按钮）。
+    /// 不可调尺寸的窗口在 Windows / Linux 改用 [`CustomTitleBar::fixed_size`]（无最大化按钮）。
     fn render_title_bar(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = active_theme(cx);
         let tokens = theme.tokens();
@@ -340,7 +423,7 @@ impl AuxiliaryWindowView {
 
         // 显式 `.bg` 覆盖 gpui-component 默认渐变；`.h` 经 refine_style 覆盖默认 34px。
         if !self.resizable && !cfg!(target_os = "macos") {
-            return FixedSizeTitleBar::new()
+            return CustomTitleBar::fixed_size()
                 .pl(spacing.sm)
                 .h(height)
                 .bg(extended.chrome)
@@ -414,6 +497,11 @@ pub struct ShellView {
     pub(crate) stored_layout: Option<Value>,
     /// Windows / Linux 标题栏内的应用菜单；`None` = 不显示（宿主按偏好注入，macOS 恒为 `None`）。
     menu_bar: Option<Entity<AppMenuBar>>,
+    /// 右侧全高面板；`None` = 本窗口没有面板。
+    side_panel: Option<ShellSidePanel>,
+    side_panel_open: bool,
+    /// 用户拖出的面板宽度（渲染时再按窗口宽度夹取）。
+    side_panel_width: Pixels,
 }
 
 impl ShellView {
@@ -453,7 +541,42 @@ impl ShellView {
             window: None,
             stored_layout: None,
             menu_bar: None,
+            side_panel: None,
+            side_panel_open: false,
+            side_panel_width: SIDE_PANEL_WIDTH,
         }
+    }
+
+    /// 注入右侧面板（默认收起）。
+    #[must_use]
+    pub fn with_side_panel(mut self, panel: ShellSidePanel) -> Self {
+        self.side_panel = Some(panel);
+        self
+    }
+
+    /// 右侧面板是否打开。
+    pub fn is_side_panel_open(&self) -> bool {
+        self.side_panel_open && self.side_panel.is_some()
+    }
+
+    /// 打开 / 收起右侧面板；打开时调用面板的 `on_open`。没有面板时忽略。
+    pub fn set_side_panel_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        let Some(panel) = &self.side_panel else {
+            return;
+        };
+        if self.side_panel_open == open {
+            return;
+        }
+        self.side_panel_open = open;
+        if open && let Some(handler) = panel.on_open.clone() {
+            self.run_in_window(handler, cx);
+        }
+        cx.notify();
+    }
+
+    /// 切换右侧面板。
+    pub fn toggle_side_panel(&mut self, cx: &mut Context<Self>) {
+        self.set_side_panel_open(!self.side_panel_open, cx);
     }
 
     /// 切换到指定路由（宿主导航入口）；路由不存在时忽略。
@@ -482,13 +605,17 @@ impl ShellView {
         else {
             return;
         };
+        self.run_in_window(handler, cx);
+    }
+
+    /// 经 `cx.defer` 在本窗口内执行宿主回调（避免重入 shell）；首帧渲染前窗口句柄未知，跳过。
+    fn run_in_window(&self, handler: ShellActionHandler, cx: &mut Context<Self>) {
         let Some(window) = self.window else {
             return;
         };
         cx.defer(move |cx| {
-            // 窗口已关闭时无需激活，更新失败即可忽略。
             let Ok(()) = window.update(cx, |_, window, cx| handler(window, cx)) else {
-                // 窗口已关闭，无需激活。
+                // 窗口已关闭，无需执行。
                 return;
             };
         });
@@ -582,12 +709,9 @@ impl ShellView {
     }
 
     /// 统一顶栏：macOS 交通灯 / Windows·Linux logo + 应用菜单，其后是顶栏左区、当前活跃路由的
-    /// 插槽与顶栏右区；Windows·Linux 的窗口按钮由 `TitleBar` 自带。
-    fn render_title_bar(
-        &self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    /// 插槽与顶栏右区。Windows·Linux 的窗口按钮由 `TitleBar` 自带；右侧面板打开时窗口按钮随
+    /// 窗口右上角移到面板顶栏，主区顶栏改用不画按钮的 [`CustomTitleBar::without_controls`]。
+    fn render_title_bar(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = active_theme(cx);
         let spacing = theme.tokens().spacing;
         let extended = theme.extended().colors;
@@ -618,30 +742,139 @@ impl ShellView {
             .and_then(|route| route.sidebar.as_ref())
             .filter(|sidebar| sidebar.read(cx).is_available())
             .map(|sidebar| self.render_sidebar_toggle(sidebar, cx));
+        // 绝对定位铺满拖动区：标题行不参与 gpui-component 拖动区的内容宽度，窗口控制按钮不会被挤出。
+        let row = h_flex()
+            .absolute()
+            .inset_0()
+            .items_center()
+            .gap(spacing.sm)
+            .pr(if is_macos { spacing.md } else { spacing.sm })
+            .children(leading)
+            .children(sidebar_toggle)
+            .children(slot)
+            .children(title_leading)
+            .child(div().flex_1().min_w_0())
+            .children(title_trailing);
+        let height = crate::title_bar_height(cx);
+
+        // 显式 `.bg` 覆盖 gpui-component 默认渐变；`.h` 经 refine_style 覆盖默认 34px。
+        if !is_macos && self.is_side_panel_open() {
+            return CustomTitleBar::without_controls()
+                .pl(spacing.sm)
+                .h(height)
+                .bg(extended.chrome)
+                .border_color(extended.hairline)
+                .child(row)
+                .into_any_element();
+        }
         let title_bar = TitleBar::new();
         #[cfg(not(target_os = "macos"))]
         let title_bar = title_bar.pl(spacing.sm);
-
-        // 显式 `.bg` 覆盖 gpui-component 默认渐变；`.h` 经 refine_style 覆盖默认 34px。
         title_bar
-            .h(crate::title_bar_height(cx))
+            .h(height)
             .bg(extended.chrome)
             .border_color(extended.hairline)
+            .child(row)
+            .into_any_element()
+    }
+
+    /// 右侧全高面板：顶栏（宿主插槽 + 收起按钮；Windows·Linux 另有窗口按钮）+ 内容，左缘可拖动调宽。
+    fn render_side_panel(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let panel = self.side_panel.as_ref().filter(|_| self.side_panel_open)?;
+        let theme = active_theme(cx);
+        let spacing = theme.tokens().spacing;
+        let extended = theme.extended();
+        let label = SharedString::from(
+            self.translator
+                .read(cx)
+                .text(panel.close_label_key)
+                .to_owned(),
+        );
+        let tooltip = label.clone();
+        let close = div()
+            .id("shell-side-panel-close-tooltip")
+            .flex_none()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .tooltip(move |window, cx| tooltip_view(tooltip.clone(), window, cx))
             .child(
-                // 绝对定位铺满拖动区：标题行不参与 gpui-component 拖动区的内容宽度，窗口控制按钮不会被挤出。
-                h_flex()
-                    .absolute()
-                    .inset_0()
-                    .items_center()
-                    .gap(spacing.sm)
-                    .pr(if is_macos { spacing.md } else { spacing.sm })
-                    .children(leading)
-                    .children(sidebar_toggle)
-                    .children(slot)
-                    .children(title_leading)
-                    .child(div().flex_1().min_w_0())
-                    .children(title_trailing),
+                toolbar_action_button(
+                    "shell-side-panel-close",
+                    label,
+                    Icon::new(FluxIcon::PanelRight).size(extended.icon.md),
+                    false,
+                    false,
+                    cx,
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.set_side_panel_open(false, cx))),
+            );
+        let row = h_flex()
+            .absolute()
+            .inset_0()
+            .items_center()
+            .gap(spacing.xs)
+            .pl(spacing.md)
+            .pr(spacing.sm)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .child(panel.header.clone()),
             )
+            .child(close);
+        // 左上角不是窗口圆角，清掉 `TitleBar` 自带的圆角；macOS 交通灯不在这里，去掉默认左内边距。
+        let title_bar = TitleBar::new()
+            .pl(px(0.))
+            .rounded_tl(px(0.))
+            .h(crate::title_bar_height(cx))
+            .bg(extended.colors.chrome)
+            .border_color(extended.colors.hairline)
+            .child(row);
+        let width = clamp_side_panel_width(self.side_panel_width, window.viewport_size().width);
+        Some(
+            v_flex()
+                .id("shell-side-panel")
+                .relative()
+                .h_full()
+                .w(width)
+                .flex_none()
+                .border_l(extended.stroke.thin)
+                .border_color(extended.colors.hairline)
+                .child(title_bar)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .min_h_0()
+                        .child(panel.content.clone()),
+                )
+                .child(self.render_side_panel_resizer(cx))
+                .into_any_element(),
+        )
+    }
+
+    /// 面板左缘的拖动调宽命中区（骑在分界线上，盖住两侧各一半）。
+    fn render_side_panel_resizer(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        div()
+            .id("shell-side-panel-resizer")
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left(px(-SIDE_PANEL_RESIZER_WIDTH / 2.))
+            .w(px(SIDE_PANEL_RESIZER_WIDTH))
+            .occlude()
+            .cursor_col_resize()
+            .on_drag(SidePanelResize, |_, _, _, cx| cx.new(|_| Empty))
+            .on_drag_move(cx.listener(
+                |this, event: &DragMoveEvent<SidePanelResize>, window, cx| {
+                    let viewport = window.viewport_size().width;
+                    let width = clamp_side_panel_width(viewport - event.event.position.x, viewport);
+                    if this.side_panel_width != width {
+                        this.side_panel_width = width;
+                        cx.notify();
+                    }
+                },
+            ))
     }
 
     fn render_sidebar_toggle(
@@ -698,12 +931,12 @@ impl Render for ShellView {
         let banner = self.render_edit_banner(cx);
         let activity_bar = self.render_activity_bar(window, cx);
         let status_bar = self.render_status_bar(window, cx);
-        v_flex()
-            .size_full()
-            .relative()
-            .bg(colors.background)
-            .text_color(colors.foreground)
-            .on_key_down(cx.listener(Self::on_edit_key_down))
+        let side_panel = self.render_side_panel(window, cx);
+        let main = v_flex()
+            .h_full()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
             .child(title_bar)
             .children(banner)
             .child(
@@ -727,7 +960,15 @@ impl Render for ShellView {
                             )
                             .children(status_bar),
                     ),
-            )
+            );
+        h_flex()
+            .size_full()
+            .relative()
+            .bg(colors.background)
+            .text_color(colors.foreground)
+            .on_key_down(cx.listener(Self::on_edit_key_down))
+            .child(main)
+            .children(side_panel)
     }
 }
 
@@ -737,7 +978,7 @@ mod tests {
 
     use fluxdown_ui_components::FluxIcon;
     use fluxdown_ui_i18n::I18nCatalog;
-    use gpui::{AppContext as _, Empty, TestApp};
+    use gpui::{Empty, TestApp};
     use serde_json::json;
 
     use super::*;

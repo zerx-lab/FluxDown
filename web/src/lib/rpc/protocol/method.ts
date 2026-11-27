@@ -105,6 +105,8 @@ export const METHOD = {
   DAEMON_RUNTIME_STATS: 'daemon.runtime.stats',
   DAEMON_FS_LIST: 'daemon.fs.list',
   DAEMON_FS_DEFAULT_FILE_EXISTS: 'daemon.fs.defaultFileExists',
+  DAEMON_NET_INTERFACES: 'daemon.net.interfaces',
+  DAEMON_NET_MEASURE_ROUTES: 'daemon.net.measureRoutes',
 
   DAEMON_RSS_LIST_SOURCES: 'daemon.rss.listSources',
   DAEMON_RSS_GET_ITEMS: 'daemon.rss.getItems',
@@ -323,6 +325,19 @@ export const METHOD = {
   AGENT_CLOUD_NOTIFY_DELIVERIES: 'agent.cloudNotify.deliveries',
   AGENT_CLOUD_NOTIFY_SEND_EMAIL_CODE: 'agent.cloudNotify.sendEmailCode',
   AGENT_CLOUD_NOTIFY_VERIFY_EMAIL: 'agent.cloudNotify.verifyEmail',
+
+  AGENT_ASSISTANT_GET: 'agent.assistant.get',
+  AGENT_ASSISTANT_REFRESH: 'agent.assistant.refresh',
+  AGENT_ASSISTANT_SESSIONS: 'agent.assistant.sessions',
+  AGENT_ASSISTANT_SESSION: 'agent.assistant.session',
+  AGENT_ASSISTANT_DELETE_SESSION: 'agent.assistant.deleteSession',
+  AGENT_ASSISTANT_CLEAR_SESSIONS: 'agent.assistant.clearSessions',
+  AGENT_ASSISTANT_ASK: 'agent.assistant.ask',
+  AGENT_ASSISTANT_CANCEL: 'agent.assistant.cancel',
+  AGENT_ASSISTANT_CONFIRM: 'agent.assistant.confirm',
+  AGENT_ASSISTANT_RATE: 'agent.assistant.rate',
+  AGENT_ASSISTANT_CONFIRM_ISSUE: 'agent.assistant.confirmIssue',
+  AGENT_ASSISTANT_DISCARD_ISSUE: 'agent.assistant.discardIssue',
 
   /** 服务端推送通知，params 为 EventFrame。 */
   SERVICE_EVENT: 'service.event',

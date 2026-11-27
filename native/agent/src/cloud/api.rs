@@ -330,6 +330,39 @@ impl CloudApi {
         .await
     }
 
+    /// AI 助手端点（`/api/v1/ai{suffix}`，账号鉴权）的 JSON 调用；204 / 空正文解码为 JSON null。
+    pub(crate) async fn ai_call<P: Serialize, R: serde::de::DeserializeOwned>(
+        &self,
+        method: Method,
+        suffix: &str,
+        body: Option<&P>,
+    ) -> Result<R, CloudError> {
+        self.authed_as(method, &format!("/api/v1/ai{suffix}"), body)
+            .await
+    }
+
+    /// `POST /api/v1/ai{suffix}`：提问这类「POST 即返回 SSE」的端点；调用方负责读取响应流。
+    pub(crate) async fn ai_stream<P: Serialize + ?Sized>(
+        &self,
+        suffix: &str,
+        body: &P,
+    ) -> Result<reqwest::Response, CloudError> {
+        self.client
+            .authenticated_stream_request_epoch(
+                Method::POST,
+                &format!("/api/v1/ai{suffix}"),
+                Some(body),
+                self.request_epoch(),
+            )
+            .await
+    }
+
+    /// 本机 `(device_id, platform)`（建 AI 会话时随客户端信息上报）。
+    pub(crate) async fn ai_device(&self) -> (String, String) {
+        let (device_id, _name, platform) = self.client.device_identity().await;
+        (device_id, platform)
+    }
+
     pub async fn is_authenticated(&self) -> bool {
         self.client.is_authenticated().await
     }
@@ -712,7 +745,7 @@ pub struct NotifyReportResult {
     pub outcome: String,
 }
 
-fn encode(value: &str) -> String {
+pub(crate) fn encode(value: &str) -> String {
     let mut encoded = String::with_capacity(value.len());
     for byte in value.bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {

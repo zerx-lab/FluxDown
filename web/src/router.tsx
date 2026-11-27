@@ -1,6 +1,6 @@
 // TanStack Router（history 模式）。
 //   /login /setup            —— 无外壳（AuthLayout）
-//   壳路由 `shell`（需登录）  —— AppShell：`/` 下载、`/rss`、`/webhooks`、`/plugins/$pluginId/$viewId`、`/settings[/$category]`
+//   壳路由 `shell`（需登录）  —— AppShell：`/` 下载、`/rss`、`/webhooks`、`/plugins/$pluginId/$viewId`、`/settings[/$category]`（AI 助手是外壳右侧面板，不走路由）
 // 未登录访问壳内路由 → /login；已登录访问 /login → /。
 
 import { Outlet, createRootRoute, createRoute, createRouter, redirect } from '@tanstack/react-router'

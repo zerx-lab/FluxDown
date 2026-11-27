@@ -5,6 +5,7 @@
 pub mod agent;
 pub mod app_icon;
 pub mod aria2_options;
+pub mod assistant;
 pub mod browser_extension;
 pub mod capture_link;
 pub mod cloud_notify;
@@ -17,6 +18,7 @@ pub mod event;
 pub mod handshake;
 pub mod local_service;
 pub mod method;
+pub mod net_diag;
 pub mod plugin_i18n;
 pub mod plugin_view;
 pub mod proxy_rules;
@@ -31,6 +33,19 @@ pub mod task_edit;
 pub use task_edit::{EditTaskParams, TaskEditCapabilities, TaskEditSnapshot, TaskPropertiesDto};
 pub mod update_prompt;
 pub mod user_agent_presets;
+pub use assistant::{
+    ASSISTANT_CLIENT_TOOL_PROTOCOL, ASSISTANT_MAX_RUNS, AssistantAskParams, AssistantAskResult,
+    AssistantChannel, AssistantClearedSessions, AssistantConfigDto, AssistantConfirmParams,
+    AssistantConfirmationState, AssistantIssueDto, AssistantIssueParams, AssistantMessageDto,
+    AssistantRateParams, AssistantRunDto, AssistantRunItemDto, AssistantRunStatus,
+    AssistantSessionDetail, AssistantSessionDto, AssistantSessionIdParams, AssistantSessionKind,
+    AssistantSessionPage, AssistantSessionsParams, AssistantStateDto, AssistantToolCallDto,
+    AssistantToolEffect, AssistantToolStatus,
+};
+pub use net_diag::{
+    NetAddressScope, NetDnsServerDto, NetInterfaceDto, NetInterfaceKind, NetInterfacesDto,
+    NetMeasureParams, NetMeasureResultDto, NetMeasureSourceDto, NetRouteMeasureDto,
+};
 pub use task_activity::{
     TaskActivityDto, TaskActivityPage, TaskActivityQuery, TaskRuntimeDto, TaskSegmentDto,
     TaskSourceBytesDto, TaskSpeedHistoryDto, TaskSpeedHistoryQuery,

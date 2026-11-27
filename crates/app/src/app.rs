@@ -83,6 +83,8 @@ pub(crate) struct Desktop {
     /// 主窗口内的下载页（主窗口关闭后失效）。
     pub main_downloads: Option<WeakEntity<DownloadView>>,
     pub main_shell: Option<WeakEntity<ShellView>>,
+    /// 主窗口右侧面板里的 AI 助手（主窗口关闭后失效）：命令面板「问 AI 助手」据此提问。
+    pub main_assistant: Option<WeakEntity<fluxdown_ui_assistant::AssistantView>>,
     /// 设置窗口内的设置页（窗口关闭后失效）：命令面板据此定位设置项。
     pub settings_view: Option<WeakEntity<SettingsView>>,
     /// 最新运行时统计（关窗 / 退出提示用）。
@@ -283,6 +285,7 @@ pub(crate) fn run() -> Result<RunOutcome, AppError> {
             referral_visibility,
             main_downloads: None,
             main_shell: None,
+            main_assistant: None,
             settings_view: None,
             runtime_stats: DaemonRuntimeStatsDto::default(),
             shell: ShellStatusDto::default(),

@@ -1,0 +1,20 @@
+[package]
+name = "fluxdown_ui_assistant"
+version = "0.1.0"
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+base64 = "0.22"
+fluxdown_protocol = { version = "0.1.0", path = "../../native/protocol" }
+fluxdown_ui_components = { version = "0.1.0", path = "../components" }
+fluxdown_ui_i18n = { version = "0.1.0", path = "../i18n" }
+fluxdown_ui_theme = { version = "0.1.0", path = "../theme" }
+gpui.workspace = true
+gpui-component.workspace = true
+# 图片附件：识别 / 转 PNG / 生成缩略图。编解码特性与 gpui 已启用的一致（Cargo.lock 无新增包）。
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff"] }
+log = "0.4"
+serde_json = "1"

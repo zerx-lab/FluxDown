@@ -27,14 +27,14 @@ describe('chromeStore', () => {
     expect(Object.keys(stored())).toHaveLength(7)
     expect(stored().hidden).toEqual(['diskFree'])
     expect(stored().titleTrailing).toEqual(['proxy'])
-    expect(stored().statusTrailing).toEqual(['downloadLimit', 'uploadLimit', 'diskFree', 'appVersion'])
+    expect(stored().statusTrailing).toEqual(['downloadLimit', 'uploadLimit', 'diskFree', 'assistantPanel', 'appVersion'])
   })
 
   test('被拒绝的移动不写入；重置写入默认布局', () => {
     expect(moveChromeItem('downloadSpeed', 'railTop', null)).toBe(false)
     resetChromeLayout()
     expect(stored().titleTrailing).toEqual([])
-    expect(stored().statusTrailing).toEqual(['downloadLimit', 'uploadLimit', 'proxy', 'diskFree', 'appVersion'])
+    expect(stored().statusTrailing).toEqual(['downloadLimit', 'uploadLimit', 'proxy', 'diskFree', 'assistantPanel', 'appVersion'])
   })
 
   test('隐藏 / 显示立即持久化，hidden 仅在非空时写入；位置不变，移动保留隐藏', () => {

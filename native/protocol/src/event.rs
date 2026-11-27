@@ -380,6 +380,9 @@ pub struct AgentSnapshot {
     /// 云端推送状态（未登录时只保留本机上报开关与隐私字段，`overview` 为空）。
     #[serde(default)]
     pub cloud_notify: crate::CloudNotifyStateDto,
+    /// AI 助手配置与进行中 / 最近结束的执行（未登录时为空）。
+    #[serde(default)]
+    pub assistant: crate::AssistantStateDto,
 }
 
 impl AgentSnapshot {
@@ -405,6 +408,7 @@ impl AgentSnapshot {
             power: self.power,
             update: self.update.clone(),
             cloud_notify: self.cloud_notify.clone(),
+            assistant: self.assistant.clone(),
         }
     }
 }
@@ -547,6 +551,8 @@ pub enum AgentEvent {
     UpdateChanged(crate::UpdateStatusDto),
     /// 云端推送状态整体替换（`AgentSnapshot.cloud_notify`）。
     CloudNotifyChanged(crate::CloudNotifyStateDto),
+    /// AI 助手状态整体替换（`AgentSnapshot.assistant`）。
+    AssistantChanged(crate::AssistantStateDto),
     /// 外部来源未经确认直接建成的任务（免打扰下载 / 系统打开链接 / 拖入 / 插件页面脚本经
     /// `flux.tasks.create` 新建）。一次性通知，不进快照；官方 UI 据此为单任务弹出进度窗口。
     /// 失败条目不在列表中。
@@ -780,6 +786,7 @@ pub fn apply_agent_event(snapshot: &mut AgentSnapshot, event: &AgentEvent) {
                 snapshot.cloud_notify.updated_at_unix_ms = None;
                 snapshot.cloud_notify.recent_deliveries.clear();
                 snapshot.cloud_notify.recent_next_cursor = None;
+                snapshot.assistant = crate::AssistantStateDto::default();
             }
         }
         AgentEvent::SyncChanged(sync) => snapshot.sync.clone_from(sync),
@@ -809,6 +816,7 @@ pub fn apply_agent_event(snapshot: &mut AgentSnapshot, event: &AgentEvent) {
         AgentEvent::PowerChanged(power) => snapshot.power = *power,
         AgentEvent::UpdateChanged(update) => snapshot.update.clone_from(update),
         AgentEvent::CloudNotifyChanged(state) => snapshot.cloud_notify.clone_from(state),
+        AgentEvent::AssistantChanged(state) => snapshot.assistant.clone_from(state),
         AgentEvent::CaptureTasksStarted(_)
         | AgentEvent::CaptureTasksResumed(_)
         | AgentEvent::SessionRevoked(_) => {}

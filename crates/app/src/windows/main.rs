@@ -1,14 +1,16 @@
-//! 主窗口：shell + 下载页 + RSS 页；关闭策略与边界持久化。
+//! 主窗口:shell + 下载页 + RSS 页 + 推送通知页 + 右侧 AI 助手面板;关闭策略与边界持久化。
 
 use std::{rc::Rc, sync::Arc};
 
 use fluxdown_ui_account::AccountRailButton;
+use fluxdown_ui_assistant::{AssistantHost, AssistantView};
 use fluxdown_ui_components::FluxIcon;
 use fluxdown_ui_downloads::{DownloadHostActions, DownloadView};
 use fluxdown_ui_rss::RssView;
 use fluxdown_ui_settings::{PushHost, PushView, VersionButton, VersionHost};
 use fluxdown_ui_shell::{
-    ChromeEditingChanged, ShellAction, ShellChrome, ShellRoute, ShellView, main_window_options,
+    ChromeEditingChanged, ShellAction, ShellChrome, ShellRoute, ShellSidePanel, ShellView,
+    main_window_options,
 };
 use gpui::{App, AppContext as _, Window, WindowHandle, px, size};
 use gpui_component::{Icon, Root};
@@ -16,7 +18,7 @@ use gpui_component::{Icon, Root};
 use crate::{
     activity::{self, ActivityEntry},
     app::Desktop,
-    capability_ports::AgentRssPort,
+    capability_ports::{AgentAssistantPort, AgentRssPort},
     downloads_port::AgentDownloadsPort,
     session::attach,
     windows::{RememberedWindow, WindowKey, WindowRegistry, confirm_active_tasks},
@@ -57,6 +59,18 @@ fn open_with(cx: &mut App, focus: bool) -> Option<WindowHandle<Root>> {
         watch_import_suspension(&client, &downloads, cx);
         let rss_port = Arc::new(AgentRssPort::new(client.clone()));
         let rss = cx.new(|cx| RssView::new(translator.clone(), rss_port, window, cx));
+        let assistant_port = Arc::new(AgentAssistantPort::new(client.clone()));
+        let assistant = cx.new(|cx| {
+            AssistantView::new(
+                translator.clone(),
+                assistant_port,
+                AssistantHost {
+                    open_account: Rc::new(|_, cx| activity::open_account(cx)),
+                },
+                window,
+                cx,
+            )
+        });
         let push = cx.new(|cx| {
             PushView::new(
                 translator.clone(),
@@ -71,6 +85,7 @@ fn open_with(cx: &mut App, focus: bool) -> Option<WindowHandle<Root>> {
 
         let downloads_sidebar = downloads.read(cx).sidebar_state();
         let rss_sidebar = rss.read(cx).sidebar_state();
+        let assistant_header = assistant.update(cx, |assistant, cx| assistant.new_panel_header(cx));
         // 推送通知页没有侧边菜单，不登记侧栏；RSS 的切换按钮由 shell 提供。
         let mut routes = Vec::new();
         let mut actions = Vec::new();
@@ -101,6 +116,16 @@ fn open_with(cx: &mut App, focus: bool) -> Option<WindowHandle<Root>> {
                         rss.clone().into(),
                     )
                     .with_sidebar(rss_sidebar.clone())
+                    .optional(optional),
+                ),
+                ActivityEntry::Assistant => actions.push(
+                    ShellAction::side_panel_toggle(
+                        button_id,
+                        "activity-assistant-tooltip",
+                        entry.label_key(),
+                        Icon::new(FluxIcon::Sparkles),
+                    )
+                    .layout_id(entry.layout_id())
                     .optional(optional),
                 ),
                 ActivityEntry::Webhooks => routes.push(
@@ -163,7 +188,21 @@ fn open_with(cx: &mut App, focus: bool) -> Option<WindowHandle<Root>> {
                 Desktop::set_pref(cx, crate::chrome_layout::CHROME_LAYOUT_PREF, value);
             }),
         };
-        let shell = cx.new(|cx| ShellView::new(translator.clone(), routes, actions, chrome, cx));
+        let assistant_for_focus = assistant.downgrade();
+        let side_panel =
+            ShellSidePanel::new(assistant_header, assistant.clone(), "assistantPanelClose")
+                .on_open(move |window, cx| {
+                    let Ok(()) = assistant_for_focus
+                        .update(cx, |assistant, cx| assistant.focus_input(window, cx))
+                    else {
+                        // 助手视图已随窗口释放，无需聚焦。
+                        return;
+                    };
+                });
+        let shell = cx.new(|cx| {
+            ShellView::new(translator.clone(), routes, actions, chrome, cx)
+                .with_side_panel(side_panel)
+        });
         // 页面插槽不进 chrome 布局：编辑模式下由插槽自己提供外观切换。
         let title_bar_for_editing = downloads_title_bar.downgrade();
         cx.subscribe(&shell, move |_, event: &ChromeEditingChanged, cx| {
@@ -231,10 +270,12 @@ fn open_with(cx: &mut App, focus: bool) -> Option<WindowHandle<Root>> {
 
         attach(&session, &downloads, cx);
         attach(&session, &rss, cx);
+        attach(&session, &assistant, cx);
         {
             let desktop = Desktop::global_mut(cx);
             desktop.main_downloads = Some(downloads.downgrade());
             desktop.main_shell = Some(shell.downgrade());
+            desktop.main_assistant = Some(assistant.downgrade());
         }
         crate::plugin_contributions::attach_main_window(cx);
 

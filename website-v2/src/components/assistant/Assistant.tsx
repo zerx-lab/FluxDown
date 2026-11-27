@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { ThumbsDown, ThumbsUp, Trash2, TriangleAlert } from "lucide-react";
+import { Trash2, TriangleAlert } from "lucide-react";
 import type { Lang } from "@/i18n/config";
 import { assistant, type AssistantMessages } from "@/i18n/messages/assistant";
 import { accountApi, accountErrorText, accountHref, currentPath } from "@/lib/account/client";
@@ -21,15 +21,14 @@ type Phase =
   | { kind: "disabled" }
   | { kind: "error"; code: string };
 
-/** 对话区顶栏：标题、今日用量、评价与删除（删除需再点一次确认）。 */
+/** 对话区顶栏：标题、今日用量与删除（删除需再点一次确认）；评价在每条回答下。 */
 function ChatHeader({
-  lang, t, session, config, onRate, onDelete,
+  lang, t, session, config, onDelete,
 }: {
   lang: Lang;
   t: AssistantMessages;
   session: AiSession | null;
   config: AiConfig;
-  onRate: (session: AiSession, rating: "up" | "down" | null) => Promise<string | null>;
   onDelete: (id: string) => Promise<string | null>;
 }) {
   const [confirming, setConfirming] = useState(false);
@@ -49,26 +48,6 @@ function ChatHeader({
     if (code !== null) setError(accountErrorText(lang, code));
   };
 
-  const rateButton = (value: "up" | "down") => {
-    if (!session) return null;
-    const pressed = session.rating === value;
-    const Icon = value === "up" ? ThumbsUp : ThumbsDown;
-    const label = value === "up" ? t.chat.rateUp : t.chat.rateDown;
-    return (
-      <button
-        type="button"
-        aria-pressed={pressed}
-        aria-label={label}
-        title={label}
-        disabled={busy}
-        onClick={() => void run(() => onRate(session, pressed ? null : value))}
-        className={`icon-btn ${pressed ? "text-accent-ink" : ""}`}
-      >
-        <Icon size={15} aria-hidden className={pressed ? "fill-current" : ""} />
-      </button>
-    );
-  };
-
   return (
     <div className="border-b border-line px-4 py-2.5 sm:px-6">
       <div className="flex min-h-9 items-center gap-3">
@@ -77,12 +56,6 @@ function ChatHeader({
         </h2>
         {config.dailyLimit > 0 && (
           <span className="hidden shrink-0 text-[12px] text-subtle sm:inline">{t.chat.quota(config.usedToday, config.dailyLimit)}</span>
-        )}
-        {session && session.messageCount > 0 && (
-          <div className="flex shrink-0 items-center">
-            {rateButton("up")}
-            {rateButton("down")}
-          </div>
         )}
         {session &&
           (confirming ? (
@@ -164,6 +137,8 @@ function Workspace({ lang, t, guard, config }: { lang: Lang; t: AssistantMessage
         issues={s.detail.data?.issues ?? []}
         live={live}
         notice={s.notice?.sessionId === s.selectedId ? s.notice : null}
+        ratings={s.ratings}
+        onRate={s.rate}
         onIssueChange={s.updateIssue}
       />
     );
@@ -182,7 +157,7 @@ function Workspace({ lang, t, guard, config }: { lang: Lang; t: AssistantMessage
         onMore={() => void s.loadMore()}
       />
       <Panel className="flex h-[calc(100dvh-var(--header-h)-7rem)] min-h-[560px] flex-col">
-        <ChatHeader lang={lang} t={t} session={session} config={s.config} onRate={s.rate} onDelete={s.remove} />
+        <ChatHeader lang={lang} t={t} session={session} config={s.config} onDelete={s.remove} />
         {body}
         {sendError && (
           <p role="alert" className="flex items-center gap-2 px-4 pb-1 pt-3 text-[13px] text-danger sm:px-6">

@@ -257,6 +257,8 @@ pub(crate) fn affected(event: &AgentEvent) -> &'static [Section] {
         | AgentEvent::CaptureTasksResumed(_)
         // 远端主机的应用内更新只在其桌面 / Web 界面操作，移动端不暴露分区。
         | AgentEvent::UpdateChanged(_)
+        // AI 助手只在桌面 / Web 界面提供，移动端不暴露分区。
+        | AgentEvent::AssistantChanged(_)
         | AgentEvent::SessionRevoked(_) => &[],
     }
 }
