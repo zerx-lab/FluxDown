@@ -121,8 +121,8 @@ impl Render for AssistantPanelHeader {
                         FluxIcon::Clock,
                         history,
                         !open,
-                        move |_, _, cx| {
-                            history_view.update(cx, |view, cx| view.toggle_history(cx));
+                        move |_, window, cx| {
+                            history_view.update(cx, |view, cx| view.toggle_history(window, cx));
                         },
                         cx,
                     )),

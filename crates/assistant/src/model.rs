@@ -244,9 +244,8 @@ impl HistoryTurn {
             }
             Block::Text(_) | Block::Issue(_) => false,
         });
-        let preview = (message.tool_kind.as_deref() == Some("client"))
-            .then(|| truncate_chars(message.content.trim(), OUTPUT_PREVIEW_CHARS))
-            .filter(|text| !text.is_empty());
+        // 历史里保留完整结果（服务端工具也带上），界面展示时再截断；复制对话时用完整内容。
+        let preview = Some(message.content.trim().to_owned()).filter(|text| !text.is_empty());
         let status = if message.is_error {
             AssistantToolStatus::Failed
         } else {
@@ -764,6 +763,131 @@ pub(crate) fn format_duration(duration_ms: i64) -> String {
     }
 }
 
+/// 工具结果在界面上的展开展示：先截断到预览长度，再按 [`format_tool_output`] 美化。
+pub(crate) fn tool_output_display(text: &str) -> String {
+    format_tool_output(&truncate_chars(text.trim(), OUTPUT_PREVIEW_CHARS))
+}
+
+/// 工具调用状态的文案键：待确认 / 未执行优先于调用状态本身。
+pub(crate) fn tool_status_key(confirmation: Option<ConfirmView>, state: ToolState) -> &'static str {
+    match (confirmation, state) {
+        (Some(ConfirmView::Pending { .. }), _) => "assistantToolWaiting",
+        (Some(ConfirmView::Declined | ConfirmView::Expired), _) => "assistantToolSkipped",
+        (_, ToolState::Running) => "assistantToolRunning",
+        (_, ToolState::Succeeded) => "assistantToolDone",
+        (_, ToolState::Failed) => "assistantToolFailed",
+        (_, ToolState::Interrupted) => "assistantToolInterrupted",
+    }
+}
+
+// ───────────────────────── 复制对话 ─────────────────────────
+
+/// 一轮对话的 Markdown 副本：提问、全部过程（中间文本、每次工具调用的状态 / 耗时 / 完整参数与
+/// 结果）、最终回答、失败 / 停止说明与问题单草稿。`t` 按文案键取界面语言的标签。
+pub(crate) fn turn_transcript(turn: &Turn, now_ms: i64, t: impl Fn(&str) -> String) -> String {
+    let mut out = format!(
+        "## {}\n\n{}\n\n## {}\n",
+        t("assistantTranscriptUser"),
+        turn.question.trim(),
+        t("assistantTranscriptAssistant"),
+    );
+    let active = turn.run_active();
+    for block in &turn.steps {
+        match block {
+            Block::Text(text) => push_paragraph(&mut out, text.trim()),
+            Block::Tool(call) => push_tool(&mut out, call, active, now_ms, &t),
+            Block::Issue(_) => {}
+        }
+    }
+    if let Some(answer) = &turn.answer {
+        push_paragraph(&mut out, answer.trim());
+    }
+    if let Some(live) = &turn.live {
+        match live.status {
+            AssistantRunStatus::Failed => {
+                push_paragraph(&mut out, &t("assistantRunFailed"));
+                if let Some(error) = &live.error {
+                    push_paragraph(&mut out, error.trim());
+                }
+            }
+            AssistantRunStatus::Canceled => push_paragraph(&mut out, &t("assistantStopped")),
+            AssistantRunStatus::Starting
+            | AssistantRunStatus::Running
+            | AssistantRunStatus::Completed
+            | AssistantRunStatus::Replied => {}
+        }
+    }
+    for issue in &turn.issues {
+        push_paragraph(&mut out, &format!("### {}", issue.title.trim()));
+        push_paragraph(&mut out, issue.body.trim());
+    }
+    out
+}
+
+fn push_paragraph(out: &mut String, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    out.push('\n');
+    out.push_str(text);
+    out.push('\n');
+}
+
+fn push_tool(
+    out: &mut String,
+    call: &AssistantToolCallDto,
+    run_active: bool,
+    now_ms: i64,
+    t: &impl Fn(&str) -> String,
+) {
+    let status = tool_status_key(
+        confirm_view(call, run_active, now_ms),
+        tool_state(call, run_active),
+    );
+    let mut head = format!(
+        "### {} `{}` · {}",
+        t("assistantTranscriptTool"),
+        call.name,
+        t(status)
+    );
+    if call.kind == "client" {
+        head.push_str(" · ");
+        head.push_str(&t("assistantToolLocal"));
+    }
+    if let Some(duration) = call.duration_ms {
+        head.push_str(" · ");
+        head.push_str(&format_duration(duration));
+    }
+    push_paragraph(out, &head);
+    if let Some(arguments) = call
+        .arguments
+        .as_ref()
+        .filter(|arguments| arguments_summary(Some(arguments)).is_some())
+    {
+        push_paragraph(out, &format!("{}:", t("assistantToolArguments")));
+        push_paragraph(out, &fenced(&arguments_pretty(arguments), "json"));
+    }
+    if let Some(output) = call
+        .output_preview
+        .as_deref()
+        .filter(|output| !output.trim().is_empty())
+    {
+        push_paragraph(out, &format!("{}:", t("assistantToolOutput")));
+        push_paragraph(out, &fenced(&format_tool_output(output), ""));
+    }
+}
+
+/// Markdown 代码块：围栏比内容里最长的连续反引号多一个（至少三个），内容里的 ``` 不会提前闭合。
+fn fenced(body: &str, lang: &str) -> String {
+    let longest = body
+        .split(|c: char| c != '`')
+        .map(str::len)
+        .max()
+        .unwrap_or(0);
+    let fence = "`".repeat(longest.max(2) + 1);
+    format!("{fence}{lang}\n{body}\n{fence}")
+}
+
 // ───────────────────────── 可用性与错误 ─────────────────────────
 
 /// 页面级门禁：决定显示对话还是说明页。
@@ -937,6 +1061,32 @@ mod tests {
 
     fn none() -> HashMap<String, AssistantIssueDto> {
         HashMap::new()
+    }
+
+    #[test]
+    fn transcript_keeps_full_tool_calls_and_results() {
+        let long_result = format!("{}```tail", "x".repeat(OUTPUT_PREVIEW_CHARS + 50));
+        let history = [
+            message("m1", Some("r1"), 1, "user", "how fast?"),
+            AssistantMessageDto {
+                content: "{\"url\":\"https://a.example\"}".to_owned(),
+                ..tool_message("m2", "r1", 2, "tool_call", "c1", "net_measure", false)
+            },
+            AssistantMessageDto {
+                content: long_result.clone(),
+                tool_kind: Some("server".to_owned()),
+                ..tool_message("m3", "r1", 3, "tool_result", "c1", "net_measure", false)
+            },
+            message("m4", Some("r1"), 4, "assistant", "about 80 Mbps"),
+        ];
+        let turns = build_timeline("s1", &history, &[], &[], &none());
+        let text = turn_transcript(&turns[0], 0, |key| format!("<{key}>"));
+        assert!(text.starts_with("## <assistantTranscriptUser>\n\nhow fast?\n"));
+        assert!(text.contains("`net_measure` · <assistantToolDone>"));
+        assert!(text.contains("```json\n{\n  \"url\": \"https://a.example\"\n}\n```"));
+        // 完整结果不截断；内容含 ``` 时围栏加长，不会提前闭合。
+        assert!(text.contains(&format!("````\n{long_result}\n````")));
+        assert!(text.trim_end().ends_with("about 80 Mbps"));
     }
 
     #[test]

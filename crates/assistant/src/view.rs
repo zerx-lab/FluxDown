@@ -29,9 +29,9 @@ use crate::{
     AssistantPort, PortFuture,
     attachment::{ImageError, ImageSource, Prepared, clipboard_sources, prepare},
     model::{
-        Gate, SESSION_PAGE_SIZE, SendFailure, Turn, classify_send_error, gate, insert_placeholder,
-        map_offset, orphaned_images, pending_confirmations, placeholder_remnant,
-        remove_placeholder,
+        Gate, SESSION_PAGE_SIZE, SendFailure, Turn, build_timeline, classify_send_error, gate,
+        insert_placeholder, map_offset, orphaned_images, pending_confirmations,
+        placeholder_remnant, remove_placeholder, turn_transcript,
     },
 };
 
@@ -188,6 +188,9 @@ pub struct AssistantView {
     pub(crate) ratings: HashMap<String, Option<String>>,
     /// 评价请求进行中的消息 ID（避免重复点击）。
     pub(crate) rating_busy: HashSet<String>,
+    /// 刚复制过的轮次键（按钮显示勾）；`copied_generation` 防止旧定时器提前复位。
+    pub(crate) copied_turn: Option<String>,
+    copied_generation: u32,
     /// 待随下一条提问发送的图片；第 n 张对应输入文本里的 `[Image #n]`。
     pub(crate) attachments: Vec<Attachment>,
     /// 上次处理过的输入框文本，用来识别一次删除是否只删掉了占位符的一部分。
@@ -266,6 +269,8 @@ impl AssistantView {
             clearing: false,
             ratings: HashMap::new(),
             rating_busy: HashSet::new(),
+            copied_turn: None,
+            copied_generation: 0,
             attachments: Vec::new(),
             input_text: SharedString::default(),
             attaching: 0,
@@ -316,11 +321,15 @@ impl AssistantView {
         }
     }
 
-    /// 切换历史视图（会话列表）。
-    pub(crate) fn toggle_history(&mut self, cx: &mut Context<Self>) {
+    /// 切换历史视图（会话列表）；回到对话时焦点交给输入框。
+    pub(crate) fn toggle_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.history_open = !self.history_open;
-        if self.history_open && self.sessions.load == Load::Failed {
-            self.reload_sessions(cx);
+        if self.history_open {
+            if self.sessions.load == Load::Failed {
+                self.reload_sessions(cx);
+            }
+        } else {
+            self.focus_input(window, cx);
         }
         cx.notify();
     }
@@ -690,8 +699,15 @@ impl AssistantView {
         cx.notify();
     }
 
-    pub(crate) fn select_session(&mut self, session_id: String, cx: &mut Context<Self>) {
+    /// 切到某个会话；焦点交给输入框，便于直接追问。
+    pub(crate) fn select_session(
+        &mut self,
+        session_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.history_open = false;
+        self.focus_input(window, cx);
         if self.current.as_deref() == Some(session_id.as_str()) {
             cx.notify();
             return;
@@ -995,6 +1011,47 @@ impl AssistantView {
             self.args_open.insert(key.to_owned());
         }
         cx.notify();
+    }
+
+    /// 复制一轮对话到剪贴板，按钮短暂显示「已复制」。
+    pub(crate) fn copy_turn(&mut self, key: &str, cx: &mut Context<Self>) {
+        let session_id = self.current.clone().unwrap_or_default();
+        let turns = build_timeline(
+            &session_id,
+            &self.detail.messages,
+            &self.detail.issues,
+            &self.state.runs,
+            &self.issue_overrides,
+        );
+        let Some(turn) = turns.iter().find(|turn| turn.key == key) else {
+            return;
+        };
+        let text = {
+            let translator = self.translator.read(cx);
+            turn_transcript(turn, now_unix_ms(), |label| {
+                translator.text(label).to_owned()
+            })
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        let generation = self.copied_generation.wrapping_add(1);
+        self.copied_generation = generation;
+        self.copied_turn = Some(key.to_owned());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(1500))
+                .await;
+            let Ok(()) = this.update(cx, |this, cx| {
+                if this.copied_generation == generation {
+                    this.copied_turn = None;
+                    cx.notify();
+                }
+            }) else {
+                // 视图已释放，结束回调而不再更新状态。
+                return;
+            };
+        })
+        .detach();
     }
 
     // ───────────────────────── 评分 ─────────────────────────

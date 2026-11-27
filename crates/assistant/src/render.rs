@@ -33,7 +33,8 @@ use crate::{
     model::{
         Block, ConfirmView, Gate, SendFailure, ToolState, Turn, arguments_pretty,
         arguments_summary, build_timeline, confirm_view, format_countdown, format_duration,
-        format_tool_output, pending_elsewhere, remaining_seconds, steps_open, tool_state,
+        pending_elsewhere, remaining_seconds, steps_open, tool_output_display, tool_state,
+        tool_status_key,
     },
     view::{AssistantView, Load, now_unix_ms},
 };
@@ -76,7 +77,17 @@ impl Render for AssistantView {
         } else {
             self.render_main(cx)
         };
-        div().size_full().min_w_0().min_h_0().child(body)
+        div()
+            .key_context(crate::actions::KEY_CONTEXT)
+            .on_action(
+                cx.listener(|this, _: &crate::actions::NewChat, window, cx| {
+                    this.new_chat(window, cx);
+                }),
+            )
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .child(body)
     }
 }
 
@@ -241,8 +252,8 @@ impl AssistantView {
                 .outline()
                 .label(self.t("assistantPendingElsewhereOpen", cx))
                 .control(cx)
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.select_session(other.clone(), cx);
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    this.select_session(other.clone(), window, cx);
                 }))
                 .into_any_element();
             column =
@@ -396,23 +407,16 @@ impl AssistantView {
         if !turn.steps.is_empty() {
             reply = reply.child(self.render_steps(turn, now_ms, cx));
         }
-        match &turn.answer {
-            Some(answer) => {
-                reply = reply.child(markdown_block(&turn.key, answer, cx));
-                if let Some(message_id) = turn.rateable_message() {
-                    reply = reply.child(self.render_rating(message_id, turn.rating.as_deref(), cx));
-                }
-            }
-            None if running && turn.steps.is_empty() => {
-                reply = reply.child(
-                    h_flex()
-                        .items_center()
-                        .gap(tokens.spacing.sm)
-                        .child(spinner(icon_sm))
-                        .child(meta_text(cx).child(self.t("assistantThinking", cx))),
-                );
-            }
-            None => {}
+        if let Some(answer) = &turn.answer {
+            reply = reply.child(markdown_block(&turn.key, answer, cx));
+        } else if running && turn.steps.is_empty() {
+            reply = reply.child(
+                h_flex()
+                    .items_center()
+                    .gap(tokens.spacing.sm)
+                    .child(spinner(icon_sm))
+                    .child(meta_text(cx).child(self.t("assistantThinking", cx))),
+            );
         }
         if let Some(live) = &turn.live {
             match live.status {
@@ -435,6 +439,16 @@ impl AssistantView {
                 | AssistantRunStatus::Completed
                 | AssistantRunStatus::Replied => {}
             }
+        }
+        if !running {
+            let mut actions = h_flex()
+                .items_center()
+                .gap(tokens.spacing.xxs)
+                .child(self.render_copy_turn(&turn.key, cx));
+            if let Some(message_id) = turn.rateable_message() {
+                actions = actions.child(self.render_rating(message_id, turn.rating.as_deref(), cx));
+            }
+            reply = reply.child(actions);
         }
         for issue in &turn.issues {
             reply = reply.child(self.render_issue(issue, cx));
@@ -539,15 +553,12 @@ impl AssistantView {
         let client = call.kind == "client";
 
         // 状态文案与图标：待确认 / 未执行优先于调用状态本身。
-        let (label_key, tone) = match (confirmation, state) {
-            (Some(ConfirmView::Pending { .. }), _) => ("assistantToolWaiting", ext.colors.warning),
-            (Some(ConfirmView::Declined | ConfirmView::Expired), _) => {
-                ("assistantToolSkipped", ext.colors.text_tertiary)
-            }
-            (_, ToolState::Running) => ("assistantToolRunning", ext.colors.text_tertiary),
-            (_, ToolState::Succeeded) => ("assistantToolDone", ext.colors.success),
-            (_, ToolState::Failed) => ("assistantToolFailed", colors.destructive),
-            (_, ToolState::Interrupted) => ("assistantToolInterrupted", ext.colors.warning),
+        let label_key = tool_status_key(confirmation, state);
+        let tone = match label_key {
+            "assistantToolWaiting" | "assistantToolInterrupted" => ext.colors.warning,
+            "assistantToolSkipped" | "assistantToolRunning" => ext.colors.text_tertiary,
+            "assistantToolDone" => ext.colors.success,
+            _ => colors.destructive,
         };
         let icon: AnyElement = match (confirmation, state) {
             (Some(ConfirmView::Pending { .. }), _) => Icon::new(FluxIcon::Clock)
@@ -587,7 +598,7 @@ impl AssistantView {
             .output_preview
             .as_deref()
             .filter(|preview| client && !preview.trim().is_empty())
-            .map(format_tool_output);
+            .map(tool_output_display);
         let expandable = confirmation.is_none() && (arguments.is_some() || output.is_some());
         let detail_key = format!("detail:{}", call.call_id);
         let detail_open = expandable && self.args_open.contains(&detail_key);
@@ -1133,6 +1144,49 @@ impl AssistantView {
             );
         }
         status.into_any_element()
+    }
+
+    // ───────────────────────── 复制 ─────────────────────────
+
+    /// 一轮回答下的复制按钮：复制提问、全部过程（工具调用参数与结果）与回答；复制后短暂显示勾。
+    fn render_copy_turn(&self, turn_key: &str, cx: &Context<Self>) -> AnyElement {
+        let theme = active_theme(cx);
+        let ext = theme.extended();
+        let side = theme.text_extent(RATE_BUTTON_SIDE);
+        let copied = self.copied_turn.as_deref() == Some(turn_key);
+        let label = self.t(
+            if copied {
+                "assistantCopied"
+            } else {
+                "assistantCopyTurn"
+            },
+            cx,
+        );
+        let tip = label.clone();
+        let key = turn_key.to_owned();
+        icon_button(
+            SharedString::from(format!("assistant-copy-{turn_key}")),
+            label,
+            Icon::new(if copied {
+                FluxIcon::Check
+            } else {
+                FluxIcon::Copy
+            })
+            .size(ext.icon.md),
+            ButtonVariant::Ghost,
+            cx,
+        )
+        .size(side)
+        .text_color(if copied {
+            ext.colors.success
+        } else {
+            theme.tokens().colors.muted_foreground
+        })
+        .tooltip(move |window, cx| tooltip_view(tip.clone(), window, cx))
+        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+            this.copy_turn(&key, cx);
+        }))
+        .into_any_element()
     }
 
     // ───────────────────────── 评分 ─────────────────────────
@@ -1784,8 +1838,8 @@ impl AssistantView {
                         .px(tokens.spacing.sm)
                         .py(tokens.spacing.xs)
                         .cursor_pointer()
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.select_session(select_id.clone(), cx);
+                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            this.select_session(select_id.clone(), window, cx);
                         }))
                         .child(label),
                 )

@@ -6,6 +6,7 @@
 //! 顶栏插槽 [`AssistantPanelHeader`] 放标题、用量、新对话与历史切换；改动本机或消耗流量的
 //! 工具调用以内嵌确认卡片等待用户允许。
 
+pub mod actions;
 mod attachment;
 mod header;
 mod model;
