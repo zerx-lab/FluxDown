@@ -170,6 +170,7 @@ export interface Ed2kServerSubRefreshResponse {
   okSources: number;
   totalSources: number;
   updatedAt: number;
+  /** 失败源的错误摘要：任一源失败即非空，含 `success = true` 的部分失败；全部成功为空。 */
   error: string;
 }
 

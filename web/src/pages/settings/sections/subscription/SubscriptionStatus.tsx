@@ -7,6 +7,8 @@ import { Button } from '../../../../ui'
 import { SettingsCustomRow, useDaemonNumber, useDaemonValue } from '../../kit'
 import { formatUnix, listEntries } from './listFormat'
 import type { ListFormat } from './listFormat'
+import { classifyRefresh } from './refreshStatus'
+import type { RefreshStatus } from './refreshStatus'
 
 export type SubscriptionKind = 'btTrackers' | 'ed2kServers' | 'ed2kNodes'
 
@@ -19,14 +21,14 @@ const SPEC: Record<SubscriptionKind, { count: CountSpec; updatedKey: string; pre
   ed2kNodes: { count: { countKey: 'ed2k_nodes_dat_count' }, updatedKey: 'ed2k_nodes_dat_updated_at', prefix: 'ed2kNodesSub' },
 }
 
-async function refresh(kind: SubscriptionKind): Promise<{ success: boolean; updatedAt: number }> {
+async function refresh(kind: SubscriptionKind): Promise<{ status: RefreshStatus; updatedAt: number }> {
   const result =
     kind === 'btTrackers'
       ? await rpc.daemon.bt.trackerSubscription.refresh()
       : kind === 'ed2kServers'
         ? await rpc.daemon.ed2k.serverSubscription.refresh()
         : await rpc.daemon.ed2k.nodesSubscription.refresh()
-  return { success: result.success, updatedAt: result.updatedAt }
+  return { status: classifyRefresh(result), updatedAt: result.updatedAt }
 }
 
 function useSubscriptionCount(spec: CountSpec): number {
@@ -42,7 +44,7 @@ export function SubscriptionStatusRow({ kind }: { kind: SubscriptionKind }) {
   const count = useSubscriptionCount(spec.count)
   const storedUpdatedAt = useDaemonNumber(spec.updatedKey)
   const [busy, setBusy] = useState(false)
-  const [failed, setFailed] = useState(false)
+  const [status, setStatus] = useState<RefreshStatus>({ kind: 'ok' })
   const [freshAt, setFreshAt] = useState(0)
   const updatedAt = Math.max(storedUpdatedAt, freshAt)
 
@@ -50,22 +52,28 @@ export function SubscriptionStatusRow({ kind }: { kind: SubscriptionKind }) {
     setBusy(true)
     try {
       const result = await refresh(kind)
-      setFailed(!result.success)
-      if (result.success) setFreshAt(result.updatedAt)
+      setStatus(result.status)
+      if (result.status.kind !== 'failed') setFreshAt(result.updatedAt)
     } catch {
-      setFailed(true)
+      setStatus({ kind: 'failed' })
     } finally {
       setBusy(false)
     }
   }
 
   const timeText = updatedAt > 0 ? t(`${spec.prefix}UpdatedAt`, { time: formatUnix(updatedAt) }) : t(`${spec.prefix}NeverUpdated`)
+  const issueText =
+    status.kind === 'failed'
+      ? t(`${spec.prefix}UpdateFailed`)
+      : status.kind === 'partial'
+        ? t('subscriptionUpdatePartial', { error: status.detail })
+        : null
   return (
     <SettingsCustomRow className="flex items-center justify-between gap-3">
       <div className="flex min-w-0 flex-col gap-0.5">
         <span className="text-sm text-foreground">{t(`${spec.prefix}Status`, { n: count })}</span>
-        <span role={failed ? 'alert' : undefined} className={failed ? 'text-xs text-destructive' : 'text-xs text-muted-foreground'}>
-          {failed ? t(`${spec.prefix}UpdateFailed`) : timeText}
+        <span role={issueText ? 'alert' : undefined} className={issueText ? 'break-words text-xs text-destructive' : 'text-xs text-muted-foreground'}>
+          {issueText ?? timeText}
         </span>
       </div>
       <Button variant="outline" loading={busy} disabled={busy} onClick={() => void run()} className="shrink-0">

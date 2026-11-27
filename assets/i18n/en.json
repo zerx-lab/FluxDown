@@ -1595,6 +1595,7 @@
   "ed2kNodesSubUpdateNow": "Update Now",
   "ed2kNodesSubUpdating": "Updating…",
   "ed2kNodesSubUpdateFailed": "Update failed",
+  "subscriptionUpdatePartial": "Updated, but some sources failed: {error}",
   "ed2kKadBootstrap": "Bootstrap",
   "ed2kKadBootstrapDesc": "Contact Kad nodes now to check that the Kad network is reachable and to learn fresh nodes",
   "ed2kKadBootstrapFromNode": "IP or hostname",

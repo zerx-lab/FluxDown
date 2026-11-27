@@ -4164,7 +4164,8 @@ pub struct Ed2kServerSubRefreshResponse {
     pub total_sources: i64,
     /// 缓存更新时间（Unix 秒；本次未成功时沿用旧值）。
     pub updated_at: i64,
-    /// 全部源失败时的错误摘要（成功时为空）。
+    /// 失败源的错误摘要（`源: 原因`，`; ` 拼接）：任一源失败即非空，含 `success = true` 的部分失败；
+    /// 全部源成功时为空。
     pub error: String,
 }
 
