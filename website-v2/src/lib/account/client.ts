@@ -10,6 +10,7 @@ import { accountErrors } from "@/i18n/messages/accountErrors";
 import { href } from "@/i18n/routing";
 import { withBase } from "@/lib/base";
 import { isSafeLocalPath } from "@/lib/return-to";
+import { SseParser } from "@/lib/sse";
 
 /** 非 HttpOnly 的登录态提示 Cookie 名（与 session.ts 同值）。 */
 export const SIGNED_IN_COOKIE = "fd_signed_in";
@@ -21,36 +22,18 @@ export type AccountResult<T> =
   | { ok: true; data: T }
   | { ok: false; status: number; code: string; retryAfter: number | null };
 
-/**
- * 调用 `/api/account/<path>`。有 `body` 时以 JSON 发送；204 的 `data` 为 `undefined`。
- * 网络失败返回 `status: 0, code: "network"`；非 2xx 返回 BFF / FluxCloud 的 `code`。
- */
-export async function accountApi<T = undefined>(
-  path: string,
-  init: { method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; body?: unknown } = {},
-): Promise<AccountResult<T>> {
-  const method = init.method ?? (init.body === undefined ? "GET" : "POST");
-  const headers: Record<string, string> = { Accept: "application/json", [ACCOUNT_REQUEST_HEADER]: "1" };
-  if (init.body !== undefined) headers["Content-Type"] = "application/json";
-  let res: Response;
-  try {
-    res = await fetch(withBase(`/api/account/${path}`), {
-      method,
-      headers,
-      body: init.body === undefined ? undefined : JSON.stringify(init.body),
-      credentials: "same-origin",
-    });
-  } catch {
-    return { ok: false, status: 0, code: "network", retryAfter: null };
-  }
-  if (res.ok) {
-    if (res.status === 204) return { ok: true, data: undefined as T };
-    try {
-      return { ok: true, data: (await res.json()) as T };
-    } catch {
-      return { ok: false, status: res.status, code: "upstream_invalid", retryAfter: null };
-    }
-  }
+type Failed = Extract<AccountResult<never>, { ok: false }>;
+
+const networkFailure: Failed = { ok: false, status: 0, code: "network", retryAfter: null };
+
+function bffHeaders(json: boolean, accept: string): Record<string, string> {
+  const headers: Record<string, string> = { Accept: accept, [ACCOUNT_REQUEST_HEADER]: "1" };
+  if (json) headers["Content-Type"] = "application/json";
+  return headers;
+}
+
+/** 非 2xx 的 BFF 响应 → 失败结果（JSON 体里的 `code` 与 `Retry-After`）。 */
+async function failureOf(res: Response): Promise<Failed> {
   let code = "fallback";
   try {
     const body = (await res.json()) as { code?: unknown };
@@ -60,6 +43,83 @@ export async function accountApi<T = undefined>(
   }
   const retry = Number(res.headers.get("retry-after"));
   return { ok: false, status: res.status, code, retryAfter: Number.isFinite(retry) && retry > 0 ? retry : null };
+}
+
+/**
+ * 调用 `/api/account/<path>`。有 `body` 时以 JSON 发送；204 的 `data` 为 `undefined`。
+ * 网络失败返回 `status: 0, code: "network"`；非 2xx 返回 BFF / FluxCloud 的 `code`。
+ */
+export async function accountApi<T = undefined>(
+  path: string,
+  init: { method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; body?: unknown } = {},
+): Promise<AccountResult<T>> {
+  const method = init.method ?? (init.body === undefined ? "GET" : "POST");
+  let res: Response;
+  try {
+    res = await fetch(withBase(`/api/account/${path}`), {
+      method,
+      headers: bffHeaders(init.body !== undefined, "application/json"),
+      body: init.body === undefined ? undefined : JSON.stringify(init.body),
+      credentials: "same-origin",
+    });
+  } catch {
+    return networkFailure;
+  }
+  if (res.ok) {
+    if (res.status === 204) return { ok: true, data: undefined as T };
+    try {
+      return { ok: true, data: (await res.json()) as T };
+    } catch {
+      return { ok: false, status: res.status, code: "upstream_invalid", retryAfter: null };
+    }
+  }
+  return failureOf(res);
+}
+
+/**
+ * POST `/api/account/<path>` 并按 SSE 读响应，每帧 `data` 解析为 JSON 后交给 `onEvent`（非 JSON 帧跳过）。
+ * 流读完返回 ok；请求失败返回 BFF / FluxCloud 的 `code`；读流途中断开或 `signal` 中止返回 `network`。
+ */
+export async function accountStream(
+  path: string,
+  body: unknown,
+  onEvent: (event: unknown) => void,
+  signal: AbortSignal,
+): Promise<AccountResult<undefined>> {
+  let res: Response;
+  try {
+    res = await fetch(withBase(`/api/account/${path}`), {
+      method: "POST",
+      headers: bffHeaders(true, "text/event-stream"),
+      body: JSON.stringify(body),
+      credentials: "same-origin",
+      signal,
+    });
+  } catch {
+    return networkFailure;
+  }
+  if (!res.ok) return failureOf(res);
+  if (!res.body) return { ok: false, status: res.status, code: "upstream_invalid", retryAfter: null };
+
+  const parser = new SseParser();
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  try {
+    for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+      for (const frame of parser.push(chunk.value)) {
+        if (frame === null) continue;
+        let event: unknown;
+        try {
+          event = JSON.parse(frame);
+        } catch {
+          continue;
+        }
+        onEvent(event);
+      }
+    }
+  } catch {
+    return networkFailure;
+  }
+  return { ok: true, data: undefined };
 }
 
 /** 错误码 → 当前语言文案；未登记的 code 用通用文案。 */

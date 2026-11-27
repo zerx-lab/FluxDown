@@ -40,6 +40,8 @@ const noindexPathnames = new Set(
     "/account/login",
     "/account/register",
     "/account/forgot",
+    // AI 助手(需登录的个人对话,noindex)
+    "/assistant",
   ].flatMap((bare) => LANGS.map((lang) => langPath(bare, lang))),
 );
 

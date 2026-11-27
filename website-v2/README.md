@@ -49,6 +49,17 @@ node dist/server/entry.mjs
 - 环境变量只用既有的 `FLUXCLOUD_API_BASE`；反代须转发 `/api/account/*` 的 Cookie 与 `Set-Cookie`，不缓存其响应。
 - 回归：`bun test tests/account-bff.test.ts`（替换 FluxCloud fetch 与 Cookie，不代表真实上游演练）。
 
+## AI 助手
+
+- 页面：`/assistant/`（zh 加 `/zh` 前缀，顶栏「AI 助手」），静态外壳 + React island（`src/components/assistant/`），`noindex` 且不进 sitemap。必须登录：`GET /api/account/ai/config` 返回 401 即跳登录页并带回本页；FluxCloud 未开放（`off` / `internal_only`）或套餐不含 `aiAssistant` 时给说明页。
+- 全站悬浮入口：`src/components/assistant/widget/`，`Layout.astro` 在有外壳的页面挂载（助手整页与登录 / 注册 / 找回密码页除外）。右下角按钮展开悬浮窗，拖标题栏可自由移动（夹在视口内，双击标题栏复位到右下角）；宽屏（≥1024px）可停靠到右侧，拖左缘调宽（320 ~ min(960, 视口 − 560) px，方向键微调，双击复位 420），`<html data-ai-dock>` + `--ai-dock-w` 让 body 让出同样宽度。未登录给登录 / 注册引导（带回当前页），已登录即在面板内对话、看历史、在完整页面打开（`/assistant/?session=<id>`）。形态、位置、停靠宽度存 localStorage，展开状态与当前会话存 sessionStorage（本标签页跨页面保留）；对话部分首次展开才懒加载。原 LangBot 客服组件已移除。
+- BFF 挂在账户 BFF 下（`src/lib/account/ai-routes.ts`，`/api/account/ai/*` → FluxCloud `/api/v1/ai/*`），复用会话 Cookie、刷新与 CSRF 闸：`config`、`sessions`（列表 / 新建 / 详情 / 删除 / 评价 / 提问 / 取消）、`issues/{id}/confirm|discard`、`attachments/{id}`。会话固定 `channel: "website"`、不声明客户端工具；详情只回用户 / 助手消息（用户消息带图片 id）。来自桌面 / Web 的会话只读。
+- 带图提问：`ai/config` 的 `imagesSupported` 为真时输入框可粘贴、拖入或选择图片（PNG / JPEG / GIF / WebP，张数与单张上限取 `maxImages` / `maxImageBytes`）；超限的静态图在浏览器里缩放重编码（`src/components/assistant/attachments.ts`），GIF 超限直接拒绝。提问请求体上限与 FluxCloud `MAX_ASK_BODY_BYTES` 同口径（约 28 MiB），**反代须放开 `/api/account/ai/sessions/*/messages` 的请求体大小**（如 nginx `client_max_body_size 32m`）。已存图片经 `GET /api/account/ai/attachments/{id}` 取：路由标 `simpleGet`，`<img src>` 不带自定义头也放行（仍要求 `Sec-Fetch-Site` 同源，会话 Cookie 为 SameSite=Strict），只转发四种位图类型并带 `nosniff` 与 `sandbox` CSP。
+- 提问是 SSE：`callAuthedStream` → `openUpstreamStream`（响应头 10 秒内到达，正文不设总时限，访客断开即中止上游，FluxCloud 随之取消执行），逐帧经 `ai-stream.ts` 白名单裁剪（丢弃分诊 / 路由 / 思考过程 / 客户端工具调用 / token 用量）。反代须对 `/api/account/ai/sessions/*/messages` 关闭响应缓冲（BFF 已回 `X-Accel-Buffering: no`）。
+- 回答用 `src/components/assistant/md-parse.ts` 解析成结构化节点再由 `Markdown.tsx` 以 React 元素渲染（不注入 HTML；链接只放行 http(s) / mailto / 站内路径）。
+- 部署顺序：FluxCloud AI 模块先上线并在后台开放 `mode`，官网才有可用的入口。
+- 回归：`bun test tests/assistant-bff.test.ts`（替换 FluxCloud fetch，不代表真实模型与上游演练）。
+
 ## 结构
 
 | 位置 | 内容 |

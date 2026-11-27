@@ -12,7 +12,7 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import { withBase } from "@/lib/base";
-import { callUpstream, failure, type ProxyFailure } from "@/lib/cloud-proxy";
+import { callUpstream, failure, openUpstreamStream, type ProxyFailure, type UpstreamStreamKind } from "@/lib/cloud-proxy";
 import { isRecord } from "@/lib/is-record";
 
 export const REFRESH_COOKIE = "fd_acct_rt";
@@ -56,9 +56,13 @@ export interface AccountContext {
   cookies: CookieJar;
   /** 访客真实 IP（透传给 FluxCloud 限频）。 */
   ip: string;
+  /** 访客请求的中止信号：流式调用时访客断开即中止上游。 */
+  signal?: AbortSignal;
 }
 
 export type UpstreamResult = { ok: true; body: unknown } | ProxyFailure;
+export type UpstreamStream = { ok: true; body: ReadableStream<Uint8Array>; contentType: string } | ProxyFailure;
+type Attempt = { ok: true } | ProxyFailure;
 
 const secure = (): boolean => Boolean(import.meta.env.PROD);
 const tokenPath = (): string => withBase("/api/account");
@@ -164,18 +168,16 @@ function withBearer(init: { method: string; headers?: Record<string, string>; bo
   return { ...init, headers: { ...init.headers, Authorization: `Bearer ${accessToken}` } };
 }
 
-const sessionExpired = (res: UpstreamResult): boolean => !res.ok && res.status === 401 && res.code === "unauthorized";
+const sessionExpired = (res: Attempt): boolean => !res.ok && res.status === 401 && res.code === "unauthorized";
 
 /**
- * 以当前会话调用 FluxCloud：访问令牌缺失先刷新；上游 401 `unauthorized` 刷新后重放一次。
+ * 以当前会话发一次上游请求：访问令牌缺失先刷新；上游 401 `unauthorized` 刷新后重放一次。
  * 只有 `unauthorized` 视为会话失效——`invalid_code` 等同为 401 的业务错误原样返回。
  */
-export async function callAuthed(
+async function withAccessToken<T extends Attempt>(
   ctx: AccountContext,
-  path: string,
-  init: { method: string; headers?: Record<string, string>; body?: string },
-  expectBody = true,
-): Promise<UpstreamResult> {
+  send: (accessToken: string) => Promise<T | ProxyFailure>,
+): Promise<T | ProxyFailure> {
   const refreshToken = ctx.cookies.get(REFRESH_COOKIE)?.value;
   let accessToken = ctx.cookies.get(ACCESS_COOKIE)?.value;
   if (!accessToken) {
@@ -188,13 +190,33 @@ export async function callAuthed(
     accessToken = renewed.accessToken;
   }
 
-  let res = await callUpstream(path, withBearer(init, accessToken), ctx.ip, expectBody);
+  let res = await send(accessToken);
   if (sessionExpired(res) && refreshToken) {
     const renewed = await renew(ctx, refreshToken);
     if (!renewed.ok) return renewed;
-    res = await callUpstream(path, withBearer(init, renewed.accessToken), ctx.ip, expectBody);
+    res = await send(renewed.accessToken);
   }
   if (sessionExpired(res)) clearSession(ctx.cookies);
   else if (!res.ok && res.status === 403 && res.code === "account_disabled") clearSession(ctx.cookies);
   return res;
+}
+
+/** 以当前会话调用 FluxCloud JSON 接口（刷新与失效处理见 `withAccessToken`）。 */
+export function callAuthed(
+  ctx: AccountContext,
+  path: string,
+  init: { method: string; headers?: Record<string, string>; body?: string },
+  expectBody = true,
+): Promise<UpstreamResult> {
+  return withAccessToken(ctx, (accessToken) => callUpstream(path, withBearer(init, accessToken), ctx.ip, expectBody));
+}
+
+/** 以当前会话打开 FluxCloud 流式响应（SSE 或图片，见 `openUpstreamStream`）；访客断开（`ctx.signal`）即中止上游。 */
+export function callAuthedStream(
+  ctx: AccountContext,
+  path: string,
+  init: { method: string; headers?: Record<string, string>; body?: string },
+  kind: UpstreamStreamKind = "sse",
+): Promise<UpstreamStream> {
+  return withAccessToken(ctx, (accessToken) => openUpstreamStream(path, withBearer(init, accessToken), ctx.ip, ctx.signal, kind));
 }

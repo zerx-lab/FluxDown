@@ -35,6 +35,7 @@ export default {
     qq: "Grupo QQ",
     qqDesc: "Grupo da comunidade chinesa",
     faq: "Perguntas frequentes",
+    assistant: "AI Assistant",
     download: "Download",
     github: "GitHub",
     account: "Conta",

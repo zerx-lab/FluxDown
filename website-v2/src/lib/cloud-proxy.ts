@@ -6,6 +6,7 @@
  * 才能按访客限频，否则全站共享一个限频桶。
  *
  * `callUpstream`：失败原样透传状态码与 `code`；上游不可达 / 未配置 / 返回畸形体统一为 502 + 稳定 code。
+ * `openUpstreamStream`：SSE 流式调用，失败映射同 `callUpstream`，响应头到达后正文不设总时限。
  */
 
 import { FLUXCLOUD_API_BASE } from "astro:env/server";
@@ -57,6 +58,22 @@ export function failure(status: number, code: string, extra: Partial<ProxyFailur
   return { ok: false, status, code, ...extra };
 }
 
+/** 非 2xx 上游响应 → 失败：透传状态码、`code`、`message` 与 `Retry-After`。 */
+function upstreamFailure(upstream: Response, body: unknown): ProxyFailure {
+  const code = isRecord(body) && typeof body.code === "string" && body.code !== "" ? body.code : "upstream_error";
+  const message = isRecord(body) && typeof body.message === "string" ? body.message : undefined;
+  const retryAfter = upstream.headers.get("retry-after") ?? undefined;
+  return failure(upstream.status, code, { message, retryAfter });
+}
+
+async function jsonBody(upstream: Response): Promise<unknown> {
+  try {
+    return await upstream.json();
+  } catch {
+    return undefined;
+  }
+}
+
 export async function callUpstream(
   path: string,
   init: { method: string; headers?: Record<string, string>; body?: string },
@@ -77,21 +94,58 @@ export async function callUpstream(
     return failure(502, "upstream_unreachable");
   }
 
-  let body: unknown;
-  try {
-    body = await upstream.json();
-  } catch {
-    body = undefined;
-  }
-
-  if (!upstream.ok) {
-    const code = isRecord(body) && typeof body.code === "string" && body.code !== "" ? body.code : "upstream_error";
-    const message = isRecord(body) && typeof body.message === "string" ? body.message : undefined;
-    const retryAfter = upstream.headers.get("retry-after") ?? undefined;
-    return failure(upstream.status, code, { message, retryAfter });
-  }
+  const body = await jsonBody(upstream);
+  if (!upstream.ok) return upstreamFailure(upstream, body);
   if (body === undefined && expectBody) return failure(502, "upstream_invalid");
   return { ok: true, body };
+}
+
+/** 流式上游响应的期望形状：`sse` = 提问事件流，`image` = 提问图片（只认四种位图类型，排除 SVG 等可执行内容）。 */
+export type UpstreamStreamKind = "sse" | "image";
+
+const STREAM_EXPECT: Record<UpstreamStreamKind, { accept: string; type: RegExp }> = {
+  sse: { accept: "text/event-stream", type: /^text\/event-stream(?:;|$)/ },
+  image: { accept: "image/png, image/jpeg, image/gif, image/webp", type: /^image\/(?:png|jpeg|gif|webp)$/ },
+};
+
+/**
+ * 流式调用（SSE / 图片）：响应头须在 `UPSTREAM_TIMEOUT_MS` 内到达，之后正文不设总时限（SSE 由上游的执行时限与保活兜底）。
+ * `signal` 中止（访客断开）时一并中止上游请求。非 2xx 的映射同 `callUpstream`；
+ * 2xx 但 Content-Type 不合 `kind` 为 502 `upstream_invalid`。成功时带回规范化（小写、去参数）的 Content-Type。
+ */
+export async function openUpstreamStream(
+  path: string,
+  init: { method: string; headers?: Record<string, string>; body?: string },
+  ip: string,
+  signal?: AbortSignal,
+  kind: UpstreamStreamKind = "sse",
+): Promise<{ ok: true; body: ReadableStream<Uint8Array>; contentType: string } | ProxyFailure> {
+  const base = cloudBase();
+  if (!base) return failure(502, "not_configured");
+  const expect = STREAM_EXPECT[kind];
+
+  const connect = new AbortController();
+  const timer = setTimeout(() => connect.abort(), UPSTREAM_TIMEOUT_MS);
+  let upstream: Response;
+  try {
+    upstream = await fetch(`${base}${path}`, {
+      ...init,
+      headers: { Accept: expect.accept, "X-Forwarded-For": ip, ...init.headers },
+      signal: signal ? AbortSignal.any([connect.signal, signal]) : connect.signal,
+    });
+  } catch {
+    return failure(502, "upstream_unreachable");
+  } finally {
+    clearTimeout(timer);
+  }
+
+  if (!upstream.ok) return upstreamFailure(upstream, await jsonBody(upstream));
+  const raw = upstream.headers.get("content-type")?.toLowerCase() ?? "";
+  if (!upstream.body || !expect.type.test(kind === "sse" ? raw : raw.split(";")[0].trim())) {
+    await upstream.body?.cancel().catch(() => undefined);
+    return failure(502, "upstream_invalid");
+  }
+  return { ok: true, body: upstream.body, contentType: raw.split(";")[0].trim() };
 }
 
 const JSON_HEADERS = {

@@ -58,6 +58,7 @@ const flat = [
   { label: t.nav.docs, href: href(docsPath(lang), lang), active: stripBase(Astro.url.pathname).startsWith("/docs") },
   { label: t.nav.pricing, href: href("/pricing", lang), active: path.startsWith("/pricing") },
   { label: t.nav.changelog, href: href("/changelog", lang), active: path.startsWith("/changelog") },
+  { label: t.nav.assistant, href: href("/assistant", lang), active: path.startsWith("/assistant") },
 ];
 const sponsor = {
   label: t.nav[SPONSOR_LINK.label],

@@ -7,7 +7,11 @@
  *   浏览器给出的 `Sec-Fetch-Site` 必须是 `same-origin`；会话 Cookie 另有 SameSite=Strict。
  */
 import { failure, failureResponse, proxyJson, proxyNoContent, callUpstream } from "@/lib/cloud-proxy";
-import { isRecord } from "@/lib/is-record";
+import { isRecord, pick } from "@/lib/is-record";
+import { AI_ROUTES } from "./ai-routes";
+import {
+  DEFAULT_MAX_BODY_BYTES, ROW_ID_RE, invalidUpstream, jsonInit, mapped, text, validationError, type Body, type Route,
+} from "./route-kit";
 import {
   callAuthed, clearSession, parseTokens, webDevice, writeSession, REFRESH_COOKIE,
   type AccountContext, type CookieJar, type UpstreamResult,
@@ -15,19 +19,6 @@ import {
 
 /** 与 `src/lib/account/client.ts::ACCOUNT_REQUEST_HEADER` 同值（HTTP 头名大小写不敏感）。 */
 export const ACCOUNT_REQUEST_HEADER = "x-fluxdown-account";
-
-const MAX_BODY_BYTES = 16 * 1024;
-const DEVICE_ROW_ID_RE = /^[A-Za-z0-9-]{1,64}$/;
-
-type Body = Record<string, unknown>;
-
-interface Route {
-  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
-  path: RegExp;
-  /** 是否要求 JSON 请求体。 */
-  json: boolean;
-  handle(ctx: AccountContext, body: Body, params: string[]): Promise<Response>;
-}
 
 const ME_KEYS = [
   "id", "email", "nickname", "plan", "status", "originId", "originIdChanged", "membershipOrdinal", "hasPassword",
@@ -42,37 +33,6 @@ const ORDER_KEYS = [
 const CHANNEL_KEYS = [
   "id", "kind", "name", "enabled", "events", "target", "status", "lastError", "lastDeliveredAt", "createdAt",
 ] as const;
-
-/** 只保留已知字段（缺失的字段不补）；不是对象时返回 null。 */
-function pick(src: unknown, keys: readonly string[]): Body | null {
-  if (!isRecord(src)) return null;
-  const out: Body = {};
-  for (const key of keys) if (key in src) out[key] = src[key];
-  return out;
-}
-
-const invalidUpstream = () => failureResponse(failure(502, "upstream_invalid"));
-const validationError = () => failureResponse(failure(400, "validation_error"));
-
-/** 字符串字段：trim 后非空且不超过 `max` 字符；否则 null。密码不 trim。 */
-function text(body: Body, key: string, max: number, trim = true): string | null {
-  const raw = body[key];
-  if (typeof raw !== "string") return null;
-  const value = trim ? raw.trim() : raw;
-  return value !== "" && [...value].length <= max ? value : null;
-}
-
-const jsonInit = (method: string, payload?: Body) => ({
-  method,
-  headers: payload === undefined ? undefined : { "Content-Type": "application/json" },
-  body: payload === undefined ? undefined : JSON.stringify(payload),
-});
-
-function mapped(res: UpstreamResult, map: (body: unknown) => unknown): Response {
-  if (!res.ok) return failureResponse(res);
-  const out = map(res.body);
-  return out === null ? invalidUpstream() : proxyJson(out);
-}
 
 /** 登录类成功：FluxCloud `AuthResponse` → 写会话 Cookie，只回 `{status:"ok"}`。 */
 function signIn(cookies: CookieJar, auth: unknown): Response {
@@ -89,7 +49,7 @@ async function publicPost(ctx: AccountContext, path: string, payload: Body, expe
   return callUpstream(path, jsonInit("POST", payload), ctx.ip, expectBody);
 }
 
-const ROUTES: Route[] = [
+const ACCOUNT_ROUTES: Route[] = [
   {
     method: "POST",
     path: /^login$/,
@@ -270,7 +230,7 @@ const ROUTES: Route[] = [
     json: true,
     async handle(ctx, body, [id]) {
       const name = text(body, "name", 64);
-      if (!name || !id || !DEVICE_ROW_ID_RE.test(id)) return validationError();
+      if (!name || !id || !ROW_ID_RE.test(id)) return validationError();
       const res = await callAuthed(ctx, `/api/v1/devices/${encodeURIComponent(id)}`, jsonInit("PATCH", { name }));
       return mapped(res, (device) => pick(device, DEVICE_KEYS));
     },
@@ -280,7 +240,7 @@ const ROUTES: Route[] = [
     path: /^devices\/([^/]+)$/,
     json: false,
     async handle(ctx, _body, [id]) {
-      if (!id || !DEVICE_ROW_ID_RE.test(id)) return validationError();
+      if (!id || !ROW_ID_RE.test(id)) return validationError();
       const res = await callAuthed(ctx, `/api/v1/devices/${encodeURIComponent(id)}`, { method: "DELETE" }, false);
       return res.ok ? proxyNoContent() : failureResponse(res);
     },
@@ -312,18 +272,23 @@ const ROUTES: Route[] = [
   },
 ];
 
-/** CSRF 闸：自定义头 + `Sec-Fetch-Site`（浏览器给出时必须同源）。 */
-function crossSite(request: Request): boolean {
-  if (request.headers.get(ACCOUNT_REQUEST_HEADER) !== "1") return true;
+const ROUTES: Route[] = [...ACCOUNT_ROUTES, ...AI_ROUTES];
+
+/** CSRF 闸：自定义头（`simpleGet` 路由的 GET 免）+ `Sec-Fetch-Site`（浏览器给出时必须同源）。 */
+function crossSite(request: Request, route: Route): boolean {
+  const headerless = route.simpleGet === true && request.method === "GET";
+  if (!headerless && request.headers.get(ACCOUNT_REQUEST_HEADER) !== "1") return true;
   const site = request.headers.get("sec-fetch-site");
   return site !== null && site !== "same-origin";
 }
 
-async function readJsonBody(request: Request): Promise<Body | null> {
+async function readJsonBody(request: Request, maxBytes: number): Promise<Body | null> {
   const type = request.headers.get("content-type")?.toLowerCase() ?? "";
   if (!type.startsWith("application/json")) return null;
+  // 声明的长度已超限就不读正文（带图提问的上限有几十 MB，没必要先整个收下来）
+  if (Number(request.headers.get("content-length") ?? 0) > maxBytes) return null;
   const raw = await request.text();
-  if (Buffer.byteLength(raw) > MAX_BODY_BYTES) return null;
+  if (Buffer.byteLength(raw) > maxBytes) return null;
   try {
     const parsed: unknown = JSON.parse(raw);
     return isRecord(parsed) ? parsed : null;
@@ -334,21 +299,23 @@ async function readJsonBody(request: Request): Promise<Body | null> {
 
 /**
  * 处理一次 `/api/account/<path>` 请求。
- * 404 `not_found` = 无此路径；405 `method_not_allowed`；403 `forbidden` = CSRF 闸；400 `bad_request` = 请求体不是 ≤16 KiB 的 JSON 对象。
+ * 404 `not_found` = 无此路径；405 `method_not_allowed`；403 `forbidden` = CSRF 闸；400 `bad_request` = 请求体不是
+ * JSON 对象或超过路由的上限（缺省 16 KiB）。
  */
 export async function handleAccountRequest(request: Request, path: string, cookies: CookieJar, ip: string): Promise<Response> {
   const candidates = ROUTES.filter((route) => route.path.test(path));
   if (candidates.length === 0) return failureResponse(failure(404, "not_found"));
   const route = candidates.find((r) => r.method === request.method);
   if (!route) return failureResponse(failure(405, "method_not_allowed"));
-  if (crossSite(request)) return failureResponse(failure(403, "forbidden"));
+  if (crossSite(request, route)) return failureResponse(failure(403, "forbidden"));
 
   let body: Body = {};
   if (route.json) {
-    const parsed = await readJsonBody(request);
+    const parsed = await readJsonBody(request, route.maxBody ?? DEFAULT_MAX_BODY_BYTES);
     if (!parsed) return failureResponse(failure(400, "bad_request"));
     body = parsed;
   }
   const params = route.path.exec(path)?.slice(1) ?? [];
-  return route.handle({ cookies, ip }, body, params);
+  const query = new URL(request.url).searchParams;
+  return route.handle({ cookies, ip, signal: request.signal }, body, params, query);
 }

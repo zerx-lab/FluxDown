@@ -35,6 +35,7 @@ export default {
     qq: "Група QQ",
     qqDesc: "Китайська група спільноти",
     faq: "Часті запитання",
+    assistant: "AI Assistant",
     download: "Завантаження",
     github: "GitHub",
     account: "Обліковий запис",

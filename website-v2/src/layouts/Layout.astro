@@ -19,7 +19,8 @@ import { SITE_ORIGIN, OG_IMAGE_URL, OG_IMAGE_WIDTH, OG_IMAGE_HEIGHT, HOME_META, 
 import { DEFAULT_LANG, HREFLANG, HTML_LANG, LANGS, OG_LOCALE, toBaselineLang, type Lang } from "../i18n/config";
 import { common } from "../i18n/messages/common";
 import { PRODUCT_LINKS, COMMUNITY_LINKS, SPONSOR_LINK, docsPath, navHref } from "../lib/site-nav";
-import { href, switchLang } from "../i18n/routing";
+import { href, stripLang, switchLang } from "../i18n/routing";
+import AssistantWidget from "../components/assistant/widget/AssistantWidget";
 import { BASE, withBase } from "@/lib/base";
 
 interface Props {
@@ -56,6 +57,8 @@ const noindex = pageNoindex || BASE !== "";
 const pathname = Astro.url.pathname;
 const normalizedPath = pathname === "/" ? "/" : `${pathname.replace(/\/$/, "")}/`;
 const canonical = canonicalUrl ?? `${SITE_ORIGIN}${normalizedPath}`;
+// 悬浮 AI 助手：助手整页与登录 / 注册 / 找回密码页不挂（后者是登录引导的去处，悬浮窗挡在表单上没有意义）。
+const assistantWidget = chrome && !/^\/(?:assistant|account\/(?:login|register|forgot))(?:\/|$)/.test(stripLang(pathname));
 
 const alternates =
   Astro.props.alternates ??
@@ -114,6 +117,26 @@ const loadAnalytics = import.meta.env.PROD && BASE === "";
         document.documentElement.dataset.theme = theme;
       })();
     </script>
+    <!-- 悬浮 AI 助手停靠预设:本标签页展开且停靠时首帧前就让出右侧,避免岛水合后页面横跳。
+         键名与 src/components/assistant/widget/storage.ts 同值(内联脚本无法 import)。 -->
+    {
+      assistantWidget && (
+        <script is:inline>
+          (function () {
+            try {
+              if (sessionStorage.getItem("fd_ai_widget_open") === "1" && localStorage.getItem("fd_ai_widget_mode") === "dock") {
+                var root = document.documentElement;
+                root.setAttribute("data-ai-dock", "");
+                // 宽度夹取规则与 storage.ts::clampDockWidth 一致
+                var w = Number(localStorage.getItem("fd_ai_widget_dock_w")) || 420;
+                var max = Math.max(320, Math.min(960, window.innerWidth - 560));
+                root.style.setProperty("--ai-dock-w", Math.round(Math.min(max, Math.max(320, w))) + "px");
+              }
+            } catch (e) {}
+          })();
+        </script>
+      )
+    }
 
     <link rel="icon" type="image/svg+xml" href={withBase("/favicon.svg")} />
     <link rel="icon" type="image/x-icon" href={withBase("/favicon.ico")} sizes="32x32" />
@@ -250,6 +273,7 @@ const loadAnalytics = import.meta.env.PROD && BASE === "";
       )
     }
     {chrome && <AnnouncementPopup client:idle lang={lang} />}
+    {assistantWidget && <AssistantWidget client:idle lang={lang} />}
 
     <script>
       import "../scripts/motion.ts";
@@ -267,11 +291,6 @@ const loadAnalytics = import.meta.env.PROD && BASE === "";
         true,
       );
     </script>
-    <!--
-      LangBot 客服机器人组件(全站)。走同域代理 /api/langbot-widget.js:上游脚本注入的
-      baseUrl 是 http://127.0.0.1:5300,直连会让所有请求打到访客本机。
-    -->
-    <script is:inline defer data-title="FD助手" src={withBase("/api/langbot-widget.js")}></script>
     <!-- Cloudflare Web Analytics（手动安装，不依赖区域代理的自动注入；区域侧须保持自动注入关闭以免重复计数） -->
     <script is:inline defer src="https://static.cloudflareinsights.com/beacon.min.js" data-cf-beacon='{"token": "a19315d531084052929d5123a1a64dbe"}'></script>
   </body>

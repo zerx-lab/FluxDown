@@ -35,6 +35,7 @@ export default {
     qq: "QQ Grubu",
     qqDesc: "Çinli topluluk grubu",
     faq: "SSS",
+    assistant: "AI Assistant",
     download: "İndir",
     github: "GitHub",
     account: "Hesap",

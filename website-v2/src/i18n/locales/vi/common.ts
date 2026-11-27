@@ -35,6 +35,7 @@ export default {
     qq: "Nhóm QQ",
     qqDesc: "Nhóm cộng đồng Trung Quốc",
     faq: "Câu hỏi thường gặp",
+    assistant: "AI Assistant",
     download: "Tải xuống",
     github: "GitHub",
     account: "Tài khoản",

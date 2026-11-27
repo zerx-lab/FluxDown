@@ -1,0 +1,23 @@
+---
+/**
+ * AI 助手(en → /assistant,zh → /zh/assistant):登录后与 FluxCloud AI 助手对话。
+ * 数据全部由 Assistant 岛经同源 BFF `/api/account/ai/*` 拉取;未登录由岛跳去登录页并带回本页。
+ */
+import Layout from "@/layouts/Layout.astro";
+import Assistant from "@/components/assistant/Assistant";
+import { assistant } from "@/i18n/messages/assistant";
+import { langStaticPaths, resolveLang } from "@/i18n/routing";
+
+export const getStaticPaths = langStaticPaths;
+const lang = resolveLang(Astro.params.lang);
+const t = assistant[lang];
+---
+
+<Layout lang={lang} title={t.meta.title} description={t.meta.description} noindex>
+  <section class="frame">
+    <div class="section-tight">
+      <h1 class="sr-only">{t.pageTitle}</h1>
+      <Assistant client:load lang={lang} />
+    </div>
+  </section>
+</Layout>

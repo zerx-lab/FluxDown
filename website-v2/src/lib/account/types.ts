@@ -152,3 +152,106 @@ export type AccountLoginResult = { status: "ok" } | { status: "verify"; ttlSecon
 export interface AccountCodeSent {
   ttlSeconds: number;
 }
+
+// ───────────── AI 助手（`/api/account/ai/*`，FluxCloud `/api/v1/ai/*`，裁剪见 `ai-routes.ts`） ─────────────
+
+/** 不可用原因：`off` 未开放 / `internal_only` 只对内部账号开放 / `plan_disabled` 当前套餐不含 AI 助手。 */
+export type AiUnavailableReason = "off" | "internal_only" | "plan_disabled";
+
+/** `GET /api/account/ai/config`。 */
+export interface AiConfig {
+  available: boolean;
+  reason: AiUnavailableReason | null;
+  /** 单次提问的字数上限（不可用时为 0）。 */
+  maxMessageChars: number;
+  /** 每日提问次数上限；0 = 不限。 */
+  dailyLimit: number;
+  /** 今日（UTC+08:00 自然日）已用的提问次数，固定回复不计。 */
+  usedToday: number;
+  /** 当前能否带图提问（FluxCloud 配有支持图片的服务商）。 */
+  imagesSupported: boolean;
+  /** 每次提问最多附带的图片数（不可用时为 0）。 */
+  maxImages: number;
+  /** 单张图片的字节上限（解码后）。 */
+  maxImageBytes: number;
+}
+
+export type AiSessionKind = "ask" | "feedback";
+
+export interface AiSession {
+  id: string;
+  /** 创建入口：`website` 官网 / `desktop` 桌面 / `web` Web 管理界面。 */
+  channel: string;
+  kind: AiSessionKind;
+  /** 首条提问的首行（空 = 尚未提问）。 */
+  title: string;
+  messageCount: number;
+  rating: "up" | "down" | null;
+  /** 正在回答中。 */
+  active: boolean;
+  /** RFC 3339 */
+  createdAt: string;
+  /** RFC 3339 */
+  updatedAt: string;
+}
+
+/** `GET /api/account/ai/sessions`：最近更新在前。 */
+export interface AiSessionPage {
+  total: number;
+  items: AiSession[];
+}
+
+export interface AiMessage {
+  id: string;
+  runId: string | null;
+  seq: number;
+  role: "user" | "assistant";
+  content: string;
+  /** 提问附带的图片 id（只有用户消息可能非空），经 `/api/account/ai/attachments/<id>` 取。 */
+  images: string[];
+  /** RFC 3339 */
+  createdAt: string;
+}
+
+export type AiIssueStatus = "draft" | "pending_review" | "submitted" | "rejected" | "discarded" | "failed";
+
+/** 模型起草的问题单；`draft` 待用户确认后提交 GitHub 或进入后台审核。 */
+export interface AiIssue {
+  id: string;
+  sessionId: string | null;
+  /** `bug` / `feature`。 */
+  kind: string;
+  title: string;
+  body: string;
+  labels: string[];
+  status: AiIssueStatus;
+  githubNumber: number | null;
+  githubUrl: string | null;
+  /** 后台驳回时的备注。 */
+  reviewNote: string | null;
+  /** RFC 3339 */
+  createdAt: string;
+  /** RFC 3339 */
+  updatedAt: string;
+}
+
+/** `GET /api/account/ai/sessions/{id}`。 */
+export interface AiSessionDetail {
+  session: AiSession;
+  messages: AiMessage[];
+  issues: AiIssue[];
+}
+
+export type AiToolKind = "client" | "server" | "mcp";
+
+/** `POST /api/account/ai/sessions/{id}/messages` 的 SSE 事件（每帧 `data` 一个）。 */
+export type AiStreamEvent =
+  | { type: "run"; runId: string; sessionId: string }
+  | { type: "text"; delta: string }
+  /** 本轮回答被重试：丢弃本轮已显示的文本。 */
+  | { type: "turnRetried"; turn: number }
+  | { type: "toolStarted"; callId: string; name: string; kind: AiToolKind }
+  | { type: "toolFinished"; callId: string; name: string; kind: AiToolKind; isError: boolean; durationMs: number | null }
+  | { type: "issueDraft"; issue: AiIssue }
+  | { type: "done"; status: "completed" | "replied"; messageId: string | null; text: string }
+  | { type: "error"; status: "failed" | "canceled"; message: string };
