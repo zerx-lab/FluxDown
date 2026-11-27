@@ -8924,7 +8924,7 @@ impl DownloadManager {
                 self.retry_unschedule(task_id);
                 self.auto_failover_pending.remove(task_id);
                 self.auto_failover_attempts.remove(task_id);
-                match self.db.delete_task(task_id).await {
+                match self.db.delete_duplicate_torrent_task(task_id).await {
                     Ok(sources) => {
                         if let Some(bt) = &self.bt_session {
                             bt.clear_web_seeds(task_id).await;
@@ -9901,7 +9901,7 @@ impl DownloadManager {
                             "[manager] startup: removing orphan duplicate-torrent placeholder {}",
                             tid
                         );
-                        match self.db.delete_task(tid).await {
+                        match self.db.delete_duplicate_torrent_task(tid).await {
                             Ok(sources) => {
                                 #[cfg(feature = "plugins")]
                                 self.pending_failure_diagnostics.remove(tid);
@@ -25992,6 +25992,7 @@ mod tests {
                 } => {
                     assert!(notify_titles.is_empty());
                     assert_eq!(items[0].status, RssItemStatus::Ignored);
+                    assert_eq!(items[0].reason, "task_removed");
                     assert!(items[0].task_id.is_empty());
                     Some(source_id.as_str())
                 }
@@ -26021,6 +26022,7 @@ mod tests {
                     source_id, items, ..
                 } => {
                     assert_eq!(items[0].status, RssItemStatus::Ignored);
+                    assert_eq!(items[0].reason, "task_removed");
                     Some(source_id.as_str())
                 }
                 _ => None,
@@ -26034,6 +26036,116 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[cfg(feature = "bt")]
+    #[tokio::test]
+    async fn rss_duplicate_cleanup_on_task_done_preserves_disposition() {
+        assert_rss_duplicate_cleanup(false).await;
+    }
+
+    #[cfg(feature = "bt")]
+    #[tokio::test]
+    async fn rss_duplicate_cleanup_at_startup_preserves_disposition() {
+        assert_rss_duplicate_cleanup(true).await;
+    }
+
+    #[cfg(feature = "bt")]
+    async fn assert_rss_duplicate_cleanup(at_startup: bool) {
+        use crate::rss::RssFetchOutcome;
+        use crate::rss::model::{RssItemInfo, RssItemStatus, RssSourceInfo};
+        use crate::rss::parser::{ParsedFeed, ParsedItem};
+
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        let save_dir = unique_dedup_dir("rss-duplicate-cleanup");
+        let save_dir = save_dir.to_str().expect("temporary path is UTF-8");
+        insert_task_at_status(&db, "owner", save_dir, "original.bin", 2).await;
+        insert_task_at_status(&db, "placeholder", save_dir, "duplicate.bin", 4).await;
+        let marker = format!("{}owner", bt_downloader::DUPLICATE_TORRENT_MSG_PREFIX);
+        db.update_task_status("placeholder", 4, &marker)
+            .await
+            .expect("mark duplicate");
+        db.insert_rss_source(&RssSourceInfo {
+            source_id: "feed".into(),
+            seeded: true,
+            auto_download: true,
+            ..Default::default()
+        })
+        .await
+        .expect("insert source");
+        db.insert_rss_items(&[RssItemInfo {
+            source_id: "feed".into(),
+            guid: "episode".into(),
+            status: RssItemStatus::Downloaded,
+            task_id: "placeholder".into(),
+            ..Default::default()
+        }])
+        .await
+        .expect("insert linked RSS item");
+
+        let sink = Arc::new(RecordingSink::new());
+        let mut manager = sched_manager_with_sink(&db, 1, sink.clone());
+        manager.rss.load().await;
+        if at_startup {
+            manager.load_and_send_all_tasks().await;
+        } else {
+            manager.active_tasks.insert(
+                "placeholder".into(),
+                ActiveTaskEntry {
+                    hls_discard: None,
+                    token: CancellationToken::new(),
+                    generation: 7,
+                    handle: None,
+                    is_bt: true,
+                    queue_id: String::new(),
+                },
+            );
+            manager
+                .on_task_done(&TaskDone::finished("placeholder".into(), 7))
+                .await;
+        }
+
+        let plans = manager
+            .rss
+            .apply_fetch(RssFetchOutcome {
+                source_id: "feed".into(),
+                feed: ParsedFeed {
+                    items: vec![ParsedItem {
+                        guid: "episode".into(),
+                        enclosure_url: "https://feed.test/episode.torrent".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                error: String::new(),
+            })
+            .await;
+        assert!(
+            plans.is_empty(),
+            "next fetch must not redispatch the episode"
+        );
+        let tasks = db.load_all_tasks().await.expect("load surviving tasks");
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].task_id, "owner");
+        let item = db
+            .rss_item("feed", "episode")
+            .await
+            .expect("load RSS item")
+            .expect("keep RSS item");
+        assert_eq!(item.status, RssItemStatus::Ignored);
+        assert_eq!(item.reason, "duplicate_torrent");
+        assert!(item.task_id.is_empty());
+        assert!(sink.events().iter().any(|event| matches!(
+            event,
+            EngineEvent::RssItemsChanged { source_id, items, .. }
+                if source_id == "feed"
+                    && items.iter().any(|item| item.guid == "episode"
+                        && item.status == RssItemStatus::Ignored
+                        && item.reason == "duplicate_torrent"
+                        && item.task_id.is_empty())
+        )));
     }
 
     /// 删除队列时 DB 重归属任务，事件流必须把受影响的任务定向迁回主队列。

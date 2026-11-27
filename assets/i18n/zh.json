@@ -2638,6 +2638,8 @@
   "rssStatusNew": "新",
   "rssStatusDownloaded": "已下载",
   "rssStatusIgnored": "已忽略",
+  "rssStatusDuplicateTorrent": "同种子已有任务",
+  "rssStatusTaskRemoved": "关联任务已移除",
   "rssStatusFiltered": "规则未命中",
   "rssStatusDuplicate": "重复剧集",
   "rssStatusHistory": "历史条目",

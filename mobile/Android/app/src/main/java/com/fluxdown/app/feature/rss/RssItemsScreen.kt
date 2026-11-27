@@ -499,7 +499,7 @@ private fun RssItemRow(
 
     val published = str(R.string.rssPublishedAt)
     val meta = remember(item.pubDate, item.enclosureLength, published) { metaText(item, published) }
-    val chipText = if (busy) str(R.string.rssActionPreparing) else str(chipTitle(chip.kind))
+    val chipText = if (busy) str(R.string.rssActionPreparing) else str(chipTitle(chip.kind, item.reason))
     val reasonText = reasonRes(item.reasonCode)?.let { str(it) }
     val downloadLabel = str(
         when {
@@ -715,7 +715,7 @@ private fun metaText(item: RssItemDto, published: String): String {
 }
 
 @StringRes
-private fun chipTitle(kind: RssChipKind): Int = when (kind) {
+private fun chipTitle(kind: RssChipKind, reason: String): Int = when (kind) {
     RssChipKind.TaskMissing -> R.string.rssTaskMissing
     RssChipKind.Pending -> R.string.statusPending
     RssChipKind.Downloading -> R.string.statusDownloading
@@ -725,7 +725,11 @@ private fun chipTitle(kind: RssChipKind): Int = when (kind) {
     RssChipKind.Error -> R.string.statusError
     RssChipKind.Preparing -> R.string.statusPreparing
     RssChipKind.TaskCreated -> R.string.rssTaskCreated
-    RssChipKind.Ignored -> R.string.rssStatusIgnored
+    RssChipKind.Ignored -> when (reason) {
+        "duplicate_torrent" -> R.string.rssStatusDuplicateTorrent
+        "task_removed" -> R.string.rssStatusTaskRemoved
+        else -> R.string.rssStatusIgnored
+    }
     RssChipKind.Filtered -> R.string.rssStatusFiltered
     RssChipKind.Duplicate -> R.string.rssStatusDuplicate
     RssChipKind.History -> R.string.rssStatusHistory

@@ -360,7 +360,7 @@
 
   **「无人值守」是 RSS 的核心不变式**——订阅可能半夜抓到 5 集，任何需要用户点一下才能继续的东西都是 bug：① BT 条目建任务时 `NewTaskSpec.unattended_selection=true`，**启动前**落库全选与 `tasks.unattended=1`（HLS/变体选择也静默），否则条目已标「已下载」却仍在等选择；② 引擎内部创建任务也必须通过宿主发布完整任务事实，不能只推缺少队列等字段的进度；③ 手动「重新下载」对**任何**状态（含已下载）都放行。
 
-  **删除任务不触发自动重下**：单删/批删在同一事务清空 RSS 条目的任务回链，将原 `Downloaded` 改为 `Ignored`（已读），其余处置状态保留；不能退回 `New`，否则下一轮自动抓取会重新派发。提交后仅向受影响订阅广播条目快照及源计数，手动下载仍对任何状态开放。
+  **删除任务不触发自动重下**：单删/批删在同一事务清空 RSS 条目的任务回链，将原 `Downloaded` 改为 `Ignored`，普通删除写 `task_removed`，BT 重复占位清理（含启动补扫）写 `duplicate_torrent`；其余处置状态保留。不能退回 `New`，否则下轮会重新派发。四端按原因显示徽标，无原因时仍为「已忽略」。提交后仅广播受影响订阅，手动下载仍对任何状态开放。
 
 ### 受管组件子系统（`components/`，`components` feature）
 外部二进制 **ffmpeg + yt-dlp** 的按需安装器/解析器（**不打包**，合规边界——用户在设置「组件」页触发下载）。解析优先级 `manual`（config path）→ `managed`（`<data_dir>/bin/`）→ `system` PATH，wire 为 `ComponentSource{Manual,Managed,System,None}`。ffmpeg = FFmpeg-Builds/FFmpeg-Builds（原 BtbN/FFmpeg-Builds，2026-11 整仓迁移，#1152）静态归档（取单文件，macOS 不支持受管）；yt-dlp = 单平台二进制（全平台）。资产与校验文件 URL 须落在 `UPSTREAM_DOWNLOAD_PREFIX`（按原始上游地址校验，在用户镜像 / 插件改写之前）；上游再迁仓必须同改 `ffmpeg.rs` 的 `RELEASE_API` / `UPSTREAM_DOWNLOAD_PREFIX` 与官网 `api/components/[name].ts`。两个组件的版本列表及 FFmpeg 安装元数据按「用户配置的 HTTPS 镜像 → 官网 `fluxdown.com/api/components` → 直连 GitHub」获取；yt-dlp 安装优先使用用户配置的镜像请求指定 tag 或 latest，再尝试直连 GitHub，最后从官网近期列表中匹配。**被两处消费**：插件 `flux.ffmpeg`/`flux.ytdlp` 能力面 + 设置「组件」UI。载荷下载（`components/segmented.rs`，#453）：`Range: bytes=0-0` 探测 → 206 且总长已知、未压缩时预分配并按 `SEGMENT_POLICY`（≤4 段、每段 ≥2MiB）并发 Range 写入，单段断流 / 30s 停滞 / 5xx·408·429 从断点退避重试（3 次，2s 起倍增），任一段最终失败整体回退单流；探测回 200 则直接把该响应当单流消费。哈希对落盘文件读回计算，多来源（用户镜像 → 插件改写 → 原址）回退与「不符即删」不变。不进任务列表、不跨安装续传。

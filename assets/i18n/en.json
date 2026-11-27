@@ -2638,6 +2638,8 @@
   "rssStatusNew": "New",
   "rssStatusDownloaded": "Downloaded",
   "rssStatusIgnored": "Ignored",
+  "rssStatusDuplicateTorrent": "Torrent already in tasks",
+  "rssStatusTaskRemoved": "Linked task removed",
   "rssStatusFiltered": "Filtered out",
   "rssStatusDuplicate": "Duplicate episode",
   "rssStatusHistory": "Existing item",
