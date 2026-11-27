@@ -1,5 +1,5 @@
 ---
-description: RSS 过滤 / 文件名解析 / Webhook 事件与端点 / 线程数风险档 / 代理直连名单归一化 / 站点代理规则 / 防吸血名字规则改动须同步 Web、扩展、agent 与各端
+description: RSS 过滤 / 文件名解析 / Webhook 事件与端点 / 线程数风险档 / 代理直连名单归一化 / 站点代理与 UA 规则 / 防吸血名字规则改动须同步 Web、扩展、agent 与各端
 condition: '[\s\S]'
 scope: "tool:edit, tool:write"
 globs:
@@ -28,6 +28,11 @@ globs:
   - '**/crates/downloads/src/model/bt_guard.rs'
   - '**/web/src/lib/btGuardClientRules{,.test}.ts'
   - '**/mobile/FluxDown/FluxDown/Features/Task/TaskDetailText.swift'
+  - '**/native/engine/src/site_user_agent.rs'
+  - '**/crates/settings/src/sections/site_user_agent_rules.rs'
+  - '**/web/src/lib/siteUserAgentRules{,.test}.ts'
+  - '**/mobile/Android/app/src/main/java/com/fluxdown/app/feature/settings/SiteUserAgentRulesSheet.kt'
+  - '**/mobile/FluxDown/FluxDown/Features/Settings/SettingsLogic.swift'
 interruptMode: never
 ---
 
@@ -60,6 +65,10 @@ interruptMode: never
 ## `native/engine/src/proxy_rules.rs` 的站点代理规则宽松解析与 wire 码（配置键 `proxy_rules`）
 
 → `native/protocol/src/proxy_rules.rs::parse_proxy_rules`（GPUI）+ Web `web/src/lib/proxyRules.ts` + Android `core/.../protocol/ProxyRules.kt` + iOS `FluxDomain/Protocol/ProxyRules.swift`：空串 / 非法 JSON / 非数组 → 空列表，非对象元素跳过，字段缺失或类型错误回退默认值（`enabled=true`、`match=domain`、`action=direct`、其余空串），编码写全 7 个字段（字段顺序不作要求，测试只比较解析后的值）。匹配只在引擎；客户端经 `daemon.config.proxyRoute` 询问，issue `code` / `reason` 与展示映射四端逐条一致（单条「试一试」草稿强制 `enabled=true`，保存检测用 `upsert(当前列表, draft)`）。任务「链路」标签（事实源 `native/engine/src/auto_proxy.rs::route`）先整串匹配精确标签（`rule:direct|system|manual|custom`、`global:direct|bypass|manual|system|pac`、`task:proxy|direct`、`protocol:direct|proxy`、`bt:direct|trackers:manual|trackers:system|all:manual|all:system`）再走 `:system`/`:manual` 后缀拆分，新增标签四端同回合加映射与 en/zh 键：GPUI `crates/downloads/src/model/task_route.rs`、Web `web/src/lib/taskRoute.ts`、Android `TaskDetailFormat.kt::routeLabel`、iOS `TaskDetailText.swift::routeLabel`
+
+## `native/engine/src/site_user_agent.rs` 的站点 User-Agent 规则（`site_user_agent_rules`）
+
+→ GPUI `sections/site_user_agent_rules.rs`、Web `lib/siteUserAgentRules.ts`、Android `SiteUserAgentRulesSheet.kt`、iOS `SettingsLogic.swift`：主机本地设置，空字符串等价于空列表；JSON 对象只含 `domain`、`includeSubdomains`、`userAgent`，完整保留数组顺序、重复条目和 UA 内部空格。按下标编辑时防止旧列表覆盖其他客户端的变更。引擎校验并按实际 HTTP(S) 请求目标逐跳匹配，捕获或显式 UA 优先，命中值不写进任务的持久化请求头。
 
 ## `native/engine/src/bt_guard/cloud.rs` 的名字规则宽松解析（`ClientRule::compile` / `parse_local_client_rules`，配置键 `bt_guard_client_rules`）
 

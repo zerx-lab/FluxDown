@@ -219,6 +219,24 @@ struct SettingsRowVisibilityTests {
         #expect(!row.isVisible(in: context([:])))
     }
 
+    @Test func siteUserAgentRulesRoundTripInPriorityOrder() throws {
+        let raw = """
+            [{"domain":"dl.example.com","includeSubdomains":false,"userAgent":"App/1"},
+             {"domain":"example.com","includeSubdomains":true,"userAgent":"App/2"}]
+            """
+        let rules = try SiteUserAgentRule.decodeList(raw)
+        #expect(rules == [
+            SiteUserAgentRule(domain: "dl.example.com", includeSubdomains: false, userAgent: "App/1"),
+            SiteUserAgentRule(domain: "example.com", includeSubdomains: true, userAgent: "App/2"),
+        ])
+        let reversed = Array(rules.reversed())
+        let wire = try SiteUserAgentRule.encodeList(reversed)
+        #expect(try SiteUserAgentRule.decodeList(wire) == reversed)
+        #expect(try SiteUserAgentRule.decodeList("").isEmpty)
+        #expect(try SiteUserAgentRule.encodeList([]) == "[]")
+        #expect(throws: (any Error).self) { try SiteUserAgentRule.decodeList("{}") }
+    }
+
     @Test func rowIdsAreUniqueAndKeysAreInTheCatalog() {
         let ids = SettingsDownloadRow.allCases.map(\.id)
         #expect(Set(ids).count == ids.count)
@@ -234,6 +252,7 @@ struct SettingsRowVisibilityTests {
         #expect(!SettingsDownloadRow.silentAutoCategory.item.isSynced)
         #expect(!SettingsDownloadRow.silentSkipSelection.item.isSynced)
         #expect(!SettingsDownloadRow.saveDir.item.isSynced)
+        #expect(!SettingsDownloadRow.siteUserAgentRules.item.isSynced)
     }
 
     @Test func searchRanksTitleBeforeDetailAndIgnoresCase() {
@@ -258,6 +277,7 @@ struct SettingsRowVisibilityTests {
         )
         let ids = DownloadPage.searchEntries(ctx).map(\.id)
         #expect(ids.contains("download.maxConcurrent"))
+        #expect(ids.contains(SettingsDownloadRow.siteUserAgentRules.id))
         #expect(!ids.contains("download.autoMaxConnections")) // 线程数 ≠ 0
         #expect(!ids.contains("download.idleFileScan")) // 本机隐藏
         #expect(!ids.contains("download.silentAutoCategory")) // 免打扰关
@@ -268,7 +288,7 @@ struct SettingsRowVisibilityTests {
 // MARK: - ConfigEditor
 
 @MainActor
-final class FakeConfigTransport: ConfigTransport {
+final class FakeConfigTransport: ConfigTransport, DaemonConfigPort {
     var hostID = "local"
     var config: [String: String]
     var configRevision: UInt64 = 1
@@ -284,6 +304,15 @@ final class FakeConfigTransport: ConfigTransport {
     init(config: [String: String], prefs: [String: JSONValue] = [:]) {
         self.config = config
         preferences.values = prefs
+    }
+
+    var cachedConfig: DaemonConfigSnapshotDto? {
+        isReadOnly ? nil : DaemonConfigSnapshotDto(revision: configRevision, values: config)
+    }
+
+    func fetchConfig() async throws(HostError) -> DaemonConfigSnapshotDto {
+        guard let cachedConfig else { throw HostError(.unavailable) }
+        return cachedConfig
     }
 
     func patchConfig(expectedRevision: UInt64, values: [String: String]) async throws(HostError) {
@@ -402,6 +431,39 @@ struct ConfigEditorTests {
         #expect(editor.form.value("bt_port_start") == "6881")
         #expect(editor.failures["bt_port_start"] == "failed:invalidArgument")
         #expect(transport.reports == ["failed:invalidArgument"])
+    }
+
+    @Test func siteUserAgentSaveReportsRejectionAndAllowsCorrection() async throws {
+        let key = "site_user_agent_rules"
+        let transport = FakeConfigTransport(config: [key: ""])
+        var draft = SiteUserAgentRule(domain: "https://example.com", userAgent: "App/1")
+        transport.pendingErrors = [HostError(.invalidArgument)]
+        await #expect(throws: HostError(.invalidArgument)) {
+            try await SiteUserAgentRule.replaceList([draft], replacing: "", on: transport)
+        }
+        #expect(transport.config[key] == "")
+
+        draft.domain = "example.com"
+        try await SiteUserAgentRule.replaceList([draft], replacing: "", on: transport)
+        let raw = try #require(transport.config[key])
+        #expect(try SiteUserAgentRule.decodeList(raw) == [draft])
+    }
+
+    @Test func siteUserAgentSaveDoesNotReplayPositionalEditsAfterConflict() async {
+        let key = "site_user_agent_rules"
+        let transport = FakeConfigTransport(config: [key: ""])
+        let draft = SiteUserAgentRule(domain: "example.com", userAgent: "App/1")
+        transport.pendingErrors = [HostError(.conflict)]
+        await #expect(throws: HostError(.conflict)) {
+            try await SiteUserAgentRule.replaceList([draft], replacing: "", on: transport)
+        }
+        let other = #"[{"domain":"other.example","includeSubdomains":false,"userAgent":"Other/1"}]"#
+        transport.config[key] = other
+        await #expect(throws: HostError(.conflict)) {
+            try await SiteUserAgentRule.replaceList([draft], replacing: "", on: transport)
+        }
+        #expect(transport.config[key] == other)
+        #expect(transport.patches.count == 1)
     }
 
     // MARK: agent.preferences.patch（同步 daemon 键 / 偏好键）

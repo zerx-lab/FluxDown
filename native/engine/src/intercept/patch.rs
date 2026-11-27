@@ -439,6 +439,12 @@ pub fn request_snapshot(url: &str, spec: &RequestSpec, meta: &RunMeta) -> Reques
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case("user-agent"))
         .map(|(_, v)| v.clone())
+        .or_else(|| {
+            spec.site_user_agent_rules.as_ref()?;
+            let url = reqwest::Url::parse(url).ok()?;
+            let ua = spec.site_user_agent(&url)?;
+            std::str::from_utf8(ua.as_bytes()).ok().map(str::to_owned)
+        })
         .unwrap_or_else(|| meta.user_agent.clone());
     RequestCtx {
         url: url.to_string(),

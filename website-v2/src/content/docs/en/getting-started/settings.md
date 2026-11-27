@@ -147,6 +147,7 @@ A very high thread count shows a risk warning because many servers throttle or b
 ### Advanced tab
 
 - **User-Agent** - browser identity for download requests: Default, Chrome, Edge, Firefox, Safari or Custom. **Manage presets** edits the saved list.
+- **Site User-Agent rules** - set a default User-Agent for a domain, optionally including its subdomains. For each HTTP(S) download or route-test request, including redirects, the first rule matching the destination wins. A captured or explicitly set task User-Agent takes precedence; otherwise an unmatched site uses the queue or global default. Rules are stored on the download host. Changes apply when a download starts or resumes; measuring a running task uses its existing rule snapshot.
 - **File manager command** - custom command used to reveal files; empty uses the platform default.
 - **Aria2 advanced options** - a draft editor for aria2-style options. Size values use 1024-based K/M/G suffixes, `split=0` means automatic, and omitted keys stay unchanged. Changes take effect only after you apply them.
 

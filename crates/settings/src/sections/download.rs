@@ -10,7 +10,8 @@ use gpui::{App, ParentElement, SharedString, Styled, Window, prelude::FluentBuil
 use gpui_component::{Disableable as _, h_flex, switch::Switch};
 
 use super::{
-    SectionContext, aria2_options, auto_quantity, categories, rate_limit, retention, user_agent,
+    SectionContext, aria2_options, auto_quantity, categories, rate_limit, retention,
+    site_user_agent_rules, user_agent,
 };
 use crate::ui::{
     Control, Explain, SettingsPage, SettingsSection, SettingsTab, body_text, meta_text,
@@ -496,6 +497,7 @@ fn advanced_section(ctx: &SectionContext) -> SettingsSection {
     SettingsSection::new()
         .title(ctx.t("settingsGroupAdvanced"))
         .row(user_agent::row(ctx))
+        .row(site_user_agent_rules::row(ctx))
         .row(
             ctx.item(
                 "revealFileCmdLabel",

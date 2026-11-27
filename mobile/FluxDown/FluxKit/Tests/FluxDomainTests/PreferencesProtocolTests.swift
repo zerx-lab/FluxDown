@@ -88,6 +88,15 @@ struct PreferencesProtocolTests {
         ])
     }
 
+    @Test func siteUserAgentRulesAreDeviceOnlyDaemonText() throws {
+        let key = "site_user_agent_rules"
+        let wire = #"[{"domain":"example.com","includeSubdomains":true,"userAgent":"App/1"}]"#
+        #expect(SettingsCatalog.defaultWire(key) == "")
+        let plan = try SettingsWritePlan.make([key: wire]).get()
+        #expect(plan.daemon == [key: wire])
+        #expect(plan.syncedPreferences.isEmpty && plan.localPreferences.isEmpty)
+    }
+
     @Test func preferenceKeysSplitBetweenSyncedAndLocal() throws {
         let plan = try SettingsWritePlan.make([
             "download.keep_awake": "true", "ui.show_activity_rss": "false",

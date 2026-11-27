@@ -3943,6 +3943,8 @@ struct ActiveTaskEntry {
     /// Named queue this task belongs to (empty string = default queue).
     /// Used for per-queue concurrency counting.
     queue_id: String,
+    /// Site UA defaults captured by this download generation.
+    site_user_agent_rules: SiteUserAgentRules,
 }
 /// A task that has been asked to pause but whose spawned downloader has not
 /// finished flushing its buffered bytes and final progress yet.
@@ -4025,7 +4027,10 @@ struct ResolvedEgress {
     /// Auto 计划下解析所用的路径：下载只走这一条。
     pin: Option<ForcedRoute>,
     protocol_overrides: Arc<ProtocolProxies>,
+    site_user_agent_rules: SiteUserAgentRules,
 }
+
+type SiteUserAgentRules = Option<Arc<crate::site_user_agent::Rules>>;
 
 /// resolve 等待中的任务状态。Start 携 `QueuedTask`（再入覆盖 res 后分派）；
 /// Resume 为标记（do_resume_task 从 DB 重读）。`generation` 与占位/outcome 同源，
@@ -4035,9 +4040,11 @@ enum PendingResolve {
     Start {
         queued: Box<QueuedTask>,
         generation: u64,
+        site_user_agent_rules: SiteUserAgentRules,
     },
     Resume {
         generation: u64,
+        site_user_agent_rules: SiteUserAgentRules,
     },
 }
 
@@ -4045,9 +4052,20 @@ enum PendingResolve {
 impl PendingResolve {
     fn generation(&self) -> u64 {
         match self {
-            PendingResolve::Start { generation, .. } | PendingResolve::Resume { generation } => {
-                *generation
+            Self::Start { generation, .. } | Self::Resume { generation, .. } => *generation,
+        }
+    }
+
+    fn site_user_agent_rules(&self) -> &SiteUserAgentRules {
+        match self {
+            Self::Start {
+                site_user_agent_rules,
+                ..
             }
+            | Self::Resume {
+                site_user_agent_rules,
+                ..
+            } => site_user_agent_rules,
         }
     }
 }
@@ -4370,8 +4388,9 @@ pub struct DownloadManager {
     data_dir: std::path::PathBuf,
     /// User-configurable BT settings (DHT, UPnP, ports, custom trackers).
     bt_config: BtConfig,
-    /// Globally configured user-agent string. Empty = use built-in Chrome UA.
+    /// Globally configured user-agent string. Empty = use the built-in downloader UA.
     global_user_agent: String,
+    site_user_agent_rules: SiteUserAgentRules,
     /// Global default segment count from settings. 0 = defer to segment_advisor.
     global_default_segments: i32,
     /// Auto 模式最大连接数上限（config `auto_max_connections`）。
@@ -4714,6 +4733,7 @@ impl DownloadManager {
             data_dir,
             bt_config: bt_config.effective(),
             global_user_agent: user_agent,
+            site_user_agent_rules: None,
             global_default_segments: 0,
             auto_max_connections: DEFAULT_AUTO_MAX_CONNECTIONS,
             use_server_time: false,
@@ -5066,6 +5086,13 @@ impl DownloadManager {
             }
             return rx;
         };
+        let user_agent = self.plugin_resolve_user_agent(
+            &url,
+            &user_agent,
+            &extra_headers,
+            "",
+            &self.site_user_agent_rules,
+        );
         let handle = pm.runtime_handle();
         handle.spawn(async move {
             let Some(identity) = pm.match_multi_resolver(&url).await else {
@@ -5379,6 +5406,10 @@ impl DownloadManager {
                 subject_url: out.subject_url.clone(),
                 pin,
                 protocol_overrides: out.protocol_overrides.clone(),
+                site_user_agent_rules: self
+                    .pending_resolve
+                    .get(task_id)
+                    .and_then(|pending| pending.site_user_agent_rules().clone()),
             },
         );
     }
@@ -5392,6 +5423,7 @@ impl DownloadManager {
         Option<String>,
         Option<ForcedRoute>,
         Option<Arc<ProtocolProxies>>,
+        SiteUserAgentRules,
     ) {
         let pending = self
             .auto_failover_pending
@@ -5403,9 +5435,10 @@ impl DownloadManager {
                 Some(resolved.subject_url),
                 resolved.pin.or(pending),
                 Some(resolved.protocol_overrides),
+                resolved.site_user_agent_rules,
             );
         }
-        (None, pending, None)
+        (None, pending, None, self.site_user_agent_rules.clone())
     }
 
     /// 先复查 DB 生命周期，再按结果分派。
@@ -6206,8 +6239,10 @@ impl DownloadManager {
                 handle: None,
                 is_bt,
                 queue_id: queued.queue_id.clone(),
+                site_user_agent_rules: self.site_user_agent_rules.clone(),
             },
         );
+        let site_user_agent_rules = self.site_user_agent_rules.clone();
         let req = crate::plugin::ResolveRequest {
             task_id: task_id.clone(),
             url: queued.url.clone(),
@@ -6215,9 +6250,11 @@ impl DownloadManager {
             cookies: queued.cookies.clone(),
             referrer: queued.referrer.clone(),
             user_agent: self.plugin_resolve_user_agent(
+                &queued.url,
                 &queued.user_agent,
                 &queued.extra_headers,
                 &queued.queue_id,
+                &site_user_agent_rules,
             ),
             extra_headers: queued.extra_headers.clone(),
             resolver_item: queued.resolver_item.clone(),
@@ -6229,6 +6266,7 @@ impl DownloadManager {
             PendingResolve::Start {
                 queued: Box::new(queued),
                 generation: spawn_gen,
+                site_user_agent_rules,
             },
         );
         let unattended = self.db.is_task_unattended(&task_id).await.unwrap_or(false);
@@ -6288,21 +6326,31 @@ impl DownloadManager {
         }
     }
 
-    /// 插件 resolve 上下文的 User-Agent，与该任务下载请求的身份一致：已持久化请求头里的
-    /// User-Agent（调用方捕获或单任务覆盖，创建时并入）优先，否则按单任务覆盖 → 队列 →
-    /// 全局默认解析。首次起跑与暂停 / 重启后的恢复重解析因此拿到同一个值。
+    /// Expose the same request default to the resolver, without inserting a site default
+    /// into the task's explicit request headers.
     #[cfg(feature = "plugins")]
     fn plugin_resolve_user_agent(
         &self,
+        url: &str,
         explicit: &str,
         extra_headers: &HashMap<String, String>,
         queue_id: &str,
+        rules: &SiteUserAgentRules,
     ) -> String {
         extra_headers
             .iter()
             .find_map(|(name, value)| {
                 name.eq_ignore_ascii_case("user-agent")
                     .then(|| value.clone())
+            })
+            .or_else(|| {
+                if !explicit.is_empty() {
+                    return None;
+                }
+                let rules = rules.as_ref()?;
+                let url = reqwest::Url::parse(url).ok()?;
+                let ua = rules.for_url(&url)?;
+                std::str::from_utf8(ua.as_bytes()).ok().map(str::to_owned)
             })
             .unwrap_or_else(|| self.resolved_task_ua(explicit, queue_id).to_string())
     }
@@ -6432,15 +6480,23 @@ impl DownloadManager {
                 handle: None,
                 is_bt,
                 queue_id: task.queue_id.clone(),
+                site_user_agent_rules: self.site_user_agent_rules.clone(),
             },
         );
+        let site_user_agent_rules = self.site_user_agent_rules.clone();
         let req = crate::plugin::ResolveRequest {
             task_id: task_id.to_string(),
             url: task.url.clone(),
             auth_ref: String::new(),
             cookies,
             referrer,
-            user_agent: self.plugin_resolve_user_agent("", &extra_headers, &task.queue_id),
+            user_agent: self.plugin_resolve_user_agent(
+                &task.url,
+                "",
+                &extra_headers,
+                &task.queue_id,
+                &site_user_agent_rules,
+            ),
             extra_headers,
             resolver_item,
         };
@@ -6449,6 +6505,7 @@ impl DownloadManager {
             task_id.to_string(),
             PendingResolve::Resume {
                 generation: spawn_gen,
+                site_user_agent_rules,
             },
         );
         let reselect = self.resolver_reselect(task_id, &req.resolver_item).await;
@@ -7040,7 +7097,7 @@ impl DownloadManager {
     /// that all **new** downloads use the updated UA.  Already-running
     /// downloads keep their existing client and are unaffected.
     ///
-    /// Empty string = revert to built-in Chrome UA.
+    /// Empty string = revert to the built-in downloader UA.
     pub fn set_user_agent(&mut self, ua: String) -> Result<(), downloader::DownloadError> {
         log_info!("[manager] updating global_user_agent: {}", ua);
         let new_client = downloader::build_client(&self.proxy_config, &ua)?;
@@ -7048,6 +7105,12 @@ impl DownloadManager {
         self.invalidate_system_client();
         self.global_user_agent = ua;
         Ok(())
+    }
+
+    /// Install validated defaults for the next download start or resume.
+    /// A running task retains the snapshot it started with.
+    pub fn set_site_user_agent_rules(&mut self, rules: Option<Arc<crate::site_user_agent::Rules>>) {
+        self.site_user_agent_rules = rules;
     }
 
     // -----------------------------------------------------------------------
@@ -11262,6 +11325,9 @@ impl DownloadManager {
                     body,
                 );
                 probe_spec.egress = egress.router.clone();
+                if user_agent.is_empty() {
+                    probe_spec.site_user_agent_rules = self.site_user_agent_rules.clone();
+                }
                 let (probe_client, probe_proxy) = (egress.client, egress.proxy);
                 let (interceptor, task_ctx, run_meta) = self
                     .meta_probe_extras(
@@ -11374,6 +11440,9 @@ impl DownloadManager {
                 match egress {
                     Ok(egress) => {
                         spec.egress = egress.router;
+                        if queued.user_agent.is_empty() {
+                            spec.site_user_agent_rules = self.site_user_agent_rules.clone();
+                        }
                         Some((spec, egress.client, egress.proxy))
                     }
                     Err(error) => {
@@ -11925,6 +11994,15 @@ impl DownloadManager {
         self.resolved_task_ua(user_agent, queue_id).to_owned()
     }
 
+    pub(crate) fn probe_site_user_agent_rules(&self, task_id: Option<&str>) -> SiteUserAgentRules {
+        task_id
+            .and_then(|id| self.active_tasks.get(id))
+            .map_or(&self.site_user_agent_rules, |entry| {
+                &entry.site_user_agent_rules
+            })
+            .clone()
+    }
+
     /// hint 任务（不得发探测请求）的占位名：名字为空时按 URL（含预签名 URL 的
     /// `response-content-disposition`）推断并以推断名落库，供排队期间 UI 显示；HTTP
     /// 完成期按实际 GET 响应精修。无网络 I/O。
@@ -12320,6 +12398,7 @@ impl DownloadManager {
                 handle: None,
                 is_bt: use_bt,
                 queue_id: queue_id.clone(),
+                site_user_agent_rules: None,
             },
         );
         // Select speed limiter: queue-specific if the queue has a limit, global otherwise.
@@ -12558,7 +12637,8 @@ impl DownloadManager {
                 return;
             }
         } else {
-            let (route_subject, forced_route, overrides) = self.take_start_route(&task_id);
+            let (route_subject, forced_route, overrides, site_user_agent_rules) =
+                self.take_start_route(&task_id);
             let protocol = if use_ed2k {
                 DownloadProtocol::Ed2k
             } else {
@@ -12615,6 +12695,12 @@ impl DownloadManager {
                 body.clone(),
             );
             spec.egress = egress_router;
+            if user_agent.is_empty() {
+                spec.site_user_agent_rules = site_user_agent_rules;
+            }
+            if let Some(entry) = self.active_tasks.get_mut(&task_id) {
+                entry.site_user_agent_rules = spec.site_user_agent_rules.clone();
+            }
 
             // 多 CDN 聚合输入：manager 侧条件（开关/TLS/代理）在此折算；
             // pinned client 的 UA 与任务 client 同源（resolved_task_ua）。
@@ -14037,6 +14123,7 @@ impl DownloadManager {
                 handle: None,
                 is_bt: use_bt,
                 queue_id: task.queue_id.clone(),
+                site_user_agent_rules: None,
             },
         );
         // Track queue membership and select the appropriate speed limiter.
@@ -14341,7 +14428,8 @@ impl DownloadManager {
             let persisted_ua = persisted_user_agent.unwrap_or_default();
             // 与 start 路径共用 `task_http_context`：一次性备用链路（Auto）与解析钉定的出口
             // 在此消费，站点规则 / Auto 决策 / 专属 client 的取舍只有这一份实现。
-            let (route_subject, forced_route, overrides) = self.take_start_route(&tid);
+            let (route_subject, forced_route, overrides, site_user_agent_rules) =
+                self.take_start_route(&tid);
             let protocol = if use_ed2k {
                 DownloadProtocol::Ed2k
             } else {
@@ -14585,6 +14673,12 @@ impl DownloadManager {
                         body,
                     );
                     spec.egress = egress_router;
+                    if persisted_ua.is_empty() {
+                        spec.site_user_agent_rules = site_user_agent_rules;
+                        if let Some(entry) = self.active_tasks.get_mut(task_id) {
+                            entry.site_user_agent_rules = spec.site_user_agent_rules.clone();
+                        }
+                    }
                     spec
                 },
                 audio_url,
@@ -18196,6 +18290,7 @@ impl DownloadManager {
             false,
             None,
         );
+        let site_user_agent_rules = self.site_user_agent_rules.clone();
         async move {
             let lower = url.get(..8).unwrap_or(&url).to_ascii_lowercase();
             if let Err(error) = &egress {
@@ -18215,6 +18310,7 @@ impl DownloadManager {
             };
             let mut spec = crate::downloader::RequestSpec::empty_get();
             spec.egress = egress.router;
+            spec.site_user_agent_rules = site_user_agent_rules;
             crate::meta_prober::probe_link_kind(&url, &egress.client, &spec).await
         }
     }
@@ -19958,6 +20054,7 @@ mod tests {
                 handle: None,
                 is_bt: false,
                 queue_id: String::new(),
+                site_user_agent_rules: None,
             },
         );
 
@@ -20107,6 +20204,7 @@ mod tests {
                     handle: None,
                     is_bt: false,
                     queue_id: String::new(),
+                    site_user_agent_rules: None,
                 },
             );
             mgr.on_task_done(&TaskDone {
@@ -20455,6 +20553,7 @@ mod tests {
                     handle: None,
                     is_bt: false,
                     queue_id: String::new(),
+                    site_user_agent_rules: None,
                 },
             );
             mgr.on_task_done(&TaskDone {
@@ -20749,6 +20848,7 @@ mod tests {
                 handle: None,
                 is_bt: false,
                 queue_id: String::new(),
+                site_user_agent_rules: None,
             },
         );
         mgr.on_task_done(&TaskDone {
@@ -21523,6 +21623,7 @@ mod tests {
                 handle: None,
                 is_bt: false,
                 queue_id: String::new(),
+                site_user_agent_rules: None,
             },
         );
 
@@ -23544,6 +23645,7 @@ mod tests {
         mgr.active_tasks.insert(
             "pause-flush".to_string(),
             ActiveTaskEntry {
+                site_user_agent_rules: None,
                 hls_discard: None,
                 token,
                 generation: 41,
@@ -23624,6 +23726,7 @@ mod tests {
         mgr.active_tasks.insert(
             "pause-race".to_string(),
             ActiveTaskEntry {
+                site_user_agent_rules: None,
                 hls_discard: None,
                 token: old_token,
                 generation: 51,
@@ -23656,6 +23759,7 @@ mod tests {
         mgr.active_tasks.insert(
             "pause-race".to_string(),
             ActiveTaskEntry {
+                site_user_agent_rules: None,
                 hls_discard: None,
                 token: new_token,
                 generation: 52,
@@ -24131,6 +24235,7 @@ mod tests {
             mgr.active_tasks.insert(
                 task_id.to_string(),
                 ActiveTaskEntry {
+                    site_user_agent_rules: None,
                     hls_discard: None,
                     token: CancellationToken::new(),
                     generation: 3,
@@ -24172,6 +24277,7 @@ mod tests {
         mgr.active_tasks.insert(
             task_id.to_string(),
             ActiveTaskEntry {
+                site_user_agent_rules: None,
                 hls_discard: None,
                 token: CancellationToken::new(),
                 generation: 1,
@@ -24889,6 +24995,7 @@ mod tests {
         mgr.active_tasks.insert(
             id.to_string(),
             ActiveTaskEntry {
+                site_user_agent_rules: None,
                 hls_discard: None,
                 token,
                 generation,
@@ -25867,6 +25974,7 @@ mod tests {
         mgr.active_tasks.insert(
             "occupier".to_string(),
             ActiveTaskEntry {
+                site_user_agent_rules: None,
                 hls_discard: None,
                 token: CancellationToken::new(),
                 generation: 0,
@@ -26166,6 +26274,7 @@ mod tests {
         mgr.active_tasks.insert(
             "occupier".to_string(),
             ActiveTaskEntry {
+                site_user_agent_rules: None,
                 hls_discard: None,
                 token: CancellationToken::new(),
                 generation: 0,
@@ -26238,6 +26347,7 @@ mod tests {
         mgr.active_tasks.insert(
             "occupier".to_string(),
             ActiveTaskEntry {
+                site_user_agent_rules: None,
                 hls_discard: None,
                 token: CancellationToken::new(),
                 generation: 0,
@@ -26305,6 +26415,7 @@ mod tests {
         mgr.active_tasks.insert(
             "occupier".to_string(),
             ActiveTaskEntry {
+                site_user_agent_rules: None,
                 hls_discard: None,
                 token: CancellationToken::new(),
                 generation: 0,
@@ -26526,6 +26637,7 @@ mod tests {
         mgr.active_tasks.insert(
             "r1".to_string(),
             ActiveTaskEntry {
+                site_user_agent_rules: None,
                 hls_discard: None,
                 token: CancellationToken::new(),
                 generation: 0,
@@ -26695,6 +26807,7 @@ mod tests {
         mgr.active_tasks.insert(
             "c1".to_string(),
             ActiveTaskEntry {
+                site_user_agent_rules: None,
                 hls_discard: None,
                 token: CancellationToken::new(),
                 generation: 0,

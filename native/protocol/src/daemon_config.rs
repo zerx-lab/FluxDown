@@ -156,6 +156,7 @@ pub const DAEMON_CONFIG_FIELDS: &[DaemonConfigField] = &[
         "sha256",
     ),
     field("global_user_agent", DaemonConfigKind::Text, ""),
+    field("site_user_agent_rules", DaemonConfigKind::Text, ""),
     field("default_queue_id", DaemonConfigKind::Text, ""),
     field("domain_conn_caps", DaemonConfigKind::ReadOnly, ""),
     // ── BT ──

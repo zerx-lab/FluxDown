@@ -61,6 +61,7 @@ fn occupy_five_slots(manager: &mut DownloadManager) {
                 handle: None,
                 is_bt: false,
                 queue_id: MAIN_QUEUE_ID.into(),
+                site_user_agent_rules: None,
             },
         );
     }

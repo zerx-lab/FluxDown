@@ -220,7 +220,11 @@ impl DownloadManager {
         &self,
         request: MeasureRequest,
     ) -> Result<impl Future<Output = MeasureReport> + Send + use<>, MeasureError> {
-        let source = self.measure_source(&request).await?;
+        let mut source = self.measure_source(&request).await?;
+        if source.task_user_agent.is_empty() {
+            source.spec.site_user_agent_rules =
+                self.probe_site_user_agent_rules(source.task_id.as_deref());
+        }
         let specs = if request.routes.is_empty() {
             vec![RouteSpec::Current, RouteSpec::Direct]
         } else {

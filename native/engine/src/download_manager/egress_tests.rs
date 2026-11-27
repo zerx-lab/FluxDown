@@ -195,6 +195,7 @@ async fn failover_pending_after_transport_error(auto_route: &str, override_url: 
             handle: None,
             is_bt: false,
             queue_id: MAIN_QUEUE_ID.into(),
+            site_user_agent_rules: None,
         },
     );
     manager

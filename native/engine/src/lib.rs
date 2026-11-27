@@ -120,6 +120,7 @@ pub mod segment_coordinator;
 pub mod selection;
 /// 站点 HTTP Basic 认证凭据（per-host 保存 + 建任务时自动套用）。
 pub mod site_auth;
+pub mod site_user_agent;
 /// 任务整个下载期的速度曲线与统计（持久化，任务完成后可回看）。
 pub mod speed_history;
 pub mod speed_limiter;
@@ -376,7 +377,14 @@ impl Engine {
             sink.clone(),
             selector.clone(),
         )?;
-        manager.set_protocol_proxies(&db.get_all_config().await?);
+        let settings = db.get_all_config().await?;
+        manager.set_protocol_proxies(&settings);
+        if let Some(raw) = settings.get(site_user_agent::CONFIG_KEY) {
+            match site_user_agent::Rules::parse(raw) {
+                Ok(rules) => manager.set_site_user_agent_rules(rules),
+                Err(error) => tracing::warn!(%error, "Ignoring invalid download User-Agent rules"),
+            }
+        }
         // 组装并注入插件管理器（feature 关时整块不编译，下载主链路零变化）。
         #[cfg(feature = "plugins")]
         {

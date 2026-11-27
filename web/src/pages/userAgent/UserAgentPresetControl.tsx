@@ -31,7 +31,7 @@ function parseUserAgentPresets(raw: unknown): UserAgentPreset[] {
   return result
 }
 
-export function UserAgentPresetControl({ value, onChange, allowSave = true, showSelector = true, showInput = true, defaultLabelKey = 'queueUaInheritGlobal', inputPlaceholderKey = 'userAgentTaskPlaceholder', forceDisabled = false }: { value: string; onChange: (value: string) => void; allowSave?: boolean; showSelector?: boolean; showInput?: boolean; defaultLabelKey?: string; inputPlaceholderKey?: string; forceDisabled?: boolean }) {
+export function UserAgentPresetControl({ value, onChange, allowSave = true, allowDefault = true, showSelector = true, showInput = true, defaultLabelKey = 'queueUaInheritGlobal', inputPlaceholderKey = 'userAgentTaskPlaceholder', forceDisabled = false }: { value: string; onChange: (value: string) => void; allowSave?: boolean; allowDefault?: boolean; showSelector?: boolean; showInput?: boolean; defaultLabelKey?: string; inputPlaceholderKey?: string; forceDisabled?: boolean }) {
   const t = useT()
   const connectionPhase = useConnection().phase
   const daemonConnected = useAgent((snapshot) => snapshot.daemonConnected, false)
@@ -45,7 +45,7 @@ export function UserAgentPresetControl({ value, onChange, allowSave = true, show
   const nextDraftId = useRef(0)
   const builtins = UA_PRESETS.map((preset, index) => ({ value: `builtin:${index}`, label: preset.label, userAgent: preset.value }))
   const options = [
-    { value: '__default', label: t(defaultLabelKey), userAgent: '' },
+    ...(allowDefault ? [{ value: '__default', label: t(defaultLabelKey), userAgent: '' }] : []),
     ...builtins,
     ...presets.map((preset, index) => ({ value: `saved:${index}`, label: preset.name, userAgent: preset.value })),
     { value: '__custom', label: t('userAgentPresetCustom'), userAgent: null },
@@ -102,14 +102,14 @@ export function UserAgentPresetControl({ value, onChange, allowSave = true, show
   }
   const disabled = forceDisabled || !connected || pending
   return <div className="flex flex-col gap-2">
-    {showSelector ? <div className="flex gap-2"><Select value={selected} options={options} disabled={disabled} aria-label={t('userAgent')} onValueChange={(next) => {
+    {showSelector ? <div className="flex flex-wrap gap-2"><Select className="w-auto flex-1 basis-36" value={selected} options={options} disabled={disabled} aria-label={t('userAgent')} onValueChange={(next) => {
       const option = options.find((item) => item.value === next)
       if (!option) return
       if (option.value === '__custom') { setCustomMode(true); return }
       setCustomMode(false)
       onChange(option.userAgent ?? '')
     }} /><Button type="button" disabled={disabled} onClick={beginManage}>{t('userAgentManagePresets')}</Button></div> : <Button type="button" disabled={disabled} onClick={beginManage}>{t('userAgentManagePresets')}</Button>}
-    {showInput && (customMode || (value !== '' && !isPreset(value))) ? <Input value={value} disabled={disabled} placeholder={t(inputPlaceholderKey)} spellCheck={false} aria-label={t('userAgent')} onChange={(event) => { setCustomMode(true); onChange(event.target.value) }} /> : null}
+    {showInput && selected === '__custom' ? <Input value={value} disabled={disabled} placeholder={t(inputPlaceholderKey)} spellCheck={false} aria-label={t('userAgent')} onChange={(event) => { setCustomMode(true); onChange(event.target.value) }} /> : null}
     {allowSave && value.trim() && !isPreset(value) ? <div className="flex gap-2"><Input value={saveName} disabled={disabled} onChange={(event) => setSaveName(event.target.value)} placeholder={t('userAgentPresetName')} aria-label={t('userAgentPresetName')} /><Button type="button" disabled={disabled || !saveName.trim()} onClick={() => void saveCurrent()}>{t('userAgentSavePreset')}</Button></div> : null}
     {manage ? <Dialog open onOpenChange={(open) => !open && !pending && setManage(false)} title={t('userAgentManagePresets')}>
       <div className="flex max-h-[60vh] flex-col gap-3 overflow-y-auto">

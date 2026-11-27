@@ -693,6 +693,8 @@ pub struct RequestSpec {
     pub pins: RequestPins,
     /// 按站点附加的请求头（插件下发，不落库）。
     pub origin_headers: Vec<OriginHeaders>,
+    /// Host-local download defaults; shared for this attempt and never persisted with the task.
+    pub site_user_agent_rules: Option<std::sync::Arc<crate::site_user_agent::Rules>>,
     /// 插件声明的单个 HTTP 数据请求的 Range 跨度上限（字节，插件 `maxRangeBytes`）；
     /// `None` = 不限。与 `origin_headers` 同属插件按次运行叠加的改写，不落库。
     /// 读取请用 [`RequestSpec::range_window_cap`]。
@@ -781,6 +783,22 @@ impl RequestSpec {
     /// HTTP 请求场景(如 BT/HLS 元数据获取,无浏览器会话上下文)。
     pub fn empty_get() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn site_user_agent(
+        &self,
+        url: &reqwest::Url,
+    ) -> Option<&reqwest::header::HeaderValue> {
+        let rules = self.site_user_agent_rules.as_ref()?;
+        if self.pins.user_agent
+            || self
+                .extra_headers
+                .keys()
+                .any(|name| name.eq_ignore_ascii_case("user-agent"))
+        {
+            return None;
+        }
+        rules.for_url(url)
     }
 
     /// 生效的 Range 跨度上限：仅 GET-like 请求（非 GET 强制单流且不发 Range）且值为正时 `Some`。
@@ -1775,6 +1793,9 @@ fn spec_without_browser_ua(spec: &RequestSpec) -> RequestSpec {
             .filter(|(k, _)| !k.eq_ignore_ascii_case("user-agent"))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect(),
+        // Falling back to the client UA is an explicit retry decision, not a
+        // request to select another site default.
+        site_user_agent_rules: None,
         ..spec.clone()
     }
 }

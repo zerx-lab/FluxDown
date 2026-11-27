@@ -106,6 +106,7 @@ public enum SettingsCatalog {
         daemon("hash_after_download", .bool, "false"),
         daemon("hash_algorithm", .choice(hashAlgorithms), "sha256"),
         daemon("global_user_agent", .text, ""),
+        daemon("site_user_agent_rules", .text, ""),
         daemon("default_queue_id", .text, ""),
         daemon("domain_conn_caps", .readOnly, ""),
         // BT

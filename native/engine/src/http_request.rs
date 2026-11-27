@@ -22,7 +22,7 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use reqwest::cookie::Jar;
-use reqwest::header::{COOKIE, HeaderValue, LOCATION, REFERER, SET_COOKIE};
+use reqwest::header::{COOKIE, HeaderValue, LOCATION, REFERER, SET_COOKIE, USER_AGENT};
 use reqwest::{Client, ClientBuilder, Method, RequestBuilder, Response, StatusCode, Url};
 use tokio::time::Instant;
 
@@ -252,6 +252,10 @@ impl<'s> HttpRequest<'s> {
             }
         }
 
+        if let Some(ua) = spec.site_user_agent(url) {
+            req = req.header(USER_AGENT, ua.clone());
+        }
+
         let authorized = anchor.is_some_and(|a| credential_scope::authorization_applies(a, url));
         req = crate::downloader::apply_extra_headers_where(req, &spec.extra_headers, |name| {
             !(name.eq_ignore_ascii_case("cookie")
@@ -439,6 +443,9 @@ mod tests {
                     let mut buf = [0u8; 4096];
                     let head_end = loop {
                         let n = stream.read(&mut buf).await.unwrap();
+                        if n == 0 {
+                            return;
+                        }
                         raw.extend_from_slice(&buf[..n]);
                         if let Some(i) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
                             break i;
@@ -504,6 +511,294 @@ mod tests {
 
     fn hops(log: &Log) -> Vec<Seen> {
         log.lock().unwrap().clone()
+    }
+
+    #[tokio::test]
+    async fn site_user_agent_matches_each_hop_and_preserves_explicit_ua() {
+        fn route(seen: &Seen, port: u16) -> String {
+            let target = match seen.host.as_str() {
+                "source.ua.test" => "cdn.ua.test",
+                "cdn.ua.test" => "unmatched.test",
+                _ => return response("200 OK", "", ""),
+            };
+            redirect("302 Found", &format!("http://{target}:{port}/payload"), "")
+        }
+        let (port, log) = serve(route).await;
+        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        let client = configure_download_client(
+            reqwest::Client::builder()
+                .no_proxy()
+                .user_agent("Queue-UA")
+                .resolve("source.ua.test", addr)
+                .resolve("cdn.ua.test", addr)
+                .resolve("unmatched.test", addr),
+            false,
+        )
+        .build()
+        .unwrap();
+        let url = format!("http://source.ua.test:{port}/payload");
+        let spec = RequestSpec {
+            site_user_agent_rules: crate::site_user_agent::Rules::parse(
+                r#"[{"domain":"source.ua.test","includeSubdomains":false,"userAgent":"Source-UA"},
+                    {"domain":"cdn.ua.test","includeSubdomains":false,"userAgent":"CDN-UA"}]"#,
+            )
+            .unwrap(),
+            ..RequestSpec::empty_get()
+        };
+        build_request(&client, &url, reqwest::Method::HEAD, &spec)
+            .send()
+            .await
+            .unwrap();
+        build_request(&client, &url, reqwest::Method::GET, &spec)
+            .header("Range", "bytes=0-0")
+            .send()
+            .await
+            .unwrap();
+
+        let mut explicit = spec.clone();
+        explicit
+            .extra_headers
+            .insert("uSeR-aGeNt".to_owned(), "Explicit-UA".to_owned());
+        build_request(&client, &url, reqwest::Method::GET, &explicit)
+            .send()
+            .await
+            .unwrap();
+        let mut pinned = spec;
+        pinned.pins.user_agent = true;
+        build_request(&client, &url, reqwest::Method::GET, &pinned)
+            .send()
+            .await
+            .unwrap();
+
+        let seen = hops(&log);
+        for triplet in [&seen[0..3], &seen[3..6]] {
+            assert_eq!(
+                triplet
+                    .iter()
+                    .map(|r| r.header("user-agent"))
+                    .collect::<Vec<_>>(),
+                [Some("Source-UA"), Some("CDN-UA"), Some("Queue-UA")],
+            );
+        }
+        assert!(seen[0..3].iter().all(|r| r.method == "HEAD"));
+        assert!(
+            seen[3..6]
+                .iter()
+                .all(|r| r.header("range") == Some("bytes=0-0"))
+        );
+        assert!(
+            seen[6..9]
+                .iter()
+                .all(|r| r.header("user-agent") == Some("Explicit-UA"))
+        );
+        assert!(
+            seen[9..12]
+                .iter()
+                .all(|r| r.header("user-agent") == Some("Queue-UA"))
+        );
+    }
+
+    #[tokio::test]
+    async fn site_user_agent_does_not_override_bot_challenge_retry() {
+        fn route(seen: &Seen, _: u16) -> String {
+            if seen.header("user-agent") == Some("Site-UA") {
+                return response("403 Forbidden", "cf-mitigated: challenge\r\n", "");
+            }
+            response(
+                "200 OK",
+                "Content-Type: application/octet-stream\r\n",
+                "data",
+            )
+        }
+        let (port, log) = serve(route).await;
+        let client = client(port, &["challenge.ua.test"]);
+        let url = format!("http://challenge.ua.test:{port}/payload");
+        let spec = RequestSpec {
+            site_user_agent_rules: crate::site_user_agent::Rules::parse(
+                r#"[{"domain":"challenge.ua.test","includeSubdomains":false,"userAgent":"Site-UA"}]"#,
+            )
+            .unwrap(),
+            ..RequestSpec::empty_get()
+        };
+        let (info, _, _) = crate::downloader::resolve_file_info_held(&client, &url, &spec)
+            .await
+            .unwrap();
+        assert_eq!(info.total_bytes, 4);
+        let seen = hops(&log);
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0].header("user-agent"), Some("Site-UA"));
+        assert!(
+            seen[1]
+                .header("user-agent")
+                .is_some_and(|ua| ua.starts_with("FluxDown/"))
+        );
+    }
+
+    #[tokio::test]
+    async fn site_user_agent_rules_are_reloaded_on_resume() {
+        use crate::bt_config::BtConfig;
+        use crate::download_manager::NewTaskSpec;
+        use crate::proxy_config::ProxyConfig;
+        use crate::site_user_agent::Rules;
+        use crate::{Engine, EngineConfig, NoopSelection, NoopSink};
+        use std::path::PathBuf;
+        use std::time::Duration;
+
+        struct WorkDir(PathBuf);
+        impl Drop for WorkDir {
+            fn drop(&mut self) {
+                if let Err(error) = std::fs::remove_dir_all(&self.0) {
+                    eprintln!("site User-Agent test directory cleanup failed: {error}");
+                }
+            }
+        }
+
+        fn route(seen: &Seen, port: u16) -> String {
+            if seen.host == "localhost" && seen.header("range") == Some("bytes=0-") {
+                return redirect(
+                    "302 Found",
+                    &format!("http://127.0.0.1:{port}/file.bin"),
+                    "",
+                );
+            }
+            let content_type = "Content-Type: application/octet-stream\r\n";
+            match (seen.method.as_str(), seen.header("range")) {
+                ("HEAD", _) => format!(
+                    "HTTP/1.1 200 OK\r\n{content_type}Content-Length: 4\r\nConnection: close\r\n\r\n"
+                ),
+                ("GET", Some("bytes=0-0")) => response(
+                    "206 Partial Content",
+                    "Content-Range: bytes 0-0/4\r\nContent-Type: application/octet-stream\r\n",
+                    "d",
+                ),
+                _ => response("200 OK", content_type, "data"),
+            }
+        }
+
+        let work = WorkDir(
+            std::env::temp_dir().join(format!("fluxdown-site-ua-{}", uuid::Uuid::new_v4())),
+        );
+        std::fs::create_dir(&work.0).unwrap();
+        let (port, log) = serve(route).await;
+        let dir = work.0.to_string_lossy().into_owned();
+        let mut engine = Engine::new(
+            EngineConfig {
+                max_concurrent: 1,
+                speed_limit_bps: 0,
+                upload_limit_bps: 0,
+                default_save_dir: dir.clone(),
+                app_data_dir: dir.clone(),
+                bt_config: BtConfig::default(),
+                proxy_config: ProxyConfig::default(),
+                user_agent: "Global-UA".into(),
+                data_dir_override: Some(work.0.clone()),
+                database_url: None,
+            },
+            Arc::new(NoopSink),
+            Arc::new(NoopSelection),
+        )
+        .await
+        .unwrap();
+        if let Some(mut progress) = engine.manager.take_progress_rx() {
+            tokio::spawn(async move { while progress.recv().await.is_some() {} });
+        }
+        let mut done = engine.manager.take_done_rx().unwrap();
+        let set = |engine: &mut Engine, ua: &str| {
+            let rules = serde_json::json!([
+                { "domain": "localhost", "includeSubdomains": false, "userAgent": ua }
+            ]);
+            engine
+                .manager
+                .set_site_user_agent_rules(Rules::parse(&rules.to_string()).unwrap());
+        };
+        set(&mut engine, "Before-UA");
+        let id = engine
+            .manager
+            .create_task(NewTaskSpec {
+                url: format!("http://localhost:{port}/file.bin"),
+                save_dir: dir,
+                file_name: "file.bin".into(),
+                segments: 1,
+                start_paused: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !log
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|r| r.header("user-agent") == Some("Before-UA"))
+            {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        async fn measure_ua(engine: &Engine, id: &str, log: &Log) -> Result<Vec<Seen>, String> {
+            log.lock().map_err(|error| error.to_string())?.clear();
+            let report = engine
+                .manager
+                .measure_routes_future(crate::net_probe::MeasureRequest {
+                    task_id: Some(id.to_owned()),
+                    connections: Some(1),
+                    max_bytes: 4,
+                    max_duration: Duration::from_secs(1),
+                    ..Default::default()
+                })
+                .await
+                .map_err(|error| error.to_string())?
+                .await;
+            if report.routes.len() != 2 || report.routes.iter().any(|route| !route.ok) {
+                return Err(format!("{:?}", report.routes));
+            }
+            Ok(hops(log))
+        }
+
+        set(&mut engine, "After-UA");
+        engine.manager.resume_task(&id).await;
+        let event = tokio::time::timeout(Duration::from_secs(5), done.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        // A worker's generation is still active until the actor processes its completion.
+        set(&mut engine, "New-Default-UA");
+        let download_hops = hops(&log);
+        for expected in ["After-UA", "New-Default-UA"] {
+            let measured = measure_ua(&engine, &id, &log)
+                .await
+                .unwrap_or_else(|error| panic!("measurement failed: {error}"));
+            let uas: Vec<_> = measured
+                .iter()
+                .filter(|r| r.header("range") == Some("bytes=0-"))
+                .map(|r| (r.host.as_str(), r.header("user-agent")))
+                .collect();
+            let route = [
+                ("localhost", Some(expected)),
+                ("127.0.0.1", Some("Global-UA")),
+            ];
+            assert_eq!(uas, route.repeat(2));
+            if expected == "After-UA" {
+                engine.manager.on_task_done(&event).await;
+            }
+        }
+        let task = engine.db.load_task_by_id(&id).await.unwrap().unwrap();
+        assert_eq!(task.status, 3, "{}", task.error_message);
+        assert_eq!(std::fs::read(work.0.join(task.file_name)).unwrap(), b"data");
+        assert!(download_hops.iter().any(|r| {
+            r.method == "GET"
+                && r.header("range") != Some("bytes=0-0")
+                && r.header("user-agent") == Some("After-UA")
+        }));
+        let (_, _, headers) = engine
+            .db
+            .load_task_request_context(&id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!headers.contains("Before-UA") && !headers.contains("After-UA"));
     }
 
     /// TikTok 形态：`www` 302 到同站 CDN 子域，CDN 只认浏览器的域 Cookie。Cookie 跟到
