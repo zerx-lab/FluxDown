@@ -44,6 +44,7 @@ pub enum WindowKey {
     Main,
     Settings,
     NewDownload,
+    CaptureDownload(String),
     QueueManager,
     Selection(String),
     /// 所有待确认的「文件已存在」请求聚合在这一个窗口里。

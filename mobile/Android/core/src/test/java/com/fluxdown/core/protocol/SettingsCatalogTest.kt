@@ -122,6 +122,7 @@ class SettingsCatalogTest {
                 "download.keep_awake" to "true",
                 "download.silent_auto_category" to "true",
                 "download.silent_skip_selection" to "1",
+                "download.capture_device_rules" to "apk=cloud:phone\nexe=link:pc",
             ),
         )
         val plan = (result as SettingsWritePlan.Result.Ok).plan
@@ -133,8 +134,11 @@ class SettingsCatalogTest {
         assertEquals(mapOf(
             "download.silent_skip_selection" to JsonValue.True,
             "download.silent_auto_category" to JsonValue.True,
+            "download.capture_device_rules" to JsonValue.of("apk=cloud:phone\nexe=link:pc"),
         ), plan.localPreferences)
         assertFalse(SettingsCatalog.isSynced("download.silent_auto_category"))
+        assertFalse(SettingsCatalog.isSynced("download.capture_device_rules"))
+        assertEquals("", SettingsCatalog.defaultWire("download.capture_device_rules"))
         // 免打扰主开关与子开关并存：子开关的可见性与默认值都依赖它在目录里。
         assertEquals("false", SettingsCatalog.defaultWire("download.silent_download"))
         assertEquals("true", SettingsCatalog.defaultWire("download.silent_auto_category"))

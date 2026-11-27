@@ -414,11 +414,10 @@ async fn run_agent(
         &cancel,
     )
     .await?;
-    let capture = Arc::new(crate::capture::CaptureService::new(
-        daemon.clone(),
-        events.clone(),
-        shell.clone(),
-    ));
+    let capture = Arc::new(
+        crate::capture::CaptureService::new(daemon.clone(), events.clone(), shell.clone())
+            .with_dispatch(remote.clone(), Some(link.clone())),
+    );
     let blobs = Arc::new(crate::capture::DaemonBlobClient::new(&daemon_config)?);
     // 已装插件的市场撤回：低频触发 daemon 拉索引（桌面与 server 宿主；embedded 不接入）。
     crate::plugin_revocation::spawn(

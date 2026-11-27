@@ -1055,6 +1055,12 @@ pub struct PendingCaptureDto {
     /// 携带的请求头名（不含值）。
     #[serde(default)]
     pub header_names: Vec<String>,
+    /// Device preference key selected by an external capture rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_target: Option<String>,
+    /// Localizable reason the matched capture could not be sent automatically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_error: Option<String>,
 }
 
 impl PendingCaptureDto {
@@ -1077,6 +1083,9 @@ pub struct CaptureResolveParams {
     /// 即使目录等于捕获表单的预填分类目录，也显式禁用分类路由。
     #[serde(default, skip_serializing_if = "crate::daemon::is_false")]
     pub disable_category_route: bool,
+    /// Confirm this capture on a remote device instead of creating it locally.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_target: Option<String>,
     /// 确认时官方 UI 表单产出的建任务参数（`None` = 按捕获原请求建任务）。
     ///
     /// agent 以捕获原请求为底合并：`url` / `method` / `body` / `audioUrl` 恒取捕获值；

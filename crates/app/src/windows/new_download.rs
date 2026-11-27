@@ -1,11 +1,13 @@
 //! 「新建下载」窗口：菜单 / 快捷键 / 拖放入口，以及外部捕获（浏览器扩展 / NMH）确认。
 //!
-//! 外部捕获不单独开确认弹窗：待确认队列里新出现的事务追加进同一个新建下载表单（没有就开
-//! 一个，无主窗口时也可以）。提交时普通链接经主窗口下载页建任务（无主窗口时直接走 agent
-//! 端口），捕获条目经 `agent.capture.resolve` 确认；表单释放时未确认的捕获一并忽略。
-//! 成功后关窗并在主窗口 toast。
+//! External captures with the same destination and routing status use one confirmation form.
+//! Distinct groups and manual drafts have separate windows and never share form options.
 
-use std::{collections::HashSet, rc::Rc, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    rc::Rc,
+    sync::Arc,
+};
 
 use fluxdown_protocol::{
     AgentEvent, AgentSnapshot, CaptureResolveParams, CloudDevice, DaemonEvent, LinkDeviceInfo,
@@ -13,13 +15,13 @@ use fluxdown_protocol::{
 };
 use fluxdown_ui_components::toast;
 use fluxdown_ui_downloads::{
-    DownloadsCommand, DownloadsPort, NewDownloadContext, NewDownloadSubmission, NewDownloadView,
-    SubmissionHooks, SubmitNotice, new_download_context_from_snapshot, new_download_targets,
-    run_submission,
+    DownloadsCommand, DownloadsPort, FailedRemoteCapture, NewDownloadContext,
+    NewDownloadSubmission, NewDownloadView, SubmissionHooks, SubmitNotice,
+    new_download_context_from_snapshot, new_download_targets, run_submission,
 };
 use fluxdown_ui_i18n::keys;
 use fluxdown_ui_shell::{AuxiliaryWindowView, auxiliary_window_options};
-use gpui::{App, AppContext as _, Global, WeakEntity, px, size};
+use gpui::{AnyWindowHandle, App, AppContext as _, Entity, Global, WeakEntity, px, size};
 use gpui_component::{Root, WindowExt as _};
 
 use crate::{
@@ -33,20 +35,22 @@ use crate::{
 const NEW_DOWNLOAD_WINDOW_SIZE: gpui::Size<gpui::Pixels> = size(px(640.), px(530.));
 const NEW_DOWNLOAD_WINDOW_MIN_SIZE: gpui::Size<gpui::Pixels> = size(px(560.), px(440.));
 
-/// 外部捕获派发状态：当前表单 + 已交给表单的事务（agent 移除前不重复追加，
-/// 关窗忽略后也不会因列表尚未刷新而重开）；另缓存设备名册，随事件推给已打开的表单。
+/// Tracks captures already shown and device state shared by all open download forms.
 #[derive(Default)]
 struct CaptureDispatch {
-    form: Option<WeakEntity<NewDownloadView>>,
-    /// 当前表单按 daemon 未连上时的空环境打开（冷启动：agent 首个快照先于 daemon 就绪，
-    /// 不带配置 / 队列 / 运行时目录），daemon 连上后需补投影一次。
-    provisional: bool,
+    forms: HashMap<WindowKey, OpenForm>,
     handed: HashSet<String>,
     cloud_devices: Vec<CloudDevice>,
     cloud_user: Option<String>,
     cloud_connected: bool,
     agent_current: bool,
     linked_devices: Vec<LinkDeviceInfo>,
+}
+
+struct OpenForm {
+    view: WeakEntity<NewDownloadView>,
+    // A cold-start snapshot can arrive before the daemon configuration is available.
+    provisional: bool,
 }
 
 impl Global for CaptureDispatch {}
@@ -133,7 +137,7 @@ fn install_capture_failure_notices(cx: &mut App) {
     .detach();
 }
 
-/// 订阅会话：待确认捕获出现 → 追加进新建下载表单（必要时打开）；启动时回放快照。
+/// Subscribe to agent capture and device updates, including pending captures from startup.
 pub fn install_captures(cx: &mut App) {
     install_capture_failure_notices(cx);
     cx.set_global(CaptureDispatch::default());
@@ -292,24 +296,33 @@ fn cache_devices(
     dispatch.linked_devices = linked.to_vec();
 }
 
-/// 把快照里最新的分类列表推给已打开的新建下载表单（快捷添加网址规则以它为写回基准）。
+fn open_forms(
+    cx: &App,
+) -> impl Iterator<Item = (&WindowKey, Entity<NewDownloadView>, AnyWindowHandle)> + '_ {
+    cx.global::<CaptureDispatch>()
+        .forms
+        .iter()
+        .filter_map(|(key, form)| {
+            Some((key, form.view.upgrade()?, WindowRegistry::handle(cx, key)?))
+        })
+}
+
 fn sync_categories(cx: &mut App, snapshot: &AgentSnapshot) {
-    let form = cx
-        .global::<CaptureDispatch>()
-        .form
-        .as_ref()
-        .and_then(WeakEntity::upgrade);
-    let (Some(form), Some(handle)) = (form, WindowRegistry::handle(cx, &WindowKey::NewDownload))
-    else {
+    if cx.global::<CaptureDispatch>().forms.is_empty() {
         return;
-    };
+    }
     let categories = new_download_context_from_snapshot(snapshot).custom_categories;
-    if let Err(error) = handle.update(cx, |_, window, cx| {
-        form.update(cx, |form, cx| {
-            form.set_custom_categories(categories, window, cx)
-        });
-    }) {
-        log::debug!("view or window released before lifecycle update: {error:#}");
+    let forms: Vec<_> = open_forms(cx)
+        .map(|(_, form, handle)| (form, handle))
+        .collect();
+    for (form, handle) in forms {
+        if let Err(error) = handle.update(cx, |_, window, cx| {
+            form.update(cx, |form, cx| {
+                form.set_custom_categories(categories.clone(), window, cx);
+            });
+        }) {
+            log::debug!("view or window released before lifecycle update: {error:#}");
+        }
     }
 }
 
@@ -338,55 +351,54 @@ fn duplicate_scope_from_snapshot(snapshot: &AgentSnapshot) -> Option<(&[TaskDto]
 }
 
 fn sync_duplicate_hint(cx: &mut App, event: Option<&DaemonEvent>) {
-    let form = cx
-        .global::<CaptureDispatch>()
-        .form
-        .as_ref()
-        .and_then(WeakEntity::upgrade);
-    let (Some(form), Some(handle)) = (form, WindowRegistry::handle(cx, &WindowKey::NewDownload))
-    else {
-        return;
-    };
-    if event.is_some_and(|event| !form.read(cx).duplicate_hint_needs_refresh(event)) {
-        return;
-    }
-    if let Err(error) = handle.update(cx, |_, window, cx| {
-        form.update(cx, |form, cx| match event {
-            None
-            | Some(
-                DaemonEvent::SnapshotReplaced(_)
-                | DaemonEvent::TablesReloading { tasks: Some(_), .. }
-                | DaemonEvent::Engine(fluxdown_protocol::WsServerMsg::TasksSnapshot { .. }),
-            ) => form.reset_duplicate_hint(window, cx),
-            Some(_) => form.refresh_duplicate_hint(window, cx),
-        });
-    }) {
-        log::debug!("view or window released before lifecycle update: {error:#}");
+    let forms: Vec<_> = open_forms(cx)
+        .filter(|(_, form, _)| {
+            event.is_none_or(|event| form.read(cx).duplicate_hint_needs_refresh(event))
+        })
+        .map(|(_, form, handle)| (form, handle))
+        .collect();
+    for (form, handle) in forms {
+        if let Err(error) = handle.update(cx, |_, window, cx| {
+            form.update(cx, |form, cx| match event {
+                None
+                | Some(
+                    DaemonEvent::SnapshotReplaced(_)
+                    | DaemonEvent::TablesReloading { tasks: Some(_), .. }
+                    | DaemonEvent::Engine(fluxdown_protocol::WsServerMsg::TasksSnapshot { .. }),
+                ) => form.reset_duplicate_hint(window, cx),
+                Some(_) => form.refresh_duplicate_hint(window, cx),
+            });
+        }) {
+            log::debug!("view or window released before lifecycle update: {error:#}");
+        }
     }
 }
 
-/// 把最新设备名册（在线状态 / 默认目录 / 设备增减）推给已打开的新建下载表单。
+fn current_targets(cx: &App) -> Vec<fluxdown_ui_downloads::DeviceEntry> {
+    let dispatch = cx.global::<CaptureDispatch>();
+    new_download_targets(
+        &dispatch.cloud_devices,
+        &dispatch.linked_devices,
+        dispatch.agent_current && dispatch.cloud_connected,
+        dispatch.agent_current,
+    )
+}
+
+/// Refresh the target roster in each live form.
 fn sync_targets(cx: &mut App) {
-    let (form, targets) = {
-        let dispatch = cx.global::<CaptureDispatch>();
-        (
-            dispatch.form.as_ref().and_then(WeakEntity::upgrade),
-            new_download_targets(
-                &dispatch.cloud_devices,
-                &dispatch.linked_devices,
-                dispatch.agent_current && dispatch.cloud_connected,
-                dispatch.agent_current,
-            ),
-        )
-    };
-    let (Some(form), Some(handle)) = (form, WindowRegistry::handle(cx, &WindowKey::NewDownload))
-    else {
+    if cx.global::<CaptureDispatch>().forms.is_empty() {
         return;
-    };
-    if let Err(error) = handle.update(cx, |_, window, cx| {
-        form.update(cx, |form, cx| form.set_targets(targets, window, cx));
-    }) {
-        log::debug!("view or window released before lifecycle update: {error:#}");
+    }
+    let targets = current_targets(cx);
+    let forms: Vec<_> = open_forms(cx)
+        .map(|(_, form, handle)| (form, handle))
+        .collect();
+    for (form, handle) in forms {
+        if let Err(error) = handle.update(cx, |_, window, cx| {
+            form.update(cx, |form, cx| form.set_targets(targets.clone(), window, cx));
+        }) {
+            log::debug!("view or window released before lifecycle update: {error:#}");
+        }
     }
 }
 
@@ -396,77 +408,143 @@ fn refresh_provisional_context(cx: &mut App, snapshot: &AgentSnapshot) {
     if !snapshot.daemon_connected {
         return;
     }
-    let form = {
-        let dispatch = cx.global::<CaptureDispatch>();
-        if !dispatch.provisional {
-            return;
+    let forms: Vec<_> = open_forms(cx)
+        .filter(|(key, _, _)| {
+            cx.global::<CaptureDispatch>()
+                .forms
+                .get(*key)
+                .is_some_and(|form| form.provisional)
+        })
+        .map(|(key, form, handle)| (key.clone(), form, handle))
+        .collect();
+    let mut context = None;
+    for (key, form, handle) in forms {
+        let context = context.get_or_insert_with(|| new_download_context_from_snapshot(snapshot));
+        match handle.update(cx, |_, window, cx| {
+            form.update(cx, |form, cx| {
+                form.refresh_context(context.clone(), window, cx)
+            });
+        }) {
+            Ok(()) => {
+                if let Some(form) = cx.global_mut::<CaptureDispatch>().forms.get_mut(&key) {
+                    form.provisional = false;
+                }
+            }
+            Err(error) => log::debug!("view or window released before lifecycle update: {error:#}"),
         }
-        dispatch.form.as_ref().and_then(WeakEntity::upgrade)
-    };
-    let (Some(form), Some(handle)) = (form, WindowRegistry::handle(cx, &WindowKey::NewDownload))
-    else {
-        return;
-    };
-    let context = new_download_context_from_snapshot(snapshot);
-    match handle.update(cx, |_, window, cx| {
-        form.update(cx, |form, cx| form.refresh_context(context, window, cx));
-    }) {
-        Ok(()) => cx.global_mut::<CaptureDispatch>().provisional = false,
-        Err(error) => log::debug!("view or window released before lifecycle update: {error:#}"),
     }
 }
 
-/// 对齐 agent 的待确认列表：已消失的事务从表单移除（链接行保留为普通链接），新事务追加
-/// 进现有表单并置前；没有表单时以快照投影的环境开一个。
-fn sync_captures(cx: &mut App, pending: &[PendingCaptureDto]) {
-    let (form, fresh) = {
-        let dispatch = cx.global_mut::<CaptureDispatch>();
-        dispatch.handed.retain(|transaction_id| {
-            pending
-                .iter()
-                .any(|capture| &capture.transaction_id == transaction_id)
+fn group_captures(
+    captures: impl IntoIterator<Item = PendingCaptureDto>,
+) -> Vec<Vec<PendingCaptureDto>> {
+    let mut groups: Vec<Vec<PendingCaptureDto>> = Vec::new();
+    for capture in captures {
+        let group = groups.iter_mut().find(|group| {
+            group.first().is_some_and(|first| {
+                first.suggested_target == capture.suggested_target
+                    && first.routing_error == capture.routing_error
+            }) && group.iter().all(|member| member.url != capture.url)
         });
-        let fresh = pending
-            .iter()
-            .filter(|capture| dispatch.handed.insert(capture.transaction_id.clone()))
-            .cloned()
-            .collect::<Vec<_>>();
-        (dispatch.form.as_ref().and_then(WeakEntity::upgrade), fresh)
-    };
-    let mut fresh = Some(fresh);
-    if let (Some(form), Some(handle)) = (form, WindowRegistry::handle(cx, &WindowKey::NewDownload))
-    {
-        let delivered = handle.update(cx, |_, window, cx| {
-            let fresh = fresh.take().unwrap_or_default();
-            let arrived = !fresh.is_empty();
-            form.update(cx, |form, cx| {
-                form.retain_captures(pending, window, cx);
-                if arrived {
-                    form.add_captures(fresh, window, cx);
-                }
-            });
-            if arrived {
-                crate::windows::bring_to_front(window, cx);
-            }
-        });
-        if delivered.is_ok() {
-            return;
+        if let Some(group) = group {
+            group.push(capture);
+        } else {
+            groups.push(vec![capture]);
         }
     }
-    let fresh = fresh.unwrap_or_default();
-    if fresh.is_empty() {
-        return;
+    groups
+}
+
+fn mark_captures_handed(cx: &mut App, captures: &[PendingCaptureDto]) {
+    cx.global_mut::<CaptureDispatch>().handed.extend(
+        captures
+            .iter()
+            .map(|capture| capture.transaction_id.clone()),
+    );
+}
+
+fn sync_captures(cx: &mut App, pending: &[PendingCaptureDto]) {
+    let dispatch = cx.global_mut::<CaptureDispatch>();
+    dispatch.handed.retain(|transaction_id| {
+        pending
+            .iter()
+            .any(|capture| &capture.transaction_id == transaction_id)
+    });
+    let groups = group_captures(
+        pending
+            .iter()
+            .filter(|capture| !dispatch.handed.contains(&capture.transaction_id))
+            .cloned(),
+    );
+    let forms: Vec<_> = open_forms(cx)
+        .filter(|(key, _, _)| matches!(key, WindowKey::CaptureDownload(_)))
+        .map(|(_, form, handle)| (form, handle))
+        .collect();
+    for (form, handle) in &forms {
+        if let Err(error) = handle.update(cx, |_, window, cx| {
+            form.update(cx, |form, cx| form.retain_captures(pending, window, cx));
+        }) {
+            log::debug!("capture window released before queue update: {error:#}");
+        }
     }
-    let context = Desktop::global(cx)
-        .session
-        .read(cx)
-        .agent_snapshot()
-        .map(new_download_context_from_snapshot)
-        .unwrap_or_default();
-    open_with(cx, context, fresh);
+    let mut context = None;
+    let mut first_handle = None;
+    for group in groups {
+        let Some(first) = group.first() else {
+            continue;
+        };
+        let key = WindowKey::CaptureDownload(first.transaction_id.clone());
+        let mut group = Some(group);
+        for (form, handle) in &forms {
+            if !group
+                .as_deref()
+                .is_some_and(|group| form.read(cx).can_append_captures(group))
+            {
+                continue;
+            }
+            let delivered = handle.update(cx, |_, window, cx| {
+                if let Some(group) = group.take() {
+                    mark_captures_handed(cx, &group);
+                    form.update(cx, |form, cx| form.add_captures(group, window, cx));
+                }
+            });
+            if delivered.is_ok() {
+                first_handle.get_or_insert(*handle);
+                break;
+            }
+        }
+        if let Some(group) = group {
+            let context = context.get_or_insert_with(|| {
+                let mut context = Desktop::global(cx)
+                    .session
+                    .read(cx)
+                    .agent_snapshot()
+                    .map(new_download_context_from_snapshot)
+                    .unwrap_or_default();
+                context.targets = current_targets(cx);
+                context
+            });
+            open_with(cx, context.clone(), group);
+            if let Some(handle) = WindowRegistry::handle(cx, &key) {
+                first_handle.get_or_insert(handle);
+            }
+        }
+    }
+    if let Some(handle) = first_handle
+        && let Err(error) = handle.update(cx, |_, window, cx| {
+            crate::windows::bring_to_front(window, cx);
+        })
+    {
+        log::debug!("capture window released before activation: {error:#}");
+    }
 }
 
 fn open_with(cx: &mut App, context: NewDownloadContext, captures: Vec<PendingCaptureDto>) {
+    let key = captures.first().map_or(WindowKey::NewDownload, |capture| {
+        WindowKey::CaptureDownload(capture.transaction_id.clone())
+    });
+    let manual = key == WindowKey::NewDownload;
+    let form_key = key.clone();
     let initial_urls = context.initial_urls.clone();
     let desktop = Desktop::global(cx);
     let translator = desktop.translator.clone();
@@ -488,74 +566,79 @@ fn open_with(cx: &mut App, context: NewDownloadContext, captures: Vec<PendingCap
         cx,
     );
 
-    let handle =
-        WindowRegistry::open_or_focus(cx, WindowKey::NewDownload, options, move |window, cx| {
-            let port = Arc::new(AgentDownloadsPort::new(client.clone()));
-            let submit_port = Arc::clone(&port);
-            let on_submit = Rc::new(
-                move |submission, _window: &mut gpui::Window, cx: &mut App| {
-                    submit(submission, &submit_port, cx);
-                },
-            );
-            let form_port: Arc<dyn DownloadsPort> = port.clone();
-            let form = cx.new(|cx| {
-                NewDownloadView::new(
-                    translator.clone(),
-                    context,
-                    form_port,
-                    on_submit,
-                    duplicate_scope,
-                    window,
-                    cx,
-                )
-            });
-            if !captures.is_empty() {
-                form.update(cx, |form, cx| form.add_captures(captures, window, cx));
-            }
-            cx.observe_release(&form, move |form, cx| {
-                ignore_captures(form.take_captures(), &port, cx);
-            })
-            .detach();
-            let dispatch = cx.default_global::<CaptureDispatch>();
-            dispatch.form = Some(form.downgrade());
-            dispatch.provisional = provisional;
-            let window_view = cx.new(|cx| {
-                AuxiliaryWindowView::new(translator, keys::NEW_DOWNLOAD, form.into(), cx)
-            });
-            let root = cx.new(|cx| Root::new(window_view, window, cx));
-            WindowRegistry::persist_bounds(
-                RememberedWindow::NewDownload,
-                client,
-                &root,
+    let handle = WindowRegistry::open_or_focus(cx, key.clone(), options, move |window, cx| {
+        let port = Arc::new(AgentDownloadsPort::new(client.clone()));
+        let submit_port = Arc::clone(&port);
+        let on_submit = Rc::new(
+            move |submission, _window: &mut gpui::Window, cx: &mut App| {
+                submit(submission, &submit_port, cx);
+            },
+        );
+        let form_port: Arc<dyn DownloadsPort> = port.clone();
+        let form = cx.new(|cx| {
+            NewDownloadView::new(
+                translator.clone(),
+                context,
+                form_port,
+                on_submit,
+                duplicate_scope,
                 window,
                 cx,
-            );
-            root
+            )
         });
-    // 菜单入口与外部捕获都是需要用户立即处理的操作：macOS 后台时也要将窗口及应用置前。
+        if !captures.is_empty() {
+            mark_captures_handed(cx, &captures);
+            form.update(cx, |form, cx| form.add_captures(captures, window, cx));
+        }
+        let released_key = form_key.clone();
+        cx.observe_release(&form, move |form, cx| {
+            cx.global_mut::<CaptureDispatch>()
+                .forms
+                .remove(&released_key);
+            ignore_captures(form.take_captures(), &port, cx);
+        })
+        .detach();
+        cx.default_global::<CaptureDispatch>().forms.insert(
+            form_key,
+            OpenForm {
+                view: form.downgrade(),
+                provisional,
+            },
+        );
+        let window_view =
+            cx.new(|cx| AuxiliaryWindowView::new(translator, keys::NEW_DOWNLOAD, form.into(), cx));
+        let root = cx.new(|cx| Root::new(window_view, window, cx));
+        WindowRegistry::persist_bounds(RememberedWindow::NewDownload, client, &root, window, cx);
+        root
+    });
+    if !manual {
+        return;
+    }
     if let Some(handle) = handle {
         if let Err(error) = handle.update(cx, |_, window, cx| {
             crate::windows::bring_to_front(window, cx)
         }) {
             log::debug!("view or window released before lifecycle update: {error:#}");
         }
-    } else if let Some(handle) = WindowRegistry::handle(cx, &WindowKey::NewDownload) {
-        // 窗口已开：新建流程不会重建表单，拖入的链接追加进已有表单（去重、保留已输入内容）。
-        let form = cx
-            .global::<CaptureDispatch>()
-            .form
-            .as_ref()
-            .and_then(WeakEntity::upgrade);
-        if let Err(error) = handle.update(cx, |_, window, cx| {
-            if let Some(form) = form
-                && !initial_urls.is_empty()
-            {
-                form.update(cx, |form, cx| form.append_urls(initial_urls, window, cx));
+    } else if let Some(handle) = WindowRegistry::handle(cx, &key) {
+        // The active window can still be on its own shortcut update stack.
+        cx.defer(move |cx| {
+            let form = cx
+                .global::<CaptureDispatch>()
+                .forms
+                .get(&key)
+                .and_then(|form| form.view.upgrade());
+            if let Err(error) = handle.update(cx, |_, window, cx| {
+                if let Some(form) = form
+                    && !initial_urls.is_empty()
+                {
+                    form.update(cx, |form, cx| form.append_urls(initial_urls, window, cx));
+                }
+                crate::windows::bring_to_front(window, cx);
+            }) {
+                log::debug!("view or window released before lifecycle update: {error:#}");
             }
-            crate::windows::bring_to_front(window, cx)
-        }) {
-            log::debug!("view or window released before lifecycle update: {error:#}");
-        }
+        });
     }
 }
 
@@ -567,6 +650,7 @@ fn ignore_captures(captures: Vec<PendingCaptureDto>, port: &AgentDownloadsPort, 
                 transaction_id: capture.transaction_id,
                 accepted: false,
                 disable_category_route: true,
+                remote_target: None,
                 request: None,
             },
         )));
@@ -579,6 +663,34 @@ fn ignore_captures(captures: Vec<PendingCaptureDto>, port: &AgentDownloadsPort, 
         });
         lifecycle::keep_alive(cx, task).detach();
     }
+}
+
+fn reoffer_failed_captures(cx: &mut App, failed: Vec<FailedRemoteCapture>) {
+    let Some(mut pending) = Desktop::global(cx)
+        .session
+        .read(cx)
+        .agent_snapshot()
+        .map(|snapshot| snapshot.pending_captures.clone())
+    else {
+        return;
+    };
+    let dispatch = cx.global_mut::<CaptureDispatch>();
+    for failure in failed {
+        if let Some(capture) = pending
+            .iter_mut()
+            .find(|capture| capture.transaction_id == failure.transaction_id)
+        {
+            dispatch.handed.remove(&failure.transaction_id);
+            // The RPC response can reach this client before the updated snapshot event.
+            if capture.routing_error.is_none()
+                || capture.suggested_target.as_deref() != Some(failure.target.as_str())
+            {
+                capture.suggested_target = Some(failure.target);
+                capture.routing_error = Some("captureRoutingDispatchFailed".to_owned());
+            }
+        }
+    }
+    sync_captures(cx, &pending);
 }
 
 /// 执行提交：有主窗口时经下载页（失败进横幅），否则直接走 agent 端口；完成后在主窗口
@@ -624,17 +736,21 @@ fn submit(submission: NewDownloadSubmission, port: &Arc<AgentDownloadsPort>, cx:
                         );
                     });
                 }
-                cx.update(|cx| report.notice(translator.read(cx)))
+                let notice = cx.update(|cx| report.notice(translator.read(cx)));
+                (notice, report.into_failed_remote_captures())
             })
         }
     };
     let task = cx.spawn(async move |cx| {
-        let SubmitNotice { ok, message } = notice.await;
+        let (SubmitNotice { ok, message }, failed) = notice.await;
         // 全部新建成功不提示：任务已在列表中，toast 只会遮挡列表顶部（#884）。
         if ok && message.is_empty() {
             return;
         }
         cx.update(|cx| {
+            if !failed.is_empty() {
+                cx.defer(move |cx| reoffer_failed_captures(cx, failed));
+            }
             let main = match WindowRegistry::handle(cx, &WindowKey::Main) {
                 Some(main) => main,
                 // 成功时静默结束；失败则打开主窗口承载错误提示，否则用户无从得知。
@@ -672,9 +788,9 @@ fn submit(submission: NewDownloadSubmission, port: &Arc<AgentDownloadsPort>, cx:
 
 #[cfg(test)]
 mod presence_tests {
-    use fluxdown_protocol::AgentSnapshot;
+    use fluxdown_protocol::{AgentSnapshot, PendingCaptureDto};
 
-    use super::{CaptureDispatch, duplicate_scope_from_snapshot};
+    use super::{CaptureDispatch, duplicate_scope_from_snapshot, group_captures};
 
     #[test]
     fn duplicate_scope_requires_a_connected_host_and_complete_task_table() {
@@ -720,5 +836,56 @@ mod presence_tests {
         dispatch.set_cloud_connected(true);
         dispatch.set_cloud_user(Some("account-c"));
         assert!(!dispatch.cloud_connected);
+    }
+
+    fn capture(
+        id: &str,
+        url: &str,
+        target: Option<&str>,
+        error: Option<&str>,
+    ) -> PendingCaptureDto {
+        PendingCaptureDto {
+            transaction_id: id.into(),
+            url: url.into(),
+            file_name: String::new(),
+            created_at_unix_ms: 0,
+            file_size: 0,
+            referrer: String::new(),
+            save_dir: String::new(),
+            has_cookies: false,
+            header_names: Vec::new(),
+            suggested_target: target.map(str::to_owned),
+            routing_error: error.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn capture_groups_keep_local_links_targets_and_errors_separate() {
+        let groups = group_captures([
+            capture("1", "https://a.test/app.apk", Some("cloud:a"), None),
+            capture("2", "https://a.test/setup.exe", Some("link:b"), None),
+            capture("3", "https://a.test/other.apk", Some("cloud:a"), None),
+            capture("4", "https://a.test/task.zip", None, None),
+            capture(
+                "5",
+                "https://a.test/failure.apk",
+                Some("cloud:a"),
+                Some("captureRoutingDispatchFailed"),
+            ),
+            capture("6", "https://a.test/app.apk", Some("cloud:a"), None),
+        ]);
+        let ids: Vec<Vec<_>> = groups
+            .iter()
+            .map(|group| {
+                group
+                    .iter()
+                    .map(|capture| capture.transaction_id.as_str())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(
+            ids,
+            [vec!["1", "3"], vec!["2"], vec!["4"], vec!["5"], vec!["6"]]
+        );
     }
 }

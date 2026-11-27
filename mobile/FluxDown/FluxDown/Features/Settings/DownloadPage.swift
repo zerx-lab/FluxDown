@@ -63,6 +63,7 @@ struct DownloadPage: View {
                 Section(L(SettingsDownloadSection.behavior.titleKey)) { behaviorRows(ctx) }
                     .disabled(readOnly)
             }
+            CaptureDeviceRulesSection()
             if !SettingsDownloadRow.visible(in: .connection, ctx).isEmpty {
                 Section(L(SettingsDownloadSection.connection.titleKey)) { connectionRows(ctx) }
                     .disabled(readOnly)
@@ -510,6 +511,11 @@ extension DownloadPage {
             id: CategoriesRow.id, route: .download, title: L(CategoriesRow.titleKey), detail: L(CategoriesRow.detailKey),
             breadcrumb: "\(name) › \(L(CategoriesRow.titleKey))", symbol: "folder.fill"
         )
-        return visible.map(entry) + [categories]
+        let captureRules = SettingsEntry(
+            id: CaptureDeviceRule.preferenceKey, route: .download, title: L("captureDeviceRules"),
+            detail: L("captureDeviceRulesDesc"), breadcrumb: "\(name) › \(L("captureDeviceRules"))",
+            symbol: "arrow.down.circle.fill"
+        )
+        return visible.map(entry) + [captureRules, categories]
     }
 }

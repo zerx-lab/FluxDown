@@ -562,6 +562,8 @@ export interface PendingCaptureDto {
   hasCookies: boolean;
   /** 携带的请求头名（不含值）。 */
   headerNames: string[];
+  suggestedTarget?: string;
+  routingError?: string;
 }
 
 /** 只读捕获预解析；不消费事务，原 URL/method/body/audioUrl 不可被表单覆盖。 */

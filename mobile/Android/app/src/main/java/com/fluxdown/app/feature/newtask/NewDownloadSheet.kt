@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import com.fluxdown.app.R
 import com.fluxdown.app.actions.LocalTaskActions
 import com.fluxdown.app.data.DeviceSettings
+import com.fluxdown.core.capture.CaptureDeviceRules
 import com.fluxdown.core.capture.TorrentFile
 import com.fluxdown.app.feature.settings.general.categoryDisplayName
 import com.fluxdown.app.feature.settings.general.categoryIcon
@@ -68,12 +69,9 @@ import com.fluxdown.core.host.notice
 import com.fluxdown.core.model.CategoryIndex
 import com.fluxdown.core.model.HostRef
 import com.fluxdown.core.model.TaskProtocol
-import com.fluxdown.core.protocol.CloudConnectionDto
-import com.fluxdown.core.protocol.CloudPresence
 import com.fluxdown.core.protocol.DeviceRules
 import com.fluxdown.core.protocol.DispatchTarget
 import com.fluxdown.core.protocol.HostSection
-import com.fluxdown.core.protocol.Json
 import com.fluxdown.core.protocol.JsonValue
 import com.fluxdown.core.protocol.patchPreferences
 import com.fluxdown.core.protocol.PathStyle
@@ -153,7 +151,12 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
         if (visible && draft == null) {
             val host = container.hostSelection.hostForNewDownloadDraft()
             appliedRoute = route
-            draft = host.id to NewDownloadState.create(route.prefill, container.store.state.value, route.external, route.targetId)
+            draft = host.id to NewDownloadState.create(
+                route.prefill, container.store.state.value, route.external.firstOrNull(), route.targetId,
+            ).also { form ->
+                route.external.asSequence().drop(1).forEach(form::addExternal)
+                form.dispatchFailure = route.captureFailure
+            }
         }
     }
     val (draftHostId, form) = draft ?: return
@@ -170,8 +173,6 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
     LaunchedEffect(route) {
         if (route == appliedRoute) return@LaunchedEffect
         appliedRoute = route
-        // 打开期间的后续唤起追加进同一表单（批量协议唤起逐条到达）
-        route.external?.let(form::addExternal)
         val existing = form.urlText.lineSequence().map(String::trim).toHashSet()
         val extra = route.prefill.trim().lineSequence()
             .filter { it.isNotBlank() && existing.add(it.trim()) }
@@ -189,10 +190,21 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
     val live by remember { derivedStateOf { host.value.connection == Connection.Live } }
     val connectionRaw by remember { derivedStateOf { host.value.sections[HostSection.agentCloudConnection] } }
     val targets = remember(cloudDevices, linkDevices, live, connectionRaw) {
-        val connection = CloudConnectionDto.fromJson(Json.parseOrNull(connectionRaw))
-        DeviceRules.dispatchTargets(cloudDevices, linkDevices, CloudPresence.isKnown(connection, live), live)
+        CaptureDeviceRules.targets(host.value)
     }
     val target = form.target(targets)
+    val externalCapture = route.external.isNotEmpty()
+    val remoteSelected = target != null || (externalCapture && form.targetId != null)
+    val routingBlock = if (externalCapture && remoteSelected) {
+        when {
+            form.hasUnsupportedCaptureForDispatch() -> str(R.string.captureRoutingContextRequired)
+            target == null -> str(R.string.captureRoutingTargetUnavailable)
+            target.isLinkOnly && target.online != true -> str(R.string.errReasonPeerOffline)
+            else -> null
+        }
+    } else {
+        null
+    }
 
     val s = Strings(
         discardTitle = str(R.string.mobileDiscardTitle),
@@ -238,7 +250,7 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
         }
     }
     fun submit(startPaused: Boolean, queueId: String) {
-        if (form.submitting || form.rangeLimitExceeded) return
+        if (form.submitting || form.rangeLimitExceeded || (externalCapture && form.targetId != null)) return
         val state = container.store.state.value
         if (container.host.value.id != draftHostId) {
             haptics.reject()
@@ -306,7 +318,7 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
 
     /** 「下载到」其他设备：逐条下发链接 / 文件名 / 保存目录；全部成功关闭，有失败时只把失败的链接留在文本框里。 */
     fun submitRemote(target: DispatchTarget) {
-        if (form.submitting || form.rangeLimitExceeded) return
+        if (form.submitting || form.rangeLimitExceeded || routingBlock != null) return
         if (container.store.state.value.isReadOnly) {
             haptics.reject()
             overlays.toast(s.readOnly, FluxToastKind.Error, FluxIcons.WifiOff)
@@ -365,11 +377,11 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
         title = str(R.string.newDownload),
         header = { FluxSheetHeader(title = str(R.string.newDownload), onClose = ::requestClose) },
         footer = {
-            NewDownloadFooter(form, target, needsDirectory, ::submit, onSubmitRemote = { target?.let(::submitRemote) })
+            NewDownloadFooter(form, remoteSelected, routingBlock != null, needsDirectory, ::submit, onSubmitRemote = { target?.let(::submitRemote) })
         },
     ) {
         NewDownloadContent(
-            form, targets, target,
+            form, targets, target, remoteSelected, routingBlock,
             draftHostId = draftHostId,
             requestedLocalDir = requestedLocalDir,
             localConfirmation = localConfirmation,
@@ -445,6 +457,8 @@ private fun NewDownloadContent(
     form: NewDownloadState,
     targets: List<DispatchTarget>,
     target: DispatchTarget?,
+    remoteSelected: Boolean,
+    routingBlock: String?,
     draftHostId: String,
     requestedLocalDir: String?,
     localConfirmation: LocalDirectoryConfirmation?,
@@ -500,7 +514,7 @@ private fun NewDownloadContent(
     var importingTorrent by remember { mutableStateOf(false) }
     val taskActions = LocalTaskActions.current
     val torrentLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris: List<Uri> ->
-        if (uris.isEmpty() || importingTorrent || form.submitting || form.rangeLimitExceeded) return@rememberLauncherForActivityResult
+        if (remoteSelected || uris.isEmpty() || importingTorrent || form.submitting || form.rangeLimitExceeded) return@rememberLauncherForActivityResult
         if (!form.saveDirValid) {
             haptics.reject()
             return@rememberLauncherForActivityResult
@@ -540,7 +554,7 @@ private fun NewDownloadContent(
         if (form.hasExternalSaveDir) externalLocalDirectory(context) else null
     }
     val pickDirectory = rememberLocalDirectoryPicker(externalDirectory) { path ->
-        if (container.host.value is HostRef.Local && target == null && !form.submitting) {
+        if (container.host.value is HostRef.Local && !remoteSelected && !form.submitting) {
             form.setSaveDirManually(path)
         }
     }
@@ -632,11 +646,11 @@ private fun NewDownloadContent(
                 size = ButtonSize.Sm,
                 icon = FluxIcons.FileUp,
                 fullWidth = true,
-                enabled = !busy && !form.rangeLimitExceeded && !importingTorrent && target == null &&
+                enabled = !busy && !form.rangeLimitExceeded && !importingTorrent && !remoteSelected &&
                     (requestedLocalDir == null || localConfirmation?.path != null),
             )
             // 种子只能在当前主机建任务：「下载到」选了其他设备时禁用并说明（同 iOS `torrentButton(remote:)`）
-            if (target != null) {
+            if (remoteSelected) {
                 FluxText(
                     str(R.string.downloadToTorrentLocalOnly),
                     style = type.sm,
@@ -654,7 +668,7 @@ private fun NewDownloadContent(
             GlassSection {
                 shown.forEach { e ->
                     row(hasIcon = true) {
-                        val name = inferName(e)
+                        val name = form.previewName(e)
                         val proto = protocolOf(e.url)
                         val cat = index.categoryOf(name, e.url).fileCategory()
                         FluxListRow(
@@ -710,12 +724,16 @@ private fun NewDownloadContent(
         }
 
         // 下载到：当前主机 / 云账号其他设备 / 局域网已配对设备
-        if (targets.isNotEmpty()) {
-            TargetSelect(form, targets, target, hostRef, enabled = !busy)
+        if (targets.isNotEmpty() || remoteSelected) {
+            TargetSelect(form, targets, target, hostRef, remoteSelected, enabled = !busy)
         }
-        if (target != null) {
+        (form.dispatchFailure ?: routingBlock)?.let { FluxBanner(text = it, kind = FluxBannerKind.Error, slim = true) }
+        if (form.hasUnreadableCaptureContext()) {
+            FluxBanner(text = str(R.string.captureDeviceRuleInvalidContext), kind = FluxBannerKind.Warn, slim = true)
+        }
+        if (remoteSelected) {
             // 下发只带链接 / 文件名 / 保存目录：线程、队列与高级选项只对当前主机有意义（同 iOS / GPUI）
-            RemoteDestination(form, target, enabled = !busy)
+            target?.let { RemoteDestination(form, it, enabled = !busy) }
             return@Column
         }
 
@@ -842,6 +860,7 @@ private fun TargetSelect(
     targets: List<DispatchTarget>,
     selected: DispatchTarget?,
     hostRef: HostRef,
+    remoteSelected: Boolean,
     enabled: Boolean,
 ) {
     val hostLabel = when (hostRef) {
@@ -877,7 +896,7 @@ private fun TargetSelect(
                 label = hostLabel,
                 onClick = { choose(null) },
                 icon = if (hostRef is HostRef.Local) FluxIcons.Smartphone else FluxIcons.Server,
-                checked = selected == null,
+                checked = !remoteSelected,
             ),
         )
         add(FluxMenuItem.Divider)
@@ -895,7 +914,7 @@ private fun TargetSelect(
     }
     // 目标非在线：云设备离线由云端排队，局域网设备离线送不到，状态未知如实说明
     val hint = if (selected == null) {
-        hostHint
+        hostHint.takeUnless { remoteSelected }
     } else {
         val presence = when (selected.online) {
             true -> null
@@ -905,10 +924,12 @@ private fun TargetSelect(
         listOfNotNull(presence, optionsIgnored).joinToString("\n")
     }
     MenuSelect(
-        value = selected?.let { "${it.name} · ${detail(it)}" } ?: hostLabel,
+        value = selected?.let { "${it.name} · ${detail(it)}" }
+            ?: if (remoteSelected) str(R.string.captureDeviceRuleTarget) else hostLabel,
         label = str(R.string.downloadTo),
         hint = hint,
         leadingIcon = when {
+            remoteSelected && selected == null -> FluxIcons.TriangleAlert
             selected == null -> if (hostRef is HostRef.Local) FluxIcons.Smartphone else FluxIcons.Server
             selected.isCloud -> FluxIcons.Cloud
             else -> FluxIcons.Wifi
@@ -1024,15 +1045,12 @@ private fun RemoteDestination(form: NewDownloadState, target: DispatchTarget, en
             enabled = enabled,
         )
     }
-    val progress = form.dispatchProgress
-    val failure = form.dispatchFailure
-    when {
-        progress != null -> FluxBanner(
-            text = str(R.string.mobileDispatchSending, "done" to progress.first, "total" to progress.second),
+    form.dispatchProgress?.let { (done, total) ->
+        FluxBanner(
+            text = str(R.string.mobileDispatchSending, "done" to done, "total" to total),
             kind = FluxBannerKind.Info,
             slim = true,
         )
-        failure != null -> FluxBanner(text = failure, kind = FluxBannerKind.Error, slim = true)
     }
 }
 
@@ -1111,7 +1129,8 @@ private fun readText(context: Context, uri: Uri): String? = runCatching {
 @Composable
 private fun NewDownloadFooter(
     form: NewDownloadState,
-    target: DispatchTarget?,
+    remoteSelected: Boolean,
+    remoteBlocked: Boolean,
     needsDirectory: Boolean,
     submit: (startPaused: Boolean, queueId: String) -> Unit,
     onSubmitRemote: () -> Unit,
@@ -1125,7 +1144,7 @@ private fun NewDownloadFooter(
     val selected = queues.firstOrNull { it.queueId == form.queueId } ?: queues.firstOrNull()
     val startLabel = if (count > 1) str(R.string.startBatchDownload, "count" to count) else str(R.string.startDownload)
     val submitEnabled = !form.submitting && !form.rangeLimitExceeded
-    if (target != null) {
+    if (remoteSelected) {
         // 下发只有「立即开始」：没有队列，也没有稍后下载（同 iOS / GPUI）
         FluxSheetFooter {
             FluxButton(
@@ -1134,7 +1153,7 @@ private fun NewDownloadFooter(
                 modifier = Modifier.weight(1f),
                 variant = ButtonVariant.Primary,
                 icon = FluxIcons.ArrowDown,
-                enabled = submitEnabled,
+                enabled = submitEnabled && !remoteBlocked,
                 loading = form.submitting,
             )
         }

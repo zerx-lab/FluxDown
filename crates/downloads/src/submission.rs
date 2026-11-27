@@ -35,6 +35,8 @@ use crate::{
     strings::{NewDownloadStrings, error_text},
 };
 
+use crate::model::new_download::{DraftOptions, build_requests, compose_request};
+
 /// 每次 `daemon.task.createMany` 的条目数（协议上限 512 的一半，单块事务与单次事件都足够小）。
 pub const CREATE_CHUNK_SIZE: usize = 256;
 /// 结果不确定（`Unavailable` / `Timeout`）时同一块的最大重发次数。
@@ -57,6 +59,8 @@ pub struct RemoteItem {
     pub url: String,
     /// 空 / `None` = 由目标设备按 URL 推断。
     pub file_name: Option<String>,
+    /// Modern agent capture transaction, resolved remotely rather than opened as a plain URL.
+    pub capture_id: Option<String>,
 }
 
 /// 下发到其他设备的提交内容：目标只接收链接 / 文件名 / 保存目录，Cookie、请求头、代理、
@@ -65,6 +69,8 @@ pub struct RemoteItem {
 pub struct RemoteSubmission {
     /// 必须是云设备或已配对设备（`Local` 走本机提交）。
     pub target: DispatchTarget,
+    /// Stable picker identity; a cloud device may currently be reachable via a direct link.
+    pub selected_target: DispatchTarget,
     /// 提示文案用的目标显示名。
     pub device_label: String,
     /// 云设备当前离线（下发被云端排队，上线后才执行）。
@@ -72,8 +78,8 @@ pub struct RemoteSubmission {
     pub items: Vec<RemoteItem>,
     /// 目标设备上的保存目录；`None` = 目标设备默认目录。
     pub save_dir: Option<String>,
-    /// 已随本次下发处理的外部捕获事务：链接经下发送达，agent 里对应的待确认捕获据此忽略清除。
-    pub captures: Vec<String>,
+    /// Captures from peers without the remote resolution contract retain the legacy behavior.
+    pub legacy_captures: Vec<String>,
 }
 
 /// 表单里与种子文件相关的提交选项（种子文件本身不带这些）。空串 = 由 agent 用默认值。
@@ -199,7 +205,7 @@ impl NewDownloadSubmission {
 
     fn target(&self) -> DispatchTarget {
         match self {
-            Self::Remote(remote) => remote.target.clone(),
+            Self::Remote(remote) => remote.selected_target.clone(),
             Self::Tasks { .. } | Self::Group { .. } | Self::TorrentFiles { .. } => {
                 DispatchTarget::Local
             }
@@ -272,6 +278,7 @@ impl NewDownloadSubmission {
                                 transaction_id: capture.transaction_id,
                                 accepted: true,
                                 disable_category_route,
+                                remote_target: None,
                                 request: Some(capture.request),
                             }))
                         })
@@ -320,41 +327,77 @@ impl NewDownloadSubmission {
             Self::Remote(remote) => {
                 let RemoteSubmission {
                     target,
+                    selected_target,
                     device_label,
                     target_offline,
                     items,
                     save_dir,
-                    captures,
+                    legacy_captures,
                 } = remote;
                 let direct = matches!(target, DispatchTarget::Paired(_));
+                let mut common = None;
+                let mut encoded_target = None;
                 let commands = items
                     .into_iter()
-                    .filter_map(|item| match &target {
-                        DispatchTarget::Cloud(device_id) => {
-                            Some(DownloadsCommand::RemoteDispatch(RemoteDispatchParams {
-                                to_device: device_id.clone(),
-                                url: item.url,
-                                file_name: item.file_name,
-                                save_dir: save_dir.clone(),
-                            }))
+                    .filter_map(|item| {
+                        if let Some(transaction_id) = item.capture_id {
+                            let common = common.get_or_insert_with(|| {
+                                build_requests(
+                                    &[],
+                                    &DraftOptions {
+                                        save_dir: save_dir.clone().unwrap_or_default(),
+                                        ..DraftOptions::default()
+                                    },
+                                )
+                                .common
+                            });
+                            let request = compose_request(
+                                common,
+                                CreateTaskItem {
+                                    url: item.url,
+                                    file_name: item.file_name.unwrap_or_default(),
+                                    checksum: String::new(),
+                                },
+                            );
+                            let remote_target =
+                                encoded_target.get_or_insert_with(|| selected_target.to_pref());
+                            return Some(DownloadsCommand::CaptureResolve(Box::new(
+                                CaptureResolveParams {
+                                    transaction_id,
+                                    accepted: true,
+                                    disable_category_route: true,
+                                    remote_target: Some(remote_target.clone()),
+                                    request: Some(request),
+                                },
+                            )));
                         }
-                        DispatchTarget::Paired(fingerprint) => {
-                            Some(DownloadsCommand::LinkDispatch(LinkDispatchParams {
-                                fingerprint: fingerprint.clone(),
-                                url: item.url,
-                                file_name: item.file_name,
-                                save_dir: save_dir.clone(),
-                            }))
+                        match &target {
+                            DispatchTarget::Cloud(device_id) => {
+                                Some(DownloadsCommand::RemoteDispatch(RemoteDispatchParams {
+                                    to_device: device_id.clone(),
+                                    url: item.url,
+                                    file_name: item.file_name,
+                                    save_dir: save_dir.clone(),
+                                }))
+                            }
+                            DispatchTarget::Paired(fingerprint) => {
+                                Some(DownloadsCommand::LinkDispatch(LinkDispatchParams {
+                                    fingerprint: fingerprint.clone(),
+                                    url: item.url,
+                                    file_name: item.file_name,
+                                    save_dir: save_dir.clone(),
+                                }))
+                            }
+                            DispatchTarget::Local => None,
                         }
-                        DispatchTarget::Local => None,
                     })
                     .collect();
-                // 捕获链接已经下发：忽略 agent 里对应的待确认事务，避免悬挂到超时。
-                best_effort.extend(captures.into_iter().map(|transaction_id| {
+                best_effort.extend(legacy_captures.into_iter().map(|transaction_id| {
                     DownloadsCommand::CaptureResolve(Box::new(CaptureResolveParams {
                         transaction_id,
                         accepted: false,
                         disable_category_route: true,
+                        remote_target: None,
                         request: None,
                     }))
                 }));
@@ -380,10 +423,10 @@ fn creates_local_task(command: &DownloadsCommand) -> bool {
     matches!(
         command,
         DownloadsCommand::Create(_)
-            | DownloadsCommand::CaptureResolve(_)
             | DownloadsCommand::SubmitTorrentFile { .. }
             | DownloadsCommand::SeedLocal(_)
-    )
+    ) || matches!(command, DownloadsCommand::CaptureResolve(params)
+        if params.accepted && params.remote_target.is_none())
 }
 
 /// 结果不确定的错误：服务端可能已处理。
@@ -573,9 +616,17 @@ pub struct SubmissionReport {
     created_task_ids: Vec<String>,
     summary: DispatchSummary,
     remote: Option<RemoteInfo>,
+    failed_remote_captures: Vec<FailedRemoteCapture>,
     cancelled: bool,
     /// 未提交（取消 / 连接中断后放弃）或结果无法确认的条目数。
     not_submitted: usize,
+}
+
+/// A remote capture confirmation that did not complete and can be offered again.
+#[derive(Debug)]
+pub struct FailedRemoteCapture {
+    pub transaction_id: String,
+    pub target: String,
 }
 
 /// 提交完成后给用户的提示。
@@ -592,6 +643,12 @@ impl SubmissionReport {
     #[must_use]
     pub fn created_task_ids(&self) -> &[String] {
         &self.created_task_ids
+    }
+
+    /// Failed remote confirmations, excluding transactions already removed by the agent.
+    #[must_use]
+    pub fn into_failed_remote_captures(self) -> Vec<FailedRemoteCapture> {
+        self.failed_remote_captures
     }
 
     #[must_use]
@@ -686,12 +743,24 @@ impl SubmissionReport {
 struct Run {
     summary: DispatchSummary,
     created_task_ids: Vec<String>,
+    failed_remote_captures: Vec<FailedRemoteCapture>,
     cancelled: bool,
     not_submitted: usize,
 }
 
 impl Run {
-    fn record_command(&mut self, creates: bool, result: Result<DownloadsResult, RpcErrorData>) {
+    fn record_command(
+        &mut self,
+        creates: bool,
+        result: Result<DownloadsResult, RpcErrorData>,
+        remote_capture: Option<FailedRemoteCapture>,
+    ) {
+        if result
+            .as_ref()
+            .is_err_and(|error| error.code == ApplicationErrorCode::Unavailable && !error.retryable)
+        {
+            self.failed_remote_captures.extend(remote_capture);
+        }
         self.summary.record(&result);
         if creates && let Ok(result) = &result {
             self.created_task_ids.extend(result.created_task_ids());
@@ -727,14 +796,19 @@ impl Run {
 
 fn capture_rejection(command: &DownloadsCommand) -> Option<DownloadsCommand> {
     match command {
-        DownloadsCommand::CaptureResolve(params) if params.accepted => Some(
-            DownloadsCommand::CaptureResolve(Box::new(CaptureResolveParams {
-                transaction_id: params.transaction_id.clone(),
-                accepted: false,
-                disable_category_route: true,
-                request: None,
-            })),
-        ),
+        DownloadsCommand::CaptureResolve(params)
+            if params.accepted && params.remote_target.is_none() =>
+        {
+            Some(DownloadsCommand::CaptureResolve(Box::new(
+                CaptureResolveParams {
+                    transaction_id: params.transaction_id.clone(),
+                    accepted: false,
+                    disable_category_route: true,
+                    remote_target: None,
+                    request: None,
+                },
+            )))
+        }
         _ => None,
     }
 }
@@ -938,13 +1012,25 @@ where
         }
         let creates = creates_local_task(&command);
         let rejection = capture_rejection(&command);
+        let remote_capture = match &command {
+            DownloadsCommand::CaptureResolve(params) => {
+                params
+                    .remote_target
+                    .as_ref()
+                    .map(|target| FailedRemoteCapture {
+                        transaction_id: params.transaction_id.clone(),
+                        target: target.clone(),
+                    })
+            }
+            _ => None,
+        };
         let mut future = execute(command);
         match settle(&mut future, &cancel, &sleep).await {
-            Settled::Finished(result) => run.record_command(creates, result),
+            Settled::Finished(result) => run.record_command(creates, result, remote_capture),
             Settled::Cancelled(settled) => {
                 run.cancelled = true;
                 match settled {
-                    Some(result) => run.record_command(creates, result),
+                    Some(result) => run.record_command(creates, result, remote_capture),
                     None => {
                         run.not_submitted += 1;
                         best_effort.extend(rejection);
@@ -979,6 +1065,7 @@ where
         created_task_ids: run.created_task_ids,
         summary: run.summary,
         remote,
+        failed_remote_captures: run.failed_remote_captures,
         cancelled: run.cancelled,
         not_submitted: run.not_submitted,
     }
@@ -1010,6 +1097,7 @@ mod tests {
 
     fn remote(target: DispatchTarget, urls: &[&str], save_dir: Option<&str>) -> RemoteSubmission {
         RemoteSubmission {
+            selected_target: target.clone(),
             target,
             device_label: "Mac".to_owned(),
             target_offline: false,
@@ -1018,10 +1106,11 @@ mod tests {
                 .map(|url| RemoteItem {
                     url: (*url).to_owned(),
                     file_name: None,
+                    capture_id: None,
                 })
                 .collect(),
             save_dir: save_dir.map(str::to_owned),
-            captures: vec!["cap-1".to_owned()],
+            legacy_captures: vec!["cap-1".to_owned()],
         }
     }
 
@@ -1059,6 +1148,64 @@ mod tests {
             DownloadsCommand::SetLocalPreference { key, value }
                 if *key == LAST_DOWNLOAD_TARGET_PREF && value == "cloud:dev-b"
         )));
+    }
+
+    #[test]
+    fn remote_capture_resolves_the_transaction_with_filename_and_directory() {
+        let mut remote = remote(
+            DispatchTarget::Paired("paired".to_owned()),
+            &["https://a/app.apk"],
+            Some("/mnt/dl"),
+        );
+        remote.selected_target = DispatchTarget::Cloud("dev-b".to_owned());
+        remote.legacy_captures.clear();
+        remote.items[0].file_name = Some("renamed.apk".to_owned());
+        remote.items[0].capture_id = Some("capture".to_owned());
+        let plan = NewDownloadSubmission::Remote(remote).plan();
+        let [command @ DownloadsCommand::CaptureResolve(params)] = plan.commands.as_slice() else {
+            panic!("remote confirmation must resolve the existing capture transaction");
+        };
+        assert!(params.accepted);
+        assert_eq!(params.remote_target.as_deref(), Some("cloud:dev-b"));
+        assert_eq!(params.transaction_id, "capture");
+        let request = params.request.as_ref().unwrap();
+        assert_eq!(request.save_dir, "/mnt/dl");
+        assert_eq!(request.file_name, "renamed.apk");
+        assert!(!creates_local_task(command));
+        assert!(capture_rejection(command).is_none());
+    }
+
+    #[test]
+    fn definite_remote_capture_failure_reoffers_only_the_failed_transaction() {
+        let mut remote = remote(
+            DispatchTarget::Cloud("dev-b".to_owned()),
+            &["https://a/app.apk", "https://a/setup.exe"],
+            None,
+        );
+        remote.legacy_captures.clear();
+        remote.items[0].capture_id = Some("accepted".to_owned());
+        remote.items[1].capture_id = Some("failed".to_owned());
+        let report = block_on(run_submission(
+            NewDownloadSubmission::Remote(remote),
+            |command| {
+                Box::pin(async move {
+                    if matches!(command, DownloadsCommand::CaptureResolve(params)
+                    if params.transaction_id == "failed")
+                    {
+                        Err(RpcErrorData::new(ApplicationErrorCode::Unavailable, false))
+                    } else {
+                        Ok(DownloadsResult::Unit)
+                    }
+                })
+            },
+            hooks(),
+        ));
+        assert!(report.failed());
+        assert!(report.created_task_ids().is_empty());
+        let retry = report.into_failed_remote_captures();
+        assert_eq!(retry.len(), 1);
+        assert_eq!(retry[0].transaction_id, "failed");
+        assert_eq!(retry[0].target, "cloud:dev-b");
     }
 
     #[test]

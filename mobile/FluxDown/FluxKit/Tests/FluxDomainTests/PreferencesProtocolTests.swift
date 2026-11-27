@@ -57,6 +57,17 @@ struct PreferencesProtocolTests {
         #expect(!SettingsCatalog.isSynced("download.silent_auto_category"))
     }
 
+    @Test func captureDeviceRulesAreStoredAsADeviceLocalString() throws {
+        let key = "download.capture_device_rules"
+        let rules = "apk=cloud:device\nexe=link:fingerprint"
+        #expect(SettingsCatalog.field(key)?.kind == .text)
+        #expect(SettingsCatalog.defaultWire(key) == "")
+        let plan = try SettingsWritePlan.make([key: rules]).get()
+        #expect(plan.localPreferences == [key: .string(rules)])
+        #expect(plan.syncedPreferences.isEmpty)
+        #expect(plan.daemon.isEmpty)
+    }
+
     // MARK: - 写入路由
 
     @Test func syncedDaemonKeysRouteThroughPreferencesUnderTheirSyncName() throws {

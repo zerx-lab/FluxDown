@@ -1,5 +1,6 @@
 package com.fluxdown.app
 
+import com.fluxdown.app.nav.SheetRoute
 import com.fluxdown.core.capture.ExternalDownload
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -17,9 +18,12 @@ class ExternalConfirmationQueueTest {
             hasOtherSheet = { confirmations.hasOtherSheet(current != null) },
         )
         fun request(dir: String, unwritableDir: String? = null) =
-            ExternalConfirmation(ExternalDownload("https://x.test/archive.zip", saveDir = dir), unwritableDir)
+            ExternalConfirmation(
+                SheetRoute.NewDownload(external = listOf(ExternalDownload("https://x.test/archive.zip", saveDir = dir))),
+                unwritableDir,
+            )
         fun arrive(confirmation: ExternalConfirmation) {
-            confirmations.offer(current?.request, confirmation)?.let { current = it }
+            confirmations.offer(current != null, confirmation)?.let { current = it }
         }
         fun closeSheet() {
             confirmations.beginClosing()
@@ -32,7 +36,7 @@ class ExternalConfirmationQueueTest {
 
         arrive(request("/first"))
         arrive(request("/second", unwritableDir = "/second"))
-        assertEquals("/first", current?.request?.saveDir)
+        assertEquals("/first", current?.route?.external?.single()?.saveDir)
         closeSheet()
         arrive(request("/third"))
         torrents.closeIfIdle()
@@ -40,11 +44,11 @@ class ExternalConfirmationQueueTest {
         assertEquals(0, windowCloses)
 
         finishExit()
-        assertEquals("/second", current?.request?.saveDir)
+        assertEquals("/second", current?.route?.external?.single()?.saveDir)
         assertEquals("/second", current?.unwritableDir)
         closeSheet()
         finishExit()
-        assertEquals("/third", current?.request?.saveDir)
+        assertEquals("/third", current?.route?.external?.single()?.saveDir)
         assertNull(current?.unwritableDir)
         closeSheet()
         torrents.closeIfIdle()

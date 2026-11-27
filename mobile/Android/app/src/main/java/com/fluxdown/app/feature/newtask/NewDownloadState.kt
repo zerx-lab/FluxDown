@@ -7,6 +7,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.fluxdown.core.capture.CaptureDeviceRules
 import com.fluxdown.core.capture.ExternalDownload
 import com.fluxdown.core.host.CreateTaskRequest
 import com.fluxdown.core.model.TaskProtocol
@@ -190,8 +191,16 @@ internal class NewDownloadState(
             targetId != initialTargetId || remoteSaveDir.isNotBlank() ||
             advanced.modified(single = true, singleHttp = true).isNotEmpty()
 
-    /** 当前选中的远端目标；目标已不在候选里（登出 / 解除配对 / 对方解除）时回落到当前主机；`link:<fp>` 已挂接时解析为云条目。 */
+    /** 匹配当前候选（含已挂接的 `link:<fp>`）；外部捕获的未解析目标由表单显示并等待显式改选。 */
     fun target(targets: List<DispatchTarget>): DispatchTarget? = targetId?.let { id -> DeviceRules.resolveTarget(id, targets) }
+
+    fun hasUnsupportedCaptureForDispatch(): Boolean =
+        entries.any { entry -> external[entry.url]?.let { !CaptureDeviceRules.canDispatch(it) } == true }
+
+    fun hasUnreadableCaptureContext(): Boolean = entries.any { external[it.url]?.hasUnusableRequestContext == true }
+
+    fun previewName(entry: UrlEntry): String =
+        entry.fileName.ifEmpty { external[entry.url]?.fileName.orEmpty() }.ifEmpty { inferName(entry) }
 
     /**
      * 下发条目：单条链接时重命名优先于 `out=`；空名交给目标设备推断。

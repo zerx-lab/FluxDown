@@ -13,7 +13,7 @@ use fluxdown_protocol::{
     PendingCaptureDto, ResolvePreviewRequest, ResolvePreviewResponse, RpcErrorData,
 };
 use serde_json::{Value, json};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
 
 use crate::daemon_client::DaemonClient;
@@ -31,6 +31,10 @@ pub(crate) const SILENT_DOWNLOAD_PREF: &str = "download.silent_download";
 pub(crate) const SILENT_AUTO_CATEGORY_PREF: &str = "download.silent_auto_category";
 /// 免打扰子开关：静默建的任务跳过 BT 文件 / HLS·DASH 画质 / 插件变体二次选择。设备本地偏好。
 pub(crate) const SILENT_SKIP_SELECTION_PREF: &str = "download.silent_skip_selection";
+const CAPTURE_DEVICE_RULES_PREF: &str = "download.capture_device_rules";
+const ROUTING_CONTEXT_REQUIRED: &str = "captureRoutingContextRequired";
+const ROUTING_TARGET_UNAVAILABLE: &str = "captureRoutingTargetUnavailable";
+const ROUTING_DISPATCH_FAILED: &str = "captureRoutingDispatchFailed";
 /// 「跟随上次保存位置」与其记录（官方 UI 新建下载写入）。
 const REMEMBER_LAST_SAVE_DIR_PREF: &str = "download.remember_last_save_dir";
 const LAST_SAVE_DIR_PREF: &str = "download.last_save_dir";
@@ -118,6 +122,7 @@ struct CaptureTransaction {
     category: Option<CategoryPlan>,
     /// 按需分配；owned guard 跨 daemon 调用存活，避免重入或旧 resolve 重复建任务。
     group_creation: Option<Arc<Mutex<()>>>,
+    _slot: OwnedSemaphorePermit,
 }
 
 /// 捕获方未指定保存目录时交给 daemon 的分类路由：引擎按初始名定初始目录，下载完成、最终
@@ -174,10 +179,33 @@ fn offered_save_dir(snapshot: &AgentSnapshot, policy: &ExternalPolicy) -> String
     }
 }
 
+struct CaptureDispatch {
+    remote: Arc<crate::remote::RemoteTaskService>,
+    link: Option<Arc<crate::link::LinkService>>,
+}
+
+struct CaptureConfirmation {
+    request: DownloadRequest,
+    suggested_target: Option<String>,
+    routing_error: Option<&'static str>,
+}
+
+impl From<DownloadRequest> for CaptureConfirmation {
+    fn from(request: DownloadRequest) -> Self {
+        Self {
+            request,
+            suggested_target: None,
+            routing_error: None,
+        }
+    }
+}
+
 pub struct CaptureService {
     daemon: Arc<DaemonClient>,
     events: AgentEventHub,
     pending: Mutex<VecDeque<CaptureTransaction>>,
+    confirmation_slots: Arc<Semaphore>,
+    dispatch: Option<CaptureDispatch>,
     /// 静默建成单个任务且没有就绪 UI 时按需拉起官方 UI 承载进度 / 完成提示（待确认捕获的
     /// 拉起由外壳控制循环按快照电平触发，见 `shell::prompt_launch`）。
     shell: Arc<ShellState>,
@@ -191,10 +219,21 @@ impl CaptureService {
         Self {
             daemon,
             events,
+            dispatch: None,
             pending: Mutex::new(VecDeque::new()),
+            confirmation_slots: Arc::new(Semaphore::new(CAPTURE_CAPACITY)),
             shell,
             outcomes: std::sync::Mutex::new(VecDeque::new()),
         }
+    }
+
+    pub(crate) fn with_dispatch(
+        mut self,
+        remote: Arc<crate::remote::RemoteTaskService>,
+        link: Option<Arc<crate::link::LinkService>>,
+    ) -> Self {
+        self.dispatch = Some(CaptureDispatch { remote, link });
+        self
     }
 
     fn record_outcome(&self, id: &str, outcome: CaptureOutcome) {
@@ -259,15 +298,30 @@ impl CaptureService {
             .into_iter()
             .flat_map(split_batch)
             .collect::<Vec<_>>();
-        let (policy, route) = self.events.inspect(|snapshot| {
+        let (policy, route, device_rules) = self.events.inspect(|snapshot| {
             let preferences = &snapshot.preferences.values;
             (
                 ExternalPolicy::from_preferences(preferences),
                 crate::category_dir::category_route(preferences),
+                preferences
+                    .get(CAPTURE_DEVICE_RULES_PREF)
+                    .and_then(Value::as_str)
+                    .filter(|rules| !rules.trim().is_empty())
+                    .map(str::to_owned),
             )
         });
         if requests.is_empty() {
             return Ok(json!({ "taskIds": [] }));
+        }
+        if matches!(origin, CaptureOrigin::External | CaptureOrigin::SystemOpen)
+            && let Some(rules) = device_rules.as_deref()
+            && requests
+                .iter()
+                .any(|request| capture_target(rules, request).is_some())
+        {
+            return self
+                .submit_routed(requests, origin, &policy, route.as_ref(), rules)
+                .await;
         }
         if origin == CaptureOrigin::SystemOpen && policy.silent {
             return self
@@ -285,7 +339,224 @@ impl CaptureService {
                 )
                 .await;
         }
-        self.enqueue(requests, route.as_ref()).await
+        let slots = self.reserve_confirmations(requests.len())?;
+        self.enqueue(
+            requests.into_iter().map(Into::into).collect(),
+            route.as_ref(),
+            slots,
+        )
+        .await
+    }
+
+    async fn submit_routed(
+        &self,
+        requests: Vec<DownloadRequest>,
+        origin: CaptureOrigin,
+        policy: &ExternalPolicy,
+        route: Option<&CategoryRouteDto>,
+        rules: &str,
+    ) -> Result<Value, CaptureError> {
+        let mut local = Vec::new();
+        let mut routed = Vec::new();
+        for request in requests {
+            if let Some(target) = capture_target(rules, &request) {
+                routed.push((request, Some(target)));
+            } else if policy.silent {
+                local.push(request);
+            } else {
+                routed.push((request, None));
+            }
+        }
+        // Reserve room for remote failures before making any irreversible submissions.
+        let slots = self.reserve_confirmations(routed.len())?;
+        let created = if local.is_empty() {
+            json!({ "taskIds": [] })
+        } else if origin == CaptureOrigin::SystemOpen {
+            self.create_all(local, None, policy.skip_selection, None)
+                .await?
+        } else {
+            self.create_all(
+                local,
+                policy.remembered_save_dir.as_deref(),
+                policy.skip_selection,
+                route.filter(|_| policy.auto_category),
+            )
+            .await?
+        };
+        let mut confirmations = Vec::new();
+        let mut dispatched = 0;
+        for (request, target) in routed {
+            let Some(target) = target else {
+                confirmations.push(request.into());
+                continue;
+            };
+            let available = self
+                .events
+                .inspect(|snapshot| target_available(snapshot, target));
+            let (suggested_target, routing_error) = if !can_dispatch_capture(&request) {
+                (None, Some(ROUTING_CONTEXT_REQUIRED))
+            } else if !available {
+                (None, Some(ROUTING_TARGET_UNAVAILABLE))
+            } else if !policy.silent {
+                (Some(target.to_owned()), None)
+            } else if let Err(reason) = self.dispatch_capture(target, &request, None, None).await {
+                (Some(target.to_owned()), Some(reason))
+            } else {
+                dispatched += 1;
+                continue;
+            };
+            confirmations.push(CaptureConfirmation {
+                request,
+                suggested_target,
+                routing_error,
+            });
+        }
+        let pending = self.enqueue(confirmations, route, slots).await?;
+        Ok(json!({
+            "taskIds": created["taskIds"],
+            "transactionIds": pending["transactionIds"],
+            "dispatchedCount": dispatched,
+        }))
+    }
+
+    async fn dispatch_capture(
+        &self,
+        target: &str,
+        request: &DownloadRequest,
+        file_name: Option<&str>,
+        save_dir: Option<&str>,
+    ) -> Result<(), &'static str> {
+        let dispatch = self.dispatch.as_ref().ok_or(ROUTING_TARGET_UNAVAILABLE)?;
+        let file_name = file_name
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .or_else(|| Some(request.filename.trim()).filter(|name| !name.is_empty()));
+        let save_dir = save_dir.map(str::trim).filter(|dir| !dir.is_empty());
+        let (link_fingerprint, cloud_device) = self.events.inspect(|snapshot| {
+            let direct = target.strip_prefix("link:").and_then(|fingerprint| {
+                snapshot
+                    .linked_devices
+                    .iter()
+                    .find(|device| !device.revoked && device.fingerprint == fingerprint)
+            });
+            let cloud = target.strip_prefix("cloud:").or_else(|| {
+                direct
+                    .and_then(|device| device.cloud_device_id.as_deref())
+                    .filter(|id| cloud_target_available(snapshot, id))
+            });
+            let linked = direct.filter(|device| device.online).or_else(|| {
+                let id = cloud?;
+                snapshot.linked_devices.iter().find(|device| {
+                    !device.revoked
+                        && device.online
+                        && device.cloud_device_id.as_deref() == Some(id)
+                })
+            });
+            match linked {
+                Some(device) => (Some(device.fingerprint.clone()), None),
+                None => (None, cloud.map(str::to_owned)),
+            }
+        });
+        if let Some(fingerprint) = link_fingerprint {
+            let link = dispatch.link.as_ref().ok_or(ROUTING_TARGET_UNAVAILABLE)?;
+            return link
+                .dispatch(&fingerprint, request.url.trim(), file_name, save_dir)
+                .await
+                .map(|_| ())
+                .map_err(|_| ROUTING_DISPATCH_FAILED);
+        }
+        let id = cloud_device.ok_or(ROUTING_TARGET_UNAVAILABLE)?;
+        dispatch
+            .remote
+            .dispatch(fluxdown_protocol::RemoteDispatchParams {
+                to_device: id,
+                url: request.url.trim().to_owned(),
+                file_name: file_name.map(str::to_owned),
+                save_dir: save_dir.map(str::to_owned),
+            })
+            .await
+            .map(|_| ())
+            .map_err(|_| ROUTING_DISPATCH_FAILED)
+    }
+
+    pub(crate) async fn resolve_remote(
+        self: &Arc<Self>,
+        transaction_id: &str,
+        target: String,
+        confirmed: Option<CreateTaskRequest>,
+    ) -> Result<Value, CaptureError> {
+        let (request, claim) = {
+            let mut pending = self.pending.lock().await;
+            let transaction = pending
+                .iter_mut()
+                .find(|transaction| transaction.public.transaction_id == transaction_id)
+                .ok_or(CaptureError::NotFound)?;
+            if !can_dispatch_capture(&transaction.request) {
+                return Err(CaptureError::Daemon(RpcErrorData::new(
+                    ApplicationErrorCode::InvalidArgument,
+                    false,
+                )));
+            }
+            let claim = transaction
+                .group_creation
+                .get_or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+                .try_lock_owned()
+                .map_err(|_| CaptureError::Busy)?;
+            (transaction.request.clone(), claim)
+        };
+        let service = Arc::clone(self);
+        let transaction_id = transaction_id.to_owned();
+        tokio::spawn(async move {
+            let _claim = claim;
+            let dispatched = if service
+                .events
+                .inspect(|snapshot| target_available(snapshot, &target))
+            {
+                service
+                    .dispatch_capture(
+                        &target,
+                        &request,
+                        confirmed.as_ref().map(|form| form.file_name.as_str()),
+                        confirmed.as_ref().map(|form| form.save_dir.as_str()),
+                    )
+                    .await
+            } else {
+                Err(ROUTING_TARGET_UNAVAILABLE)
+            };
+            if let Err(reason) = dispatched {
+                {
+                    let mut pending = service.pending.lock().await;
+                    let transaction = pending
+                        .iter_mut()
+                        .find(|transaction| transaction.public.transaction_id == transaction_id)
+                        .ok_or(CaptureError::NotFound)?;
+                    transaction.public.suggested_target = Some(target);
+                    transaction.public.routing_error = Some(reason.to_owned());
+                }
+                service.publish().await;
+                return Err(CaptureError::Daemon(RpcErrorData::new(
+                    ApplicationErrorCode::Unavailable,
+                    false,
+                )));
+            }
+            {
+                let mut pending = service.pending.lock().await;
+                let index = pending
+                    .iter()
+                    .position(|transaction| transaction.public.transaction_id == transaction_id)
+                    .ok_or(CaptureError::NotFound)?;
+                pending.remove(index).ok_or(CaptureError::NotFound)?;
+                service.record_outcome(&transaction_id, CaptureOutcome::Accepted);
+            }
+            service.publish().await;
+            Ok(json!({ "accepted": true }))
+        })
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, "capture dispatch worker failed");
+            CaptureError::Daemon(RpcErrorData::new(ApplicationErrorCode::Internal, false))
+        })?
     }
 
     /// 直接建任务（不经确认）。建成的任务随后以 [`AgentEvent::CaptureTasksStarted`] 通知官方
@@ -355,29 +626,45 @@ impl CaptureService {
         self.events.publish(event);
     }
 
+    fn reserve_confirmations(&self, count: usize) -> Result<OwnedSemaphorePermit, CaptureError> {
+        self.confirmation_slots
+            .clone()
+            .try_acquire_many_owned(u32::try_from(count).map_err(|_| CaptureError::Full)?)
+            .map_err(|_| CaptureError::Full)
+    }
+
     async fn enqueue(
         &self,
-        requests: Vec<DownloadRequest>,
+        requests: Vec<CaptureConfirmation>,
         route: Option<&CategoryRouteDto>,
+        mut slots: OwnedSemaphorePermit,
     ) -> Result<Value, CaptureError> {
+        if requests.is_empty() {
+            return Ok(json!({ "transactionIds": [] }));
+        }
         let transaction_ids = {
             let mut pending = self.pending.lock().await;
-            if pending.len() + requests.len() > CAPTURE_CAPACITY {
-                return Err(CaptureError::Full);
-            }
             let mut transaction_ids = Vec::with_capacity(requests.len());
-            for request in requests {
+            for confirmation in requests {
+                let CaptureConfirmation {
+                    request,
+                    suggested_target,
+                    routing_error,
+                } = confirmation;
                 let category = CategoryPlan::of(&request, route);
                 let mut public = pending_capture_dto(&request);
                 if let Some(plan) = &category {
                     public.save_dir.clone_from(&plan.prefill);
                 }
+                public.suggested_target = suggested_target;
+                public.routing_error = routing_error.map(str::to_owned);
                 transaction_ids.push(public.transaction_id.clone());
                 pending.push_back(CaptureTransaction {
                     public,
                     request,
                     category,
                     group_creation: None,
+                    _slot: slots.split(1).ok_or(CaptureError::Full)?,
                 });
             }
             transaction_ids
@@ -633,6 +920,80 @@ impl CaptureService {
     }
 }
 
+fn http_capture_url(url: &str) -> Option<reqwest::Url> {
+    let url = reqwest::Url::parse(url.trim()).ok()?;
+    matches!(url.scheme(), "http" | "https").then_some(url)
+}
+
+fn capture_target<'a>(rules: &'a str, request: &DownloadRequest) -> Option<&'a str> {
+    let url = http_capture_url(&request.url)?;
+    let filename = request.filename.trim();
+    let inferred;
+    let filename = if filename.is_empty() {
+        inferred =
+            fluxdown_protocol::capture_link::percent_decode(url.path_segments()?.next_back()?);
+        inferred.as_str()
+    } else {
+        filename
+    };
+    let (stem, suffix) = filename.rsplit_once('.')?;
+    if stem.is_empty() || suffix.is_empty() || filename.contains(['/', '\\']) {
+        return None;
+    }
+    rules.lines().find_map(|line| {
+        let (extension, target) = line.split_once('=')?;
+        let extension = extension.trim();
+        let extension = extension.strip_prefix('.').unwrap_or(extension);
+        let target = target.trim();
+        let (kind, id) = target.split_once(':')?;
+        (matches!(kind, "cloud" | "link")
+            && !id.is_empty()
+            && !id.contains([':', '='])
+            && !id.chars().any(|c| c.is_whitespace() || c.is_control())
+            && extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
+            && suffix.eq_ignore_ascii_case(extension))
+        .then_some(target)
+    })
+}
+
+fn target_available(snapshot: &AgentSnapshot, target: &str) -> bool {
+    if let Some(id) = target.strip_prefix("cloud:") {
+        cloud_target_available(snapshot, id)
+    } else {
+        snapshot.linked_devices.iter().any(|device| {
+            !device.revoked && target.strip_prefix("link:") == Some(device.fingerprint.as_str())
+        })
+    }
+}
+
+fn cloud_target_available(snapshot: &AgentSnapshot, id: &str) -> bool {
+    snapshot.cloud_devices.iter().any(|device| {
+        !device.is_current
+            && device.device_id == id
+            && !snapshot
+                .session
+                .as_ref()
+                .is_some_and(|session| session.device.device_id == id)
+    })
+}
+
+fn can_dispatch_capture(request: &DownloadRequest) -> bool {
+    http_capture_url(&request.url)
+        .is_some_and(|url| url.username().is_empty() && url.password().is_none())
+        && request.cookies.trim().is_empty()
+        && request.headers.as_ref().is_none_or(|headers| {
+            headers
+                .keys()
+                .all(|name| name.eq_ignore_ascii_case("user-agent"))
+        })
+        && request
+            .method
+            .as_deref()
+            .is_none_or(|method| method.eq_ignore_ascii_case("GET"))
+        && request.body.is_none()
+        && request.audio_url.as_deref().is_none_or(str::is_empty)
+}
+
 /// 捕获请求 → UI 可见摘要：只暴露头名与是否带 Cookie，不含任何值。
 fn pending_capture_dto(request: &DownloadRequest) -> PendingCaptureDto {
     let mut header_names = request
@@ -658,6 +1019,8 @@ fn pending_capture_dto(request: &DownloadRequest) -> PendingCaptureDto {
         save_dir: request.save_dir.clone(),
         has_cookies: !request.cookies.trim().is_empty() || cookie_header,
         header_names,
+        suggested_target: None,
+        routing_error: None,
     }
 }
 
@@ -1088,6 +1451,84 @@ mod tests {
         CaptureService::new(daemon, events, shell)
     }
 
+    #[tokio::test]
+    async fn routed_batch_preserves_failed_captures_without_creating_local_tasks() {
+        let capture = service(json!({
+            "download.silent_download": true,
+            "download.capture_device_rules": ".APK=cloud:phone\nexe=link:pc",
+        }));
+        let requests = vec![
+            serde_json::from_value(json!({
+                "url": "https://example.com/app%2EAPK?name=wrong.exe",
+            }))
+            .expect("capture"),
+            serde_json::from_value(json!({
+                "url": "https://example.com/download.apk",
+                "filename": "setup.exe",
+                "cookies": "sid=private",
+            }))
+            .expect("capture"),
+        ];
+        let outcome = capture
+            .submit_many(requests, CaptureOrigin::External)
+            .await
+            .expect("route failures should remain available for confirmation");
+        assert_eq!(outcome["taskIds"], json!([]));
+        let pending = capture.list().await;
+        assert_eq!(pending.len(), 2);
+        assert_eq!(
+            pending[0].routing_error.as_deref(),
+            Some(super::ROUTING_TARGET_UNAVAILABLE),
+        );
+        assert_eq!(
+            pending[1].routing_error.as_deref(),
+            Some(super::ROUTING_CONTEXT_REQUIRED),
+        );
+        assert!(pending[1].has_cookies);
+    }
+
+    #[tokio::test]
+    async fn confirmation_keeps_each_capture_destination_separate()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let capture = service(json!({
+            "download.capture_device_rules": "..apk=cloud:wrong\n.APK=cloud:phone\napk=cloud:pc\nexe=cloud:pc",
+        }));
+        let devices = serde_json::from_value(json!([
+            { "id": "1", "deviceId": "phone" },
+            { "id": "2", "deviceId": "pc" },
+        ]))?;
+        capture
+            .events
+            .publish(AgentEvent::CloudDevicesChanged(devices));
+        let requests = serde_json::from_value(json!([
+            { "url": "https://example.com/app%2EAPK?name=setup.exe" },
+            { "url": "https://example.com/app.apk", "filename": "setup.EXE" },
+            { "url": "https://example.com/.apk" },
+        ]))?;
+        capture
+            .submit_many(requests, CaptureOrigin::External)
+            .await?;
+        let pending = capture.list().await;
+        let suggestions = pending
+            .iter()
+            .map(|capture| {
+                (
+                    capture.suggested_target.as_deref(),
+                    capture.routing_error.as_deref(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            suggestions,
+            [
+                (Some("cloud:phone"), None),
+                (Some("cloud:pc"), None),
+                (None, None)
+            ]
+        );
+        Ok(())
+    }
+
     #[test]
     fn external_policy_follows_silent_preferences_and_remembered_dir() {
         let off = ExternalPolicy::from_preferences(&preferences(json!({})));
@@ -1430,6 +1871,7 @@ mod tests {
                 request,
                 category: None,
                 group_creation: None,
+                _slot: capture.reserve_confirmations(1).expect("confirmation slot"),
             });
         capture.publish().await;
         id

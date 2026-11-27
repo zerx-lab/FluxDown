@@ -55,8 +55,14 @@ class ExternalDownloadTest {
 
         val noUaInJson = ExternalIntake.fromView("magnet:?xt=urn:btih:abc", userAgent = "UA/1", headersJson = """{"X-T":"1"}""")!!
         assertEquals(mapOf("X-T" to "1", "User-Agent" to "UA/1"), noUaInJson.headers)
-        // 损坏的请求头 JSON 整体丢弃，不影响其余字段。
-        assertEquals(mapOf("User-Agent" to "UA/1"), ExternalIntake.fromView("https://h.test/x", userAgent = "UA/1", headersJson = "{oops")!!.headers)
+        // 损坏的请求头不能重建，但恢复表单时保留其余字段并提示。
+        val malformed = ExternalIntake.fromView("https://h.test/x", userAgent = "UA/1", headersJson = "{oops")!!
+        assertEquals(mapOf("User-Agent" to "UA/1"), malformed.headers)
+        assertTrue(malformed.hasUnusableRequestContext)
+        val partiallyDecoded = ExternalIntake.fromView("https://h.test/x", headersJson = """{"User-Agent":"UA/1","Authorization":7}""")!!
+        assertEquals(mapOf("User-Agent" to "UA/1"), partiallyDecoded.headers)
+        assertTrue(partiallyDecoded.hasUnusableRequestContext)
+        assertFalse(ExternalIntake.fromView("https://h.test/x", headersJson = "{}")!!.hasUnusableRequestContext)
     }
 
     // ── fluxdown://download 协议 ──
@@ -120,14 +126,26 @@ class ExternalDownloadTest {
         assertEquals("/dl", SilentCapture.plan(emptyDir, state(prefs))!!.request.offeredSaveDir)
     }
 
+    @Test fun protocolRequestOptionsOutsideTheMobileContractRequireConfirmation() {
+        val base = "fluxdown://download?url=https%3A%2F%2Fx.test%2Fapp.apk"
+        assertFalse(ExternalIntake.fromView("$base&method=GET")!!.hasUnusableRequestContext)
+        for (option in listOf("method=POST", "body=data", "audioUrl=audio")) {
+            val capture = ExternalIntake.fromView("$base&$option")!!
+            assertTrue(capture.hasUnusableRequestContext)
+            assertNull(SilentCapture.plan(capture, state(mapOf(SilentCapture.SILENT_PREF to true))))
+        }
+    }
+
     // ── 分享文本 ──
 
-    @Test fun sharedTextExtractsFirstLink() {
-        assertEquals("https://x.test/f.zip", ExternalIntake.fromSharedText("看看这个\u3000https://x.test/f.zip 很好用")?.url)
-        assertEquals("magnet:?xt=urn:btih:abc", ExternalIntake.fromSharedText("magnet:?xt=urn:btih:abc https://x.test")?.url)
-        assertEquals("ftp://x.test/a", ExternalIntake.fromSharedText("FTP://x.test/a")?.url?.lowercase())
-        assertNull(ExternalIntake.fromSharedText("no links here"))
-        assertNull(ExternalIntake.fromSharedText(null))
+    @Test fun sharedTextExtractsAllLinksInOrderWithoutDuplicates() {
+        val text = "看看这个\u3000https://x.test/f.zip https://x.test/f.zip magnet:?xt=urn:btih:abc FTP://x.test/a"
+        assertEquals(
+            listOf("https://x.test/f.zip", "magnet:?xt=urn:btih:abc", "FTP://x.test/a"),
+            ExternalIntake.fromSharedText(text).map { it.url },
+        )
+        assertTrue(ExternalIntake.fromSharedText("no links here").isEmpty())
+        assertTrue(ExternalIntake.fromSharedText(null).isEmpty())
     }
 
     // ── 截断上限 ──
@@ -154,6 +172,7 @@ class ExternalDownloadTest {
         val d = ExternalIntake.fromView(url, cookie = "c".repeat(ExternalIntake.MAX_COOKIES_LEN + 1))!!
         assertEquals(ExternalIntake.MAX_URL_LEN, d.url.length)
         assertEquals(ExternalIntake.MAX_COOKIES_LEN, d.cookies.length)
+        assertTrue(d.hasUnusableRequestContext)
     }
 
     // ── 免打扰 ──
