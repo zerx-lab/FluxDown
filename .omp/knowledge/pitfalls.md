@@ -234,6 +234,7 @@
 - **行悬停操作浮层不得直接用半透明 `row_hover` / `accent` 作底**：默认最右列是「创建时间」，浮层从右侧留白列向左盖住末列；半透明底会让时间与图标叠成「双层字」。底色须 `surface.blend(选中/悬停)` 不透明，并加左侧渐隐；Web 同行用 surface + accent/row-hover 分层 + mask → `crates/downloads/src/components/task_table.rs::wrap_row_action_strip`、`web/src/pages/downloads/table/rowParts.tsx::RowActionsBar`。
 - **有「浏览」系统选择器的窗口不能用 `WindowKind::Floating`**：gpui-fast macOS 把 Floating 设为 `NSFloatingWindowLevel`，`prompt_for_paths` 的系统面板在普通层级，会被压在窗口下面（Windows 的 Floating 是普通窗口，不受影响）；需要选目录 / 文件的窗口用 `Normal`，只读确认类小窗才置顶。改成 `Normal` 后窗口不会再自己浮到其他应用之上，引擎主动弹出的窗口（用户可能已切走）要在开窗后 `bring_to_front`，应用原本不在前台再 `request_attention` 兜底 → `crates/app/src/windows/selection.rs::open`（BT 文件选择窗，#994）。
 - **空分类列表不能隐藏自动分类开关**：没有配置分类目录时，空规则路由仍可授权插件归档；新建下载须继续提供「自动 / 不分类」，否则用户无法显式关闭路由。四端入口：GPUI `pages/new_download/category.rs`、Web `NewDownloadDialog.tsx`、Android / iOS `NewDownloadSheet`。
+- **键位上下文覆盖无上下文全局绑定时，单写 `Ctx` 会输**：gpui-fast 的 `Keymap::binding_enabled` 把无谓词绑定的深度记为整条上下文栈长度，`Ctx` 谓词只取到 `Ctx` 所在层；焦点在更深的 `Input` 里时全局绑定胜出（助手面板 cmd-n 曾照样弹新建下载）。覆盖谓词写 `Ctx || (Ctx > !Ctx)` 让面板内任意深度都按最深层匹配，再靠「同深度后装入者胜」→ `crates/app/src/shortcuts.rs::FOLLOWERS`、回归 `assistant_panel_takes_new_download_chord`。
 
 ## Web SPA
 

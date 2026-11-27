@@ -74,6 +74,23 @@ const ACTIONS: &[ActionBinding] = &[
     download_list("cycle_sort", || Box::new(dl::CycleSort)),
 ];
 
+/// 跟随某个目录快捷键键位、只在更窄键位上下文生效的附属动作：不进目录、不单独可编辑。
+///
+/// 无上下文的绑定按「最深层」参与优先级比较，单写 `AssistantView` 会输给全局的新建下载
+/// （焦点在输入框时 `Input` 更深）。`AssistantView > !AssistantView` 让附属绑定在面板内任意
+/// 深度都按最深层匹配，同深度时后装入者胜出（附属绑定紧跟原绑定装入）。
+const FOLLOWERS: &[(&str, ActionBinding)] = &[(
+    "new_download",
+    ActionBinding {
+        id: "assistant_new_chat",
+        context: Some(ASSISTANT_PANEL_PREDICATE),
+        make: || Box::new(fluxdown_ui_assistant::actions::NewChat),
+    },
+)];
+
+/// 焦点在助手面板（`fluxdown_ui_assistant::actions::KEY_CONTEXT`）内任意位置。
+const ASSISTANT_PANEL_PREDICATE: &str = "AssistantView || (AssistantView > !AssistantView)";
+
 fn action_binding(id: &str) -> Option<&'static ActionBinding> {
     ACTIONS.iter().find(|binding| binding.id == id)
 }
@@ -169,12 +186,18 @@ fn sync(store: &Entity<SettingsStore>, translator: &Entity<Translator>, cx: &mut
             match trigger {
                 ShortcutTrigger::Chord(chord) => {
                     let keystroke = chord_keystroke(chord);
-                    match build_binding(binding, &keystroke, cx) {
-                        Ok(key_binding) => bindings.push(key_binding),
-                        Err(error) => log::warn!(
-                            "skipping shortcut `{}` = `{keystroke}`: {error}",
-                            entry.spec.id
-                        ),
+                    let followers = FOLLOWERS
+                        .iter()
+                        .filter(|(id, _)| *id == entry.spec.id)
+                        .map(|(_, follower)| follower);
+                    for target in std::iter::once(binding).chain(followers) {
+                        match build_binding(target, &keystroke, cx) {
+                            Ok(key_binding) => bindings.push(key_binding),
+                            Err(error) => log::warn!(
+                                "skipping shortcut `{}` = `{keystroke}`: {error}",
+                                target.id
+                            ),
+                        }
                     }
                 }
                 ShortcutTrigger::DoubleTap(modifier) => {
@@ -187,6 +210,7 @@ fn sync(store: &Entity<SettingsStore>, translator: &Entity<Translator>, cx: &mut
     // 只替换受管动作的绑定；其他 crate（gpui-component、命令面板、对话框）的绑定原样保留。
     let managed: Vec<&'static str> = ACTIONS
         .iter()
+        .chain(FOLLOWERS.iter().map(|(_, follower)| follower))
         .map(|binding| (binding.make)().name())
         .collect();
     let keymap = cx.key_bindings();
@@ -332,6 +356,41 @@ mod tests {
             };
             assert_eq!(binding.context, expected, "{}", spec.id);
         }
+    }
+
+    #[test]
+    fn assistant_panel_takes_new_download_chord() {
+        let new_download = action_binding("new_download").unwrap();
+        let (_, follower) = FOLLOWERS
+            .iter()
+            .find(|(id, _)| *id == "new_download")
+            .unwrap();
+        let keymap = gpui::Keymap::new(vec![
+            KeyBinding::new("cmd-n", dl::NewDownload, new_download.context),
+            KeyBinding::new(
+                "cmd-n",
+                fluxdown_ui_assistant::actions::NewChat,
+                follower.context,
+            ),
+        ]);
+        let keystroke = [Keystroke::parse("cmd-n").unwrap()];
+        let first_action = |stack: &[&str]| {
+            let contexts: Vec<gpui::KeyContext> = stack
+                .iter()
+                .map(|context| gpui::KeyContext::parse(context).unwrap())
+                .collect();
+            let (bindings, _) = keymap.bindings_for_input(&keystroke, &contexts);
+            bindings.first().map(|binding| binding.action().name())
+        };
+        let new_chat = Some(fluxdown_ui_assistant::actions::NewChat.name());
+        let assistant = fluxdown_ui_assistant::actions::KEY_CONTEXT;
+        assert_eq!(first_action(&["Root", assistant, "Input"]), new_chat);
+        assert_eq!(first_action(&["Root", assistant]), new_chat);
+        assert_eq!(
+            first_action(&["Root", "DownloadView", "Input"]),
+            Some(dl::NewDownload.name())
+        );
+        assert_eq!(first_action(&[]), Some(dl::NewDownload.name()));
     }
 
     #[test]
