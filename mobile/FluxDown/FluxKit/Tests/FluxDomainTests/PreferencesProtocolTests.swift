@@ -88,6 +88,17 @@ struct PreferencesProtocolTests {
         ])
     }
 
+    @Test func siteRequestHeadersAreDeviceLocalDaemonText() throws {
+        let key = "site_request_headers"
+        let wire = #"[{"origin":"https://files.example.net","headers":{"X-Test":"one:  two"}}]"#
+        #expect(SettingsCatalog.defaultWire(key) == "")
+        #expect(SettingsCatalog.field(key)?.kind == .text)
+        #expect(!SettingsCatalog.isSynced(key))
+        let plan = try SettingsWritePlan.make([key: wire]).get()
+        #expect(plan.daemon == [key: wire])
+        #expect(plan.syncedPreferences.isEmpty && plan.localPreferences.isEmpty)
+    }
+
     @Test func preferenceKeysSplitBetweenSyncedAndLocal() throws {
         let plan = try SettingsWritePlan.make([
             "download.keep_awake": "true", "ui.show_activity_rss": "false",

@@ -10,7 +10,8 @@ use gpui::{App, ParentElement, SharedString, Styled, Window, prelude::FluentBuil
 use gpui_component::{Disableable as _, h_flex, switch::Switch};
 
 use super::{
-    SectionContext, aria2_options, auto_quantity, categories, rate_limit, retention, user_agent,
+    SectionContext, aria2_options, auto_quantity, categories, rate_limit, retention,
+    site_request_headers, user_agent,
 };
 use crate::ui::{
     Control, Explain, SettingsPage, SettingsSection, SettingsTab, body_text, meta_text,
@@ -43,7 +44,9 @@ pub(crate) fn page(ctx: &SectionContext, cx: &mut App) -> SettingsPage {
     )
     .tab(SettingsTab::new("files", ctx.t("settingsTabFiles")).sections(files_sections(ctx)))
     .tab(
-        SettingsTab::new("advanced", ctx.t("settingsGroupAdvanced")).section(advanced_section(ctx)),
+        SettingsTab::new("advanced", ctx.t("settingsGroupAdvanced")).sections(
+            std::iter::once(advanced_section(ctx)).chain(site_request_headers::group(ctx, cx)),
+        ),
     )
     .tab(
         SettingsTab::new("categories", ctx.t("customCategories"))

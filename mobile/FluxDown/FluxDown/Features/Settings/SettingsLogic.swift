@@ -264,7 +264,7 @@ nonisolated enum SettingsDownloadRow: String, CaseIterable, Identifiable {
     case defaultSegments, autoMaxConnections, cdnMulti, cdnMaxNodes, multiNic, maxConcurrent
     case speedLimit, uploadLimit
     case autoRetryCount, autoRetryDelay, autoResumeOnStart
-    case userAgent
+    case userAgent, siteRequestHeaders
 
     var id: String { "download.\(rawValue)" }
 
@@ -276,7 +276,7 @@ nonisolated enum SettingsDownloadRow: String, CaseIterable, Identifiable {
         case .defaultSegments, .autoMaxConnections, .cdnMulti, .cdnMaxNodes, .multiNic, .maxConcurrent,
              .speedLimit, .uploadLimit: .connection
         case .autoRetryCount, .autoRetryDelay, .autoResumeOnStart: .retry
-        case .userAgent: .advanced
+        case .userAgent, .siteRequestHeaders: .advanced
         }
     }
 
@@ -307,6 +307,7 @@ nonisolated enum SettingsDownloadRow: String, CaseIterable, Identifiable {
         case .autoRetryDelay: "auto_retry_delay_secs"
         case .autoResumeOnStart: "auto_resume_on_start"
         case .userAgent: "global_user_agent"
+        case .siteRequestHeaders: "site_request_headers"
         }
     }
 
@@ -336,6 +337,7 @@ nonisolated enum SettingsDownloadRow: String, CaseIterable, Identifiable {
         case .autoRetryDelay: "autoRetryDelay"
         case .autoResumeOnStart: "autoResumeOnStart"
         case .userAgent: "userAgent"
+        case .siteRequestHeaders: "siteRequestHeadersTitle"
         }
     }
 
@@ -365,6 +367,7 @@ nonisolated enum SettingsDownloadRow: String, CaseIterable, Identifiable {
         case .autoRetryDelay: "autoRetryDelayDesc"
         case .autoResumeOnStart: "autoResumeOnStartDesc"
         case .userAgent: "userAgentDesc"
+        case .siteRequestHeaders: "siteRequestHeadersDesc"
         }
     }
 
@@ -387,6 +390,8 @@ nonisolated enum SettingsDownloadRow: String, CaseIterable, Identifiable {
                 && f.int(SettingsDownloadRow.defaultSegments.configKey, default: 0) == 0
         case .cdnMaxNodes:
             return f.has(configKey) && f.has(SettingsDownloadRow.cdnMulti.configKey) && f.bool(SettingsDownloadRow.cdnMulti.configKey)
+        case .siteRequestHeaders:
+            return f.host[configKey] != nil
         default:
             return f.has(configKey)
         }

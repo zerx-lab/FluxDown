@@ -36,6 +36,7 @@ import { UserAgentRow } from './UserAgentField'
 import { AutoCountRow } from './AutoCountRow'
 import { RetentionRow } from './RetentionRow'
 import { CategoriesGroup } from './CategoriesGroup'
+import { SiteRequestHeadersGroup } from './SiteRequestHeadersGroup'
 
 import { Aria2OptionsEditor } from './Aria2OptionsEditor'
 const NO_QUEUES: readonly QueueDto[] = []
@@ -72,10 +73,13 @@ export function DownloadSettings() {
       id: 'advanced',
       label: t('settingsGroupAdvanced'),
       content: (
-        <SettingsSection title={t('settingsGroupAdvanced')}>
-          <UserAgentRow />
-          <Aria2OptionsEditor />
-        </SettingsSection>
+        <>
+          <SettingsSection title={t('settingsGroupAdvanced')}>
+            <UserAgentRow />
+            <Aria2OptionsEditor />
+          </SettingsSection>
+          <SiteRequestHeadersGroup disabled={readOnly} />
+        </>
       ),
     },
     { id: 'categories', label: t('customCategories'), content: <CategoriesGroup disabled={readOnly} /> },

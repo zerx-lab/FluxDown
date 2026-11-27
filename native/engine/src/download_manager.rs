@@ -4302,6 +4302,7 @@ pub struct DownloadManager {
     /// Current proxy configuration — used to rebuild Client on config change.
     proxy_config: ProxyConfig,
     protocol_proxies: Arc<ProtocolProxies>,
+    site_request_headers: Option<Arc<crate::site_request_headers::SiteRequestHeaders>>,
     /// All state for every actively-running download, keyed by task_id.
     /// Replaces the five separate maps that previously tracked the same set:
     ///   • active_tokens   (CancellationToken + generation)
@@ -4687,6 +4688,7 @@ impl DownloadManager {
             client,
             proxy_config,
             protocol_proxies: Arc::new(ProtocolProxies::default()),
+            site_request_headers: None,
             active_tasks: HashMap::new(),
             pending_pauses: HashMap::new(),
             awaiting_decision: HashMap::new(),
@@ -11262,6 +11264,8 @@ impl DownloadManager {
                     body,
                 );
                 probe_spec.egress = egress.router.clone();
+                probe_spec.site_request_headers = self.site_request_headers.clone();
+                probe_spec.explicit_user_agent = !user_agent.trim().is_empty();
                 let (probe_client, probe_proxy) = (egress.client, egress.proxy);
                 let (interceptor, task_ctx, run_meta) = self
                     .meta_probe_extras(
@@ -11374,6 +11378,8 @@ impl DownloadManager {
                 match egress {
                     Ok(egress) => {
                         spec.egress = egress.router;
+                        spec.site_request_headers = self.site_request_headers.clone();
+                        spec.explicit_user_agent = !queued.user_agent.trim().is_empty();
                         Some((spec, egress.client, egress.proxy))
                     }
                     Err(error) => {
@@ -12615,6 +12621,8 @@ impl DownloadManager {
                 body.clone(),
             );
             spec.egress = egress_router;
+            spec.site_request_headers = self.site_request_headers.clone();
+            spec.explicit_user_agent = !user_agent.trim().is_empty();
 
             // 多 CDN 聚合输入：manager 侧条件（开关/TLS/代理）在此折算；
             // pinned client 的 UA 与任务 client 同源（resolved_task_ua）。
@@ -14585,6 +14593,8 @@ impl DownloadManager {
                         body,
                     );
                     spec.egress = egress_router;
+                    spec.site_request_headers = self.site_request_headers.clone();
+                    spec.explicit_user_agent = !persisted_ua.trim().is_empty();
                     spec
                 },
                 audio_url,
@@ -18180,6 +18190,14 @@ impl DownloadManager {
         )
     }
 
+    /// Replace the default request headers captured by future download runs and probes.
+    pub fn set_site_request_headers(
+        &mut self,
+        rules: crate::site_request_headers::SiteRequestHeaders,
+    ) {
+        self.site_request_headers = (!rules.is_empty()).then(|| Arc::new(rules));
+    }
+
     /// 剪贴板识别用的只读链接探测（`daemon.link.probe`）：只发一次 HEAD。
     ///
     /// client 与 meta-probe 同源（全局代理 / UA / Auto 路由）；返回的 future 可在 actor 之外
@@ -18196,6 +18214,7 @@ impl DownloadManager {
             false,
             None,
         );
+        let site_request_headers = self.site_request_headers.clone();
         async move {
             let lower = url.get(..8).unwrap_or(&url).to_ascii_lowercase();
             if let Err(error) = &egress {
@@ -18215,6 +18234,7 @@ impl DownloadManager {
             };
             let mut spec = crate::downloader::RequestSpec::empty_get();
             spec.egress = egress.router;
+            spec.site_request_headers = site_request_headers;
             crate::meta_prober::probe_link_kind(&url, &egress.client, &spec).await
         }
     }

@@ -120,6 +120,8 @@ pub mod segment_coordinator;
 pub mod selection;
 /// 站点 HTTP Basic 认证凭据（per-host 保存 + 建任务时自动套用）。
 pub mod site_auth;
+/// Host-local default HTTP headers for download requests.
+pub mod site_request_headers;
 /// 任务整个下载期的速度曲线与统计（持久化，任务完成后可回看）。
 pub mod speed_history;
 pub mod speed_limiter;
@@ -377,6 +379,14 @@ impl Engine {
             selector.clone(),
         )?;
         manager.set_protocol_proxies(&db.get_all_config().await?);
+        if let Some(raw) = db.get_config(site_request_headers::KEY).await? {
+            match site_request_headers::SiteRequestHeaders::parse(&raw) {
+                Ok(rules) => manager.set_site_request_headers(rules),
+                Err(error) => {
+                    logger::log_info!("[engine] Invalid site request header rules: {error}");
+                }
+            }
+        }
         // 组装并注入插件管理器（feature 关时整块不编译，下载主链路零变化）。
         #[cfg(feature = "plugins")]
         {

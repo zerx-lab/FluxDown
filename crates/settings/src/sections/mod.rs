@@ -36,6 +36,7 @@ pub(crate) mod rate_limit;
 mod retention;
 pub(crate) mod shortcuts;
 pub(crate) mod site_auth;
+mod site_request_headers;
 mod sound;
 pub(crate) mod subscription;
 pub(crate) mod user_agent;

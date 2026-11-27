@@ -4375,6 +4375,7 @@ impl Db {
             ("proxy_password", ""),
             ("proxy_no_list", ""),
             ("global_user_agent", ""),
+            (crate::site_request_headers::KEY, ""),
             // 本机 API 服务器（axum，见 native/api）：探活 / 脚本接管 /
             // aria2 兼容 / 管理 API。仅监听 127.0.0.1；token 为空表示
             // 接管/aria2 端点不鉴权（仍受自定义请求头门禁 + 下载确认弹框

@@ -219,6 +219,30 @@ impl<'s> HttpRequest<'s> {
         } = *hop;
         let spec = self.spec;
         let mut req = client.request(method.clone(), url.clone());
+        let defaults = spec
+            .site_request_headers
+            .as_ref()
+            .and_then(|rules| rules.headers_for(url));
+
+        if let Some(defaults) = defaults {
+            for (name, value) in defaults {
+                let key = name.as_str();
+                if name != REFERER
+                    && !(spec.explicit_user_agent && key == "user-agent")
+                    && (keeps_body || !is_body_header(key))
+                    && !spec
+                        .extra_headers
+                        .keys()
+                        .any(|k| k.eq_ignore_ascii_case(key))
+                    && !self
+                        .headers
+                        .iter()
+                        .any(|(k, _)| k.eq_ignore_ascii_case(key))
+                {
+                    req = req.header(name.clone(), value.clone());
+                }
+            }
+        }
 
         let captured = header_value(spec, "cookie").unwrap_or(&spec.cookies).trim();
         if !captured.is_empty() && anchor.is_some_and(|a| credential_scope::cookies_apply(a, url)) {
@@ -239,6 +263,13 @@ impl<'s> HttpRequest<'s> {
         if crate::downloader::is_valid_referrer(referer) {
             if credential_scope::referer_applies(referer, url) {
                 req = req.header(REFERER, referer.trim());
+            }
+        } else if let Some(value) = defaults.and_then(|headers| headers.get(REFERER)) {
+            if value
+                .to_str()
+                .is_ok_and(|value| credential_scope::referer_applies(value, url))
+            {
+                req = req.header(REFERER, value.clone());
             }
         } else if let Some(previous) = previous {
             // 无原始来源页时与浏览器 / 原 reqwest 一致：以上一跳 URL 作 Referer。
@@ -476,6 +507,79 @@ mod tests {
             }
         });
         (port, log)
+    }
+
+    #[tokio::test]
+    async fn site_request_headers_fill_missing_values_without_crossing_origins()
+    -> anyhow::Result<()> {
+        use crate::site_request_headers::SiteRequestHeaders;
+
+        fn route(seen: &Seen, port: u16) -> String {
+            if seen.path == "/redirect" {
+                redirect(
+                    "302 Found",
+                    &format!("http://cdn.rules.test:{port}/file"),
+                    "",
+                )
+            } else {
+                response("200 OK", "", "")
+            }
+        }
+
+        let (port, log) = serve(route).await;
+        let client = client(port, &["files.rules.test", "cdn.rules.test"]);
+        let origin = format!("http://files.rules.test:{port}");
+        let raw = serde_json::json!([{
+            "origin": origin,
+            "headers": {"Referer": "http://source.rules.test/page", "X-Mode": "default"}
+        }]);
+        let rules =
+            Arc::new(SiteRequestHeaders::parse(&raw.to_string()).map_err(anyhow::Error::msg)?);
+        let mut spec = RequestSpec {
+            site_request_headers: Some(rules),
+            ..RequestSpec::empty_get()
+        };
+        for path in ["/first", "/redirect"] {
+            build_request(
+                &client,
+                &format!("{origin}{path}"),
+                reqwest::Method::GET,
+                &spec,
+            )
+            .send()
+            .await?
+            .error_for_status()?;
+        }
+        spec.referrer = "http://source.rules.test/explicit".to_owned();
+        spec.extra_headers
+            .insert("x-MODE".to_owned(), "explicit".to_owned());
+        build_request(
+            &client,
+            &format!("{origin}/explicit"),
+            reqwest::Method::HEAD,
+            &spec,
+        )
+        .send()
+        .await?
+        .error_for_status()?;
+
+        let seen = hops(&log);
+        for hop in &seen[..2] {
+            assert_eq!(hop.header("referer"), Some("http://source.rules.test/page"));
+            assert_eq!(hop.header("x-mode"), Some("default"));
+        }
+        assert_eq!(seen[2].host, "cdn.rules.test");
+        assert_eq!(
+            seen[2].header("referer"),
+            Some(format!("{origin}/redirect").as_str())
+        );
+        assert_eq!(seen[2].header("x-mode"), None);
+        assert_eq!(
+            seen[3].header("referer"),
+            Some("http://source.rules.test/explicit")
+        );
+        assert_eq!(seen[3].header("x-mode"), Some("explicit"));
+        Ok(())
     }
 
     fn response(status: &str, extra: &str, body: &str) -> String {
