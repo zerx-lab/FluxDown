@@ -4,7 +4,11 @@ import type { CookieJar, CookieOptions } from "../src/lib/account/session";
 
 // 动态 import：base.ts 在模块加载时读 BASE_URL，astro:env/server 须先 mock，二者都要在路由模块加载之前就位。
 process.env.BASE_URL = "/";
-mock.module("astro:env/server", () => ({ FLUXCLOUD_API_BASE: "http://cloud.test" }));
+// 与 download-route / download-pass / bt-guard-proxy 测试共用同一进程的模块表：bun 的 mock.module 首次注册后导出名集合即固定，须含全部 astro:env/server 导出。
+mock.module("astro:env/server", () => ({
+  GITHUB_TOKEN: "", GITHUB_REPO: "owner/repo", FLUXCLOUD_API_BASE: "http://cloud.test", DOWNLOAD_PASS_SECRET: undefined,
+  CN_CDN_DAILY_BUDGET_GB: 0,
+}));
 const { handleAccountRequest } = await import("../src/lib/account/routes");
 const { resetRefreshCache, ACCESS_COOKIE, REFRESH_COOKIE } = await import("../src/lib/account/session");
 
