@@ -9,6 +9,8 @@ use std::io;
 
 const CF_ENCODING_UTF8: u32 = 0x0800_0100;
 const LS_ROLES_ALL: u32 = 0xFFFF_FFFF;
+/// `kUTTagClassFilenameExtension` 的稳定字符串值；用字面量免去读取外部常量的 unsafe。
+const UT_TAG_CLASS_FILENAME_EXTENSION: &str = "public.filename-extension";
 type CFStringRef = *const c_void;
 type CFArrayRef = *const c_void;
 
@@ -39,10 +41,10 @@ unsafe extern "C" {
     fn CFBundleGetIdentifier(bundle: *const c_void) -> CFStringRef;
 }
 
-// SAFETY: Signatures follow LaunchServices LSInfo.h; roles are u32 and OSStatus is i32.
+// SAFETY: Signatures follow LaunchServices LSInfo.h and UTType.h; roles are u32, OSStatus
+// is i32, and UTTypeCreateAllIdentifiersForTag follows the Create rule (+1 CFArray).
 #[link(name = "CoreServices", kind = "framework")]
 unsafe extern "C" {
-    fn LSCopyDefaultRoleHandlerForContentType(content_type: CFStringRef, role: u32) -> CFStringRef;
     fn LSSetDefaultRoleHandlerForContentType(
         content_type: CFStringRef,
         role: u32,
@@ -52,6 +54,11 @@ unsafe extern "C" {
     fn LSCopyDefaultHandlerForURLScheme(scheme: CFStringRef) -> CFStringRef;
     fn LSSetDefaultHandlerForURLScheme(scheme: CFStringRef, handler: CFStringRef) -> i32;
     fn LSCopyAllHandlersForURLScheme(scheme: CFStringRef) -> CFArrayRef;
+    fn UTTypeCreateAllIdentifiersForTag(
+        tag_class: CFStringRef,
+        tag: CFStringRef,
+        conforming_to: CFStringRef,
+    ) -> CFArrayRef;
 }
 
 /// 私有 Create/Copy 字符串守卫；不提供任何裸指针接管构造器，也不实现 Send/Sync。
@@ -100,7 +107,7 @@ impl Drop for OwnedString {
     }
 }
 
-/// 仅接收 Launch Services 的 CopyAll 返回值；与 OwnedString 不可互换。
+/// 仅接收 Launch Services CopyAll / UTType CreateAll 返回的 CFArray<CFString>；与 OwnedString 不可互换。
 struct OwnedStringArray(CFArrayRef);
 
 impl OwnedStringArray {
@@ -190,16 +197,6 @@ unsafe fn copy_string(raw: CFStringRef) -> io::Result<Option<String>> {
         .map_err(io::Error::other)
 }
 
-/// 查询 UTI 的默认处理程序；没有默认值时返回 None，输入 NUL 或转换失败返回错误。
-pub(super) fn default_content_handler(content_type: &str) -> io::Result<Option<String>> {
-    let content_type = OwnedString::from_str(content_type)?;
-    // SAFETY: 字符串在调用期间有效；Copy 返回的 +1 字符串引用立即由专用守卫接管。
-    let handler = OwnedString(unsafe {
-        LSCopyDefaultRoleHandlerForContentType(content_type.0, LS_ROLES_ALL)
-    });
-    handler.text()
-}
-
 /// 查询 scheme 的默认处理程序；没有默认值时返回 None，输入 NUL 或转换失败返回错误。
 pub(super) fn default_scheme_handler(scheme: &str) -> io::Result<Option<String>> {
     let scheme = OwnedString::from_str(scheme)?;
@@ -223,6 +220,18 @@ pub(super) fn scheme_handlers(scheme: &str) -> io::Result<Vec<String>> {
     let scheme = OwnedString::from_str(scheme)?;
     // SAFETY: scheme 有效；CopyAll 返回 CFArray<CFString> 的 +1 引用。
     let array = OwnedStringArray(unsafe { LSCopyAllHandlersForURLScheme(scheme.0) });
+    array.strings()
+}
+
+/// 列出文件扩展名当前映射到的全部 UTI（含其他程序导出的声明）；无声明时系统返回动态 UTI。
+pub(super) fn content_types_for_extension(extension: &str) -> io::Result<Vec<String>> {
+    let tag_class = OwnedString::from_str(UT_TAG_CLASS_FILENAME_EXTENSION)?;
+    let extension = OwnedString::from_str(extension)?;
+    // SAFETY: 两个字符串在调用期间存活，conforming_to 允许为空；Create 返回
+    // CFArray<CFString> 的 +1 引用，立即由专用守卫接管。
+    let array = OwnedStringArray(unsafe {
+        UTTypeCreateAllIdentifiersForTag(tag_class.0, extension.0, std::ptr::null())
+    });
     array.strings()
 }
 
@@ -315,10 +324,6 @@ mod tests {
     fn business_apis_reject_nul_before_launch_services_calls() {
         let invalid = "invalid\0identifier";
         assert_eq!(
-            default_content_handler(invalid).unwrap_err().kind(),
-            io::ErrorKind::InvalidInput
-        );
-        assert_eq!(
             default_scheme_handler(invalid).unwrap_err().kind(),
             io::ErrorKind::InvalidInput
         );
@@ -328,6 +333,10 @@ mod tests {
         );
         assert_eq!(
             scheme_handlers(invalid).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            content_types_for_extension(invalid).unwrap_err().kind(),
             io::ErrorKind::InvalidInput
         );
         // 两种参数位置均在 FFI 写入前被拒绝，不更改任何系统关联。
@@ -350,11 +359,6 @@ mod tests {
     fn launch_services_queries_are_read_only_and_accept_missing_handlers() {
         let missing = "com.fluxdown.test.nonexistent-handler-9a2bc815";
         assert!(
-            default_content_handler(missing)
-                .expect("query content default")
-                .is_none()
-        );
-        assert!(
             content_handlers(missing)
                 .expect("query content candidates")
                 .is_empty()
@@ -371,5 +375,7 @@ mod tests {
         );
         let candidates = scheme_handlers("https").expect("query real string array");
         assert!(candidates.iter().all(|value| !value.is_empty()));
+        let pdf = content_types_for_extension("pdf").expect("query extension UTIs");
+        assert!(pdf.iter().any(|value| value == "com.adobe.pdf"));
     }
 }

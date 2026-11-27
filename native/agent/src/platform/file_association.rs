@@ -13,9 +13,9 @@
 //! ——两处需保持同步。
 //!
 //! Linux 通过 `xdg-mime` 把 `application/x-bittorrent` 交给打包的
-//! `com.fluxdown.app.desktop`；macOS 通过 Launch Services 把
-//! `org.bittorrent.torrent` UTI（`packaging/macos/Info.plist` 已声明）交给当前
-//! `.app` bundle。
+//! `com.fluxdown.app.desktop`；macOS（`desktop` feature）按临时 `.torrent` 文件经
+//! `NSWorkspace` 查询 / 设置「这类文件」的默认程序，与 Finder 同口径（其他程序导出的同扩展名
+//! UTI 同样覆盖），macOS 12+ 阻塞到用户在系统确认框作答。
 
 #[cfg(target_os = "windows")]
 mod inner {
@@ -152,43 +152,68 @@ mod inner {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "desktop"))]
 mod inner {
     use std::path::Path;
 
     use crate::platform::macos_cf;
+    use crate::platform::macos_default_app::{self as workspace, ProbeFile};
     use crate::platform::{PlatformError, host_bundle_id, successor_handler};
 
     /// Info.plist 中声明的 `.torrent` UTI。
     const TORRENT_UTI: &str = "org.bittorrent.torrent";
+    const TORRENT_EXTENSION: &str = "torrent";
 
     pub fn supported(_desktop: Option<&Path>) -> bool {
         host_bundle_id().is_some()
     }
 
-    /// `.torrent` 当前是否关联到本 bundle。
-    pub fn is_associated() -> bool {
-        let Ok(Some(handler_id)) = macos_cf::default_content_handler(TORRENT_UTI) else {
-            return false;
-        };
-        host_bundle_id().is_some_and(|mine| handler_id.eq_ignore_ascii_case(&mine))
+    fn is_mine(probe: &ProbeFile, mine: &str) -> bool {
+        probe
+            .default_app()
+            .is_some_and(|id| id.eq_ignore_ascii_case(mine))
     }
 
-    /// 把本 bundle 设为 `.torrent` 默认处理程序。
-    ///
-    /// bundle 首次被系统扫描或启动时即已向 Launch Services 登记其 Info.plist
-    /// 中声明的 UTI。
+    /// 打开 `.torrent` 文件的默认程序是否为本 bundle（按临时 `.torrent` 文件查询，与 Finder
+    /// 同口径：其他程序导出的同扩展名 UTI 同样覆盖）。
+    pub fn is_associated() -> bool {
+        let Some(mine) = host_bundle_id() else {
+            return false;
+        };
+        match ProbeFile::create(TORRENT_EXTENSION) {
+            Ok(probe) => is_mine(&probe, &mine),
+            Err(error) => {
+                tracing::warn!(%error, "failed to probe the .torrent default handler");
+                false
+            }
+        }
+    }
+
+    /// 把本 bundle 设为 `.torrent` 文件的默认程序。macOS 12+ 阻塞到用户在系统确认框作答；
+    /// 用户拒绝返回 [`PlatformError::Declined`]。
     pub fn associate(_desktop: Option<&Path>) -> Result<(), PlatformError> {
-        let bundle_id = host_bundle_id().ok_or(PlatformError::Unsupported(
+        let app = workspace::host_app().ok_or(PlatformError::Unsupported(
             "fluxdown-agent is not running inside an app bundle",
         ))?;
-        macos_cf::set_content_handler(TORRENT_UTI, &bundle_id)
-            .map_err(|error| PlatformError::Failed(error.to_string()))?;
-        tracing::info!(bundle_id, "associated .torrent with FluxDown");
+        let probe = ProbeFile::create(TORRENT_EXTENSION)?;
+        if is_mine(&probe, &app.id) {
+            return Ok(());
+        }
+        if workspace::confirmed_setters_available() {
+            probe.set_default_app(&app)?;
+        } else {
+            set_all_content_types(&app.id)?;
+        }
+        if !workspace::settles(|| is_mine(&probe, &app.id)) {
+            tracing::info!(".torrent association declined");
+            return Err(PlatformError::Declined);
+        }
+        tracing::info!(bundle_id = app.id, "associated .torrent with FluxDown");
         Ok(())
     }
 
     /// 把 `.torrent` 移交给另一个已安装的候选程序；仅在当前由本 bundle 持有时执行。
+    /// macOS 12+ 阻塞到用户作答，用户选「继续使用 FluxDown」返回 [`PlatformError::Declined`]。
     ///
     /// 没有其他候选时 Launch Services 必然回落到本 bundle，无从让出：保持现状，
     /// 由 `torrent_assoc_user_disabled` 在捕获入口拦截系统交来的文件。
@@ -196,25 +221,65 @@ mod inner {
         let Some(mine) = host_bundle_id() else {
             return Ok(());
         };
-        if !is_associated() {
+        let probe = ProbeFile::create(TORRENT_EXTENSION)?;
+        if !is_mine(&probe, &mine) {
             tracing::info!(".torrent not associated to FluxDown, skipping removal");
             return Ok(());
         }
-        let candidates = macos_cf::content_handlers(TORRENT_UTI)?;
-        let Some(successor) = successor_handler(candidates, &mine) else {
-            tracing::info!(
-                "no other .torrent handler installed; FluxDown stays the system default"
-            );
-            return Ok(());
-        };
-        macos_cf::set_content_handler(TORRENT_UTI, &successor)
-            .map_err(|error| PlatformError::Failed(error.to_string()))?;
-        tracing::info!(successor, "handed .torrent association over");
+        if workspace::confirmed_setters_available() {
+            let mut candidates = probe.candidate_apps();
+            let ids = candidates.iter().map(|app| app.id.clone()).collect();
+            let Some(successor) = successor_handler(ids, &mine) else {
+                return no_successor();
+            };
+            let Some(index) = candidates.iter().position(|app| app.id == successor) else {
+                return no_successor();
+            };
+            probe.set_default_app(&candidates.swap_remove(index))?;
+        } else {
+            let candidates = macos_cf::content_handlers(TORRENT_UTI)?;
+            let Some(successor) = successor_handler(candidates, &mine) else {
+                return no_successor();
+            };
+            set_all_content_types(&successor)?;
+        }
+        if !workspace::settles(|| !is_mine(&probe, &mine)) {
+            tracing::info!(".torrent handover declined");
+            return Err(PlatformError::Declined);
+        }
+        tracing::info!("handed .torrent association over");
+        Ok(())
+    }
+
+    fn no_successor() -> Result<(), PlatformError> {
+        tracing::info!("no other .torrent handler installed; FluxDown stays the system default");
+        Ok(())
+    }
+
+    /// macOS 11（无确认式接口、不弹框）：把扩展名映射到的全部 UTI（恒含 [`TORRENT_UTI`]）交给
+    /// `bundle_id`。其他程序导出的同扩展名 UTI 压过本 bundle 的导入声明时，只设
+    /// `org.bittorrent.torrent` 不会改变 Finder 的选择。
+    fn set_all_content_types(bundle_id: &str) -> Result<(), PlatformError> {
+        let mut types = macos_cf::content_types_for_extension(TORRENT_EXTENSION)?;
+        if !types
+            .iter()
+            .any(|uti| uti.eq_ignore_ascii_case(TORRENT_UTI))
+        {
+            types.push(TORRENT_UTI.to_owned());
+        }
+        for content_type in types {
+            macos_cf::set_content_handler(&content_type, bundle_id)
+                .map_err(|error| PlatformError::Failed(format!("{content_type}: {error}")))?;
+        }
         Ok(())
     }
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(
+    target_os = "windows",
+    target_os = "linux",
+    all(target_os = "macos", feature = "desktop")
+)))]
 mod inner {
     use std::path::Path;
 

@@ -26,8 +26,10 @@ mod file_association;
 mod file_icon;
 #[cfg(feature = "desktop")]
 pub(crate) mod hotkey;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "desktop"))]
 mod macos_cf;
+#[cfg(all(target_os = "macos", feature = "desktop"))]
+mod macos_default_app;
 #[cfg(windows)]
 pub mod pipe_security;
 mod protocol_registry;
@@ -68,7 +70,7 @@ pub fn desktop_executable() -> Option<PathBuf> {
 
 /// 辅助 bundle 的 bundle id = 外层 bundle id + 此后缀（打包脚本
 /// `scripts/package_gpui_macos.sh` 按此写入辅助 Info.plist）。
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "desktop"))]
 const HELPER_BUNDLE_ID_SUFFIX: &str = ".agent";
 
 /// agent 位于 `<Host>.app/Contents/Helpers/<Helper>.app/Contents/MacOS/` 时返回外层
@@ -108,7 +110,7 @@ pub(crate) fn host_app_bundle() -> Option<PathBuf> {
 /// 辅助 bundle 内由 Core Foundation 解析出的是辅助 bundle 自身的 id，按约定去掉
 /// [`HELPER_BUNDLE_ID_SUFFIX`] 得到外层 id；后缀不符说明打包错误，按不支持处理，
 /// 避免把关联登记到不声明 UTI / scheme 的辅助 bundle 上。
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "desktop"))]
 pub(crate) fn host_bundle_id() -> Option<String> {
     let own = macos_cf::main_bundle_id()?;
     let in_helper = std::env::current_exe()
@@ -117,7 +119,7 @@ pub(crate) fn host_bundle_id() -> Option<String> {
     host_id_from(own, in_helper)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "desktop"))]
 fn host_id_from(own: String, in_helper: bool) -> Option<String> {
     if !in_helper {
         return Some(own);
@@ -131,7 +133,7 @@ fn host_id_from(own: String, in_helper: bool) -> Option<String> {
 ///
 /// Launch Services 没有「无默认处理程序」状态，设空 bundle id 只会让系统回落到剩余候选；
 /// FluxDown 是唯一候选时返回 `None`，此时系统层面无法让出，由关联 opt-out 在捕获入口拦截。
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "desktop"))]
 fn successor_handler(candidates: Vec<String>, mine: &str) -> Option<String> {
     candidates
         .into_iter()
@@ -265,9 +267,12 @@ pub fn run_shell_open(args: &[String]) -> Option<i32> {
         Ok(()) => EXIT_OK,
         Err(PlatformError::NotFound(_)) => EXIT_NOT_FOUND,
         Err(PlatformError::Unsupported(_)) => EXIT_UNSUPPORTED,
-        Err(PlatformError::Io(_) | PlatformError::Failed(_) | PlatformError::InvalidScheme(_)) => {
-            EXIT_FAILED
-        }
+        Err(
+            PlatformError::Io(_)
+            | PlatformError::Failed(_)
+            | PlatformError::InvalidScheme(_)
+            | PlatformError::Declined,
+        ) => EXIT_FAILED,
     })
 }
 
@@ -979,6 +984,9 @@ pub enum PlatformError {
     NotFound(PathBuf),
     #[error("unknown URL scheme: {0}")]
     InvalidScheme(String),
+    /// 用户在系统确认框里拒绝了默认处理程序变更（macOS「继续使用 FluxDown」）。
+    #[error("default handler change declined by the user")]
+    Declined,
 }
 
 #[cfg(test)]
@@ -1116,7 +1124,7 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", feature = "desktop"))]
     #[test]
     fn host_bundle_id_strips_helper_suffix_only_inside_helper() {
         assert_eq!(
@@ -1131,7 +1139,7 @@ mod tests {
         assert_eq!(host_id_from(".agent".to_owned(), true), None);
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", feature = "desktop"))]
     #[test]
     fn release_hands_over_to_first_other_candidate_only() {
         let mine = "com.fluxdown.app";

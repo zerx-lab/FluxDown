@@ -99,7 +99,7 @@ x11rb = { version = "0.13.2", features = ["xinput"], optional = true }
 block2 = { version = "0.6.2", optional = true }
 objc2 = { version = "0.6", optional = true }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard", "NSWorkspace", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSGraphicsContext", "NSGraphics", "NSEvent", "block2"], optional = true }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSData", "NSDictionary", "NSGeometry", "NSBundle", "NSArray", "NSSet", "NSError", "NSObject"], optional = true }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSData", "NSDictionary", "NSGeometry", "NSBundle", "NSArray", "NSSet", "NSError", "NSObject", "NSURL"], optional = true }
 objc2-user-notifications = { version = "0.3.2", default-features = false, features = ["std", "block2", "UNUserNotificationCenter", "UNNotification", "UNNotificationAction", "UNNotificationCategory", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSettings", "UNNotificationTrigger"], optional = true }
 
 [features]

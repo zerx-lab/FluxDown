@@ -1872,6 +1872,7 @@ fn platform_error_data(error: PlatformError) -> RpcErrorData {
             tracing::debug!(path = %path.display(), "platform target is missing");
             RpcErrorData::new(ApplicationErrorCode::NotFound, false)
         }
+        PlatformError::Declined => RpcErrorData::new(ApplicationErrorCode::Cancelled, false),
         error @ (PlatformError::Io(_) | PlatformError::Failed(_)) => {
             internal_error("platform action", error)
         }
@@ -2649,7 +2650,8 @@ enum Lane {
     Icon,
     /// 局域网配对 / 诊断：含最长约 70s 的对端等待或外部探测，单独成道，不堵住心跳与本机设置操作。
     Slow,
-    /// Doctor 修复：可能等待用户在系统授权对话框里操作数分钟，单独成道，不堵住配对与重新诊断。
+    /// 等待用户在系统对话框里操作（Doctor 修复的授权框、macOS 改默认程序的确认框），可能
+    /// 持续数分钟：单独成道，不堵住配对、重新诊断与其他本机操作；同道串行，确认框不叠弹。
     Repair,
 }
 
@@ -2700,7 +2702,12 @@ fn lane_for(method_name: &str) -> Lane {
         .any(|prefix| method_name.starts_with(prefix))
     {
         Lane::Cloud
-    } else if method_name == fluxdown_protocol::method::AGENT_DIAGNOSTICS_REPAIR {
+    } else if matches!(
+        method_name,
+        fluxdown_protocol::method::AGENT_DIAGNOSTICS_REPAIR
+            | fluxdown_protocol::method::AGENT_PLATFORM_SET_FILE_ASSOCIATION
+            | fluxdown_protocol::method::AGENT_PLATFORM_SET_URL_PROTOCOL
+    ) {
         Lane::Repair
     } else if method_name.starts_with("agent.link.")
         || method_name == method::AGENT_SOUND_PREVIEW
@@ -5038,6 +5045,13 @@ mod tests {
             lane_for(fluxdown_protocol::method::AGENT_PRIVATE_PLUGIN_INSTALL),
             Lane::DaemonSlow
         ));
+        // 关联开关阻塞到用户在系统确认框作答，不堵住打开文件等本机操作。
+        for name in [
+            fluxdown_protocol::method::AGENT_PLATFORM_SET_FILE_ASSOCIATION,
+            fluxdown_protocol::method::AGENT_PLATFORM_SET_URL_PROTOCOL,
+        ] {
+            assert!(matches!(lane_for(name), Lane::Repair), "{name}");
+        }
     }
 
     #[tokio::test]

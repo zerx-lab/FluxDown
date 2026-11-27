@@ -994,22 +994,34 @@ impl SettingsStore {
             Self::absorb_integration,
         );
     }
-    pub fn set_file_association(&mut self, enabled: bool, cx: &mut Context<Self>) {
+    /// `opt_out`：该关联的 opt-out 偏好键；用户在系统确认框里拒绝移交时撤销它。
+    pub fn set_file_association(
+        &mut self,
+        enabled: bool,
+        opt_out: Option<&'static str>,
+        cx: &mut Context<Self>,
+    ) {
         self.call_with(
             "integration",
             method::AGENT_PLATFORM_SET_FILE_ASSOCIATION,
             json!({ "enabled": enabled }),
             cx,
-            Self::absorb_integration,
+            Self::absorb_association(opt_out),
         );
     }
-    pub fn set_url_protocol(&mut self, scheme: &str, enabled: bool, cx: &mut Context<Self>) {
+    pub fn set_url_protocol(
+        &mut self,
+        scheme: &str,
+        enabled: bool,
+        opt_out: Option<&'static str>,
+        cx: &mut Context<Self>,
+    ) {
         self.call_with(
             "integration",
             method::AGENT_PLATFORM_SET_URL_PROTOCOL,
             json!({ "scheme": scheme, "enabled": enabled }),
             cx,
-            Self::absorb_integration,
+            Self::absorb_association(opt_out),
         );
     }
     fn absorb_integration(&mut self, result: Result<Value, RpcErrorData>, _cx: &mut Context<Self>) {
@@ -1017,6 +1029,22 @@ impl SettingsStore {
             && let Ok(dto) = serde_json::from_value::<PlatformIntegrationDto>(value)
         {
             self.integration = Some(dto);
+        }
+    }
+    /// 关联开关的回调。`Cancelled` = 用户在 macOS 确认框里拒绝了变更：关闭时选「继续使用
+    /// FluxDown」→ 系统默认仍是 FluxDown，撤销刚写的 opt-out（否则开关显示关闭、捕获入口
+    /// 还会拦截系统交来的文件 / 链接）；开启时拒绝 → opt-out 本就为 false。不报错，重新探测。
+    fn absorb_association(
+        opt_out: Option<&'static str>,
+    ) -> impl FnOnce(&mut Self, Result<Value, RpcErrorData>, &mut Context<Self>) + 'static {
+        move |this, result, cx| match result {
+            Err(error) if error.code == ApplicationErrorCode::Cancelled => {
+                if let Some(key) = opt_out {
+                    this.set_pref_bool(key, false, cx);
+                }
+                this.load_integration(cx);
+            }
+            result => this.absorb_integration(result, cx),
         }
     }
 

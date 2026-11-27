@@ -326,13 +326,16 @@ fn integration_switch(ctx: &SectionContext, kind: IntegrationKind) -> Control {
         },
         move |value, cx: &mut App| {
             set.update(cx, |store, cx| {
-                if let Some(key) = opt_out_key(kind) {
+                let opt_out = opt_out_key(kind);
+                if let Some(key) = opt_out {
                     store.set_pref_bool(key, !value, cx);
                 }
                 match kind {
                     IntegrationKind::Autostart => store.set_autostart(value, cx),
-                    IntegrationKind::Torrent => store.set_file_association(value, cx),
-                    IntegrationKind::Scheme(scheme) => store.set_url_protocol(scheme, value, cx),
+                    IntegrationKind::Torrent => store.set_file_association(value, opt_out, cx),
+                    IntegrationKind::Scheme(scheme) => {
+                        store.set_url_protocol(scheme, value, opt_out, cx);
+                    }
                 }
             });
         },

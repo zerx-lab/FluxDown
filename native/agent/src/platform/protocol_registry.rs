@@ -235,48 +235,74 @@ mod inner {
 
 // macOS：Launch Services 默认处理程序；scheme 必须在 `CFBundleURLTypes`
 // （packaging/macos/Info.plist）中声明，Launch Services 才接受本 bundle 为候选。
-#[cfg(target_os = "macos")]
+// macOS 12+ 改默认程序会弹系统确认框：经 `NSWorkspace` 确认式接口阻塞到用户作答。
+#[cfg(all(target_os = "macos", feature = "desktop"))]
 mod inner {
     use std::path::Path;
 
     use super::UrlScheme;
     use crate::platform::macos_cf;
+    use crate::platform::macos_default_app as workspace;
     use crate::platform::{PlatformError, host_bundle_id, successor_handler};
 
     pub fn supported(_desktop: Option<&Path>) -> bool {
         host_bundle_id().is_some()
     }
 
-    /// 本 bundle 是否为 `proto` 的默认处理程序。
-    pub fn is_registered(proto: UrlScheme, _desktop: Option<&Path>) -> bool {
-        let Ok(Some(handler_id)) = macos_cf::default_scheme_handler(proto.scheme) else {
-            return false;
-        };
-        host_bundle_id().is_some_and(|mine| handler_id.eq_ignore_ascii_case(&mine))
+    fn handled_by(scheme: &str, bundle_id: &str) -> bool {
+        matches!(
+            macos_cf::default_scheme_handler(scheme),
+            Ok(Some(handler)) if handler.eq_ignore_ascii_case(bundle_id)
+        )
     }
 
-    /// 把本 bundle 设为 `proto` 的默认处理程序。
+    /// 本 bundle 是否为 `proto` 的默认处理程序。
+    pub fn is_registered(proto: UrlScheme, _desktop: Option<&Path>) -> bool {
+        host_bundle_id().is_some_and(|mine| handled_by(proto.scheme, &mine))
+    }
+
+    /// 把 `proto` 交给 `app`：macOS 12+ 阻塞到用户在系统确认框作答，macOS 11 直接写入。
+    fn set_handler(proto: UrlScheme, app: &workspace::App) -> Result<(), PlatformError> {
+        if workspace::confirmed_setters_available() {
+            workspace::set_default_scheme_app(app, proto.scheme)
+        } else {
+            macos_cf::set_scheme_handler(proto.scheme, &app.id)
+                .map_err(|error| PlatformError::Failed(error.to_string()))
+        }
+    }
+
+    /// 把本 bundle 设为 `proto` 的默认处理程序；用户拒绝返回 [`PlatformError::Declined`]。
     pub fn register(proto: UrlScheme, _desktop: Option<&Path>) -> Result<(), PlatformError> {
-        let bundle_id = host_bundle_id().ok_or(PlatformError::Unsupported(
+        let app = workspace::host_app().ok_or(PlatformError::Unsupported(
             "fluxdown-agent is not running inside an app bundle",
         ))?;
-        macos_cf::set_scheme_handler(proto.scheme, &bundle_id)
-            .map_err(|error| PlatformError::Failed(error.to_string()))?;
-        tracing::info!(scheme = proto.scheme, bundle_id, "registered URL protocol");
+        if handled_by(proto.scheme, &app.id) {
+            return Ok(());
+        }
+        set_handler(proto, &app)?;
+        if !workspace::settles(|| handled_by(proto.scheme, &app.id)) {
+            tracing::info!(scheme = proto.scheme, "URL protocol registration declined");
+            return Err(PlatformError::Declined);
+        }
+        tracing::info!(
+            scheme = proto.scheme,
+            bundle_id = app.id,
+            "registered URL protocol"
+        );
         Ok(())
     }
 
     /// 把 `proto` 移交给另一个已安装的候选程序；仅在当前由我们持有时执行，
-    /// 不覆盖其他客户端的选择。
+    /// 不覆盖其他客户端的选择。用户选「继续使用 FluxDown」返回 [`PlatformError::Declined`]。
     ///
     /// Launch Services 没有“取消”原语，设空 bundle id 会回落到剩余候选——FluxDown 是唯一
     /// 候选时仍是 FluxDown。因此显式挑选另一个候选；没有候选时保持现状，由
     /// `<scheme>_assoc_user_disabled` 在捕获入口拦截系统交来的链接。
-    pub fn unregister(proto: UrlScheme, desktop: Option<&Path>) -> Result<(), PlatformError> {
+    pub fn unregister(proto: UrlScheme, _desktop: Option<&Path>) -> Result<(), PlatformError> {
         let Some(mine) = host_bundle_id() else {
             return Ok(());
         };
-        if !is_registered(proto, desktop) {
+        if !handled_by(proto.scheme, &mine) {
             tracing::info!(
                 scheme = proto.scheme,
                 "URL protocol not registered to FluxDown, skipping removal"
@@ -284,21 +310,38 @@ mod inner {
             return Ok(());
         }
         let candidates = macos_cf::scheme_handlers(proto.scheme)?;
-        let Some(successor) = successor_handler(candidates, &mine) else {
+        let Some(successor) =
+            successor_handler(candidates, &mine).and_then(|id| workspace::app_for_bundle_id(&id))
+        else {
             tracing::info!(
                 scheme = proto.scheme,
                 "no other handler installed; FluxDown stays the system default"
             );
             return Ok(());
         };
-        macos_cf::set_scheme_handler(proto.scheme, &successor)
-            .map_err(|error| PlatformError::Failed(error.to_string()))?;
-        tracing::info!(scheme = proto.scheme, successor, "handed URL protocol over");
+        set_handler(proto, &successor)?;
+        if !workspace::settles(|| !handled_by(proto.scheme, &mine)) {
+            tracing::info!(
+                scheme = proto.scheme,
+                successor = successor.id,
+                "URL protocol handover declined"
+            );
+            return Err(PlatformError::Declined);
+        }
+        tracing::info!(
+            scheme = proto.scheme,
+            successor = successor.id,
+            "handed URL protocol over"
+        );
         Ok(())
     }
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(
+    target_os = "windows",
+    target_os = "linux",
+    all(target_os = "macos", feature = "desktop")
+)))]
 mod inner {
     use std::path::Path;
 
