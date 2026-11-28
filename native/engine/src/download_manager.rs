@@ -16588,8 +16588,7 @@ impl DownloadManager {
         };
         // parts 边车（完成时写下）：优先用它做种——选中文件按记录的最终
         // 路径打开、未选文件路由到边车 blob，不在 save_dir 重建任何占位
-        // 文件，扁平化/重命名布局也能通过校验。缺失/损坏时回退默认
-        // storage（下面的 output_folder 推断仅在回退路径生效）。
+        // 文件，扁平化/重命名布局也能通过校验。缺失/损坏时回退到种子原路径（下面的 output_folder 推断仅在回退路径生效）。
         let parts_factory = match crate::bt_partfile::load_seed_factory(
             &crate::bt_partfile::sidecar_path(&self.app_data_dir, &task_id),
             std::path::Path::new(&task.save_dir),
@@ -16597,7 +16596,7 @@ impl DownloadManager {
             Ok(f) => f,
             Err(e) => {
                 log_info!(
-                    "[manager] reseed {}: parts sidecar unusable ({}) — falling back to default storage",
+                    "[manager] reseed {}: parts sidecar unusable ({}) — using original torrent paths",
                     task_id,
                     e
                 );

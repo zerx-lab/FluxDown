@@ -2286,8 +2286,7 @@ impl SharedBtSession {
     /// 注入为该 torrent 的自定义 storage：选中文件按边车映射的最终路径
     /// 打开（绝不创建新文件），未选文件路由到边车 blob——磁盘上不会
     /// 出现未选文件的 0 字节占位，边界 piece 校验/上传均为真实字节，
-    /// 扁平化/重命名后的布局也能通过校验。为 `None` 时回退 librqbit
-    /// 默认 FilesystemStorage（老任务/边车损坏）。
+    /// 扁平化/重命名后的布局也能通过校验。为 `None` 时使用原路径（Windows 只读，其他平台使用默认存储）（老任务/边车损坏）。
     pub async fn readd_for_seeding(
         &self,
         task_id: &str,
@@ -2300,10 +2299,18 @@ impl SharedBtSession {
         let mut opts = AddTorrentOptions {
             overwrite: true,
             output_folder: Some(output_folder),
+            storage_factory: match parts_factory {
+                Some(factory) => Some(factory.into_boxed()),
+                #[cfg(windows)]
+                None => Some(crate::bt_partfile::original_paths_seed_factory(
+                    only_files.clone(),
+                )),
+                #[cfg(not(windows))]
+                None => None,
+            },
             only_files,
             paused: true,
             ratelimits: task_ratelimits(upload_limit_bps),
-            storage_factory: parts_factory.map(|f| f.into_boxed()),
             ..Default::default()
         };
         self.apply_task_options(task_id, &mut opts).await;
@@ -6669,7 +6676,10 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<BtInnerExit, DownloadErro
             let save_path = PathBuf::from(&save_dir);
             let stage_dir = bt_stage_dir(&save_dir, &task_id);
 
-            let (completed_name, all_moves_succeeded) = if !stage_dir.exists() {
+            #[cfg(windows)]
+            let mut wrote_sidecar = false;
+            let has_staging = stage_dir.exists();
+            let (completed_name, all_moves_succeeded) = if !has_staging {
                 // No staging dir at all — resumed download that was already
                 // moved in a previous session, or existing_handle path where
                 // output_folder == save_dir.  The DB file_name is already
@@ -6952,11 +6962,17 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<BtInnerExit, DownloadErro
                                     })
                                     .await;
                                     match result {
-                                        Ok(Ok(n)) => log_info!(
-                                            "[BT] task={} parts sidecar written ({} boundary segment(s))",
-                                            short_id(&task_id),
-                                            n
-                                        ),
+                                        Ok(Ok(n)) => {
+                                            #[cfg(windows)]
+                                            {
+                                                wrote_sidecar = true;
+                                            }
+                                            log_info!(
+                                                "[BT] task={} parts sidecar written ({} boundary segment(s))",
+                                                short_id(&task_id),
+                                                n
+                                            );
+                                        }
                                         Ok(Err(e)) => log_info!(
                                             "[BT] task={} parts sidecar write failed: {} — reseed will fall back",
                                             short_id(&task_id),
@@ -7214,59 +7230,109 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<BtInnerExit, DownloadErro
             // 不能再登记为活动做种者：暂停不会被撤销，登记会让 UI 显示
             // 「做种中」而实际不上传。
             let user_paused = cancelled.load(Ordering::SeqCst) || handle.is_paused();
-            let (seeding_status, seeding_message) = if !seed_enabled || user_paused {
-                shared_bt.pause_task(&task_id).await?;
-                let stopped = crate::bt_seeding::SeedingStopReason::UserStopped;
-                db.update_task_seeding_status(&task_id, stopped.as_i32(), stopped.message())
-                    .await?;
-                log_info!(
-                    "[BT] task={} seeding not started (disabled by config or task paused/cancelled during completion) — torrent paused",
-                    short_id(&task_id)
-                );
-                (stopped.as_i32(), stopped.message())
-            } else {
-                // Register the completed torrent as a seeder.  The torrent
-                // stays live so it can upload to peers.  When the
-                // active-seeder cap is reached the torrent is queued and
-                // paused instead; a later reconcile activates it in FIFO
-                // order.
-                let registration = shared_bt
-                    .register_seeder(
-                        &task_id,
-                        handle.clone(),
-                        uploaded_at_completion,
-                        completed_uploaded_bytes,
-                        seed_time_base,
-                    )
-                    .await;
-                match registration {
-                    SeedingRegistration::Activated | SeedingRegistration::AlreadyPresent => {
-                        db.set_task_seeding_active(&task_id, chrono::Local::now().timestamp())
-                            .await?;
-                        (crate::bt_seeding::SEEDING_STATUS_ACTIVE, "")
-                    }
-                    SeedingRegistration::Queued => {
-                        shared_bt.pause_task(&task_id).await?;
-                        if shared_bt.seeding_manager().is_seeding(&task_id).await {
-                            // 与 actor 侧 reconcile 的升级竞争：注册后、暂停前它
-                            // 可能已被提升为活跃做种者。以 SeedingManager 内存态
-                            // 为准，重新解除暂停并落活跃状态，避免三方失配。
-                            if shared_bt.resume_task(&task_id).await?.is_none() {
-                                return Err(DownloadError::Other(
-                                    "BT seeding resume lost its handle".into(),
-                                ));
-                            }
+            let start_seeding = async {
+                #[cfg(windows)]
+                {
+                    let seed_handle = handle.clone();
+                    let sidecar_path = shared_bt.parts_sidecar_path(&task_id);
+                    tokio::task::spawn_blocking(move || {
+                        anyhow::ensure!(
+                            !has_staging || wrote_sidecar,
+                            "completed torrent sidecar unavailable"
+                        );
+                        let factory =
+                            crate::bt_partfile::load_seed_factory(&sidecar_path, &save_path)
+                                .map_err(anyhow::Error::msg)?;
+                        anyhow::ensure!(
+                            !has_staging || factory.is_some(),
+                            "completed torrent sidecar missing"
+                        );
+                        crate::bt_sparse::switch_to_seed_files(&seed_handle, factory)
+                    })
+                    .await
+                    .map_err(|e| DownloadError::Other(format!("{e:#}")))?
+                    .map_err(|e| {
+                        DownloadError::Other(format!("open completed files for seeding: {e:#}"))
+                    })?;
+                }
+                Ok::<_, DownloadError>(if !seed_enabled || user_paused {
+                    shared_bt.pause_task(&task_id).await?;
+                    let stopped = crate::bt_seeding::SeedingStopReason::UserStopped;
+                    db.update_task_seeding_status(&task_id, stopped.as_i32(), stopped.message())
+                        .await?;
+                    log_info!(
+                        "[BT] task={} seeding not started (disabled by config or task paused/cancelled during completion) — torrent paused",
+                        short_id(&task_id)
+                    );
+                    (stopped.as_i32(), stopped.message())
+                } else {
+                    // Register the completed torrent as a seeder.  The torrent
+                    // stays live so it can upload to peers.  When the
+                    // active-seeder cap is reached the torrent is queued and
+                    // paused instead; a later reconcile activates it in FIFO
+                    // order.
+                    let registration = shared_bt
+                        .register_seeder(
+                            &task_id,
+                            handle.clone(),
+                            uploaded_at_completion,
+                            completed_uploaded_bytes,
+                            seed_time_base,
+                        )
+                        .await;
+                    match registration {
+                        SeedingRegistration::Activated | SeedingRegistration::AlreadyPresent => {
                             db.set_task_seeding_active(&task_id, chrono::Local::now().timestamp())
                                 .await?;
                             (crate::bt_seeding::SEEDING_STATUS_ACTIVE, "")
-                        } else {
-                            db.set_task_seeding_queued(&task_id).await?;
-                            (
-                                crate::bt_seeding::SEEDING_STATUS_QUEUED,
-                                crate::bt_seeding::SEEDING_QUEUED_MESSAGE,
-                            )
+                        }
+                        SeedingRegistration::Queued => {
+                            shared_bt.pause_task(&task_id).await?;
+                            if shared_bt.seeding_manager().is_seeding(&task_id).await {
+                                // 与 actor 侧 reconcile 的升级竞争：注册后、暂停前它
+                                // 可能已被提升为活跃做种者。以 SeedingManager 内存态
+                                // 为准，重新解除暂停并落活跃状态，避免三方失配。
+                                if shared_bt.resume_task(&task_id).await?.is_none() {
+                                    return Err(DownloadError::Other(
+                                        "BT seeding resume lost its handle".into(),
+                                    ));
+                                }
+                                db.set_task_seeding_active(
+                                    &task_id,
+                                    chrono::Local::now().timestamp(),
+                                )
+                                .await?;
+                                (crate::bt_seeding::SEEDING_STATUS_ACTIVE, "")
+                            } else {
+                                db.set_task_seeding_queued(&task_id).await?;
+                                (
+                                    crate::bt_seeding::SEEDING_STATUS_QUEUED,
+                                    crate::bt_seeding::SEEDING_QUEUED_MESSAGE,
+                                )
+                            }
                         }
                     }
+                })
+            };
+            let start_error;
+            let (seeding_status, seeding_message) = match start_seeding.await {
+                Ok(state) => state,
+                Err(error) => {
+                    start_error = format!("could not start seeding: {error:#}");
+                    log_info!("[BT] task={} {start_error}", short_id(&task_id));
+                    if shared_bt.unregister_seeder(&task_id).await.is_some() {
+                        tracing::debug!(task_id, "rolled back seeding registration");
+                    }
+                    if let Err(error) = shared_bt.evict(&task_id, false).await {
+                        log_info!(
+                            "[BT] task={} evict after seeding failure: {error:#}",
+                            short_id(&task_id)
+                        );
+                    }
+                    let stopped = crate::bt_seeding::SeedingStopReason::UserStopped.as_i32();
+                    db.update_task_seeding_status(&task_id, stopped, &start_error)
+                        .await?;
+                    (stopped, start_error.as_str())
                 }
             };
             db.update_task_status(&task_id, STATUS_COMPLETED, "")

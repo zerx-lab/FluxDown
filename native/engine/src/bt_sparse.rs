@@ -24,9 +24,14 @@
 #[cfg(feature = "bt")]
 use std::any::TypeId;
 use std::path::Path;
+#[cfg(feature = "bt")]
+use std::{
+    collections::HashMap,
+    sync::{Arc, LazyLock, Mutex, RwLock, Weak},
+};
 
 #[cfg(feature = "bt")]
-use librqbit::storage::filesystem::{FilesystemStorage, FilesystemStorageFactory};
+use librqbit::storage::filesystem::FilesystemStorageFactory;
 #[cfg(feature = "bt")]
 use librqbit::storage::{
     BoxStorageFactory, MoveStorageOutcome, MoveStorageRequest, StorageFactory, TorrentStorage,
@@ -61,9 +66,8 @@ impl StorageFactory for SparseFsFactory {
         shared: &ManagedTorrentShared,
         metadata: &TorrentMetadata,
     ) -> anyhow::Result<Self::Storage> {
-        Ok(Box::new(SparseFsStorage {
-            inner: self.inner.create(shared, metadata)?,
-        }))
+        let storage = Box::new(self.inner.create(shared, metadata)?);
+        Ok(Box::new(SparseFsStorage::register(shared, storage)))
     }
 
     fn is_type_id(&self, type_id: TypeId) -> bool {
@@ -82,10 +86,82 @@ impl StorageFactory for SparseFsFactory {
 }
 
 #[cfg(feature = "bt")]
-/// 委托 `FilesystemStorage` 的存储实现，仅在 `init` 后追加 sparse 标记；其余操作（含
-/// 重命名 / 移动 / 重新校验用到的接口）原样转发。
+/// 下载时向文件系统存储转发 I/O，并在初始化后标记 sparse。完成搬移后，
+/// 同一个 torrent 的上传读请求切换到只读成品，已有对端连接继续使用。
 pub struct SparseFsStorage {
-    inner: FilesystemStorage,
+    key: usize,
+    inner: Arc<StorageCell>,
+}
+
+#[cfg(feature = "bt")]
+type StorageCell = RwLock<Box<dyn TorrentStorage>>;
+
+// Only the completion path needs to find the live storage from the torrent handle.
+// A shared torrent outlives its active storage. Its address distinguishes concurrent sessions.
+#[cfg(feature = "bt")]
+static ACTIVE: LazyLock<Mutex<HashMap<usize, Weak<StorageCell>>>> = LazyLock::new(Mutex::default);
+
+#[cfg(feature = "bt")]
+impl SparseFsStorage {
+    fn register(shared: &ManagedTorrentShared, storage: Box<dyn TorrentStorage>) -> Self {
+        let key = std::ptr::from_ref(shared).addr();
+        let inner = Arc::new(RwLock::new(storage));
+        ACTIVE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key, Arc::downgrade(&inner));
+        Self { key, inner }
+    }
+
+    fn read(&self) -> anyhow::Result<std::sync::RwLockReadGuard<'_, Box<dyn TorrentStorage>>> {
+        self.inner
+            .read()
+            .map_err(|_| anyhow::anyhow!("torrent storage lock poisoned"))
+    }
+}
+
+#[cfg(feature = "bt")]
+impl Drop for SparseFsStorage {
+    fn drop(&mut self) {
+        let mut active = ACTIVE.lock().unwrap_or_else(|e| e.into_inner());
+        if active
+            .get(&self.key)
+            .is_some_and(|w| w.ptr_eq(&Arc::downgrade(&self.inner)))
+        {
+            active.remove(&self.key);
+        }
+    }
+}
+
+#[cfg(feature = "bt")]
+pub(crate) fn switch_to_seed_files(
+    handle: &crate::bt_downloader::BtHandle,
+    sidecar: Option<crate::bt_partfile::PartsSeedStorageFactory>,
+) -> anyhow::Result<()> {
+    let shared = handle.shared();
+    let selected = handle.only_files();
+    let storage = handle.with_metadata(|metadata| {
+        let mut files = match &sidecar {
+            Some(factory) => factory.create(shared, metadata)?,
+            None => crate::bt_partfile::PartsSeedStorage::from_paths(
+                shared,
+                metadata,
+                selected.as_deref(),
+            )?,
+        };
+        files.init(shared, metadata)?;
+        Ok::<_, anyhow::Error>(files)
+    })??;
+    // Serialize with take(): rqbit transfers ownership during pause/resume.
+    let active = ACTIVE.lock().unwrap_or_else(|e| e.into_inner());
+    let cell = active
+        .get(&std::ptr::from_ref(shared).addr())
+        .and_then(Weak::upgrade)
+        .ok_or_else(|| anyhow::anyhow!("active torrent storage missing"))?;
+    *cell
+        .write()
+        .map_err(|_| anyhow::anyhow!("torrent storage lock poisoned"))? = Box::new(storage);
+    Ok(())
 }
 
 #[cfg(feature = "bt")]
@@ -95,7 +171,10 @@ impl TorrentStorage for SparseFsStorage {
         shared: &ManagedTorrentShared,
         metadata: &TorrentMetadata,
     ) -> anyhow::Result<()> {
-        self.inner.init(shared, metadata)?;
+        self.inner
+            .write()
+            .map_err(|_| anyhow::anyhow!("torrent storage lock poisoned"))?
+            .init(shared, metadata)?;
         // 文件此刻已创建/打开（0 字节或带既有数据），尚未 set_len——
         // 正是打 sparse 标记的窗口。对已有数据的文件重复打标记是幂等
         // 操作，既有分配不受影响。
@@ -118,50 +197,62 @@ impl TorrentStorage for SparseFsStorage {
     }
 
     fn pread_exact(&self, file_id: usize, offset: u64, buf: &mut [u8]) -> anyhow::Result<()> {
-        self.inner.pread_exact(file_id, offset, buf)
+        self.read()?.pread_exact(file_id, offset, buf)
     }
 
     fn pwrite_all(&self, file_id: usize, offset: u64, buf: &[u8]) -> anyhow::Result<()> {
-        self.inner.pwrite_all(file_id, offset, buf)
+        self.read()?.pwrite_all(file_id, offset, buf)
+    }
+
+    fn pwrite_all_vectored(
+        &self,
+        file_id: usize,
+        offset: u64,
+        bufs: [std::io::IoSlice<'_>; 2],
+    ) -> anyhow::Result<usize> {
+        self.read()?.pwrite_all_vectored(file_id, offset, bufs)
     }
 
     fn remove_file(&self, file_id: usize, filename: &Path) -> anyhow::Result<()> {
-        self.inner.remove_file(file_id, filename)
+        self.read()?.remove_file(file_id, filename)
     }
 
     fn remove_directory_if_empty(&self, path: &Path) -> anyhow::Result<()> {
-        self.inner.remove_directory_if_empty(path)
+        self.read()?.remove_directory_if_empty(path)
     }
 
     fn ensure_file_length(&self, file_id: usize, length: u64) -> anyhow::Result<()> {
-        self.inner.ensure_file_length(file_id, length)
+        self.read()?.ensure_file_length(file_id, length)
     }
 
     fn take(&self) -> anyhow::Result<Box<dyn TorrentStorage>> {
-        // 暂停时 librqbit 用 take() 把存储换成占位并取走句柄集；sparse
-        // 标记是文件属性、init 期已落盘，之后的存储对象无需再带包装。
-        // `on_piece_completed` 不覆写：FilesystemStorage 亦为默认 no-op。
-        self.inner.take()
+        let mut active = ACTIVE.lock().unwrap_or_else(|e| e.into_inner());
+        let inner = Arc::new(RwLock::new(self.read()?.take()?));
+        active.insert(self.key, Arc::downgrade(&inner));
+        Ok(Box::new(Self {
+            key: self.key,
+            inner,
+        }))
     }
 
     fn file_length(&self, file_id: usize) -> anyhow::Result<Option<u64>> {
-        self.inner.file_length(file_id)
+        self.read()?.file_length(file_id)
     }
 
     fn rename_file(&self, file_id: usize, from: &Path, to: &Path) -> anyhow::Result<()> {
-        self.inner.rename_file(file_id, from, to)
+        self.read()?.rename_file(file_id, from, to)
     }
 
     fn move_storage(&self, request: &MoveStorageRequest<'_>) -> anyhow::Result<MoveStorageOutcome> {
-        self.inner.move_storage(request)
+        self.read()?.move_storage(request)
     }
 
     fn finish_move_storage(&self, commit: bool) -> anyhow::Result<()> {
-        self.inner.finish_move_storage(commit)
+        self.read()?.finish_move_storage(commit)
     }
 
     fn forget_cached_data(&self) -> anyhow::Result<()> {
-        self.inner.forget_cached_data()
+        self.read()?.forget_cached_data()
     }
 }
 

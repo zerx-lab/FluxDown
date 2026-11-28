@@ -24,6 +24,192 @@ fn pack() -> Vec<(&'static str, Vec<u8>)> {
     ]
 }
 
+#[cfg(all(windows, any(feature = "plugins", feature = "components")))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn completed_files_allow_shared_read_during_upload_and_after_restart() {
+    check_shared_read_while_seeding(false).await;
+}
+
+#[cfg(all(windows, any(feature = "plugins", feature = "components")))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn magnet_completed_files_allow_shared_read_during_upload_and_after_restart() {
+    check_shared_read_while_seeding(true).await;
+}
+
+#[cfg(all(windows, any(feature = "plugins", feature = "components")))]
+async fn check_shared_read_while_seeding(use_magnet: bool) {
+    use std::io::Read;
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let tracker = Tracker::start().await;
+    let payload = patterned(128 * 1024, 42);
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    zip.start_file("payload.bin", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    zip.write_all(&payload).unwrap();
+    let files = vec![
+        ("sample.zip", zip.finish().unwrap().into_inner()),
+        ("other.bin", patterned(24_490, 9)),
+    ];
+    let origin = Seeder::start(&files, &tracker, None).await;
+    let mut host = Downloader::start(&tracker).await;
+    let id = if use_magnet {
+        let share = fluxdown_engine::bt_local_seed::torrent_share(&origin.torrent_bytes, &[])
+            .expect("create magnet link");
+        host.add_magnet(&share.magnet).await
+    } else {
+        host.add(&origin, &[], false).await
+    };
+    let task = host.wait_done(&id).await;
+    assert_eq!(task.status, 3, "{}", task.error_message);
+    origin.session.stop().await;
+    for phase in ["fresh", "restart", "legacy"] {
+        if phase != "fresh" {
+            if phase == "legacy" {
+                let parts =
+                    fluxdown_engine::bt_partfile::sidecar_path(&host.work.to_string_lossy(), &id);
+                std::fs::remove_file(parts).expect("simulate an older download without a sidecar");
+            }
+            host = host.restart(&tracker).await;
+            host.engine.manager.load_and_send_all_tasks().await;
+        }
+        wait_until("active seeder", || async {
+            host.task(&id).await.seeding_status == SEEDING_STATUS_ACTIVE
+        })
+        .await;
+        let path = Path::new(&task.save_dir)
+            .join(&task.file_name)
+            .join("sample.zip");
+        let reader = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(path)
+            .expect("open with FILE_SHARE_READ while seeding");
+        let mut archive = zip::ZipArchive::new(reader).expect("open ZIP while seeding");
+        let mut bytes = Vec::new();
+        archive
+            .by_name("payload.bin")
+            .unwrap()
+            .read_to_end(&mut bytes)
+            .expect("extract member and verify CRC");
+        assert_eq!(bytes, payload);
+
+        let target = host.work.join(format!("receiver-{phase}"));
+        receive_and_check(
+            &origin.torrent_bytes,
+            host.engine.manager.bt_port_status().listen_port,
+            &target,
+            &files,
+        )
+        .await;
+        drop(archive);
+    }
+    host.shutdown().await;
+}
+
+#[cfg(windows)]
+async fn receive_and_check(
+    torrent_bytes: &[u8],
+    port: u16,
+    target: &Path,
+    files: &[(&str, Vec<u8>)],
+) {
+    use std::net::Ipv4Addr;
+    let peer = librqbit::Session::new_with_opts(
+        target.to_path_buf(),
+        librqbit::SessionOptions {
+            dht: None,
+            disable_trackers: true,
+            disable_local_service_discovery: true,
+            mse_mode: librqbit::MseMode::Disabled,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("isolated receiving peer");
+    let received = peer
+        .add_torrent(
+            librqbit::AddTorrent::from_bytes(torrent_bytes.to_vec()),
+            Some(librqbit::AddTorrentOptions {
+                initial_peers: Some(vec![(Ipv4Addr::LOCALHOST, port).into()]),
+                output_folder: Some(target.to_string_lossy().into_owned()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("add to receiver")
+        .into_handle()
+        .expect("receiving torrent");
+    tokio::time::timeout(Duration::from_secs(60), received.wait_until_completed())
+        .await
+        .expect("seed did not deliver all pieces")
+        .expect("receiver verification failed");
+    for (rel, expected) in files {
+        assert_eq!(
+            &std::fs::read(target.join(rel)).expect("received file"),
+            expected
+        );
+    }
+    peer.stop().await;
+}
+
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn partial_seed_uploads_cross_file_piece_after_staging_cleanup() {
+    let tracker = Tracker::start().await;
+    // Both files fit in one piece. The receiver needs the unselected tail to verify it.
+    let files = vec![("a.bin", patterned(7001, 3)), ("b.bin", patterned(9001, 7))];
+    assert!(files.iter().map(|(_, bytes)| bytes.len()).sum::<usize>() <= PIECE_LEN as usize);
+    let origin = Seeder::start(&files, &tracker, None).await;
+    let mut host = Downloader::start(&tracker).await;
+    let id = host.add(&origin, &[origin.index_of("a.bin")], false).await;
+    let task = host.wait_done(&id).await;
+    assert_eq!(task.status, 3, "{}", task.error_message);
+    assert_eq!(
+        task.seeding_status, SEEDING_STATUS_ACTIVE,
+        "{}",
+        task.seeding_message
+    );
+    assert!(!host.stage_dir(&id).await.try_exists().unwrap());
+    assert!(host.landed(&task, "b.bin").await.is_none());
+    origin.session.stop().await;
+    receive_and_check(
+        &origin.torrent_bytes,
+        host.engine.manager.bt_port_status().listen_port,
+        &host.work.join("receiver-partial"),
+        &files,
+    )
+    .await;
+    host.shutdown().await;
+}
+
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn seed_storage_failure_keeps_download_completed() {
+    let tracker = Tracker::start().await;
+    let files = pack();
+    let origin = Seeder::start(&files, &tracker, Some(SLOW)).await;
+    let mut host = Downloader::start(&tracker).await;
+    let id = host.add(&origin, &[], false).await;
+    let sidecar = fluxdown_engine::bt_partfile::sidecar_path(&host.work.to_string_lossy(), &id);
+    std::fs::create_dir_all(sidecar).expect("block sidecar publication with a directory");
+    let task = host.wait_done(&id).await;
+    assert_eq!(task.status, 3, "{}", task.error_message);
+    assert_eq!(
+        task.seeding_status,
+        fluxdown_engine::bt_seeding::SeedingStopReason::UserStopped.as_i32()
+    );
+    assert!(
+        task.seeding_message.contains("could not start seeding"),
+        "{}",
+        task.seeding_message
+    );
+    for (rel, bytes) in files {
+        assert_eq!(host.landed(&task, rel).await.as_ref(), Some(&bytes));
+    }
+    host.shutdown().await;
+}
+
 fn path_of(files: &BtTaskFiles, index: u32) -> &str {
     files
         .files
