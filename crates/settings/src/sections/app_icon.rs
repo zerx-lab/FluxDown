@@ -1,4 +1,4 @@
-//! 外观 → 应用图标：默认 / 闪电 / 自定义图片三张卡片 + 「选择图片…」。
+//! 外观 → 应用图标：默认 / 内置备选图标 / 自定义图片卡片 + 「选择图片…」。
 //!
 //! 控件**不写偏好**：选择经 `agent.platform.setAppIcon` 交给 agent（导入图片、落盘、再写
 //! `desktop.app_icon` 并应用到托盘 / 窗口 / 快捷方式），生效由 app 的偏好投影完成。卡片的选中态
@@ -9,7 +9,7 @@ use std::sync::{Arc, LazyLock};
 
 use base64::Engine as _;
 use fluxdown_protocol::app_icon::{
-    APP_ICON_PREF_KEY, AppIconChoice, AppIconKind, PlatformAppIconImageDto,
+    APP_ICON_PREF_KEY, AppIconChoice, AppIconKind, BuiltinAppIcon, PlatformAppIconImageDto,
     PlatformSetAppIconParams,
 };
 use fluxdown_protocol::{ApplicationErrorCode, RpcErrorData, method};
@@ -31,12 +31,50 @@ use crate::store::{SettingsStore, rpc_error_text};
 use crate::ui::{Control, SettingsRow, row_button};
 
 const DEFAULT_PNG: &[u8] = include_bytes!("../../../../assets/logo/fluxdown_logo.png");
-const BOLT_PNG: &[u8] = include_bytes!("../../../../assets/logo/fluxdown_bolt.png");
 
 static DEFAULT_IMAGE: LazyLock<Arc<Image>> =
     LazyLock::new(|| Arc::new(Image::from_bytes(ImageFormat::Png, DEFAULT_PNG.to_vec())));
-static BOLT_IMAGE: LazyLock<Arc<Image>> =
-    LazyLock::new(|| Arc::new(Image::from_bytes(ImageFormat::Png, BOLT_PNG.to_vec())));
+/// 与 [`BuiltinAppIcon::ALL`] 同序的预览图。
+static BUILTIN_IMAGES: LazyLock<[Arc<Image>; 4]> = LazyLock::new(|| {
+    BuiltinAppIcon::ALL.map(|icon| {
+        Arc::new(Image::from_bytes(
+            ImageFormat::Png,
+            builtin_card(icon).png.to_vec(),
+        ))
+    })
+});
+
+/// 内置备选图标卡片的静态素材。
+struct BuiltinCard {
+    id: &'static str,
+    label_key: &'static str,
+    png: &'static [u8],
+}
+
+const fn builtin_card(icon: BuiltinAppIcon) -> BuiltinCard {
+    match icon {
+        BuiltinAppIcon::Bolt => BuiltinCard {
+            id: "app-icon-bolt",
+            label_key: "appIconBolt",
+            png: include_bytes!("../../../../assets/logo/fluxdown_bolt.png"),
+        },
+        BuiltinAppIcon::Classic => BuiltinCard {
+            id: "app-icon-classic",
+            label_key: "appIconClassic",
+            png: include_bytes!("../../../../assets/logo/fluxdown_classic.png"),
+        },
+        BuiltinAppIcon::Frost => BuiltinCard {
+            id: "app-icon-frost",
+            label_key: "appIconFrost",
+            png: include_bytes!("../../../../assets/logo/fluxdown_frost.png"),
+        },
+        BuiltinAppIcon::Sunset => BuiltinCard {
+            id: "app-icon-sunset",
+            label_key: "appIconSunset",
+            png: include_bytes!("../../../../assets/logo/fluxdown_sunset.png"),
+        },
+    }
+}
 
 type SelectHandler = Box<dyn Fn(&mut Window, &mut App)>;
 
@@ -127,7 +165,7 @@ fn field(ctx: &SectionContext) -> Control {
     let store = ctx.store();
     let translator = ctx.translator.clone();
     let default_label = ctx.t("appIconDefault");
-    let bolt_label = ctx.t("appIconBolt");
+    let builtin_labels = BuiltinAppIcon::ALL.map(|icon| ctx.t(builtin_card(icon).label_key));
     let custom_label = ctx.t("appIconCustom");
     let choose_label = ctx.t("appIconChooseImage");
     Control::custom(
@@ -211,13 +249,21 @@ fn field(ctx: &SectionContext) -> Control {
                             current == AppIconChoice::Default,
                             select(AppIconKind::Default),
                         ))
-                        .child(make_card(
-                            "app-icon-bolt",
-                            &bolt_label,
-                            Some(Arc::clone(&BOLT_IMAGE)),
-                            current == AppIconChoice::Bolt,
-                            select(AppIconKind::Bolt),
-                        ))
+                        .children(
+                            BuiltinAppIcon::ALL
+                                .into_iter()
+                                .zip(builtin_labels.iter())
+                                .zip(BUILTIN_IMAGES.iter())
+                                .map(|((icon, label), image)| {
+                                    make_card(
+                                        builtin_card(icon).id,
+                                        label,
+                                        Some(Arc::clone(image)),
+                                        current == AppIconChoice::Builtin(icon),
+                                        select(icon.kind()),
+                                    )
+                                }),
+                        )
                         .child(make_card(
                             "app-icon-custom",
                             &custom_label,

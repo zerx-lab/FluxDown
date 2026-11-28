@@ -1,4 +1,4 @@
-//! 应用图标（Dock / Cmd-Tab / 任务栏 / 窗口管理器 / 标题栏）：默认、内置「闪电」或用户导入的图片，
+//! 应用图标（Dock / Cmd-Tab / 任务栏 / 窗口管理器 / 标题栏）：默认、内置备选图标或用户导入的图片，
 //! 运行期可切换。
 //!
 //! 选择存为设备本地偏好 [`APP_ICON_PREF_KEY`]，**只由 agent 写入**（`agent.platform.setAppIcon`
@@ -17,7 +17,8 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use fluxdown_protocol::app_icon::{
-    APP_ICON_PREF_KEY, AppIconChoice, PlatformAppIconImageDto, PlatformAppIconImageParams,
+    APP_ICON_PREF_KEY, AppIconChoice, BuiltinAppIcon, PlatformAppIconImageDto,
+    PlatformAppIconImageParams,
 };
 use fluxdown_protocol::method;
 use gpui::{App, Global, Image, ImageFormat, WindowOptions};
@@ -27,14 +28,34 @@ use crate::agent_client::AgentClient;
 /// 与 Linux 桌面入口、Windows 资源 `InternalName`、macOS bundle id 一致的应用 ID。
 pub const APP_ID: &str = "com.fluxdown.app";
 
-/// 标题栏 / X11 使用的默认与闪电图标（方形 PNG）。
+/// 标题栏 / X11 使用的默认与内置备选图标（方形 PNG）。
 const DEFAULT_LOGO_PNG: &[u8] = include_bytes!("../../../assets/logo/fluxdown_logo.png");
-const BOLT_LOGO_PNG: &[u8] = include_bytes!("../../../assets/logo/fluxdown_bolt.png");
+const fn builtin_logo_png(icon: BuiltinAppIcon) -> &'static [u8] {
+    match icon {
+        BuiltinAppIcon::Bolt => include_bytes!("../../../assets/logo/fluxdown_bolt.png"),
+        BuiltinAppIcon::Classic => include_bytes!("../../../assets/logo/fluxdown_classic.png"),
+        BuiltinAppIcon::Frost => include_bytes!("../../../assets/logo/fluxdown_frost.png"),
+        BuiltinAppIcon::Sunset => include_bytes!("../../../assets/logo/fluxdown_sunset.png"),
+    }
+}
 /// macOS 风格（Apple HIG 内缩）的 Dock 素材，来自公共品牌资源。
 #[cfg(target_os = "macos")]
 const DEFAULT_DOCK_PNG: &[u8] = include_bytes!("../../../assets/logo/macos/app_icon_512.png");
 #[cfg(target_os = "macos")]
-const BOLT_DOCK_PNG: &[u8] = include_bytes!("../../../assets/logo/macos/app_icon_bolt_512.png");
+const fn builtin_dock_png(icon: BuiltinAppIcon) -> &'static [u8] {
+    match icon {
+        BuiltinAppIcon::Bolt => include_bytes!("../../../assets/logo/macos/app_icon_bolt_512.png"),
+        BuiltinAppIcon::Classic => {
+            include_bytes!("../../../assets/logo/macos/app_icon_classic_512.png")
+        }
+        BuiltinAppIcon::Frost => {
+            include_bytes!("../../../assets/logo/macos/app_icon_frost_512.png")
+        }
+        BuiltinAppIcon::Sunset => {
+            include_bytes!("../../../assets/logo/macos/app_icon_sunset_512.png")
+        }
+    }
+}
 
 /// 向 agent 取自定义图标母版的边长：覆盖 Dock（512）与 X11（256），再大只是白占内存。
 const CUSTOM_IMAGE_SIZE: u32 = 512;
@@ -72,7 +93,7 @@ struct Resolved {
 }
 
 impl Resolved {
-    /// 默认 / 闪电的内置素材；自定义返回 `None`（须向 agent 取）。
+    /// 默认 / 内置图标的随包素材；自定义返回 `None`（须向 agent 取）。
     fn builtin(choice: &AppIconChoice) -> Option<Self> {
         match choice {
             AppIconChoice::Default => Some(Self {
@@ -80,10 +101,10 @@ impl Resolved {
                 #[cfg(target_os = "macos")]
                 dock_png: Cow::Borrowed(DEFAULT_DOCK_PNG),
             }),
-            AppIconChoice::Bolt => Some(Self {
-                logo_png: Cow::Borrowed(BOLT_LOGO_PNG),
+            AppIconChoice::Builtin(icon) => Some(Self {
+                logo_png: Cow::Borrowed(builtin_logo_png(*icon)),
                 #[cfg(target_os = "macos")]
-                dock_png: Cow::Borrowed(BOLT_DOCK_PNG),
+                dock_png: Cow::Borrowed(builtin_dock_png(*icon)),
             }),
             AppIconChoice::Custom { .. } => None,
         }
@@ -338,7 +359,7 @@ mod macos {
 
 #[cfg(test)]
 mod tests {
-    use fluxdown_protocol::app_icon::AppIconChoice;
+    use fluxdown_protocol::app_icon::{AppIconChoice, BuiltinAppIcon};
 
     use super::{compose_hig_icon, reply_is_current};
 
@@ -352,7 +373,10 @@ mod tests {
     fn stale_or_foreign_replies_are_rejected() {
         assert!(reply_is_current(Some(&custom("a1b2")), "a1b2"));
         assert!(!reply_is_current(Some(&custom("a1b2")), "c3d4"));
-        assert!(!reply_is_current(Some(&AppIconChoice::Bolt), "a1b2"));
+        assert!(!reply_is_current(
+            Some(&AppIconChoice::Builtin(BuiltinAppIcon::Bolt)),
+            "a1b2"
+        ));
         assert!(!reply_is_current(Some(&AppIconChoice::Default), "a1b2"));
         assert!(!reply_is_current(None, "a1b2"));
     }

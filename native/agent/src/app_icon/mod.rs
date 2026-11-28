@@ -1,4 +1,4 @@
-//! 桌面应用图标（默认 / 内置「闪电」/ 用户导入的自定义图片）的 agent 侧服务。
+//! 桌面应用图标（默认 / 内置备选图标 / 用户导入的自定义图片）的 agent 侧服务。
 //!
 //! 偏好 [`APP_ICON_PREF_KEY`] 只由 agent 写：`agent.platform.setAppIcon` 先把图片落盘，再写偏好，保证
 //! 偏好引用的文件一定存在（见 [`resolve_request`]）。[`AppIconService`] 订阅偏好变化并在启动时对账一次，
@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use fluxdown_protocol::app_icon::{
-    APP_ICON_PREF_KEY, AppIconChoice, AppIconKind, PlatformAppIconImageDto,
+    APP_ICON_PREF_KEY, AppIconChoice, AppIconKind, BuiltinAppIcon, PlatformAppIconImageDto,
     PlatformSetAppIconParams,
 };
 use fluxdown_protocol::{AgentEvent, AgentPreferencesDto, ServiceEvent};
@@ -32,8 +32,16 @@ use crate::sync::SyncService;
 pub(crate) use store::write_atomic;
 pub(crate) use store::{IconStore, StoreError};
 
-/// 内置「闪电」图标（512²，自带白色圆角底）。
-pub(crate) const BOLT_PNG: &[u8] = include_bytes!("../../../../assets/logo/fluxdown_bolt.png");
+/// 内置备选图标（512²，各自带圆角底）；与 `scripts/gen_icons.ts` 产出一一对应。
+pub(crate) const fn builtin_png(icon: BuiltinAppIcon) -> &'static [u8] {
+    match icon {
+        BuiltinAppIcon::Bolt => include_bytes!("../../../../assets/logo/fluxdown_bolt.png"),
+        BuiltinAppIcon::Classic => include_bytes!("../../../../assets/logo/fluxdown_classic.png"),
+        BuiltinAppIcon::Frost => include_bytes!("../../../../assets/logo/fluxdown_frost.png"),
+        BuiltinAppIcon::Sunset => include_bytes!("../../../../assets/logo/fluxdown_sunset.png"),
+    }
+}
+
 /// 默认图标源图（X11 `_NET_WM_ICON` 还原用）。
 #[cfg(target_os = "linux")]
 pub(crate) const DEFAULT_LOGO_PNG: &[u8] =
@@ -71,7 +79,10 @@ pub(crate) fn resolve_request(
 ) -> Result<AppIconChoice, PlatformError> {
     match params.choice {
         AppIconKind::Default => Ok(AppIconChoice::Default),
-        AppIconKind::Bolt => Ok(AppIconChoice::Bolt),
+        AppIconKind::Bolt => Ok(AppIconChoice::Builtin(BuiltinAppIcon::Bolt)),
+        AppIconKind::Classic => Ok(AppIconChoice::Builtin(BuiltinAppIcon::Classic)),
+        AppIconKind::Frost => Ok(AppIconChoice::Builtin(BuiltinAppIcon::Frost)),
+        AppIconKind::Sunset => Ok(AppIconChoice::Builtin(BuiltinAppIcon::Sunset)),
         AppIconKind::Custom => {
             let revision = match params.source_path.as_deref() {
                 Some(source) => store.import(Path::new(source)),
@@ -458,7 +469,7 @@ impl AppIconService {
             return;
         };
         let choice = match legacy.trim() {
-            "bolt" => AppIconChoice::Bolt,
+            "bolt" => AppIconChoice::Builtin(BuiltinAppIcon::Bolt),
             "custom" => {
                 let store = self.store.clone();
                 let dir = self.legacy_data_dir.clone();
@@ -566,10 +577,10 @@ mod tests {
         let dir = temp_dir("builtin");
         let store = IconStore::new(&dir);
 
-        assert_eq!(
-            effective_choice(&AppIconChoice::Bolt, &store),
-            AppIconChoice::Bolt
-        );
+        for icon in BuiltinAppIcon::ALL {
+            let choice = AppIconChoice::Builtin(icon);
+            assert_eq!(effective_choice(&choice, &store), choice);
+        }
         assert_eq!(
             effective_choice(&AppIconChoice::Default, &store),
             AppIconChoice::Default
@@ -675,10 +686,12 @@ mod tests {
         );
         assert_eq!(tray_icon_source(&custom, &store), TrayIconSource::Default);
         if !cfg!(target_os = "macos") {
-            assert!(matches!(
-                tray_icon_source(&AppIconChoice::Bolt, &store),
-                TrayIconSource::Image { ref key, .. } if key == "bolt"
-            ));
+            for icon in BuiltinAppIcon::ALL {
+                assert!(matches!(
+                    tray_icon_source(&AppIconChoice::Builtin(icon), &store),
+                    TrayIconSource::Image { ref key, .. } if key == icon.key()
+                ));
+            }
         }
         std::fs::remove_dir_all(&dir).expect("cleanup");
     }
