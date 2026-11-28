@@ -196,6 +196,48 @@ pub(super) async fn update_settings(ctx: &ToolContext, args: Value) -> Result<Va
     update_settings_with(ctx, args).await
 }
 
+/// 确认卡片用的改前 / 改后(不写入):与 `update_settings` 同一套校验与取值,校验失败原样返回错误。
+pub(super) async fn preview_changes(
+    rpc: &impl ToolRpc,
+    args: Value,
+) -> Result<Vec<(String, Value, Value)>, ToolError> {
+    let args: UpdateArgs = parse_args(args)?;
+    if args.values.is_empty() || args.values.len() > MAX_KEYS {
+        return Err(invalid(format!(
+            "values must contain 1..={MAX_KEYS} settings"
+        )));
+    }
+    let snapshot = rpc.daemon_config().await?;
+    let current = rpc.preferences().await?;
+    let mut out = Vec::with_capacity(args.values.len());
+    for (key, value) in &args.values {
+        match plan_key(key, value) {
+            Ok(Planned::Daemon(plan)) => {
+                let before_wire = snapshot
+                    .values
+                    .get(key)
+                    .map_or_else(|| daemon_config_default(key), String::as_str);
+                out.push((
+                    key.clone(),
+                    wire_to_json(plan.kind, before_wire),
+                    plan.after,
+                ));
+            }
+            Ok(Planned::Preference(after)) => {
+                let before = current.values.get(key).cloned().unwrap_or(Value::Null);
+                out.push((key.clone(), before, after));
+            }
+            Err(KeyProblem::Denied(reason)) => {
+                return Err(ToolError::Refused(format!("{}: {reason}", echo_key(key))));
+            }
+            Err(KeyProblem::Invalid(message)) => {
+                return Err(invalid(format!("{}: {message}", echo_key(key))));
+            }
+        }
+    }
+    Ok(out)
+}
+
 async fn update_settings_with(rpc: &impl ToolRpc, args: Value) -> Result<Value, ToolError> {
     let args: UpdateArgs = parse_args(args)?;
     if args.values.is_empty() || args.values.len() > MAX_KEYS {

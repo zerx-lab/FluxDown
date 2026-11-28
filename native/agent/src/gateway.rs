@@ -656,6 +656,21 @@ impl GatewayService {
                     parse_params::<fluxdown_protocol::AssistantIssueParams>(request.params)?;
                 assistant_ok(self.assistant()?.discard_issue(params).await)
             }
+            method::AGENT_ASSISTANT_RENAME_SESSION => {
+                let params =
+                    parse_params::<fluxdown_protocol::AssistantRenameParams>(request.params)?;
+                assistant_value(self.assistant()?.rename_session(params).await)
+            }
+            method::AGENT_ASSISTANT_EXPORT_SESSION => {
+                let params =
+                    parse_params::<fluxdown_protocol::AssistantExportParams>(request.params)?;
+                assistant_value(self.assistant()?.export_session(params).await)
+            }
+            method::AGENT_ASSISTANT_ATTACHMENT => {
+                let params =
+                    parse_params::<fluxdown_protocol::AssistantAttachmentParams>(request.params)?;
+                assistant_value(self.assistant()?.attachment(params).await)
+            }
             method::AGENT_SYNC_GET => to_value(self.sync.status().await),
             method::AGENT_SYNC_ENABLE => sync_value(self.sync.set_enabled(true).await),
             method::AGENT_SYNC_DISABLE => sync_value(self.sync.set_enabled(false).await),
@@ -5139,6 +5154,9 @@ mod tests {
             fluxdown_protocol::method::AGENT_ASSISTANT_ASK,
             fluxdown_protocol::method::AGENT_ASSISTANT_CANCEL,
             fluxdown_protocol::method::AGENT_ASSISTANT_CONFIRM,
+            fluxdown_protocol::method::AGENT_ASSISTANT_RENAME_SESSION,
+            fluxdown_protocol::method::AGENT_ASSISTANT_EXPORT_SESSION,
+            fluxdown_protocol::method::AGENT_ASSISTANT_ATTACHMENT,
         ] {
             assert!(matches!(lane_for(name), Lane::DaemonSlow), "{name}");
         }

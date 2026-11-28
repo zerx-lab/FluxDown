@@ -34,13 +34,16 @@ pub use task_edit::{EditTaskParams, TaskEditCapabilities, TaskEditSnapshot, Task
 pub mod update_prompt;
 pub mod user_agent_presets;
 pub use assistant::{
-    ASSISTANT_CLIENT_TOOL_PROTOCOL, ASSISTANT_MAX_RUNS, AssistantAskParams, AssistantAskResult,
-    AssistantChannel, AssistantClearedSessions, AssistantConfigDto, AssistantConfirmParams,
-    AssistantConfirmationState, AssistantIssueDto, AssistantIssueParams, AssistantMessageDto,
-    AssistantRateParams, AssistantRunDto, AssistantRunItemDto, AssistantRunStatus,
-    AssistantSessionDetail, AssistantSessionDto, AssistantSessionIdParams, AssistantSessionKind,
-    AssistantSessionPage, AssistantSessionsParams, AssistantStateDto, AssistantToolCallDto,
-    AssistantToolEffect, AssistantToolStatus,
+    ASSISTANT_CLIENT_TOOL_PROTOCOL, ASSISTANT_MAX_RUNS, ASSISTANT_MAX_TITLE_CHARS,
+    ASSISTANT_PREVIEW_MAX_ITEMS, AssistantAskParams, AssistantAskResult, AssistantAttachmentParams,
+    AssistantAttachmentResult, AssistantChannel, AssistantClearedSessions, AssistantConfigDto,
+    AssistantConfirmParams, AssistantConfirmationState, AssistantExportFormat,
+    AssistantExportParams, AssistantExportResult, AssistantIssueDto, AssistantIssueParams,
+    AssistantMessageDto, AssistantRateParams, AssistantRenameParams, AssistantRunDto,
+    AssistantRunItemDto, AssistantRunStatus, AssistantSessionDetail, AssistantSessionDto,
+    AssistantSessionIdParams, AssistantSessionKind, AssistantSessionPage, AssistantSessionsParams,
+    AssistantSettingChangeDto, AssistantStateDto, AssistantToolCallDto, AssistantToolEffect,
+    AssistantToolPreviewDto, AssistantToolStatus,
 };
 pub use net_diag::{
     NetAddressScope, NetDnsServerDto, NetInterfaceDto, NetInterfaceKind, NetInterfacesDto,

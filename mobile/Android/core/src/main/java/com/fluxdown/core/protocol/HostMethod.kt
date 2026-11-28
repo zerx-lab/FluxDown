@@ -340,6 +340,9 @@ object HostMethod {
     const val agentAssistantRate = "agent.assistant.rate"
     const val agentAssistantConfirmIssue = "agent.assistant.confirmIssue"
     const val agentAssistantDiscardIssue = "agent.assistant.discardIssue"
+    const val agentAssistantRenameSession = "agent.assistant.renameSession"
+    const val agentAssistantExportSession = "agent.assistant.exportSession"
+    const val agentAssistantAttachment = "agent.assistant.attachment"
     const val serviceEvent = "service.event"
 }
 

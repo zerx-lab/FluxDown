@@ -754,7 +754,7 @@ fn diagnostics_json(report: &DiagnosticsReportDto) -> Value {
             "ok": count(&DiagnosticLevel::Ok),
         },
         "checks": items,
-        "note": "repairAction entries can only be applied by the user in the app's diagnostics page",
+        "note": "repairAction entries can be applied with fd_repair (the user must approve each call); 'open_settings' / 'open_log_dir' / 'test_notification' stay in the app's diagnostics page",
     })
 }
 
@@ -782,8 +782,21 @@ const MIB: u64 = 1024 * 1024;
 const MAX_MEASURE_TASK_ID_CHARS: usize = 128;
 const MAX_MEASURE_URL_CHARS: usize = 8192;
 const MAX_MEASURE_ROUTE_CHARS: usize = 300;
-/// 测速不得指向 FluxDown 自己的服务器(官网 / 下载分发 / FluxCloud)。
-const FLUXDOWN_HOSTS: [&str; 3] = ["fluxdown.com", "fluxdown.zerx.dev", "zerx.dev"];
+/// 测速不得指向 FluxDown 自己的服务器:官网 / 下载分发 / FluxCloud 的域名(含全部子域)。
+const FLUXDOWN_DOMAINS: [&str; 3] = ["fluxdown.com", "fluxdown.zerx.dev", "zerx.dev"];
+/// 源站与运维服务器的 IP。
+const FLUXDOWN_IPS: [[u8; 4]; 2] = [[123, 57, 37, 142], [8, 216, 57, 80]];
+/// 阿里云 OSS 发布桶:`zerx-lab.oss-<region>[-internal | -accelerate].aliyuncs.com`。
+const FLUXDOWN_OSS_PREFIX: &str = "zerx-lab.oss-";
+const ALIYUN_SUFFIX: &str = ".aliyuncs.com";
+/// 123 云盘发布空间:直链形如 `<UID>.cdn.123clouddisk.cn`。
+const PAN123_UID: &str = "1860494902";
+const PAN123_SUFFIXES: [&str; 4] = [
+    ".123clouddisk.cn",
+    ".123clouddisk.com",
+    ".123pan.cn",
+    ".123pan.com",
+];
 /// `routes` 里的关键字路线;其余必须是不含凭据的代理 URL。
 const ROUTE_KEYWORDS: [&str; 4] = ["current", "direct", "system", "manual"];
 const ROUTE_PROXY_SCHEMES: [&str; 4] = ["http", "https", "socks5", "socks5h"];
@@ -791,26 +804,45 @@ const MEASURE_URL_SCHEMES: [&str; 3] = ["http", "https", "ftp"];
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct MeasureArgs {
+pub(super) struct MeasureArgs {
     #[serde(default)]
-    task_id: Option<String>,
+    pub(super) task_id: Option<String>,
     #[serde(default)]
-    url: Option<String>,
+    pub(super) url: Option<String>,
     #[serde(default)]
-    routes: Option<Vec<String>>,
+    pub(super) routes: Option<Vec<String>>,
     #[serde(default)]
-    connections: Option<u32>,
+    pub(super) connections: Option<u32>,
     #[serde(default)]
-    max_megabytes: Option<u32>,
+    pub(super) max_megabytes: Option<u32>,
     #[serde(default)]
-    max_seconds: Option<u32>,
+    pub(super) max_seconds: Option<u32>,
 }
 
+/// 主机是否属于 FluxDown 自己的服务器(域名及子域、OSS 发布桶、源站 IP、123 云盘发布直链)。
 fn is_fluxdown_host(host: &str) -> bool {
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
-    FLUXDOWN_HOSTS
+    let host = host
+        .trim_matches(['[', ']'])
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        let v4 = match ip {
+            std::net::IpAddr::V4(v4) => Some(v4),
+            std::net::IpAddr::V6(v6) => v6.to_ipv4_mapped(),
+        };
+        return v4.is_some_and(|v4| FLUXDOWN_IPS.contains(&v4.octets()));
+    }
+    if FLUXDOWN_DOMAINS
         .iter()
         .any(|own| host == *own || host.ends_with(&format!(".{own}")))
+    {
+        return true;
+    }
+    if host.starts_with(FLUXDOWN_OSS_PREFIX) && host.ends_with(ALIYUN_SUFFIX) {
+        return true;
+    }
+    PAN123_SUFFIXES.iter().any(|suffix| host.ends_with(suffix))
+        && host.split('.').any(|label| label.contains(PAN123_UID))
 }
 
 fn check_measure_url(url: &str) -> Result<(), ToolError> {
@@ -973,6 +1005,15 @@ fn measure_report(result: &NetMeasureResultDto) -> Value {
 
 pub(super) async fn measure_routes(ctx: &ToolContext, args: Value) -> Result<Value, ToolError> {
     let params = measure_params(parse_args(args)?)?;
+    // 按任务测速时,任务地址同样不得指向 FluxDown 自己的服务器。
+    if let Some(task_url) = params.task_id.as_deref().and_then(|id| {
+        ctx.inspect(|snapshot| snapshot.daemon.task(id).map(|task| task.url.clone()))
+    }) && url_host(&task_url).is_some_and(|host| is_fluxdown_host(&host))
+    {
+        return Err(ToolError::Refused(
+            "measuring FluxDown's own servers is not allowed".to_owned(),
+        ));
+    }
     let request = to_json("net measure params", &params)?;
     let result: NetMeasureResultDto = ctx
         .call_as(method::DAEMON_NET_MEASURE_ROUTES, request)

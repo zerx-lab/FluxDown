@@ -22,10 +22,12 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use fluxdown_protocol::{
-    ASSISTANT_MAX_RUNS, AgentEvent, ApplicationErrorCode, AssistantAskParams, AssistantAskResult,
+    ASSISTANT_MAX_RUNS, ASSISTANT_MAX_TITLE_CHARS, AgentEvent, ApplicationErrorCode,
+    AssistantAskParams, AssistantAskResult, AssistantAttachmentParams, AssistantAttachmentResult,
     AssistantClearedSessions, AssistantConfigDto, AssistantConfirmParams,
-    AssistantConfirmationState, AssistantIssueDto, AssistantIssueParams, AssistantRateParams,
-    AssistantRunDto, AssistantRunItemDto, AssistantRunStatus, AssistantSessionDetail,
+    AssistantConfirmationState, AssistantExportParams, AssistantExportResult, AssistantIssueDto,
+    AssistantIssueParams, AssistantRateParams, AssistantRenameParams, AssistantRunDto,
+    AssistantRunItemDto, AssistantRunStatus, AssistantSessionDetail, AssistantSessionDto,
     AssistantSessionIdParams, AssistantSessionPage, AssistantSessionsParams, AssistantStateDto,
     AssistantToolCallDto, AssistantToolEffect, AssistantToolStatus, ErrorReason,
 };
@@ -38,8 +40,8 @@ use crate::cloud::CloudApi;
 use crate::event_hub::AgentEventHub;
 use crate::gateway::GatewayService;
 pub(crate) use cloud::AssistantError;
-use cloud::{AiCloud, EventStream, RunEvent};
-use tools::{ClientTools, ToolCall, ToolOutput};
+use cloud::{AiCloud, AskRequest, EventStream, RunEvent, SseEvent, StreamError};
+use tools::{ClientTools, ToolCall, ToolOutput, ToolPreview};
 
 /// 配置缓存有效期：过期后 `agent.assistant.get` 在后台刷新。
 const CONFIG_TTL: Duration = Duration::from_secs(5 * 60);
@@ -63,6 +65,15 @@ const RESULT_RETRY_DELAY: Duration = Duration::from_millis(500);
 /// 后台任务的回收周期与关停收尾窗口。
 const REAP_INTERVAL: Duration = Duration::from_secs(30);
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
+/// 确认卡片预览的生成时限：本机查询慢（daemon 忙）时宁可先显示原始参数，也不堵住事件流。
+const PREVIEW_TIMEOUT: Duration = Duration::from_secs(3);
+/// 事件流中断后续读的总时限：云端在 45 秒无人订阅后取消执行，这里留出余量。
+const RESUME_WINDOW: Duration = Duration::from_secs(40);
+/// 续读失败后重试间隔的起点与上限（指数退避）。
+const RESUME_FIRST_DELAY: Duration = Duration::from_millis(500);
+const RESUME_MAX_DELAY: Duration = Duration::from_secs(8);
+/// 会话搜索词的字符上限。
+const MAX_SEARCH_CHARS: usize = 200;
 
 const KIND_CLIENT: &str = "client";
 
@@ -73,6 +84,8 @@ const KIND_CLIENT: &str = "client";
 pub(crate) trait ToolExecutor: Send + Sync {
     /// 本机实现的 `(name, version)`，建会话时声明给云端。
     fn declared(&self) -> Vec<(&'static str, u32)>;
+    /// 为待确认的调用生成人能读懂的预览（任务名 / 设置新旧值等）；生成不了返回空预览。
+    async fn preview(&self, call: &ToolCall) -> ToolPreview;
     /// 执行一次调用；取消令牌触发后尽快返回。
     async fn execute(&self, call: ToolCall, cancel: CancellationToken) -> ToolOutput;
 }
@@ -83,17 +96,40 @@ impl ToolExecutor for ClientTools {
         ClientTools::declared()
     }
 
+    async fn preview(&self, call: &ToolCall) -> ToolPreview {
+        ClientTools::preview(self, call).await
+    }
+
     async fn execute(&self, call: ToolCall, cancel: CancellationToken) -> ToolOutput {
         ClientTools::execute(self, call, cancel).await
     }
 }
 
-/// 本机对工具副作用的最低判定：云端声明的等级低于它时按它处理（需要确认）。
+/// 本机已知的只读工具：不改本机状态、不访问外网，免确认。
+const READ_ONLY_TOOLS: [&str; 12] = [
+    "fd_get_app_info",
+    "fd_get_settings",
+    "fd_list_tasks",
+    "fd_get_task",
+    "fd_get_runtime_stats",
+    "fd_get_bt_status",
+    "fd_get_network_status",
+    "fd_list_plugins",
+    "fd_list_components",
+    "fd_run_diagnostics",
+    "fd_get_logs",
+    "fd_get_net_interfaces",
+];
+
+/// 本机对工具副作用的最低判定：云端声明的等级低于它时按它处理（需要确认）。只有明确列为只读的工具
+/// 免确认，未列出的名字（含日后新增的写入类工具）一律按写入处理——宁可多确认，不可漏确认。
 fn effect_floor(name: &str) -> AssistantToolEffect {
-    match name {
-        "fd_measure_routes" => AssistantToolEffect::Network,
-        "fd_create_tasks" | "fd_manage_tasks" | "fd_update_settings" => AssistantToolEffect::Write,
-        _ => AssistantToolEffect::Read,
+    if name == "fd_measure_routes" {
+        AssistantToolEffect::Network
+    } else if READ_ONLY_TOOLS.contains(&name) {
+        AssistantToolEffect::Read
+    } else {
+        AssistantToolEffect::Write
     }
 }
 
@@ -110,6 +146,23 @@ fn stricter(a: AssistantToolEffect, b: AssistantToolEffect) -> AssistantToolEffe
         a
     } else {
         b
+    }
+}
+
+/// 调用是否须先经用户确认：云端声明或本机判定非只读，或云端给了确认窗口。
+fn confirmation_required(
+    name: &str,
+    declared: AssistantToolEffect,
+    confirm_timeout_secs: Option<u32>,
+) -> bool {
+    stricter(declared, effect_floor(name)).needs_confirmation() || confirm_timeout_secs.is_some()
+}
+
+/// 没有预览的调用(无需确认 / 本机生成不了)。
+fn no_preview() -> ToolPreview {
+    ToolPreview {
+        preview: None,
+        destructive: false,
     }
 }
 
@@ -168,6 +221,12 @@ impl Inner {
             last_error_reason: self.last_error.as_ref().and_then(|(reason, _)| *reason),
             last_error_message: self.last_error.as_ref().map(|(_, message)| message.clone()),
             runs: self.slots.iter().map(|slot| slot.dto.clone()).collect(),
+            // 时钟只为换算确认截止时刻（在执行里）：没有执行时保持 0，空闲 / 登出后的状态仍等于默认值。
+            now_unix_ms: if self.slots.is_empty() {
+                0
+            } else {
+                now_unix_ms()
+            },
         }
     }
 
@@ -224,11 +283,8 @@ impl RunSlot {
     }
 
     /// 结束这次执行：写入终态，收尾未完成的工具 / 确认，取消本机进行中的工具。
-    fn finish(&mut self, status: AssistantRunStatus, error: Option<String>) {
+    fn finish(&mut self, status: AssistantRunStatus) {
         self.dto.status = status;
-        if error.is_some() {
-            self.dto.error = error;
-        }
         let leftover = if matches!(
             status,
             AssistantRunStatus::Completed | AssistantRunStatus::Replied
@@ -237,6 +293,9 @@ impl RunSlot {
         } else {
             AssistantToolStatus::Failed
         };
+        // 回答已落库（带 messageId）：会话详情里有完整的工具参数，实时投影不再携带——否则每次推送都
+        // 深拷贝（`fd_create_tasks` 的参数可达数百 KB）。没有 messageId 的失败 / 取消执行保留参数。
+        let persisted = self.dto.message_id.is_some();
         for item in &mut self.dto.items {
             if let AssistantRunItemDto::Tool { call } = item {
                 if call.confirmation == Some(AssistantConfirmationState::Pending) {
@@ -245,11 +304,21 @@ impl RunSlot {
                 if call.status == AssistantToolStatus::Running {
                     call.status = leftover;
                 }
+                if persisted {
+                    call.arguments = None;
+                }
             }
         }
         if let Some(ctl) = self.ctl.take() {
             ctl.cancel.cancel();
         }
+    }
+
+    /// 带失败原因收尾：`error` 是原文详情，`reason` 见 [`AssistantRunDto::error_reason`]。
+    fn fail(&mut self, status: AssistantRunStatus, error: String, reason: String) {
+        self.dto.error = Some(error);
+        self.dto.error_reason = Some(reason);
+        self.finish(status);
     }
 
     fn mark_running(&mut self) {
@@ -283,7 +352,7 @@ enum Action {
 }
 
 /// 把一个云端事件映射进执行状态。
-fn apply_event(slot: &mut RunSlot, event: RunEvent, now: Instant) -> Action {
+fn apply_event(slot: &mut RunSlot, event: RunEvent, now: Instant, preview: ToolPreview) -> Action {
     if slot.ctl.is_none() {
         return Action::Unchanged;
     }
@@ -370,6 +439,7 @@ fn apply_event(slot: &mut RunSlot, event: RunEvent, now: Instant) -> Action {
             effect,
             confirm_timeout_secs,
             timeout_secs,
+            preview,
         ),
         RunEvent::IssueDraft { issue } => {
             let issue = *issue;
@@ -409,16 +479,29 @@ fn apply_event(slot: &mut RunSlot, event: RunEvent, now: Instant) -> Action {
             } else {
                 AssistantRunStatus::Completed
             };
-            slot.finish(status, None);
+            slot.finish(status);
             Action::Finished
         }
-        RunEvent::Error { status, message } => {
-            let status = if status == "canceled" {
+        RunEvent::Error {
+            status,
+            message,
+            reason,
+            message_id,
+        } => {
+            let canceled = status == "canceled";
+            let reason = reason
+                .filter(|reason| !reason.is_empty())
+                .unwrap_or_else(|| (if canceled { "canceled" } else { "error" }).to_owned());
+            // 中断前已推送的文本被云端落库为 interrupted 回答：带上它的 ID，UI 才能评价这条部分回答。
+            if message_id.is_some() {
+                slot.dto.message_id = message_id;
+            }
+            let status = if canceled {
                 AssistantRunStatus::Canceled
             } else {
                 AssistantRunStatus::Failed
             };
-            slot.finish(status, Some(message));
+            slot.fail(status, message, reason);
             Action::Finished
         }
         RunEvent::Other => Action::Unchanged,
@@ -439,11 +522,13 @@ fn apply_client_call(
     effect: AssistantToolEffect,
     confirm_timeout_secs: Option<u32>,
     timeout_secs: u32,
+    preview: ToolPreview,
 ) -> Action {
     slot.mark_running();
-    let effect = stricter(effect, effect_floor(&name));
     // 非只读（云端声明或本机判定）或云端给了确认窗口：都必须先确认。
-    let window = (effect.needs_confirmation() || confirm_timeout_secs.is_some()).then(|| {
+    let required = confirmation_required(&name, effect, confirm_timeout_secs);
+    let effect = stricter(effect, effect_floor(&name));
+    let window = required.then(|| {
         Duration::from_secs(u64::from(
             confirm_timeout_secs.unwrap_or(DEFAULT_CONFIRM_SECS),
         ))
@@ -479,8 +564,15 @@ fn apply_client_call(
     call.arguments = Some(arguments.clone());
     call.confirmation = window.map(|_| AssistantConfirmationState::Pending);
     call.confirm_deadline_unix_ms = window.map(|window| {
-        now_unix_ms().saturating_add(i64::try_from(window.as_millis()).unwrap_or(i64::MAX))
+        // 事件收到后可能先花了时间生成预览:截止时刻从收到事件起算。
+        let remaining = window.saturating_sub(now.elapsed());
+        now_unix_ms().saturating_add(i64::try_from(remaining.as_millis()).unwrap_or(i64::MAX))
     });
+    // 只有需要确认的调用展示预览（确认卡片用）。
+    if window.is_some() {
+        call.preview = preview.preview;
+        call.destructive = preview.destructive;
+    }
     let pending = PendingCall {
         name,
         version,
@@ -492,7 +584,10 @@ fn apply_client_call(
     match (window, slot.ctl.as_mut()) {
         (Some(window), Some(ctl)) => {
             ctl.pending.insert(request_id.clone(), pending);
-            Action::AwaitConfirm { request_id, window }
+            Action::AwaitConfirm {
+                request_id,
+                window: window.saturating_sub(now.elapsed()),
+            }
         }
         (None, Some(_)) => Action::Execute {
             request_id,
@@ -862,7 +957,16 @@ impl AssistantService {
         &self,
         params: AssistantSessionsParams,
     ) -> Result<AssistantSessionPage, AssistantError> {
-        Ok(self.cloud.sessions(params.limit, params.offset).await?)
+        let query = params
+            .query
+            .as_deref()
+            .map(str::trim)
+            .filter(|query| !query.is_empty())
+            .map(|query| query.chars().take(MAX_SEARCH_CHARS).collect::<String>());
+        Ok(self
+            .cloud
+            .sessions(params.limit, params.offset, query.as_deref())
+            .await?)
     }
 
     pub(crate) async fn session(
@@ -871,6 +975,41 @@ impl AssistantService {
     ) -> Result<AssistantSessionDetail, AssistantError> {
         let id = require_id("sessionId", &params.session_id)?;
         Ok(self.cloud.session(id).await?)
+    }
+
+    /// 给会话改名：标题去首尾空白后须是 1–[`ASSISTANT_MAX_TITLE_CHARS`] 个字符。
+    pub(crate) async fn rename_session(
+        &self,
+        params: AssistantRenameParams,
+    ) -> Result<AssistantSessionDto, AssistantError> {
+        let id = require_id("sessionId", &params.session_id)?;
+        let title = params.title.trim();
+        let length = title.chars().count();
+        if length == 0 || length > ASSISTANT_MAX_TITLE_CHARS {
+            return Err(AssistantError::invalid_field(
+                "title",
+                format!("The title must be 1-{ASSISTANT_MAX_TITLE_CHARS} characters."),
+            ));
+        }
+        Ok(self.cloud.rename_session(id, title).await?)
+    }
+
+    /// 导出会话：文件名 / MIME / 内容由云端生成，UI 只负责保存。
+    pub(crate) async fn export_session(
+        &self,
+        params: AssistantExportParams,
+    ) -> Result<AssistantExportResult, AssistantError> {
+        let id = require_id("sessionId", &params.session_id)?;
+        Ok(self.cloud.export_session(id, params.format).await?)
+    }
+
+    /// 读取本人会话里的一张提问图片（`data:` URL，体积有上限）。
+    pub(crate) async fn attachment(
+        &self,
+        params: AssistantAttachmentParams,
+    ) -> Result<AssistantAttachmentResult, AssistantError> {
+        let id = require_id("attachmentId", &params.attachment_id)?;
+        self.cloud.attachment(id).await
     }
 
     /// 删除会话（云端只在用户侧隐藏）：本机该会话进行中的执行先取消，删除成功后本机相关执行一并清掉。
@@ -892,7 +1031,7 @@ impl AssistantService {
         {
             let mut inner = self.lock();
             for slot in inner.slots.iter_mut().filter(|slot| slot.ctl.is_some()) {
-                slot.finish(AssistantRunStatus::Canceled, None);
+                slot.finish(AssistantRunStatus::Canceled);
             }
             self.publish(&inner);
         }
@@ -962,7 +1101,8 @@ impl AssistantService {
     // ---------------------------------------------------------------- 提问
 
     /// 提问：无 `sessionId` 先建会话；云端准入（额度 / 限频 / 会话忙…）失败同步返回，成功后执行
-    /// 在后台消费 SSE，状态经 `AssistantChanged` 推送。
+    /// 在后台消费 SSE，状态经 `AssistantChanged` 推送。准入失败时本次刚建的空会话会被删掉，不在历史
+    /// 里留下一串空的「新对话」。
     pub(crate) async fn ask(
         self: &Arc<Self>,
         params: AssistantAskParams,
@@ -973,6 +1113,36 @@ impl AssistantService {
                 "text",
                 "The question is empty.",
             ));
+        }
+        let existing = params
+            .session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty());
+        let replace_from = params
+            .replace_from
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty());
+        if replace_from.is_some() && existing.is_none() {
+            return Err(AssistantError::invalid_field(
+                "replaceFrom",
+                "replaceFrom requires a sessionId.",
+            ));
+        }
+        if params.keep_images {
+            if replace_from.is_none() {
+                return Err(AssistantError::invalid_field(
+                    "keepImages",
+                    "keepImages requires replaceFrom.",
+                ));
+            }
+            if !params.images.is_empty() {
+                return Err(AssistantError::invalid_field(
+                    "keepImages",
+                    "keepImages cannot be combined with new images.",
+                ));
+            }
         }
         let Some(executor) = self.executor() else {
             return Err(AssistantError::unavailable(
@@ -986,13 +1156,8 @@ impl AssistantService {
             .filter(|locale| !locale.is_empty());
         // 整次执行（建会话 / 提问 / 确认 / 回传结果）钉在提问时的账号会话上。
         let cloud = self.cloud.at_epoch(self.cloud.request_epoch());
-        let session_id = match params
-            .session_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-        {
-            Some(id) => id.to_owned(),
+        let (session_id, created) = match existing {
+            Some(id) => (id.to_owned(), false),
             None => {
                 let created = cloud
                     .create_session(
@@ -1003,28 +1168,61 @@ impl AssistantService {
                     )
                     .await
                     .map_err(|error| self.record_error(error.into()))?;
-                created.id
+                (created.id, true)
             }
         };
-        let (slot_id, cancel) = self.begin_run(&session_id, text, cloud.clone())?;
-        let stream = match cloud.ask(&session_id, text, &params.images, locale).await {
-            Ok(stream) => stream,
-            Err(error) => {
+        let image_count = u32::try_from(params.images.len()).unwrap_or(u32::MAX);
+        let (slot_id, cancel) = self.begin_run(&session_id, text, image_count, cloud.clone())?;
+        let request = AskRequest {
+            text,
+            images: &params.images,
+            locale,
+            replace_from,
+            keep_images: params.keep_images,
+        };
+        let asked = tokio::select! {
+            biased;
+            () = cancel.cancelled() => None,
+            asked = cloud.ask(&session_id, &request) => Some(asked),
+        };
+        let stream = match asked {
+            Some(Ok(stream)) => stream,
+            Some(Err(error)) => {
                 self.discard_run(slot_id);
+                if created {
+                    remove_empty_session(&cloud, &session_id).await;
+                }
                 return Err(self.record_error(error.into()));
             }
+            None => {
+                // 提问在途时被取消：状态已由取消方写好。云端可能已受理，丢弃响应后它要等满宽限期才
+                // 发现没人订阅，所以主动通知取消。
+                tracing::debug!(%session_id, "assistant run cancelled while the question was in flight");
+                if let Err(error) = cloud.cancel(&session_id).await {
+                    tracing::debug!(%session_id, error = %error, "assistant cancel after an in-flight question failed");
+                }
+                return Ok(AssistantAskResult { session_id });
+            }
         };
+        if replace_from.is_some() {
+            self.drop_superseded_runs(&session_id, slot_id);
+        }
         if let Some(run_id) = &stream.run_id {
             self.with_slot(slot_id, |slot| slot.dto.run_id = Some(run_id.clone()));
-        }
-        if cancel.is_cancelled() {
-            // 提问在途时被取消：状态已由取消方写好；丢弃响应流，云端据断开取消执行。
-            tracing::debug!(%session_id, "assistant run cancelled while the question was in flight");
-            return Ok(AssistantAskResult { session_id });
         }
         let service = Arc::clone(self);
         self.spawn(service.consume(slot_id, stream.events, cloud, cancel, stream.run_id));
         Ok(AssistantAskResult { session_id })
+    }
+
+    /// 撤掉 `keep` 之外该会话已结束的执行：「重新生成 / 编辑重发」之后被替换的回答不再出现在云端历史里，
+    /// 它们的实时覆盖层留着会让旧回答重新冒出来。
+    fn drop_superseded_runs(&self, session_id: &str, keep: SlotId) {
+        let mut inner = self.lock();
+        inner.slots.retain(|slot| {
+            slot.id == keep || slot.ctl.is_some() || slot.dto.session_id != session_id
+        });
+        self.publish(&inner);
     }
 
     /// 登记一次新的执行（`Starting`）；同一会话已有进行中的执行则冲突。
@@ -1032,6 +1230,7 @@ impl AssistantService {
         &self,
         session_id: &str,
         question: &str,
+        image_count: u32,
         cloud: AiCloud,
     ) -> Result<(SlotId, CancellationToken), AssistantError> {
         let mut inner = self.lock();
@@ -1053,6 +1252,7 @@ impl AssistantService {
                 session_id: session_id.to_owned(),
                 status: AssistantRunStatus::Starting,
                 question: question.to_owned(),
+                image_count,
                 started_at_unix_ms: now_unix_ms(),
                 ..AssistantRunDto::default()
             },
@@ -1086,12 +1286,18 @@ impl AssistantService {
     }
 
     /// 应用一个云端事件；除「稍后合并推送」的文本增量外，状态变化立即推送。
-    fn apply(&self, slot_id: SlotId, event: RunEvent) -> Action {
+    fn apply(
+        &self,
+        slot_id: SlotId,
+        event: RunEvent,
+        now: Instant,
+        preview: ToolPreview,
+    ) -> Action {
         let mut inner = self.lock();
         let Some(slot) = inner.slots.iter_mut().find(|slot| slot.id == slot_id) else {
             return Action::Gone;
         };
-        let action = apply_event(slot, event, Instant::now());
+        let action = apply_event(slot, event, now, preview);
         if !matches!(
             action,
             Action::Unchanged | Action::Changed { urgent: false }
@@ -1101,22 +1307,63 @@ impl AssistantService {
         action
     }
 
-    /// 以失败 / 取消 / 完成终态收尾；已结束的执行返回 `false`。
-    fn finish(&self, slot_id: SlotId, status: AssistantRunStatus, error: Option<String>) -> bool {
+    /// 事件流中断且续读失败：以失败终态收尾（`reason` 见 [`AssistantRunDto::error_reason`]）；已结束的
+    /// 执行不动。
+    fn fail_run(&self, slot_id: SlotId, error: String, reason: &str) {
         let mut inner = self.lock();
         let Some(slot) = inner
             .slots
             .iter_mut()
             .find(|slot| slot.id == slot_id && slot.ctl.is_some())
         else {
-            return false;
+            return;
         };
-        slot.finish(status, error);
+        slot.fail(AssistantRunStatus::Failed, error, reason.to_owned());
         self.publish(&inner);
-        true
     }
 
-    /// 消费一次提问的 SSE，直到终态、断开或被取消。
+    fn has_slot(&self, slot_id: SlotId) -> bool {
+        self.lock().slots.iter().any(|slot| slot.id == slot_id)
+    }
+
+    /// 为需要确认的调用生成确认卡片的预览：有时限，取消即放弃；生成不了回退到没有预览（UI 显示原始参数）。
+    async fn preview_for(&self, event: &RunEvent, cancel: &CancellationToken) -> ToolPreview {
+        let RunEvent::ClientToolCall {
+            name,
+            version,
+            arguments,
+            effect,
+            confirm_timeout_secs,
+            ..
+        } = event
+        else {
+            return no_preview();
+        };
+        if !confirmation_required(name, *effect, *confirm_timeout_secs) {
+            return no_preview();
+        }
+        let Some(executor) = self.executor() else {
+            return no_preview();
+        };
+        let call = ToolCall {
+            name: name.clone(),
+            version: *version,
+            arguments: arguments.clone(),
+        };
+        tokio::select! {
+            () = cancel.cancelled() => no_preview(),
+            preview = tokio::time::timeout(PREVIEW_TIMEOUT, executor.preview(&call)) => {
+                preview.unwrap_or_else(|_| {
+                    tracing::debug!(tool = %name, "assistant confirmation preview timed out");
+                    no_preview()
+                })
+            }
+        }
+    }
+
+    /// 消费一次提问的 SSE，直到终态、断开或被取消。事件流在终态前中断（EOF / 读取失败 / 空闲超时）时，
+    /// 在云端宽限期内按事件序号续读 `GET /ai/runs/{runId}/events?after=<seq>`；续读不了才以失败收尾
+    /// （`streamLost` / `network`）。
     async fn consume(
         self: Arc<Self>,
         slot_id: SlotId,
@@ -1126,10 +1373,14 @@ impl AssistantService {
         mut run_id: Option<String>,
     ) {
         let mut flush_at: Option<Instant> = None;
+        // 已处理的最后一个事件序号（每次执行内从 1 递增；旧云端不带）与是否处理过事件：只有序号明确
+        // （或还没处理过任何事件）才能从中断处续读，否则重放会让文本重复。
+        let mut last_id: Option<u64> = None;
+        let mut seen_any = false;
         let refresh = loop {
             let next = tokio::select! {
                 biased;
-                () = cancel.cancelled() => return,
+                () = cancel.cancelled() => break self.has_slot(slot_id),
                 () = tokio::time::sleep_until(flush_at.unwrap_or_else(Instant::now)),
                     if flush_at.is_some() =>
                 {
@@ -1137,26 +1388,35 @@ impl AssistantService {
                     self.flush();
                     continue;
                 }
-                next = events.next_data() => next,
+                next = events.next_event() => next,
             };
-            let payload = match next {
-                Ok(Some(payload)) => payload,
-                Ok(None) => {
-                    self.finish(
-                        slot_id,
-                        AssistantRunStatus::Failed,
-                        Some(
-                            "FluxCloud closed the event stream before the run finished.".to_owned(),
-                        ),
-                    );
-                    break true;
-                }
-                Err(error) => {
-                    self.finish(slot_id, AssistantRunStatus::Failed, Some(error.to_string()));
-                    break true;
+            let frame = match next {
+                Ok(Some(frame)) => frame,
+                broken => {
+                    let after = if seen_any { last_id } else { Some(0) };
+                    let lost = stream_break(broken);
+                    match reconnect(&cloud, &cancel, run_id.as_deref(), after, lost).await {
+                        Reconnect::Resumed(stream) => {
+                            events = stream;
+                            continue;
+                        }
+                        Reconnect::Cancelled => break self.has_slot(slot_id),
+                        Reconnect::Failed { message, reason } => {
+                            self.fail_run(slot_id, message, reason);
+                            break true;
+                        }
+                    }
                 }
             };
-            let event = match cloud::parse_event(&payload) {
+            if let Some(id) = frame.id {
+                if last_id.is_some_and(|last| id <= last) {
+                    // 续读重放了已处理的事件。
+                    continue;
+                }
+                last_id = Some(id);
+            }
+            seen_any = true;
+            let event = match cloud::parse_event(&frame.data) {
                 Ok(event) => event,
                 Err(error) => {
                     tracing::debug!(error = %error, "assistant ignored an unreadable event frame");
@@ -1166,7 +1426,9 @@ impl AssistantService {
             if let RunEvent::Run { run_id: id } = &event {
                 run_id = Some(id.clone());
             }
-            match self.apply(slot_id, event) {
+            let received = Instant::now();
+            let preview = self.preview_for(&event, &cancel).await;
+            match self.apply(slot_id, event, received, preview) {
                 Action::Gone => break false,
                 Action::Finished => break true,
                 Action::Unchanged => {}
@@ -1192,7 +1454,7 @@ impl AssistantService {
             }
         };
         if refresh {
-            // 本次提问计入当日额度：静默刷新配置，让 `usedToday` 跟上。
+            // 本次提问（含被取消的）计入当日额度：静默刷新配置，让 `usedToday` 跟上。
             let service = Arc::clone(&self);
             self.spawn(async move {
                 if let Err(error) = service.fetch_config(false).await {
@@ -1204,15 +1466,24 @@ impl AssistantService {
 
     // ---------------------------------------------------------------- 取消
 
-    /// 取消会话中进行中的执行：本机立即收尾（停 SSE、取消进行中的工具），并通知云端。
+    /// 取消会话中进行中的执行：本机立即收尾（停 SSE、取消进行中的工具），并通知云端。本机已收尾后云端取消
+    /// 失败只记日志（云端在无人订阅的宽限期后自行取消），不向用户报错。
     pub(crate) async fn cancel(
         &self,
         params: AssistantSessionIdParams,
     ) -> Result<(), AssistantError> {
         let id = require_id("sessionId", &params.session_id)?;
-        let cloud = self.cancel_local(id).unwrap_or_else(|| self.cloud.clone());
-        cloud.cancel(id).await?;
-        Ok(())
+        let local = self.cancel_local(id);
+        let canceled_locally = local.is_some();
+        let cloud = local.unwrap_or_else(|| self.cloud.clone());
+        match cloud.cancel(id).await {
+            Ok(()) => Ok(()),
+            Err(error) if canceled_locally => {
+                tracing::warn!(session_id = %id, error = %error, "assistant run was cancelled locally but the cloud cancel failed");
+                Ok(())
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// 本机侧取消：会话里进行中的执行标为已取消并取消其令牌。返回该执行的云端客户端。
@@ -1223,7 +1494,7 @@ impl AssistantService {
             .iter_mut()
             .find(|slot| slot.ctl.is_some() && slot.dto.session_id == session_id)?;
         let cloud = slot.ctl.as_ref().map(|ctl| ctl.cloud.clone());
-        slot.finish(AssistantRunStatus::Canceled, None);
+        slot.finish(AssistantRunStatus::Canceled);
         self.publish(&inner);
         cloud
     }
@@ -1260,7 +1531,6 @@ impl AssistantService {
                     } else {
                         call.confirmation = Some(AssistantConfirmationState::Declined);
                         call.status = AssistantToolStatus::Failed;
-                        call.output_preview = Some("Declined by the user.".to_owned());
                     }
                 }
                 let run = slot.ctl.as_ref().map(|ctl| ToolRun {
@@ -1282,9 +1552,7 @@ impl AssistantService {
                 // 云端已不再等这次确认（超时 / 已结束）：绝不执行。
                 slot.expire(request_id);
                 self.publish(&inner);
-                Err(AssistantError::conflict(
-                    "The confirmation window has expired; the action was not performed.",
-                ))
+                Err(confirm_expired())
             }
             Err(error) => {
                 // 决定没送达：恢复待确认，用户可以重试。
@@ -1311,9 +1579,23 @@ impl AssistantService {
                 .as_ref()
                 .is_some_and(|ctl| ctl.pending.contains_key(request_id))
         }) else {
-            return Err(AssistantError::not_found(
-                "No tool call is waiting for confirmation under this request id.",
-            ));
+            let expired = inner.slots.iter().any(|slot| {
+                slot.dto.items.iter().any(|item| {
+                    matches!(item, AssistantRunItemDto::Tool { call }
+                        if call.request_id.as_deref() == Some(request_id)
+                            && call.confirmation == Some(AssistantConfirmationState::Expired))
+                })
+            });
+            let error = AssistantError::not_found(if expired {
+                "The confirmation window has expired; the action was not performed."
+            } else {
+                "No tool call is waiting for confirmation under this request id."
+            });
+            return Err(if expired {
+                error.with_reason(ErrorReason::AssistantConfirmExpired)
+            } else {
+                error
+            });
         };
         let slot_id = slot.id;
         let run_id = slot.dto.run_id.clone();
@@ -1334,9 +1616,7 @@ impl AssistantService {
         if Instant::now() >= pending.deadline {
             slot.expire(request_id);
             self.publish(&inner);
-            return Err(AssistantError::conflict(
-                "The confirmation window has expired; the action was not performed.",
-            ));
+            return Err(confirm_expired());
         }
         pending.claimed = true;
         let Some(run_id) = run_id else {
@@ -1409,23 +1689,34 @@ impl AssistantService {
             None => ToolOutput {
                 output: "The local tool executor is not available.".to_owned(),
                 is_error: true,
+                interrupted: false,
             },
         };
         if run_cancel.is_cancelled() {
-            // 执行已被取消（用户取消 / 断线 / 登出）：云端不再等结果，状态由取消方写好。
+            // 执行已被取消（用户取消 / 断线 / 登出）：云端不再等结果，状态由取消方写好。已批准的写操作
+            // 在执行中被停止时本机请求可能已生效：标出来，UI 提示结果未知。
+            if output.interrupted {
+                self.with_slot(slot_id, |slot| {
+                    if let Some(call) = slot.tool_mut(&request_id) {
+                        call.interrupted = true;
+                    }
+                });
+            }
             tracing::debug!(%request_id, "assistant tool stopped with its run; result not reported");
             return;
         }
         let output_text = clamp_output(output.output);
         let is_error = output.is_error;
+        let interrupted = output.interrupted;
         let preview = preview_of(&output_text);
         self.with_slot(slot_id, |slot| {
             if let Some(call) = slot.tool_mut(&request_id) {
-                call.status = if is_error {
+                call.status = if is_error || interrupted {
                     AssistantToolStatus::Failed
                 } else {
                     AssistantToolStatus::Succeeded
                 };
+                call.interrupted = interrupted;
                 call.output_preview = Some(preview);
             }
         });
@@ -1492,18 +1783,129 @@ async fn execute_with_deadline(
         output = &mut execution => output,
         () = tokio::time::sleep(timeout) => {
             token.cancel();
-            if tokio::time::timeout(TOOL_CANCEL_GRACE, &mut execution).await.is_err() {
-                tracing::warn!("assistant tool did not stop after its deadline");
-            }
+            let interrupted = match tokio::time::timeout(TOOL_CANCEL_GRACE, &mut execution).await {
+                Ok(stopped) => stopped.interrupted,
+                Err(_) => {
+                    tracing::warn!("assistant tool did not stop after its deadline");
+                    false
+                }
+            };
             ToolOutput {
                 output: format!(
-                    "The tool did not finish within {} seconds and was cancelled.",
-                    timeout.as_secs()
+                    "The tool did not finish within {} seconds and was cancelled.{}",
+                    timeout.as_secs(),
+                    if interrupted {
+                        " It may already have taken effect; the outcome is unknown."
+                    } else {
+                        ""
+                    }
                 ),
                 is_error: true,
+                interrupted,
             }
         }
     }
+}
+
+/// 事件流中断的原因与能否续读。
+struct StreamBreak {
+    message: String,
+    /// `AssistantRunDto.error_reason` 的本机取值。
+    reason: &'static str,
+    resumable: bool,
+}
+
+fn stream_break(result: Result<Option<SseEvent>, StreamError>) -> StreamBreak {
+    match result {
+        Err(error) => StreamBreak {
+            message: error.to_string(),
+            reason: error.local_reason(),
+            resumable: error.is_resumable(),
+        },
+        Ok(_) => StreamBreak {
+            message: "FluxCloud closed the event stream before the run finished.".to_owned(),
+            reason: "streamLost",
+            resumable: true,
+        },
+    }
+}
+
+enum Reconnect {
+    Resumed(EventStream),
+    Cancelled,
+    Failed {
+        message: String,
+        reason: &'static str,
+    },
+}
+
+/// 事件流中断后续读执行事件：指数退避重试，总时长不超过云端的无订阅宽限期（[`RESUME_WINDOW`]）。
+/// `after` 是已处理的最后一个事件序号（`None` = 序号不明，无法安全续读）。云端已不保留这次执行（410）、
+/// 请求不可重试或时限用完都返回失败原因。
+async fn reconnect(
+    cloud: &AiCloud,
+    cancel: &CancellationToken,
+    run_id: Option<&str>,
+    after: Option<u64>,
+    lost: StreamBreak,
+) -> Reconnect {
+    let (Some(run_id), Some(after), true) = (run_id, after, lost.resumable) else {
+        return Reconnect::Failed {
+            message: lost.message,
+            reason: lost.reason,
+        };
+    };
+    tracing::debug!(%run_id, after, cause = %lost.message, "assistant event stream interrupted; resuming");
+    let deadline = Instant::now() + RESUME_WINDOW;
+    let mut delay = RESUME_FIRST_DELAY;
+    loop {
+        tokio::select! {
+            () = cancel.cancelled() => return Reconnect::Cancelled,
+            () = tokio::time::sleep(delay) => {}
+        }
+        let attempt = tokio::select! {
+            () = cancel.cancelled() => return Reconnect::Cancelled,
+            attempt = cloud.events(run_id, after) => attempt,
+        };
+        match attempt {
+            Ok(stream) => return Reconnect::Resumed(stream),
+            Err(error) if error.status == Some(410) => {
+                return Reconnect::Failed {
+                    message: error.message,
+                    reason: "streamLost",
+                };
+            }
+            Err(error) if error.retryable || error.unreachable => {
+                if Instant::now() + delay >= deadline {
+                    return Reconnect::Failed {
+                        message: error.message,
+                        reason: "network",
+                    };
+                }
+                tracing::debug!(%run_id, error = %error, "assistant event stream resume failed; retrying");
+                delay = (delay * 2).min(RESUME_MAX_DELAY);
+            }
+            Err(error) => {
+                return Reconnect::Failed {
+                    message: error.message,
+                    reason: "streamLost",
+                };
+            }
+        }
+    }
+}
+
+/// 删掉提问被拒后留在云端的空会话（失败只记日志：最坏是历史里多一条空的「新对话」）。
+async fn remove_empty_session(cloud: &AiCloud, session_id: &str) {
+    if let Err(error) = cloud.delete_session(session_id).await {
+        tracing::warn!(%session_id, error = %format_args!("{error:#}"), "assistant could not remove the empty session left by a refused question");
+    }
+}
+
+/// 确认窗口已过（本机或云端判定）：调用没有执行。
+fn confirm_expired() -> AssistantError {
+    AssistantError::conflict("The confirmation window has expired; the action was not performed.")
+        .with_reason(ErrorReason::AssistantConfirmExpired)
 }
 
 fn require_id<'a>(field: &str, value: &'a str) -> Result<&'a str, AssistantError> {

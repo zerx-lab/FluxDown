@@ -429,10 +429,16 @@ pub const AGENT_ASSISTANT_CANCEL: &str = "agent.assistant.cancel";
 pub const AGENT_ASSISTANT_CONFIRM: &str = "agent.assistant.confirm";
 /// `AssistantRateParams` → `{ "ok": true }`。
 pub const AGENT_ASSISTANT_RATE: &str = "agent.assistant.rate";
-/// `AssistantIssueParams` → `AssistantIssueDto`：确认提交云端起草的问题单。
+/// `AssistantIssueParams` → `AssistantIssueDto`：确认提交云端起草的问题单（`failed` 的问题单可再次确认重试）。
 pub const AGENT_ASSISTANT_CONFIRM_ISSUE: &str = "agent.assistant.confirmIssue";
 /// `AssistantIssueParams` → `{ "ok": true }`：放弃云端起草的问题单。
 pub const AGENT_ASSISTANT_DISCARD_ISSUE: &str = "agent.assistant.discardIssue";
+/// `AssistantRenameParams` → `AssistantSessionDto`：给会话改名。
+pub const AGENT_ASSISTANT_RENAME_SESSION: &str = "agent.assistant.renameSession";
+/// `AssistantExportParams` → `AssistantExportResult`：导出会话（云端生成 Markdown / JSON）。
+pub const AGENT_ASSISTANT_EXPORT_SESSION: &str = "agent.assistant.exportSession";
+/// `AssistantAttachmentParams` → `AssistantAttachmentResult`：读取本人会话里的提问图片。
+pub const AGENT_ASSISTANT_ATTACHMENT: &str = "agent.assistant.attachment";
 
 pub const AGENT_PLATFORM_OPEN_TASK: &str = "agent.platform.openTask";
 pub const AGENT_PLATFORM_REVEAL_TASK: &str = "agent.platform.revealTask";
@@ -783,6 +789,9 @@ pub const ALL_METHODS: &[&str] = &[
     AGENT_ASSISTANT_RATE,
     AGENT_ASSISTANT_CONFIRM_ISSUE,
     AGENT_ASSISTANT_DISCARD_ISSUE,
+    AGENT_ASSISTANT_RENAME_SESSION,
+    AGENT_ASSISTANT_EXPORT_SESSION,
+    AGENT_ASSISTANT_ATTACHMENT,
     AGENT_PLATFORM_OPEN_TASK,
     AGENT_PLATFORM_REVEAL_TASK,
     AGENT_PLATFORM_COPY_TASK_FILES,

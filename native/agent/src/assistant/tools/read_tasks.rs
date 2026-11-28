@@ -13,9 +13,10 @@ use std::collections::{BTreeMap, HashMap};
 
 use fluxdown_api::service::LiveSpeed;
 use fluxdown_protocol::{
-    BtDhtDto, BtPeerDto, BtPortStatusDto, BtStatusDto, BtTrackerDto, DaemonBtStatusParams,
-    DaemonSnapshot, QueueDto, TaskActivityPage, TaskActivityQuery, TaskDto, TaskRuntimeDto,
-    TaskSpeedHistoryDto, TaskSpeedHistoryQuery, method,
+    BT_FILE_PRIORITY_HIGH, BT_FILE_PRIORITY_MAXIMUM, BT_FILE_PRIORITY_NORMAL,
+    BT_FILE_PRIORITY_SKIP, BtDhtDto, BtFilesDto, BtPeerDto, BtPortStatusDto, BtStatusDto,
+    BtTrackerDto, DaemonBtStatusParams, DaemonSnapshot, QueueDto, TaskActivityPage,
+    TaskActivityQuery, TaskDto, TaskRuntimeDto, TaskSpeedHistoryDto, TaskSpeedHistoryQuery, method,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -613,6 +614,54 @@ pub(super) async fn get_task(ctx: &ToolContext, args: Value) -> Result<Value, To
 struct BtArgs {
     #[serde(default)]
     task_id: Option<String>,
+    /// 版本 2:BT 文件列表的起点 / 条数。
+    #[serde(default)]
+    files_offset: Option<u32>,
+    #[serde(default)]
+    files_limit: Option<u32>,
+}
+
+/// BT 文件列表默认 / 最多返回的条数(云端 Schema `filesLimit`)。
+const DEFAULT_FILES_LIMIT: usize = 100;
+const MAX_FILES_LIMIT: usize = 500;
+const MAX_FILE_PATH_CHARS: usize = 200;
+
+/// BT 文件优先级的展示名;界面只用四档,其余档位原样给数字。
+pub(super) fn file_priority_label(priority: u8) -> String {
+    match priority {
+        BT_FILE_PRIORITY_SKIP => "skip".to_owned(),
+        BT_FILE_PRIORITY_NORMAL => "normal".to_owned(),
+        BT_FILE_PRIORITY_HIGH => "high".to_owned(),
+        BT_FILE_PRIORITY_MAXIMUM => "maximum".to_owned(),
+        other => other.to_string(),
+    }
+}
+
+/// BT 任务的文件表(按 `index` 升序分页):`setFilePriorities` 要用这里的 `index`。
+fn files_json(files: &BtFilesDto, offset: usize, limit: usize) -> Value {
+    let mut sorted: Vec<_> = files.files.iter().collect();
+    sorted.sort_by_key(|file| file.index);
+    let items: Vec<Value> = sorted
+        .iter()
+        .skip(offset)
+        .take(limit)
+        .map(|file| {
+            json!({
+                "index": file.index,
+                "path": truncate_chars(&file.path, MAX_FILE_PATH_CHARS),
+                "sizeBytes": file.size,
+                "downloadedBytes": file.downloaded,
+                "priority": file_priority_label(file.priority),
+            })
+        })
+        .collect();
+    json!({
+        "editable": files.editable,
+        "total": sorted.len(),
+        "offset": offset,
+        "listed": items.len(),
+        "items": items,
+    })
 }
 
 /// BT 相关的 daemon 设置(平铺键)。
@@ -767,8 +816,35 @@ fn bt_task_json(facts: Option<&TaskFacts>, status: &BtStatusDto) -> Result<Value
     }))
 }
 
-pub(super) async fn bt_status(ctx: &ToolContext, args: Value) -> Result<Value, ToolError> {
-    let BtArgs { task_id } = parse_args(args)?;
+/// `paging` = 工具版本 2:接受 `filesOffset` / `filesLimit`;版本 1 只返回默认的前 100 个文件。
+pub(super) async fn bt_status(
+    ctx: &ToolContext,
+    args: Value,
+    paging: bool,
+) -> Result<Value, ToolError> {
+    let BtArgs {
+        task_id,
+        files_offset,
+        files_limit,
+    } = parse_args(args)?;
+    if !paging && (files_offset.is_some() || files_limit.is_some()) {
+        return Err(invalid(
+            "filesOffset / filesLimit need fd_get_bt_status version 2",
+        ));
+    }
+    if task_id.is_none() && (files_offset.is_some() || files_limit.is_some()) {
+        return Err(invalid("filesOffset / filesLimit need a taskId"));
+    }
+    let files_limit = match files_limit {
+        None => DEFAULT_FILES_LIMIT,
+        Some(limit) if (1..=MAX_FILES_LIMIT as u32).contains(&limit) => limit as usize,
+        Some(_) => {
+            return Err(invalid(format!(
+                "filesLimit must be between 1 and {MAX_FILES_LIMIT}"
+            )));
+        }
+    };
+    let files_offset = files_offset.unwrap_or(0) as usize;
     if let Some(task_id) = &task_id {
         check_task_id(task_id)?;
     }
@@ -796,11 +872,22 @@ pub(super) async fn bt_status(ctx: &ToolContext, args: Value) -> Result<Value, T
             )
             .await?;
         let facts = task_facts(ctx, &task_id);
+        let files = match ctx
+            .call_as::<BtFilesDto>(
+                method::DAEMON_TASK_BT_FILES,
+                to_json("bt files params", &params)?,
+            )
+            .await
+        {
+            Ok(files) => files_json(&files, files_offset, files_limit),
+            Err(error) => soft_error(&error),
+        };
         if let Some(object) = result.as_object_mut() {
             object.insert(
                 "taskStatus".to_owned(),
                 bt_task_json(facts.as_ref(), &status)?,
             );
+            object.insert("files".to_owned(), files);
         }
     }
     Ok(result)

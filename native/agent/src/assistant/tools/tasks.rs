@@ -17,6 +17,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
+use super::task_ops::{self, FilePriorityArg, SeedLimitsArgs};
 use super::{ToolContext, ToolError, parse_args};
 
 /// 单次创建的条目上限（云端 Schema `items.maxItems`）。
@@ -24,7 +25,7 @@ const MAX_CREATE_ITEMS: usize = 50;
 /// 单次管理的任务数上限（云端 Schema `taskIds.maxItems`）。
 const MAX_MANAGE_IDS: usize = 200;
 const MAX_ID_CHARS: usize = 128;
-const MAX_URL_CHARS: usize = 8192;
+pub(super) const MAX_URL_CHARS: usize = 8192;
 const MAX_FILE_NAME_CHARS: usize = 255;
 const MAX_CHECKSUM_CHARS: usize = 200;
 const MAX_SAVE_DIR_CHARS: usize = 1024;
@@ -45,11 +46,11 @@ const MAX_TASK_LIMIT_BPS: i64 = 1_000_000_000_000;
 const EDIT_ATTEMPTS: usize = 3;
 
 /// 任务状态码（`TaskDto::status`）：0 排队、1 下载中、2 已暂停、3 已完成、5 准备中，其余视为失败。
-const STATUS_PENDING: i32 = 0;
-const STATUS_DOWNLOADING: i32 = 1;
-const STATUS_PAUSED: i32 = 2;
-const STATUS_COMPLETED: i32 = 3;
-const STATUS_PREPARING: i32 = 5;
+pub(super) const STATUS_PENDING: i32 = 0;
+pub(super) const STATUS_DOWNLOADING: i32 = 1;
+pub(super) const STATUS_PAUSED: i32 = 2;
+pub(super) const STATUS_COMPLETED: i32 = 3;
+pub(super) const STATUS_PREPARING: i32 = 5;
 
 /// 本机 RPC 句柄：生产实现是 [`ToolContext`]，单测用记录式替身。
 pub(super) trait ToolRpc: Sync {
@@ -84,8 +85,13 @@ pub(super) async fn create_tasks(ctx: &ToolContext, args: Value) -> Result<Value
     create_tasks_with(ctx, args).await
 }
 
-pub(super) async fn manage_tasks(ctx: &ToolContext, args: Value) -> Result<Value, ToolError> {
-    manage_tasks_with(ctx, args).await
+/// `extended` = 工具版本 2:开放重新下载、换源、BT 校验 / 重新汇报 / 做种限制 / 文件优先级。
+pub(super) async fn manage_tasks(
+    ctx: &ToolContext,
+    args: Value,
+    extended: bool,
+) -> Result<Value, ToolError> {
+    manage_tasks_versioned(ctx, args, extended).await
 }
 
 // ───────────────────────── 通用校验 / 转换 ─────────────────────────
@@ -128,7 +134,7 @@ pub(super) fn check_no_control(field: &str, value: &str) -> Result<(), ToolError
 }
 
 /// 该错误是否应继续上抛（取消）；其余 RPC 失败只记在对应条目上。
-fn soft(error: ToolError) -> Result<String, ToolError> {
+pub(super) fn soft(error: ToolError) -> Result<String, ToolError> {
     match error {
         ToolError::Cancelled => Err(ToolError::Cancelled),
         other => Ok(other.to_string()),
@@ -325,7 +331,7 @@ fn pick_queue(queues: &[QueueDto], wanted: &str) -> Result<String, ToolError> {
     )))
 }
 
-async fn resolve_queue(rpc: &impl ToolRpc, wanted: &str) -> Result<String, ToolError> {
+pub(super) async fn resolve_queue(rpc: &impl ToolRpc, wanted: &str) -> Result<String, ToolError> {
     let queues: Vec<QueueDto> = rpc_json(rpc, method::DAEMON_QUEUE_LIST, json!({})).await?;
     pick_queue(&queues, wanted)
 }
@@ -490,23 +496,76 @@ async fn edit_one(
 }
 
 /// `daemon.task.get` 的最小投影。
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct TaskView {
+pub(super) struct TaskView {
     #[serde(default)]
-    task_id: String,
+    pub(super) task_id: String,
     #[serde(default)]
-    file_name: String,
+    pub(super) file_name: String,
     #[serde(default)]
-    status: i32,
+    pub(super) status: i32,
     #[serde(default)]
-    seeding_status: i32,
+    pub(super) seeding_status: i32,
     #[serde(default)]
-    file_missing: bool,
+    pub(super) file_missing: bool,
     #[serde(default)]
-    created_at: String,
+    pub(super) created_at: String,
     #[serde(default)]
-    queue_id: String,
+    pub(super) queue_id: String,
+    #[serde(default)]
+    pub(super) url: String,
+    #[serde(default)]
+    pub(super) origin_url: String,
+    #[serde(default)]
+    pub(super) save_dir: String,
+    #[serde(default)]
+    pub(super) referrer: String,
+    #[serde(default)]
+    pub(super) proxy_url: String,
+    #[serde(default)]
+    pub(super) checksum: String,
+    #[serde(default)]
+    pub(super) ignore_tls_errors: bool,
+    /// 做种限制：与 `TaskDto` 一致，缺省 = 跟随全局（线上哨兵 -2，序列化时省略）。
+    #[serde(default = "seed_limit_inherit")]
+    pub(super) seed_ratio_limit_milli: i64,
+    #[serde(default = "seed_limit_inherit")]
+    pub(super) seed_post_ratio_limit_milli: i64,
+    #[serde(default = "seed_limit_inherit")]
+    pub(super) seed_time_limit_minutes: i64,
+    #[serde(default = "seed_limit_inherit")]
+    pub(super) seed_inactive_time_limit_minutes: i64,
+    #[serde(default)]
+    pub(super) seed_upload_limit_bps: i64,
+}
+
+/// 任务级做种限制的「跟随全局」哨兵（与 `native/protocol` 一致）。
+pub(super) const SEED_LIMIT_FOLLOW_GLOBAL: i64 = -2;
+
+fn seed_limit_inherit() -> i64 {
+    SEED_LIMIT_FOLLOW_GLOBAL
+}
+
+/// 本地种子文件任务的地址哨兵。
+const TORRENT_FILE_SCHEME: &str = "torrent-file://";
+
+/// 任务地址是否属于 BitTorrent（`magnet:` / `torrent-file://` 哨兵，不分大小写）。
+pub(super) fn is_bt_url(url: &str) -> bool {
+    let url = url.trim_start();
+    ["magnet:", TORRENT_FILE_SCHEME].iter().any(|prefix| {
+        url.as_bytes()
+            .get(..prefix.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(prefix.as_bytes()))
+    })
+}
+
+/// 任务地址是否为本地种子文件哨兵。
+pub(super) fn is_torrent_file_url(url: &str) -> bool {
+    url.trim_start()
+        .as_bytes()
+        .get(..TORRENT_FILE_SCHEME.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(TORRENT_FILE_SCHEME.as_bytes()))
 }
 
 impl TaskView {
@@ -519,7 +578,7 @@ impl TaskView {
     }
 
     /// 失败：状态码不在已知的非失败集合内（与 GPUI 的展示态映射一致）。
-    fn is_failed(&self) -> bool {
+    pub(super) fn is_failed(&self) -> bool {
         !matches!(
             self.status,
             STATUS_PENDING
@@ -539,16 +598,20 @@ impl TaskView {
                 && !self.file_missing)
     }
 
-    fn describe(&self) -> Value {
+    pub(super) fn is_bt(&self) -> bool {
+        is_bt_url(&self.url)
+    }
+
+    pub(super) fn describe(&self) -> Value {
         json!({ "taskId": self.task_id, "name": self.file_name })
     }
 
-    fn describe_with(&self, reason: &str) -> Value {
+    pub(super) fn describe_with(&self, reason: &str) -> Value {
         json!({ "taskId": self.task_id, "name": self.file_name, "reason": reason })
     }
 }
 
-async fn fetch_task(rpc: &impl ToolRpc, task_id: &str) -> Result<TaskView, ToolError> {
+pub(super) async fn fetch_task(rpc: &impl ToolRpc, task_id: &str) -> Result<TaskView, ToolError> {
     let mut task: TaskView =
         rpc_json(rpc, method::DAEMON_TASK_GET, json!({ "taskId": task_id })).await?;
     if task.task_id.is_empty() {
@@ -561,28 +624,28 @@ async fn fetch_task(rpc: &impl ToolRpc, task_id: &str) -> Result<TaskView, ToolE
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct CreateArgs {
-    items: Vec<ItemArgs>,
+pub(super) struct CreateArgs {
+    pub(super) items: Vec<ItemArgs>,
     #[serde(default)]
-    options: CreateOptions,
+    pub(super) options: CreateOptions,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ItemArgs {
-    url: String,
+pub(super) struct ItemArgs {
+    pub(super) url: String,
     #[serde(default)]
-    file_name: String,
+    pub(super) file_name: String,
     #[serde(default)]
     checksum: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct CreateOptions {
-    save_dir: Option<String>,
-    category: Option<String>,
-    queue: Option<String>,
+pub(super) struct CreateOptions {
+    pub(super) save_dir: Option<String>,
+    pub(super) category: Option<String>,
+    pub(super) queue: Option<String>,
     connections: Option<u32>,
     proxy: Option<String>,
     #[serde(rename = "speedLimitKBps")]
@@ -592,7 +655,7 @@ struct CreateOptions {
     headers: Option<BTreeMap<String, String>>,
     tags: Option<Vec<String>>,
     ignore_tls_errors: Option<bool>,
-    start_paused: Option<bool>,
+    pub(super) start_paused: Option<bool>,
 }
 
 impl CreateArgs {
@@ -938,49 +1001,75 @@ async fn apply_new_task_props(
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ManageArgs {
-    task_ids: Vec<String>,
-    action: ManageAction,
-    delete_files: Option<bool>,
-    queue: Option<String>,
-    edit: Option<EditArgs>,
+pub(super) struct ManageArgs {
+    pub(super) task_ids: Vec<String>,
+    pub(super) action: ManageAction,
+    pub(super) delete_files: Option<bool>,
+    pub(super) queue: Option<String>,
+    pub(super) edit: Option<EditArgs>,
+    /// 版本 2:`changeUrl` 的新地址。
+    pub(super) url: Option<String>,
+    /// 版本 2:`setSeedLimits` 的做种限制(只写给出的字段,其余保持原值)。
+    pub(super) seed_limits: Option<SeedLimitsArgs>,
+    /// 版本 2:`setFilePriorities` 的文件优先级。
+    pub(super) file_priorities: Option<Vec<FilePriorityArg>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
-enum ManageAction {
+pub(super) enum ManageAction {
     Pause,
     Resume,
     Delete,
     MoveToQueue,
     Edit,
+    Restart,
+    ChangeUrl,
+    Recheck,
+    Reannounce,
+    SetSeedLimits,
+    SetFilePriorities,
 }
 
 impl ManageAction {
-    fn as_str(self) -> &'static str {
+    pub(super) fn as_str(self) -> &'static str {
         match self {
             Self::Pause => "pause",
             Self::Resume => "resume",
             Self::Delete => "delete",
             Self::MoveToQueue => "moveToQueue",
             Self::Edit => "edit",
+            Self::Restart => "restart",
+            Self::ChangeUrl => "changeUrl",
+            Self::Recheck => "recheck",
+            Self::Reannounce => "reannounce",
+            Self::SetSeedLimits => "setSeedLimits",
+            Self::SetFilePriorities => "setFilePriorities",
         }
+    }
+
+    /// 工具版本 2 才有的动作。
+    pub(super) fn is_extended(self) -> bool {
+        !matches!(
+            self,
+            Self::Pause | Self::Resume | Self::Delete | Self::MoveToQueue | Self::Edit
+        )
     }
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct EditArgs {
-    proxy: Option<String>,
-    connections: Option<u32>,
+pub(super) struct EditArgs {
+    pub(super) proxy: Option<String>,
+    pub(super) connections: Option<u32>,
     #[serde(rename = "speedLimitKBps")]
-    speed_limit_kbps: Option<u64>,
-    user_agent: Option<String>,
-    headers: Option<BTreeMap<String, String>>,
-    save_dir: Option<String>,
-    file_name: Option<String>,
-    category: Option<String>,
-    tags: Option<Vec<String>>,
+    pub(super) speed_limit_kbps: Option<u64>,
+    pub(super) user_agent: Option<String>,
+    pub(super) headers: Option<BTreeMap<String, String>>,
+    pub(super) save_dir: Option<String>,
+    pub(super) file_name: Option<String>,
+    pub(super) category: Option<String>,
+    pub(super) tags: Option<Vec<String>>,
 }
 
 /// 校验后的管理请求：字段与动作的搭配、去重后的任务 ID。
@@ -992,9 +1081,12 @@ struct ManagePlan {
     edit: EditPlan,
     /// `edit.category` 里待解析的分类名（空串 = 清除分类）。
     edit_category: Option<String>,
+    /// 版本 2 动作的参数。
+    ext: task_ops::ExtPlan,
 }
 
-fn plan_manage(args: ManageArgs) -> Result<ManagePlan, ToolError> {
+fn plan_manage(args: ManageArgs, extended: bool) -> Result<ManagePlan, ToolError> {
+    task_ops::check_fields(&args, extended)?;
     if args.task_ids.is_empty() || args.task_ids.len() > MAX_MANAGE_IDS {
         return Err(invalid(format!(
             "taskIds must contain 1..={MAX_MANAGE_IDS} entries"
@@ -1030,6 +1122,7 @@ fn plan_manage(args: ManageArgs) -> Result<ManagePlan, ToolError> {
         queue: String::new(),
         edit: EditPlan::default(),
         edit_category: None,
+        ext: task_ops::ExtPlan::default(),
     };
     match action {
         ManageAction::Pause | ManageAction::Resume | ManageAction::Delete => {}
@@ -1052,6 +1145,33 @@ fn plan_manage(args: ManageArgs) -> Result<ManagePlan, ToolError> {
             if plan.edit.is_empty() && plan.edit_category.is_none() {
                 return Err(invalid("edit must contain at least one field"));
             }
+        }
+        ManageAction::Restart | ManageAction::Recheck | ManageAction::Reannounce => {}
+        ManageAction::ChangeUrl => {
+            let url = args
+                .url
+                .ok_or_else(|| invalid("url is required with action 'changeUrl'"))?;
+            if plan.ids.len() != 1 {
+                return Err(invalid("action 'changeUrl' needs exactly one task id"));
+            }
+            plan.ext.url = task_ops::plan_new_url(&url)?;
+        }
+        ManageAction::SetSeedLimits => {
+            let limits = args
+                .seed_limits
+                .ok_or_else(|| invalid("seedLimits is required with action 'setSeedLimits'"))?;
+            plan.ext.seed = Some(task_ops::plan_seed_limits(&limits)?);
+        }
+        ManageAction::SetFilePriorities => {
+            let items = args.file_priorities.ok_or_else(|| {
+                invalid("filePriorities is required with action 'setFilePriorities'")
+            })?;
+            if plan.ids.len() != 1 {
+                return Err(invalid(
+                    "action 'setFilePriorities' needs exactly one task id",
+                ));
+            }
+            plan.ext.priorities = task_ops::plan_priorities(&items)?;
         }
     }
     Ok(plan)
@@ -1106,9 +1226,18 @@ fn plan_edit(edit: &EditArgs, task_count: usize) -> Result<EditPlan, ToolError> 
     Ok(plan)
 }
 
+#[cfg(test)]
 async fn manage_tasks_with(rpc: &impl ToolRpc, args: Value) -> Result<Value, ToolError> {
+    manage_tasks_versioned(rpc, args, true).await
+}
+
+pub(super) async fn manage_tasks_versioned(
+    rpc: &impl ToolRpc,
+    args: Value,
+    extended: bool,
+) -> Result<Value, ToolError> {
     let args: ManageArgs = parse_args(args)?;
-    let mut plan = plan_manage(args)?;
+    let mut plan = plan_manage(args, extended)?;
 
     // 参数里依赖本机状态的部分先解析，失败时一个任务都不动。
     let target_queue = if plan.action == ManageAction::MoveToQueue {
@@ -1218,6 +1347,31 @@ async fn manage_tasks_with(rpc: &impl ToolRpc, args: Value) -> Result<Value, Too
                     Err(error) => failed.push(task.describe_with(&soft(error)?)),
                 }
             }
+        }
+        ManageAction::Restart => {
+            let outcome = task_ops::restart(rpc, &tasks).await?;
+            outcome.merge(&mut applied, &mut skipped, &mut failed);
+        }
+        ManageAction::ChangeUrl => {
+            let outcome = task_ops::change_url(rpc, &tasks, &plan.ext.url).await?;
+            outcome.merge(&mut applied, &mut skipped, &mut failed);
+        }
+        ManageAction::Recheck => {
+            let outcome = task_ops::recheck(rpc, &tasks).await?;
+            outcome.merge(&mut applied, &mut skipped, &mut failed);
+        }
+        ManageAction::Reannounce => {
+            let outcome = task_ops::reannounce(rpc, &tasks).await?;
+            outcome.merge(&mut applied, &mut skipped, &mut failed);
+        }
+        ManageAction::SetSeedLimits => {
+            let seed = plan.ext.seed.unwrap_or_default();
+            let outcome = task_ops::set_seed_limits(rpc, &tasks, seed).await?;
+            outcome.merge(&mut applied, &mut skipped, &mut failed);
+        }
+        ManageAction::SetFilePriorities => {
+            let outcome = task_ops::set_file_priorities(rpc, &tasks, &plan.ext.priorities).await?;
+            outcome.merge(&mut applied, &mut skipped, &mut failed);
         }
     }
 

@@ -1,6 +1,7 @@
 //! AI 助手服务测试：axum 搭的 mock FluxCloud + 替身工具执行器，覆盖 SSE 事件到 `AssistantRunDto`
 //! 的映射、确认 / 执行 / 结果回传的顺序、拒绝不执行、取消与断线对工具的取消、账号切换清空。
 
+use std::collections::{HashMap, VecDeque};
 use std::convert::Infallible;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -9,22 +10,24 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::body::{Body, Bytes};
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, RawQuery, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use fluxdown_protocol::{
-    ApplicationErrorCode, AssistantAskParams, AssistantAskResult, AssistantConfirmParams,
-    AssistantConfirmationState, AssistantRunDto, AssistantRunItemDto, AssistantRunStatus,
-    AssistantSessionIdParams, AssistantStateDto, AssistantToolCallDto, AssistantToolEffect,
-    AssistantToolStatus,
+    ASSISTANT_MAX_TITLE_CHARS, ApplicationErrorCode, AssistantAskParams, AssistantAskResult,
+    AssistantAttachmentParams, AssistantConfirmParams, AssistantConfirmationState,
+    AssistantExportFormat, AssistantExportParams, AssistantRenameParams, AssistantRunDto,
+    AssistantRunItemDto, AssistantRunStatus, AssistantSessionIdParams, AssistantSessionsParams,
+    AssistantStateDto, AssistantToolCallDto, AssistantToolEffect, AssistantToolPreviewDto,
+    AssistantToolStatus, ErrorReason,
 };
 use serde_json::{Value, json};
 use tokio::sync::{Notify, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use super::cloud::{self, AiCloud, RunEvent, SseParser};
-use super::tools::{ToolCall, ToolOutput};
+use super::tools::{ToolCall, ToolOutput, ToolPreview};
 use super::{AssistantError, AssistantService, ToolExecutor, effect_floor, lock, stricter};
 use crate::cloud::{CloudApi, CloudClient, CloudError};
 use crate::event_hub::AgentEventHub;
@@ -44,11 +47,35 @@ fn sse_parser_handles_split_chunks_comments_and_multiline_data() {
         .feed(b"ta: {\"type\":\"text\",\r\ndata: \"delta\":\"a\"}\r\n\r\nevent: x\ndata:b\n\n")
         .expect("feed");
     assert_eq!(
-        parser.pop().as_deref(),
+        parser.pop().map(|event| event.data).as_deref(),
         Some(b"{\"type\":\"text\",\n\"delta\":\"a\"}".as_slice())
     );
-    assert_eq!(parser.pop().as_deref(), Some(b"b".as_slice()));
+    assert_eq!(
+        parser.pop().map(|event| event.data).as_deref(),
+        Some(b"b".as_slice())
+    );
     assert!(parser.pop().is_none());
+}
+
+#[test]
+fn sse_parser_reads_event_ids() {
+    let mut parser = SseParser::default();
+    parser
+        .feed(b"id: 7\ndata: a\n\ndata: b\n\nid: x\ndata: c\n\nid: 1")
+        .expect("feed");
+    parser.feed(b"2\r\ndata: d\r\n\r\n").expect("feed");
+    let events: Vec<(Option<u64>, Vec<u8>)> = std::iter::from_fn(|| parser.pop())
+        .map(|event| (event.id, event.data))
+        .collect();
+    assert_eq!(
+        events,
+        [
+            (Some(7), b"a".to_vec()),
+            (None, b"b".to_vec()),
+            (None, b"c".to_vec()),
+            (Some(12), b"d".to_vec()),
+        ]
+    );
 }
 
 #[test]
@@ -84,11 +111,30 @@ fn unknown_events_are_ignored_and_known_ones_parse() {
         ),
         "{call:?}"
     );
+    let error = cloud::parse_event(
+        br#"{"type":"error","status":"failed","message":"m","reason":"contextOverflow","messageId":"m1"}"#,
+    );
+    assert!(
+        matches!(
+            &error,
+            Ok(RunEvent::Error { reason: Some(reason), message_id: Some(message_id), .. })
+                if reason == "contextOverflow" && message_id == "m1"
+        ),
+        "{error:?}"
+    );
+    assert!(matches!(
+        cloud::parse_event(br#"{"type":"error","status":"failed","message":"m"}"#),
+        Ok(RunEvent::Error {
+            reason: None,
+            message_id: None,
+            ..
+        })
+    ));
     assert!(cloud::parse_event(b"not json").is_err());
 }
 
 #[test]
-fn cloud_errors_map_to_application_codes() {
+fn cloud_errors_map_to_application_codes_and_reasons() {
     fn error(status: u16, code: &str, retryable: bool) -> CloudError {
         CloudError {
             status: Some(status),
@@ -102,32 +148,44 @@ fn cloud_errors_map_to_application_codes() {
         (
             error(503, "ai_unavailable", false),
             ApplicationErrorCode::Unavailable,
+            None,
         ),
         (
             error(403, "ai_disabled", false),
             ApplicationErrorCode::Unsupported,
+            None,
         ),
+        // 当日额度用完与每分钟限频是两件事:UI 靠 reason 分开。
         (
             error(403, "ai_quota_exceeded", false),
             ApplicationErrorCode::Conflict,
+            Some(ErrorReason::AssistantQuotaExceeded),
         ),
         (
             error(409, "conflict", false),
             ApplicationErrorCode::Conflict,
+            None,
         ),
         (
             error(429, "rate_limited", true),
             ApplicationErrorCode::Unavailable,
+            Some(ErrorReason::RateLimited),
         ),
     ];
-    for (cloud_error, code) in cases {
+    for (cloud_error, code, reason) in cases {
         let status = cloud_error.status;
         let mapped = AssistantError::from(cloud_error);
         assert_eq!(mapped.data.code, code, "status {status:?}");
+        assert_eq!(mapped.data.reason, reason, "status {status:?}");
         assert_eq!(mapped.message, "cloud text");
     }
     assert!(
         AssistantError::from(error(429, "rate_limited", true))
+            .data
+            .retryable
+    );
+    assert!(
+        !AssistantError::from(error(403, "ai_quota_exceeded", false))
             .data
             .retryable
     );
@@ -162,7 +220,7 @@ type Log = Arc<Mutex<Vec<String>>>;
 
 #[derive(Default)]
 struct MockCloud {
-    /// 云端与执行器共用的事件日志，用来断言先后顺序。
+    /// 云端与执行器共用的事件日志,用来断言先后顺序。
     log: Log,
     created: Mutex<Vec<Value>>,
     asks: Mutex<Vec<Value>>,
@@ -171,8 +229,23 @@ struct MockCloud {
     ask_failure: Mutex<Option<(StatusCode, Value)>>,
     confirm_status: Mutex<Option<StatusCode>>,
     cancels: AtomicUsize,
+    cancel_status: Mutex<Option<StatusCode>>,
     config: Mutex<Value>,
     status: Mutex<Value>,
+    /// `DELETE /sessions/{id}` 收到的会话 ID 与应答状态(默认 204)。
+    deleted: Mutex<Vec<String>>,
+    delete_status: Mutex<Option<StatusCode>>,
+    /// `GET /runs/{id}/events`(续读)的应答队列:状态 + 正文(2xx 是 SSE 文本,其余是错误 JSON)。
+    resume: Mutex<VecDeque<(StatusCode, String)>>,
+    /// `PATCH /sessions/{id}` 的请求体。
+    renames: Mutex<Vec<Value>>,
+    /// 会话列表 / 导出请求的「名字 + 查询串」。
+    queries: Mutex<Vec<String>>,
+    /// `GET /attachments/{id}` 的应答:`Content-Type` + 正文。
+    attachment: Mutex<Option<(String, Vec<u8>)>>,
+    /// 置位后提问一直挂起,直到 `ask_release`。
+    ask_hold: AtomicBool,
+    ask_release: Notify,
 }
 
 type Mock = Arc<MockCloud>;
@@ -206,6 +279,9 @@ async fn mock_ask(
     axum::Json(body): axum::Json<Value>,
 ) -> Response {
     lock(&mock.asks).push(body);
+    if mock.ask_hold.load(Ordering::SeqCst) {
+        mock.ask_release.notified().await;
+    }
     let failure = lock(&mock.ask_failure).clone();
     if let Some((status, body)) = failure {
         return (status, axum::Json(body)).into_response();
@@ -264,15 +340,77 @@ async fn mock_result(
 async fn mock_cancel(State(mock): State<Mock>, Path(_session): Path<String>) -> StatusCode {
     mock.cancels.fetch_add(1, Ordering::SeqCst);
     record(&mock, "cancel".to_owned());
-    StatusCode::NO_CONTENT
+    lock(&mock.cancel_status).unwrap_or(StatusCode::NO_CONTENT)
+}
+
+async fn mock_sessions(State(mock): State<Mock>, RawQuery(query): RawQuery) -> axum::Json<Value> {
+    lock(&mock.queries).push(format!("sessions?{}", query.unwrap_or_default()));
+    axum::Json(json!({"total": 0, "items": []}))
+}
+
+async fn mock_rename(
+    State(mock): State<Mock>,
+    Path(session): Path<String>,
+    axum::Json(body): axum::Json<Value>,
+) -> axum::Json<Value> {
+    record(&mock, format!("rename {session}"));
+    let title = body["title"].clone();
+    lock(&mock.renames).push(body);
+    axum::Json(json!({
+        "id": session, "channel": "desktop", "kind": "ask", "title": title, "messageCount": 0,
+        "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z"
+    }))
+}
+
+async fn mock_delete_session(State(mock): State<Mock>, Path(session): Path<String>) -> StatusCode {
+    lock(&mock.deleted).push(session);
+    lock(&mock.delete_status).unwrap_or(StatusCode::NO_CONTENT)
+}
+
+async fn mock_export(
+    State(mock): State<Mock>,
+    Path(session): Path<String>,
+    RawQuery(query): RawQuery,
+) -> axum::Json<Value> {
+    lock(&mock.queries).push(format!("export {session}?{}", query.unwrap_or_default()));
+    axum::Json(json!({"fileName": "chat.md", "mime": "text/markdown", "content": "# chat"}))
+}
+
+async fn mock_attachment(State(mock): State<Mock>, Path(_id): Path<String>) -> Response {
+    match lock(&mock.attachment).clone() {
+        Some((mime, body)) => ([(header::CONTENT_TYPE, mime)], body).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn mock_events(
+    State(mock): State<Mock>,
+    Path(run): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    record(
+        &mock,
+        format!(
+            "events {run} after={}",
+            query.get("after").map_or("", String::as_str)
+        ),
+    );
+    let Some((status, body)) = lock(&mock.resume).pop_front() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let content_type = if status.is_success() {
+        "text/event-stream"
+    } else {
+        "application/json"
+    };
+    (status, [(header::CONTENT_TYPE, content_type)], body).into_response()
 }
 
 // ------------------------------------------------------------------ 替身执行器
 
 struct FakeTools {
     log: Log,
-    /// `true`：执行器一直等到取消令牌触发才返回（模拟长时间运行的工具）。
-    block: bool,
+    setup: Setup,
     started: Notify,
     cancelled: AtomicBool,
     calls: Mutex<Vec<ToolCall>>,
@@ -288,23 +426,69 @@ impl ToolExecutor for FakeTools {
         ]
     }
 
+    async fn preview(&self, _call: &ToolCall) -> ToolPreview {
+        match self.setup.preview {
+            Some((action, destructive)) => ToolPreview {
+                preview: Some(AssistantToolPreviewDto {
+                    action: action.to_owned(),
+                    tasks: vec!["a.iso".to_owned()],
+                    more_tasks: 3,
+                    delete_files: destructive,
+                    ..AssistantToolPreviewDto::default()
+                }),
+                destructive,
+            },
+            None => ToolPreview {
+                preview: None,
+                destructive: false,
+            },
+        }
+    }
+
     async fn execute(&self, call: ToolCall, cancel: CancellationToken) -> ToolOutput {
         lock(&self.log).push(format!("exec {}", call.name));
         lock(&self.calls).push(call);
         self.started.notify_one();
-        if self.block {
+        if self.setup.block {
             cancel.cancelled().await;
             self.cancelled.store(true, Ordering::SeqCst);
             return ToolOutput {
                 output: "cancelled".to_owned(),
                 is_error: true,
+                interrupted: self.setup.interrupt,
             };
         }
         ToolOutput {
             output: "tool output".to_owned(),
             is_error: false,
+            interrupted: false,
         }
     }
+}
+
+/// 替身执行器的可调项。
+#[derive(Clone, Copy, Default)]
+struct Setup {
+    /// 执行器一直等到取消令牌触发才返回(模拟长时间运行的工具)。
+    block: bool,
+    /// 阻塞的工具被取消时按「写操作已发出、结果未知」返回。
+    interrupt: bool,
+    /// 待确认调用的预览(动作名,是否破坏性);`None` = 生成不了。
+    preview: Option<(&'static str, bool)>,
+}
+
+/// 去掉主机时钟字段后的状态:时钟每次投影都不同,比较状态时要忽略。
+fn without_clock(mut state: AssistantStateDto) -> AssistantStateDto {
+    state.now_unix_ms = 0;
+    state
+}
+
+/// 把带序号的事件拼成云端的 SSE 文本(续读应答)。
+fn sse_body(frames: &[(u64, Value)]) -> String {
+    frames
+        .iter()
+        .map(|(seq, event)| format!("id: {seq}\ndata: {event}\n\n"))
+        .collect()
 }
 
 // ------------------------------------------------------------------ harness
@@ -323,15 +507,22 @@ struct Harness {
 
 impl Harness {
     async fn new(label: &str) -> Self {
-        Self::build(label, false).await
+        Self::build(label, Setup::default()).await
     }
 
     /// 工具一直阻塞到被取消。
     async fn blocking(label: &str) -> Self {
-        Self::build(label, true).await
+        Self::build(
+            label,
+            Setup {
+                block: true,
+                ..Setup::default()
+            },
+        )
+        .await
     }
 
-    async fn build(label: &str, block: bool) -> Self {
+    async fn build(label: &str, setup: Setup) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind assistant mock");
@@ -346,9 +537,19 @@ impl Harness {
         let router = Router::new()
             .route("/api/v1/ai/config", get(mock_config))
             .route("/api/v1/ai/status", get(mock_status))
-            .route("/api/v1/ai/sessions", post(mock_create_session))
+            .route(
+                "/api/v1/ai/sessions",
+                post(mock_create_session).get(mock_sessions),
+            )
+            .route(
+                "/api/v1/ai/sessions/{id}",
+                patch(mock_rename).delete(mock_delete_session),
+            )
+            .route("/api/v1/ai/sessions/{id}/export", get(mock_export))
             .route("/api/v1/ai/sessions/{id}/messages", post(mock_ask))
             .route("/api/v1/ai/sessions/{id}/cancel", post(mock_cancel))
+            .route("/api/v1/ai/attachments/{id}", get(mock_attachment))
+            .route("/api/v1/ai/runs/{id}/events", get(mock_events))
             .route(
                 "/api/v1/ai/runs/{id}/tool-confirmations",
                 post(mock_confirmation),
@@ -393,7 +594,7 @@ impl Harness {
         ));
         let tools = Arc::new(FakeTools {
             log: mock.log.clone(),
-            block,
+            setup,
             started: Notify::new(),
             cancelled: AtomicBool::new(false),
             calls: Mutex::new(Vec::new()),
@@ -419,6 +620,23 @@ impl Harness {
             .expect("mock event stream is open")
             .send(Bytes::from(format!("data: {event}\n\n")))
             .expect("mock event stream is open");
+    }
+
+    /// 带序号的事件(云端每个事件都带 `id:`,续读靠它)。
+    fn send_id(&self, seq: u64, event: Value) {
+        let frames = lock(&self.frames);
+        frames
+            .as_ref()
+            .expect("mock event stream is open")
+            .send(Bytes::from(format!("id: {seq}\ndata: {event}\n\n")))
+            .expect("mock event stream is open");
+    }
+
+    /// 为下一次提问备好新的事件流(每次提问消费一个)。
+    fn next_stream(&self) {
+        let (frames, receiver) = mpsc::unbounded_channel();
+        *lock(&self.mock.stream) = Some(receiver);
+        *lock(&self.frames) = Some(frames);
     }
 
     /// 关闭事件流（云端正常 EOF）。
@@ -610,7 +828,14 @@ async fn events_map_into_the_run_and_publish_the_whole_state() {
     let published = harness
         .events
         .inspect(|snapshot| snapshot.assistant.clone());
-    assert_eq!(published, harness.service.state());
+    assert_eq!(
+        without_clock(published),
+        without_clock(harness.service.state())
+    );
+    assert!(
+        harness.service.state().now_unix_ms > 0,
+        "the projection carries the host clock"
+    );
     // 提问体：服务端只拿到文本。
     assert_eq!(lock(&harness.mock.asks)[0]["text"], "download something");
     harness.finish().await;
@@ -672,6 +897,7 @@ async fn cloud_refusal_is_mapped_recorded_and_leaves_no_run() {
         .await
         .expect_err("quota refusal");
     assert_eq!(error.data.code, ApplicationErrorCode::Conflict);
+    assert_eq!(error.data.reason, Some(ErrorReason::AssistantQuotaExceeded));
     assert_eq!(error.message, "Daily limit reached");
     let state = harness.service.state();
     assert!(state.runs.is_empty(), "{state:?}");
@@ -679,6 +905,12 @@ async fn cloud_refusal_is_mapped_recorded_and_leaves_no_run() {
         state.last_error_message.as_deref(),
         Some("Daily limit reached")
     );
+    assert_eq!(
+        state.last_error_reason,
+        Some(ErrorReason::AssistantQuotaExceeded)
+    );
+    // 这次提问自己建的会话在云端是空的：被删掉，不在历史里留下「新对话」。
+    assert_eq!(*lock(&harness.mock.deleted), ["sess-1"]);
     harness.finish().await;
 }
 
@@ -725,6 +957,10 @@ async fn write_tool_runs_only_after_the_confirmation_reaches_the_cloud() {
     assert_eq!(call.effect, AssistantToolEffect::Write);
     assert!(call.confirm_deadline_unix_ms.is_some());
     assert_eq!(call.arguments, Some(json!({"tasks": []})));
+    // 执行器给不出预览：卡片回退到原始参数。
+    assert_eq!(call.preview, None);
+    assert!(!call.destructive);
+    assert!(!call.interrupted);
     assert!(
         harness.log().is_empty(),
         "nothing may run before the user decides"
@@ -770,6 +1006,10 @@ async fn declined_confirmation_never_runs_the_tool() {
         Some(AssistantConfirmationState::Declined)
     );
     assert_eq!(call.status, AssistantToolStatus::Failed);
+    assert_eq!(
+        call.output_preview, None,
+        "the UI localises a declined call itself"
+    );
     // 云端自己把「已拒绝」交还模型；本机既不执行也不回传结果。
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(harness.log(), ["confirm run-1 r1 false"]);
@@ -819,6 +1059,10 @@ async fn confirmation_the_cloud_no_longer_waits_for_expires_without_running() {
         .await
         .expect_err("stale confirmation");
     assert_eq!(error.data.code, ApplicationErrorCode::Conflict);
+    assert_eq!(
+        error.data.reason,
+        Some(ErrorReason::AssistantConfirmExpired)
+    );
     assert_eq!(
         harness.tool("r1").confirmation,
         Some(AssistantConfirmationState::Expired)
@@ -928,7 +1172,9 @@ async fn stream_disconnect_fails_the_run_and_cancels_its_tools() {
             h.tools.cancelled.load(Ordering::SeqCst)
         })
         .await;
-    assert!(harness.run().error.is_some());
+    let run = harness.run();
+    assert!(run.error.is_some());
+    assert_eq!(run.error_reason.as_deref(), Some("streamLost"));
     harness.finish().await;
 }
 
@@ -1026,5 +1272,718 @@ async fn run_history_is_trimmed_but_active_runs_survive() {
         inner.make_room();
         assert_eq!(inner.slots.len(), 8, "all-active history is not trimmed");
     }
+    harness.finish().await;
+}
+
+// ------------------------------------------------------------------ 提问准入
+
+#[tokio::test]
+async fn rate_limit_keeps_its_own_reason_and_an_existing_session() {
+    let harness = Harness::new("rate_limit").await;
+    *lock(&harness.mock.ask_failure) = Some((
+        StatusCode::TOO_MANY_REQUESTS,
+        json!({"code": "rate_limited", "message": "Slow down"}),
+    ));
+    let error = harness
+        .service
+        .ask(AssistantAskParams {
+            session_id: Some("sess-9".to_owned()),
+            text: "hi".to_owned(),
+            ..AssistantAskParams::default()
+        })
+        .await
+        .expect_err("rate limited");
+    // 每分钟限频不是「额度用完」:两者的 reason 不同,UI 才能分开显示。
+    assert_eq!(error.data.reason, Some(ErrorReason::RateLimited));
+    assert!(error.data.retryable);
+    assert!(lock(&harness.mock.created).is_empty());
+    assert!(
+        lock(&harness.mock.deleted).is_empty(),
+        "only a session this ask created is removed"
+    );
+    harness.finish().await;
+}
+
+#[tokio::test]
+async fn failed_empty_session_cleanup_does_not_mask_the_refusal() {
+    let harness = Harness::new("cleanup_fails").await;
+    *lock(&harness.mock.ask_failure) = Some((
+        StatusCode::FORBIDDEN,
+        json!({"code": "ai_quota_exceeded", "message": "Daily limit reached"}),
+    ));
+    *lock(&harness.mock.delete_status) = Some(StatusCode::INTERNAL_SERVER_ERROR);
+    let error = harness
+        .service
+        .ask(AssistantAskParams {
+            text: "hi".to_owned(),
+            ..AssistantAskParams::default()
+        })
+        .await
+        .expect_err("quota refusal");
+    assert_eq!(error.data.reason, Some(ErrorReason::AssistantQuotaExceeded));
+    assert_eq!(*lock(&harness.mock.deleted), ["sess-1"]);
+    harness.finish().await;
+}
+
+#[tokio::test]
+async fn ask_validates_replace_from_and_keep_images_before_touching_the_cloud() {
+    let harness = Harness::new("validate_ask").await;
+    let cases = [
+        // (sessionId, replaceFrom, keepImages, 新图数, 出错字段)
+        (None, Some("m1"), false, 0, "replaceFrom"),
+        (Some("sess-1"), None, true, 0, "keepImages"),
+        (Some("sess-1"), Some("m1"), true, 1, "keepImages"),
+    ];
+    for (session_id, replace_from, keep_images, images, field) in cases {
+        let error = harness
+            .service
+            .ask(AssistantAskParams {
+                session_id: session_id.map(str::to_owned),
+                replace_from: replace_from.map(str::to_owned),
+                keep_images,
+                images: vec!["data:image/png;base64,AAAA".to_owned(); images],
+                text: "hi".to_owned(),
+                ..AssistantAskParams::default()
+            })
+            .await
+            .expect_err(field);
+        assert_eq!(
+            error.data.code,
+            ApplicationErrorCode::InvalidArgument,
+            "{field}"
+        );
+        assert_eq!(error.data.field.as_deref(), Some(field));
+    }
+    assert!(lock(&harness.mock.created).is_empty());
+    assert!(lock(&harness.mock.asks).is_empty());
+    assert!(harness.service.state().runs.is_empty());
+    harness.finish().await;
+}
+
+#[tokio::test]
+async fn regenerate_passes_replace_from_and_keep_images_and_drops_the_old_answer() {
+    let harness = Harness::new("replace").await;
+    harness.send(json!({"type": "done", "status": "completed", "messageId": "m1", "text": "one"}));
+    harness.ask().await;
+    harness
+        .eventually("first answer", |h| {
+            h.service
+                .state()
+                .runs
+                .last()
+                .is_some_and(|run| run.status == AssistantRunStatus::Completed)
+        })
+        .await;
+    harness.next_stream();
+    harness.send(json!({"type": "done", "status": "completed", "messageId": "m2", "text": "two"}));
+    harness
+        .service
+        .ask(AssistantAskParams {
+            session_id: Some("sess-1".to_owned()),
+            replace_from: Some("u1".to_owned()),
+            keep_images: true,
+            text: "again".to_owned(),
+            ..AssistantAskParams::default()
+        })
+        .await
+        .expect("regenerate accepted");
+    harness
+        .eventually("second answer", |h| {
+            h.service
+                .state()
+                .runs
+                .last()
+                .is_some_and(|run| run.message_id.as_deref() == Some("m2"))
+        })
+        .await;
+    let asks = lock(&harness.mock.asks).clone();
+    assert_eq!(asks.len(), 2);
+    assert!(asks[0].get("replaceFrom").is_none() && asks[0].get("keepImages").is_none());
+    assert_eq!(asks[1]["replaceFrom"], "u1");
+    assert_eq!(asks[1]["keepImages"], true);
+    // 被替换的旧回答不再留着实时覆盖层。
+    assert_eq!(harness.service.state().runs.len(), 1);
+    harness.finish().await;
+}
+
+#[tokio::test]
+async fn run_records_the_image_count_of_the_question() {
+    let harness = Harness::new("images").await;
+    harness.send(json!({"type": "run", "runId": "run-1", "sessionId": "sess-1"}));
+    harness
+        .service
+        .ask(AssistantAskParams {
+            text: "look".to_owned(),
+            images: vec![
+                "data:image/png;base64,AAAA".to_owned(),
+                "data:image/png;base64,BBBB".to_owned(),
+            ],
+            ..AssistantAskParams::default()
+        })
+        .await
+        .expect("ask accepted");
+    assert_eq!(harness.run().image_count, 2);
+    assert_eq!(
+        lock(&harness.mock.asks)[0]["images"]
+            .as_array()
+            .map(Vec::len),
+        Some(2)
+    );
+    harness.finish().await;
+}
+
+// ------------------------------------------------------------------ 失败原因
+
+#[tokio::test]
+async fn cloud_error_reason_and_message_id_reach_the_run() {
+    let harness = Harness::new("error_reason").await;
+    harness.send(json!({
+        "type": "error", "status": "failed", "message": "too long",
+        "reason": "contextOverflow", "messageId": "m9"
+    }));
+    harness.ask().await;
+    harness
+        .eventually("failed run", |h| {
+            h.service
+                .state()
+                .runs
+                .last()
+                .is_some_and(|run| run.status == AssistantRunStatus::Failed)
+        })
+        .await;
+    let run = harness.run();
+    assert_eq!(run.error.as_deref(), Some("too long"));
+    assert_eq!(run.error_reason.as_deref(), Some("contextOverflow"));
+    assert_eq!(run.message_id.as_deref(), Some("m9"));
+    harness.finish().await;
+}
+
+#[tokio::test]
+async fn persisted_runs_drop_tool_arguments_but_unpersisted_ones_keep_them() {
+    /// 跑完一次只读工具调用(参数不小),返回等到工具成功后的 harness。
+    async fn with_finished_tool(label: &str) -> Harness {
+        let harness = Harness::new(label).await;
+        harness.send(json!({"type": "run", "runId": "run-1", "sessionId": "sess-1"}));
+        harness.send(
+            json!({"type": "toolStarted", "callId": "c1", "name": "fd_get_app_info", "kind": "client"}),
+        );
+        harness.send(json!({
+            "type": "clientToolCall", "requestId": "r1", "name": "fd_get_app_info", "version": 1,
+            "arguments": {"big": [1, 2, 3]}, "effect": "read", "timeoutSecs": 20
+        }));
+        harness.ask().await;
+        harness
+            .eventually("result report", |h| h.has_log("result"))
+            .await;
+        harness
+            .eventually("succeeded tool", |h| {
+                h.tool("r1").status == AssistantToolStatus::Succeeded
+            })
+            .await;
+        harness
+    }
+
+    let harness = with_finished_tool("arguments").await;
+    assert_eq!(
+        harness.tool("r1").arguments,
+        Some(json!({"big": [1, 2, 3]})),
+        "a running run keeps the arguments for the live card"
+    );
+    // 没落库的失败(无 messageId):保留参数。
+    harness.send(json!({"type": "error", "status": "failed", "message": "boom"}));
+    harness
+        .eventually("failed run", |h| {
+            h.run().status == AssistantRunStatus::Failed
+        })
+        .await;
+    assert!(harness.tool("r1").arguments.is_some());
+    harness.finish().await;
+
+    let harness = with_finished_tool("arguments_persisted").await;
+    harness.send(json!({"type": "done", "status": "completed", "messageId": "m1", "text": "ok"}));
+    harness
+        .eventually("completed run", |h| {
+            h.run().status == AssistantRunStatus::Completed
+        })
+        .await;
+    // 回答已落库:会话详情里有完整参数,实时投影不再每次深拷贝它。
+    assert_eq!(harness.tool("r1").arguments, None);
+    harness.finish().await;
+}
+
+// ------------------------------------------------------------------ 事件流续读
+
+#[tokio::test]
+async fn interrupted_stream_resumes_after_the_last_event_id() {
+    let harness = Harness::new("resume").await;
+    harness.send_id(
+        1,
+        json!({"type": "run", "runId": "run-1", "sessionId": "sess-1"}),
+    );
+    harness.send_id(2, json!({"type": "text", "delta": "Hel"}));
+    // 先一次 503(退避后重试),再成功续读:云端从 `after` 之后补发,含一帧已处理过的重放。
+    *lock(&harness.mock.resume) = VecDeque::from([
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"code": "unavailable", "message": "down"}).to_string(),
+        ),
+        (
+            StatusCode::OK,
+            sse_body(&[
+                (2, json!({"type": "text", "delta": "Hel"})),
+                (3, json!({"type": "text", "delta": "lo"})),
+                (
+                    4,
+                    json!({"type": "done", "status": "completed", "messageId": "m1", "text": "Hello"}),
+                ),
+            ]),
+        ),
+    ]);
+    harness.ask().await;
+    harness.close_stream();
+    harness
+        .eventually("completed run", |h| {
+            h.service
+                .state()
+                .runs
+                .last()
+                .is_some_and(|run| run.status == AssistantRunStatus::Completed)
+        })
+        .await;
+    let run = harness.run();
+    assert_eq!(run.items.len(), 1, "{:?}", run.items);
+    assert!(
+        matches!(&run.items[0], AssistantRunItemDto::Text { text } if text == "Hello"),
+        "the replayed event must not duplicate text: {:?}",
+        run.items
+    );
+    assert_eq!(run.message_id.as_deref(), Some("m1"));
+    let resumes: Vec<String> = harness
+        .log()
+        .into_iter()
+        .filter(|entry| entry.starts_with("events"))
+        .collect();
+    assert_eq!(resumes, ["events run-1 after=2", "events run-1 after=2"]);
+    harness.finish().await;
+}
+
+#[tokio::test]
+async fn stream_closed_before_the_first_event_resumes_from_the_start() {
+    let harness = Harness::new("resume_start").await;
+    *lock(&harness.mock.resume) = VecDeque::from([(
+        StatusCode::OK,
+        sse_body(&[
+            (
+                1,
+                json!({"type": "run", "runId": "run-1", "sessionId": "sess-1"}),
+            ),
+            (
+                2,
+                json!({"type": "done", "status": "completed", "messageId": "m1", "text": "hi"}),
+            ),
+        ]),
+    )]);
+    harness.close_stream();
+    harness.ask().await;
+    harness
+        .eventually("completed run", |h| {
+            h.service
+                .state()
+                .runs
+                .last()
+                .is_some_and(|run| run.status == AssistantRunStatus::Completed)
+        })
+        .await;
+    assert!(
+        harness.has_log("events run-1 after=0"),
+        "{:?}",
+        harness.log()
+    );
+    harness.finish().await;
+}
+
+#[tokio::test]
+async fn resume_refused_with_gone_fails_the_run_as_stream_lost() {
+    let harness = Harness::new("resume_gone").await;
+    harness.send_id(
+        1,
+        json!({"type": "run", "runId": "run-1", "sessionId": "sess-1"}),
+    );
+    harness.send_id(2, json!({"type": "text", "delta": "partial"}));
+    *lock(&harness.mock.resume) = VecDeque::from([(
+        StatusCode::GONE,
+        json!({"code": "ai_run_gone", "message": "The run is no longer available."}).to_string(),
+    )]);
+    harness.ask().await;
+    harness.close_stream();
+    harness
+        .eventually("failed run", |h| {
+            h.service
+                .state()
+                .runs
+                .last()
+                .is_some_and(|run| run.status == AssistantRunStatus::Failed)
+        })
+        .await;
+    let run = harness.run();
+    assert_eq!(run.error_reason.as_deref(), Some("streamLost"));
+    assert_eq!(
+        run.error.as_deref(),
+        Some("The run is no longer available.")
+    );
+    assert_eq!(
+        harness.log(),
+        ["events run-1 after=2"],
+        "410 is final: no retry"
+    );
+    harness.finish().await;
+}
+
+#[tokio::test]
+async fn stream_without_event_ids_is_never_resumed() {
+    let harness = Harness::new("resume_no_ids").await;
+    // 旧云端不带 `id:`:已处理过事件却不知道序号,续读会重放并重复文本,所以直接失败。
+    harness.send(json!({"type": "run", "runId": "run-1", "sessionId": "sess-1"}));
+    harness.send(json!({"type": "text", "delta": "partial"}));
+    harness.ask().await;
+    harness.close_stream();
+    harness
+        .eventually("failed run", |h| {
+            h.service
+                .state()
+                .runs
+                .last()
+                .is_some_and(|run| run.status == AssistantRunStatus::Failed)
+        })
+        .await;
+    assert_eq!(harness.run().error_reason.as_deref(), Some("streamLost"));
+    assert!(!harness.has_log("events"));
+    harness.finish().await;
+}
+
+// ------------------------------------------------------------------ 取消竞态
+
+#[tokio::test]
+async fn cancel_while_the_question_is_in_flight_wins_the_race() {
+    let harness = Harness::new("ask_race").await;
+    harness.mock.ask_hold.store(true, Ordering::SeqCst);
+    let service = harness.service.clone();
+    let asking = tokio::spawn(async move {
+        service
+            .ask(AssistantAskParams {
+                session_id: Some("sess-1".to_owned()),
+                text: "hi".to_owned(),
+                ..AssistantAskParams::default()
+            })
+            .await
+    });
+    harness
+        .eventually("question in flight", |h| !lock(&h.mock.asks).is_empty())
+        .await;
+    harness
+        .service
+        .cancel(AssistantSessionIdParams {
+            session_id: "sess-1".to_owned(),
+        })
+        .await
+        .expect("cancel");
+    let result = asking
+        .await
+        .expect("ask task")
+        .expect("a cancelled question is not an error");
+    assert_eq!(result.session_id, "sess-1");
+    assert_eq!(harness.run().status, AssistantRunStatus::Canceled);
+    // 取消方一次,被取消的提问自己再通知一次(云端可能已受理)。
+    harness
+        .eventually("both cloud cancels", |h| {
+            h.mock.cancels.load(Ordering::SeqCst) == 2
+        })
+        .await;
+    harness.finish().await;
+}
+
+#[tokio::test]
+async fn cloud_cancel_failure_after_a_local_cancel_is_only_logged() {
+    let harness = Harness::new("cancel_cloud_down").await;
+    harness.send(json!({"type": "run", "runId": "run-1", "sessionId": "sess-1"}));
+    harness.ask().await;
+    *lock(&harness.mock.cancel_status) = Some(StatusCode::INTERNAL_SERVER_ERROR);
+    let params = || AssistantSessionIdParams {
+        session_id: "sess-1".to_owned(),
+    };
+    harness
+        .service
+        .cancel(params())
+        .await
+        .expect("the local cancel already succeeded");
+    assert_eq!(harness.run().status, AssistantRunStatus::Canceled);
+    // 本机没有进行中的执行可取消:云端的失败就是答案。
+    harness
+        .service
+        .cancel(params())
+        .await
+        .expect_err("nothing was cancelled locally");
+    harness.finish().await;
+}
+
+#[tokio::test]
+async fn every_run_end_refreshes_the_daily_usage() {
+    let harness = Harness::new("usage").await;
+    let used = |h: &Harness| h.service.state().config.map(|config| config.used_today);
+    *lock(&harness.mock.config) = json!({"available": true, "usedToday": 1});
+    harness.service.refresh().await.expect("refresh");
+    assert_eq!(used(&harness), Some(1));
+
+    *lock(&harness.mock.config) = json!({"available": true, "usedToday": 2});
+    harness.send(json!({"type": "done", "status": "completed", "text": "hi"}));
+    harness.ask().await;
+    harness
+        .eventually("usage after a finished run", |h| used(h) == Some(2))
+        .await;
+
+    // 被取消的执行同样计入当日额度。
+    *lock(&harness.mock.config) = json!({"available": true, "usedToday": 3});
+    harness.next_stream();
+    harness.send(json!({"type": "run", "runId": "run-1", "sessionId": "sess-1"}));
+    harness.ask().await;
+    harness
+        .service
+        .cancel(AssistantSessionIdParams {
+            session_id: "sess-1".to_owned(),
+        })
+        .await
+        .expect("cancel");
+    harness
+        .eventually("usage after a cancelled run", |h| used(h) == Some(3))
+        .await;
+    harness.finish().await;
+}
+
+// ------------------------------------------------------------------ 确认卡片预览 / 中断
+
+#[tokio::test]
+async fn confirmation_card_carries_the_executor_preview() {
+    let harness = Harness::build(
+        "preview",
+        Setup {
+            preview: Some(("delete", true)),
+            ..Setup::default()
+        },
+    )
+    .await;
+    harness
+        .pending_write_call("fd_manage_tasks", "write", 30)
+        .await;
+    let call = harness.tool("r1");
+    let preview = call.preview.expect("the card shows what will change");
+    assert_eq!(preview.action, "delete");
+    assert_eq!(preview.tasks, ["a.iso"]);
+    assert_eq!(preview.more_tasks, 3);
+    assert!(call.destructive);
+    harness.finish().await;
+}
+
+/// 批准一次会阻塞的写调用,等它开始执行后取消整次执行,等工具收到取消。
+async fn cancelled_write_call(label: &str, interrupt: bool) -> Harness {
+    let harness = Harness::build(
+        label,
+        Setup {
+            block: true,
+            interrupt,
+            ..Setup::default()
+        },
+    )
+    .await;
+    harness
+        .pending_write_call("fd_create_tasks", "write", 30)
+        .await;
+    harness
+        .service
+        .confirm(confirm("r1", true))
+        .await
+        .expect("confirm");
+    harness.tools.started.notified().await;
+    harness
+        .service
+        .cancel(AssistantSessionIdParams {
+            session_id: "sess-1".to_owned(),
+        })
+        .await
+        .expect("cancel");
+    harness
+        .eventually("tool cancellation", |h| {
+            h.tools.cancelled.load(Ordering::SeqCst)
+        })
+        .await;
+    harness
+}
+
+#[tokio::test]
+async fn write_tool_stopped_mid_flight_is_marked_interrupted() {
+    let harness = cancelled_write_call("interrupted", true).await;
+    harness
+        .eventually("interrupted mark", |h| h.tool("r1").interrupted)
+        .await;
+    assert_eq!(harness.tool("r1").status, AssistantToolStatus::Failed);
+    harness.finish().await;
+}
+
+#[tokio::test]
+async fn tool_cancelled_without_an_outcome_unknown_flag_is_not_marked_interrupted() {
+    let harness = cancelled_write_call("not_interrupted", false).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(!harness.tool("r1").interrupted);
+    harness.finish().await;
+}
+
+// ------------------------------------------------------------------ 会话管理 RPC
+
+#[tokio::test]
+async fn rename_validates_the_title_and_routes_to_the_cloud() {
+    let harness = Harness::new("rename").await;
+    let rename = |title: String| AssistantRenameParams {
+        session_id: "sess-7".to_owned(),
+        title,
+    };
+    let renamed = harness
+        .service
+        .rename_session(rename("  New title ".to_owned()))
+        .await
+        .expect("rename");
+    assert_eq!(
+        (renamed.id.as_str(), renamed.title.as_str()),
+        ("sess-7", "New title")
+    );
+    assert_eq!(
+        *lock(&harness.mock.renames),
+        [json!({"title": "New title"})]
+    );
+
+    // 长度按字符数算,不是字节数:80 个汉字合法。
+    let long = "题".repeat(ASSISTANT_MAX_TITLE_CHARS);
+    harness
+        .service
+        .rename_session(rename(long))
+        .await
+        .expect("a title of exactly the maximum length is accepted");
+
+    for title in ["   ".to_owned(), "x".repeat(ASSISTANT_MAX_TITLE_CHARS + 1)] {
+        let error = harness
+            .service
+            .rename_session(rename(title))
+            .await
+            .expect_err("invalid title");
+        assert_eq!(error.data.code, ApplicationErrorCode::InvalidArgument);
+        assert_eq!(error.data.field.as_deref(), Some("title"));
+    }
+    let error = harness
+        .service
+        .rename_session(AssistantRenameParams {
+            session_id: " ".to_owned(),
+            title: "ok".to_owned(),
+        })
+        .await
+        .expect_err("empty session id");
+    assert_eq!(error.data.field.as_deref(), Some("sessionId"));
+    assert_eq!(
+        lock(&harness.mock.renames).len(),
+        2,
+        "invalid titles never reach the cloud"
+    );
+    harness.finish().await;
+}
+
+#[tokio::test]
+async fn export_and_search_route_to_the_cloud() {
+    let harness = Harness::new("export").await;
+    let exported = harness
+        .service
+        .export_session(AssistantExportParams {
+            session_id: "sess-7".to_owned(),
+            format: AssistantExportFormat::Json,
+        })
+        .await
+        .expect("export");
+    assert_eq!(
+        (
+            exported.file_name.as_str(),
+            exported.mime.as_str(),
+            exported.content.as_str()
+        ),
+        ("chat.md", "text/markdown", "# chat")
+    );
+    harness
+        .service
+        .export_session(AssistantExportParams {
+            session_id: "sess-7".to_owned(),
+            format: AssistantExportFormat::default(),
+        })
+        .await
+        .expect("default export");
+
+    // `query` 去空白后以 `q` 传给云端;空白查询等于不搜;超长查询截到上限。
+    for query in ["  hello world ", "   "] {
+        harness
+            .service
+            .sessions(AssistantSessionsParams {
+                limit: Some(5),
+                offset: Some(10),
+                query: Some(query.to_owned()),
+            })
+            .await
+            .expect("sessions");
+    }
+    harness
+        .service
+        .sessions(AssistantSessionsParams {
+            query: Some("a".repeat(300)),
+            ..AssistantSessionsParams::default()
+        })
+        .await
+        .expect("sessions");
+    assert_eq!(
+        *lock(&harness.mock.queries),
+        [
+            "export sess-7?format=json".to_owned(),
+            "export sess-7?format=markdown".to_owned(),
+            "sessions?limit=5&offset=10&q=hello%20world".to_owned(),
+            "sessions?limit=5&offset=10".to_owned(),
+            format!("sessions?q={}", "a".repeat(200)),
+        ]
+    );
+    harness.finish().await;
+}
+
+#[tokio::test]
+async fn attachment_returns_a_data_url_with_the_response_mime_and_respects_the_cap() {
+    let harness = Harness::new("attachment").await;
+    let fetch = |id: &str| {
+        harness.service.attachment(AssistantAttachmentParams {
+            attachment_id: id.to_owned(),
+        })
+    };
+    *lock(&harness.mock.attachment) = Some(("image/png".to_owned(), vec![1, 2, 3]));
+    assert_eq!(
+        fetch("att-1").await.expect("attachment").data_url,
+        "data:image/png;base64,AQID"
+    );
+    // MIME 取自响应头(去掉参数),不是写死 png。
+    *lock(&harness.mock.attachment) =
+        Some(("image/jpeg; charset=binary".to_owned(), vec![1, 2, 3]));
+    assert_eq!(
+        fetch("att-1").await.expect("attachment").data_url,
+        "data:image/jpeg;base64,AQID"
+    );
+    // 只放行云端接受的图片类型。
+    *lock(&harness.mock.attachment) = Some(("text/html".to_owned(), vec![1, 2, 3]));
+    fetch("att-1").await.expect_err("unsupported type");
+    // 体积上限。
+    *lock(&harness.mock.attachment) = Some(("image/png".to_owned(), vec![0; 6 * 1024 * 1024 + 1]));
+    fetch("att-1").await.expect_err("oversized attachment");
+    // 云端不认的 ID。
+    *lock(&harness.mock.attachment) = None;
+    fetch("missing").await.expect_err("unknown attachment");
+    let error = fetch(" ").await.expect_err("empty id");
+    assert_eq!(error.data.field.as_deref(), Some("attachmentId"));
     harness.finish().await;
 }

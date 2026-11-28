@@ -364,6 +364,17 @@ impl CloudApi {
             .await
     }
 
+    /// `GET /api/v1/ai{suffix}`：提问执行的事件续读（SSE）与提问附图（二进制）这类 GET 流式响应；
+    /// 调用方负责读取响应体。
+    pub(crate) async fn ai_get_stream(
+        &self,
+        suffix: &str,
+    ) -> Result<reqwest::Response, CloudError> {
+        self.client
+            .authenticated_stream_epoch(&format!("/api/v1/ai{suffix}"), self.request_epoch())
+            .await
+    }
+
     /// 本机 `(device_id, platform)`（建 AI 会话时随客户端信息上报）。
     pub(crate) async fn ai_device(&self) -> (String, String) {
         let (device_id, _name, platform) = self.client.device_identity().await;

@@ -354,6 +354,9 @@ public enum HostMethod {
     public static let agentAssistantRate = "agent.assistant.rate"
     public static let agentAssistantConfirmIssue = "agent.assistant.confirmIssue"
     public static let agentAssistantDiscardIssue = "agent.assistant.discardIssue"
+    public static let agentAssistantRenameSession = "agent.assistant.renameSession"
+    public static let agentAssistantExportSession = "agent.assistant.exportSession"
+    public static let agentAssistantAttachment = "agent.assistant.attachment"
     public static let serviceEvent = "service.event"
 }
 

@@ -7,15 +7,22 @@
 //!
 //! 工具与本机 RPC 的对应关系见各实现模块:
 //! - `read`:应用 / 设置 / 运行时 / 网络 / 插件 / 组件 / 体检 / 网卡 / 测速;
-//! - `read_tasks`:任务列表与详情、BT 状态;
+//! - `read_tasks`:任务列表与详情、BT 状态(含文件表);
 //! - `read_logs`:日志;
-//! - `tasks`、`settings`:写工具。
+//! - `tasks`、`task_ops`、`settings`、`admin`:写工具(任务 / 队列 / 设置 / 组件 / 插件 / 体检修复);
+//! - `preview`:待确认写工具的人话预览(任务名、设置新旧值、脱敏地址、危险标记)。
+//!
+//! 写类工具一经用户批准就不再随取消半途丢弃:取消时已发出的 daemon 请求继续在后台跑完(结果写日志),
+//! `execute` 立即返回 `interrupted = true`;只读 / 测速工具照旧直接取消。
 
+mod admin;
 mod output;
+mod preview;
 mod read;
 mod read_logs;
 mod read_tasks;
 mod settings;
+mod task_ops;
 mod tasks;
 
 use std::collections::HashMap;
@@ -24,7 +31,8 @@ use std::time::Duration;
 
 use fluxdown_api::service::LiveSpeed;
 use fluxdown_protocol::{
-    AgentPreferencesDto, AgentSnapshot, DaemonConfigSnapshot, RpcErrorData, method,
+    AgentPreferencesDto, AgentSnapshot, AssistantToolPreviewDto, DaemonConfigSnapshot,
+    RpcErrorData, method,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -39,6 +47,10 @@ use crate::task_events::TaskEventHub;
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// 写工具(用户确认之后起算)的执行时限。
 const WRITE_TIMEOUT: Duration = Duration::from_secs(60);
+/// 体检修复的执行时限:重新探测存储 / 组件可能要几十秒。
+const REPAIR_TIMEOUT: Duration = Duration::from_secs(120);
+/// 组件安装 / 更新的执行时限:要联网下载几十到上百 MB。
+const INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
 /// 测速的执行时限,对应云端目录的 `timeoutSecs`:最多 4 条路线 × 每条 60 秒,另留建连与收尾余量。
 const MEASURE_TIMEOUT: Duration = Duration::from_secs(300);
 /// 首次读取任务实时速率前,等待速率采样器收到第一批进度帧的时间。
@@ -58,6 +70,23 @@ pub(crate) struct ToolOutput {
     /// 已脱敏、已截断(≤ 64 KiB)的文本;JSON 结果序列化为紧凑字符串。
     pub output: String,
     pub is_error: bool,
+    /// 已批准的写类工具在执行中被停止(取消 / 超时):已发出的请求可能已生效,结果未知。
+    pub interrupted: bool,
+}
+
+/// 待确认调用的可读预览(用本机数据生成)与危险标记。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ToolPreview {
+    /// 生成不了(或无需预览)时为 `None`。
+    pub preview: Option<AssistantToolPreviewDto>,
+    /// 删除任务 / 文件、重新下载等不可撤销的动作:确认卡片用危险样式。
+    pub destructive: bool,
+}
+
+impl ToolPreview {
+    pub(crate) fn none() -> Self {
+        Self::default()
+    }
 }
 
 /// 工具执行失败的原因;文本是给模型看的英文说明。
@@ -154,7 +183,8 @@ impl ToolContext {
             ToolId::ListTasks => read_tasks::list_tasks(self, args).await,
             ToolId::GetTask => read_tasks::get_task(self, args).await,
             ToolId::GetRuntimeStats => read::runtime_stats(self, args).await,
-            ToolId::GetBtStatus => read_tasks::bt_status(self, args).await,
+            ToolId::GetBtStatus => read_tasks::bt_status(self, args, false).await,
+            ToolId::GetBtStatusV2 => read_tasks::bt_status(self, args, true).await,
             ToolId::GetNetworkStatus => read::network_status(self, args).await,
             ToolId::ListPlugins => read::plugins(self, args).await,
             ToolId::ListComponents => read::components(self, args).await,
@@ -163,8 +193,13 @@ impl ToolContext {
             ToolId::GetNetInterfaces => read::net_interfaces(self, args).await,
             ToolId::MeasureRoutes => read::measure_routes(self, args).await,
             ToolId::CreateTasks => tasks::create_tasks(self, args).await,
-            ToolId::ManageTasks => tasks::manage_tasks(self, args).await,
+            ToolId::ManageTasks => tasks::manage_tasks(self, args, false).await,
+            ToolId::ManageTasksV2 => tasks::manage_tasks(self, args, true).await,
             ToolId::UpdateSettings => settings::update_settings(self, args).await,
+            ToolId::ManageQueues => admin::manage_queues(self, args).await,
+            ToolId::InstallComponent => admin::install_component(self, args).await,
+            ToolId::SetPluginEnabled => admin::set_plugin_enabled(self, args).await,
+            ToolId::Repair => admin::repair(self, args).await,
         }
     }
 }
@@ -202,6 +237,7 @@ enum ToolId {
     GetTask,
     GetRuntimeStats,
     GetBtStatus,
+    GetBtStatusV2,
     GetNetworkStatus,
     ListPlugins,
     ListComponents,
@@ -211,7 +247,12 @@ enum ToolId {
     MeasureRoutes,
     CreateTasks,
     ManageTasks,
+    ManageTasksV2,
     UpdateSettings,
+    ManageQueues,
+    InstallComponent,
+    SetPluginEnabled,
+    Repair,
 }
 
 /// 本机实现的一个工具版本。名称与版本是与 FluxCloud `ai/catalog.rs` 的契约。
@@ -220,46 +261,99 @@ struct ToolDef {
     version: u32,
     id: ToolId,
     timeout: Duration,
+    /// 会改动设置 / 任务 / 组件等本机状态:批准后不随取消丢弃,见 [`execute_write`]。
+    writes: bool,
 }
 
-const fn def(name: &'static str, id: ToolId, timeout: Duration) -> ToolDef {
+const fn read_tool(name: &'static str, version: u32, id: ToolId, timeout: Duration) -> ToolDef {
     ToolDef {
         name,
-        version: 1,
+        version,
         id,
         timeout,
+        writes: false,
     }
 }
 
-static TOOLS: [ToolDef; 16] = [
-    def("fd_get_app_info", ToolId::GetAppInfo, READ_TIMEOUT),
-    def("fd_get_settings", ToolId::GetSettings, READ_TIMEOUT),
-    def("fd_list_tasks", ToolId::ListTasks, READ_TIMEOUT),
-    def("fd_get_task", ToolId::GetTask, READ_TIMEOUT),
-    def(
+const fn write_tool(name: &'static str, version: u32, id: ToolId, timeout: Duration) -> ToolDef {
+    ToolDef {
+        name,
+        version,
+        id,
+        timeout,
+        writes: true,
+    }
+}
+
+/// 同名工具可并存多个版本:云端按客户端声明的版本取目录里最高的,旧云端仍只会用版本 1。
+static TOOLS: &[ToolDef] = &[
+    read_tool("fd_get_app_info", 1, ToolId::GetAppInfo, READ_TIMEOUT),
+    read_tool("fd_get_settings", 1, ToolId::GetSettings, READ_TIMEOUT),
+    read_tool("fd_list_tasks", 1, ToolId::ListTasks, READ_TIMEOUT),
+    read_tool("fd_get_task", 1, ToolId::GetTask, READ_TIMEOUT),
+    read_tool(
         "fd_get_runtime_stats",
+        1,
         ToolId::GetRuntimeStats,
         READ_TIMEOUT,
     ),
-    def("fd_get_bt_status", ToolId::GetBtStatus, READ_TIMEOUT),
-    def(
+    read_tool("fd_get_bt_status", 1, ToolId::GetBtStatus, READ_TIMEOUT),
+    read_tool("fd_get_bt_status", 2, ToolId::GetBtStatusV2, READ_TIMEOUT),
+    read_tool(
         "fd_get_network_status",
+        1,
         ToolId::GetNetworkStatus,
         READ_TIMEOUT,
     ),
-    def("fd_list_plugins", ToolId::ListPlugins, READ_TIMEOUT),
-    def("fd_list_components", ToolId::ListComponents, READ_TIMEOUT),
-    def("fd_run_diagnostics", ToolId::RunDiagnostics, READ_TIMEOUT),
-    def("fd_get_logs", ToolId::GetLogs, READ_TIMEOUT),
-    def(
+    read_tool("fd_list_plugins", 1, ToolId::ListPlugins, READ_TIMEOUT),
+    read_tool(
+        "fd_list_components",
+        1,
+        ToolId::ListComponents,
+        READ_TIMEOUT,
+    ),
+    read_tool(
+        "fd_run_diagnostics",
+        1,
+        ToolId::RunDiagnostics,
+        READ_TIMEOUT,
+    ),
+    read_tool("fd_get_logs", 1, ToolId::GetLogs, READ_TIMEOUT),
+    read_tool(
         "fd_get_net_interfaces",
+        1,
         ToolId::GetNetInterfaces,
         READ_TIMEOUT,
     ),
-    def("fd_measure_routes", ToolId::MeasureRoutes, MEASURE_TIMEOUT),
-    def("fd_create_tasks", ToolId::CreateTasks, WRITE_TIMEOUT),
-    def("fd_manage_tasks", ToolId::ManageTasks, WRITE_TIMEOUT),
-    def("fd_update_settings", ToolId::UpdateSettings, WRITE_TIMEOUT),
+    read_tool(
+        "fd_measure_routes",
+        1,
+        ToolId::MeasureRoutes,
+        MEASURE_TIMEOUT,
+    ),
+    write_tool("fd_create_tasks", 1, ToolId::CreateTasks, WRITE_TIMEOUT),
+    write_tool("fd_manage_tasks", 1, ToolId::ManageTasks, WRITE_TIMEOUT),
+    write_tool("fd_manage_tasks", 2, ToolId::ManageTasksV2, WRITE_TIMEOUT),
+    write_tool(
+        "fd_update_settings",
+        1,
+        ToolId::UpdateSettings,
+        WRITE_TIMEOUT,
+    ),
+    write_tool("fd_manage_queues", 1, ToolId::ManageQueues, WRITE_TIMEOUT),
+    write_tool(
+        "fd_install_component",
+        1,
+        ToolId::InstallComponent,
+        INSTALL_TIMEOUT,
+    ),
+    write_tool(
+        "fd_set_plugin_enabled",
+        1,
+        ToolId::SetPluginEnabled,
+        WRITE_TIMEOUT,
+    ),
+    write_tool("fd_repair", 1, ToolId::Repair, REPAIR_TIMEOUT),
 ];
 
 /// 按名称 + 版本找实现;失败时给出面向模型的原因。
@@ -289,14 +383,35 @@ fn error_output(message: &str) -> ToolOutput {
     ToolOutput {
         output: output::finalize_text(message),
         is_error: true,
+        interrupted: false,
+    }
+}
+
+/// 写类工具被中途停止(取消 / 超时 / 任务崩溃):已发出的请求可能已生效,结果未知。
+fn interrupted_output(message: &str) -> ToolOutput {
+    ToolOutput {
+        interrupted: true,
+        ..error_output(message)
+    }
+}
+
+fn finish(outcome: Result<Value, ToolError>) -> ToolOutput {
+    match outcome {
+        Ok(value) => ToolOutput {
+            output: output::finalize_json(value),
+            is_error: false,
+            interrupted: false,
+        },
+        Err(error) => error_output(&error.to_string()),
     }
 }
 
 /// 执行流程:查表 → 带时限与取消地运行 → 收尾。`run` 把工具 id 与参数交给真正的实现,单测可替换。
+/// 写类工具走 [`execute_write`](取消不丢弃在途请求),其余在取消 / 超时时直接丢弃。
 async fn execute_with<F, Fut>(call: ToolCall, cancel: CancellationToken, run: F) -> ToolOutput
 where
     F: FnOnce(ToolId, Value) -> Fut,
-    Fut: Future<Output = Result<Value, ToolError>>,
+    Fut: Future<Output = Result<Value, ToolError>> + Send + 'static,
 {
     let ToolCall {
         name,
@@ -308,6 +423,9 @@ where
         Err(message) => return error_output(&message),
     };
     let work = run(tool.id, arguments);
+    if tool.writes {
+        return execute_write(tool, cancel, work).await;
+    }
     let outcome = tokio::select! {
         biased;
         () = cancel.cancelled() => Err(ToolError::Cancelled),
@@ -321,18 +439,77 @@ where
             }
         },
     };
-    match outcome {
-        Ok(value) => ToolOutput {
-            output: output::finalize_json(value),
-            is_error: false,
-        },
-        Err(error) => error_output(&error.to_string()),
+    finish(outcome)
+}
+
+/// 写类工具:工作放到独立任务里跑(自带时限)。执行期间被取消时不丢弃它——已发出的 daemon 请求
+/// 继续在后台跑完、结果写日志,本函数立即返回 `interrupted`(结果未知,须先核对当前状态再重试)。
+async fn execute_write<Fut>(
+    tool: &'static ToolDef,
+    cancel: CancellationToken,
+    work: Fut,
+) -> ToolOutput
+where
+    Fut: Future<Output = Result<Value, ToolError>> + Send + 'static,
+{
+    // 还没开始执行就已取消:什么都没发出,不是「结果未知」。
+    if cancel.is_cancelled() {
+        return error_output(&ToolError::Cancelled.to_string());
+    }
+    let name = tool.name;
+    let limit = tool.timeout;
+    let mut handle = tokio::spawn(async move { tokio::time::timeout(limit, work).await });
+    // 两者同时就绪时以执行结果为准。
+    let joined = tokio::select! {
+        biased;
+        joined = &mut handle => Some(joined),
+        () = cancel.cancelled() => None,
+    };
+    match joined {
+        Some(Ok(Ok(result))) => finish(result),
+        Some(Ok(Err(_))) => interrupted_output(&format!(
+            "client tool '{name}' timed out after {} seconds; the operation may or may not have completed, check the current state before retrying",
+            limit.as_secs()
+        )),
+        Some(Err(error)) => {
+            tracing::error!(tool = name, %error, "assistant write tool task failed");
+            interrupted_output(&format!(
+                "client tool '{name}' ended unexpectedly; the operation may or may not have completed, check the current state before retrying"
+            ))
+        }
+        None => {
+            tokio::spawn(async move {
+                match handle.await {
+                    Ok(Ok(Ok(_))) => {
+                        tracing::info!(
+                            tool = name,
+                            "assistant write tool finished after its run stopped"
+                        );
+                    }
+                    Ok(Ok(Err(error))) => {
+                        tracing::warn!(tool = name, %error, "assistant write tool failed after its run stopped");
+                    }
+                    Ok(Err(_)) => {
+                        tracing::warn!(
+                            tool = name,
+                            "assistant write tool timed out after its run stopped"
+                        );
+                    }
+                    Err(error) => {
+                        tracing::warn!(tool = name, %error, "assistant write tool task failed after its run stopped");
+                    }
+                }
+            });
+            interrupted_output(&format!(
+                "the run was stopped while client tool '{name}' was executing; it may still complete in the background, check the current state before retrying"
+            ))
+        }
     }
 }
 
 /// 客户端工具执行器。
 pub(crate) struct ClientTools {
-    ctx: ToolContext,
+    ctx: Arc<ToolContext>,
 }
 
 impl ClientTools {
@@ -340,7 +517,7 @@ impl ClientTools {
     pub(crate) fn new(gateway: Arc<GatewayService>, events: AgentEventHub) -> Self {
         read::mark_started();
         Self {
-            ctx: ToolContext::new(gateway, events),
+            ctx: Arc::new(ToolContext::new(gateway, events)),
         }
     }
 
@@ -349,9 +526,19 @@ impl ClientTools {
         TOOLS.iter().map(|tool| (tool.name, tool.version)).collect()
     }
 
-    /// 执行一次调用;取消即尽快返回。未知工具 / 版本、参数错误、超时都以 `is_error = true` 返回。
+    /// 执行一次调用;取消即尽快返回(写类工具见 [`execute_write`])。未知工具 / 版本、参数错误、超时都以
+    /// `is_error = true` 返回。
     pub(crate) async fn execute(&self, call: ToolCall, cancel: CancellationToken) -> ToolOutput {
-        execute_with(call, cancel, |id, args| self.ctx.run(id, args)).await
+        let ctx = Arc::clone(&self.ctx);
+        execute_with(call, cancel, move |id, args| async move {
+            ctx.run(id, args).await
+        })
+        .await
+    }
+
+    /// 为待确认的调用生成人能读懂的预览;生成不了返回 `preview: None`。只用本机数据与快速 RPC。
+    pub(crate) async fn preview(&self, call: &ToolCall) -> ToolPreview {
+        preview::build(self.ctx.as_ref(), call).await
     }
 }
 
@@ -370,12 +557,12 @@ mod tests {
     }
 
     #[test]
-    fn declares_the_sixteen_catalog_tools_once() {
+    fn declares_every_catalog_tool_version_once() {
         let declared = ClientTools::declared();
-        assert_eq!(declared.len(), 16);
+        let unique: HashSet<(&str, u32)> = declared.iter().copied().collect();
+        assert_eq!(unique.len(), declared.len(), "duplicate (name, version)");
         let names: HashSet<&str> = declared.iter().map(|(name, _)| *name).collect();
-        assert_eq!(names.len(), 16);
-        assert!(declared.iter().all(|(_, version)| *version == 1));
+        assert_eq!(names.len(), 20);
         for name in [
             "fd_get_app_info",
             "fd_get_settings",
@@ -393,8 +580,39 @@ mod tests {
             "fd_create_tasks",
             "fd_manage_tasks",
             "fd_update_settings",
+            "fd_manage_queues",
+            "fd_install_component",
+            "fd_set_plugin_enabled",
+            "fd_repair",
         ] {
             assert!(names.contains(name), "{name} not declared");
+        }
+        for (name, version) in [
+            ("fd_get_bt_status", 2),
+            ("fd_manage_tasks", 1),
+            ("fd_manage_tasks", 2),
+        ] {
+            assert!(
+                unique.contains(&(name, version)),
+                "{name} v{version} missing"
+            );
+        }
+    }
+
+    #[test]
+    fn only_state_changing_tools_are_write_tools() {
+        for tool in TOOLS {
+            let expected = matches!(
+                tool.name,
+                "fd_create_tasks"
+                    | "fd_manage_tasks"
+                    | "fd_update_settings"
+                    | "fd_manage_queues"
+                    | "fd_install_component"
+                    | "fd_set_plugin_enabled"
+                    | "fd_repair"
+            );
+            assert_eq!(tool.writes, expected, "{} v{}", tool.name, tool.version);
         }
     }
 
@@ -405,6 +623,11 @@ mod tests {
         assert_eq!(timeout("fd_measure_routes"), Ok(Duration::from_secs(300)));
         assert_eq!(timeout("fd_manage_tasks"), Ok(Duration::from_secs(60)));
         assert_eq!(timeout("fd_update_settings"), Ok(Duration::from_secs(60)));
+        assert_eq!(
+            timeout("fd_install_component"),
+            Ok(Duration::from_secs(600))
+        );
+        assert_eq!(timeout("fd_repair"), Ok(Duration::from_secs(120)));
     }
 
     #[tokio::test]
@@ -533,6 +756,111 @@ mod tests {
         .await;
         assert!(out.is_error);
         assert_eq!(out.output, "cancelled");
+    }
+
+    #[tokio::test]
+    async fn cancelled_before_a_write_tool_starts_sends_nothing() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::clone(&ran);
+        let out = execute_with(
+            call("fd_manage_tasks", 1, json!({})),
+            cancel,
+            move |_, _| async move {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(json!({ "ok": true }))
+            },
+        )
+        .await;
+        assert!(out.is_error);
+        assert!(
+            !out.interrupted,
+            "nothing was sent, so the result is not unknown"
+        );
+        assert_eq!(out.output, "cancelled");
+        tokio::task::yield_now().await;
+        assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_running_write_tool_detaches_it_and_reports_interrupted() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let cancel = CancellationToken::new();
+        let finished = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&finished);
+        let stopper = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            stopper.cancel();
+        });
+        let started = std::time::Instant::now();
+        let out = execute_with(
+            call("fd_manage_tasks", 1, json!({})),
+            cancel,
+            move |_, _| async move {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                flag.store(true, Ordering::SeqCst);
+                Ok(json!({ "ok": true }))
+            },
+        )
+        .await;
+        assert!(
+            started.elapsed() < Duration::from_millis(300),
+            "must not wait for the tool"
+        );
+        assert!(out.is_error && out.interrupted, "{out:?}");
+        assert!(
+            out.output.contains("check the current state"),
+            "{}",
+            out.output
+        );
+        assert!(
+            !finished.load(Ordering::SeqCst),
+            "still running right after the cancel"
+        );
+        // 已发出的请求继续在后台跑完,而不是被丢弃。
+        for _ in 0..100 {
+            if finished.load(Ordering::SeqCst) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            finished.load(Ordering::SeqCst),
+            "the detached write must run to completion"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_read_tool_drops_it_without_interrupted() {
+        let cancel = CancellationToken::new();
+        let stopper = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            stopper.cancel();
+        });
+        let out = execute_with(call("fd_get_task", 1, json!({})), cancel, |_, _| {
+            std::future::pending::<Result<Value, ToolError>>()
+        })
+        .await;
+        assert!(out.is_error);
+        assert!(!out.interrupted);
+        assert_eq!(out.output, "cancelled");
+    }
+
+    #[tokio::test]
+    async fn a_finished_write_tool_reports_its_real_result_not_interrupted() {
+        let out = execute_with(
+            call("fd_manage_tasks", 2, json!({})),
+            CancellationToken::new(),
+            |id, _| async move {
+                assert_eq!(id, ToolId::ManageTasksV2);
+                Ok(json!({ "applied": [] }))
+            },
+        )
+        .await;
+        assert!(!out.is_error && !out.interrupted, "{out:?}");
     }
 
     #[test]
