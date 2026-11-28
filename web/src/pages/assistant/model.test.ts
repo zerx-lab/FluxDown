@@ -23,6 +23,7 @@ import {
   canSend,
   charCount,
   classifySendError,
+  sessionLimitState,
   confirmView,
   currentKind,
   currentRun,
@@ -583,6 +584,36 @@ describe('gate', () => {
   })
 })
 
+describe('sessionLimitState', () => {
+  const limited = { sessionLimit: 10 }
+
+  test('limit 0 or missing means unlimited', () => {
+    expect(sessionLimitState({ sessionLimit: 0 }, 's', 999, false)).toEqual({ kind: 'none' })
+    expect(sessionLimitState({}, 's', 999, false)).toEqual({ kind: 'none' })
+    expect(sessionLimitState(undefined, 's', 999, false)).toEqual({ kind: 'none' })
+    expect(sessionLimitState(null, 's', 999, false)).toEqual({ kind: 'none' })
+  })
+
+  test('a new chat is never limited', () => {
+    expect(sessionLimitState(limited, null, 10, false)).toEqual({ kind: 'none' })
+  })
+
+  test('remaining hint shows for 3, 2 and 1 left only', () => {
+    expect(sessionLimitState(limited, 's', 0, false)).toEqual({ kind: 'none' })
+    expect(sessionLimitState(limited, 's', 6, false)).toEqual({ kind: 'none' })
+    expect(sessionLimitState(limited, 's', 7, false)).toEqual({ kind: 'remaining', count: 3 })
+    expect(sessionLimitState(limited, 's', 8, false)).toEqual({ kind: 'remaining', count: 2 })
+    expect(sessionLimitState(limited, 's', 9, false)).toEqual({ kind: 'remaining', count: 1 })
+    expect(sessionLimitState(limited, 's', 9, true)).toEqual({ kind: 'remaining', count: 1 })
+  })
+
+  test('reached at or above the limit unless a run is active', () => {
+    expect(sessionLimitState(limited, 's', 10, false)).toEqual({ kind: 'reached', limit: 10 })
+    expect(sessionLimitState(limited, 's', 12, false)).toEqual({ kind: 'reached', limit: 10 })
+    expect(sessionLimitState(limited, 's', 10, true)).toEqual({ kind: 'none' })
+  })
+})
+
 describe('classifySendError', () => {
   test('errors are classified', () => {
     const error = (code: ApplicationErrorCode) => ({ code })
@@ -594,6 +625,9 @@ describe('classifySendError', () => {
     expect(classifySendError(error('invalidArgument'))).toBe('rejected')
     expect(classifySendError(error('internal'))).toBe('failed')
     expect(classifySendError({ ...error('unavailable'), reason: 'assistantQuotaExceeded' })).toBe('quotaExceeded')
+    // 会话上限是独立类别：不归到额度 / 忙 / 通用失败。
+    expect(classifySendError({ ...error('conflict'), reason: 'assistantSessionLimit' })).toBe('sessionLimit')
+    expect(classifySendError({ ...error('internal'), reason: 'assistantSessionLimit' })).toBe('sessionLimit')
     expect(classifySendError({ ...error('unavailable'), reason: 'rateLimited' })).toBe('rateLimited')
     expect(classifySendError({ ...error('internal'), reason: 'cloudUnreachable' })).toBe('unavailable')
     expect(classifySendError({ ...error('internal'), reason: 'sessionExpired' })).toBe('signedOut')
@@ -829,6 +863,7 @@ describe('error classification and keys', () => {
 
   test('quota and rate limit have separate texts', () => {
     expect(SEND_FAILURE_KEY.quotaExceeded).toBe('assistantErrQuota')
+    expect(SEND_FAILURE_KEY.sessionLimit).toBe('assistantErrSessionLimit')
     expect(SEND_FAILURE_KEY.rateLimited).toBe('assistantErrRateLimited')
     expect(ACTION_FAILURE_KEY.confirmExpired).toBe('assistantErrConfirmExpired')
     expect(ACTION_FAILURE_KEY.failed).toBe('assistantActionFailed')

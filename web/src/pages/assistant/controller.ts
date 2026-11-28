@@ -97,6 +97,8 @@ export interface Detail {
   session: AssistantSessionDto | null
   messages: readonly AssistantMessageDto[]
   issues: readonly AssistantIssueDto[]
+  /** 本会话已计入上限的提问数（服务端口径，不在本地累加）。 */
+  questionsUsed: number
 }
 
 export interface ViewState {
@@ -144,7 +146,7 @@ export interface ViewState {
 }
 
 const EMPTY_SESSIONS: SessionList = { items: [], total: 0, load: 'idle', moreLoading: false, query: '' }
-const EMPTY_DETAIL: Detail = { load: 'idle', session: null, messages: [], issues: [] }
+const EMPTY_DETAIL: Detail = { load: 'idle', session: null, messages: [], issues: [], questionsUsed: 0 }
 
 function initialView(env: AssistantEnv): ViewState {
   return {
@@ -434,7 +436,7 @@ export class AssistantController {
         if (account !== this.accountEpoch || epoch !== this.detailEpoch || this.view.current !== sessionId) return
         const first = this.view.detail.messages.length === 0
         this.update((view) => ({
-          detail: { load: 'ready', session: detail.session, messages: detail.messages, issues: detail.issues ?? [] },
+          detail: { load: 'ready', session: detail.session, messages: detail.messages, issues: detail.issues ?? [], questionsUsed: detail.questionsUsed ?? 0 },
           // 新读到的历史里问题单状态以云端为准。
           issueOverrides: new Map(),
           scrollToken: first ? view.scrollToken + 1 : view.scrollToken,
@@ -628,6 +630,15 @@ export class AssistantController {
       this.set({ sending: false, sendFailure: failure })
       // 额度 / 开放状态可能已变：重新取配置让页面门禁跟上（限频只是稍后再试，不用）。
       if (failure === 'quotaExceeded' || failure === 'notOpen') this.fetchConfig(true)
+      // 会话上限：把本地视为已达上限（切到提示卡，输入框内容保留），并重取配置与详情让数字回到服务端口径。
+      if (failure === 'sessionLimit' && origin !== null) {
+        const limit = this.view.env.state.config?.sessionLimit ?? 0
+        if (this.view.current === origin) {
+          if (limit > 0) this.update((now) => ({ detail: { ...now.detail, questionsUsed: Math.max(now.detail.questionsUsed, limit) } }))
+          this.loadDetail(origin)
+        }
+        this.fetchConfig(true)
+      }
       return false
     }
   }

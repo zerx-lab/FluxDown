@@ -27,7 +27,7 @@ import {
 } from './composer'
 import type { AttachError, Attachment, ComposerState } from './composer'
 import type { AssistantController, ViewState } from './controller'
-import { ACTION_FAILURE_KEY, SEND_FAILURE_KEY, canSend, charCount, currentKind, currentSession } from './model'
+import { ACTION_FAILURE_KEY, SEND_FAILURE_KEY, canSend, charCount, currentKind, currentSession, sessionLimitState } from './model'
 
 /** 输入框最多增高到几行（GPUI `INPUT_MAX_ROWS`）。 */
 const INPUT_MAX_ROWS = 8
@@ -175,6 +175,36 @@ export function Composer({
   const stale = view.env.stale
   const run = controller.activeRun()
   const running = run !== undefined
+  const sessionLimit = sessionLimitState(config, view.current, view.detail.questionsUsed, running)
+  const failureKey =
+    view.sendFailure !== null ? SEND_FAILURE_KEY[view.sendFailure] : view.actionFailure !== null ? ACTION_FAILURE_KEY[view.actionFailure] : null
+
+  if (sessionLimit.kind === 'reached') {
+    return (
+      <div className="flex w-full flex-none flex-col items-center px-4 pt-1 pb-3">
+        <Card className="flex w-full max-w-3xl flex-col gap-2 p-3">
+          <div className="flex flex-col gap-1">
+            <div className="text-sm font-medium text-foreground">{t('assistantSessionLimitTitle')}</div>
+            <div className="text-xs text-text-tertiary">{t('assistantSessionLimitDesc', { limit: sessionLimit.limit })}</div>
+          </div>
+          {failureKey !== null ? <FieldError>{t(failureKey)}</FieldError> : null}
+          <div>
+            <Button
+              variant="primary"
+              disabled={stale}
+              onClick={() => {
+                controller.clearFailure()
+                controller.newChat()
+              }}
+            >
+              {t('assistantNewChat')}
+            </Button>
+          </div>
+        </Card>
+      </div>
+    )
+  }
+
   const trimmed = value.draft.trim()
   const maxChars = config?.maxMessageChars ?? 0
   const count = charCount(value.draft)
@@ -193,8 +223,6 @@ export function Composer({
   const canAttach = images && !stale && !view.sending && !keepImages
   const removable = !stale && !view.sending
   const kind: AssistantSessionKind = currentKind(view.current, view.kind, currentSession(view.current, view.detail.session, view.sessions.items))
-  const failureKey =
-    view.sendFailure !== null ? SEND_FAILURE_KEY[view.sendFailure] : view.actionFailure !== null ? ACTION_FAILURE_KEY[view.actionFailure] : null
 
   const submit = () => {
     if (!sendable) return
@@ -446,6 +474,7 @@ export function Composer({
             </Tooltip>
           </div>
         </div>
+        {sessionLimit.kind === 'remaining' ? <div className="px-1 text-xs text-text-tertiary">{t('assistantSessionRemaining', { count: sessionLimit.count })}</div> : null}
       </div>
     </div>
   )

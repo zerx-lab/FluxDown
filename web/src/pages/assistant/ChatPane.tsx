@@ -17,7 +17,7 @@ import { CopyButton } from './CopyButton'
 import { IssueCard } from './IssueCard'
 import { Markdown } from './MarkdownView'
 import { MembershipCard } from './MembershipCard'
-import { buildTimeline, pendingElsewhere, runActive, runErrorKey, turnTranscript } from './model'
+import { buildTimeline, pendingElsewhere, runActive, runErrorKey, sessionLimitState, turnTranscript } from './model'
 import type { Turn } from './model'
 import { Steps } from './Steps'
 
@@ -234,7 +234,10 @@ function Conversation({
 
   const historyLoading = view.current !== null && view.detail.load === 'loading' && turns.length === 0
   const historyFailed = view.current !== null && view.detail.load === 'failed' && turns.length === 0
-  const rewritable = view.current !== null && !view.env.stale && !view.sending && controller.activeRun() === undefined
+  const activeRun = controller.activeRun()
+  // 已达单会话提问上限：重新生成 / 编辑重发都会被服务端拒绝，入口隐藏。
+  const limitReached = sessionLimitState(view.env.state.config, view.current, view.detail.questionsUsed, activeRun !== undefined).kind === 'reached'
+  const rewritable = view.current !== null && !view.env.stale && !view.sending && activeRun === undefined && !limitReached
   let body: ReactNode
   if (historyLoading) {
     body = (

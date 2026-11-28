@@ -573,6 +573,26 @@ describe('send', () => {
     expect(limited.port.count('refresh')).toBe(0)
   })
 
+  test('a session limit rejection marks the open session as reached and reloads its detail', async () => {
+    const { port, controller, view } = setup({ state: state([], { config: config({ sessionLimit: 10 }) }) })
+    controller.selectSession('a')
+    settle(port.pending.session, { session: session('a'), messages: [message('m', 1, 'user')], questionsUsed: 7 })
+    await flush()
+    expect(view().detail.questionsUsed).toBe(7)
+
+    const result = controller.send('x', [])
+    port.pending.ask[0]?.reject(rpcError('conflict', 'assistantSessionLimit'))
+    expect(await result).toBe(false)
+    expect(view().sendFailure).toBe('sessionLimit')
+    expect(view().detail.questionsUsed).toBe(10)
+    // 以服务端口径重新读取详情与配置。
+    expect(port.count('session')).toBe(2)
+    expect(port.count('refresh')).toBe(1)
+    settle(port.pending.session, { session: session('a'), messages: [message('m', 1, 'user')], questionsUsed: 10 })
+    await flush()
+    expect(view().detail.questionsUsed).toBe(10)
+  })
+
   test('the next attempt clears the previous failure', async () => {
     const { port, controller, view } = setup()
     const failed = controller.send('x', [])

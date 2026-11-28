@@ -34,6 +34,8 @@ export interface AssistantConfigDto {
   /** `0` = 不限。 */
   dailyLimit: number;
   usedToday: number;
+  /** 单个会话最多提问次数；`0` = 不限（旧云端缺省按不限）。 */
+  sessionLimit?: number;
   /** 云端工具协议与本机一致、本机工具会被声明。 */
   toolsEnabled: boolean;
 }
@@ -234,6 +236,8 @@ export interface AssistantSessionDetail {
   session: AssistantSessionDto;
   messages: AssistantMessageDto[];
   issues?: AssistantIssueDto[];
+  /** 本会话已计入上限的提问数（口径同每日额度）；旧云端缺省按 0。 */
+  questionsUsed?: number;
 }
 
 /** `agent.assistant.sessions` 参数。 */

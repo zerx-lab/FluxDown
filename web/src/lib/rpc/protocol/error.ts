@@ -106,6 +106,7 @@ export type ErrorReason =
   | 'referralCodeTaken'
   | 'assistantQuotaExceeded'
   | 'assistantConfirmExpired'
+  | 'assistantSessionLimit'
   | 'subscriptionConflict'
   | 'unknown';
 

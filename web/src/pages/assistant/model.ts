@@ -590,12 +590,43 @@ export function gate(signedIn: boolean, state: AssistantStateDto, fetchFailed: b
   return { kind: 'open', quotaExhausted: quotaExhausted(config) }
 }
 
+/** 剩余提问次数 ≤ 此值时在输入区附近提示。 */
+export const SESSION_REMAINING_HINT_MAX = 3
+
+/** 单会话提问上限的界面状态。 */
+export type SessionLimitState =
+  /** 不限 / 新对话 / 剩余充足：界面零变化。 */
+  | { kind: 'none' }
+  /** 剩余 1..=3 次：显示弱化提示。 */
+  | { kind: 'remaining'; count: number }
+  /** 已达上限且没有进行中的执行：换提示卡，隐藏重新生成 / 编辑重发。 */
+  | { kind: 'reached'; limit: number }
+
+/**
+ * 单会话提问上限状态。`limit` 为 `config.sessionLimit`（0 / 缺失 = 不限），`used` 为当前会话详情的 `questionsUsed`。
+ * 只针对已存在的会话（`current` 非空）；有进行中的执行时不判定为已达上限（执行结束后详情重载再判）。
+ */
+export function sessionLimitState(
+  config: Pick<AssistantConfigDto, 'sessionLimit'> | null | undefined,
+  current: string | null,
+  used: number,
+  hasActiveRun: boolean,
+): SessionLimitState {
+  const limit = config?.sessionLimit ?? 0
+  if (current === null || limit <= 0) return { kind: 'none' }
+  const remaining = limit - used
+  if (remaining <= 0) return hasActiveRun ? { kind: 'none' } : { kind: 'reached', limit }
+  return remaining <= SESSION_REMAINING_HINT_MAX ? { kind: 'remaining', count: remaining } : { kind: 'none' }
+}
+
 /** 提问失败的归类（决定提示文案与是否需要重新取配置）。 */
 export type SendFailure =
   | 'signedOut'
   | 'notOpen'
   /** 当日额度用完（`assistantQuotaExceeded`）。 */
   | 'quotaExceeded'
+  /** 本会话提问数已达上限（`assistantSessionLimit`）。 */
+  | 'sessionLimit'
   /** 每分钟限频（`rateLimited`），稍后可再试。 */
   | 'rateLimited'
   /** 该会话已有执行在进行。 */
@@ -607,6 +638,7 @@ export type SendFailure =
 
 export function classifySendError(error: Pick<RpcErrorData, 'code' | 'reason'> | undefined): SendFailure {
   if (error?.reason === 'assistantQuotaExceeded') return 'quotaExceeded'
+  if (error?.reason === 'assistantSessionLimit') return 'sessionLimit'
   if (error?.reason === 'rateLimited') return 'rateLimited'
   if (error?.reason === 'sessionExpired') return 'signedOut'
   if (error?.reason === 'cloudUnreachable') return 'unavailable'
@@ -632,6 +664,7 @@ export const SEND_FAILURE_KEY: Readonly<Record<SendFailure, string>> = {
   signedOut: 'assistantErrSignedOut',
   notOpen: 'assistantErrNotOpen',
   quotaExceeded: 'assistantErrQuota',
+  sessionLimit: 'assistantErrSessionLimit',
   rateLimited: 'assistantErrRateLimited',
   busy: 'assistantErrBusy',
   unavailable: 'assistantErrUnavailable',

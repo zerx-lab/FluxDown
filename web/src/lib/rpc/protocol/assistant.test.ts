@@ -51,8 +51,9 @@ describe('AI 助手协议镜像与 Rust 对齐', () => {
     const source = await read('error.rs')
     expect(source.includes('AssistantQuotaExceeded')).toBe(true)
     expect(source.includes('AssistantConfirmExpired')).toBe(true)
-    const reasons: ErrorReason[] = ['assistantQuotaExceeded', 'assistantConfirmExpired']
-    expect(reasons).toHaveLength(2)
+    expect(source.includes('AssistantSessionLimit')).toBe(true)
+    const reasons: ErrorReason[] = ['assistantQuotaExceeded', 'assistantConfirmExpired', 'assistantSessionLimit']
+    expect(reasons).toHaveLength(3)
   })
 
   test('常量与 assistant.rs 一致', async () => {
