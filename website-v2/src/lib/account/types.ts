@@ -217,13 +217,15 @@ export interface AiMessage {
   runId: string | null;
   seq: number;
   /** `membership_offer` 由官网 BFF 合成（上游 `offer_membership` 成功的工具结果），无文本，仅表示该轮（同 `runId`）要显示开通会员卡片。 */
-  role: "user" | "assistant" | "membership_offer";
+  role: "user" | "assistant" | "assistant_step" | "membership_offer";
   content: string;
   /** 提问附带的图片 id（只有用户消息可能非空），经 `/api/account/ai/attachments/<id>` 取。 */
   images: string[];
   /** 对这条回答的评价（只有助手消息有值；旧版 FluxCloud 不带）。 */
   rating?: AiRating | null;
   ratingComment?: string | null;
+  /** 执行中断（取消 / 超时 / 失败 / 轮数用尽）时已推送的部分回答（只有助手消息可能为 true；旧版 FluxCloud 不带）。 */
+  interrupted?: boolean;
   /** RFC 3339 */
   createdAt: string;
 }
@@ -257,10 +259,18 @@ export interface AiSessionDetail {
   issues: AiIssue[];
 }
 
+/** `GET /api/account/ai/sessions/{id}/export`：下载用的文件名、MIME 与正文。 */
+export interface AiExport {
+  fileName: string;
+  mime: string;
+  content: string;
+}
+
 export type AiToolKind = "client" | "server" | "mcp";
 
 /** 异常结束的原因：轮数用尽 / 无回答 / 超时 / 取消 / 其它失败。旧版 FluxCloud 不带。 */
-export type AiFailReason = "maxTurns" | "noAnswer" | "timeout" | "canceled" | "error";
+export type AiFailReason =
+  | "maxTurns" | "noAnswer" | "timeout" | "canceled" | "contextOverflow" | "imageUnsupported" | "unavailable" | "error";
 
 /** `POST /api/account/ai/sessions/{id}/messages` 的 SSE 事件（每帧 `data` 一个）。 */
 export type AiStreamEvent =
@@ -272,4 +282,4 @@ export type AiStreamEvent =
   | { type: "toolFinished"; callId: string; name: string; kind: AiToolKind; isError: boolean; durationMs: number | null }
   | { type: "issueDraft"; issue: AiIssue }
   | { type: "done"; status: "completed" | "replied"; messageId: string | null; text: string }
-  | { type: "error"; status: "failed" | "canceled"; reason?: AiFailReason; message: string };
+  | { type: "error"; status: "failed" | "canceled"; reason?: AiFailReason; message: string; messageId?: string | null };

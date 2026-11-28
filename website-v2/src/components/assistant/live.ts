@@ -2,7 +2,7 @@
  * 进行中的一次提问：SSE 事件 → 展示状态的纯归约（事件契约见 `src/lib/account/types.ts::AiStreamEvent`）。
  */
 import { isRecord } from "@/lib/is-record";
-import type { AiFailReason, AiIssue, AiStreamEvent } from "@/lib/account/types";
+import type { AiFailReason, AiIssue, AiMessage, AiStreamEvent } from "@/lib/account/types";
 
 /** FluxCloud 的服务端工具：成功即该轮显示开通会员卡片，条目本身不进过程步骤。 */
 const OFFER_MEMBERSHIP_TOOL = "offer_membership";
@@ -16,8 +16,12 @@ export type LivePhase = "streaming" | "done" | "stopped" | "failed" | "interrupt
 
 export interface LiveRun {
   sessionId: string;
+  /** 这次执行的 ID（`run` 事件带来；历史里同 `runId` 的消息就是这次问答，据此去重 / 续读）。 */
+  runId: string | null;
+  /** 已处理的最后一个事件序号（断线续读的 `after`；上游没带序号时为 0）。 */
+  lastSeq: number;
   question: string;
-  /** 提问附带的图片（data URL，回答结束刷新详情后换成附件地址）。 */
+  /** 提问附带的图片（可直接用作 `src`：刚发出的是 data URL，续读自历史的是附件地址）。 */
   images: string[];
   /** 按到达顺序的回答文本与工具调用。 */
   segments: Segment[];
@@ -27,14 +31,17 @@ export interface LiveRun {
   phase: LivePhase;
   /** `failed` / `stopped` 时云端给出的原因（旧版 FluxCloud 不带）。 */
   failReason: AiFailReason | null;
-  /** `done` 时这次回答的消息 ID（可对它评价；`replied` 等无落库消息时为 null）。 */
+  /** `done` 时这次回答的消息 ID；`failed` / `stopped` 时是已落库的部分回答（可对它评价）。无落库消息（`replied` 等）为 null。 */
   messageId: string | null;
   /** 收到过任何事件（区分「请求被拒」与「中途断开」）。 */
   started: boolean;
 }
 
-export function startRun(sessionId: string, question: string, images: string[] = []): LiveRun {
-  return { sessionId, question, images, segments: [], issues: [], membershipOffer: false, phase: "streaming", failReason: null, messageId: null, started: false };
+export function startRun(sessionId: string, question: string, images: string[] = [], runId: string | null = null): LiveRun {
+  return {
+    sessionId, runId, lastSeq: 0, question, images, segments: [], issues: [], membershipOffer: false, phase: "streaming",
+    failReason: null, messageId: null, started: false,
+  };
 }
 
 /** BFF 已按白名单裁剪，这里只确认是带 `type` 的对象。 */
@@ -42,11 +49,14 @@ export function asStreamEvent(raw: unknown): AiStreamEvent | null {
   return isRecord(raw) && typeof raw.type === "string" ? (raw as AiStreamEvent) : null;
 }
 
-export function applyEvent(run: LiveRun, event: AiStreamEvent): LiveRun {
-  const next: LiveRun = { ...run, started: true };
+/** 把一个事件归约进展示状态；`seq` 为事件序号，已处理过的（续读重叠）直接忽略。 */
+export function applyEvent(run: LiveRun, event: AiStreamEvent, seq: number | null = null): LiveRun {
+  if (seq !== null && seq <= run.lastSeq) return run;
+  const next: LiveRun = { ...run, started: true, lastSeq: seq ?? run.lastSeq };
   const last = run.segments[run.segments.length - 1];
   switch (event.type) {
     case "run":
+      next.runId = event.runId;
       return next;
     case "text":
       if (event.delta === "") return next;
@@ -86,6 +96,7 @@ export function applyEvent(run: LiveRun, event: AiStreamEvent): LiveRun {
     case "error":
       next.phase = event.status === "canceled" ? "stopped" : "failed";
       next.failReason = event.reason ?? null;
+      next.messageId = event.messageId ?? null;
       next.segments = abandonTools(run.segments);
       return next;
   }
@@ -109,4 +120,15 @@ export function toolLabel(name: string): ToolLabel {
   if (name.startsWith("github_")) return "github";
   if (name === "propose_issue") return "issue";
   return "other";
+}
+
+/** 会话仍在回答中时，从历史里认出该续读的那次执行：最后一条带 `runId` 的提问（`imageIds` 为附件 ID）。 */
+export function resumeTarget(messages: AiMessage[]): { runId: string; question: string; imageIds: string[] } | null {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message?.role === "user" && message.runId !== null) {
+      return { runId: message.runId, question: message.content, imageIds: message.images };
+    }
+  }
+  return null;
 }

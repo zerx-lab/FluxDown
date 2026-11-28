@@ -6,9 +6,10 @@
 import type { AiConfig } from "@/lib/account/types";
 import { withBase } from "@/lib/base";
 
-/** FluxCloud 接受的图片类型（按文件头识别；SVG 等矢量 / 可执行格式一律不收）。 */
+/** FluxCloud 直接接受的图片类型（按文件头识别）；其它位图先在浏览器里转 PNG，SVG 等矢量 / 可执行格式一律不收。 */
 export const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"] as const;
-export const IMAGE_ACCEPT = IMAGE_TYPES.join(",");
+/** 文件选择器：任意图片（HEIC / BMP / AVIF 等由 `prepareImage` 转 PNG）。 */
+export const IMAGE_ACCEPT = "image/*";
 
 /** 缩放重编码时的最长边起点；仍超限就按比例继续缩小。 */
 const MAX_EDGE = 2560;
@@ -58,7 +59,7 @@ function toBlob(canvas: HTMLCanvasElement, type: string): Promise<Blob | null> {
  * 把超限的位图缩到 `maxBytes` 以内：按最长边 2560 起步、每次缩 25%，优先 WebP（保留透明），
  * 浏览器不支持 WebP 编码（`toBlob` 回落成 PNG）时改用 JPEG。缩不下来返回 null。
  */
-async function shrink(file: File, maxBytes: number): Promise<Blob | null> {
+async function shrink(file: Blob, maxBytes: number): Promise<Blob | null> {
   let bitmap: ImageBitmap;
   try {
     bitmap = await createImageBitmap(file);
@@ -93,15 +94,51 @@ async function shrink(file: File, maxBytes: number): Promise<Blob | null> {
   }
 }
 
+/**
+ * 云端不收的格式（HEIC / BMP / AVIF / TIFF 等）交给浏览器解码并转成 PNG；浏览器解不开（或是矢量图）返回 null。
+ * 解码走 `createImageBitmap`，只取位图像素，SVG 一律拒绝。
+ */
+async function convertToPng(file: Blob): Promise<Blob | null> {
+  if (file.type === "image/svg+xml") return null;
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(file);
+  } catch {
+    return null;
+  }
+  try {
+    if (bitmap.width === 0 || bitmap.height === 0) return null;
+    const canvas = document.createElement("canvas");
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const context = canvas.getContext("2d");
+    if (!context) return null;
+    context.drawImage(bitmap, 0, 0);
+    const blob = await toBlob(canvas, "image/png");
+    return blob?.type === "image/png" ? blob : null;
+  } finally {
+    bitmap.close();
+  }
+}
+
 let seq = 0;
 
-/** 校验并准备一张图片；超过 `maxBytes` 的静态图自动缩小（GIF 缩放会丢动画，直接拒绝）。 */
+/**
+ * 校验并准备一张图片：云端接受的格式原样使用，其余图片先转 PNG（解码失败才报 `type`）；
+ * 超过 `maxBytes` 的静态图自动缩小（GIF 缩放会丢动画，直接拒绝）。
+ */
 export async function prepareImage(file: File, maxBytes: number): Promise<Prepared> {
-  if (!isImageType(file.type)) return { ok: false, error: "type" };
   let blob: Blob = file;
-  if (file.size > maxBytes) {
-    if (file.type === "image/gif") return { ok: false, error: "size" };
-    const shrunk = await shrink(file, maxBytes);
+  if (!isImageType(file.type)) {
+    // 类型为空（部分浏览器给不出 HEIC 的 MIME）也试着解码；明确不是图片的直接拒绝
+    if (file.type !== "" && !file.type.startsWith("image/")) return { ok: false, error: "type" };
+    const png = await convertToPng(file);
+    if (!png) return { ok: false, error: "type" };
+    blob = png;
+  }
+  if (blob.size > maxBytes) {
+    if (blob.type === "image/gif") return { ok: false, error: "size" };
+    const shrunk = await shrink(blob, maxBytes);
     if (!shrunk) return { ok: false, error: "size" };
     blob = shrunk;
   }

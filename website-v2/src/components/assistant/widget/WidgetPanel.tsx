@@ -5,16 +5,15 @@ import { account } from "@/i18n/messages/account";
 import { assistant, type AssistantMessages } from "@/i18n/messages/assistant";
 import { href } from "@/i18n/routing";
 import { accountApi, accountErrorText, accountHref, currentPath, hasSignedInHint } from "@/lib/account/client";
-import type { AiConfig, AiSessionKind } from "@/lib/account/types";
+import type { AiConfig } from "@/lib/account/types";
 import type { Failure, Guard } from "@/components/account/dashboard/resource";
-import { LoadFailed, Skeleton, Spinner } from "@/components/account/dashboard/ui";
-import Composer from "../Composer";
-import Conversation from "../Conversation";
-import { Greeting, StatePanel, UnavailableState } from "../parts";
+import { Spinner } from "@/components/account/dashboard/ui";
+import ChatArea from "../ChatArea";
+import ChatHeader from "../ChatHeader";
+import { StatePanel, UnavailableState } from "../parts";
 import SessionList from "../SessionList";
-import { newChatShortcutLabel, useNewChatShortcut } from "../shortcuts";
+import { NEW_CHAT_ARIA_SHORTCUT, newChatShortcutLabel, useNewChatShortcut } from "../shortcuts";
 import { useAssistant } from "../useAssistant";
-import { imageLimits } from "../attachments";
 import { readSession, writeSession, type WidgetMode } from "./storage";
 
 type Phase =
@@ -48,7 +47,7 @@ function IconButton({ label, onClick, pressed, shortcut, children }: { label: st
       type="button"
       aria-label={label}
       title={shortcut ? `${label} (${shortcut})` : label}
-      aria-keyshortcuts={shortcut ? "Control+N Meta+N" : undefined}
+      aria-keyshortcuts={shortcut ? NEW_CHAT_ARIA_SHORTCUT : undefined}
       aria-pressed={pressed}
       onClick={onClick}
       className="ai-icon-btn"
@@ -99,8 +98,6 @@ function Frame({ t, mode, onMode, onClose, subtitle, actions, children }: FrameP
 function WidgetChat({ lang, t, guard, config, frame }: { lang: Lang; t: AssistantMessages; guard: Guard; config: AiConfig; frame: Omit<FrameProps, "children" | "actions" | "subtitle" | "t"> }) {
   const s = useAssistant(lang, guard, config, readSession());
   const [view, setView] = useState<"chat" | "history">("chat");
-  const [kind, setKind] = useState<AiSessionKind>("ask");
-  const [prefill, setPrefill] = useState<{ text: string; nonce: number } | null>(null);
   /** 每次「新对话」递增：已在新对话上再按一次也要把焦点送回输入框。 */
   const [newChatNonce, setNewChatNonce] = useState(0);
 
@@ -108,13 +105,8 @@ function WidgetChat({ lang, t, guard, config, frame }: { lang: Lang; t: Assistan
     writeSession(s.selectedId);
   }, [s.selectedId]);
 
-  const live = s.live && s.live.sessionId === s.selectedId ? s.live : null;
   const streaming = s.live?.phase === "streaming";
-  const session = s.selectedId === null ? null : s.detail.data?.session ?? s.sessions.items.find((i) => i.id === s.selectedId) ?? null;
-  const readOnly = session !== null && session.channel !== "website";
-  const quotaFull = s.config.dailyLimit > 0 && s.config.usedToday >= s.config.dailyLimit;
-  const blocked = readOnly ? t.chat.readOnly : quotaFull && !live ? t.chat.quotaReached : null;
-  const sendError = s.sendError ? (s.sendError.status === 409 ? t.chat.busy : accountErrorText(lang, s.sendError.code)) : null;
+  const session = s.selectedId === null ? null : (s.detail.data?.session ?? s.sessions.items.find((i) => i.id === s.selectedId) ?? null);
   const subtitle = view === "history" ? t.widget.history : session ? session.title || t.sidebar.untitled : s.config.dailyLimit > 0 ? t.chat.quota(s.config.usedToday, s.config.dailyLimit) : null;
   const fullPage = `${href("/assistant", lang)}${s.selectedId ? `?session=${encodeURIComponent(s.selectedId)}` : ""}`;
 
@@ -142,81 +134,26 @@ function WidgetChat({ lang, t, guard, config, frame }: { lang: Lang; t: Assistan
     </>
   );
 
-  let body: ReactNode;
-  if (view === "history") {
-    body = (
-      <SessionList
-        lang={lang}
-        t={t}
-        sessions={s.sessions}
-        selectedId={s.selectedId}
-        streamingId={streaming ? (s.live?.sessionId ?? null) : null}
-        onSelect={(id) => (id === null ? newChat() : select(id))}
-        onRetry={() => void s.loadSessions()}
-        onMore={() => void s.loadMore()}
-        fill
-      />
-    );
-  } else if (s.selectedId === null && !live) {
-    body = <Greeting compact t={t} kind={kind} onKind={setKind} onPick={(text) => setPrefill({ text, nonce: Date.now() })} />;
-  } else if (s.detail.status === "loading" && !live) {
-    body = (
-      <div className="flex-1 space-y-4 px-4 py-6" aria-busy="true">
-        <Skeleton className="ml-auto h-10 w-2/3" />
-        <Skeleton className="h-24 w-full" />
-      </div>
-    );
-  } else if (s.detail.status === "error" && !live) {
-    body = (
-      <div className="flex-1 px-4 py-6">
-        <LoadFailed
-          text={`${t.chat.loadFailed} · ${accountErrorText(lang, s.detail.errorCode ?? "fallback")}`}
-          retryLabel={t.sidebar.retry}
-          onRetry={() => s.selectedId && void s.loadDetail(s.selectedId)}
-        />
-      </div>
-    );
-  } else {
-    body = (
-      <Conversation
-        key={s.selectedId ?? "new"}
-        lang={lang}
-        t={t}
-        guard={guard}
-        messages={s.detail.data?.messages ?? []}
-        issues={s.detail.data?.issues ?? []}
-        live={live}
-        notice={s.notice?.sessionId === s.selectedId ? s.notice : null}
-        ratings={s.ratings}
-        onRate={s.rate}
-        onIssueChange={s.updateIssue}
-      />
-    );
-  }
-
   return (
     <Frame {...frame} t={t} subtitle={subtitle} actions={actions}>
-      {body}
-      {view === "chat" && (
+      {view === "history" ? (
+        <SessionList
+          lang={lang}
+          t={t}
+          sessions={s.sessions}
+          selectedId={s.selectedId}
+          streamingId={streaming ? (s.live?.sessionId ?? null) : null}
+          onSelect={(id) => (id === null ? newChat() : select(id))}
+          onRetry={() => void s.loadSessions()}
+          onMore={() => void s.loadMore()}
+          onSearch={s.search}
+          onClearAll={s.clearAll}
+          fill
+        />
+      ) : (
         <>
-          {sendError && (
-            <p role="alert" className="flex items-center gap-2 px-4 pt-3 text-[13px] text-danger">
-              <TriangleAlert size={14} aria-hidden />
-              {sendError}
-            </p>
-          )}
-          <Composer
-            t={t}
-            placeholder={(session?.kind ?? kind) === "feedback" ? t.chat.placeholderFeedback : t.chat.placeholder}
-            maxChars={s.config.maxMessageChars}
-            streaming={live?.phase === "streaming"}
-            blockedReason={blocked}
-            prefill={prefill}
-            images={imageLimits(s.config)}
-            onSend={(text, images) => s.send(text, kind, images)}
-            onStop={s.stop}
-            focusKey={`${s.selectedId ?? ""}|${newChatNonce}`}
-          />
+          {session && <ChatHeader compact lang={lang} t={t} session={session} config={s.config} onDelete={s.remove} onRename={s.rename} onExport={s.exportSession} />}
+          <ChatArea compact lang={lang} t={t} guard={guard} s={s} newChatNonce={newChatNonce} />
         </>
       )}
     </Frame>

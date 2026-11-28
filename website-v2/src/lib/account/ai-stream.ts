@@ -22,7 +22,7 @@ const EVENT_KEYS: Record<string, readonly string[]> = {
   toolFinished: ["callId", "name", "kind", "isError", "durationMs"],
   issueDraft: [],
   done: ["status", "messageId", "text"],
-  error: ["status", "reason", "message"],
+  error: ["status", "reason", "message", "messageId"],
 };
 
 /** 一个上游事件 → 转发给浏览器的事件；不在白名单里或形状不对时返回 null。 */
@@ -49,19 +49,24 @@ function sanitizeFrame(data: string): string | null {
   return out === null ? null : JSON.stringify(out);
 }
 
-/** 字节流变换：上游 SSE（UTF-8）→ 裁剪后的 SSE（每帧一个 `data:` 行）；多字节字符可跨块。 */
+/** 事件序号：只放行十进制整数（续读 `after` 的取值），其余一律不转发。 */
+const EVENT_ID_RE = /^\d{1,12}$/;
+
+/** 字节流变换：上游 SSE（UTF-8）→ 裁剪后的 SSE（每帧一个 `data:` 行，带上游的事件序号 `id:`）；多字节字符可跨块。 */
 export function aiEventFilter(): TransformStream<Uint8Array, Uint8Array> {
   const parser = new SseParser();
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   const forward = (text: string, controller: TransformStreamDefaultController<Uint8Array>) => {
-    for (const frame of parser.push(text)) {
-      if (frame === null) {
+    for (const frame of parser.pushEvents(text)) {
+      if (frame.data === null) {
         controller.enqueue(encoder.encode(": ka\n\n"));
         continue;
       }
-      const out = sanitizeFrame(frame);
-      if (out !== null) controller.enqueue(encoder.encode(`data: ${out}\n\n`));
+      const out = sanitizeFrame(frame.data);
+      if (out === null) continue;
+      const id = frame.id !== null && EVENT_ID_RE.test(frame.id) ? `id: ${frame.id}\n` : "";
+      controller.enqueue(encoder.encode(`${id}data: ${out}\n\n`));
     }
   };
   return new TransformStream({

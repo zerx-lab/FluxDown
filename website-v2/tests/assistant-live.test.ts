@@ -6,7 +6,7 @@ const started = (callId: string, name: string): AiStreamEvent => ({ type: "toolS
 const finished = (callId: string, name: string, isError: boolean): AiStreamEvent => ({
   type: "toolFinished", callId, name, kind: "server", isError, durationMs: 1,
 });
-const reduce = (events: AiStreamEvent[]) => events.reduce(applyEvent, startRun("s1", "q"));
+const reduce = (events: AiStreamEvent[]) => events.reduce((run, event) => applyEvent(run, event), startRun("s1", "q"));
 
 test("live: offer_membership success sets the flag and never becomes a tool step", () => {
   const run = reduce([started("c1", "source_read"), started("offer-r1", "offer_membership"), finished("offer-r1", "offer_membership", false), finished("c1", "source_read", false)]);

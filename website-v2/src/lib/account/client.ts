@@ -77,21 +77,22 @@ export async function accountApi<T = undefined>(
 }
 
 /**
- * POST `/api/account/<path>` 并按 SSE 读响应，每帧 `data` 解析为 JSON 后交给 `onEvent`（非 JSON 帧跳过）。
+ * 按 SSE 读 `/api/account/<path>`：`body` 缺省为 GET（续读），否则 POST JSON。每帧 `data` 解析为 JSON 后交给 `onEvent`
+ * （非 JSON 帧跳过；`id` 为该帧的事件序号，上游没给或不是整数为 null）。
  * 流读完返回 ok；请求失败返回 BFF / FluxCloud 的 `code`；读流途中断开或 `signal` 中止返回 `network`。
  */
 export async function accountStream(
   path: string,
   body: unknown,
-  onEvent: (event: unknown) => void,
+  onEvent: (event: unknown, id: number | null) => void,
   signal: AbortSignal,
 ): Promise<AccountResult<undefined>> {
   let res: Response;
   try {
     res = await fetch(withBase(`/api/account/${path}`), {
-      method: "POST",
-      headers: bffHeaders(true, "text/event-stream"),
-      body: JSON.stringify(body),
+      method: body === undefined ? "GET" : "POST",
+      headers: bffHeaders(body !== undefined, "text/event-stream"),
+      body: body === undefined ? undefined : JSON.stringify(body),
       credentials: "same-origin",
       signal,
     });
@@ -105,15 +106,15 @@ export async function accountStream(
   const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
   try {
     for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
-      for (const frame of parser.push(chunk.value)) {
-        if (frame === null) continue;
+      for (const frame of parser.pushEvents(chunk.value)) {
+        if (frame.data === null) continue;
         let event: unknown;
         try {
-          event = JSON.parse(frame);
+          event = JSON.parse(frame.data);
         } catch {
           continue;
         }
-        onEvent(event);
+        onEvent(event, frame.id !== null && /^\d{1,12}$/.test(frame.id) ? Number(frame.id) : null);
       }
     }
   } catch {

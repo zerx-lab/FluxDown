@@ -412,3 +412,104 @@ test("sessions: detail turns a successful offer_membership result into a members
     { id: "m7", runId: "r1", seq: 7, role: "assistant", content: "A", createdAt: "t", images: [] },
   ]);
 });
+
+test("sessions: list forwards a trimmed search term; over-long terms never reach FluxCloud", async () => {
+  reply = () => Response.json({ total: 0, items: [] });
+  const res = await call(`ai/sessions?limit=10&q=${encodeURIComponent("  下载 失败 ")}`);
+  expect(res.status).toBe(200);
+  expect(seen[0]?.url).toBe(`http://cloud.test/api/v1/ai/sessions?limit=10&offset=0&q=${encodeURIComponent("下载 失败")}`);
+
+  seen = [];
+  const long = await call(`ai/sessions?q=${"x".repeat(101)}`);
+  expect(long.status).toBe(400);
+  expect(seen).toHaveLength(0);
+});
+
+test("sessions: clear-all, rename and export forward to FluxCloud with validated input", async () => {
+  reply = () => Response.json({ cleared: 3, secret: 1 });
+  const cleared = await call("ai/sessions", { method: "DELETE" });
+  expect(await cleared.json()).toEqual({ cleared: 3 });
+  expect(seen[0]?.method).toBe("DELETE");
+  expect(seen[0]?.url).toBe("http://cloud.test/api/v1/ai/sessions");
+
+  seen = [];
+  reply = () => Response.json({ id: SESSION_ID, channel: "website", kind: "ask", title: "New name", messageCount: 1, rating: null, active: false, createdAt: "t", updatedAt: "t" });
+  const renamed = await call(`ai/sessions/${SESSION_ID}`, { method: "PATCH", body: { title: "  New name  " } });
+  expect(renamed.status).toBe(200);
+  expect(seen[0]?.method).toBe("PATCH");
+  expect(seen[0]?.body).toEqual({ title: "New name" });
+  expect((await call(`ai/sessions/${SESSION_ID}`, { method: "PATCH", body: { title: "   " } })).status).toBe(400);
+  expect((await call(`ai/sessions/${SESSION_ID}`, { method: "PATCH", body: { title: "x".repeat(81) } })).status).toBe(400);
+
+  seen = [];
+  reply = () => Response.json({ fileName: "a.md", mime: "text/markdown", content: "# hi", extra: 1 });
+  const exported = await call(`ai/sessions/${SESSION_ID}/export?format=markdown`);
+  expect(await exported.json()).toEqual({ fileName: "a.md", mime: "text/markdown", content: "# hi" });
+  expect(seen[0]?.url).toBe(`http://cloud.test/api/v1/ai/sessions/${SESSION_ID}/export?format=markdown`);
+  expect((await call(`ai/sessions/${SESSION_ID}/export?format=pdf`)).status).toBe(400);
+});
+
+test("ask: replaceFrom / keepImages are validated and forwarded", async () => {
+  reply = () => sse([frame({ type: "run", runId: "r1", sessionId: SESSION_ID })]);
+  const ok = await call(`ai/sessions/${SESSION_ID}/messages`, { method: "POST", body: { text: "again", replaceFrom: "m1", keepImages: true } });
+  expect(ok.status).toBe(200);
+  await ok.text();
+  expect(seen[0]?.body).toEqual({ text: "again", replaceFrom: "m1", keepImages: true });
+
+  seen = [];
+  // keepImages 与新图片互斥，且必须带 replaceFrom
+  const withImages = await call(`ai/sessions/${SESSION_ID}/messages`, { method: "POST", body: { text: "x", replaceFrom: "m1", keepImages: true, images: [PNG_URL] } });
+  expect(withImages.status).toBe(400);
+  const orphan = await call(`ai/sessions/${SESSION_ID}/messages`, { method: "POST", body: { text: "x", keepImages: true } });
+  expect(orphan.status).toBe(400);
+  const badId = await call(`ai/sessions/${SESSION_ID}/messages`, { method: "POST", body: { text: "x", replaceFrom: "../x" } });
+  expect(badId.status).toBe(400);
+  expect(seen).toHaveLength(0);
+});
+
+test("runs: resume proxies events after a sequence number and forwards only integer event ids", async () => {
+  reply = () =>
+    sse([
+      `id: 4\ndata: ${JSON.stringify({ type: "text", delta: "Hel", secret: 1 })}\n\n`,
+      `id: abc\ndata: ${JSON.stringify({ type: "text", delta: "lo" })}\n\n`,
+      `data: ${JSON.stringify({ type: "triage", intent: "usage" })}\n\n`,
+      `id: 6\ndata: ${JSON.stringify({ type: "done", status: "completed", messageId: "m1", text: "Hello", inputTokens: 1 })}\n\n`,
+    ]);
+  const res = await call("ai/runs/r1/events?after=3");
+  expect(res.status).toBe(200);
+  expect(res.headers.get("content-type")).toContain("text/event-stream");
+  expect(seen[0]?.url).toBe("http://cloud.test/api/v1/ai/runs/r1/events?after=3");
+  expect(seen[0]?.method).toBe("GET");
+  const text = await res.text();
+  expect(text).toContain('id: 4\ndata: {"type":"text","delta":"Hel"}');
+  expect(text).toContain('data: {"type":"text","delta":"lo"}');
+  expect(text).not.toContain("id: abc");
+  expect(text).not.toContain("triage");
+  expect(text).toContain('id: 6\ndata: {"type":"done","status":"completed","messageId":"m1","text":"Hello"}');
+
+  seen = [];
+  reply = () => Response.json({ code: "ai_run_gone", message: "gone" }, { status: 410 });
+  const gone = await call("ai/runs/r1/events");
+  expect(gone.status).toBe(410);
+  expect(seen[0]?.url).toBe("http://cloud.test/api/v1/ai/runs/r1/events?after=0");
+  expect((await call("ai/runs/../x/events")).status).not.toBe(200);
+});
+
+test("sessions: detail keeps assistant_step messages and the interrupted flag", async () => {
+  reply = () =>
+    Response.json({
+      session: { id: SESSION_ID, channel: "website", kind: "ask", title: "Q", messageCount: 3, rating: null, active: false, createdAt: "t", updatedAt: "t" },
+      messages: [
+        { id: "m1", runId: "r1", seq: 1, role: "user", content: "Q", images: [], createdAt: "t" },
+        { id: "m2", runId: "r1", seq: 2, role: "assistant_step", content: "Let me look", images: [], createdAt: "t", secret: 1 },
+        { id: "m3", runId: "r1", seq: 3, role: "assistant", content: "Partial", images: [], interrupted: true, createdAt: "t" },
+      ],
+      issues: [],
+    });
+  const detail = (await (await call(`ai/sessions/${SESSION_ID}`)).json()) as { messages: unknown[] };
+  expect(detail.messages).toEqual([
+    { id: "m1", runId: "r1", seq: 1, role: "user", content: "Q", createdAt: "t", images: [] },
+    { id: "m2", runId: "r1", seq: 2, role: "assistant_step", content: "Let me look", createdAt: "t", images: [] },
+    { id: "m3", runId: "r1", seq: 3, role: "assistant", content: "Partial", interrupted: true, createdAt: "t", images: [] },
+  ]);
+});

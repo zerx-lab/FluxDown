@@ -57,6 +57,9 @@ const WidgetPanel = lazy(() => import("./WidgetPanel"));
 function Widget({ lang }: { lang: Lang }) {
   const t = assistant[lang];
   const [open, setOpen] = useState(false);
+  /** 展开过一次后面板常驻（收起只隐藏不卸载）：进行中的回答不会因为关窗被掐断。 */
+  const [everOpen, setEverOpen] = useState(false);
+  if (open && !everOpen) setEverOpen(true);
   const [mode, setMode] = useState<WidgetMode>("float");
   const launcherRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -210,7 +213,7 @@ function Widget({ lang }: { lang: Lang }) {
           </span>
         </button>
       )}
-      {open && (
+      {everOpen && (
         <div
           ref={panelRef}
           role="dialog"
@@ -219,7 +222,10 @@ function Widget({ lang }: { lang: Lang }) {
           tabIndex={-1}
           data-mode={mode}
           data-positioned={pos ? "" : undefined}
-          style={pos ? ({ "--ai-x": `${pos.x}px`, "--ai-y": `${pos.y}px` } as CSSProperties) : undefined}
+          style={{
+            ...(pos ? ({ "--ai-x": `${pos.x}px`, "--ai-y": `${pos.y}px` } as CSSProperties) : null),
+            ...(open ? null : { display: "none" }),
+          }}
           className="ai-widget"
           data-ai-root=""
           onPointerDown={onPanelPointerDown}

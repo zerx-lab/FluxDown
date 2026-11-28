@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode, type TouchEvent, type WheelEvent } from "react";
-import { ArrowDown, Bot, CircleAlert, CircleCheck, LoaderCircle, ThumbsDown, ThumbsUp } from "lucide-react";
+import { ArrowDown, Bot, Check, CircleAlert, CircleCheck, Copy, LoaderCircle, Pencil, RotateCcw, ThumbsDown, ThumbsUp } from "lucide-react";
 import type { Lang } from "@/i18n/config";
 import type { AssistantMessages } from "@/i18n/messages/assistant";
 import { accountErrorText } from "@/lib/account/client";
@@ -11,7 +11,9 @@ import IssueCard from "./IssueCard";
 import { toolLabel, type LiveRun, type Segment } from "./live";
 import Markdown from "./Markdown";
 import MembershipCard from "./MembershipCard";
-import { ratingOf, type Ratings, type RunNotice } from "./useAssistant";
+import { splitPlaceholders } from "./placeholders";
+import { buildTimeline, lastUserMessage } from "./timeline";
+import { ratingOf, runPersisted, type Ratings, type RunNotice } from "./useAssistant";
 
 interface Props {
   lang: Lang;
@@ -26,13 +28,41 @@ interface Props {
   /** 评价一条回答（`null` 清除）；失败返回错误码（已回滚）。 */
   onRate: (messageId: string, rating: AiRating | null) => Promise<string | null>;
   onIssueChange: (issue: AiIssue) => void;
+  /** 重新生成 / 编辑重发最后一条提问；undefined = 当前不可用（回答中、只读会话）。 */
+  onRegenerate?: (message: AiMessage) => void;
+  onEdit?: (message: AiMessage) => void;
 }
 
 /** 距底部不到这么多像素即视为回到了最新位置，恢复跟随。 */
 const BOTTOM_PX = 24;
 
-/** 用户提问：图片缩略图在上（点开看大图），文字气泡在下。`images` 为可直接用作 `src` 的地址。 */
-function UserBubble({ text, images, t }: { text: string; images: string[]; t: AssistantMessages }) {
+/** 提问文字：`[Image #N]` 占位符渲染成可点开的图片引用（N 超出图片张数的当普通文字）。 */
+function QuestionText({ text, images, t, onView }: { text: string; images: string[]; t: AssistantMessages; onView: (image: ViewerImage) => void }) {
+  const parts = splitPlaceholders(text, images.length);
+  return (
+    <p className="whitespace-pre-wrap text-[14.5px] leading-relaxed [overflow-wrap:anywhere]">
+      {parts.map((part, i) => {
+        if (part.kind === "text") return part.text;
+        const src = images[part.number - 1];
+        if (src === undefined) return part.text;
+        return (
+          <button
+            key={i}
+            type="button"
+            onClick={() => onView({ src, alt: t.chat.imageAlt(part.number) })}
+            aria-label={`${t.chat.viewImage} · ${t.chat.imageAlt(part.number)}`}
+            className="mx-0.5 inline rounded bg-accent-soft px-1.5 text-[12.5px] text-accent-ink hover:underline"
+          >
+            {part.text}
+          </button>
+        );
+      })}
+    </p>
+  );
+}
+
+/** 用户提问：图片缩略图在上（点开看大图），文字气泡在下，`children` 是气泡下的动作。`images` 为可直接用作 `src` 的地址。 */
+function UserBubble({ text, images, t, children }: { text: string; images: string[]; t: AssistantMessages; children?: ReactNode }) {
   const [viewing, setViewing] = useState<ViewerImage | null>(null);
   return (
     <div className="flex flex-col items-end gap-2">
@@ -54,12 +84,15 @@ function UserBubble({ text, images, t }: { text: string; images: string[]; t: As
         </ul>
       )}
       <div className="max-w-[85%] rounded-2xl rounded-br-md bg-inset px-4 py-2.5">
-        <p className="whitespace-pre-wrap text-[14.5px] leading-relaxed [overflow-wrap:anywhere]">{text}</p>
+        <QuestionText text={text} images={images} t={t} onView={setViewing} />
       </div>
+      {children}
       {viewing && <ImageViewer image={viewing} t={t} onClose={() => setViewing(null)} />}
     </div>
   );
 }
+
+const textBtn = "inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[12px] text-subtle transition-colors hover:text-fg";
 
 function AssistantTurn({ t, children }: { t: AssistantMessages; children: ReactNode }) {
   return (
@@ -90,13 +123,26 @@ function ToolChip({ segment, t }: { segment: Extract<Segment, { kind: "tool" }>;
   );
 }
 
+/** 非 done 收尾的说明：停止 / 连接中断 / 云端给出的失败原因（旧版云端不带原因，按通用失败）。 */
 function noticeText(phase: RunNotice["phase"], reason: RunNotice["reason"], t: AssistantMessages): string {
   if (phase === "stopped") return t.chat.stopped;
   if (phase === "interrupted") return t.chat.interrupted;
-  if (reason === "maxTurns") return t.chat.maxTurns;
-  if (reason === "noAnswer") return t.chat.noAnswer;
-  if (reason === "timeout") return t.chat.timedOut;
-  return t.chat.failed;
+  switch (reason) {
+    case "maxTurns":
+      return t.chat.maxTurns;
+    case "noAnswer":
+      return t.chat.noAnswer;
+    case "timeout":
+      return t.chat.timedOut;
+    case "contextOverflow":
+      return t.chat.contextOverflow;
+    case "imageUnsupported":
+      return t.chat.imageUnsupported;
+    case "unavailable":
+      return t.chat.unavailable;
+    default:
+      return t.chat.failed;
+  }
 }
 
 function Notice({ text }: { text: string }) {
@@ -118,15 +164,43 @@ function Segments({ segments, t }: { segments: Segment[]; t: AssistantMessages }
   );
 }
 
-/** 一条回答下的评价：赞 / 踩，再点同一个清除。乐观更新由 `onRate` 负责，失败时已回滚，这里只显示错误。 */
+/** 复制整条回答的 Markdown 原文。 */
+function CopyAnswer({ text, t }: { text: string; t: AssistantMessages }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(timer);
+  }, [copied]);
+  const label = copied ? t.chat.copied : t.chat.copyAnswer;
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={() => {
+        navigator.clipboard.writeText(text).then(
+          () => setCopied(true),
+          () => setCopied(false),
+        );
+      }}
+      className="grid size-7 place-items-center rounded-md text-subtle transition-colors hover:text-fg"
+    >
+      {copied ? <Check size={14} aria-hidden /> : <Copy size={14} aria-hidden />}
+    </button>
+  );
+}
+
+/** 一条回答下的评价：赞 / 踩，再点同一个清除；`actions` 是同一行的其它动作。乐观更新由 `onRate` 负责，失败时已回滚，这里只显示错误。 */
 function RateBar({
-  lang, t, messageId, rating, onRate,
+  lang, t, messageId, rating, onRate, actions,
 }: {
   lang: Lang;
   t: AssistantMessages;
   messageId: string;
   rating: AiRating | null;
   onRate: Props["onRate"];
+  actions?: ReactNode;
 }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -173,6 +247,7 @@ function RateBar({
       <div className="flex items-center gap-0.5">
         {button("up")}
         {button("down")}
+        {actions}
       </div>
       {error && (
         <p role="alert" className="mt-1 text-[12.5px] text-danger">
@@ -184,12 +259,15 @@ function RateBar({
 }
 
 /**
- * 会话的消息时间线：历史消息、进行中的回答（文本 / 工具进度）与问题单卡片。
+ * 会话的消息时间线：历史消息（工具前的说明文字归入「过程」）、进行中的回答（文本 / 工具进度）与问题单卡片。
+ * 进行中的执行（`live.runId`）的历史消息不再画：回答期间切走再切回，云端已落库的提问 / 步骤不会和进行中的展示各出现一次。
  *
  * 跟随最新：缺省新内容到达即滚到底；用户往上滚（滚动位置变小）立即停止跟随，回答照常在下方生成；
  * 不在底部时显示「回到最新」，点它或自己滚回底部即恢复跟随。新的提问开始时强制回到跟随。
  */
-export default function Conversation({ lang, t, guard, messages, issues, live, notice, ratings, onRate, onIssueChange }: Props) {
+export default function Conversation({
+  lang, t, guard, messages, issues, live, notice, ratings, onRate, onIssueChange, onRegenerate, onEdit,
+}: Props) {
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const lastTop = useRef(0);
@@ -264,18 +342,28 @@ export default function Conversation({ lang, t, guard, messages, issues, live, n
 
   const shownIssues = live ? [...issues.filter((i) => !live.issues.some((l) => l.id === i.id)), ...live.issues] : issues;
   const liveText = live?.segments.some((s) => s.kind === "text") ?? false;
-
-  // 开通会员卡片：历史里由 `membership_offer` 消息标出所属执行（runId），卡片挂在该轮回答之后；同一轮只一张。
-  // 该轮没有落库的回答时（理论上不会出现）就地显示。
-  const offerRuns = new Set(messages.flatMap((m) => (m.role === "membership_offer" && m.runId !== null ? [m.runId] : [])));
-  const answeredRuns = new Set(messages.flatMap((m) => (m.role === "assistant" && m.runId !== null ? [m.runId] : [])));
-  const offerShown = new Set<string>();
-  const takeOffer = (runId: string | null): boolean => {
-    if (runId === null || !offerRuns.has(runId) || offerShown.has(runId)) return false;
-    offerShown.add(runId);
-    return true;
-  };
+  const items = buildTimeline(messages, live?.runId ?? null);
+  const lastUser = live ? null : lastUserMessage(messages);
+  const noticeHere = !live && notice !== null;
   const card = <MembershipCard lang={lang} t={t} guard={guard} />;
+
+  const reviseActions = (message: AiMessage, withRegenerate: boolean): ReactNode =>
+    onEdit || (withRegenerate && onRegenerate) ? (
+      <div className="flex items-center gap-1">
+        {onEdit && (
+          <button type="button" onClick={() => onEdit(message)} className={textBtn}>
+            <Pencil size={12} aria-hidden />
+            {t.chat.editResend}
+          </button>
+        )}
+        {withRegenerate && onRegenerate && (
+          <button type="button" onClick={() => onRegenerate(message)} className={textBtn}>
+            <RotateCcw size={12} aria-hidden />
+            {t.chat.regenerate}
+          </button>
+        )}
+      </div>
+    ) : null;
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
@@ -292,22 +380,51 @@ export default function Conversation({ lang, t, guard, messages, issues, live, n
       aria-live="off"
     >
       <div ref={content} className="mx-auto flex max-w-[760px] flex-col gap-6">
-        {messages.map((message) => {
-          if (message.role === "user") {
-            return <UserBubble key={message.id} text={message.content} images={message.images.map(attachmentUrl)} t={t} />;
+        {items.map((item, index) => {
+          const last = index === items.length - 1;
+          if (item.kind === "user") {
+            const { message } = item;
+            const mine = lastUser !== null && message.id === lastUser.id;
+            return (
+              <UserBubble key={message.id} text={message.content} images={message.images.map(attachmentUrl)} t={t}>
+                {mine && reviseActions(message, last)}
+              </UserBubble>
+            );
           }
-          if (message.role === "membership_offer") {
-            return message.runId !== null && !answeredRuns.has(message.runId) && takeOffer(message.runId) ? (
-              <AssistantTurn key={message.id} t={t}>
-                {card}
-              </AssistantTurn>
-            ) : null;
-          }
+          const { answer } = item;
+          const reasonShown = noticeHere && notice.runId !== null && notice.runId === item.runId;
           return (
-            <AssistantTurn key={message.id} t={t}>
-              <Markdown text={message.content} labels={t.chat} />
-              <RateBar lang={lang} t={t} messageId={message.id} rating={ratingOf(ratings, message.id, message.rating)} onRate={onRate} />
-              {takeOffer(message.runId) && card}
+            <AssistantTurn key={item.key} t={t}>
+              {item.steps.length > 0 && (
+                <div className="space-y-2 border-l-2 border-line pl-3 text-muted">
+                  {item.steps.map((step) => (
+                    <Markdown key={step.id} text={step.content} labels={t.chat} />
+                  ))}
+                </div>
+              )}
+              {answer && <Markdown text={answer.content} labels={t.chat} />}
+              {answer?.interrupted === true && !reasonShown && <Notice text={t.chat.answerInterrupted} />}
+              {answer && (
+                <RateBar
+                  lang={lang}
+                  t={t}
+                  messageId={answer.id}
+                  rating={ratingOf(ratings, answer.id, answer.rating)}
+                  onRate={onRate}
+                  actions={
+                    <>
+                      <CopyAnswer text={answer.content} t={t} />
+                      {last && lastUser && onRegenerate && (
+                        <button type="button" onClick={() => onRegenerate(lastUser)} className={textBtn}>
+                          <RotateCcw size={12} aria-hidden />
+                          {t.chat.regenerate}
+                        </button>
+                      )}
+                    </>
+                  }
+                />
+              )}
+              {item.offer && card}
             </AssistantTurn>
           );
         })}
@@ -331,16 +448,16 @@ export default function Conversation({ lang, t, guard, messages, issues, live, n
             </AssistantTurn>
           </>
         )}
-        {!live && notice && (notice.segments.length > 0 || notice.membershipOffer) && (
-          <AssistantTurn t={t}>
-            <Segments segments={notice.segments} t={t} />
+        {noticeHere &&
+          (runPersisted(messages, notice.runId) || (notice.segments.length === 0 && !notice.membershipOffer) ? (
             <Notice text={noticeText(notice.phase, notice.reason, t)} />
-            {notice.membershipOffer && card}
-          </AssistantTurn>
-        )}
-        {!live && notice && notice.segments.length === 0 && !notice.membershipOffer && (
-          <Notice text={noticeText(notice.phase, notice.reason, t)} />
-        )}
+          ) : (
+            <AssistantTurn t={t}>
+              <Segments segments={notice.segments} t={t} />
+              <Notice text={noticeText(notice.phase, notice.reason, t)} />
+              {notice.membershipOffer && card}
+            </AssistantTurn>
+          ))}
         {shownIssues.map((issue) => (
           <IssueCard key={issue.id} issue={issue} lang={lang} t={t} guard={guard} onChange={onIssueChange} />
         ))}

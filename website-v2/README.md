@@ -61,6 +61,11 @@ node dist/server/entry.mjs
 - 开通会员卡片：FluxCloud 的服务端工具 `offer_membership`（无参数）成功即该轮回答后显示 `MembershipCard.tsx`（不带套餐数据，挂载时实时取 `/api/cloud/plans` 与 `me`，每个在售套餐一行 + `WebPurchase`）。实时由 `live.ts` 把该工具从过程步骤里拿掉并置 `LiveRun.membershipOffer`；历史由 BFF 把上游成功的 `tool_result`（`toolName == "offer_membership"`、`isError == false`、带 `runId`）合成为 `role: "membership_offer"` 消息（`content` 为空，其余工具消息仍不下发），`Conversation.tsx` 按 `runId` 挂到该轮，同一轮只一张。
 - 回答用 `src/components/assistant/md-parse.ts` 解析成结构化节点再由 `Markdown.tsx` 以 React 元素渲染（不注入 HTML；链接只放行 http(s) / mailto / 站内路径）。
 - 部署顺序：FluxCloud AI 模块（含 `GET /api/v1/ai/status` 与 `ai/config.visible`）先上线并在后台开放 `mode`，官网才有可用的入口；FluxCloud 未升级时 `ai/status` 回失败（匿名 404、已登录 502），入口一直隐藏。
+- 会话管理：重命名（`PATCH ai/sessions/{id}`，标题 1–80 字符）、搜索（`GET ai/sessions?q=`，≤ 100 字符，匹配标题与消息内容）、导出（`GET ai/sessions/{id}/export?format=markdown|json` → `{fileName, mime, content}`，浏览器侧存成文件）、清空全部（`DELETE ai/sessions` → `{cleared}`，列表底部原地二次确认；二次确认按钮鼠标移开 / 失焦即取消）。悬浮面板的对话顶栏与历史视图同样可用。
+- 重新生成 / 编辑重发：对最后一条提问再次 `POST …/messages`，带 `replaceFrom`（被替换的 user 消息 ID，它及之后的消息在云端被取代）与 `keepImages`（沿用原附图，与新图片互斥，且必须带 `replaceFrom`），BFF 校验后转发。回答被打断（取消 / 超时 / 失败）时云端会把已推送的文本落库为 `interrupted` 回答；工具调用前的说明文字是 `assistant_step`，历史里归入该轮的「过程」，BFF 的消息白名单（`MESSAGE_KEYS` / `SHOWN_ROLES`）包含这两者。
+- 断线续读：`GET ai/runs/{runId}/events?after=<seq>`（BFF 逐帧转发上游事件序号 `id:`，只放行十进制整数）。流中途断开且已有事件序号时前端自动续读；会话详情 `active` 为真（换页 / 重新打开悬浮面板后）则用 `after=0` 接回整个过程，显示「回答中 / 停止」；执行已过期（410 `ai_run_gone`）显示「连接中断」。悬浮面板展开过一次后常驻（收起只隐藏），关窗不会掐断进行中的回答。同一时间只允许一条流：别的会话在回答时输入框说明原因且不可发送。
+- 图片：非 PNG / JPEG / GIF / WebP（HEIC / BMP / AVIF 等）交给浏览器解码后转 PNG，解码失败才报类型错误；每张图在光标处写入 `[Image #N]` 占位符（移除图片同步删除并重新编号，手动删掉占位符图片随之移除），历史里占位符渲染成可点开的图片引用。
+- 失败原因（`error.reason`）：`maxTurns` / `noAnswer` / `timeout` / `contextOverflow` / `imageUnsupported` / `unavailable` / `error` 各有文案（`src/i18n/messages/assistant.ts`，非 en / zh 语言由 `bun run i18n:generate` 生成，未翻译的单元回退 en）。提交失败的问题单可再次提交。快捷键只宣传 Alt+N（macOS 显示 ⌥N，另认 ⌘N 但不宣传）。
 - 回归：`bun test tests/assistant-bff.test.ts`（替换 FluxCloud fetch，不代表真实模型与上游演练）。
 
 ## 结构

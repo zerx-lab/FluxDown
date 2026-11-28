@@ -26,6 +26,9 @@ export default function IssueCard({ issue, lang, t, guard, onChange }: Props) {
   const [busy, setBusy] = useState<"submit" | "discard" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const draft = issue.status === "draft";
+  /** 提交失败的问题单也能重试（云端 `confirm` 对 `failed` 同样可调用）。 */
+  const failed = issue.status === "failed";
+  const actionable = draft || failed;
   const kind = issue.kind === "bug" || issue.kind === "feature" ? t.issue.kinds[issue.kind] : t.issue.kinds.other;
 
   const act = async (action: "submit" | "discard") => {
@@ -89,7 +92,7 @@ export default function IssueCard({ issue, lang, t, guard, onChange }: Props) {
               {issue.title}
             </h3>
             {draft && <p className="mt-1 text-[13px] text-muted">{t.issue.draftDesc}</p>}
-            {draft && (
+            {actionable && (
               <div className="mt-3 max-h-72 overflow-y-auto border-t border-line pt-3">
                 <Markdown text={issue.body} labels={t.chat} />
               </div>
@@ -107,19 +110,21 @@ export default function IssueCard({ issue, lang, t, guard, onChange }: Props) {
             <ExternalLink size={13} aria-hidden />
           </a>
         )}
-        {draft && (
+        {actionable && (
           <div className="mt-4 flex flex-wrap items-center gap-2">
             <button type="button" onClick={() => void act("submit")} disabled={busy !== null || (editing && title.trim().length < 4)} className="btn btn-primary btn-sm disabled:opacity-60">
               {busy === "submit" && <Spinner size={13} />}
-              {t.issue.submit}
+              {failed ? t.issue.retry : t.issue.submit}
             </button>
             <button type="button" onClick={toggleEdit} disabled={busy !== null} className="btn btn-secondary btn-sm disabled:opacity-60">
               {editing ? t.issue.cancelEdit : t.issue.edit}
             </button>
-            <button type="button" onClick={() => void act("discard")} disabled={busy !== null} className="btn btn-secondary btn-sm ml-auto disabled:opacity-60">
-              {busy === "discard" && <Spinner size={13} />}
-              {t.issue.discard}
-            </button>
+            {draft && (
+              <button type="button" onClick={() => void act("discard")} disabled={busy !== null} className="btn btn-secondary btn-sm ml-auto disabled:opacity-60">
+                {busy === "discard" && <Spinner size={13} />}
+                {t.issue.discard}
+              </button>
+            )}
           </div>
         )}
         <ErrorLine text={error} />
