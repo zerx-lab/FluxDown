@@ -445,7 +445,7 @@ struct DownloadsListScreen: View {
                 #endif
                 Button(L("copyUrl"), systemImage: FluxSymbol.copy) { copySelectedLinks() }
                     .disabled(model.selection.isEmpty)
-                Button(L("exportTaskInfoTxt"), systemImage: "square.and.arrow.down") {
+                Button(L("exportTaskInfoTxt"), systemImage: "doc.text") {
                     let rows = TaskInfoRow.selected(
                         local: model.selectedTasks(), remote: model.selectedRemoteTasks(), visibleIds: model.list.visibleIds
                     )

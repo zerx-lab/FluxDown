@@ -639,7 +639,7 @@ impl DownloadView {
         actions.push(self.icon_action(
             "download-selection-export-info",
             export_label,
-            Icon::new(FluxIcon::Download).size(icon_size),
+            Icon::new(FluxIcon::FileText).size(icon_size),
             false,
             Self::export_selected_task_info,
             cx,

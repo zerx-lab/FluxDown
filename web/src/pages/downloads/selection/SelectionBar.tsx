@@ -1,4 +1,4 @@
-import { Copy, Download, FileDown, Pause, Play, Trash2, X } from 'lucide-react'
+import { Copy, Download, FileText, Pause, Play, Trash2, X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useT } from '../../../i18n'
 import { cn } from '../../../lib/cn'
@@ -73,7 +73,7 @@ function SelectionActions({ inline }: { inline?: boolean }) {
         <Icon icon={Copy} size="md" />
       </Action>
       <Action label={t('exportTaskInfoTxt')} className={btn} onClick={() => exportTaskInfo(selectedViewsInOrder().map(taskInfoRow), taskInfoHeader(t))}>
-        <Icon icon={FileDown} size="md" />
+        <Icon icon={FileText} size="md" />
       </Action>
       <ActionMenu
         title={t('delete')}

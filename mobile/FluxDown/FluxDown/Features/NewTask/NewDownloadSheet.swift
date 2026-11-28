@@ -333,7 +333,7 @@ private struct NewDownloadContent: View {
                     .foregroundStyle(.secondary)
             }
             if entries.count > 1 {
-                Button(L("exportTaskInfoTxt"), systemImage: "square.and.arrow.down") {
+                Button(L("exportTaskInfoTxt"), systemImage: "doc.text") {
                     taskInfoExport = TaskInfoDocument(entries.map {
                         TaskInfoRow(name: batchExportName($0), url: $0.url, size: batchExportSize($0.url))
                     }, labels: .localized)

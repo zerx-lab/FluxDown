@@ -315,7 +315,7 @@ struct ManifestSelectView: View {
                 }
                 .accessibilityLabel(L("manifestSelectAll"))
             }
-            Button(L("exportTaskInfoTxt"), systemImage: "square.and.arrow.down") {
+            Button(L("exportTaskInfoTxt"), systemImage: "doc.text") {
                 taskInfoExport = TaskInfoDocument(model.selection.selectedExportRows().map {
                     TaskInfoRow(name: $0.name, url: "", size: $0.size > 0 ? $0.size : nil)
                 }, labels: .localized)
