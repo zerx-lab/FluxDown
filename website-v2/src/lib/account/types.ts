@@ -158,10 +158,17 @@ export interface AccountCodeSent {
 /** 不可用原因：`off` 未开放 / `internal_only` 只对内部账号开放 / `plan_disabled` 当前套餐不含 AI 助手。 */
 export type AiUnavailableReason = "off" | "internal_only" | "plan_disabled";
 
+/** `GET /api/account/ai/status`：各端 AI 入口是否显示（匿名取公开口径，有会话按本人身份，由 FluxCloud 判定）。 */
+export interface AiStatus {
+  visible: boolean;
+}
+
 /** `GET /api/account/ai/config`。 */
 export interface AiConfig {
   available: boolean;
   reason: AiUnavailableReason | null;
+  /** 入口是否显示：与 `available` 无关（套餐不含助手时入口照常显示，只是不可用）。 */
+  visible: boolean;
   /** 单次提问的字数上限（不可用时为 0）。 */
   maxMessageChars: number;
   /** 每日提问次数上限；0 = 不限。 */

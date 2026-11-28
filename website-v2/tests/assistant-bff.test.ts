@@ -60,7 +60,7 @@ const signedIn = () => new Jar({ [ACCESS_COOKIE]: "at-0", [REFRESH_COOKIE]: "rt-
 
 function call(
   path: string,
-  { method = "GET", body, signal, headers = {} }: { method?: string; body?: unknown; signal?: AbortSignal; headers?: Record<string, string> } = {},
+  { method = "GET", body, signal, headers = {}, jar = signedIn() }: { method?: string; body?: unknown; signal?: AbortSignal; headers?: Record<string, string>; jar?: Jar } = {},
 ) {
   const request = new Request(`https://site.example/api/account/${path}`, {
     method,
@@ -73,7 +73,7 @@ function call(
     body: body === undefined ? undefined : JSON.stringify(body),
     signal,
   });
-  return handleAccountRequest(request, path.split("?")[0] ?? path, signedIn(), "203.0.113.7");
+  return handleAccountRequest(request, path.split("?")[0] ?? path, jar, "203.0.113.7");
 }
 
 /** 把若干文本块依次作为上游 SSE 正文返回（块边界可以切在帧中间）。 */
@@ -207,6 +207,76 @@ test("attachments: plain <img> GETs are proxied with a locked-down image respons
   expect((await call("ai/attachments/a1")).status).toBe(502);
   expect((await call("ai/attachments/a1", { headers: { "X-Fluxdown-Account": "", "Sec-Fetch-Site": "cross-site" } })).status).toBe(403);
   expect(seen).toHaveLength(2);
+});
+
+test("config: carries the entry visibility next to availability; internals stay out", async () => {
+  reply = () =>
+    Response.json({
+      available: false, reason: "plan_disabled", visible: true, maxMessageChars: 0, dailyLimit: 0, usedToday: 0,
+      imagesSupported: false, maxImages: 0, maxImageBytes: 0, provider: "secret",
+    });
+  const res = await call("ai/config");
+  expect(await res.json()).toEqual({
+    available: false, reason: "plan_disabled", visible: true, maxMessageChars: 0, dailyLimit: 0, usedToday: 0,
+    imagesSupported: false, maxImages: 0, maxImageBytes: 0,
+  });
+});
+
+test("status: a signed-in visitor gets the verdict for their own account from ai/config (plan limits don't hide the entry)", async () => {
+  reply = () => Response.json({ available: false, reason: "plan_disabled", visible: true, usedToday: 3 });
+  const res = await call("ai/status");
+  expect(res.status).toBe(200);
+  expect(await res.json()).toEqual({ visible: true });
+  expect(seen).toHaveLength(1);
+  expect(seen[0]?.url).toBe("http://cloud.test/api/v1/ai/config");
+  expect(seen[0]?.headers.authorization).toBe("Bearer at-0");
+
+  reply = () => Response.json({ available: false, reason: "internal_only", visible: false });
+  expect(await (await call("ai/status")).json()).toEqual({ visible: false });
+});
+
+test("status: without a session the public ai/status answers, with no credentials sent", async () => {
+  reply = () => Response.json({ visible: true });
+  const res = await call("ai/status", { jar: new Jar() });
+  expect(await res.json()).toEqual({ visible: true });
+  expect(seen).toHaveLength(1);
+  expect(seen[0]?.url).toBe("http://cloud.test/api/v1/ai/status");
+  expect(seen[0]?.headers.authorization).toBeUndefined();
+});
+
+test("status: a dead session (401) falls back to the public verdict and the session is cleared", async () => {
+  reply = (c) =>
+    c.url.endsWith("/ai/config") ? Response.json({ code: "unauthorized" }, { status: 401 }) : Response.json({ visible: false });
+  const jar = new Jar({ [ACCESS_COOKIE]: "at-0" });
+  const res = await call("ai/status", { jar });
+  expect(res.status).toBe(200);
+  expect(await res.json()).toEqual({ visible: false });
+  expect(seen.map((s) => s.url)).toEqual(["http://cloud.test/api/v1/ai/config", "http://cloud.test/api/v1/ai/status"]);
+  expect(seen[1]?.headers.authorization).toBeUndefined();
+  expect(jar.get(ACCESS_COOKIE)).toBeUndefined();
+});
+
+test("status: other upstream failures and malformed bodies surface as failures, never as a guessed verdict", async () => {
+  reply = () => Response.json({ code: "internal_error" }, { status: 500 });
+  const signed = await call("ai/status");
+  expect(signed.status).toBe(500);
+  expect(seen).toHaveLength(1);
+
+  reply = () => Response.json({ code: "internal_error" }, { status: 503 });
+  expect((await call("ai/status", { jar: new Jar() })).status).toBe(503);
+
+  // 上游还没带 visible（FluxCloud 未升级）/ 类型不对：502，客户端保留上次已知值
+  reply = () => Response.json({ available: true });
+  expect((await call("ai/status")).status).toBe(502);
+  reply = () => Response.json({ visible: "yes" });
+  expect((await call("ai/status", { jar: new Jar() })).status).toBe(502);
+});
+
+test("status: GET only, behind the same CSRF gate as the rest of the account BFF", async () => {
+  reply = () => Response.json({ visible: true });
+  expect((await call("ai/status", { headers: { "X-Fluxdown-Account": "" } })).status).toBe(403);
+  expect((await call("ai/status", { method: "POST", body: {} })).status).toBe(405);
+  expect(seen).toHaveLength(0);
 });
 
 test("sessions: created as website channel without client tools; kind is validated", async () => {

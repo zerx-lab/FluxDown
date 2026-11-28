@@ -117,15 +117,39 @@ const loadAnalytics = import.meta.env.PROD && BASE === "";
         document.documentElement.dataset.theme = theme;
       })();
     </script>
-    <!-- 悬浮 AI 助手停靠预设:本标签页展开且停靠时首帧前就让出右侧,避免岛水合后页面横跳。
-         键名与 src/components/assistant/widget/storage.ts 同值(内联脚本无法 import)。 -->
+    <!-- AI 助手入口显隐预设:读上次的结果(localStorage `fd_ai_visible`,值 `<in|out>:<0|1>:<时刻>`)并在首帧前写
+         `<html data-ai-visible>`;只认与当前登录态(提示 Cookie `fd_signed_in=1`)同一档的缓存,不一致一律按隐藏,
+         等 Header 脚本刷新。键名 / 属性 / 格式与 src/lib/account/ai-entry.ts 同值(内联脚本无法 import)。 -->
+    {
+      chrome && (
+        <script is:inline>
+          (function () {
+            try {
+              var signedIn = document.cookie.split(";").some(function (part) {
+                return part.trim() === "fd_signed_in=1";
+              });
+              var cached = (localStorage.getItem("fd_ai_visible") || "").split(":");
+              if (cached[0] === (signedIn ? "in" : "out") && cached[1] === "1") {
+                document.documentElement.setAttribute("data-ai-visible", "");
+              }
+            } catch (e) {}
+          })();
+        </script>
+      )
+    }
+    <!-- 悬浮 AI 助手停靠预设:本标签页展开且停靠时首帧前就让出右侧,避免岛水合后页面横跳;入口不可见(上面没放行)
+         时不预设,否则会空出一块没有挂件的右侧。键名与 src/components/assistant/widget/storage.ts 同值(内联脚本无法 import)。 -->
     {
       assistantWidget && (
         <script is:inline>
           (function () {
             try {
-              if (sessionStorage.getItem("fd_ai_widget_open") === "1" && localStorage.getItem("fd_ai_widget_mode") === "dock") {
-                var root = document.documentElement;
+              var root = document.documentElement;
+              if (
+                root.hasAttribute("data-ai-visible") &&
+                sessionStorage.getItem("fd_ai_widget_open") === "1" &&
+                localStorage.getItem("fd_ai_widget_mode") === "dock"
+              ) {
                 root.setAttribute("data-ai-dock", "");
                 // 宽度夹取规则与 storage.ts::clampDockWidth 一致
                 var w = Number(localStorage.getItem("fd_ai_widget_dock_w")) || 420;

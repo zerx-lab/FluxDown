@@ -11,11 +11,11 @@
  * - 提问可带图片（`data:image/(png|jpeg|gif|webp);base64,...`，张数 / 单张大小同 FluxCloud `ai::attachments`）；
  *   BFF 只做形状与长度预检，格式识别与解码后大小由 FluxCloud 判定。
  */
-import { failureResponse, NOINDEX_ROBOTS, proxyNoContent } from "@/lib/cloud-proxy";
+import { callUpstream, failureResponse, NOINDEX_ROBOTS, proxyNoContent } from "@/lib/cloud-proxy";
 import { isRecord, pick } from "@/lib/is-record";
 import { AI_ISSUE_KEYS, aiEventFilter } from "./ai-stream";
 import { jsonInit, mapped, ROW_ID_RE, text, validationError, type Body, type Route } from "./route-kit";
-import { callAuthed, callAuthedStream, type AccountContext } from "./session";
+import { callAuthed, callAuthedStream, hasSession, type AccountContext } from "./session";
 
 /** FluxCloud `limits.maxMessageChars` 的取值上限；实际上限由 FluxCloud 按设置再校验。 */
 const MAX_ASK_CHARS = 16_000;
@@ -37,7 +37,7 @@ const MAX_PAGE = 100;
 const LOCALE_RE = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$/;
 
 const CONFIG_KEYS = [
-  "available", "reason", "maxMessageChars", "dailyLimit", "usedToday", "imagesSupported", "maxImages", "maxImageBytes",
+  "available", "reason", "visible", "maxMessageChars", "dailyLimit", "usedToday", "imagesSupported", "maxImages", "maxImageBytes",
 ] as const;
 const SESSION_KEYS = [
   "id", "channel", "kind", "title", "messageCount", "rating", "active", "createdAt", "updatedAt",
@@ -145,6 +145,10 @@ async function noContent(ctx: AccountContext, path: string, init: { method: stri
   return res.ok ? proxyNoContent() : failureResponse(res);
 }
 
+/** 入口可见性：上游 `ai/config` 与公开 `ai/status` 都带布尔 `visible`，只取这一个字段。 */
+const visibleOf = (body: unknown): Body | null =>
+  isRecord(body) && typeof body.visible === "boolean" ? { visible: body.visible } : null;
+
 export const AI_ROUTES: Route[] = [
   {
     method: "GET",
@@ -152,6 +156,21 @@ export const AI_ROUTES: Route[] = [
     json: false,
     async handle(ctx) {
       return mapped(await callAuthed(ctx, "/api/v1/ai/config", { method: "GET" }), (body) => pick(body, CONFIG_KEYS));
+    },
+  },
+  {
+    // 各端 AI 入口是否显示（FluxCloud 判定，官网不复刻规则）。静态页拿不到登录态，所以允许匿名：
+    // 有会话按本人身份取 `ai/config.visible`（`internal` 模式只对内部账号显示）；无会话、或会话已失效（401，
+    // `callAuthed` 已清会话）退回免鉴权的 `ai/status.visible`。其它上游失败原样返回，客户端据此保留上次已知值。
+    method: "GET",
+    path: /^ai\/status$/,
+    json: false,
+    async handle(ctx) {
+      if (hasSession(ctx.cookies)) {
+        const res = await callAuthed(ctx, "/api/v1/ai/config", { method: "GET" });
+        if (res.ok || res.status !== 401) return mapped(res, visibleOf);
+      }
+      return mapped(await callUpstream("/api/v1/ai/status", { method: "GET" }, ctx.ip), visibleOf);
     },
   },
   {
