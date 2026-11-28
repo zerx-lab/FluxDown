@@ -157,6 +157,11 @@ struct SettingsRowVisibilityTests {
         #expect(SettingsDownloadRow.visible(in: .retry, loading).isEmpty)
     }
 
+    @Test func siteRequestHeadersRequireSupportFromTheConnectedHost() {
+        #expect(!SettingsDownloadRow.siteRequestHeaders.isVisible(in: context(["max_concurrent_tasks": "5"])))
+        #expect(SettingsDownloadRow.siteRequestHeaders.isVisible(in: context(["site_request_headers": ""])))
+    }
+
     @Test func preferenceRowsAreAlwaysAvailableWithCatalogDefaults() {
         let ctx = context([:])
         #expect(SettingsDownloadRow.rememberLastSaveDir.isVisible(in: ctx))

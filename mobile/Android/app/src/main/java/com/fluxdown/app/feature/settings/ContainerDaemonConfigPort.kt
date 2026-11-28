@@ -6,6 +6,7 @@ import com.fluxdown.app.R
 import com.fluxdown.app.i18n.str
 import com.fluxdown.core.host.HostErrorCode
 import com.fluxdown.core.host.HostException
+import com.fluxdown.core.host.HostSession
 import com.fluxdown.core.protocol.DaemonConfigPort
 import com.fluxdown.core.protocol.DaemonConfigSnapshot
 import com.fluxdown.core.protocol.HostMethod
@@ -16,14 +17,16 @@ import com.fluxdown.core.protocol.callJson
  * 取最新值与 revision（[cachedConfig] 恒为 null，不信任 store 快照——发布有合帧延迟），
  * 再 `daemon.config.patch {expectedRevision}`。
  */
-internal class ContainerDaemonConfigPort(private val container: AppContainer) : DaemonConfigPort {
+internal class ContainerDaemonConfigPort(private val session: () -> HostSession) : DaemonConfigPort {
+    constructor(container: AppContainer) : this({ container.session })
+
     override val cachedConfig: DaemonConfigSnapshot? = null
 
     override suspend fun fetchConfig(): DaemonConfigSnapshot =
-        DaemonConfigSnapshot.fromJson(container.session.callJson(HostMethod.daemonConfigGet))
+        DaemonConfigSnapshot.fromJson(session().callJson(HostMethod.daemonConfigGet))
 
     override suspend fun patchConfig(expectedRevision: Long, values: Map<String, String>) {
-        container.session.patchConfig(expectedRevision, values)
+        session().patchConfig(expectedRevision, values)
     }
 }
 

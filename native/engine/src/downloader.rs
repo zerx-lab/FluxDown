@@ -697,6 +697,11 @@ pub struct RequestSpec {
     /// `None` = 不限。与 `origin_headers` 同属插件按次运行叠加的改写，不落库。
     /// 读取请用 [`RequestSpec::range_window_cap`]。
     pub max_range_bytes: Option<i64>,
+    /// Host-local request header defaults, captured for this run. Never persisted on a task.
+    pub site_request_headers:
+        Option<std::sync::Arc<crate::site_request_headers::SiteRequestHeaders>>,
+    /// A per-task UA stored separately from the captured headers takes precedence over site defaults.
+    pub explicit_user_agent: bool,
     /// 站点代理规则的逐请求路由器。任务「跟随全局」且存在启用规则时由 manager / RSS
     /// 设置；`DownloadSpec` 的刷新是克隆后修补，会保留该字段。`None` = 规则不参与。
     pub egress: Option<std::sync::Arc<crate::rule_route::EgressRouter>>,
@@ -2155,6 +2160,12 @@ fn spec_with_browser_ua_and_referrer(spec: &RequestSpec, url: &str) -> RequestSp
 fn fill_inferred_referrer(s: &mut RequestSpec, url: &str) {
     if !s.pins.referrer
         && s.referrer.is_empty()
+        && !s.site_request_headers.as_ref().is_some_and(|rules| {
+            reqwest::Url::parse(url)
+                .ok()
+                .and_then(|url| rules.headers_for(&url))
+                .is_some_and(|headers| headers.contains_key(reqwest::header::REFERER))
+        })
         && let Some(ref_url) = infer_origin_referrer(url)
     {
         s.referrer = ref_url;

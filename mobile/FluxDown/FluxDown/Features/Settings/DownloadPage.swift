@@ -71,8 +71,12 @@ struct DownloadPage: View {
                 Section(L(SettingsDownloadSection.retry.titleKey)) { retryRows(ctx) }
                     .disabled(readOnly)
             }
-            if !SettingsDownloadRow.visible(in: .advanced, ctx).isEmpty {
+            if SettingsDownloadRow.userAgent.isVisible(in: ctx) {
                 Section(L(SettingsDownloadSection.advanced.titleKey)) { advancedRows(ctx) }
+                    .disabled(readOnly)
+            }
+            if SettingsDownloadRow.siteRequestHeaders.isVisible(in: ctx) {
+                SiteRequestHeadersSection(raw: ctx.form.value(SettingsDownloadRow.siteRequestHeaders.configKey))
                     .disabled(readOnly)
             }
             CategoriesSection(editing: $categoryTarget, readOnly: readOnly)

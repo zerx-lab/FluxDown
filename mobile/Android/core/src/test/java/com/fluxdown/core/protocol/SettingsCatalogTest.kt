@@ -20,6 +20,15 @@ class SettingsCatalogTest {
     }
 
     @Test
+    fun siteRequestHeadersAreDeviceLocalDaemonText() {
+        val key = "site_request_headers"
+        val wire = """[{"origin":"https://files.example.net","headers":{"X-Test":"one:  two"}}]"""
+        assertEquals("", SettingsCatalog.defaultWire(key))
+        assertFalse(SettingsCatalog.isSynced(key))
+        assertEquals(wire, ok(key, wire))
+    }
+
+    @Test
     fun btGuardKeysMirrorContract() {
         val guard = SettingsCatalog.daemonFields.filter { it.key.startsWith("bt_guard_") }
         // 21 个 daemon 键：20 个同步 + 设备本地上报开关

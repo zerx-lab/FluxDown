@@ -190,6 +190,11 @@ private val DlRows: List<DlRow> = listOf(
     DlRow("download.autoRetryDelay", "auto_retry_delay_secs", DlSection.Retry, R.string.autoRetryDelay, R.string.autoRetryDelayDesc),
     DlRow("download.autoResumeOnStart", "auto_resume_on_start", DlSection.Retry, R.string.autoResumeOnStart, R.string.autoResumeOnStartDesc),
     DlRow("download.userAgent", "global_user_agent", DlSection.Advanced, R.string.userAgent, R.string.userAgentDesc),
+    DlRow(
+        SITE_REQUEST_HEADERS_ROW, SITE_REQUEST_HEADERS_KEY, DlSection.Advanced,
+        R.string.siteRequestHeadersTitle, R.string.siteRequestHeadersDesc,
+        visible = { f, _ -> SITE_REQUEST_HEADERS_KEY in f.host },
+    ),
 )
 
 private fun visibleDlRows(form: SettingsForm, isLocalHost: Boolean): List<DlRow> =
@@ -242,6 +247,7 @@ internal fun DownloadPage() {
     var connClearing by remember { mutableStateOf(false) }
 
     val ctx = rememberSettingsCtx { picker = it }
+    var siteHeaderTarget by remember(hostRef.id) { mutableStateOf<SiteHeaderTarget?>(null) }
     val gate = rememberFlowInGate()
     val animateSize = Modifier.animateContentSize(motion.of(motion.fluid))
     val readOnly = ctx.readOnly
@@ -436,7 +442,16 @@ internal fun DownloadPage() {
                                 onClearPolicy = onClearConnPolicy,
                             )
                             DlSection.Retry -> retryRows(ctx, shown)
-                            DlSection.Advanced -> advancedRows(ctx, shown, uaForceCustom) { uaForceCustom = it }
+                            DlSection.Advanced -> {
+                                advancedRows(ctx, shown, uaForceCustom) { uaForceCustom = it }
+                                if (SITE_REQUEST_HEADERS_ROW in shown) {
+                                    siteRequestHeadersRows(ctx) { rule ->
+                                        if (container.host.value.id == hostRef.id) {
+                                            siteHeaderTarget = SiteHeaderTarget(rule, container.session)
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -444,6 +459,11 @@ internal fun DownloadPage() {
         }
         PickerSheetHost(picker = picker, onDismiss = { picker = null })
         NicHelpSheet(visible = showNicHelp, onDismiss = { showNicHelp = false })
+        if (SITE_REQUEST_HEADERS_ROW in shown) {
+            siteHeaderTarget?.let { target ->
+                FluxPortal { SiteHeaderSheet(target, readOnly, onDismiss = { siteHeaderTarget = null }) }
+            }
+        }
         RemoteDirectoryPickerSheet(
             visible = showRemotePicker,
             startPath = ctx.form.string("default_save_dir"),

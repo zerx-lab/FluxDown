@@ -3277,6 +3277,11 @@ async fn patch_config(
     {
         return Err(ActorError::InvalidArgument(first.message()));
     }
+    let site_request_headers = values
+        .get(fluxdown_engine::site_request_headers::KEY)
+        .map(|raw| fluxdown_engine::site_request_headers::SiteRequestHeaders::parse(raw))
+        .transpose()
+        .map_err(ActorError::InvalidArgument)?;
     for (key, value) in &values {
         if fluxdown_engine::protocol_proxy::is_key(key) {
             fluxdown_engine::protocol_proxy::validate(key, value)
@@ -3307,6 +3312,9 @@ async fn patch_config(
             }
             other => ActorError::Operation(format!("{other:#}")),
         })?;
+    if let Some(rules) = site_request_headers {
+        engine.manager.set_site_request_headers(rules);
+    }
     // DB 与 revision 已提交：即便在线应用失败，也必须广播已提交快照，
     // 否则事件快照与 DB revision 分叉，后续 patch 会一直冲突。
     let applied = apply_live_config(engine, &merged, values.keys()).await;

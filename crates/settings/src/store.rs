@@ -667,6 +667,10 @@ impl SettingsStore {
 
     // ───────────────────────── daemon 配置 ─────────────────────────
 
+    pub(crate) fn daemon_value(&self, key: &str) -> Option<&str> {
+        self.daemon.values.get(key).map(String::as_str)
+    }
+
     /// daemon 原始字符串值；缺省取协议目录默认值。
     #[must_use]
     pub fn daemon_str(&self, key: &str) -> String {
