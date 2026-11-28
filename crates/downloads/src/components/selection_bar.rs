@@ -625,7 +625,7 @@ impl DownloadView {
         actions.push(self.icon_action(
             "download-selection-copy-info",
             copy_label,
-            Icon::new(FluxIcon::Copy).size(icon_size),
+            Icon::new(FluxIcon::ClipboardList).size(icon_size),
             false,
             Self::copy_selected_task_info,
             cx,
@@ -639,7 +639,7 @@ impl DownloadView {
         actions.push(self.icon_action(
             "download-selection-export-info",
             export_label,
-            Icon::new(FluxIcon::FileText).size(icon_size),
+            Icon::new(FluxIcon::FileDown).size(icon_size),
             false,
             Self::export_selected_task_info,
             cx,
