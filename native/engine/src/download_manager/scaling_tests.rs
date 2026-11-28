@@ -156,6 +156,7 @@ fn occupy(manager: &mut DownloadManager, id: &str, queue_id: &str) {
             handle: None,
             is_bt: false,
             queue_id: queue_id.to_string(),
+            site_user_agent_rules: None,
         },
     );
 }

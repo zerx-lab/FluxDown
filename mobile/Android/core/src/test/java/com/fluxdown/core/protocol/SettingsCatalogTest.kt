@@ -20,6 +20,18 @@ class SettingsCatalogTest {
     }
 
     @Test
+    fun siteUserAgentRulesStayOnTheSelectedHost() {
+        val key = "site_user_agent_rules"
+        val rules = """[{"domain":"example.com","includeSubdomains":false,"userAgent":"Example UA"}]"""
+        assertEquals("", SettingsCatalog.defaultWire(key))
+        assertFalse(SettingsCatalog.isSynced(key))
+        val plan = (SettingsWritePlan.make(mapOf(key to rules)) as SettingsWritePlan.Result.Ok).plan
+        assertEquals(mapOf(key to rules), plan.daemon)
+        assertTrue(plan.syncedPreferences.isEmpty())
+        assertTrue(plan.localPreferences.isEmpty())
+    }
+
+    @Test
     fun btGuardKeysMirrorContract() {
         val guard = SettingsCatalog.daemonFields.filter { it.key.startsWith("bt_guard_") }
         // 21 个 daemon 键：20 个同步 + 设备本地上报开关

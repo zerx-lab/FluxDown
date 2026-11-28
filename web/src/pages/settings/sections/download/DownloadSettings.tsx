@@ -32,7 +32,7 @@ import {
 import { CATEGORY_SAVE_DIR_HISTORY_PREF, SAVE_DIR_HISTORY_ENABLED_PREF, SAVE_DIR_HISTORY_PREF, readCategorySaveDirHistory, readSaveDirHistory } from '../../../../lib/saveDirHistory'
 import { RateLimitRow } from './RateLimitField'
 import { DirPickerDialog } from './DirPickerDialog'
-import { UserAgentRow } from './UserAgentField'
+import { SiteUserAgentRulesRow, UserAgentRow } from './UserAgentField'
 import { AutoCountRow } from './AutoCountRow'
 import { RetentionRow } from './RetentionRow'
 import { CategoriesGroup } from './CategoriesGroup'
@@ -74,6 +74,7 @@ export function DownloadSettings() {
       content: (
         <SettingsSection title={t('settingsGroupAdvanced')}>
           <UserAgentRow />
+          <SiteUserAgentRulesRow />
           <Aria2OptionsEditor />
         </SettingsSection>
       ),

@@ -75,6 +75,12 @@ struct DownloadPage: View {
                 Section(L(SettingsDownloadSection.advanced.titleKey)) { advancedRows(ctx) }
                     .disabled(readOnly)
             }
+            if SettingsDownloadRow.siteUserAgentRules.isVisible(in: ctx) {
+                SiteUserAgentRulesRows(
+                    presets: uaPresets.map { .init(id: $0.ua, label: L($0.labelKey)) }
+                )
+                .id(container.host.id)
+            }
             CategoriesSection(editing: $categoryTarget, readOnly: readOnly)
         }
         .fluxAnimation(.smooth, value: ctx.form)

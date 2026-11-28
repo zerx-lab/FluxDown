@@ -498,6 +498,9 @@ mod tests {
         // 生产的起飞 client 在竞速前就已构建。用同一装配路径初始化共享根证书库，
         // 不把 nextest 独立进程首次读取系统证书的时间算进错峰断言。
         params.client = crate::downloader::build_client(&params.proxy_config, "")?;
+        // 生产选起飞路径时已读取路由先验。测试直接组装 AutoProxyCtx，
+        // 也在计时前填充网络快照，避免首次同步探测系统代理占用竞速时间。
+        let _ = crate::route_health::path_prior(host, RoutePath::Direct);
         params.auto_proxy = Some(Arc::new(AutoProxyCtx {
             host: host.to_string(),
             user_agent: String::new(),

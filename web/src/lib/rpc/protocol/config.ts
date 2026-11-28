@@ -271,6 +271,7 @@ export const DAEMON_CONFIG_FIELDS: readonly DaemonConfigField[] = [
   bool('hash_after_download', 'false'),
   oneOf('hash_algorithm', 'sha256', HASH_ALGORITHMS),
   text('global_user_agent'),
+  text('site_user_agent_rules'),
   text('default_queue_id'),
   readOnly('domain_conn_caps'),
   // BT

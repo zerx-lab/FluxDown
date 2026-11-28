@@ -264,7 +264,7 @@ nonisolated enum SettingsDownloadRow: String, CaseIterable, Identifiable {
     case defaultSegments, autoMaxConnections, cdnMulti, cdnMaxNodes, multiNic, maxConcurrent
     case speedLimit, uploadLimit
     case autoRetryCount, autoRetryDelay, autoResumeOnStart
-    case userAgent
+    case userAgent, siteUserAgentRules
 
     var id: String { "download.\(rawValue)" }
 
@@ -276,7 +276,7 @@ nonisolated enum SettingsDownloadRow: String, CaseIterable, Identifiable {
         case .defaultSegments, .autoMaxConnections, .cdnMulti, .cdnMaxNodes, .multiNic, .maxConcurrent,
              .speedLimit, .uploadLimit: .connection
         case .autoRetryCount, .autoRetryDelay, .autoResumeOnStart: .retry
-        case .userAgent: .advanced
+        case .userAgent, .siteUserAgentRules: .advanced
         }
     }
 
@@ -307,6 +307,7 @@ nonisolated enum SettingsDownloadRow: String, CaseIterable, Identifiable {
         case .autoRetryDelay: "auto_retry_delay_secs"
         case .autoResumeOnStart: "auto_resume_on_start"
         case .userAgent: "global_user_agent"
+        case .siteUserAgentRules: "site_user_agent_rules"
         }
     }
 
@@ -336,6 +337,7 @@ nonisolated enum SettingsDownloadRow: String, CaseIterable, Identifiable {
         case .autoRetryDelay: "autoRetryDelay"
         case .autoResumeOnStart: "autoResumeOnStart"
         case .userAgent: "userAgent"
+        case .siteUserAgentRules: "siteUserAgentRules"
         }
     }
 
@@ -365,6 +367,7 @@ nonisolated enum SettingsDownloadRow: String, CaseIterable, Identifiable {
         case .autoRetryDelay: "autoRetryDelayDesc"
         case .autoResumeOnStart: "autoResumeOnStartDesc"
         case .userAgent: "userAgentDesc"
+        case .siteUserAgentRules: "siteUserAgentRulesDesc"
         }
     }
 
@@ -394,6 +397,38 @@ nonisolated enum SettingsDownloadRow: String, CaseIterable, Identifiable {
 
     static func visible(in group: SettingsDownloadSection, _ ctx: SettingsDownloadContext) -> [SettingsDownloadRow] {
         allCases.filter { $0.group == group && $0.isVisible(in: ctx) }
+    }
+}
+
+nonisolated struct SiteUserAgentRule: Codable, Equatable {
+    var domain = ""
+    var includeSubdomains = false
+    var userAgent = ""
+
+    static let maxCount = 200
+
+    static func decodeList(_ raw: String) throws -> [Self] {
+        if raw.isEmpty { return [] }
+        return try ProtocolJSON.makeDecoder().decode([Self].self, from: Data(raw.utf8))
+    }
+
+    static func encodeList(_ rules: [Self]) throws -> String {
+        String(decoding: try ProtocolJSON.makeEncoder().encode(rules), as: UTF8.self)
+    }
+
+    @MainActor
+    static func replaceList(_ rules: [Self], replacing raw: String, on port: any DaemonConfigPort) async throws(HostError) {
+        let key = SettingsDownloadRow.siteUserAgentRules.configKey
+        guard let config = port.cachedConfig else { throw HostError(.unavailable) }
+        guard (config.values[key] ?? "") == raw else { throw HostError(.conflict) }
+        let wire: String
+        do {
+            wire = try encodeList(rules)
+        } catch {
+            throw HostError(.invalidArgument)
+        }
+        // A positional edit cannot be replayed against a different list.
+        try await port.patchConfig(expectedRevision: config.revision, values: [key: wire])
     }
 }
 

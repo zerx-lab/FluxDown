@@ -699,6 +699,7 @@ async fn checksum_worker_timeout_keeps_candidate_and_foreign_partial() {
         fx.mgr.active_tasks.insert(
             id.clone(),
             ActiveTaskEntry {
+                site_user_agent_rules: None,
                 hls_discard: None,
                 token: CancellationToken::new(),
                 generation: 1,
@@ -772,6 +773,7 @@ async fn delete_timeout_keeps_owned_partial_and_record_until_worker_exits() {
         fx.mgr.active_tasks.insert(
             id.clone(),
             ActiveTaskEntry {
+                site_user_agent_rules: None,
                 hls_discard: None,
                 token: CancellationToken::new(),
                 generation: 1,
@@ -903,6 +905,7 @@ async fn hls_retry_finalizes_after_delete_timeout_and_stale_done() {
         fx.mgr.active_tasks.insert(
             id.clone(),
             ActiveTaskEntry {
+                site_user_agent_rules: None,
                 token: CancellationToken::new(),
                 hls_discard: Some(discard.clone()),
                 generation,
@@ -1003,6 +1006,7 @@ async fn check_cancelled_hls_stop(delete: bool) {
     fx.mgr.active_tasks.insert(
         id.clone(),
         ActiveTaskEntry {
+            site_user_agent_rules: None,
             token: stop,
             hls_discard: Some(discard.clone()),
             generation: 1,
@@ -1120,6 +1124,7 @@ async fn check_delete_retry(batch: bool, worker_exits: bool) {
     fx.mgr.active_tasks.insert(
         id.clone(),
         ActiveTaskEntry {
+            site_user_agent_rules: None,
             hls_discard: None,
             token: token.clone(),
             generation: 1,
@@ -1403,6 +1408,7 @@ async fn batch_delete_uses_the_name_claimed_when_the_worker_exits() {
     fx.mgr.active_tasks.insert(
         id.clone(),
         ActiveTaskEntry {
+            site_user_agent_rules: None,
             hls_discard: None,
             token,
             generation: 1,

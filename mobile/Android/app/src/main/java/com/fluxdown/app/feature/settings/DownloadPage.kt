@@ -13,6 +13,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -190,6 +191,10 @@ private val DlRows: List<DlRow> = listOf(
     DlRow("download.autoRetryDelay", "auto_retry_delay_secs", DlSection.Retry, R.string.autoRetryDelay, R.string.autoRetryDelayDesc),
     DlRow("download.autoResumeOnStart", "auto_resume_on_start", DlSection.Retry, R.string.autoResumeOnStart, R.string.autoResumeOnStartDesc),
     DlRow("download.userAgent", "global_user_agent", DlSection.Advanced, R.string.userAgent, R.string.userAgentDesc),
+    DlRow(
+        "download.siteUserAgentRules", SITE_USER_AGENT_RULES_KEY, DlSection.Advanced,
+        R.string.siteUserAgentRules, R.string.siteUserAgentRulesDesc,
+    ),
 )
 
 private fun visibleDlRows(form: SettingsForm, isLocalHost: Boolean): List<DlRow> =
@@ -235,6 +240,7 @@ internal fun DownloadPage() {
     var picker by remember { mutableStateOf<PickerSpec?>(null) }
     var showNicHelp by remember { mutableStateOf(false) }
     var showRemotePicker by remember { mutableStateOf(false) }
+    var showSiteUserAgentRules by remember(hostRef) { mutableStateOf(false) }
     var uaForceCustom by rememberSaveable { mutableStateOf(false) }
     var retentionForceCustom by rememberSaveable { mutableStateOf(false) }
     var connCount by remember { mutableStateOf<Long?>(null) }
@@ -436,13 +442,40 @@ internal fun DownloadPage() {
                                 onClearPolicy = onClearConnPolicy,
                             )
                             DlSection.Retry -> retryRows(ctx, shown)
-                            DlSection.Advanced -> advancedRows(ctx, shown, uaForceCustom) { uaForceCustom = it }
+                            DlSection.Advanced -> {
+                                if ("download.userAgent" in shown) {
+                                    advancedRows(ctx, uaForceCustom) { uaForceCustom = it }
+                                }
+                                if ("download.siteUserAgentRules" in shown) {
+                                    row {
+                                        SettingRowBox(ctx, "download.siteUserAgentRules", SITE_USER_AGENT_RULES_KEY) {
+                                            FluxListRow(
+                                                title = str(R.string.siteUserAgentRules),
+                                                subtitle = str(R.string.siteUserAgentRulesDesc),
+                                                chevron = true,
+                                                enabled = !ctx.readOnly,
+                                                onClick = { showSiteUserAgentRules = true },
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
         }
         PickerSheetHost(picker = picker, onDismiss = { picker = null })
+        if (ctx.form.has(SITE_USER_AGENT_RULES_KEY)) {
+            key(hostRef) {
+                SiteUserAgentRulesSheet(
+                    ctx = ctx,
+                    visible = showSiteUserAgentRules,
+                    presets = UaPresets.map { SelectOption(it.ua, str(it.label)) },
+                    onDismiss = { showSiteUserAgentRules = false },
+                )
+            }
+        }
         NicHelpSheet(visible = showNicHelp, onDismiss = { showNicHelp = false })
         RemoteDirectoryPickerSheet(
             visible = showRemotePicker,
@@ -813,11 +846,9 @@ private fun GlassSectionScope.retryRows(ctx: SettingsCtx, shown: Set<String>) {
 
 private fun GlassSectionScope.advancedRows(
     ctx: SettingsCtx,
-    shown: Set<String>,
     uaForceCustom: Boolean,
     setUaForceCustom: (Boolean) -> Unit,
 ) {
-    if ("download.userAgent" !in shown) return
     val key = "global_user_agent"
     val current = ctx.form.string(key)
     val matched = UaPresets.firstOrNull { it.ua == current }?.id ?: if (current.isEmpty()) UA_DEFAULT else UA_CUSTOM
