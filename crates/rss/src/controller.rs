@@ -473,7 +473,11 @@ impl RssController {
                 None if self.tasks_loading => "rssTaskLoading",
                 None => "rssTaskMissing",
             },
-            2 => "rssStatusIgnored",
+            2 => match item.reason.as_str() {
+                "duplicate_torrent" => "rssStatusDuplicateTorrent",
+                "task_removed" => "rssStatusTaskRemoved",
+                _ => "rssStatusIgnored",
+            },
             3 => "rssStatusFiltered",
             4 => "rssStatusDuplicate",
             5 => "rssStatusHistory",

@@ -97,6 +97,8 @@ export function itemStatusKey(item: RssItemDto, tasks: LinkedTaskStates): string
       }
     }
     case RSS_ITEM_STATUS.ignored:
+      if (item.reason === 'duplicate_torrent') return 'rssStatusDuplicateTorrent'
+      if (item.reason === 'task_removed') return 'rssStatusTaskRemoved'
       return 'rssStatusIgnored'
     case RSS_ITEM_STATUS.filtered:
       return 'rssStatusFiltered'

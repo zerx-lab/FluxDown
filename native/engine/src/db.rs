@@ -20,6 +20,8 @@ pub use bt_guard::{
     BtGuardEventQuery, BtGuardEventRow, BtGuardLedgerRow, BtGuardPrune, BtGuardStrikeRow,
 };
 
+const RSS_TASK_REMOVED: &str = "task_removed";
+
 #[derive(Error, Debug)]
 pub enum DbError {
     #[error("database error: {0}")]
@@ -3375,6 +3377,23 @@ impl Db {
 
     /// 删除任务及其 RSS 回链，返回状态/回链实际改变的订阅源 ID（去重）。
     pub async fn delete_task(&self, id: &str) -> Result<Vec<String>, DbError> {
+        self.delete_task_with_rss_reason(id, RSS_TASK_REMOVED).await
+    }
+
+    #[cfg(feature = "bt")]
+    pub(crate) async fn delete_duplicate_torrent_task(
+        &self,
+        id: &str,
+    ) -> Result<Vec<String>, DbError> {
+        self.delete_task_with_rss_reason(id, "duplicate_torrent")
+            .await
+    }
+
+    async fn delete_task_with_rss_reason(
+        &self,
+        id: &str,
+        reason: &str,
+    ) -> Result<Vec<String>, DbError> {
         // RAII 事务：任何 `?` 提前返回时 Drop 自动 ROLLBACK，不会泄漏事务。
         let mut tx = self.pool.begin().await?;
         sqlx::query("DELETE FROM task_segments WHERE task_id = $1")
@@ -3403,10 +3422,13 @@ impl Db {
         // 已下载条目变为已读，而非 New：否则下一轮抓取会自动重新派发。
         // 已忽略/过滤等状态原样保留，只清除无效任务回链；与任务删除同事务。
         let mut affected_sources: Vec<String> = sqlx::query_scalar(
-            "UPDATE rss_items SET status = CASE WHEN status = $1 THEN $2 ELSE status END, task_id = '' WHERE task_id = $3 RETURNING source_id",
+            "UPDATE rss_items SET status = CASE WHEN status = $1 THEN $2 ELSE status END, \
+             reason = CASE WHEN status = $1 THEN $3 ELSE reason END, \
+             task_id = '' WHERE task_id = $4 RETURNING source_id",
         )
         .bind(RssItemStatus::Downloaded.as_i32())
         .bind(RssItemStatus::Ignored.as_i32())
+        .bind(reason)
         .bind(id)
         .fetch_all(&mut *tx)
         .await?;
@@ -3469,7 +3491,9 @@ impl Db {
                 query.execute(&mut *tx).await?;
             }
             let rss_sql = format!(
-                "UPDATE rss_items SET status = CASE WHEN status = {downloaded} THEN {ignored} ELSE status END, task_id = '' WHERE task_id IN ({placeholders}) RETURNING source_id",
+                "UPDATE rss_items SET status = CASE WHEN status = {downloaded} THEN {ignored} ELSE status END, \
+                 reason = CASE WHEN status = {downloaded} THEN '{RSS_TASK_REMOVED}' ELSE reason END, \
+                 task_id = '' WHERE task_id IN ({placeholders}) RETURNING source_id",
                 downloaded = RssItemStatus::Downloaded.as_i32(),
                 ignored = RssItemStatus::Ignored.as_i32(),
             );
