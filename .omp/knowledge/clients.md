@@ -160,6 +160,7 @@ PC 与 Web SPA 都消费 agent 的 `AgentSnapshot.cloud_connection` / `CloudConn
 - 会话操作：`agent.assistant.renameSession`（1–80 字符）、`sessions` 的 `query`（云端 `q`，标题与未替换消息内容）、`exportSession`（云端生成 Markdown / JSON，UI 只保存）、`attachment`（`AssistantMessageDto.images` 是**附件 ID**，经它取 data URL 并按 ID 缓存，不得直接当 `<img src>`）。重新生成 / 编辑重发 = `ask` 带 `replaceFrom`（user 消息 ID）+ 可选 `keepImages`：云端把该消息起的后续消息写 `ai_messages.superseded_at`，对用户、模型、搜索、导出、评价都不可见（后台可见并标注）。
 - 历史消息：中断的回答以 `assistant` + `interrupted=true` 落库（可评价，Error 事件带 `messageId`）；工具调用前的中间说明落库为 role `assistant_step`，UI 归入「过程」、不可评价；用户侧会话详情的 `tool_result` 截断到 4000 字符。已落库（带 `messageId`）执行的投影不带工具 `arguments`，实时卡片缺参数时隐藏参数区。
 - 确认卡片：agent 挂起确认时调 `ClientTools::preview` 生成 `AssistantToolCallDto.preview`（`action` 固定集合 → `assistantPreviewAction*`、任务名、设置旧值 → 新值、地址、是否删文件）与 `destructive`（危险样式），生成失败回退原始参数。已批准的写操作被停止时 daemon 请求在后台跑完，调用标 `interrupted`（「结果未知」）而非普通失败。确认截止时刻是 agent 主机时钟，UI 用 `AssistantStateDto.nowUnixMs` 换算偏差（无执行时为 0 = 无偏差）。面板收起 / 停在历史视图时有待确认调用，入口显示角标（GPUI shell `ShellAction::indicator`、Web `ActivityItem`）。GPUI 面板开关快捷键 `toggle_assistant`（⌘⇧A / Ctrl+Shift+A，`native/protocol/src/shortcuts.rs`）。
+- 单会话提问上限：FluxCloud 套餐能力 `aiSessionMessages`（默认 10，0 = 不限；计法同每日额度、不分日期，重新生成 / 编辑重发也计）。`AssistantConfigDto.sessionLimit` + 会话详情 `questionsUsed` 决定 UI：达上限时输入区换成「开始新对话」提示卡并隐藏该会话的重新生成 / 编辑重发，剩余 1–3 次时显示剩余数；提问被拒为 `ErrorReason::AssistantSessionLimit`（云端 403 `ai_session_limit`）。客户端不自行累加计数（分诊直接回复不计），一律以详情的 `questionsUsed` 为准。GPUI / Web / 官网三端同口径。
 
 ## 历史数据与主题兼容
 
