@@ -122,12 +122,34 @@ impl ActivityEntry {
     }
 }
 
-/// 设置页「活动栏」分区的开关行，与活动栏同序。
-pub(crate) fn toggles() -> Vec<ActivityBarToggle> {
+/// 设置页「活动栏」分区的开关行，与活动栏同序；云端未开放助手入口时不含助手开关。
+pub(crate) fn toggles(cx: &App) -> Vec<ActivityBarToggle> {
+    let assistant_visible = Desktop::global(cx).assistant_visible;
     ActivityEntry::ALL
         .into_iter()
+        .filter(|entry| *entry != ActivityEntry::Assistant || assistant_visible)
         .filter_map(ActivityEntry::toggle)
         .collect()
+}
+
+/// 云端入口可见性 → 主窗口状态栏按钮（与偏好取与）；变为不可见时收起已打开的助手面板。
+/// 命令面板与设置页在构建时读 [`Desktop::assistant_visible`]。
+pub(crate) fn set_assistant_visible(cx: &mut App, visible: bool) {
+    let desktop = Desktop::global_mut(cx);
+    if desktop.assistant_visible == visible {
+        return;
+    }
+    desktop.assistant_visible = visible;
+    let Some(shell) = desktop.main_shell.as_ref().and_then(WeakEntity::upgrade) else {
+        return;
+    };
+    let preferences = Desktop::preferences(cx).clone();
+    shell.update(cx, |shell, cx| {
+        apply_visibility(shell, &preferences, cx);
+        if !visible {
+            shell.set_side_panel_open(false, cx);
+        }
+    });
 }
 
 /// 偏好 → 活动栏可选入口可见性；幂等，窗口创建与每次偏好快照/事件都走这里。
@@ -136,6 +158,7 @@ pub(crate) fn apply_visibility(
     preferences: &BTreeMap<String, serde_json::Value>,
     cx: &mut Context<ShellView>,
 ) {
+    let assistant_visible = Desktop::global(cx).assistant_visible;
     for entry in ActivityEntry::ALL {
         let Some(toggle) = entry.toggle() else {
             continue;
@@ -143,7 +166,8 @@ pub(crate) fn apply_visibility(
         let visible = preferences
             .get(toggle.pref_key)
             .and_then(serde_json::Value::as_bool)
-            .unwrap_or(true);
+            .unwrap_or(true)
+            && (entry != ActivityEntry::Assistant || assistant_visible);
         shell.set_entry_visible(entry.button_id(), visible, cx);
     }
 }
@@ -162,6 +186,9 @@ pub(crate) fn open_account(cx: &mut App) {
 
 /// 状态栏 AI 助手按钮之外的入口（命令面板）：主窗口到前台并开关右侧 AI 助手面板。
 pub(crate) fn toggle_assistant(cx: &mut App) {
+    if !Desktop::global(cx).assistant_visible {
+        return;
+    }
     cx.defer(|cx| {
         crate::windows::main::reveal(cx);
         if let Some(shell) = Desktop::global(cx)
@@ -176,6 +203,9 @@ pub(crate) fn toggle_assistant(cx: &mut App) {
 
 /// 命令面板「问 AI 助手」：主窗口到前台、打开右侧 AI 助手面板，开新对话发出这段问题。
 pub(crate) fn ask_assistant(cx: &mut App, query: String) {
+    if !Desktop::global(cx).assistant_visible {
+        return;
+    }
     cx.defer(move |cx| {
         crate::windows::main::reveal(cx);
         let desktop = Desktop::global(cx);

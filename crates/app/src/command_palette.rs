@@ -83,11 +83,8 @@ fn build_config(translator: &Translator, cx: &mut App) -> PaletteConfig {
 
     let usage = UsageStats::from_value(Desktop::preferences(cx).get(USAGE_PREF_KEY));
     let ask_translator = translator.clone();
-    PaletteConfig {
-        items,
-        usage,
-        on_usage: Rc::new(|usage, cx| Desktop::set_pref(cx, USAGE_PREF_KEY, usage.to_value())),
-        query_action: Some(PaletteQueryAction::new(
+    let query_action = Desktop::global(cx).assistant_visible.then(|| {
+        PaletteQueryAction::new(
             Icon::new(FluxIcon::Sparkles),
             move |query| {
                 SharedString::from(
@@ -95,7 +92,13 @@ fn build_config(translator: &Translator, cx: &mut App) -> PaletteConfig {
                 )
             },
             |query, _, cx| crate::activity::ask_assistant(cx, query),
-        )),
+        )
+    });
+    PaletteConfig {
+        items,
+        usage,
+        on_usage: Rc::new(|usage, cx| Desktop::set_pref(cx, USAGE_PREF_KEY, usage.to_value())),
+        query_action,
     }
 }
 
@@ -294,12 +297,16 @@ fn commands(labels: &Labels, cx: &App) -> Vec<PaletteItem> {
                     .keywords([page.to_owned()]),
                 );
             }
-            ActivityEntry::Assistant => items.push(labels.command(
-                "cmd.toggle_assistant",
-                "assistantPanelToggle",
-                FluxIcon::Sparkles,
-                |_, cx| crate::activity::toggle_assistant(cx),
-            )),
+            ActivityEntry::Assistant => {
+                if Desktop::global(cx).assistant_visible {
+                    items.push(labels.command(
+                        "cmd.toggle_assistant",
+                        "assistantPanelToggle",
+                        FluxIcon::Sparkles,
+                        |_, cx| crate::activity::toggle_assistant(cx),
+                    ));
+                }
+            }
             ActivityEntry::Account => items.push(labels.command(
                 "cmd.open_account",
                 label_key,
@@ -367,7 +374,7 @@ fn settings_items(labels: &Labels, cx: &mut App) -> Vec<PaletteItem> {
     let entries = search_index(
         &translator,
         &store,
-        &crate::activity::toggles(),
+        &crate::activity::toggles(cx),
         referral_visible,
         cx,
     );

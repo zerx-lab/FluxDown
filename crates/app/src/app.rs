@@ -85,6 +85,9 @@ pub(crate) struct Desktop {
     pub main_shell: Option<WeakEntity<ShellView>>,
     /// 主窗口右侧面板里的 AI 助手（主窗口关闭后失效）：命令面板「问 AI 助手」据此提问。
     pub main_assistant: Option<WeakEntity<fluxdown_ui_assistant::AssistantView>>,
+    /// 云端开放了 AI 助手入口（`AgentSnapshot.assistant.visible`）：为 false 时状态栏按钮、命令面板
+    /// 与设置页的助手开关一律隐藏。变化只经 [`crate::activity::set_assistant_visible`] 写入。
+    pub assistant_visible: bool,
     /// 设置窗口内的设置页（窗口关闭后失效）：命令面板据此定位设置项。
     pub settings_view: Option<WeakEntity<SettingsView>>,
     /// 最新运行时统计（关窗 / 退出提示用）。
@@ -286,6 +289,7 @@ pub(crate) fn run() -> Result<RunOutcome, AppError> {
             main_downloads: None,
             main_shell: None,
             main_assistant: None,
+            assistant_visible: false,
             settings_view: None,
             runtime_stats: DaemonRuntimeStatsDto::default(),
             shell: ShellStatusDto::default(),
@@ -304,14 +308,19 @@ pub(crate) fn run() -> Result<RunOutcome, AppError> {
                 if let Some(body) = crate::session::agent_body(snapshot) {
                     let stats = body.daemon.runtime_stats.clone();
                     let shell = body.shell.clone();
+                    let assistant_visible = body.assistant.visible;
                     let desktop = Desktop::global_mut(cx);
                     desktop.runtime_stats = stats;
                     desktop.shell = shell;
+                    crate::activity::set_assistant_visible(cx, assistant_visible);
                 }
             }
             SessionSignal::Event(frame) => match &frame.event {
                 ServiceEvent::Agent(AgentEvent::ShellChanged(shell)) => {
                     Desktop::global_mut(cx).shell = shell.clone();
+                }
+                ServiceEvent::Agent(AgentEvent::AssistantChanged(state)) => {
+                    crate::activity::set_assistant_visible(cx, state.visible);
                 }
                 ServiceEvent::Agent(AgentEvent::Daemon(DaemonEvent::RuntimeStatsChanged(
                     stats,

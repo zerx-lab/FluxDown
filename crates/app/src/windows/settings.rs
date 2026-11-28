@@ -55,7 +55,7 @@ pub fn open(cx: &mut App) {
                         view: referral.clone().into(),
                         visible: referral_visibility,
                     }),
-                    activity_bar: crate::activity::toggles(),
+                    activity_bar: crate::activity::toggles(cx),
                     // 点击发生在设置窗口的 update 栈内；开 / 置前更新窗口延后到栈外。
                     open_update_prompt: Some(Rc::new(|cx: &mut App| {
                         cx.defer(crate::windows::update_prompt::open);
