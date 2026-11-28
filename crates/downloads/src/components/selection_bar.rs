@@ -420,7 +420,7 @@ impl DownloadView {
             .into_any_element()
     }
 
-    /// 删除入口：普通删除、删除文件，以及只清理选区内的无效任务。
+    /// 删除入口：普通删除、删除文件，以及只清理选区内的无效 / 暂停或失败任务。
     fn selection_delete_menu(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = active_theme(cx);
         let tokens = theme.tokens();
@@ -429,12 +429,17 @@ impl DownloadView {
         let icon_size = theme.extended().icon.md;
         let delete_task = self.strings.delete_task.clone();
         let delete_with_files = self.strings.delete_task_and_file.clone();
-        let clean_stale_tasks = SharedString::from(
-            self.translator
-                .read(cx)
-                .text(TaskCleanup::InvalidSelection.label())
-                .to_owned(),
-        );
+        let translator = self.translator.read(cx);
+        let cleanups = [
+            TaskCleanup::InvalidSelection,
+            TaskCleanup::UnfinishedSelection,
+        ]
+        .map(|scope| {
+            (
+                scope,
+                SharedString::from(translator.text(scope.label()).to_owned()),
+            )
+        });
         let view = cx.weak_entity();
         div()
             .flex_none()
@@ -450,67 +455,64 @@ impl DownloadView {
                             .text_color(destructive),
                     )
                     .dropdown_menu_with_anchor(Anchor::TopLeft, move |menu, _, cx| {
-                        let cleanup_disabled = view.upgrade().is_none_or(|view| {
-                            let this = view.read(cx);
-                            !this.has_cleanup_targets(TaskCleanup::InvalidSelection, cx)
-                        });
-                        menu.item(
-                            PopupMenuItem::element({
-                                let label = delete_task.clone();
-                                move |_, _| div().text_color(destructive).child(label.clone())
-                            })
-                            .icon(Icon::new(FluxIcon::Trash2).text_color(destructive))
-                            .on_click({
-                                let view = view.clone();
-                                move |_, window, cx| {
-                                    let Ok(()) = view.update(cx, |this, cx| {
-                                        this.confirm_delete_selected(false, window, cx);
-                                    }) else {
-                                        // 视图已释放，结束这次回调而不再更新状态。
-                                        return;
-                                    };
-                                }
-                            }),
-                        )
-                        .item(
-                            PopupMenuItem::element({
-                                let label = delete_with_files.clone();
-                                move |_, _| div().text_color(destructive).child(label.clone())
-                            })
-                            .icon(Icon::new(FluxIcon::Trash2).text_color(destructive))
-                            .on_click({
-                                let view = view.clone();
-                                move |_, window, cx| {
-                                    let Ok(()) = view.update(cx, |this, cx| {
-                                        this.confirm_delete_selected(true, window, cx);
-                                    }) else {
-                                        // 视图已释放，结束这次回调而不再更新状态。
-                                        return;
-                                    };
-                                }
-                            }),
-                        )
-                        .separator()
-                        .item(
-                            PopupMenuItem::new(clean_stale_tasks.clone())
-                                .icon(FluxIcon::Trash2)
-                                .disabled(cleanup_disabled)
+                        let menu = menu
+                            .item(
+                                PopupMenuItem::element({
+                                    let label = delete_task.clone();
+                                    move |_, _| div().text_color(destructive).child(label.clone())
+                                })
+                                .icon(Icon::new(FluxIcon::Trash2).text_color(destructive))
                                 .on_click({
                                     let view = view.clone();
                                     move |_, window, cx| {
                                         let Ok(()) = view.update(cx, |this, cx| {
-                                            this.confirm_task_cleanup(
-                                                TaskCleanup::InvalidSelection,
-                                                window,
-                                                cx,
-                                            );
+                                            this.confirm_delete_selected(false, window, cx);
                                         }) else {
-                                            // 视图已释放，不再发起清理。
+                                            // 视图已释放，结束这次回调而不再更新状态。
                                             return;
                                         };
                                     }
                                 }),
-                        )
+                            )
+                            .item(
+                                PopupMenuItem::element({
+                                    let label = delete_with_files.clone();
+                                    move |_, _| div().text_color(destructive).child(label.clone())
+                                })
+                                .icon(Icon::new(FluxIcon::Trash2).text_color(destructive))
+                                .on_click({
+                                    let view = view.clone();
+                                    move |_, window, cx| {
+                                        let Ok(()) = view.update(cx, |this, cx| {
+                                            this.confirm_delete_selected(true, window, cx);
+                                        }) else {
+                                            // 视图已释放，结束这次回调而不再更新状态。
+                                            return;
+                                        };
+                                    }
+                                }),
+                            )
+                            .separator();
+                        cleanups.iter().fold(menu, |menu, (scope, label)| {
+                            let scope = *scope;
+                            let disabled = view
+                                .upgrade()
+                                .is_none_or(|view| !view.read(cx).has_cleanup_targets(scope, cx));
+                            let view = view.clone();
+                            menu.item(
+                                PopupMenuItem::new(label.clone())
+                                    .icon(FluxIcon::Trash2)
+                                    .disabled(disabled)
+                                    .on_click(move |_, window, cx| {
+                                        let Ok(()) = view.update(cx, |this, cx| {
+                                            this.confirm_task_cleanup(scope, window, cx);
+                                        }) else {
+                                            // 视图已释放，不再发起清理。
+                                            return;
+                                        };
+                                    }),
+                            )
+                        })
                     }),
             )
             .into_any_element()

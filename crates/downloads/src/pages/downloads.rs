@@ -2120,6 +2120,24 @@ impl DownloadView {
         });
     }
 
+    fn on_clean_stale_selected(
+        &mut self,
+        _: &crate::actions::CleanStaleSelected,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.confirm_task_cleanup(TaskCleanup::InvalidSelection, window, cx);
+    }
+
+    fn on_clean_unfinished_selected(
+        &mut self,
+        _: &crate::actions::CleanUnfinishedSelected,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.confirm_task_cleanup(TaskCleanup::UnfinishedSelection, window, cx);
+    }
+
     fn on_delete_selected_with_files(
         &mut self,
         _: &DeleteSelectedWithFiles,
@@ -2809,6 +2827,8 @@ impl Render for DownloadView {
             .on_action(cx.listener(Self::on_export_torrent_selected))
             .on_action(cx.listener(Self::on_redownload_selected))
             .on_action(cx.listener(Self::on_clear_selected_task_file))
+            .on_action(cx.listener(Self::on_clean_stale_selected))
+            .on_action(cx.listener(Self::on_clean_unfinished_selected))
             .on_action(cx.listener(Self::on_toggle_boost_selected))
             .on_action(cx.listener(Self::on_cycle_density))
             .on_action(cx.listener(Self::on_cycle_group_by))

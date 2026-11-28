@@ -16,6 +16,10 @@ actions!(
         DeleteSelected,
         DeleteSelectedWithFiles,
         ClearSelectedTaskFile,
+        /// 清理选中的无效任务（失败或文件已丢失；右键「清理无效任务」）。
+        CleanStaleSelected,
+        /// 清理选中的暂停 / 失败本机任务及其残片（右键「清理所选的暂停或失败任务」）。
+        CleanUnfinishedSelected,
         SelectAllTasks,
         /// 以当前选区进入显式多选模式（右键「选择」）。
         EnterMultiSelect,

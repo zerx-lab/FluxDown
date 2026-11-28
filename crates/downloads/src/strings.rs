@@ -41,6 +41,8 @@ pub(crate) struct DownloadStrings {
     pub(crate) delete_task: SharedString,
     pub(crate) delete_task_and_file: SharedString,
     pub(crate) clear_task_file: SharedString,
+    pub(crate) clean_stale_tasks: SharedString,
+    pub(crate) clean_unfinished_selection: SharedString,
     pub(crate) clear_task_file_confirmation: SharedString,
     delete_confirm_with_file: SharedString,
     delete_confirm_keep_file: SharedString,
@@ -280,6 +282,8 @@ impl DownloadStrings {
             delete_task: shared(translator.text("deleteTask")),
             delete_task_and_file: shared(translator.text("deleteTaskAndFile")),
             clear_task_file: shared(translator.text("clearTaskFile")),
+            clean_stale_tasks: shared(translator.text("cleanStaleTasks")),
+            clean_unfinished_selection: shared(translator.text("cleanUnfinishedSelection")),
             clear_task_file_confirmation: shared(
                 translator.text("clearTaskFileConfirmWithBrowserNotice"),
             ),
