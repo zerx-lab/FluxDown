@@ -104,6 +104,8 @@ export type ErrorReason =
   | 'referralAlreadyUsed'
   | 'referralPlanExcluded'
   | 'referralCodeTaken'
+  | 'assistantQuotaExceeded'
+  | 'assistantConfirmExpired'
   | 'subscriptionConflict'
   | 'unknown';
 

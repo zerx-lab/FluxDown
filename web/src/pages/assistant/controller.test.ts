@@ -1,6 +1,11 @@
 import { describe, expect, test } from 'bun:test'
 import { RpcError } from '../../lib/rpc/error'
 import type {
+  AssistantAttachmentParams,
+  AssistantAttachmentResult,
+  AssistantExportParams,
+  AssistantExportResult,
+  AssistantRenameParams,
   AssistantAskParams,
   AssistantConfigDto,
   AssistantIssueDto,
@@ -123,6 +128,9 @@ class FakePort implements AssistantPort {
     rate: [] as Deferred<{ ok: true }>[],
     confirmIssue: [] as Deferred<AssistantIssueDto>[],
     discardIssue: [] as Deferred<{ ok: true }>[],
+    renameSession: [] as Deferred<AssistantSessionDto>[],
+    exportSession: [] as Deferred<AssistantExportResult>[],
+    attachment: [] as Deferred<AssistantAttachmentResult>[],
   }
 
   private enqueue<K extends keyof FakePort['pending'], T>(method: K, params: unknown): Promise<T> {
@@ -152,6 +160,9 @@ class FakePort implements AssistantPort {
   rate = (params: AssistantRateParams) => this.enqueue<'rate', { ok: true }>('rate', params)
   confirmIssue = (params: AssistantIssueParams) => this.enqueue<'confirmIssue', AssistantIssueDto>('confirmIssue', params)
   discardIssue = (params: AssistantIssueParams) => this.enqueue<'discardIssue', { ok: true }>('discardIssue', params)
+  renameSession = (params: AssistantRenameParams) => this.enqueue<'renameSession', AssistantSessionDto>('renameSession', params)
+  exportSession = (params: AssistantExportParams) => this.enqueue<'exportSession', AssistantExportResult>('exportSession', params)
+  attachment = (params: AssistantAttachmentParams) => this.enqueue<'attachment', AssistantAttachmentResult>('attachment', params)
 }
 
 const env = (extra: Partial<AssistantEnv> = {}): AssistantEnv => ({ state: state(), signedIn: true, stale: false, locale: 'zh-CN', ...extra })
@@ -193,12 +204,12 @@ describe('loading', () => {
     controller.ensureLoaded()
     expect(port.count('get')).toBe(1)
     expect(port.count('sessions')).toBe(1)
-    expect(port.last('sessions')).toEqual({ limit: SESSION_PAGE_SIZE, offset: 0 })
+    expect(port.last('sessions')).toEqual({ limit: SESSION_PAGE_SIZE, offset: 0, query: null })
     expect(view().sessions.load).toBe('loading')
 
     settle(port.pending.sessions, page([session('a'), session('b')], 5))
     await flush()
-    expect(view().sessions).toEqual({ items: [session('a'), session('b')], total: 5, load: 'ready', moreLoading: false })
+    expect(view().sessions).toEqual({ items: [session('a'), session('b')], total: 5, load: 'ready', moreLoading: false, query: '' })
   })
 
   test('nothing loads while signed out or disconnected', () => {
@@ -241,7 +252,7 @@ describe('loading', () => {
     settle(port.pending.sessions, page(Array.from({ length: 45 }, (_, index) => session(`s${index}`)), 60))
     await flush()
     controller.reloadSessions()
-    expect(port.last('sessions')).toEqual({ limit: 45, offset: 0 })
+    expect(port.last('sessions')).toEqual({ limit: 45, offset: 0, query: null })
   })
 
   test('only the newest session list response counts', async () => {
@@ -265,7 +276,7 @@ describe('loading', () => {
     controller.loadMoreSessions()
     controller.loadMoreSessions()
     expect(port.count('sessions')).toBe(2)
-    expect(port.last('sessions')).toEqual({ limit: SESSION_PAGE_SIZE, offset: 2 })
+    expect(port.last('sessions')).toEqual({ limit: SESSION_PAGE_SIZE, offset: 2, query: null })
     settle(port.pending.sessions, page([session('b'), session('c')], 4))
     await flush()
     expect(view().sessions.items.map((item) => item.id)).toEqual(['a', 'b', 'c'])
@@ -521,7 +532,8 @@ describe('send', () => {
       [rpcError('conflict'), 'busy'],
       [rpcError('invalidArgument'), 'rejected'],
       [rpcError('unavailable'), 'unavailable'],
-      [rpcError('internal', 'rateLimited'), 'quotaExceeded'],
+      [rpcError('internal', 'assistantQuotaExceeded'), 'quotaExceeded'],
+      [rpcError('internal', 'rateLimited'), 'rateLimited'],
       [new RpcError({ code: -32001, message: 'closed' }), 'failed'],
     ]
     for (const [error, expected] of cases) {
@@ -536,7 +548,7 @@ describe('send', () => {
 
   test('a quota or availability failure refreshes the configuration', async () => {
     for (const [error, expectedFailure] of [
-      [rpcError('internal', 'rateLimited'), 'quotaExceeded'],
+      [rpcError('internal', 'assistantQuotaExceeded'), 'quotaExceeded'],
       [rpcError('unsupported'), 'notOpen'],
     ] as const) {
       const { port, controller, view } = setup()
@@ -551,6 +563,14 @@ describe('send', () => {
     port.pending.ask[0]?.reject(rpcError('conflict'))
     await result
     expect(port.count('refresh')).toBe(0)
+
+    // 限频只是稍后再试：不重新取配置。
+    const limited = setup()
+    const limitedResult = limited.controller.send('x', [])
+    limited.port.pending.ask[0]?.reject(rpcError('internal', 'rateLimited'))
+    await limitedResult
+    expect(limited.view().sendFailure).toBe('rateLimited')
+    expect(limited.port.count('refresh')).toBe(0)
   })
 
   test('the next attempt clears the previous failure', async () => {
@@ -587,7 +607,7 @@ describe('stop', () => {
     settle(port.pending.cancel, { ok: true })
     await flush()
     expect(view().cancelling).toBe(false)
-    expect(view().actionFailed).toBe(false)
+    expect(view().actionFailure).toBeNull()
   })
 
   test('does nothing without a running answer in the open conversation', () => {
@@ -604,7 +624,7 @@ describe('stop', () => {
     port.pending.cancel[0]?.reject(rpcError('unavailable'))
     await flush()
     expect(view().cancelling).toBe(false)
-    expect(view().actionFailed).toBe(true)
+    expect(view().actionFailure).toBe('failed')
   })
 })
 
@@ -651,11 +671,20 @@ describe('tool confirmation', () => {
     port.pending.confirm[0]?.reject(rpcError('unavailable'))
     await flush()
     expect(view().confirming.has('r1')).toBe(false)
-    expect(view().actionFailed).toBe(true)
+    expect(view().actionFailure).toBe('failed')
     // 可以重试。
     controller.confirmTool('r1', true)
     expect(port.count('confirm')).toBe(2)
-    expect(view().actionFailed).toBe(false)
+    expect(view().actionFailure).toBeNull()
+  })
+
+  test('an expired approval window is reported on its own', async () => {
+    const { port, controller, view } = setup({ state: withPending('r1') })
+    controller.confirmTool('r1', true)
+    port.pending.confirm[0]?.reject(rpcError('conflict', 'assistantConfirmExpired'))
+    await flush()
+    expect(view().confirming.has('r1')).toBe(false)
+    expect(view().actionFailure).toBe('confirmExpired')
   })
 
   test('refused while disconnected', () => {
@@ -709,7 +738,23 @@ describe('rating', () => {
     await flush()
     expect(view().ratingOverrides.has('m1')).toBe(false)
     expect(view().ratingBusy.has('m1')).toBe(false)
-    expect(view().actionFailed).toBe(true)
+    expect(view().actionFailure).toBe('failed')
+  })
+
+  test('the new rating shows at once and a failure rolls back to the earlier local rating', async () => {
+    const { port, controller, view } = setup()
+    controller.selectSession('a')
+    controller.rate('m1', null, 'up')
+    expect(view().ratingOverrides.get('m1')).toBe('up')
+    settle(port.pending.rate, { ok: true })
+    await flush()
+
+    controller.rate('m1', 'up', 'down')
+    expect(view().ratingOverrides.get('m1')).toBe('down')
+    port.pending.rate[0]?.reject(rpcError('unavailable'))
+    await flush()
+    expect(view().ratingOverrides.get('m1')).toBe('up')
+    expect(view().actionFailure).toBe('failed')
   })
 
   test('needs a saved conversation and a connection', () => {
@@ -779,7 +824,7 @@ describe('issues', () => {
     port.pending.confirmIssue[0]?.reject(rpcError('unavailable'))
     await flush()
     expect(view().issueBusy.has('i1')).toBe(false)
-    expect(view().actionFailed).toBe(true)
+    expect(view().actionFailure).toBe('failed')
     expect(view().issueOverrides.size).toBe(0)
   })
 
@@ -863,7 +908,7 @@ describe('delete', () => {
     port.pending.deleteSession[0]?.reject(rpcError('unavailable'))
     await flush()
     expect(view().sessions.items).toHaveLength(1)
-    expect(view().actionFailed).toBe(true)
+    expect(view().actionFailure).toBe('failed')
   })
 
   test('refused while disconnected', () => {
@@ -911,7 +956,7 @@ describe('clear all', () => {
     expect(view().sessions.items).toEqual([])
     expect(view().sessions.total).toBe(0)
     expect(view().sessions.load).toBe('ready')
-    expect(view().actionFailed).toBe(false)
+    expect(view().actionFailure).toBeNull()
   })
 
   test('returns the open conversation to a new chat and drops in-flight responses', async () => {
@@ -953,7 +998,7 @@ describe('clear all', () => {
     expect(view().clearing).toBe(false)
     expect(view().sessions.items).toHaveLength(1)
     expect(view().current).toBe('a')
-    expect(view().actionFailed).toBe(true)
+    expect(view().actionFailure).toBe('failed')
   })
 
   test('refused while disconnected', () => {
@@ -1004,5 +1049,238 @@ describe('view toggles', () => {
     off()
     controller.toggleArguments('c1')
     expect(notified).toBe(1)
+  })
+})
+
+describe('regenerate / edit and resend', () => {
+  const history = () => [message('m1', 1, 'user'), message('m2', 2, 'assistant'), message('m3', 3, 'user'), message('m4', 4, 'assistant')]
+
+  test('replaceFrom goes on the wire and the replaced history is cut once the answer is accepted', async () => {
+    const { port, controller, view } = setup()
+    controller.selectSession('a')
+    settle(port.pending.session, { session: session('a'), messages: history() })
+    await flush()
+    const result = controller.regenerate('m3', 'again', true)
+    expect(port.last('ask')).toMatchObject({ sessionId: 'a', text: 'again', images: [], replaceFrom: 'm3', keepImages: true })
+    // 回包前历史原样保留。
+    expect(view().detail.messages).toHaveLength(4)
+    settle(port.pending.ask, { sessionId: 'a' })
+    expect(await result).toBe(true)
+    expect(view().detail.messages.map((item) => item.id)).toEqual(['m1', 'm2'])
+  })
+
+  test('a plain question carries no replaceFrom / keepImages', () => {
+    const { port, controller } = setup()
+    void controller.send('x', [])
+    expect('replaceFrom' in (port.last('ask') as object)).toBe(false)
+    expect('keepImages' in (port.last('ask') as object)).toBe(false)
+  })
+
+  test('a failed resend keeps the history', async () => {
+    const { port, controller, view } = setup()
+    controller.selectSession('a')
+    settle(port.pending.session, { session: session('a'), messages: history() })
+    await flush()
+    const result = controller.send('edited', [], { replaceFrom: 'm1' })
+    port.pending.ask[0]?.reject(rpcError('conflict'))
+    expect(await result).toBe(false)
+    expect(view().detail.messages).toHaveLength(4)
+    expect(view().sendFailure).toBe('busy')
+  })
+})
+
+describe('send switching race', () => {
+  test('selecting another conversation while the question is in flight keeps that selection', async () => {
+    const { port, controller, view } = setup()
+    const result = controller.send('hello', [])
+    controller.selectSession('other')
+    settle(port.pending.ask, { sessionId: 'new' })
+    expect(await result).toBe(true)
+    expect(view().current).toBe('other')
+    expect(view().sending).toBe(false)
+    // 列表仍会刷新，新会话出现在列表里。
+    expect(port.count('sessions')).toBe(1)
+  })
+
+  test('a new chat started while the question is in flight is not overwritten', async () => {
+    const { port, controller, view } = setup()
+    controller.selectSession('a')
+    settle(port.pending.session, { session: session('a'), messages: [message('m1', 1, 'user')] })
+    await flush()
+    const result = controller.send('hello', [])
+    controller.newChat()
+    settle(port.pending.ask, { sessionId: 'a' })
+    expect(await result).toBe(true)
+    expect(view().current).toBeNull()
+    expect(view().sent).toBeNull()
+  })
+
+  test('a resend whose position was left keeps the shown history', async () => {
+    const { port, controller, view } = setup()
+    controller.selectSession('a')
+    settle(port.pending.session, { session: session('a'), messages: [message('m1', 1, 'user'), message('m2', 2, 'assistant')] })
+    await flush()
+    const result = controller.send('edited', [], { replaceFrom: 'm1' })
+    controller.selectSession('b')
+    settle(port.pending.ask, { sessionId: 'a' })
+    expect(await result).toBe(true)
+    expect(view().current).toBe('b')
+    expect(view().detail.messages).toEqual([])
+  })
+})
+
+describe('rename', () => {
+  test('the trimmed title goes out and both the list and the open conversation follow', async () => {
+    const { port, controller, view } = setup()
+    controller.reloadSessions()
+    settle(port.pending.sessions, page([session('a'), session('b')]))
+    await flush()
+    controller.selectSession('a')
+    settle(port.pending.session, { session: session('a'), messages: [] })
+    await flush()
+
+    const result = controller.renameSession('a', '  new title  ')
+    expect(port.last('renameSession')).toEqual({ sessionId: 'a', title: 'new title' })
+    settle(port.pending.renameSession, session('a', { title: 'new title' }))
+    expect(await result).toBe(true)
+    expect(view().sessions.items.map((item) => item.title)).toEqual(['new title', 'title b'])
+    expect(view().detail.session?.title).toBe('new title')
+  })
+
+  test('blank, over-long and offline renames never reach the port', async () => {
+    const { port, controller } = setup()
+    expect(await controller.renameSession('a', '   ')).toBe(false)
+    expect(await controller.renameSession('a', 'x'.repeat(81))).toBe(false)
+    expect(port.count('renameSession')).toBe(0)
+    const stale = setup({ stale: true })
+    expect(await stale.controller.renameSession('a', 'ok')).toBe(false)
+    expect(stale.port.count('renameSession')).toBe(0)
+  })
+
+  test('a failure keeps the old title and reports', async () => {
+    const { port, controller, view } = setup()
+    controller.reloadSessions()
+    settle(port.pending.sessions, page([session('a')]))
+    await flush()
+    const result = controller.renameSession('a', 'new')
+    port.pending.renameSession[0]?.reject(rpcError('unavailable'))
+    expect(await result).toBe(false)
+    expect(view().sessions.items[0]?.title).toBe('title a')
+    expect(view().actionFailure).toBe('failed')
+  })
+})
+
+describe('export', () => {
+  const file: AssistantExportResult = { fileName: 'chat.md', mime: 'text/markdown', content: '# x' }
+
+  test('returns the cloud file and refuses a second export while one is running', async () => {
+    const { port, controller, view } = setup()
+    const result = controller.exportSession('a', 'markdown')
+    expect(view().exporting).toBe('a')
+    expect(port.last('exportSession')).toEqual({ sessionId: 'a', format: 'markdown' })
+    expect(await controller.exportSession('a', 'json')).toBeNull()
+    expect(port.count('exportSession')).toBe(1)
+    settle(port.pending.exportSession, file)
+    expect(await result).toEqual(file)
+    expect(view().exporting).toBeNull()
+    expect(view().actionFailure).toBeNull()
+  })
+
+  test('a failure reports and releases the button', async () => {
+    const { port, controller, view } = setup()
+    const result = controller.exportSession('a', 'json')
+    port.pending.exportSession[0]?.reject(rpcError('unavailable'))
+    expect(await result).toBeNull()
+    expect(view().exporting).toBeNull()
+    expect(view().actionFailure).toBe('failed')
+  })
+
+  test('refused while disconnected', async () => {
+    const { port, controller } = setup({ stale: true })
+    expect(await controller.exportSession('a', 'json')).toBeNull()
+    expect(port.count('exportSession')).toBe(0)
+  })
+})
+
+describe('history images', () => {
+  const dataUrl = 'data:image/png;base64,AA=='
+
+  test('an attachment is fetched once per id', async () => {
+    const { port, controller } = setup()
+    const first = controller.attachment('att1')
+    const again = controller.attachment('att1')
+    expect(port.count('attachment')).toBe(1)
+    expect(port.last('attachment')).toEqual({ attachmentId: 'att1' })
+    settle(port.pending.attachment, { dataUrl })
+    expect(await first).toBe(dataUrl)
+    expect(await again).toBe(dataUrl)
+    expect(await controller.attachment('att1')).toBe(dataUrl)
+    expect(port.count('attachment')).toBe(1)
+  })
+
+  test('a failed fetch is not cached', async () => {
+    const { port, controller } = setup()
+    const failing = controller.attachment('att1')
+    port.pending.attachment[0]?.reject(rpcError('unavailable'))
+    expect(await failing.then(() => 'ok', () => 'rejected')).toBe('rejected')
+    void controller.attachment('att1').catch(() => undefined)
+    expect(port.count('attachment')).toBe(2)
+  })
+
+  test('signing out drops the cache', async () => {
+    const { port, controller } = setup()
+    const first = controller.attachment('att1')
+    settle(port.pending.attachment, { dataUrl })
+    await first
+    controller.sync(env({ signedIn: false, state: state() }))
+    controller.sync(env({ signedIn: true, state: state() }))
+    void controller.attachment('att1')
+    expect(port.count('attachment')).toBe(2)
+  })
+})
+
+describe('search', () => {
+  test('a query restarts the list from the first page; the same or a blank query behaves', async () => {
+    const { port, controller, view } = setup()
+    controller.reloadSessions()
+    settle(port.pending.sessions, page([session('a')], 1))
+    await flush()
+
+    controller.setQuery('  proxy ')
+    expect(view().sessions).toMatchObject({ items: [], load: 'loading', query: 'proxy' })
+    expect(port.last('sessions')).toEqual({ limit: SESSION_PAGE_SIZE, offset: 0, query: 'proxy' })
+    settle(port.pending.sessions, page([session('hit')], 1))
+    await flush()
+    expect(view().sessions.items.map((item) => item.id)).toEqual(['hit'])
+    expect(view().sessions.load).toBe('ready')
+
+    const requests = port.count('sessions')
+    controller.setQuery('proxy')
+    expect(port.count('sessions')).toBe(requests)
+
+    controller.setQuery('   ')
+    expect(view().sessions.query).toBe('')
+    expect(port.last('sessions')).toEqual({ limit: SESSION_PAGE_SIZE, offset: 0, query: null })
+  })
+
+  test('load more keeps the query and an older response of the previous query is dropped', async () => {
+    const { port, controller, view } = setup()
+    controller.setQuery('a')
+    settle(port.pending.sessions, page([session('a1'), session('a2')], 4))
+    await flush()
+    controller.loadMoreSessions()
+    expect(port.last('sessions')).toEqual({ limit: SESSION_PAGE_SIZE, offset: 2, query: 'a' })
+    settle(port.pending.sessions, page([session('a3')], 4))
+    await flush()
+    expect(view().sessions.items.map((item) => item.id)).toEqual(['a1', 'a2', 'a3'])
+
+    controller.setQuery('b')
+    controller.setQuery('c')
+    settle(port.pending.sessions, page([session('stale-b')]))
+    await flush()
+    expect(view().sessions.load).toBe('loading')
+    settle(port.pending.sessions, page([session('c1')]))
+    await flush()
+    expect(view().sessions.items.map((item) => item.id)).toEqual(['c1'])
   })
 })

@@ -1,11 +1,12 @@
 // 「执行过程」折叠区、工具调用行与确认卡片（GPUI `render_steps` / `render_tool` / `render_confirm`）。
 // 工具名、参数 JSON、输出预览都是模型 / 用户数据：单行摘要截断，展开后的 JSON 在块内横向滚动，不撑破版面。
 
-import { ChevronDown, ChevronRight, CircleAlert, CircleCheck, Clock, Globe, Pen, X } from 'lucide-react'
+import { ChevronDown, ChevronRight, CircleAlert, CircleCheck, CircleHelp, Clock, Globe, Pen, Trash2, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
+import type { ReactNode } from 'react'
 import { useT } from '../../i18n'
 import { cn } from '../../lib/cn'
-import type { AssistantToolCallDto } from '../../lib/rpc'
+import type { AssistantToolCallDto, AssistantToolPreviewDto } from '../../lib/rpc'
 import { Badge, Button, Icon, Spinner } from '../../ui'
 import type { AssistantController, ViewState } from './controller'
 import {
@@ -15,6 +16,7 @@ import {
   formatCountdown,
   formatDuration,
   formatToolOutput,
+  previewActionKey,
   remainingSeconds,
   stepsOpen,
   toolCount,
@@ -38,11 +40,81 @@ export function ResultLabel({ icon, text, tone }: { icon: LucideIcon; text: stri
   )
 }
 
-function ConfirmCard({ call, confirmation, view, controller }: { call: AssistantToolCallDto; confirmation: ConfirmView } & Shared) {
+/** 可读预览（agent 用本机数据生成）：动作、受影响任务、设置变更、地址与补充说明；全部是数据，按文本节点输出。 */
+function PreviewBlock({ preview }: { preview: AssistantToolPreviewDto }) {
+  const t = useT()
+  const actionKey = previewActionKey(preview.action)
+  const tasks = preview.tasks ?? []
+  const settings = preview.settings ?? []
+  const urls = preview.urls ?? []
+  const details = preview.details ?? []
+  const moreTasks = preview.moreTasks ?? 0
+  return (
+    <div className="flex min-w-0 flex-col gap-2 rounded-sm bg-muted p-2">
+      <div className="text-sm font-medium break-words text-foreground">{actionKey === null ? preview.action : t(actionKey)}</div>
+      {preview.deleteFiles === true ? <ResultLabel icon={Trash2} text={t('assistantPreviewDeleteFiles')} tone="text-destructive" /> : null}
+      {tasks.length > 0 ? (
+        <PreviewList title={t('assistantPreviewTasks')}>
+          {tasks.map((task, index) => (
+            <li key={`${index}:${task}`} className="break-all">
+              {task}
+            </li>
+          ))}
+          {moreTasks > 0 ? <li className="list-none text-text-tertiary">{t('assistantPreviewMoreTasks', { n: moreTasks })}</li> : null}
+        </PreviewList>
+      ) : null}
+      {settings.length > 0 ? (
+        <PreviewList title={t('assistantPreviewSettings')}>
+          {settings.map((change, index) => (
+            <li key={`${index}:${change.key}`} className="break-all">
+              <span className="font-mono">{change.key}</span>
+              {': '}
+              {change.from !== undefined && change.from !== null ? <span className="text-text-tertiary line-through">{change.from}</span> : null}
+              {change.from !== undefined && change.from !== null ? ' → ' : null}
+              <span className="font-medium">{change.to}</span>
+            </li>
+          ))}
+        </PreviewList>
+      ) : null}
+      {urls.length > 0 ? (
+        <PreviewList title={t('assistantPreviewUrls')}>
+          {urls.map((url, index) => (
+            <li key={`${index}:${url}`} className="font-mono break-all">
+              {url}
+            </li>
+          ))}
+        </PreviewList>
+      ) : null}
+      {details.map((line, index) => (
+        <div key={`${index}:${line}`} className="text-xs break-all whitespace-pre-wrap text-muted-foreground">
+          {line}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function PreviewList({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="flex min-w-0 flex-col gap-0.5">
+      <div className="text-xs font-medium text-text-tertiary">{title}</div>
+      <ul className="ml-4 flex list-disc flex-col gap-0.5 text-xs text-foreground">{children}</ul>
+    </div>
+  )
+}
+
+function ConfirmCard({
+  call,
+  rowKey,
+  confirmation,
+  view,
+  controller,
+}: { call: AssistantToolCallDto; rowKey: string; confirmation: ConfirmView } & Shared) {
   const t = useT()
   const requestId = call.requestId ?? null
   const busy = requestId !== null && view.confirming.has(requestId)
   const enabled = confirmation.kind === 'pending' && !view.env.stale && !busy && requestId !== null
+  const destructive = call.destructive === true
 
   let status = null
   switch (confirmation.kind) {
@@ -71,15 +143,22 @@ function ConfirmCard({ call, confirmation, view, controller }: { call: Assistant
       : call.effect === 'write'
         ? { icon: Pen, key: 'assistantEffectWrite' }
         : null
-  const summary = argumentsSummary(call.arguments)
-  const argsOpen = view.argsOpen.has(call.callId)
+  const preview = call.preview ?? null
+  const summary = preview === null ? argumentsSummary(call.arguments) : null
+  const argsKey = `args:${rowKey}`
+  const argsOpen = view.argsOpen.has(argsKey)
   const hasArguments = call.arguments !== undefined && call.arguments !== null
 
   return (
-    <div className="flex w-full min-w-0 flex-col gap-3 rounded-[var(--fx-components-card-radius)] border border-warning/50 bg-surface p-3">
+    <div
+      className={cn(
+        'flex w-full min-w-0 flex-col gap-3 rounded-[var(--fx-components-card-radius)] border bg-surface p-3',
+        destructive ? 'border-destructive/60' : 'border-warning/50',
+      )}
+    >
       <div className="flex min-w-0 flex-col gap-2">
         <div className="flex flex-wrap items-center gap-1.5">
-          <Icon icon={CircleAlert} size="sm" className="text-warning" />
+          <Icon icon={CircleAlert} size="sm" className={destructive ? 'text-destructive' : 'text-warning'} />
           <span className="text-sm font-medium text-foreground">{t('assistantConfirmTitle')}</span>
           {effect ? (
             <Badge>
@@ -91,6 +170,8 @@ function ConfirmCard({ call, confirmation, view, controller }: { call: Assistant
           ) : null}
         </div>
         <div className="font-mono text-sm break-all text-foreground">{call.name}</div>
+        {destructive ? <div className="text-xs font-medium text-destructive">{t('assistantConfirmDestructive')}</div> : null}
+        {preview !== null ? <PreviewBlock preview={preview} /> : null}
         {summary !== null ? (
           <div className={cn('font-mono text-xs text-text-tertiary', argsOpen ? 'break-all whitespace-pre-wrap' : 'truncate')} title={argsOpen ? undefined : summary}>
             {summary}
@@ -101,7 +182,7 @@ function ConfirmCard({ call, confirmation, view, controller }: { call: Assistant
             <button
               type="button"
               aria-expanded={argsOpen}
-              onClick={() => controller.toggleArguments(call.callId)}
+              onClick={() => controller.toggleArguments(argsKey)}
               className="flex w-fit items-center gap-1 text-xs text-accent-text coarse:min-h-touch"
             >
               <Icon icon={argsOpen ? ChevronDown : ChevronRight} size="sm" />
@@ -120,7 +201,7 @@ function ConfirmCard({ call, confirmation, view, controller }: { call: Assistant
         <Button variant="outline" disabled={!enabled} onClick={() => requestId !== null && controller.confirmTool(requestId, false)}>
           {t('assistantDeny')}
         </Button>
-        <Button variant="primary" loading={busy} disabled={!enabled} onClick={() => requestId !== null && controller.confirmTool(requestId, true)}>
+        <Button variant={destructive ? 'danger' : 'primary'} loading={busy} disabled={!enabled} onClick={() => requestId !== null && controller.confirmTool(requestId, true)}>
           {t('assistantAllow')}
         </Button>
       </div>
@@ -143,6 +224,8 @@ function toolPresentation(state: ToolState, confirmation: ConfirmView | null): {
       return { labelKey: 'assistantToolFailed', tone: 'text-destructive', icon: CircleAlert }
     case 'interrupted':
       return { labelKey: 'assistantToolInterrupted', tone: 'text-warning', icon: CircleAlert }
+    case 'unknown':
+      return { labelKey: 'assistantToolResultUnknown', tone: 'text-warning', icon: CircleHelp }
   }
 }
 
@@ -155,16 +238,21 @@ function DetailSection({ title, text }: { title: string; text: string }) {
   )
 }
 
-function ToolRow({ call, runActive, view, controller, now }: { call: AssistantToolCallDto; runActive: boolean } & Shared) {
+function ToolRow({ call, rowKey, runActive, view, controller, now }: { call: AssistantToolCallDto; rowKey: string; runActive: boolean } & Shared) {
   const t = useT()
   const state = toolState(call, runActive)
   const confirmation = confirmView(call, runActive, now)
   const client = call.kind === 'client'
   const { labelKey, tone, icon } = toolPresentation(state, confirmation)
-  const detailKey = `detail:${call.callId}`
-  const detailArguments = client && call.arguments !== undefined && call.arguments !== null && argumentsSummary(call.arguments) !== null ? argumentsPretty(call.arguments) : null
-  const detailOutput = client && call.outputPreview && call.outputPreview.trim() !== '' ? formatToolOutput(call.outputPreview) : null
-  const expandable = confirmation === null && (detailArguments !== null || detailOutput !== null)
+  const detailKey = `detail:${rowKey}`
+  // 需要确认的工具，参数已在确认卡片里；批准后的执行结果仍可在卡片下方展开。
+  const detailArguments =
+    confirmation === null && client && call.arguments !== undefined && call.arguments !== null && argumentsSummary(call.arguments) !== null
+      ? argumentsPretty(call.arguments)
+      : null
+  const showsOutput = confirmation === null || confirmation.kind === 'approved'
+  const detailOutput = showsOutput && client && call.outputPreview && call.outputPreview.trim() !== '' ? formatToolOutput(call.outputPreview) : null
+  const expandable = detailArguments !== null || detailOutput !== null
   const open = expandable && view.argsOpen.has(detailKey)
 
   const header = (
@@ -181,6 +269,7 @@ function ToolRow({ call, runActive, view, controller, now }: { call: AssistantTo
 
   return (
     <div className="flex w-full min-w-0 flex-col gap-1">
+      {confirmation !== null ? <ConfirmCard call={call} rowKey={rowKey} confirmation={confirmation} view={view} controller={controller} now={now} /> : null}
       {expandable ? (
         <button
           type="button"
@@ -202,7 +291,6 @@ function ToolRow({ call, runActive, view, controller, now }: { call: AssistantTo
           {detailOutput !== null ? <DetailSection title={t('assistantToolOutput')} text={detailOutput} /> : null}
         </div>
       ) : null}
-      {confirmation !== null ? <ConfirmCard call={call} confirmation={confirmation} view={view} controller={controller} now={now} /> : null}
     </div>
   )
 }
@@ -238,7 +326,9 @@ export function Steps({ turn, view, controller, now }: { turn: Turn } & Shared) 
             }
             // 问题单草稿在 `Turn.issues` 单独渲染，不进过程列表。
             if (block.type === 'tool') {
-              return <ToolRow key={block.call.callId} call={block.call} runActive={running} view={view} controller={controller} now={now} />
+              // 历史里没有 `toolCallId` 的工具 ID 可能为空 / 重复：键与展开状态都带上位置。
+              const rowKey = `${turn.key}:${index}:${block.call.callId}`
+              return <ToolRow key={rowKey} call={block.call} rowKey={rowKey} runActive={running} view={view} controller={controller} now={now} />
             }
             return null
           })}

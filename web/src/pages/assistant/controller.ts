@@ -7,12 +7,18 @@ import { EMPTY_ASSISTANT_STATE, isAssistantRunActive } from '../../lib/rpc/proto
 import type {
   AssistantAskParams,
   AssistantAskResult,
+  AssistantAttachmentParams,
+  AssistantAttachmentResult,
   AssistantClearedSessions,
   AssistantConfirmParams,
+  AssistantExportFormat,
+  AssistantExportParams,
+  AssistantExportResult,
   AssistantIssueDto,
   AssistantIssueParams,
   AssistantMessageDto,
   AssistantRateParams,
+  AssistantRenameParams,
   AssistantRunDto,
   AssistantSessionDetail,
   AssistantSessionDto,
@@ -24,8 +30,25 @@ import type {
   OkResult,
   RpcErrorData,
 } from '../../lib/rpc/protocol'
-import { SESSION_PAGE_SIZE, appendSessions, classifySendError, currentKind, currentRun, currentSession, finishedSessions, findIssue, gate, pendingRequestIds } from './model'
-import type { SendFailure } from './model'
+import {
+  SESSION_PAGE_SIZE,
+  appendSessions,
+  classifyConfirmError,
+  classifySendError,
+  currentKind,
+  currentRun,
+  currentSession,
+  finishedSessions,
+  findIssue,
+  gate,
+  pendingRequestIds,
+  validTitle,
+  withoutReplaced,
+} from './model'
+import type { ActionFailure, SendFailure, SentImages } from './model'
+
+/** 历史图片缓存的条数上限（每张是一份 data URL，超出按最早取用的先丢）。 */
+const ATTACHMENT_CACHE_LIMIT = 64
 
 /** 控制器依赖的 RPC 面（生产环境是 `rpc.agent.assistant`，测试注入替身）。 */
 export interface AssistantPort {
@@ -39,6 +62,9 @@ export interface AssistantPort {
   cancel(params: AssistantSessionIdParams): Promise<OkResult>
   confirm(params: AssistantConfirmParams): Promise<OkResult>
   rate(params: AssistantRateParams): Promise<OkResult>
+  renameSession(params: AssistantRenameParams): Promise<AssistantSessionDto>
+  exportSession(params: AssistantExportParams): Promise<AssistantExportResult>
+  attachment(params: AssistantAttachmentParams): Promise<AssistantAttachmentResult>
   confirmIssue(params: AssistantIssueParams): Promise<AssistantIssueDto>
   discardIssue(params: AssistantIssueParams): Promise<OkResult>
 }
@@ -61,6 +87,8 @@ export interface SessionList {
   total: number
   load: Load
   moreLoading: boolean
+  /** 当前搜索词（已去首尾空白；空 = 不搜索）。 */
+  query: string
 }
 
 /** 当前会话在云端的历史。 */
@@ -85,8 +113,12 @@ export interface ViewState {
   sending: boolean
   cancelling: boolean
   sendFailure: SendFailure | null
-  /** 其他动作失败的提示（确认 / 评分 / 问题单 / 删除 / 清空）。 */
-  actionFailed: boolean
+  /** 其他动作失败的提示（确认 / 评分 / 问题单 / 会话管理）；null = 无。 */
+  actionFailure: ActionFailure | null
+  /** 正在导出的会话 ID（避免重复点击）。 */
+  exporting: string | null
+  /** 刚发出的这条提问的本地图片：执行期间提问气泡据此显示缩略图。 */
+  sent: SentImages | null
   /** 已发出、等待结果的确认请求（避免重复点击）。 */
   confirming: ReadonlySet<string>
   /** 用户对「过程」折叠区的显式选择（键 = 轮次键）。 */
@@ -111,7 +143,7 @@ export interface ViewState {
   scrollToken: number
 }
 
-const EMPTY_SESSIONS: SessionList = { items: [], total: 0, load: 'idle', moreLoading: false }
+const EMPTY_SESSIONS: SessionList = { items: [], total: 0, load: 'idle', moreLoading: false, query: '' }
 const EMPTY_DETAIL: Detail = { load: 'idle', session: null, messages: [], issues: [] }
 
 function initialView(env: AssistantEnv): ViewState {
@@ -126,7 +158,9 @@ function initialView(env: AssistantEnv): ViewState {
     sending: false,
     cancelling: false,
     sendFailure: null,
-    actionFailed: false,
+    actionFailure: null,
+    exporting: null,
+    sent: null,
     confirming: new Set(),
     stepsChoice: new Map(),
     argsOpen: new Set(),
@@ -162,6 +196,19 @@ function withEntry<K, V>(map: ReadonlyMap<K, V>, key: K, value: V): Map<K, V> {
   return new Map(map).set(key, value)
 }
 
+function withoutEntry<K, V>(map: ReadonlyMap<K, V>, key: K): Map<K, V> {
+  const next = new Map(map)
+  next.delete(key)
+  return next
+}
+
+/** 提问的可选项：重新生成 / 编辑后重发（替换某条用户消息及其之后的全部消息）。 */
+export interface SendOptions {
+  replaceFrom?: string
+  /** 沿用被替换提问的附图（此时 `images` 必须为空）。 */
+  keepImages?: boolean
+}
+
 export class AssistantController {
   private view: ViewState
   private readonly listeners = new Set<() => void>()
@@ -170,7 +217,11 @@ export class AssistantController {
   private accountEpoch = 0
   private sessionsEpoch = 0
   private detailEpoch = 0
+  /** 用户切换位置（新对话 / 选择 / 离开会话）时加一：发送在途时判断用户有没有走开。 */
+  private navEpoch = 0
   private configRequested = false
+  /** 历史图片（附件 ID -> data URL）；失败的请求不留，可重试。 */
+  private readonly attachments = new Map<string, Promise<string>>()
 
   constructor(port: AssistantPort, env: AssistantEnv = INITIAL_ENV) {
     this.port = port
@@ -211,7 +262,9 @@ export class AssistantController {
       this.accountEpoch += 1
       this.sessionsEpoch += 1
       this.detailEpoch += 1
+      this.navEpoch += 1
       this.configRequested = false
+      this.attachments.clear()
       this.view = { ...initialView(env), kind: this.view.kind, scrollToken: this.view.scrollToken + 1 }
     }
 
@@ -280,16 +333,28 @@ export class AssistantController {
 
   /** 重新读取会话列表第一页（已加载更多页时保持原有条数）。 */
   reloadSessions(): void {
+    this.loadSessions(Math.max(SESSION_PAGE_SIZE, this.view.sessions.items.length))
+  }
+
+  /** 搜索会话（标题 / 消息内容）；空白清除搜索。结果从第一页重新开始。 */
+  setQuery(query: string): void {
+    const next = query.trim()
+    if (this.view.sessions.query === next) return
+    this.update(() => ({ sessions: { items: [], total: 0, load: 'loading', moreLoading: false, query: next } }))
+    if (this.view.env.signedIn) this.loadSessions(SESSION_PAGE_SIZE)
+  }
+
+  private loadSessions(limit: number): void {
     if (!this.view.env.signedIn) return
     this.sessionsEpoch += 1
     const epoch = this.sessionsEpoch
     const account = this.accountEpoch
-    const limit = Math.max(SESSION_PAGE_SIZE, this.view.sessions.items.length)
+    const query = this.view.sessions.query
     this.update((view) => ({ sessions: { ...view.sessions, load: 'loading' } }))
-    this.port.sessions({ limit, offset: 0 }).then(
+    this.port.sessions({ limit, offset: 0, query: query === '' ? null : query }).then(
       (page) => {
         if (account !== this.accountEpoch || epoch !== this.sessionsEpoch) return
-        this.set({ sessions: { items: page.items, total: page.total, load: 'ready', moreLoading: false } })
+        this.update((view) => ({ sessions: { items: page.items, total: page.total, load: 'ready', moreLoading: false, query: view.sessions.query } }))
       },
       () => {
         if (account !== this.accountEpoch || epoch !== this.sessionsEpoch) return
@@ -304,7 +369,7 @@ export class AssistantController {
     const epoch = this.sessionsEpoch
     const account = this.accountEpoch
     this.update((view) => ({ sessions: { ...view.sessions, moreLoading: true } }))
-    this.port.sessions({ limit: SESSION_PAGE_SIZE, offset: sessions.items.length }).then(
+    this.port.sessions({ limit: SESSION_PAGE_SIZE, offset: sessions.items.length, query: sessions.query === '' ? null : sessions.query }).then(
       (page) => {
         if (account !== this.accountEpoch) return
         // 期间列表被整体刷新：这一页的偏移已失效。
@@ -318,7 +383,7 @@ export class AssistantController {
       },
       () => {
         if (account !== this.accountEpoch) return
-        this.update((view) => ({ sessions: { ...view.sessions, moreLoading: false }, actionFailed: true }))
+        this.update((view) => ({ sessions: { ...view.sessions, moreLoading: false }, actionFailure: 'failed' }))
       },
     )
   }
@@ -327,11 +392,13 @@ export class AssistantController {
 
   newChat(): void {
     this.detailEpoch += 1
+    this.navEpoch += 1
     this.set({
       current: null,
       detail: EMPTY_DETAIL,
+      sent: null,
       sendFailure: null,
-      actionFailed: false,
+      actionFailure: null,
       deletePending: null,
       clearPending: false,
       issueEditing: null,
@@ -341,11 +408,13 @@ export class AssistantController {
   selectSession(sessionId: string): void {
     if (this.view.current === sessionId) return
     this.detailEpoch += 1
+    this.navEpoch += 1
     this.update((view) => ({
       current: sessionId,
       detail: EMPTY_DETAIL,
+      sent: view.sent?.sessionId === sessionId ? view.sent : null,
       sendFailure: null,
-      actionFailed: false,
+      actionFailure: null,
       deletePending: null,
       clearPending: false,
       issueEditing: null,
@@ -408,6 +477,59 @@ export class AssistantController {
     )
   }
 
+  /** 修改会话标题（去首尾空白后 1–80 字符）；成功返回 true，列表与当前会话详情同步更新。 */
+  async renameSession(sessionId: string, title: string): Promise<boolean> {
+    const valid = validTitle(title)
+    if (valid === null || this.view.env.stale) return false
+    const account = this.accountEpoch
+    this.set({ actionFailure: null })
+    try {
+      const updated = await this.port.renameSession({ sessionId, title: valid })
+      if (account !== this.accountEpoch) return false
+      this.update((view) => ({
+        sessions: { ...view.sessions, items: view.sessions.items.map((session) => (session.id === sessionId ? updated : session)) },
+        detail: view.detail.session?.id === sessionId ? { ...view.detail, session: updated } : view.detail,
+      }))
+      return true
+    } catch {
+      this.failAction(account)
+      return false
+    }
+  }
+
+  /** 导出会话（云端生成文件内容）；成功返回结果交给调用方保存，失败返回 null 并提示。 */
+  async exportSession(sessionId: string, format: AssistantExportFormat): Promise<AssistantExportResult | null> {
+    if (this.view.env.stale || this.view.exporting !== null) return null
+    const account = this.accountEpoch
+    this.set({ exporting: sessionId, actionFailure: null })
+    try {
+      const result = await this.port.exportSession({ sessionId, format })
+      if (account !== this.accountEpoch) return null
+      this.set({ exporting: null })
+      return result
+    } catch {
+      if (account !== this.accountEpoch) return null
+      this.set({ exporting: null, actionFailure: 'failed' })
+      return null
+    }
+  }
+
+  /** 历史消息里的一张图片（附件 ID -> `data:` URL）：按 ID 缓存，失败不缓存（可重试）。 */
+  attachment(attachmentId: string): Promise<string> {
+    const cached = this.attachments.get(attachmentId)
+    if (cached !== undefined) return cached
+    const request = this.port.attachment({ attachmentId }).then((result) => result.dataUrl)
+    this.attachments.set(attachmentId, request)
+    if (this.attachments.size > ATTACHMENT_CACHE_LIMIT) {
+      const oldest = this.attachments.keys().next()
+      if (!oldest.done) this.attachments.delete(oldest.value)
+    }
+    request.catch(() => {
+      if (this.attachments.get(attachmentId) === request) this.attachments.delete(attachmentId)
+    })
+    return request
+  }
+
   requestClear(): void {
     this.set({ clearPending: true, deletePending: null })
   }
@@ -420,7 +542,7 @@ export class AssistantController {
   clearSessions(): void {
     if (this.view.env.stale || this.view.clearing) return
     const account = this.accountEpoch
-    this.set({ clearPending: false, deletePending: null, clearing: true, actionFailed: false })
+    this.set({ clearPending: false, deletePending: null, clearing: true, actionFailure: null })
     this.port.clearSessions().then(
       () => {
         if (account !== this.accountEpoch) return
@@ -428,13 +550,13 @@ export class AssistantController {
         const view = this.view
         this.set({
           clearing: false,
-          sessions: { items: [], total: 0, load: 'ready', moreLoading: false },
+          sessions: { items: [], total: 0, load: 'ready', moreLoading: false, query: view.sessions.query },
           ...(view.current !== null ? this.leaveCurrent() : {}),
         })
       },
       () => {
         if (account !== this.accountEpoch) return
-        this.set({ clearing: false, actionFailed: true })
+        this.set({ clearing: false, actionFailure: 'failed' })
       },
     )
   }
@@ -442,45 +564,61 @@ export class AssistantController {
   /** 当前会话已不存在（被删 / 清空）：回到新对话。 */
   private leaveCurrent(): Partial<ViewState> {
     this.detailEpoch += 1
-    return { current: null, detail: EMPTY_DETAIL, issueEditing: null }
+    this.navEpoch += 1
+    return { current: null, detail: EMPTY_DETAIL, sent: null, issueEditing: null }
   }
 
-  private failAction(account: number): void {
+  private failAction(account: number, failure: ActionFailure = 'failed'): void {
     if (account !== this.accountEpoch) return
-    this.set({ actionFailed: true })
+    this.set({ actionFailure: failure })
+  }
+
+  /** 关掉提问 / 动作失败的提示（切换视图时调用）。 */
+  clearFailure(): void {
+    if (this.view.sendFailure !== null || this.view.actionFailure !== null) this.set({ sendFailure: null, actionFailure: null })
   }
 
   // ───────────────────────── 提问 / 停止 ─────────────────────────
 
   /**
    * 提问；成功返回 true（调用方清空输入）。`text` 已去首尾空白，`images` 为 `data:` URL。
-   * 可提问性由调用方按 `canSend` 判定，这里只防重入与断线。
+   * 可提问性由调用方按 `canSend` 判定，这里只防重入与断线。`options.replaceFrom` 为重新生成 / 编辑后重发。
+   * 发送期间用户可能切到别的会话 / 新对话：回包时只有仍停在发送时的位置才跟进（新会话才接管当前会话，
+   * 重发才截掉被替换的历史），否则只刷新会话列表，不覆盖用户的切换。
    */
-  async send(text: string, images: readonly string[]): Promise<boolean> {
+  async send(text: string, images: readonly string[], options: SendOptions = {}): Promise<boolean> {
     const view = this.view
     if (view.env.stale || view.sending || currentRun(view.env.state, view.current) !== undefined) return false
     const account = this.accountEpoch
-    const kind = currentKind(view.current, view.kind, currentSession(view.current, view.detail.session, view.sessions.items))
-    this.set({ sending: true, sendFailure: null, actionFailed: false })
+    const origin = view.current
+    const navigation = this.navEpoch
+    const kind = currentKind(origin, view.kind, currentSession(origin, view.detail.session, view.sessions.items))
+    this.set({ sending: true, sendFailure: null, actionFailure: null })
     try {
       const answer = await this.port.ask({
-        sessionId: view.current,
+        sessionId: origin,
         kind,
         channel: 'web',
         text,
         images: [...images],
         locale: view.env.locale,
+        ...(options.replaceFrom ? { replaceFrom: options.replaceFrom, keepImages: options.keepImages === true } : {}),
       })
       if (account !== this.accountEpoch) return false
-      const created = this.view.current !== answer.sessionId
+      const stayed = navigation === this.navEpoch
+      const created = stayed && origin === null
       if (created) {
         // 新会话在云端还没有任何已落库的历史：直接以空历史起步，提问内容由推送的实时执行显示。
         this.detailEpoch += 1
       }
       this.update((now) => ({
         sending: false,
-        scrollToken: now.scrollToken + 1,
+        sent: images.length > 0 ? { sessionId: answer.sessionId, text, images: [...images] } : null,
+        scrollToken: stayed ? now.scrollToken + 1 : now.scrollToken,
         ...(created ? { current: answer.sessionId, detail: { ...EMPTY_DETAIL, load: 'ready' as const } } : {}),
+        ...(stayed && !created && options.replaceFrom
+          ? { detail: { ...now.detail, messages: withoutReplaced(now.detail.messages, options.replaceFrom) } }
+          : {}),
       }))
       this.reloadSessions()
       return true
@@ -488,10 +626,15 @@ export class AssistantController {
       if (account !== this.accountEpoch) return false
       const failure = classifySendError(errorData(error))
       this.set({ sending: false, sendFailure: failure })
-      // 额度 / 开放状态可能已变：重新取配置让页面门禁跟上。
+      // 额度 / 开放状态可能已变：重新取配置让页面门禁跟上（限频只是稍后再试，不用）。
       if (failure === 'quotaExceeded' || failure === 'notOpen') this.fetchConfig(true)
       return false
     }
+  }
+
+  /** 重新生成：用原提问文本替换这条用户消息及其之后的回答；原提问有附图时沿用。 */
+  regenerate(questionId: string, text: string, keepImages: boolean): Promise<boolean> {
+    return this.send(text, [], { replaceFrom: questionId, keepImages })
   }
 
   stop(): void {
@@ -506,7 +649,7 @@ export class AssistantController {
       },
       () => {
         if (account !== this.accountEpoch) return
-        this.set({ cancelling: false, actionFailed: true })
+        this.set({ cancelling: false, actionFailure: 'failed' })
       },
     )
   }
@@ -522,13 +665,13 @@ export class AssistantController {
     const view = this.view
     if (view.env.stale || view.confirming.has(requestId)) return
     const account = this.accountEpoch
-    this.set({ confirming: withMember(view.confirming, requestId), actionFailed: false })
+    this.set({ confirming: withMember(view.confirming, requestId), actionFailure: null })
     this.port.confirm({ requestId, approved }).then(
       () => undefined,
-      () => {
+      (error) => {
         if (account !== this.accountEpoch) return
-        // 成功后状态由推送改写；失败则放开按钮让用户重试（若已过期，推送会让卡片变为过期）。
-        this.update((now) => ({ confirming: withoutMember(now.confirming, requestId), actionFailed: true }))
+        // 成功后状态由推送改写；失败则放开按钮让用户重试（确认窗口已过期时单独提示：工具没有执行）。
+        this.update((now) => ({ confirming: withoutMember(now.confirming, requestId), actionFailure: classifyConfirmError(errorData(error)) }))
       },
     )
   }
@@ -543,25 +686,35 @@ export class AssistantController {
 
   // ───────────────────────── 评分 ─────────────────────────
 
-  /** 评价一条回答：再次点击同一个评价则清除。`current` 为该回答当前显示的评价。 */
+  /**
+   * 评价一条回答：再次点击同一个评价则清除。`current` 为该回答当前显示的评价。
+   * 乐观更新：先显示新评价，失败时回滚到点击前的状态。
+   */
   rate(messageId: string, current: string | null, rating: 'up' | 'down'): void {
     const view = this.view
     const sessionId = view.current
     if (sessionId === null || view.env.stale || view.ratingBusy.has(messageId)) return
     const next = current === rating ? null : rating
     const account = this.accountEpoch
-    this.set({ ratingBusy: withMember(view.ratingBusy, messageId), actionFailed: false })
+    const hadOverride = view.ratingOverrides.has(messageId)
+    const previous = view.ratingOverrides.get(messageId) ?? null
+    this.set({
+      ratingBusy: withMember(view.ratingBusy, messageId),
+      ratingOverrides: withEntry(view.ratingOverrides, messageId, next),
+      actionFailure: null,
+    })
     this.port.rate({ sessionId, messageId, rating: next, comment: null }).then(
+      () => {
+        if (account !== this.accountEpoch) return
+        this.update((now) => ({ ratingBusy: withoutMember(now.ratingBusy, messageId) }))
+      },
       () => {
         if (account !== this.accountEpoch) return
         this.update((now) => ({
           ratingBusy: withoutMember(now.ratingBusy, messageId),
-          ratingOverrides: withEntry(now.ratingOverrides, messageId, next),
+          ratingOverrides: hadOverride ? withEntry(now.ratingOverrides, messageId, previous) : withoutEntry(now.ratingOverrides, messageId),
+          actionFailure: 'failed',
         }))
-      },
-      () => {
-        if (account !== this.accountEpoch) return
-        this.update((now) => ({ ratingBusy: withoutMember(now.ratingBusy, messageId), actionFailed: true }))
       },
     )
   }
@@ -586,7 +739,7 @@ export class AssistantController {
     const view = this.view
     if (view.env.stale || view.issueBusy.has(issueId)) return
     const account = this.accountEpoch
-    this.set({ issueBusy: withMember(view.issueBusy, issueId), actionFailed: false })
+    this.set({ issueBusy: withMember(view.issueBusy, issueId), actionFailure: null })
     this.port.confirmIssue({ issueId, title: edited?.title ?? null, body: edited?.body ?? null }).then(
       (issue) => {
         if (account !== this.accountEpoch) return
@@ -598,7 +751,7 @@ export class AssistantController {
       },
       () => {
         if (account !== this.accountEpoch) return
-        this.update((now) => ({ issueBusy: withoutMember(now.issueBusy, issueId), actionFailed: true }))
+        this.update((now) => ({ issueBusy: withoutMember(now.issueBusy, issueId), actionFailure: 'failed' }))
       },
     )
   }
@@ -608,7 +761,7 @@ export class AssistantController {
     if (view.env.stale || view.issueBusy.has(issueId)) return
     const account = this.accountEpoch
     const snapshot = this.issue(issueId)
-    this.set({ issueBusy: withMember(view.issueBusy, issueId), actionFailed: false })
+    this.set({ issueBusy: withMember(view.issueBusy, issueId), actionFailure: null })
     this.port.discardIssue({ issueId }).then(
       () => {
         if (account !== this.accountEpoch) return
@@ -620,7 +773,7 @@ export class AssistantController {
       },
       () => {
         if (account !== this.accountEpoch) return
-        this.update((now) => ({ issueBusy: withoutMember(now.issueBusy, issueId), actionFailed: true }))
+        this.update((now) => ({ issueBusy: withoutMember(now.issueBusy, issueId), actionFailure: 'failed' }))
       },
     )
   }

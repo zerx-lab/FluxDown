@@ -15,6 +15,12 @@ import type {
   AssistantSessionIdParams,
   AssistantSessionPage,
   AssistantSessionsParams,
+  AssistantSessionDto,
+  AssistantRenameParams,
+  AssistantExportParams,
+  AssistantExportResult,
+  AssistantAttachmentParams,
+  AssistantAttachmentResult,
   AssistantStateDto,
   CloudNotifyChannelCreateParams,
   CloudNotifyChannelDto,
@@ -374,6 +380,12 @@ const assistant = {
   /** 确认提交云端起草的问题单（可改标题与正文）。 */
   confirmIssue: (params: AssistantIssueParams) => call<AssistantIssueDto>(METHOD.AGENT_ASSISTANT_CONFIRM_ISSUE, params),
   discardIssue: (params: AssistantIssueParams) => call<OkResult>(METHOD.AGENT_ASSISTANT_DISCARD_ISSUE, params),
+  /** 给会话改名（标题去首尾空白后 1–`ASSISTANT_MAX_TITLE_CHARS` 字符）。 */
+  renameSession: (params: AssistantRenameParams) => call<AssistantSessionDto>(METHOD.AGENT_ASSISTANT_RENAME_SESSION, params),
+  /** 导出会话（云端生成 Markdown / JSON，UI 负责下载）。 */
+  exportSession: (params: AssistantExportParams) => call<AssistantExportResult>(METHOD.AGENT_ASSISTANT_EXPORT_SESSION, params),
+  /** 读取本人会话里的提问图片（`AssistantMessageDto.images` 的附件 ID → `data:` URL）。 */
+  attachment: (params: AssistantAttachmentParams) => call<AssistantAttachmentResult>(METHOD.AGENT_ASSISTANT_ATTACHMENT, params),
 };
 
 

@@ -15,6 +15,7 @@ import { AccountMenu } from './AccountMenu'
 import { isActivityActive } from './activity'
 import type { ActivityEntry } from './activity'
 import { toggleAssistantPanel, useAssistantPanel } from './assistantPanelStore'
+import { usePendingConfirmationCount } from '../pages/assistant/useAssistant'
 
 /** 选中项悬停不变色（GPUI `activity_button`：选中态 hover 与常态一致）。 */
 export const BUTTON_ACTIVE = 'bg-nav-selected text-nav-selected-foreground hover:bg-nav-selected hover:text-nav-selected-foreground'
@@ -39,22 +40,39 @@ export function RouteItem({ entry, orientation = 'horizontal', side }: WidgetPro
   )
 }
 
-/** AI 助手入口：不是路由，点击开关窗口右侧面板；面板打开时呈选中态。 */
+/** 入口按钮上标记「面板打开着」的 DOM 属性：关闭面板后焦点据此回到入口（见 `AssistantPanel`）。 */
+export const ASSISTANT_PANEL_TRIGGER_ATTR = 'data-assistant-trigger'
+
+/**
+ * AI 助手入口：不是路由，点击开关窗口右侧面板；面板打开时呈选中态。
+ * 面板收起时若有工具在等确认（有截止时间），右上角显示待确认数量，避免确认窗口无声过期。
+ */
 export function AssistantPanelItem({ entry, orientation = 'horizontal', side }: WidgetProps & { entry: ActivityEntry }) {
   const t = useT()
   const { open } = useAssistantPanel()
+  const pending = usePendingConfirmationCount()
   const rail = orientation === 'rail'
-  const label = t(entry.labelKey)
+  const badge = !open && pending > 0 ? pending : 0
+  const label = badge > 0 ? `${t(entry.labelKey)} · ${t('assistantPendingBadge', { n: pending })}` : t(entry.labelKey)
   return (
     <Tooltip content={label} side={resolveSide(orientation, side)}>
       <button
         type="button"
         aria-label={label}
         aria-pressed={open}
-        className={cn(rail ? RAIL_BUTTON : ACTION_BUTTON, open && BUTTON_ACTIVE)}
+        {...{ [ASSISTANT_PANEL_TRIGGER_ATTR]: '' }}
+        className={cn('relative', rail ? RAIL_BUTTON : ACTION_BUTTON, open && BUTTON_ACTIVE)}
         onClick={toggleAssistantPanel}
       >
         <Icon icon={entry.icon} size={rail ? 'xl' : 'lg'} className={cn(open && 'text-nav-selected-icon')} />
+        {badge > 0 ? (
+          <span
+            aria-hidden
+            className="pointer-events-none absolute top-0 right-0 grid min-w-3.5 place-items-center rounded-full bg-warning px-1 text-[10px] leading-3.5 font-medium text-background tabular"
+          >
+            {badge > 9 ? '9+' : badge}
+          </span>
+        ) : null}
       </button>
     </Tooltip>
   )

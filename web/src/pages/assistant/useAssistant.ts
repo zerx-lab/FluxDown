@@ -5,7 +5,7 @@ import { useI18n } from '../../i18n'
 import { EMPTY_ASSISTANT_STATE, rpc, useAgent, useConnection } from '../../lib/rpc'
 import { AssistantController } from './controller'
 import type { AssistantEnv, ViewState } from './controller'
-import { pendingConfirmations } from './model'
+import { agentNowMs, clockSkewMs, pendingConfirmations } from './model'
 
 export interface AssistantHandle {
   controller: AssistantController
@@ -34,16 +34,28 @@ export function useAssistant(): AssistantHandle {
   return { controller, view, ready, now }
 }
 
-/** 倒计时用的时钟：助手状态变化时立即校准；有待确认工具时每秒走一次，全部结束后停表。 */
+/** 有多少个工具在等用户确认（面板收起时入口据此提示，避免确认窗口无声过期）。 */
+export function usePendingConfirmationCount(): number {
+  const state = useAgent((snapshot) => snapshot.assistant ?? EMPTY_ASSISTANT_STATE, EMPTY_ASSISTANT_STATE)
+  return pendingConfirmations(state, useNowMs(state))
+}
+
+/**
+ * 倒计时 / 过期判定用的时钟（agent 时间轴，与 `confirmDeadlineUnixMs` 同一时钟）：本机与 agent 主机的时钟偏差在每次
+ * 收到助手状态时校准；有待确认工具时每秒走一次，全部结束后停表。
+ */
 function useNowMs(state: AssistantEnv['state']): number {
-  const [now, setNow] = useState(() => Date.now())
+  const [local, setLocal] = useState(() => Date.now())
+  const [calibration, setCalibration] = useState(() => ({ state, skew: clockSkewMs(state, Date.now()) }))
+  if (calibration.state !== state) setCalibration({ state, skew: clockSkewMs(state, Date.now()) })
+  const now = agentNowMs(local, calibration.skew)
   const ticking = pendingConfirmations(state, now) > 0
   useEffect(() => {
-    setNow(Date.now())
+    setLocal(Date.now())
   }, [state])
   useEffect(() => {
     if (!ticking) return
-    const timer = setInterval(() => setNow(Date.now()), 1000)
+    const timer = setInterval(() => setLocal(Date.now()), 1000)
     return () => clearInterval(timer)
   }, [ticking])
   return now

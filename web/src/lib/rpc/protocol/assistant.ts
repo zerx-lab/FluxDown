@@ -10,6 +10,8 @@ import type { ErrorReason } from './error';
 export const ASSISTANT_CLIENT_TOOL_PROTOCOL = 3;
 /** `AssistantStateDto.runs` 保留的执行数上限（进行中的执行永不被裁掉）。 */
 export const ASSISTANT_MAX_RUNS = 8;
+/** 预览列表（任务名 / 地址）的条数上限。 */
+export const ASSISTANT_PREVIEW_MAX_ITEMS = 20;
 
 /** 发起提问的界面渠道（Web 固定为 `web`）。 */
 export type AssistantChannel = 'desktop' | 'web';
@@ -66,6 +68,42 @@ export interface AssistantToolCallDto {
   confirmDeadlineUnixMs?: number | null;
   /** 本机执行结果摘要（客户端工具，截断后的文本）。 */
   outputPreview?: string | null;
+  /** 待确认调用的可读预览（agent 用本机数据生成）；无法生成时为 null，UI 回退显示原始参数。 */
+  preview?: AssistantToolPreviewDto | null;
+  /** 不可撤销的破坏性动作（删除任务 / 删除文件等）：确认卡片用危险样式。 */
+  destructive?: boolean;
+  /** 已批准的写操作在执行中被用户停止：本机请求可能已生效，结果未知（`status` 为 `failed`）。 */
+  interrupted?: boolean;
+}
+
+/** 预览里一项设置的变更。 */
+export interface AssistantSettingChangeDto {
+  /** 规范设置键（UI 有本地化名时显示名称，否则显示键）。 */
+  key: string;
+  from?: string | null;
+  to: string;
+}
+
+/** 确认卡片的可读预览。各字段按需出现，UI 按 `action` 本地化动作名、逐项渲染其余字段。 */
+export interface AssistantToolPreviewDto {
+  /**
+   * 动作标识（camelCase）：`create` `pause` `resume` `delete` `moveToQueue` `edit` `restart` `changeUrl`
+   * `recheck` `reannounce` `setSeedLimits` `setFilePriorities` `updateSettings` `queueStart` `queueStop`
+   * `queueReorder` `installComponent` `setPluginEnabled` `repair` `measureRoutes`；未知值回退原文。
+   */
+  action: string;
+  /** 受影响任务的显示名（至多 `ASSISTANT_PREVIEW_MAX_ITEMS` 条）。 */
+  tasks?: string[];
+  /** 超出 `tasks` 上限、未列出的任务数。 */
+  moreTasks?: number;
+  /** 同时删除已下载的文件。 */
+  deleteFiles?: boolean;
+  /** 设置变更（旧值 → 新值）。 */
+  settings?: AssistantSettingChangeDto[];
+  /** 将要访问 / 新建的地址（至多 `ASSISTANT_PREVIEW_MAX_ITEMS` 条，已脱敏）。 */
+  urls?: string[];
+  /** 其余原样显示的补充文本（如目标队列名、保存目录）。 */
+  details?: string[];
 }
 
 /** 云端起草、待用户确认提交的问题单。 */
@@ -100,10 +138,14 @@ export interface AssistantRunDto {
   runId?: string | null;
   status: AssistantRunStatus;
   question: string;
+  /** 提问附带的图片张数（执行中提问气泡据此显示占位 / 本地缩略图）。 */
+  imageCount?: number;
   startedAtUnixMs: number;
   items?: AssistantRunItemDto[];
   messageId?: string | null;
   error?: string | null;
+  /** 失败原因（camelCase）；云端：`timeout` / `maxTurns` / `noAnswer` / `canceled` / `contextOverflow` / `imageUnsupported` / `unavailable` / `error`，本机：`streamLost` / `network`；未知值按 `error`。 */
+  errorReason?: string | null;
   inputTokens?: number;
   outputTokens?: number;
 }
@@ -123,6 +165,11 @@ export interface AssistantStateDto {
   visible: boolean;
   /** 进行中与最近结束的执行（新的在后，至多 `ASSISTANT_MAX_RUNS` 条）。 */
   runs: AssistantRunDto[];
+  /**
+   * 生成本投影时 agent 主机的时钟（Unix 毫秒）。UI 以「本地收到时刻 − 该值」作时钟偏差，换算
+   * `confirmDeadlineUnixMs`；旧 agent 缺省为 `0`，视为无偏差。
+   */
+  nowUnixMs?: number;
 }
 
 /** 空状态（对应 Rust `AssistantStateDto::default()`；登出时快照回到它）。 */
@@ -133,6 +180,7 @@ export const EMPTY_ASSISTANT_STATE: AssistantStateDto = {
   lastErrorMessage: null,
   visible: false,
   runs: [],
+  nowUnixMs: 0,
 };
 
 /** 云端会话摘要。 */
@@ -150,7 +198,10 @@ export interface AssistantSessionDto {
   updatedAt: string;
 }
 
-/** 云端会话中的一条消息（`role`：`user` / `assistant` / `tool_call` / `tool_result`）。 */
+/**
+ * 云端会话中的一条消息（`role`：`user` / `assistant` / `assistant_step` / `tool_call` / `tool_result`）。
+ * `assistant_step` 是工具调用之前的中间说明文字，UI 归入「过程」，不可评价。被「重新生成 / 编辑重发」替换的消息云端不再返回。
+ */
 export interface AssistantMessageDto {
   id: string;
   runId?: string | null;
@@ -162,8 +213,10 @@ export interface AssistantMessageDto {
   toolKind?: string | null;
   isError?: boolean;
   durationMs?: number | null;
-  /** `data:` URL 图片。 */
+  /** 附件 ID（不是 data URL）：经 `agent.assistant.attachment` 取图。 */
   images?: string[];
+  /** 回答未完成就中断（取消 / 超时 / 失败），内容是中断前已输出的部分；只有 `assistant` 消息可能为真。 */
+  interrupted?: boolean;
   /** 用户对该条回答的评价（`up` / `down`）；只有 `assistant` 消息可能非空。 */
   rating?: string | null;
   ratingComment?: string | null;
@@ -187,6 +240,8 @@ export interface AssistantSessionDetail {
 export interface AssistantSessionsParams {
   limit?: number;
   offset?: number;
+  /** 按标题 / 消息内容搜索（不区分大小写）；空白视为不搜索。 */
+  query?: string | null;
 }
 
 /** `agent.assistant.clearSessions` 的结果。 */
@@ -211,6 +266,13 @@ export interface AssistantAskParams {
   images?: string[];
   /** 界面语言（BCP 47），新建会话时随客户端信息上报。 */
   locale?: string | null;
+  /**
+   * 重新生成 / 编辑后重发：该会话里一条 `user` 消息的 ID。云端把它及之后的消息标为已替换（对用户与
+   * 模型都不再可见），再以本次 `text` 作答。须同时带 `sessionId`。
+   */
+  replaceFrom?: string | null;
+  /** 与 `replaceFrom` 连用：沿用被替换提问的附图（此时 `images` 必须为空；`text` 里的占位符仍按原附图编号）。 */
+  keepImages?: boolean;
 }
 
 /** `agent.assistant.ask` 的结果：执行随后经 `assistantChanged` 推送。 */
@@ -242,4 +304,42 @@ export interface AssistantIssueParams {
   issueId: string;
   title?: string | null;
   body?: string | null;
+}
+
+/** 会话标题的字符数上限（与 FluxCloud 一致）。 */
+export const ASSISTANT_MAX_TITLE_CHARS = 80;
+
+/** `agent.assistant.renameSession` 参数：标题去首尾空白后 1–`ASSISTANT_MAX_TITLE_CHARS` 字符。 */
+export interface AssistantRenameParams {
+  sessionId: string;
+  title: string;
+}
+
+/** 会话导出格式。 */
+export type AssistantExportFormat = 'markdown' | 'json';
+
+/** `agent.assistant.exportSession` 参数。 */
+export interface AssistantExportParams {
+  sessionId: string;
+  format?: AssistantExportFormat;
+}
+
+/** `agent.assistant.exportSession` 的结果：由云端生成，UI 只负责保存 / 下载。 */
+export interface AssistantExportResult {
+  /** 建议文件名（已去除路径分隔符等不安全字符，含扩展名）。 */
+  fileName: string;
+  /** `text/markdown` / `application/json`。 */
+  mime: string;
+  content: string;
+}
+
+/** `agent.assistant.attachment` 参数：`AssistantMessageDto.images` 里的附件 ID。 */
+export interface AssistantAttachmentParams {
+  attachmentId: string;
+}
+
+/** `agent.assistant.attachment` 的结果。 */
+export interface AssistantAttachmentResult {
+  /** `data:image/(png|jpeg|gif|webp);base64,...`。 */
+  dataUrl: string;
 }

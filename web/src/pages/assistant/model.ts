@@ -2,7 +2,7 @@
 // GPUI `crates/assistant/src/model.rs`（及 `view.rs` 里的纯判定）的逐条移植，单测见 model.test.ts；
 // 这里不碰 React，时间由调用方传入。
 
-import { isAssistantRunActive } from '../../lib/rpc/protocol'
+import { ASSISTANT_MAX_TITLE_CHARS, isAssistantRunActive } from '../../lib/rpc/protocol'
 import type {
   AssistantConfigDto,
   AssistantIssueDto,
@@ -37,9 +37,12 @@ export type RatingOverrides = ReadonlyMap<string, string | null>
 
 // ───────────────────────── 时间线 ─────────────────────────
 
-/** 一轮回答里按到达顺序排列的条目。 */
+/**
+ * 一轮回答里按到达顺序排列的条目。`step`：工具调用之前的中间说明文字（云端 `assistant_step`），
+ * 永远属于「过程」，不会被当成最终回答。
+ */
 export type Block =
-  | { type: 'text'; text: string; message?: AnswerMessage }
+  | { type: 'text'; text: string; message?: AnswerMessage; step?: boolean }
   | { type: 'tool'; call: AssistantToolCallDto }
   | { type: 'issue'; issue: AssistantIssueDto }
 
@@ -47,27 +50,38 @@ export type Block =
 export interface Live {
   status: AssistantRunDto['status']
   error: string | null
+  /** 失败原因（`AssistantRunDto.errorReason`）；界面据此本地化。 */
+  errorReason: string | null
 }
 
-/** 一条回答消息：评价按它记录（`rating`：`up` / `down`）。 */
+/** 一条回答消息：评价按它记录（`rating`：`up` / `down`）；`interrupted`：回答中途中断，内容是已输出的部分。 */
 export interface AnswerMessage {
   id: string
   rating: string | null
+  interrupted: boolean
 }
 
 /** 一问一答：用户提问、中间过程、最终回答与问题单草稿。 */
 export interface Turn {
   /** 折叠状态等界面状态的键：执行 ID 优先，其次消息 / 起始时间。 */
   key: string
+  /** 用户消息 ID（重新生成 / 编辑重发的 `replaceFrom`）；实时轮次为 null。 */
+  questionId: string | null
   question: string
-  /** 用户消息附带的图片（`data:` URL，仅云端历史轮次有）。 */
+  /** 用户消息附带图片的附件 ID（云端历史轮次；经 `agent.assistant.attachment` 取图）。 */
   images: readonly string[]
+  /** 本轮提问的附图张数：历史轮次 = `images.length`，实时轮次取执行上报的张数。 */
+  imageCount: number
+  /** 刚发出的这条提问的本地缩略图（`data:` URL）；只有最后一轮、文本一致时才有。 */
+  localImages: readonly string[]
   /** 最终回答之前的全部条目：中间文本与工具调用（可折叠的「过程」）。 */
   steps: Block[]
   /** 最终回答（Markdown）；尚未产出时为 null。 */
   answer: string | null
   /** 最终回答对应的 `assistant` 消息 ID（评价按它记录）；尚未落库 / 未知时为 null。 */
   answerId: string | null
+  /** 回答中途中断（取消 / 超时 / 失败）：`answer` 是中断前已输出的部分。 */
+  answerInterrupted: boolean
   /** 最终回答的评价（`up` / `down`）；未评价为 null。 */
   rating: string | null
   issues: AssistantIssueDto[]
@@ -119,7 +133,8 @@ function splitBlocks(blocks: readonly Block[]): {
     } else if (block.type !== 'text' || block.text.trim() !== '') steps.push(block)
   }
   const last = steps[steps.length - 1]
-  if (last?.type === 'text') {
+  // 中间说明文字（`assistant_step`）永远属于过程，不会被当成最终回答。
+  if (last?.type === 'text' && last.step !== true) {
     steps.pop()
     return { steps, answer: last.text, answerMessage: last.message ?? null, issues, membershipOffer }
   }
@@ -151,15 +166,19 @@ function liveTurn(run: AssistantRunDto, overrides: IssueOverrides, ratings: Rati
   const answerId = answer !== null && run.messageId ? run.messageId : null
   return {
     key: run.runId ? `run:${run.runId}` : `live:${run.startedAtUnixMs}`,
+    questionId: null,
     question: run.question,
     images: [],
+    imageCount: run.imageCount ?? 0,
+    localImages: [],
     steps,
     answer,
     answerId,
+    answerInterrupted: answer !== null && (run.status === 'failed' || run.status === 'canceled'),
     rating: answerId === null ? null : resolveRating(answerId, null, ratings),
     issues,
     membershipOffer,
-    live: { status: run.status, error: run.error ? run.error : null },
+    live: { status: run.status, error: run.error ? run.error : null, errorReason: run.errorReason ?? null },
     startedAt: null,
   }
 }
@@ -168,6 +187,7 @@ interface HistoryTurn {
   runId: string | null
   key: string
   startedAt: string
+  questionId: string | null
   question: string
   images: readonly string[]
   blocks: Block[]
@@ -179,6 +199,7 @@ function newHistoryTurn(message: AssistantMessageDto): HistoryTurn {
     runId,
     key: runId === null ? `msg:${message.id}` : `run:${runId}`,
     startedAt: message.createdAt,
+    questionId: null,
     question: '',
     images: [],
     blocks: [],
@@ -196,7 +217,8 @@ function parseJson(text: string): JsonValue | undefined {
 function toolFromCall(message: AssistantMessageDto): AssistantToolCallDto {
   const parsed = message.role === 'tool_call' ? parseJson(message.content) : undefined
   return {
-    callId: message.toolCallId ?? '',
+    // 没有调用 ID 的历史条目用消息 ID 兜底，保证列表键与展开状态不重复。
+    callId: message.toolCallId || `msg:${message.id}`,
     name: message.toolName ?? '',
     kind: message.toolKind ?? 'server',
     status: 'running',
@@ -207,7 +229,7 @@ function toolFromCall(message: AssistantMessageDto): AssistantToolCallDto {
 
 function completeTool(turn: HistoryTurn, message: AssistantMessageDto): void {
   const matches = (call: AssistantToolCallDto): boolean =>
-    call.status === 'running' && (message.toolCallId != null ? call.callId === message.toolCallId : call.name === message.toolName)
+    call.status === 'running' && (message.toolCallId ? call.callId === message.toolCallId : call.name === message.toolName)
   let position = -1
   for (let index = turn.blocks.length - 1; index >= 0; index -= 1) {
     const block = turn.blocks[index]
@@ -230,13 +252,22 @@ function completeTool(turn: HistoryTurn, message: AssistantMessageDto): void {
 function pushMessage(turn: HistoryTurn, message: AssistantMessageDto): void {
   switch (message.role) {
     case 'user':
+      turn.questionId = message.id
       turn.question = message.content
       turn.images = message.images ?? []
       break
     case 'assistant':
       if (message.content.trim() !== '') {
-        turn.blocks.push({ type: 'text', text: message.content, message: { id: message.id, rating: message.rating ?? null } })
+        turn.blocks.push({
+          type: 'text',
+          text: message.content,
+          message: { id: message.id, rating: message.rating ?? null, interrupted: message.interrupted === true },
+        })
       }
+      break
+    case 'assistant_step':
+      // 工具调用之前的中间说明文字：属于过程，不是最终回答，也不可评价。
+      if (message.content.trim() !== '') turn.blocks.push({ type: 'text', text: message.content, step: true })
       break
     case 'tool_call':
       turn.blocks.push({ type: 'tool', call: toolFromCall(message) })
@@ -253,11 +284,15 @@ function intoTurn(turn: HistoryTurn, ratings: RatingOverrides): Turn {
   const { steps, answer, answerMessage, issues, membershipOffer } = splitBlocks(turn.blocks)
   return {
     key: turn.key,
+    questionId: turn.questionId,
     question: turn.question,
     images: turn.images,
+    imageCount: turn.images.length,
+    localImages: [],
     steps,
     answer,
     answerId: answerMessage?.id ?? null,
+    answerInterrupted: answerMessage?.interrupted ?? false,
     rating: answerMessage ? resolveRating(answerMessage.id, answerMessage.rating, ratings) : null,
     issues,
     membershipOffer,
@@ -284,6 +319,7 @@ export function buildTimeline(
   runs: readonly AssistantRunDto[],
   overrides: IssueOverrides,
   ratings: RatingOverrides,
+  sent: SentImages | null = null,
 ): Turn[] {
   const live = runs.filter((run) => run.sessionId === sessionId)
   const ordered = [...messages].sort((a, b) => a.seq - b.seq)
@@ -318,7 +354,24 @@ export function buildTimeline(
     if (!consumed[index]) turns.push(liveTurn(run, overrides, ratings))
   })
   placeIssues(turns, issues, overrides)
+  attachSentImages(turns, sessionId, sent)
   return turns
+}
+
+/** 刚发出的提问的本地图片（`data:` URL）：执行期间提问气泡据此显示缩略图，不必等历史重载。 */
+export interface SentImages {
+  sessionId: string
+  text: string
+  images: readonly string[]
+}
+
+/** 只认刚发出的那条（最后一轮、文本一致、历史轮次的张数对得上）。 */
+function attachSentImages(turns: Turn[], sessionId: string, sent: SentImages | null): void {
+  const last = turns[turns.length - 1]
+  if (sent === null || last === undefined || sent.images.length === 0) return
+  if (sent.sessionId !== sessionId || sent.text !== last.question) return
+  if (last.live === null && last.imageCount !== sent.images.length) return
+  last.localImages = sent.images
 }
 
 function secondKey(timestamp: string): string {
@@ -340,11 +393,15 @@ function placeIssues(turns: Turn[], issues: readonly AssistantIssueDto[], overri
     }
     turns.push({
       key: `issue:${issue.id}`,
+      questionId: null,
       question: '',
       images: [],
+      imageCount: 0,
+      localImages: [],
       steps: [],
       answer: null,
       answerId: null,
+      answerInterrupted: false,
       rating: null,
       issues: [issue],
       membershipOffer: false,
@@ -356,12 +413,34 @@ function placeIssues(turns: Turn[], issues: readonly AssistantIssueDto[], overri
 
 // ───────────────────────── 工具调用 ─────────────────────────
 
-/** 工具调用在界面上的呈现状态。`interrupted`：所属执行已结束，工具却没有结果（连接中断等）。 */
-export type ToolState = 'running' | 'succeeded' | 'failed' | 'interrupted'
+/**
+ * 工具调用在界面上的呈现状态。`interrupted`：所属执行已结束，工具却没有结果（连接中断等）；
+ * `unknown`：已批准的写操作在执行中被停止，本机请求可能已生效，结果未知。
+ */
+export type ToolState = 'running' | 'succeeded' | 'failed' | 'interrupted' | 'unknown'
 
 export function toolState(call: AssistantToolCallDto, runIsActive: boolean): ToolState {
+  if (call.interrupted === true) return 'unknown'
   if (call.status === 'running') return runIsActive ? 'running' : 'interrupted'
   return call.status
+}
+
+/** 工具调用状态的文案键：待确认 / 未执行优先于调用状态本身。 */
+export function toolStatusKey(confirmation: ConfirmView | null, state: ToolState): string {
+  if (confirmation?.kind === 'pending') return 'assistantToolWaiting'
+  if (confirmation?.kind === 'declined' || confirmation?.kind === 'expired') return 'assistantToolSkipped'
+  switch (state) {
+    case 'running':
+      return 'assistantToolRunning'
+    case 'succeeded':
+      return 'assistantToolDone'
+    case 'failed':
+      return 'assistantToolFailed'
+    case 'interrupted':
+      return 'assistantToolInterrupted'
+    case 'unknown':
+      return 'assistantToolResultUnknown'
+  }
 }
 
 /** 确认卡片的呈现状态；`remainingMs` 为到期前剩余毫秒（无期限时为 null）。 */
@@ -515,7 +594,10 @@ export function gate(signedIn: boolean, state: AssistantStateDto, fetchFailed: b
 export type SendFailure =
   | 'signedOut'
   | 'notOpen'
+  /** 当日额度用完（`assistantQuotaExceeded`）。 */
   | 'quotaExceeded'
+  /** 每分钟限频（`rateLimited`），稍后可再试。 */
+  | 'rateLimited'
   /** 该会话已有执行在进行。 */
   | 'busy'
   | 'unavailable'
@@ -524,7 +606,8 @@ export type SendFailure =
   | 'failed'
 
 export function classifySendError(error: Pick<RpcErrorData, 'code' | 'reason'> | undefined): SendFailure {
-  if (error?.reason === 'rateLimited') return 'quotaExceeded'
+  if (error?.reason === 'assistantQuotaExceeded') return 'quotaExceeded'
+  if (error?.reason === 'rateLimited') return 'rateLimited'
   if (error?.reason === 'sessionExpired') return 'signedOut'
   if (error?.reason === 'cloudUnreachable') return 'unavailable'
   switch (error?.code) {
@@ -549,10 +632,77 @@ export const SEND_FAILURE_KEY: Readonly<Record<SendFailure, string>> = {
   signedOut: 'assistantErrSignedOut',
   notOpen: 'assistantErrNotOpen',
   quotaExceeded: 'assistantErrQuota',
+  rateLimited: 'assistantErrRateLimited',
   busy: 'assistantErrBusy',
   unavailable: 'assistantErrUnavailable',
   rejected: 'assistantErrRejected',
   failed: 'assistantErrFailed',
+}
+
+/** 其他动作（确认 / 评分 / 问题单 / 会话管理）失败的归类。 */
+export type ActionFailure = 'failed' | 'confirmExpired'
+
+/** 工具确认失败：确认窗口已过期（工具未执行）与其他失败分开提示。 */
+export function classifyConfirmError(error: Pick<RpcErrorData, 'reason'> | undefined): ActionFailure {
+  return error?.reason === 'assistantConfirmExpired' ? 'confirmExpired' : 'failed'
+}
+
+export const ACTION_FAILURE_KEY: Readonly<Record<ActionFailure, string>> = {
+  failed: 'assistantActionFailed',
+  confirmExpired: 'assistantErrConfirmExpired',
+}
+
+/** 执行失败原因（`AssistantRunDto.errorReason`）→ 文案键；缺省 / 未知 / `canceled` 一律按 `error`。 */
+export function runErrorKey(reason: string | null | undefined): string {
+  switch (reason) {
+    case 'timeout':
+      return 'assistantRunErrTimeout'
+    case 'maxTurns':
+      return 'assistantRunErrMaxTurns'
+    case 'noAnswer':
+      return 'assistantRunErrNoAnswer'
+    case 'contextOverflow':
+      return 'assistantRunErrContextOverflow'
+    case 'imageUnsupported':
+      return 'assistantRunErrImageUnsupported'
+    case 'unavailable':
+      return 'assistantRunErrUnavailable'
+    case 'streamLost':
+      return 'assistantRunErrStreamLost'
+    case 'network':
+      return 'assistantRunErrNetwork'
+    default:
+      return 'assistantRunErrError'
+  }
+}
+
+/** 协议固定的预览动作（`assistantPreviewAction` + 首字母大写的 action 是文案键）。 */
+const PREVIEW_ACTIONS: Readonly<Record<string, true | undefined>> = {
+  create: true,
+  pause: true,
+  resume: true,
+  delete: true,
+  moveToQueue: true,
+  edit: true,
+  restart: true,
+  changeUrl: true,
+  recheck: true,
+  reannounce: true,
+  setSeedLimits: true,
+  setFilePriorities: true,
+  updateSettings: true,
+  queueStart: true,
+  queueStop: true,
+  queueReorder: true,
+  installComponent: true,
+  setPluginEnabled: true,
+  repair: true,
+  measureRoutes: true,
+}
+
+/** 预览动作 → 文案键；协议里没有的动作返回 null，界面显示原文。 */
+export function previewActionKey(action: string): string | null {
+  return PREVIEW_ACTIONS[action] === true ? `assistantPreviewAction${action.charAt(0).toUpperCase()}${action.slice(1)}` : null
 }
 
 /** 提问输入的校验入参（`draft` 已去首尾空白）。 */
@@ -646,4 +796,84 @@ export function findIssue(
 export function appendSessions(items: readonly AssistantSessionDto[], page: readonly AssistantSessionDto[]): AssistantSessionDto[] {
   const known = new Set(items.map((session) => session.id))
   return [...items, ...page.filter((session) => !known.has(session.id))]
+}
+
+/** 新标题去首尾空白后须有 1–`ASSISTANT_MAX_TITLE_CHARS` 个字符；合法返回修剪后的标题，否则 null。 */
+export function validTitle(title: string): string | null {
+  const trimmed = title.trim()
+  const length = charCount(trimmed)
+  return length >= 1 && length <= ASSISTANT_MAX_TITLE_CHARS ? trimmed : null
+}
+
+/** 重新生成 / 编辑重发成功后：历史里去掉被替换的用户消息及其之后的全部消息（云端不再返回它们）。 */
+export function withoutReplaced(messages: readonly AssistantMessageDto[], fromId: string): readonly AssistantMessageDto[] {
+  const from = messages.find((message) => message.id === fromId)
+  return from === undefined ? messages : messages.filter((message) => message.seq < from.seq)
+}
+
+// ───────────────────────── 时钟偏差 ─────────────────────────
+
+/**
+ * agent 主机与本地的时钟偏差（本地 − agent，毫秒）：以收到投影的本地时刻对 `nowUnixMs`；
+ * 旧 agent 缺省为 0，视为无偏差。
+ */
+export function clockSkewMs(state: AssistantStateDto, receivedAtMs: number): number {
+  const agentNow = state.nowUnixMs ?? 0
+  return agentNow > 0 ? receivedAtMs - agentNow : 0
+}
+
+/** 本地时刻换算到 agent 时间轴（与 `confirmDeadlineUnixMs` 同一时钟）。 */
+export function agentNowMs(localNowMs: number, skewMs: number): number {
+  return localNowMs - skewMs
+}
+
+// ───────────────────────── 复制对话 ─────────────────────────
+
+/** Markdown 代码块：围栏比内容里最长的连续反引号多一个（至少三个），内容里的 ``` 不会提前闭合。 */
+function fenced(body: string, lang: string): string {
+  const longest = [...body.matchAll(/`+/g)].reduce((max, match) => Math.max(max, match[0].length), 0)
+  const fence = '`'.repeat(Math.max(3, longest + 1))
+  return `${fence}${lang}\n${body}\n${fence}`
+}
+
+function toolTranscript(call: AssistantToolCallDto, active: boolean, nowMs: number, t: (key: string) => string): string[] {
+  const status = toolStatusKey(confirmView(call, active, nowMs), toolState(call, active))
+  let head = `### ${t('assistantTranscriptTool')} \`${call.name}\` · ${t(status)}`
+  if (call.kind === 'client') head += ` · ${t('assistantToolLocal')}`
+  if (call.durationMs !== undefined && call.durationMs !== null) head += ` · ${formatDuration(call.durationMs)}`
+  const parts = [head]
+  if (call.arguments !== undefined && call.arguments !== null && argumentsSummary(call.arguments) !== null) {
+    parts.push(`${t('assistantToolArguments')}:`, fenced(argumentsPretty(call.arguments), 'json'))
+  }
+  if (call.outputPreview && call.outputPreview.trim() !== '') {
+    parts.push(`${t('assistantToolOutput')}:`, fenced(formatToolOutput(call.outputPreview), ''))
+  }
+  return parts
+}
+
+/**
+ * 一轮对话的 Markdown 副本：提问、全部过程（中间文本、每次工具调用的状态 / 耗时 / 完整参数与结果）、
+ * 最终回答、失败 / 停止说明与问题单草稿（GPUI `turn_transcript`）。`t` 按文案键取界面语言的标签。
+ */
+export function turnTranscript(turn: Turn, nowMs: number, t: (key: string) => string): string {
+  const head = `## ${t('assistantTranscriptUser')}\n\n${turn.question.trim()}\n\n## ${t('assistantTranscriptAssistant')}\n`
+  const parts: string[] = []
+  const active = runActive(turn)
+  for (const block of turn.steps) {
+    if (block.type === 'text') parts.push(block.text.trim())
+    else if (block.type === 'tool') parts.push(...toolTranscript(block.call, active, nowMs, t))
+  }
+  if (turn.answer !== null) {
+    parts.push(turn.answer.trim())
+    if (turn.answerInterrupted) parts.push(t('assistantAnswerInterrupted'))
+  }
+  if (turn.membershipOffer) parts.push(`### ${t('assistantMembershipTitle')}`, t('assistantMembershipBody'))
+  if (turn.live?.status === 'failed') {
+    parts.push(t('assistantRunFailed'), t(runErrorKey(turn.live.errorReason)))
+    if (turn.live.error) parts.push(turn.live.error.trim())
+  } else if (turn.live?.status === 'canceled') {
+    parts.push(t('assistantStopped'))
+  }
+  for (const issue of turn.issues) parts.push(`### ${issue.title.trim()}`, issue.body.trim())
+  return head + parts.filter((part) => part !== '').map((part) => `\n${part}\n`).join('')
 }

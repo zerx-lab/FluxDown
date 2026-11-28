@@ -79,6 +79,11 @@ function IssueStatus({ issue, busy, stale, controller }: { issue: AssistantIssue
           {t('assistantIssueOpenGithub', { number: issue.githubNumber ?? '' })}
         </a>
       ) : null}
+      {issue.status === 'failed' ? (
+        <Button variant="outline" className="w-fit" loading={busy} disabled={stale || busy} onClick={() => controller.confirmIssue(issue.id)}>
+          {t('assistantRetry')}
+        </Button>
+      ) : null}
     </div>
   )
 }

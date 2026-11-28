@@ -42,6 +42,17 @@ import {
   toolCount,
   toolState,
   truncateChars,
+  ACTION_FAILURE_KEY,
+  SEND_FAILURE_KEY,
+  agentNowMs,
+  classifyConfirmError,
+  clockSkewMs,
+  previewActionKey,
+  runErrorKey,
+  toolStatusKey,
+  turnTranscript,
+  validTitle,
+  withoutReplaced,
 } from './model'
 import type { IssueOverrides, RatingOverrides, Turn } from './model'
 
@@ -582,7 +593,8 @@ describe('classifySendError', () => {
     expect(classifySendError(error('unsupported'))).toBe('notOpen')
     expect(classifySendError(error('invalidArgument'))).toBe('rejected')
     expect(classifySendError(error('internal'))).toBe('failed')
-    expect(classifySendError({ ...error('unavailable'), reason: 'rateLimited' })).toBe('quotaExceeded')
+    expect(classifySendError({ ...error('unavailable'), reason: 'assistantQuotaExceeded' })).toBe('quotaExceeded')
+    expect(classifySendError({ ...error('unavailable'), reason: 'rateLimited' })).toBe('rateLimited')
     expect(classifySendError({ ...error('internal'), reason: 'cloudUnreachable' })).toBe('unavailable')
     expect(classifySendError({ ...error('internal'), reason: 'sessionExpired' })).toBe('signedOut')
     // 传输层之外的异常（没有错误数据）。
@@ -705,5 +717,198 @@ describe('session helpers', () => {
     expect(findIssue('i1', none, snapshot, history)?.title).toBe('live')
     expect(findIssue('i2', none, snapshot, history)?.title).toBe('history')
     expect(findIssue('missing', none, snapshot, history)).toBeUndefined()
+  })
+})
+
+describe('timeline: v31 additions', () => {
+  test('assistant_step text stays in the process and never becomes the answer', () => {
+    const history = [
+      message('m1', 'r1', 1, 'user', 'q'),
+      message('m2', 'r1', 2, 'assistant_step', 'let me check'),
+      toolMessage('m3', 'r1', 3, 'tool_call', 'c1', 'net_measure', false),
+      toolMessage('m4', 'r1', 4, 'tool_result', 'c1', 'net_measure', false),
+      message('m5', 'r1', 5, 'assistant', 'done'),
+    ]
+    const [turn] = buildTimeline('s1', history, [], [], none, noRatings)
+    expect(turn?.answer).toBe('done')
+    expect(turn?.steps.map((block) => block.type)).toEqual(['text', 'tool'])
+    expect(turn?.answerId).toBe('m5')
+
+    const [onlyStep] = buildTimeline('s1', history.slice(0, 2), [], [], none, noRatings)
+    expect(onlyStep?.answer).toBeNull()
+    expect(onlyStep?.steps).toHaveLength(1)
+  })
+
+  test('history images are attachment ids and the question id is kept for resend', () => {
+    const user = { ...message('m1', 'r1', 1, 'user', 'see'), images: ['att-1', 'att-2'] }
+    const [turn] = buildTimeline('s1', [user, message('m2', 'r1', 2, 'assistant', 'ok')], [], [], none, noRatings)
+    expect(turn?.questionId).toBe('m1')
+    expect(turn?.images).toEqual(['att-1', 'att-2'])
+    expect(turn?.imageCount).toBe(2)
+  })
+
+  test('an interrupted history answer is flagged', () => {
+    const partial = { ...message('m2', 'r1', 2, 'assistant', 'partial'), interrupted: true }
+    const [turn] = buildTimeline('s1', [message('m1', 'r1', 1, 'user', 'q'), partial], [], [], none, noRatings)
+    expect(turn?.answer).toBe('partial')
+    expect(turn?.answerInterrupted).toBe(true)
+  })
+
+  test('a live answer of a failed or canceled run is interrupted; a completed one is not', () => {
+    const flags = (status: AssistantRunStatus) =>
+      buildTimeline('s1', [], [], [run('s1', 'r1', status, [text('part')])], none, noRatings)[0]?.answerInterrupted
+    expect(flags('failed')).toBe(true)
+    expect(flags('canceled')).toBe(true)
+    expect(flags('completed')).toBe(false)
+    expect(flags('running')).toBe(false)
+  })
+
+  test('live turns carry the attached image count and the local thumbnails of the matching question', () => {
+    const live = { ...run('s1', 'r1', 'running', []), imageCount: 2 }
+    const sent = { sessionId: 's1', text: 'live question', images: ['data:image/png;base64,AA==', 'data:image/png;base64,BB=='] }
+    const [turn] = buildTimeline('s1', [], [], [live], none, noRatings, sent)
+    expect(turn?.imageCount).toBe(2)
+    expect(turn?.localImages).toEqual(sent.images)
+    // 文本不一致（不是刚发出的那条）时不挂本地图。
+    const [other] = buildTimeline('s1', [], [], [live], none, noRatings, { ...sent, text: 'something else' })
+    expect(other?.localImages).toEqual([])
+  })
+
+  test('a live persisted tool call without arguments is tolerated', () => {
+    const call: AssistantToolCallDto = { callId: 'c9', name: 'net_measure', kind: 'client', status: 'succeeded', arguments: null }
+    const [turn] = buildTimeline('s1', [], [], [run('s1', 'r1', 'completed', [{ type: 'tool', call }, text('ok')])], none, noRatings)
+    expect(toolCount(turn as Turn)).toBe(1)
+    expect(argumentsSummary(call.arguments)).toBeNull()
+  })
+})
+
+describe('tool state: unknown result', () => {
+  test('an approved write that was stopped mid-run has an unknown result', () => {
+    const stopped: AssistantToolCallDto = { ...pendingCall(null), confirmation: 'approved', status: 'failed', interrupted: true }
+    expect(toolState(stopped, false)).toBe('unknown')
+    expect(toolState(stopped, true)).toBe('unknown')
+    expect(toolStatusKey(confirmView(stopped, false, 0), toolState(stopped, false))).toBe('assistantToolResultUnknown')
+  })
+
+  test('status keys: pending / skipped win over the call state', () => {
+    expect(toolStatusKey({ kind: 'pending', remainingMs: 5 }, 'running')).toBe('assistantToolWaiting')
+    expect(toolStatusKey({ kind: 'declined' }, 'running')).toBe('assistantToolSkipped')
+    expect(toolStatusKey({ kind: 'expired' }, 'interrupted')).toBe('assistantToolSkipped')
+    expect(toolStatusKey(null, 'running')).toBe('assistantToolRunning')
+    expect(toolStatusKey({ kind: 'approved' }, 'succeeded')).toBe('assistantToolDone')
+    expect(toolStatusKey(null, 'failed')).toBe('assistantToolFailed')
+    expect(toolStatusKey(null, 'interrupted')).toBe('assistantToolInterrupted')
+  })
+})
+
+describe('error classification and keys', () => {
+  test('confirm errors: an expired window is separate', () => {
+    expect(classifyConfirmError({ reason: 'assistantConfirmExpired' })).toBe('confirmExpired')
+    expect(classifyConfirmError({ reason: 'rateLimited' })).toBe('failed')
+    expect(classifyConfirmError(undefined)).toBe('failed')
+  })
+
+  test('run error reasons map to their own keys; unknown and canceled fall back to error', () => {
+    const reasons: [string, string][] = [
+      ['timeout', 'assistantRunErrTimeout'],
+      ['maxTurns', 'assistantRunErrMaxTurns'],
+      ['noAnswer', 'assistantRunErrNoAnswer'],
+      ['contextOverflow', 'assistantRunErrContextOverflow'],
+      ['imageUnsupported', 'assistantRunErrImageUnsupported'],
+      ['unavailable', 'assistantRunErrUnavailable'],
+      ['streamLost', 'assistantRunErrStreamLost'],
+      ['network', 'assistantRunErrNetwork'],
+      ['error', 'assistantRunErrError'],
+      ['canceled', 'assistantRunErrError'],
+      ['somethingNew', 'assistantRunErrError'],
+    ]
+    for (const [reason, key] of reasons) expect(runErrorKey(reason)).toBe(key)
+    expect(runErrorKey(null)).toBe('assistantRunErrError')
+    expect(runErrorKey(undefined)).toBe('assistantRunErrError')
+  })
+
+  test('quota and rate limit have separate texts', () => {
+    expect(SEND_FAILURE_KEY.quotaExceeded).toBe('assistantErrQuota')
+    expect(SEND_FAILURE_KEY.rateLimited).toBe('assistantErrRateLimited')
+    expect(ACTION_FAILURE_KEY.confirmExpired).toBe('assistantErrConfirmExpired')
+    expect(ACTION_FAILURE_KEY.failed).toBe('assistantActionFailed')
+  })
+
+  test('preview actions: protocol names map to keys, anything else shows verbatim', () => {
+    expect(previewActionKey('create')).toBe('assistantPreviewActionCreate')
+    expect(previewActionKey('moveToQueue')).toBe('assistantPreviewActionMoveToQueue')
+    expect(previewActionKey('setSeedLimits')).toBe('assistantPreviewActionSetSeedLimits')
+    expect(previewActionKey('bogus')).toBeNull()
+    expect(previewActionKey('toString')).toBeNull()
+    expect(previewActionKey('')).toBeNull()
+  })
+})
+
+describe('titles, resend history and clock skew', () => {
+  test('a title needs 1-80 characters after trimming', () => {
+    expect(validTitle('  hello  ')).toBe('hello')
+    expect(validTitle('   ')).toBeNull()
+    expect(validTitle('界'.repeat(80))).toBe('界'.repeat(80))
+    expect(validTitle('界'.repeat(81))).toBeNull()
+    // 按码点计数，不按 UTF-16 单元。
+    expect(validTitle('😀'.repeat(80))).toBe('😀'.repeat(80))
+  })
+
+  test('a replaced message and everything after it leave the history', () => {
+    const messages = [message('m1', 'r1', 1, 'user', 'a'), message('m2', 'r1', 2, 'assistant', 'b'), message('m3', 'r2', 3, 'user', 'c')]
+    expect(withoutReplaced(messages, 'm3').map((item) => item.id)).toEqual(['m1', 'm2'])
+    expect(withoutReplaced(messages, 'm1')).toEqual([])
+    expect(withoutReplaced(messages, 'missing')).toBe(messages)
+  })
+
+  test('skew is local minus agent; an old agent or an idle projection means none', () => {
+    expect(clockSkewMs(state([], { nowUnixMs: 10_000 }), 12_500)).toBe(2_500)
+    expect(clockSkewMs(state([], { nowUnixMs: 10_000 }), 7_000)).toBe(-3_000)
+    expect(clockSkewMs(state([], { nowUnixMs: 0 }), 12_500)).toBe(0)
+    expect(clockSkewMs(state([]), 12_500)).toBe(0)
+    expect(agentNowMs(12_600, 2_500)).toBe(10_100)
+    // 本机时钟偏快 2.5 秒：agent 时间轴上的截止时间仍按 agent 时钟倒数。
+    const call = pendingCall(20_000)
+    expect(confirmView(call, true, agentNowMs(12_600, 2_500))).toEqual({ kind: 'pending', remainingMs: 9_900 })
+  })
+})
+
+describe('turnTranscript', () => {
+  const t = (key: string) => `[${key}]`
+
+  test('contains the question, the whole process, the answer and the failure notes', () => {
+    const call: AssistantToolCallDto = {
+      ...readOnlyCall(),
+      status: 'succeeded',
+      durationMs: 1_500,
+      arguments: { a: 1 },
+      outputPreview: 'plain ``` result',
+    }
+    const failed = { ...run('s1', 'r1', 'failed', [text('thinking'), { type: 'tool', call }, text('partial')]), errorReason: 'timeout', error: 'boom' }
+    const [turn] = buildTimeline('s1', [], [], [failed], none, noRatings)
+    const out = turnTranscript(turn as Turn, 0, t)
+    const has = (part: string) => out.includes(part)
+    expect(out.startsWith('## [assistantTranscriptUser]\n\nlive question\n\n## [assistantTranscriptAssistant]\n')).toBe(true)
+    expect(has('thinking')).toBe(true)
+    expect(has('### [assistantTranscriptTool] `net_measure` · [assistantToolDone] · [assistantToolLocal] · 1.5 s')).toBe(true)
+    expect(has('```json\n{\n  "a": 1\n}\n```')).toBe(true)
+    // 内容里有 ``` 时围栏加长，不会提前闭合。
+    expect(has('````\nplain ``` result\n````')).toBe(true)
+    expect(has('partial')).toBe(true)
+    expect(has('[assistantAnswerInterrupted]')).toBe(true)
+    expect(has('[assistantRunFailed]')).toBe(true)
+    expect(has('[assistantRunErrTimeout]')).toBe(true)
+    expect(has('boom')).toBe(true)
+  })
+
+  test('a canceled run says it stopped; a clean answer has no notes', () => {
+    const [canceled] = buildTimeline('s1', [], [], [run('s1', 'r1', 'canceled', [])], none, noRatings)
+    expect(turnTranscript(canceled as Turn, 0, t).includes('[assistantStopped]')).toBe(true)
+    const history = [message('m1', 'r1', 1, 'user', 'q'), message('m2', 'r1', 2, 'assistant', 'answer')]
+    const [done] = buildTimeline('s1', history, [], [], none, noRatings)
+    const out = turnTranscript(done as Turn, 0, t)
+    expect(out.includes('answer')).toBe(true)
+    expect(out.includes('[assistantRunFailed]')).toBe(false)
+    expect(out.includes('[assistantAnswerInterrupted]')).toBe(false)
   })
 })

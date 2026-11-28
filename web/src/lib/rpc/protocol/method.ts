@@ -338,6 +338,9 @@ export const METHOD = {
   AGENT_ASSISTANT_RATE: 'agent.assistant.rate',
   AGENT_ASSISTANT_CONFIRM_ISSUE: 'agent.assistant.confirmIssue',
   AGENT_ASSISTANT_DISCARD_ISSUE: 'agent.assistant.discardIssue',
+  AGENT_ASSISTANT_RENAME_SESSION: 'agent.assistant.renameSession',
+  AGENT_ASSISTANT_EXPORT_SESSION: 'agent.assistant.exportSession',
+  AGENT_ASSISTANT_ATTACHMENT: 'agent.assistant.attachment',
 
   /** 服务端推送通知，params 为 EventFrame。 */
   SERVICE_EVENT: 'service.event',

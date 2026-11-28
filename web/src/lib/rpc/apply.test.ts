@@ -370,7 +370,7 @@ describe('apply assistant', () => {
       remoteTasks: [],
     } as unknown as AgentSnapshot
     const next = applyAgentEvent(snapshot, { type: 'sessionChanged', data: null })
-    expect(next.assistant).toEqual({ config: null, loading: false, lastErrorReason: null, lastErrorMessage: null, visible: true, runs: [] })
+    expect(next.assistant).toEqual({ config: null, loading: false, lastErrorReason: null, lastErrorMessage: null, visible: true, nowUnixMs: 0, runs: [] })
     // 登出前缺少该字段的旧快照回到空状态（visible 按 false）。
     const legacy = applyAgentEvent({ cloudDevices: [], remoteTasks: [] } as unknown as AgentSnapshot, { type: 'sessionChanged', data: null })
     expect(legacy.assistant).toEqual(EMPTY_ASSISTANT_STATE)
