@@ -115,6 +115,12 @@ export interface AssistantStateDto {
   loading?: boolean;
   lastErrorReason?: ErrorReason | null;
   lastErrorMessage?: string | null;
+  /**
+   * 是否显示 AI 助手入口（云端 `ai.mode` 决定，agent 已登录取 `ai/config.visible`、未登录取 `ai/status.visible`）：
+   * `enabled` 所有人可见；`internal` 仅内部账号登录后可见；`off` 都不可见。与套餐无关。
+   * UI 一律以它判定是否显示入口；旧 agent 快照缺该字段按 false 处理，初始 false，拉取失败保留上次值。
+   */
+  visible: boolean;
   /** 进行中与最近结束的执行（新的在后，至多 `ASSISTANT_MAX_RUNS` 条）。 */
   runs: AssistantRunDto[];
 }
@@ -125,6 +131,7 @@ export const EMPTY_ASSISTANT_STATE: AssistantStateDto = {
   loading: false,
   lastErrorReason: null,
   lastErrorMessage: null,
+  visible: false,
   runs: [],
 };
 

@@ -59,6 +59,7 @@ const state = (runs: AssistantRunDto[] = [], extra: Partial<AssistantStateDto> =
   loading: false,
   lastErrorReason: null,
   lastErrorMessage: null,
+  visible: true,
   runs,
   ...extra,
 })

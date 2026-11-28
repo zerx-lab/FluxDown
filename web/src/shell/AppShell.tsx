@@ -24,10 +24,11 @@ import { AccountGuards } from './AccountGuards'
 import { AssistantPanel } from '../pages/assistant/AssistantPanel'
 import { ActivityRail } from './ActivityRail'
 import { BottomTabBar } from './BottomTabBar'
-import { isAssistantShortcut, toggleAssistantPanel } from './assistantPanelStore'
+import { closeAssistantPanel, isAssistantShortcut, toggleAssistantPanel } from './assistantPanelStore'
 import { ChromeEditBanner, ChromeMenuArea } from './ChromeEdit'
 import { ChromeStatusBar } from './ChromeStatusBar'
 import { setChromeEditing, useChromeEdit } from './chromeStore'
+import { useAssistantVisible } from './useVisibleActivityEntries'
 import { ChromeZoneView } from './ChromeZone'
 import { ConnectionBanner, ConnectionDot } from './ConnectionStatus'
 import { TitleBar, TitleBarSlotProvider } from './TitleBar'
@@ -72,9 +73,14 @@ function isMacPlatform(): boolean {
   return /mac|iphone|ipad|ipod/i.test(platform)
 }
 
-/** ⌘K（macOS）/ Ctrl+K（其它）开关 AI 助手面板；输入框内同样生效，有模态对话框时不响应。 */
+/** ⌘K（macOS）/ Ctrl+K（其它）开关 AI 助手面板；输入框内同样生效，有模态对话框时不响应。云端不显示助手入口时不响应，且已打开的面板随之关闭。 */
 function useAssistantShortcut(): void {
+  const visible = useAssistantVisible()
   useEffect(() => {
+    if (!visible) {
+      closeAssistantPanel()
+      return
+    }
     const mac = isMacPlatform()
     const onKeyDown = (event: KeyboardEvent) => {
       if (!isAssistantShortcut(event, mac) || document.querySelector('[role="dialog"]')) return
@@ -83,7 +89,7 @@ function useAssistantShortcut(): void {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
+  }, [visible])
 }
 
 const EMPTY_SELECTIONS: readonly SelectionRequestDto[] = []

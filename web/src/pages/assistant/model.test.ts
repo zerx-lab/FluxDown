@@ -109,7 +109,7 @@ const issue = (id: string, extra: Partial<AssistantIssueDto> = {}): AssistantIss
 const none: IssueOverrides = new Map()
 const noRatings: RatingOverrides = new Map()
 
-const state = (runs: AssistantRunDto[], extra: Partial<AssistantStateDto> = {}): AssistantStateDto => ({ runs, ...extra })
+const state = (runs: AssistantRunDto[], extra: Partial<AssistantStateDto> = {}): AssistantStateDto => ({ visible: true, runs, ...extra })
 
 describe('buildTimeline', () => {
   test('history turns group by user message and attach tool results', () => {
@@ -525,16 +525,16 @@ describe('gate', () => {
     usedToday: 4,
     toolsEnabled: true,
   }
-  const withConfig = (config: AssistantConfigDto | null): AssistantStateDto => ({ config, runs: [] })
+  const withConfig = (config: AssistantConfigDto | null): AssistantStateDto => ({ config, visible: true, runs: [] })
 
   test('reflects account, plan, quota and errors', () => {
     expect(gate(false, withConfig(open), false)).toEqual({ kind: 'signedOut' })
     expect(gate(true, withConfig(null), false)).toEqual({ kind: 'loading' })
     expect(gate(true, withConfig(null), true)).toEqual({ kind: 'serviceError' })
-    expect(gate(true, { runs: [], lastErrorReason: 'cloudUnreachable' }, false)).toEqual({ kind: 'serviceError' })
-    expect(gate(true, { runs: [], lastErrorMessage: 'x' }, false)).toEqual({ kind: 'serviceError' })
+    expect(gate(true, { visible: true, runs: [], lastErrorReason: 'cloudUnreachable' }, false)).toEqual({ kind: 'serviceError' })
+    expect(gate(true, { visible: true, runs: [], lastErrorMessage: 'x' }, false)).toEqual({ kind: 'serviceError' })
     // 拉取进行中的上一次错误不算失败。
-    expect(gate(true, { runs: [], loading: true, lastErrorReason: 'cloudUnreachable' }, false)).toEqual({ kind: 'loading' })
+    expect(gate(true, { visible: true, runs: [], loading: true, lastErrorReason: 'cloudUnreachable' }, false)).toEqual({ kind: 'loading' })
     expect(gate(true, withConfig(open), false)).toEqual({ kind: 'open', quotaExhausted: false })
     expect(gate(true, withConfig({ ...open, usedToday: 5 }), false)).toEqual({ kind: 'open', quotaExhausted: true })
     // 0 = 不限额。
@@ -546,7 +546,7 @@ describe('gate', () => {
   })
 
   test('a missing state field is the same as the empty state', () => {
-    expect(gate(true, { runs: [] }, false)).toEqual({ kind: 'loading' })
+    expect(gate(true, { visible: false, runs: [] }, false)).toEqual({ kind: 'loading' })
   })
 
   test('canSend follows the gate, connection, running state and length limit', () => {

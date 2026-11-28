@@ -903,7 +903,7 @@ function applyNonDaemonAgentEvent(snapshot: AgentSnapshot, event: Exclude<AgentE
         daemon: event.data ? snapshot.daemon : { ...snapshot.daemon, taskRuntime: {} },
       }
     case 'sessionChanged':
-      // 会话结束后账号维度投影随之失效（对应 Rust apply_agent_event）。
+      // 会话结束后账号维度投影随之失效（对应 Rust apply_agent_event）；助手入口可见性例外：agent 只在它变化时推送，重置会让 UI 卡在隐藏。
       return event.data === null
         ? {
             ...snapshot,
@@ -911,7 +911,7 @@ function applyNonDaemonAgentEvent(snapshot: AgentSnapshot, event: Exclude<AgentE
             cloudDevices: [],
             remoteTasks: [],
             cloudConnection: { state: 'disconnected' },
-            assistant: EMPTY_ASSISTANT_STATE,
+            assistant: { ...EMPTY_ASSISTANT_STATE, visible: snapshot.assistant?.visible === true },
             cloudNotify: snapshot.cloudNotify
               ? {
                   ...snapshot.cloudNotify,

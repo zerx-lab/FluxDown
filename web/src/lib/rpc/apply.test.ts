@@ -331,6 +331,7 @@ describe('apply assistant', () => {
     loading: false,
     lastErrorReason: null,
     lastErrorMessage: null,
+    visible: true,
     runs,
   })
 
@@ -362,15 +363,15 @@ describe('apply assistant', () => {
     expect(next.daemon.tasks.map((item) => item.taskId)).toEqual(['t1'])
   })
 
-  test('session end resets the assistant to the empty state (config, runs and errors)', () => {
+  test('session end resets the assistant (config, runs and errors) but keeps visible', () => {
     const snapshot = {
       assistant: { ...state([run('running', 'x')]), lastErrorReason: 'cloudUnreachable', lastErrorMessage: 'down' },
       cloudDevices: [],
       remoteTasks: [],
     } as unknown as AgentSnapshot
     const next = applyAgentEvent(snapshot, { type: 'sessionChanged', data: null })
-    expect(next.assistant).toEqual({ config: null, loading: false, lastErrorReason: null, lastErrorMessage: null, runs: [] })
-    // 登出前缺少该字段的旧快照同样回到空状态。
+    expect(next.assistant).toEqual({ config: null, loading: false, lastErrorReason: null, lastErrorMessage: null, visible: true, runs: [] })
+    // 登出前缺少该字段的旧快照回到空状态（visible 按 false）。
     const legacy = applyAgentEvent({ cloudDevices: [], remoteTasks: [] } as unknown as AgentSnapshot, { type: 'sessionChanged', data: null })
     expect(legacy.assistant).toEqual(EMPTY_ASSISTANT_STATE)
   })
