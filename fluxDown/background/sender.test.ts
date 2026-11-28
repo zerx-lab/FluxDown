@@ -42,7 +42,7 @@ mock.module("./tasks", () => ({ maybeArmTaskPollForChannel: () => {} }));
 
 // 必须先 mock 再加载被测模块（与 host-page-scripts.test.ts 同一约定），故此处动态导入。
 const { sendToFluxDown } = await import("./sender");
-const { requestRecordCache } = await import("./request-cache");
+const { requestHeaderCache, requestRecordCache } = await import("./request-cache");
 const { recordCapturedRequest } = await import("./request-record");
 
 // 去重状态是模块级的（3s 窗口），每个用例用独立 URL 隔离。
@@ -55,6 +55,7 @@ beforeEach(() => {
   url = `https://oa.example.com/api/export?case=${(seq += 1)}`;
   dispatched.length = 0;
   requestRecordCache.clear();
+  requestHeaderCache.clear();
 });
 
 describe("sendToFluxDown 自动拦截去重接线", () => {
@@ -99,4 +100,44 @@ describe("sendToFluxDown 自动拦截去重接线", () => {
     await sendToFluxDown({ url, origin: "intercept", channel: "local" });
     expect(dispatched).toHaveLength(4);
   });
+});
+
+test("serialized browser redirect metadata does not change the replay URL or POST association", async () => {
+  const browserOriginalUrl = "https://oa.example.com/submit";
+  recordCapturedRequest(requestRecordCache, browserOriginalUrl, "POST", form("1"), Date.now());
+  await sendToFluxDown({ url, originalUrl: browserOriginalUrl, browserOriginalUrl });
+  await sendToFluxDown({ url, originalUrl: browserOriginalUrl });
+
+  const wire = JSON.parse(JSON.stringify(dispatched));
+  expect(wire[0]).toMatchObject({ url, browserOriginalUrl });
+  expect(wire[0]).not.toHaveProperty("originalUrl");
+  expect(wire[0]).not.toHaveProperty("method");
+  expect(wire[0]).not.toHaveProperty("body");
+  expect(wire[1]).not.toHaveProperty("browserOriginalUrl");
+});
+
+test("request header cache falls back only to the final download's origin", async () => {
+  const cacheHeaders = (key: string, token: string) =>
+    requestHeaderCache.set(key, {
+      cookies: `session=${token}`,
+      headers: { Authorization: `Bearer ${token}` },
+      ts: Date.now(),
+      navigationPreload: false,
+    });
+  const sameOrigin = "https://oa.example.com:443/start";
+  const otherOrigin = "https://oa.example.com:8443/start";
+  cacheHeaders(sameOrigin, "same");
+  cacheHeaders(otherOrigin, "other");
+
+  await sendToFluxDown({ url, originalUrl: otherOrigin });
+  await sendToFluxDown({ url, originalUrl: sameOrigin });
+  cacheHeaders(url, "final");
+  await sendToFluxDown({ url, originalUrl: otherOrigin });
+
+  expect(dispatched[0].cookies).toBe("");
+  expect(dispatched[0].headers?.Authorization).toBeUndefined();
+  expect(dispatched[1].cookies).toBe("session=same");
+  expect(dispatched[1].headers?.Authorization).toBe("Bearer same");
+  expect(dispatched[2].cookies).toBe("session=final");
+  expect(dispatched[2].headers?.Authorization).toBe("Bearer final");
 });

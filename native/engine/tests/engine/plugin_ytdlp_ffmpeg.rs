@@ -440,6 +440,7 @@ async fn resolve_selectors_prioritize_resolution_and_prefer_avc1() {
     let req = ResolveRequest {
         task_id: "t_sel".to_string(),
         url: "https://www.youtube.com/watch?v=test".to_string(),
+        browser_original_url: None,
         auth_ref: String::new(),
         cookies: String::new(),
         referrer: String::new(),

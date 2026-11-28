@@ -1515,6 +1515,7 @@ impl GatewayService {
             method: None,
             body: None,
             audio_url: None,
+            browser_original_url: None,
         };
         let options = crate::capture::TorrentCreateOptions {
             unattended: params.silent,

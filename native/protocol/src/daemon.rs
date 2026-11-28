@@ -309,6 +309,9 @@ pub struct DaemonCreateTaskParams {
     /// 主名不变；缺省 / 空串 = 无参照。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name_hint: Option<String>,
+    /// Observed pre-redirect browser download URL, for resolver input only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_original_url: Option<String>,
     /// 分类目录路由：调用方未替用户选定保存目录时（外部捕获）携带，引擎据此按初始名与
     /// 下载完成时的最终文件名把产物放进命中分类的目录；`request.saveDir` 为路由未命中时
     /// 的基准目录（空 = daemon 默认）。缺省 = 保存目录即最终目录。
@@ -1897,6 +1900,13 @@ pub struct DownloadRequest {
     /// 空/缺省 = 普通单 URL 下载。
     #[serde(rename = "audioUrl", default)]
     pub audio_url: Option<String>,
+    /// Observed pre-redirect browser download URL, not a replay target.
+    #[serde(
+        rename = "browserOriginalUrl",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub browser_original_url: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

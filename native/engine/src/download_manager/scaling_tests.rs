@@ -49,6 +49,7 @@ fn queued(task_id: &str, url: &str, queue_id: &str, torrent: bool) -> QueuedTask
         resolver_item: String::new(),
         source_url: String::new(),
         resolver_patch: None,
+        browser_request_origin: None,
     }
 }
 

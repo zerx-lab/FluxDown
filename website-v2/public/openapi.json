@@ -4575,6 +4575,13 @@
               }
             ]
           },
+          "browserOriginalUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Observed pre-redirect browser download URL, not a replay target."
+          },
           "cookies": {
             "type": "string"
           },

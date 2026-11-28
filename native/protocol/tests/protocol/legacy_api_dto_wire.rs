@@ -20,6 +20,7 @@ fn download_request_deserializes_wire_fields() {
             name: "full payload with headers",
             json: r#"{
                     "url": "https://example.com/file.zip",
+                    "browserOriginalUrl": "https://origin.test/download",
                     "filename": "file.zip",
                     "referrer": "https://example.com/",
                     "cookies": "session=abc123",
@@ -29,6 +30,10 @@ fn download_request_deserializes_wire_fields() {
                 }"#,
             check: |req| {
                 assert_eq!(req.url, "https://example.com/file.zip");
+                assert_eq!(
+                    req.browser_original_url.as_deref(),
+                    Some("https://origin.test/download")
+                );
                 assert_eq!(req.filename, "file.zip");
                 assert_eq!(req.referrer, "https://example.com/");
                 assert_eq!(req.cookies, "session=abc123");
@@ -44,6 +49,7 @@ fn download_request_deserializes_wire_fields() {
             json: r#"{"url": "https://example.com/file.zip"}"#,
             check: |req| {
                 assert!(req.headers.is_none());
+                assert!(req.browser_original_url.is_none());
                 assert_eq!(req.cookies, "");
                 assert_eq!(req.referrer, "");
                 assert_eq!(req.file_size, None);

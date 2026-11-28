@@ -54,7 +54,7 @@ How scripts are run:
 
 ### `resolve(ctx)`
 
-Called before protocol dispatch, on **every** start and resume of a task that matches `resolvers[0].match.urls` (resolution is lazy — see the [overview](/docs/en/plugins/overview/)). A resolver whose manifest has `multi: true` is additionally called once by the new-download window to pre-resolve a link (see [Manifests](#manifest-results)).
+Called before protocol dispatch, on **every** start and resume of a task that matches a resolver (resolution is lazy — see the [overview](/docs/en/plugins/overview/)). The task URL is matched first. Only if no resolver matches it can a resolver with [`match.browserOriginalUrl: true`](/docs/en/plugins/manifest/#resolvers0) match against the browser's first URL instead. A resolver whose manifest has `multi: true` is additionally called once by the new-download window to pre-resolve a link (see [Manifests](#manifest-results)).
 
 When the resolved URL selects a different downloader protocol than the original URL, FluxDown may call `resolve` a second time using that protocol's proxy route. The second result replaces the first; it must still identify the same selected variant. If that format is no longer available, resolution fails rather than downloading a different format. A failed second call is reported as a resolver error.
 
@@ -65,7 +65,8 @@ If a required setting has neither a stored value nor a `default`, the call fails
 | Field | Type | Meaning |
 |---|---|---|
 | `taskId` | string | Task UUID. |
-| `url` | string | The original task URL (never a previously resolved one). |
+| `url` | string | The task's input URL (never a previously resolved one). For a captured download this remains the browser's final URL, even when the first URL matched the resolver. |
+| `browserOriginalUrl` | string (optional) | First URL observed by Chromium for a direct HTTP(S) download captured through desktop native messaging (NMH). Present only if both the first and final URLs are HTTP(S) and differ. |
 | `authRef` | string | The default credential reference for `plugin + site`. Only filled when the manifest declares permission `auth` **and** the URL has a derivable http/https site; otherwise `""`. You normally just call `flux.fetch` — the host looks the credential up by this reference automatically. |
 | `cookies` | string | Cookie header value attached to the task. `""` when none. |
 | `referrer` | string | Referrer attached to the task. `""` when none. |
@@ -74,6 +75,8 @@ If a required setting has neither a stored value nor a `default`, the call fails
 | `resolverItem` | string | `""` on a normal call. For a selected [manifest](#manifest-results) child: the plugin's own `item.id`, or `<itemId>@<variantId>` when the user explicitly chose one of that item's variants. |
 
 `cookies`, `referrer`, `userAgent` and `extraHeaders` carry whatever was stored on the task when it was created — for example by the browser extension capture or the new-download form. They are empty strings / objects when nothing was supplied.
+
+`browserOriginalUrl` is URL metadata, not a replay of the first request. FluxDown does not attach or replay first-hop cookies, authorization headers or other credentials based on this field. To use another URL for the download, return it explicitly in the resolver result; pass-through still downloads `ctx.url`.
 
 #### Return value
 

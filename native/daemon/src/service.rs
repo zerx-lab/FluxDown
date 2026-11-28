@@ -2073,6 +2073,7 @@ impl DaemonService {
                 torrent_file_bytes: bytes,
                 hint_file_size: params.hint_file_size.filter(|size| *size > 0).unwrap_or(0),
                 name_hint: params.name_hint.unwrap_or_default(),
+                browser_original_url: params.browser_original_url,
                 unattended: params.unattended,
                 category_route: params.category_route,
             })

@@ -330,6 +330,7 @@ async fn route_with_plugins(plugins: &Arc<PluginManager>, url: &str) -> EgressRo
         .spawn(async move {
             let identity = manager.unattended_resolver(&source).await?;
             let request = ResolveRequest {
+                browser_original_url: None,
                 task_id: String::new(),
                 url: source,
                 auth_ref: String::new(),

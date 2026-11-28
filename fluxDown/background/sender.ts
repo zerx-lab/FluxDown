@@ -42,8 +42,10 @@ export interface SendInput {
   filename?: string;
   fileSize?: number;
   mimeType?: string;
-  /** 重定向前的 URL：用于回退查找 headers / 请求事务缓存。 */
+  /** 重定向前的 URL：仅用于回退查找 headers 缓存。 */
   originalUrl?: string;
+  /** Chromium's observed first URL, only for resolver matching. */
+  browserOriginalUrl?: string;
   storedCookies?: string;
   storedHeaders?: Record<string, string>;
   /** 离散音视频轨对的音频轨 URL；非空 = 视频轨 + 音频轨配对，引擎分别下载后 mux。 */
@@ -212,6 +214,7 @@ async function deliverToFluxDown(input: SendInput): Promise<SendOutcome> {
 
   const request: DownloadRequest = {
     url,
+    browserOriginalUrl: input.browserOriginalUrl,
     filename: filename || "",
     referrer: referrer || "",
     cookies: cookieString,

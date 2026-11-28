@@ -3,12 +3,29 @@ import {
   ServiceWorkerScopes,
   browserOnlyReason,
   isReplayableUrl,
+  observedBrowserOriginalUrl,
   scopeBelongsTo,
   type NetworkEvidence,
 } from "./download-source";
 
 const none = (): NetworkEvidence => "none";
 const evidence = (map: Record<string, NetworkEvidence>) => (url: string): NetworkEvidence => map[url] ?? "none";
+
+describe("observedBrowserOriginalUrl", () => {
+  const original = "https://example.com/export?key=1";
+  const final = "http://cdn.example.com/file.zip";
+
+  test("keeps the first URL for a distinct observed HTTP(S) target", () => {
+    expect(observedBrowserOriginalUrl(original, final)).toBe(original);
+  });
+
+  test("omits absent, unchanged, invalid, and non-HTTP(S) targets", () => {
+    for (const target of [undefined, original, "not a URL", "ftp://example.com/file.zip"]) {
+      expect(observedBrowserOriginalUrl(original, target)).toBeUndefined();
+    }
+    expect(observedBrowserOriginalUrl("data:,file", final)).toBeUndefined();
+  });
+});
 
 describe("browserOnlyReason: local schemes", () => {
   const scopes = new ServiceWorkerScopes();

@@ -75,6 +75,7 @@ fn request(url: &str) -> ResolveRequest {
     ResolveRequest {
         task_id: "memory-budget".to_string(),
         url: url.to_string(),
+        browser_original_url: None,
         auth_ref: String::new(),
         cookies: String::new(),
         referrer: String::new(),

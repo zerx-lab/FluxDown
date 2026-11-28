@@ -1089,6 +1089,30 @@ impl PluginManager {
             version: dev_ver,
             app_version: self.app_version.clone(),
         };
+        if let Some(original) = req.browser_original_url.as_deref() {
+            let matches_url = |url: &str| {
+                manifest
+                    .resolver_urls()
+                    .iter()
+                    .any(|pattern| super::manifest::url_glob_match(pattern, url))
+            };
+            if matches_url(&req.url) {
+                req.browser_original_url = None;
+            } else if manifest
+                .resolvers
+                .first()
+                .is_some_and(|resolver| resolver.match_decl.browser_original_url)
+                && matches_url(original)
+            {
+                req.cookies.clear();
+                req.extra_headers.clear();
+                req.referrer.clear();
+            } else {
+                return Err(PluginError::Runtime(format!(
+                    "插件 {identity} 已不再匹配此浏览器下载；请重新选择解析方式{escape}"
+                )));
+            }
+        }
         // 每次 resolve 都把同一插件/站点映射到稳定认证引用。插件无需把 Cookie
         // 放进自己的 KV，也无需在每次调用时重新登录。只对声明了 auth 权限的
         // 插件填充（M-5）：未授权插件本就会被 `bridge::http_request` 拒绝
@@ -1097,7 +1121,10 @@ impl PluginManager {
         // 承诺的字段语义不符。
         if req.auth_ref.is_empty()
             && manifest.has_permission(PERMISSION_AUTH)
-            && let Some(auth_ref) = crate::auth::default_auth_ref(identity, &req.url)
+            && let Some(auth_ref) = crate::auth::default_auth_ref(
+                identity,
+                req.browser_original_url.as_deref().unwrap_or(&req.url),
+            )
         {
             req.auth_ref = auth_ref;
         }

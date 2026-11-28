@@ -57,6 +57,8 @@ export type RequestBody =
 
 export interface DownloadRequest {
   url: string;
+  /** Browser-observed URL before a redirect; not used to replay the request. */
+  browserOriginalUrl?: string;
   filename?: string;
   referrer?: string;
   cookies?: string;
@@ -105,6 +107,7 @@ export interface ApiResponse {
  */
 export interface BatchDownloadItem {
   url: string;
+  browserOriginalUrl?: string;
   audioUrl?: string;
   filename?: string;
   referrer?: string;
@@ -272,6 +275,7 @@ const BATCH_CHUNK_ITEMS_LIMIT = 1000;
  */
 function toBatchWireItem(item: BatchDownloadItem): Record<string, any> {
   const wire: Record<string, any> = { url: item.url };
+  if (item.browserOriginalUrl) wire.browserOriginalUrl = item.browserOriginalUrl;
   if (item.audioUrl) wire.audioUrl = item.audioUrl;
   if (item.filename) wire.filename = item.filename;
   const referrer = sanitizeReferrer(item.referrer);
@@ -335,6 +339,7 @@ async function nmhSendBatchDownloadLegacy(
     items.map((item) =>
       nmhSendDownloadRequest({
         url: item.url,
+        browserOriginalUrl: item.browserOriginalUrl,
         audioUrl: item.audioUrl,
         filename: item.filename || "",
         referrer: item.referrer || "",

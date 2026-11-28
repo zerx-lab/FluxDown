@@ -128,6 +128,7 @@ impl LinkTaskCreator for DaemonTaskCreator {
                     unattended: true,
                     hint_file_size: None,
                     name_hint: None,
+                    browser_original_url: None,
                     category_route,
                 }),
             )

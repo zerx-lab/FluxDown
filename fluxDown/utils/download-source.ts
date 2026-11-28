@@ -25,6 +25,25 @@ export function isReplayableUrl(url: string): boolean {
   }
 }
 
+/** Matching hint from a browser-observed HTTP(S) redirect; never a replay URL. */
+export function observedBrowserOriginalUrl(url: string, finalUrl?: string): string | undefined {
+  if (!finalUrl || url === finalUrl) return undefined;
+  try {
+    const original = new URL(url);
+    const final = new URL(finalUrl);
+    if (
+      (original.protocol === "http:" || original.protocol === "https:") &&
+      (final.protocol === "http:" || final.protocol === "https:") &&
+      original.href !== final.href
+    ) {
+      return url;
+    }
+  } catch {
+    // An invalid URL cannot establish a browser redirect.
+  }
+  return undefined;
+}
+
 /** 规范化 SW 作用域：仅接受 http(s)，去掉 query / hash。非法返回 null。 */
 export function normalizeScope(scope: string): string | null {
   let parsed: URL;

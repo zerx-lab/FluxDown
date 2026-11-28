@@ -176,11 +176,21 @@ export function extractAuthFromCache(
   cookies: string | undefined;
   headers: Record<string, string> | undefined;
 } {
-  const cached =
-    requestHeaderCache.get(url) ||
-    (fallbackUrl && fallbackUrl !== url
-      ? requestHeaderCache.get(fallbackUrl)
-      : undefined);
+  let cached = requestHeaderCache.get(url);
+  if (!cached && fallbackUrl && fallbackUrl !== url) {
+    try {
+      const target = new URL(url);
+      const source = new URL(fallbackUrl);
+      if (
+        (target.protocol === "http:" || target.protocol === "https:") &&
+        target.origin === source.origin
+      ) {
+        cached = requestHeaderCache.get(fallbackUrl);
+      }
+    } catch {
+      // Invalid URLs cannot authorize a credential cache fallback.
+    }
+  }
   if (!cached) return { cookies: undefined, headers: undefined };
 
   const cookies = cached.cookies || undefined;

@@ -218,9 +218,17 @@ impl<'s> HttpRequest<'s> {
             deadline,
         } = *hop;
         let spec = self.spec;
+        let browser_origin = spec.browser_request_origin.as_deref();
+        let request_headers_apply =
+            browser_origin.is_none_or(|origin| credential_scope::same_origin(origin, url));
+        let anchor = browser_origin.or(anchor);
         let mut req = client.request(method.clone(), url.clone());
 
-        let captured = header_value(spec, "cookie").unwrap_or(&spec.cookies).trim();
+        let captured = if request_headers_apply {
+            header_value(spec, "cookie").unwrap_or(&spec.cookies).trim()
+        } else {
+            ""
+        };
         if !captured.is_empty() && anchor.is_some_and(|a| credential_scope::cookies_apply(a, url)) {
             // 手动 Cookie 头会让 reqwest 跳过 jar：并入本链内下发、作用于本跳的 Cookie。
             let fresh = learned
@@ -235,7 +243,11 @@ impl<'s> HttpRequest<'s> {
             );
         }
 
-        let referer = header_value(spec, "referer").unwrap_or(&spec.referrer);
+        let referer = if request_headers_apply {
+            header_value(spec, "referer").unwrap_or(&spec.referrer)
+        } else {
+            ""
+        };
         if crate::downloader::is_valid_referrer(referer) {
             if credential_scope::referer_applies(referer, url) {
                 req = req.header(REFERER, referer.trim());
@@ -253,12 +265,14 @@ impl<'s> HttpRequest<'s> {
         }
 
         let authorized = anchor.is_some_and(|a| credential_scope::authorization_applies(a, url));
-        req = crate::downloader::apply_extra_headers_where(req, &spec.extra_headers, |name| {
-            !(name.eq_ignore_ascii_case("cookie")
-                || name.eq_ignore_ascii_case("referer")
-                || (!authorized && credential_scope::is_authorization_header(name))
-                || (!keeps_body && is_body_header(name)))
-        });
+        if request_headers_apply {
+            req = crate::downloader::apply_extra_headers_where(req, &spec.extra_headers, |name| {
+                !(name.eq_ignore_ascii_case("cookie")
+                    || name.eq_ignore_ascii_case("referer")
+                    || (!authorized && credential_scope::is_authorization_header(name))
+                    || (!keeps_body && is_body_header(name)))
+            });
+        }
         req = crate::downloader::apply_origin_headers(req, url.as_str(), &spec.origin_headers);
 
         if keeps_body
