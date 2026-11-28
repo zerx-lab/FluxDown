@@ -40,6 +40,21 @@ pub(crate) type CloudSocket = tokio_tungstenite::WebSocketStream<reqwest::Upgrad
 /// 云端连接的 TCP keepalive 探测间隔。
 const TCP_KEEPALIVE: Duration = Duration::from_secs(30);
 
+/// 提问 SSE 等响应头的基础时限。
+const STREAM_HEADERS_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// 按请求体体积折算上传耗时的下限速率(字节 / 秒,约 1 Mbps):带满 4 张大图的提问体可达数十 MB,
+/// 慢上行下不能被当成「云端不回响应头」。
+const STREAM_UPLOAD_FLOOR_BYTES_PER_SEC: u64 = 125_000;
+
+/// 流式请求的响应头时限:基础 15 s + 请求体按下限速率上传所需的时间。
+fn stream_headers_timeout(body_len: usize) -> Duration {
+    let body_len = u64::try_from(body_len).unwrap_or(u64::MAX);
+    STREAM_HEADERS_TIMEOUT.saturating_add(Duration::from_secs(
+        body_len / STREAM_UPLOAD_FLOOR_BYTES_PER_SEC,
+    ))
+}
+
 /// access token 剩余有效期不足该值时，发请求 / 建长连接前先单飞刷新，
 /// 避免重连时先吃一次 401 再刷新重放（服务端 access token 有效期 15 分钟）。
 const ACCESS_TOKEN_REFRESH_LEEWAY_SECS: i64 = 60;
@@ -958,13 +973,24 @@ impl CloudClient {
             .header("X-FluxDown-Device-Name", device_name)
             .header("X-FluxDown-Platform", platform)
             .header("X-FluxDown-Version", fluxdown_protocol::APP_VERSION);
-        if let Some(body) = body {
-            request = request.json(body);
+        // 请求体自己序列化：上传耗时要按体积折算进响应头时限，且 401 重放时按同一份字节重发。
+        let payload = match body {
+            Some(body) => Some(serde_json::to_vec(body).map_err(|error| {
+                CloudError::local(format!("cannot encode the stream request body: {error}"))
+            })?),
+            None => None,
+        };
+        let headers_timeout = stream_headers_timeout(payload.as_ref().map_or(0, Vec::len));
+        if let Some(payload) = payload {
+            request = request
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(payload);
         }
         let request = request.send();
         let sent_at = unix_ms();
-        // 仅限制响应头，不给无限 SSE body 加总寿命；包括成功 TCP 后不回头的反代。
-        let response = tokio::time::timeout(Duration::from_secs(15), request)
+        // 仅限制「请求体发完后等响应头」，不给无限 SSE body 加总寿命；包括成功 TCP 后不回头的反代。
+        // 请求体的上传时间另按 [`STREAM_UPLOAD_FLOOR_BYTES_PER_SEC`] 折算进时限（带图提问可达数十 MB）。
+        let response = tokio::time::timeout(headers_timeout, request)
             .await
             .map_err(|_| CloudError::network("cloud SSE response headers timeout".to_owned()))?
             .map_err(|error| CloudError::network(error_chain(&error)))?;
