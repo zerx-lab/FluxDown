@@ -93,6 +93,29 @@ async function renderPngFrom(src: string, size: number): Promise<Buffer> {
 }
 
 /**
+ * 把完全透明像素的 RGB 填成白色。GPU 对非预乘纹理做双线性缩放时会把透明像素的 RGB
+ * 混进相邻不透明像素；透明像素若是黑色，白色底板直边会出现一圈灰线（设置页「闪电」卡片）。
+ */
+async function whitenTransparent(png: Buffer): Promise<Buffer> {
+  const { data, info } = await sharp(png)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] === 0) {
+      data[i] = 255;
+      data[i + 1] = 255;
+      data[i + 2] = 255;
+    }
+  }
+  return sharp(data, {
+    raw: { width: info.width, height: info.height, channels: 4 },
+  })
+    .png({ compressionLevel: 9 })
+    .toBuffer();
+}
+
+/**
  * 生成 macOS 应用图标 — 遵循 Apple HIG：圆角矩形形状精确占画布 824/1024（≈80.5%），
  * 四周各留 100px 透明边距（1024 画布）。系统会自动为图标叠加阴影，故源 SVG 不含手绘阴影，
  * viewBox 已收紧到圆角矩形边界（内容占比 1.0），此处直接把内容渲染到画布的 824/1024。
@@ -400,7 +423,9 @@ async function main() {
 
     // 内置备选应用图标「闪电」— 512px（Windows / Linux）+ macOS Dock 的 HIG 版
     if (existsSync(BOLT_SVG_SRC)) {
-      const bolt = await renderPngFrom(BOLT_SVG_SRC, 512);
+      const bolt = await whitenTransparent(
+        await renderPngFrom(BOLT_SVG_SRC, 512),
+      );
       await saveFile("assets/logo/fluxdown_bolt.png", bolt);
       await saveFile(
         "assets/logo/macos/app_icon_bolt_512.png",
