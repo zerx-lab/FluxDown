@@ -1,4 +1,4 @@
-// 套餐选择 / 购买对话框（GPUI `crates/account/src/pages/plan_dialog.rs` 的 Web 对应）：
+// 套餐选择 / 购买对话框（GPUI `crates/account/src/dialogs/plan_purchase.rs` 的 Web 对应）：
 // select（目录 + 抵扣 + 邀请码）→ paying（微信二维码 + 轮询）→ success。关闭 / 卸载即停止轮询与倒计时。
 
 import { Check, CheckCheck, Copy, Crown, Diamond, Gem, Rocket, Shield, Sparkles, Star, TriangleAlert, Zap } from 'lucide-react'
@@ -350,6 +350,16 @@ export function PlanDialog({ session, onClose }: { session: AgentSessionDto; onC
   const chosen = ready && selected ? plans.find((plan) => plan.code === selected) : undefined
   const chosenState = chosen && ready ? stateOf(chosen, ready) : null
   const chosenAvailable = chosenState === 'available' || chosenState === 'renewable'
+  // 打开 / 重载后默认选中展示顺序（买断在前、期卡在后）中第一个可选套餐（与 GPUI `first_selectable` 一致）。
+  const firstSelectable = ready
+    ? ([...lifetimePlans(plans), ...cardPlans(plans)].find((plan) => {
+        const state = stateOf(plan, ready)
+        return state === 'available' || state === 'renewable'
+      })?.code ?? null)
+    : null
+  useEffect(() => {
+    if (step.kind === 'select' && !chosenAvailable && firstSelectable !== null) setSelected(firstSelectable)
+  }, [step.kind, chosenAvailable, firstSelectable])
 
   let title = t('accountPlanDialogTitle')
   let footer = null
