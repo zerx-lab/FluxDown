@@ -66,6 +66,54 @@ export function endEdit(state: ComposerState): ComposerState {
   return state.editing === null ? state : { ...state.editing.previous, editing: null }
 }
 
+/**
+ * 编辑重发发出后输入框已被改动:新输入的保留,暂存的原草稿接在后面(空行隔开),不丢(GPUI `merge_stashed_draft`)。
+ * `restoreImages` 为暂存的图片附件能否一并还原;不能时文本里指向它们的占位符一并去掉。
+ */
+export function mergeStashedDraft(current: string, stash: string, stashImages: number, restoreImages: boolean): string {
+  const kept = restoreImages ? stash : stripPlaceholders(stash, stashImages)
+  if (kept.trim() === '') return current
+  if (current.trim() === '') return kept
+  return `${current.trimEnd()}\n\n${kept}`
+}
+
+/**
+ * 去掉文本里编号 1..=`count` 的图片占位符(旧草稿的图不再随它回来时,占位符不能指向别的图);超出 `count` 的
+ * `[Image #n]` 是用户自己写的文字,原样保留(GPUI `strip_placeholders`)。
+ */
+export function stripPlaceholders(text: string, count: number): string {
+  let out = text
+  for (let remaining = count; remaining >= 1; remaining -= 1) out = removePlaceholder(out, 0, 1, remaining).text
+  return out
+}
+
+/**
+ * 提问发出后输入区的收尾(GPUI `clear_sent_draft`):文本与附图仍是发送时的才清空;发送期间用户新输入的内容
+ * 一律保留。被发送的编辑到此结束并还原暂存的原草稿:输入区原样时直接还原;已被改动时新输入的保留,暂存草稿接在
+ * 它后面(附图为空时一并还原暂存的附图,否则去掉暂存文本里指向它们的占位符),暂存的草稿不会丢。
+ */
+export function settleSent(sent: ComposerState, now: ComposerState): ComposerState {
+  const unchanged =
+    now.draft === sent.draft &&
+    now.attachments.length === sent.attachments.length &&
+    now.attachments.every((item, index) => item.key === sent.attachments[index]?.key)
+  if (sent.editing === null) {
+    // 普通提问没有暂存草稿;发送期间若开始了另一条编辑,那不是这次发送的收尾对象。
+    if (now.editing !== null) return now
+    return unchanged ? EMPTY_COMPOSER : now
+  }
+  // 被发送的编辑已在发送期间结束(切走会话等,暂存草稿已还原)或被别的编辑取代:输入区不归这次发送收尾。
+  if (now.editing === null || now.editing.questionId !== sent.editing.questionId) return now
+  const stash = now.editing.previous
+  if (unchanged) return { draft: stash.draft, attachments: stash.attachments, editing: null }
+  const restoreImages = now.attachments.length === 0
+  return {
+    draft: mergeStashedDraft(now.draft, stash.draft, stash.attachments.length, restoreImages),
+    attachments: restoreImages ? stash.attachments : now.attachments,
+    editing: null,
+  }
+}
+
 /** 附图能力：云端配置声明支持且允许至少一张。不满足时输入区不提供任何图片入口。 */
 export function imagesEnabled(config: AssistantConfigDto | undefined): boolean {
   return config !== undefined && config.imagesSupported && config.maxImages > 0
@@ -245,44 +293,65 @@ function placeholderSpans(text: string): PlaceholderSpan[] {
   }
 }
 
-/** 文本里全部 `[Image #N]` 占位符（N 为十进制数字，不带符号 / 前导空白）。 */
-const PLACEHOLDER = /\[Image #(\d+)\]/g
-
-/** 在选区 `[start, end)` 处写入第 `number` 张图片的占位符（选区被替换，与粘贴一致），光标落在占位符之后。 */
-export function insertPlaceholder(text: string, start: number, end: number, number: number): TextEdit {
-  const from = clampCaret(text, Math.min(start, end))
-  const to = clampCaret(text, Math.max(start, end))
-  const placeholder = assistantImagePlaceholder(number)
-  return { text: text.slice(0, from) + placeholder + text.slice(to), caret: from + placeholder.length }
+/** 占位符前面是行首 / 空白（此时删除占位符可以顺带吞掉后面的一个空格）。 */
+function endsAtBoundary(before: string): boolean {
+  return before === '' || /\s$/.test(before)
 }
 
 /**
- * 删除第 `number` 张图片后更新文本：该编号的占位符全部移除，其后编号（`number < N <= count`，`count` 为删除前的
- * 附件数）各减一，保持与剩余附件列表一一对应；超出范围的编号是用户手写的无效引用，原样保留。
- * 光标跟随文本移动（落在被移除的占位符里时回到它的起点）。
+ * 在选区 `[start, end)` 处写入第 `number` 张图片的占位符（选区被替换，与粘贴一致）。与相邻文字之间补一个空格，
+ * 免得占位符黏在词上；该侧已是空白则不重复补。光标落在占位符（及补的空格）之后。
  */
-export function removePlaceholder(text: string, caret: number, number: number, count: number): TextEdit {
-  const at = clampCaret(text, caret)
+export function insertPlaceholder(text: string, start: number, end: number, number: number): TextEdit {
+  const from = floorBoundary(text, Math.min(start, end))
+  const to = Math.max(from, floorBoundary(text, Math.max(start, end)))
+  const before = text.slice(0, from)
+  const after = text.slice(to)
+  const lead = endsAtBoundary(before) ? '' : ' '
+  const trail = after === '' || !/^\s/.test(after) ? ' ' : ''
+  const inserted = `${lead}${assistantImagePlaceholder(number)}${trail}`
+  return { text: before + inserted + after, caret: from + inserted.length }
+}
+
+/** 一处文本替换：`[start, end)` 换成 `text`。 */
+interface Replacement {
+  start: number
+  end: number
+  text: string
+}
+
+/** 把升序、互不重叠的替换应用到文本，并把偏移 `caret` 映射到编辑后（落在被替换区间内取区间起点）。 */
+function applyReplacements(text: string, edits: readonly Replacement[], caret: number): TextEdit {
   let out = ''
   let cursor = 0
-  let nextCaret = at
-  for (const match of text.matchAll(PLACEHOLDER)) {
-    const start = match.index
-    const end = start + match[0].length
-    const n = Number(match[1])
-    let replacement = match[0]
-    if (n === number) replacement = ''
-    else if (n > number && n <= count) replacement = assistantImagePlaceholder(n - 1)
-    out += text.slice(cursor, start) + replacement
-    cursor = end
-    const delta = replacement.length - match[0].length
-    if (delta !== 0) {
-      if (end <= at) nextCaret += delta
-      else if (start < at) nextCaret = out.length - replacement.length
-    }
+  let nextCaret = caret
+  for (const edit of edits) {
+    out += text.slice(cursor, edit.start) + edit.text
+    cursor = edit.end
+    const delta = edit.text.length - (edit.end - edit.start)
+    if (edit.end <= caret) nextCaret += delta
+    else if (edit.start < caret) nextCaret = out.length - edit.text.length
   }
   out += text.slice(cursor)
   return { text: out, caret: clampCaret(out, nextCaret) }
+}
+
+/**
+ * 删除第 `number` 张图片（删除前共 `count` 张）后文本要做的编辑：该编号的占位符全部移除（占位符前是行首 / 空白时
+ * 顺带吞掉后面的一个空格），其后编号（`number < N <= count`）各减一，保持与剩余附件列表一一对应；超出范围的编号与
+ * 前导 0 的写法是用户自己写的文字，原样保留。光标跟随文本移动（落在被移除的占位符里时回到它的起点）。
+ */
+export function removePlaceholder(text: string, caret: number, number: number, count: number): TextEdit {
+  const edits: Replacement[] = []
+  for (const span of placeholderSpans(text)) {
+    if (span.number === number) {
+      const end = endsAtBoundary(text.slice(0, span.start)) && text[span.end] === ' ' ? span.end + 1 : span.end
+      edits.push({ start: span.start, end, text: '' })
+    } else if (span.number > number && span.number <= count) {
+      edits.push({ start: span.start, end: span.end, text: assistantImagePlaceholder(span.number - 1) })
+    }
+  }
+  return applyReplacements(text, edits, clampCaret(text, caret))
 }
 
 /** 编号 1..=`count` 里在文本中已找不到占位符的图片编号（升序）：用户删掉了占位符，对应图片随之移除。 */
@@ -328,9 +397,7 @@ export function placeholderRemnant(previous: string, next: string, count: number
   if (lo === start && hi === previousEnd) return null
   let end = start + (hi - previousEnd)
   // 与 GPUI 一致：占位符前是行首 / 空白时顺带吞掉后面的一个空格。
-  const before = next.slice(0, lo)
-  const atBoundary = before === '' || /\s$/.test(before)
-  if (atBoundary && next[end] === ' ') end += 1
+  if (endsAtBoundary(next.slice(0, lo)) && next[end] === ' ') end += 1
   return { start: lo, end }
 }
 

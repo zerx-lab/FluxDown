@@ -31,8 +31,10 @@ import type {
   RpcErrorData,
 } from '../../lib/rpc/protocol'
 import {
+  SEND_FAILURE_KEY,
   SESSION_PAGE_SIZE,
   appendSessions,
+  canResend,
   classifyConfirmError,
   classifySendError,
   currentKind,
@@ -42,13 +44,19 @@ import {
   findIssue,
   gate,
   pendingRequestIds,
+  sessionLimitState,
+  validRatingComment,
   validTitle,
   withoutReplaced,
 } from './model'
-import type { ActionFailure, SendFailure, SentImages } from './model'
+import type { ActionFailure, RetryPlan, SendFailure, SentImages } from './model'
 
-/** 历史图片缓存的条数上限（每张是一份 data URL，超出按最早取用的先丢）。 */
-const ATTACHMENT_CACHE_LIMIT = 64
+/** 历史图片缓存的字节上限（按 data URL 的长度计；超出时先丢最久没用过的）。 */
+export const ATTACHMENT_CACHE_BYTES = 64 * 1024 * 1024
+/** 被限频后本地暂停提问的时长：云端只返回「限频」不带重试时刻，按固定冷却处理（与 GPUI 一致）。 */
+export const RATE_LIMIT_COOLDOWN_MS = 10_000
+/** 删除 / 清空的二次确认等多久自动取消。 */
+export const CONFIRM_TIMEOUT_MS = 4_000
 
 /** 控制器依赖的 RPC 面（生产环境是 `rpc.agent.assistant`，测试注入替身）。 */
 export interface AssistantPort {
@@ -69,14 +77,37 @@ export interface AssistantPort {
   discardIssue(params: AssistantIssueParams): Promise<OkResult>
 }
 
-/** 页面外部的输入：快照里的助手状态、登录态、连接是否可用、界面语言。 */
+/** 页面外部的输入：快照里的助手状态、登录态、账号、连接是否可用、界面语言。 */
 export interface AssistantEnv {
   state: AssistantStateDto
   signedIn: boolean
+  /** 当前账号的用户 ID（未登录为 null）；A 直接换成 B 时登录态不变，只有它变化。 */
+  userId: string | null
   /** 与 agent 断开：内容保留只读，动作禁用。 */
   stale: boolean
   /** 提问时随新会话上报的界面语言（BCP 47）。 */
   locale: string
+}
+
+/** 控制器的外部能力（测试注入替身）。 */
+export interface AssistantDeps {
+  /** 提问失败时用户已离开发起它的位置：以提示（toast）告知，参数是文案键。 */
+  notify?: (key: string) => void
+  /** 定时器：到点执行 `run`，返回取消函数。 */
+  schedule?: (run: () => void, delayMs: number) => () => void
+  /** 历史图片缓存的字节上限（默认 `ATTACHMENT_CACHE_BYTES`）。 */
+  attachmentCacheBytes?: number
+}
+
+function defaultSchedule(run: () => void, delayMs: number): () => void {
+  const timer = setTimeout(run, delayMs)
+  return () => clearTimeout(timer)
+}
+
+/** 一张已请求的历史图片；`bytes` 在取回后才有值（data URL 的长度）。 */
+interface CachedAttachment {
+  request: Promise<string>
+  bytes: number
 }
 
 export type Load = 'idle' | 'loading' | 'ready' | 'failed'
@@ -114,6 +145,10 @@ export interface ViewState {
   kind: AssistantSessionKind
   sending: boolean
   cancelling: boolean
+  /** 提问请求在途时发起它的会话（新对话为 null）；仅在 `sending` 为真时有意义。 */
+  sendingFrom: string | null
+  /** 刚被限频：冷却期内暂不能提问 / 重试。 */
+  cooldown: boolean
   sendFailure: SendFailure | null
   /** 其他动作失败的提示（确认 / 评分 / 问题单 / 会话管理）；null = 无。 */
   actionFailure: ActionFailure | null
@@ -135,6 +170,10 @@ export interface ViewState {
   /** 正在编辑的问题单 ID（标题 / 正文草稿在问题单卡片自己的输入框里）。 */
   issueEditing: string | null
   ratingBusy: ReadonlySet<string>
+  /** 刚点踩、等待可选说明的回答消息 ID。 */
+  commentPrompt: string | null
+  /** 刚提交说明的回答消息 ID（显示感谢）。 */
+  commentThanks: string | null
   /** 等待二次确认的删除（会话 ID）。 */
   deletePending: string | null
   /** 等待二次确认的「清空全部会话」。 */
@@ -159,6 +198,8 @@ function initialView(env: AssistantEnv): ViewState {
     kind: 'ask',
     sending: false,
     cancelling: false,
+    sendingFrom: null,
+    cooldown: false,
     sendFailure: null,
     actionFailure: null,
     exporting: null,
@@ -171,6 +212,8 @@ function initialView(env: AssistantEnv): ViewState {
     issueBusy: new Set(),
     issueEditing: null,
     ratingBusy: new Set(),
+    commentPrompt: null,
+    commentThanks: null,
     deletePending: null,
     clearPending: false,
     clearing: false,
@@ -178,7 +221,7 @@ function initialView(env: AssistantEnv): ViewState {
   }
 }
 
-export const INITIAL_ENV: AssistantEnv = { state: EMPTY_ASSISTANT_STATE, signedIn: false, stale: true, locale: 'en' }
+export const INITIAL_ENV: AssistantEnv = { state: EMPTY_ASSISTANT_STATE, signedIn: false, userId: null, stale: true, locale: 'en' }
 
 function errorData(error: unknown): RpcErrorData | undefined {
   return error instanceof RpcError ? error.data : undefined
@@ -222,12 +265,23 @@ export class AssistantController {
   /** 用户切换位置（新对话 / 选择 / 离开会话）时加一：发送在途时判断用户有没有走开。 */
   private navEpoch = 0
   private configRequested = false
-  /** 历史图片（附件 ID -> data URL）；失败的请求不留，可重试。 */
-  private readonly attachments = new Map<string, Promise<string>>()
+  /** 历史图片（附件 ID -> data URL）；失败的请求不留，可重试。按最近使用排序，超出字节上限时先丢最旧的。 */
+  private readonly attachments = new Map<string, CachedAttachment>()
+  private attachmentBytes = 0
+  private readonly attachmentLimit: number
+  private readonly notify: (key: string) => void
+  private readonly schedule: (run: () => void, delayMs: number) => () => void
+  /** 在途的提问（停止请求挂在它上面）。 */
+  private outgoing: { stopRequested: boolean } | null = null
+  private cancelCooldown: (() => void) | null = null
+  private cancelConfirmation: (() => void) | null = null
 
-  constructor(port: AssistantPort, env: AssistantEnv = INITIAL_ENV) {
+  constructor(port: AssistantPort, env: AssistantEnv = INITIAL_ENV, deps: AssistantDeps = {}) {
     this.port = port
     this.view = initialView(env)
+    this.notify = deps.notify ?? (() => undefined)
+    this.schedule = deps.schedule ?? defaultSchedule
+    this.attachmentLimit = deps.attachmentCacheBytes ?? ATTACHMENT_CACHE_BYTES
   }
 
   readonly subscribe = (listener: () => void): (() => void) => {
@@ -254,19 +308,26 @@ export class AssistantController {
     if (
       previous.state === env.state &&
       previous.signedIn === env.signedIn &&
+      previous.userId === env.userId &&
       previous.stale === env.stale &&
       previous.locale === env.locale
     ) {
       return
     }
-    // 登录态变化：账号相关的缓存（会话、历史、配置）一律作废。
-    if (previous.signedIn !== env.signedIn) {
+    // 登录态或账号变化（含 A 直接换成 B）：账号相关的缓存（会话、历史、附图、配置、冷却）一律作废。
+    if (previous.signedIn !== env.signedIn || previous.userId !== env.userId) {
       this.accountEpoch += 1
       this.sessionsEpoch += 1
       this.detailEpoch += 1
       this.navEpoch += 1
       this.configRequested = false
       this.attachments.clear()
+      this.attachmentBytes = 0
+      this.outgoing = null
+      this.cancelCooldown?.()
+      this.cancelCooldown = null
+      this.cancelConfirmation?.()
+      this.cancelConfirmation = null
       this.view = { ...initialView(env), kind: this.view.kind, scrollToken: this.view.scrollToken + 1 }
     }
 
@@ -404,6 +465,8 @@ export class AssistantController {
       deletePending: null,
       clearPending: false,
       issueEditing: null,
+      commentPrompt: null,
+      commentThanks: null,
     })
   }
 
@@ -420,6 +483,8 @@ export class AssistantController {
       deletePending: null,
       clearPending: false,
       issueEditing: null,
+      commentPrompt: null,
+      commentThanks: null,
       issueOverrides: new Map(),
       scrollToken: view.scrollToken + 1,
     }))
@@ -451,6 +516,16 @@ export class AssistantController {
 
   requestDelete(sessionId: string): void {
     this.set({ deletePending: sessionId, clearPending: false })
+    this.armConfirmation()
+  }
+
+  /** 二次确认只等一会儿：超时自动取消（再次请求会重新计时）。 */
+  private armConfirmation(): void {
+    this.cancelConfirmation?.()
+    this.cancelConfirmation = this.schedule(() => {
+      this.cancelConfirmation = null
+      if (this.view.deletePending !== null || this.view.clearPending) this.set({ deletePending: null, clearPending: false })
+    }, CONFIRM_TIMEOUT_MS)
   }
 
   /** 只在待确认的正是该会话时取消（鼠标离开别的行不影响当前待确认项）。 */
@@ -516,24 +591,46 @@ export class AssistantController {
     }
   }
 
-  /** 历史消息里的一张图片（附件 ID -> `data:` URL）：按 ID 缓存，失败不缓存（可重试）。 */
+  /**
+   * 历史消息里的一张图片（附件 ID -> `data:` URL）：按 ID 缓存，失败不缓存（可重试）。
+   * 缓存按最近使用排序，累计字节超出上限时先丢最久没用过的。
+   */
   attachment(attachmentId: string): Promise<string> {
     const cached = this.attachments.get(attachmentId)
-    if (cached !== undefined) return cached
-    const request = this.port.attachment({ attachmentId }).then((result) => result.dataUrl)
-    this.attachments.set(attachmentId, request)
-    if (this.attachments.size > ATTACHMENT_CACHE_LIMIT) {
-      const oldest = this.attachments.keys().next()
-      if (!oldest.done) this.attachments.delete(oldest.value)
+    if (cached !== undefined) {
+      this.attachments.delete(attachmentId)
+      this.attachments.set(attachmentId, cached)
+      return cached.request
     }
+    const request: Promise<string> = this.port.attachment({ attachmentId }).then((result) => {
+      this.settleAttachment(attachmentId, request, result.dataUrl.length)
+      return result.dataUrl
+    })
+    this.attachments.set(attachmentId, { request, bytes: 0 })
     request.catch(() => {
-      if (this.attachments.get(attachmentId) === request) this.attachments.delete(attachmentId)
+      if (this.attachments.get(attachmentId)?.request === request) this.attachments.delete(attachmentId)
     })
     return request
   }
 
+  /** 图片取回后记账并按字节上限淘汰；缓存已被清空 / 换掉的请求不再计入。 */
+  private settleAttachment(attachmentId: string, request: Promise<string>, bytes: number): void {
+    const entry = this.attachments.get(attachmentId)
+    if (entry === undefined || entry.request !== request) return
+    entry.bytes = bytes
+    this.attachmentBytes += bytes
+    for (const [key, other] of this.attachments) {
+      if (this.attachmentBytes <= this.attachmentLimit) break
+      // 刚取回的这张与还在途中的请求不淘汰。
+      if (key === attachmentId || other.bytes === 0) continue
+      this.attachments.delete(key)
+      this.attachmentBytes -= other.bytes
+    }
+  }
+
   requestClear(): void {
     this.set({ clearPending: true, deletePending: null })
+    this.armConfirmation()
   }
 
   cancelClear(): void {
@@ -567,7 +664,7 @@ export class AssistantController {
   private leaveCurrent(): Partial<ViewState> {
     this.detailEpoch += 1
     this.navEpoch += 1
-    return { current: null, detail: EMPTY_DETAIL, sent: null, issueEditing: null }
+    return { current: null, detail: EMPTY_DETAIL, sent: null, issueEditing: null, commentPrompt: null, commentThanks: null }
   }
 
   private failAction(account: number, failure: ActionFailure = 'failed'): void {
@@ -583,19 +680,22 @@ export class AssistantController {
   // ───────────────────────── 提问 / 停止 ─────────────────────────
 
   /**
-   * 提问；成功返回 true（调用方清空输入）。`text` 已去首尾空白，`images` 为 `data:` URL。
-   * 可提问性由调用方按 `canSend` 判定，这里只防重入与断线。`options.replaceFrom` 为重新生成 / 编辑后重发。
+   * 提问；成功返回 true（调用方在输入仍是发送时的文本时清空它）。`text` 已去首尾空白，`images` 为 `data:` URL。
+   * 可提问性由调用方按 `canSend` 判定，这里只防重入、断线与冷却。`options.replaceFrom` 为重新生成 / 编辑后重发。
    * 发送期间用户可能切到别的会话 / 新对话：回包时只有仍停在发送时的位置才跟进（新会话才接管当前会话，
-   * 重发才截掉被替换的历史），否则只刷新会话列表，不覆盖用户的切换。
+   * 重发才截掉被替换的历史），否则只刷新会话列表，不覆盖用户的切换；失败则以提示（toast）告知，不写进别的会话。
+   * 发送期间点停止：接受后立即取消刚开始的执行。被限频后进入冷却，期间不能再提问。
    */
   async send(text: string, images: readonly string[], options: SendOptions = {}): Promise<boolean> {
     const view = this.view
-    if (view.env.stale || view.sending || currentRun(view.env.state, view.current) !== undefined) return false
+    if (view.env.stale || view.sending || view.cooldown || currentRun(view.env.state, view.current) !== undefined) return false
     const account = this.accountEpoch
     const origin = view.current
     const navigation = this.navEpoch
     const kind = currentKind(origin, view.kind, currentSession(origin, view.detail.session, view.sessions.items))
-    this.set({ sending: true, sendFailure: null, actionFailure: null })
+    const outgoing = { stopRequested: false }
+    this.outgoing = outgoing
+    this.set({ sending: true, sendingFrom: origin, sendFailure: null, actionFailure: null })
     try {
       const answer = await this.port.ask({
         sessionId: origin,
@@ -607,6 +707,7 @@ export class AssistantController {
         ...(options.replaceFrom ? { replaceFrom: options.replaceFrom, keepImages: options.keepImages === true } : {}),
       })
       if (account !== this.accountEpoch) return false
+      if (this.outgoing === outgoing) this.outgoing = null
       const stayed = navigation === this.navEpoch
       const created = stayed && origin === null
       if (created) {
@@ -615,6 +716,7 @@ export class AssistantController {
       }
       this.update((now) => ({
         sending: false,
+        sendingFrom: null,
         sent: images.length > 0 ? { sessionId: answer.sessionId, text, images: [...images] } : null,
         scrollToken: stayed ? now.scrollToken + 1 : now.scrollToken,
         ...(created ? { current: answer.sessionId, detail: { ...EMPTY_DETAIL, load: 'ready' as const } } : {}),
@@ -623,13 +725,24 @@ export class AssistantController {
           : {}),
       }))
       this.reloadSessions()
+      if (outgoing.stopRequested) this.cancelSession(answer.sessionId)
       return true
     } catch (error) {
       if (account !== this.accountEpoch) return false
+      if (this.outgoing === outgoing) this.outgoing = null
       const failure = classifySendError(errorData(error))
-      this.set({ sending: false, sendFailure: failure })
+      const same = this.view.current === origin
+      this.update((now) => ({
+        sending: false,
+        sendingFrom: null,
+        cancelling: outgoing.stopRequested ? false : now.cancelling,
+        sendFailure: same ? failure : null,
+      }))
+      // 用户已经去了别的会话：提示不能写进那里，改用 toast。
+      if (!same) this.notify(SEND_FAILURE_KEY[failure])
       // 额度 / 开放状态可能已变：重新取配置让页面门禁跟上（限频只是稍后再试，不用）。
       if (failure === 'quotaExceeded' || failure === 'notOpen') this.fetchConfig(true)
+      if (failure === 'rateLimited') this.startCooldown()
       // 会话上限：把本地视为已达上限（切到提示卡，输入框内容保留），并重取配置与详情让数字回到服务端口径。
       if (failure === 'sessionLimit' && origin !== null) {
         const limit = this.view.env.state.config?.sessionLimit ?? 0
@@ -643,17 +756,64 @@ export class AssistantController {
     }
   }
 
+  /** 限频冷却：到点恢复提问（期间再次限频会重新计时）。 */
+  private startCooldown(): void {
+    this.cancelCooldown?.()
+    this.set({ cooldown: true })
+    this.cancelCooldown = this.schedule(() => {
+      this.cancelCooldown = null
+      this.set({ cooldown: false })
+    }, RATE_LIMIT_COOLDOWN_MS)
+  }
+
   /** 重新生成：用原提问文本替换这条用户消息及其之后的回答；原提问有附图时沿用。 */
   regenerate(questionId: string, text: string, keepImages: boolean): Promise<boolean> {
     return this.send(text, [], { replaceFrom: questionId, keepImages })
   }
 
+  /**
+   * 失败轮次一键重试（`retryPlan` 给出方案）：已落库的替换原提问重答，未落库的按原问题在同一会话重发。
+   * 与重新生成一样受额度 / 会话上限 / 冷却门控，不满足时什么也不做并返回 false。
+   */
+  retry(plan: RetryPlan): Promise<boolean> {
+    const view = this.view
+    const allowed = canResend({
+      gate: gate(view.env.signedIn, view.env.state, view.configFailed),
+      stale: view.env.stale,
+      sending: view.sending,
+      cooldown: view.cooldown,
+      hasActiveRun: currentRun(view.env.state, view.current) !== undefined,
+      hasSession: view.current !== null,
+      limitReached: sessionLimitState(view.env.state.config, view.current, view.detail.questionsUsed, false).kind === 'reached',
+    })
+    if (!allowed) return Promise.resolve(false)
+    return plan.kind === 'replace'
+      ? this.send(plan.text, [], { replaceFrom: plan.questionId, keepImages: plan.keepImages })
+      : this.send(plan.text, plan.images)
+  }
+
+  /**
+   * 停止：有进行中的执行就取消它；提问还在途中（尚未被接受）就记下停止请求，接受后立即取消。
+   * 提问在途时只有停在发起它的位置才能停。
+   */
   stop(): void {
+    const view = this.view
+    if (view.env.stale || view.cancelling) return
     const run = this.activeRun()
-    if (run === undefined || this.view.cancelling) return
+    if (run !== undefined) {
+      this.cancelSession(run.sessionId)
+      return
+    }
+    if (view.sending && this.outgoing !== null && view.sendingFrom === view.current) {
+      this.outgoing.stopRequested = true
+      this.set({ cancelling: true })
+    }
+  }
+
+  private cancelSession(sessionId: string): void {
     const account = this.accountEpoch
     this.set({ cancelling: true })
-    this.port.cancel({ sessionId: run.sessionId }).then(
+    this.port.cancel({ sessionId }).then(
       () => {
         if (account !== this.accountEpoch) return
         this.set({ cancelling: false })
@@ -699,7 +859,7 @@ export class AssistantController {
 
   /**
    * 评价一条回答：再次点击同一个评价则清除。`current` 为该回答当前显示的评价。
-   * 乐观更新：先显示新评价，失败时回滚到点击前的状态。
+   * 乐观更新：先显示新评价，失败时回滚到点击前的状态。点踩成功后邀请填写可选说明（`commentPrompt`）。
    */
   rate(messageId: string, current: string | null, rating: 'up' | 'down'): void {
     const view = this.view
@@ -712,12 +872,17 @@ export class AssistantController {
     this.set({
       ratingBusy: withMember(view.ratingBusy, messageId),
       ratingOverrides: withEntry(view.ratingOverrides, messageId, next),
+      commentPrompt: view.commentPrompt === messageId ? null : view.commentPrompt,
+      commentThanks: null,
       actionFailure: null,
     })
     this.port.rate({ sessionId, messageId, rating: next, comment: null }).then(
       () => {
         if (account !== this.accountEpoch) return
-        this.update((now) => ({ ratingBusy: withoutMember(now.ratingBusy, messageId) }))
+        this.update((now) => ({
+          ratingBusy: withoutMember(now.ratingBusy, messageId),
+          ...(next === 'down' && now.current === sessionId ? { commentPrompt: messageId } : {}),
+        }))
       },
       () => {
         if (account !== this.accountEpoch) return
@@ -728,6 +893,35 @@ export class AssistantController {
         }))
       },
     )
+  }
+
+  /** 点踩后补充说明（去首尾空白后 1–500 字符，同一条 `down` 评价带 `comment` 再提交一次）；成功返回 true。 */
+  async submitRatingComment(messageId: string, comment: string): Promise<boolean> {
+    const view = this.view
+    const sessionId = view.current
+    const valid = validRatingComment(comment)
+    if (valid === null || sessionId === null || view.env.stale || view.ratingBusy.has(messageId)) return false
+    const account = this.accountEpoch
+    this.set({ ratingBusy: withMember(view.ratingBusy, messageId), actionFailure: null })
+    try {
+      await this.port.rate({ sessionId, messageId, rating: 'down', comment: valid })
+    } catch {
+      if (account !== this.accountEpoch) return false
+      this.update((now) => ({ ratingBusy: withoutMember(now.ratingBusy, messageId), actionFailure: 'failed' }))
+      return false
+    }
+    if (account !== this.accountEpoch) return false
+    this.update((now) => ({
+      ratingBusy: withoutMember(now.ratingBusy, messageId),
+      commentPrompt: now.commentPrompt === messageId ? null : now.commentPrompt,
+      commentThanks: messageId,
+    }))
+    return true
+  }
+
+  /** 跳过点踩后的说明。 */
+  dismissRatingComment(): void {
+    if (this.view.commentPrompt !== null) this.set({ commentPrompt: null })
   }
 
   // ───────────────────────── 问题单 ─────────────────────────

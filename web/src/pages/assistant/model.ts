@@ -52,6 +52,10 @@ export interface Live {
   error: string | null
   /** 失败原因（`AssistantRunDto.errorReason`）；界面据此本地化。 */
   errorReason: string | null
+  /** 旁观执行（其他设备 / 重启前发起）：本机不能确认其中的待确认调用。 */
+  observing: boolean
+  /** 执行 ID；null = 提问还没被云端接受（首帧前失败 / 被取消）。 */
+  runId: string | null
 }
 
 /** 一条回答消息：评价按它记录（`rating`：`up` / `down`）；`interrupted`：回答中途中断，内容是已输出的部分。 */
@@ -151,6 +155,16 @@ function resolveRating(messageId: string, fallback: string | null, ratings: Rati
   return ratings.has(messageId) ? (ratings.get(messageId) ?? null) : fallback
 }
 
+function liveStatus(run: AssistantRunDto): Live {
+  return {
+    status: run.status,
+    error: run.error ? run.error : null,
+    errorReason: run.errorReason ?? null,
+    observing: run.observing === true,
+    runId: run.runId ? run.runId : null,
+  }
+}
+
 function liveTurn(run: AssistantRunDto, overrides: IssueOverrides, ratings: RatingOverrides): Turn {
   const blocks = (run.items ?? []).map((item): Block => {
     switch (item.type) {
@@ -164,12 +178,14 @@ function liveTurn(run: AssistantRunDto, overrides: IssueOverrides, ratings: Rati
   })
   const { steps, answer, issues, membershipOffer } = splitBlocks(blocks)
   const answerId = answer !== null && run.messageId ? run.messageId : null
+  // 沿用的旧图（keepImages）以附件 ID 给出，与本次新附的张数分开计。
+  const images = run.imageIds ?? []
   return {
     key: run.runId ? `run:${run.runId}` : `live:${run.startedAtUnixMs}`,
     questionId: null,
     question: run.question,
-    images: [],
-    imageCount: run.imageCount ?? 0,
+    images,
+    imageCount: (run.imageCount ?? 0) + images.length,
     localImages: [],
     steps,
     answer,
@@ -178,9 +194,33 @@ function liveTurn(run: AssistantRunDto, overrides: IssueOverrides, ratings: Rati
     rating: answerId === null ? null : resolveRating(answerId, null, ratings),
     issues,
     membershipOffer,
-    live: { status: run.status, error: run.error ? run.error : null, errorReason: run.errorReason ?? null },
+    live: liveStatus(run),
     startedAt: null,
   }
+}
+
+function hasRunningTool(turn: Turn): boolean {
+  return turn.steps.some((block) => block.type === 'tool' && block.call.status === 'running')
+}
+
+/**
+ * 已结束且已落库的执行：以历史为准，但历史若是执行中途读到的（还没有最终回答、工具仍在运行）而实时覆盖层更完整，
+ * 就继续用覆盖层（带上历史里的用户消息 ID / 起始时间），直到结束后那次重读成功。失败 / 停止的状态与原因随轮次保留，
+ * 失败重试与失败说明据此显示。
+ */
+function finishedTurn(group: HistoryTurn, run: AssistantRunDto, overrides: IssueOverrides, ratings: RatingOverrides): Turn {
+  const history = intoTurn(group, ratings)
+  const overlay = liveTurn(run, overrides, ratings)
+  if ((history.answer === null && overlay.answer !== null) || hasRunningTool(history)) {
+    return {
+      ...overlay,
+      questionId: history.questionId,
+      images: history.images.length > 0 ? history.images : overlay.images,
+      imageCount: Math.max(history.imageCount, overlay.imageCount),
+      startedAt: history.startedAt,
+    }
+  }
+  return run.status === 'failed' || run.status === 'canceled' ? { ...history, live: liveStatus(run) } : history
 }
 
 interface HistoryTurn {
@@ -347,7 +387,7 @@ export function buildTimeline(
     }
     const already = consumed[index] === true
     consumed[index] = true
-    if (!isAssistantRunActive(run.status)) turns.push(intoTurn(group, ratings))
+    if (!isAssistantRunActive(run.status)) turns.push(finishedTurn(group, run, overrides, ratings))
     else if (!already) turns.push(liveTurn(run, overrides, ratings))
   }
   live.forEach((run, index) => {
@@ -489,10 +529,11 @@ export function formatCountdown(totalSeconds: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
 }
 
-function pendingToolCalls(state: AssistantStateDto, nowMs: number): { sessionId: string }[] {
+/** 进行中执行里的待确认调用（按会话）。旁观执行的待确认在本机不可操作，默认不计。 */
+function pendingToolCalls(state: AssistantStateDto, nowMs: number, includeObserving: boolean): { sessionId: string }[] {
   const found: { sessionId: string }[] = []
   for (const run of state.runs) {
-    if (!isAssistantRunActive(run.status)) continue
+    if (!isAssistantRunActive(run.status) || (run.observing === true && !includeObserving)) continue
     for (const item of run.items ?? []) {
       if (item.type === 'tool' && confirmView(item.call, true, nowMs)?.kind === 'pending') found.push({ sessionId: run.sessionId })
     }
@@ -500,14 +541,17 @@ function pendingToolCalls(state: AssistantStateDto, nowMs: number): { sessionId:
   return found
 }
 
-/** 所有进行中执行里等待确认的调用数。 */
-export function pendingConfirmations(state: AssistantStateDto, nowMs: number): number {
-  return pendingToolCalls(state, nowMs).length
+/**
+ * 进行中执行里等待用户确认的调用数（入口角标据此提示）。`includeObserving` 为真时连旁观执行的待确认一起算
+ * （倒计时是否需要走表用它判断）；角标与跳转提示不含旁观执行。
+ */
+export function pendingConfirmations(state: AssistantStateDto, nowMs: number, includeObserving = false): number {
+  return pendingToolCalls(state, nowMs, includeObserving).length
 }
 
-/** 当前会话之外、有待确认工具的会话（头部提示据此给出跳转）。 */
+/** 当前会话之外、有待确认工具的会话（头部提示据此给出跳转；旁观执行不计）。 */
 export function pendingElsewhere(state: AssistantStateDto, current: string | null, nowMs: number): string | null {
-  return pendingToolCalls(state, nowMs).find((call) => call.sessionId !== current)?.sessionId ?? null
+  return pendingToolCalls(state, nowMs, false).find((call) => call.sessionId !== current)?.sessionId ?? null
 }
 
 /** 模型给出的参数的一行摘要；没有有意义的参数时为 null。 */
@@ -746,14 +790,35 @@ export interface SendCheck {
   hasActiveRun: boolean
   draft: string
   maxMessageChars: number
+  /** 刚被限频：冷却期内暂不能提问。 */
+  cooldown?: boolean
 }
 
-/** 与 GPUI `AssistantView::can_send` 同判定：门禁开放且未用尽额度、未断线、无进行中、非空、未超长。 */
+/** 与 GPUI `AssistantView::can_send` 同判定：门禁开放且未用尽额度、未断线、无进行中、不在冷却、非空、未超长。 */
 export function canSend(check: SendCheck): boolean {
   if (check.gate.kind !== 'open' || check.gate.quotaExhausted) return false
-  if (check.stale || check.sending || check.hasActiveRun) return false
+  if (check.stale || check.sending || check.hasActiveRun || check.cooldown === true) return false
   if (check.draft === '') return false
   return check.maxMessageChars === 0 || charCount(check.draft) <= check.maxMessageChars
+}
+
+/** 重新生成 / 编辑重发 / 失败重试的入参（这些动作都会再提一问，受额度 / 上限 / 冷却门控）。 */
+export interface ResendCheck {
+  gate: Gate
+  stale: boolean
+  sending: boolean
+  cooldown: boolean
+  hasActiveRun: boolean
+  /** 已有云端会话（新对话没有可重写的历史）。 */
+  hasSession: boolean
+  /** 本会话提问数已达上限。 */
+  limitReached: boolean
+}
+
+/** 与 GPUI `AssistantView::can_resend` 同判定：门禁开放且额度未用尽、已连接、已有会话、无进行中、不在冷却、未达会话上限。 */
+export function canResend(check: ResendCheck): boolean {
+  if (check.gate.kind !== 'open' || check.gate.quotaExhausted) return false
+  return !check.stale && !check.sending && !check.cooldown && !check.hasActiveRun && check.hasSession && !check.limitReached
 }
 
 // ───────────────────────── 会话与状态 ─────────────────────────
@@ -842,6 +907,68 @@ export function validTitle(title: string): string | null {
 export function withoutReplaced(messages: readonly AssistantMessageDto[], fromId: string): readonly AssistantMessageDto[] {
   const from = messages.find((message) => message.id === fromId)
   return from === undefined ? messages : messages.filter((message) => message.seq < from.seq)
+}
+
+/** 失败轮次的一键重试方案。 */
+export type RetryPlan =
+  /** 已落库：替换这条提问重答（有附图时沿用原图）。 */
+  | { kind: 'replace'; questionId: string; text: string; keepImages: boolean }
+  /** 提问从未被云端接受（没有用户消息 ID、也没有执行 ID）：按原问题在同一会话里重发。 */
+  | { kind: 'resend'; text: string; images: readonly string[] }
+
+/**
+ * 失败的轮次已拿到执行 ID、但历史里还没有它的用户消息（云端在返回执行流之前就保存了提问，只是历史还没读到，
+ * 网络失败后常见）：提问其实已落库，不能原样重发（会重复提问、多占一次额度），要等历史读到后再走替换。
+ */
+export function awaitsHistory(turn: Turn): boolean {
+  return turn.questionId === null && turn.live?.status === 'failed' && turn.live.runId !== null
+}
+
+/**
+ * 失败轮次能否一键重试。只对最后一轮、执行失败的轮次给出方案：已落库的替换重答；执行从未被接受（没有执行 ID）
+ * 才按原问题重发。已被接受却还没读到历史（`awaitsHistory`）、或未落库而附图又不在本地（沿用旧图的执行、页面刷新后）
+ * 无法安全重发，返回 null。
+ */
+export function retryPlan(turn: Turn, isLast: boolean): RetryPlan | null {
+  if (!isLast || turn.live?.status !== 'failed') return null
+  const text = turn.question.trim()
+  if (text === '') return null
+  if (turn.questionId !== null) return { kind: 'replace', questionId: turn.questionId, text, keepImages: turn.imageCount > 0 }
+  if (awaitsHistory(turn)) return null
+  if (turn.imageCount === 0) return { kind: 'resend', text, images: [] }
+  return turn.localImages.length === turn.imageCount ? { kind: 'resend', text, images: turn.localImages } : null
+}
+
+/** 点踩后可选说明的字符数上限（与云端 `MAX_RATING_COMMENT_CHARS` 一致）。 */
+export const MAX_RATING_COMMENT_CHARS = 500
+
+/** 评价说明去首尾空白后须有 1–`MAX_RATING_COMMENT_CHARS` 个字符；合法返回修剪后的文本，否则 null。 */
+export function validRatingComment(comment: string): string | null {
+  const trimmed = comment.trim()
+  const length = charCount(trimmed)
+  return length >= 1 && length <= MAX_RATING_COMMENT_CHARS ? trimmed : null
+}
+
+/** 本地标题过滤：大小写不敏感的子串匹配；空白搜索词不过滤。 */
+export function filterSessions(items: readonly AssistantSessionDto[], query: string): AssistantSessionDto[] {
+  const needle = query.trim().toLowerCase()
+  return needle === '' ? [...items] : items.filter((session) => session.title.toLowerCase().includes(needle))
+}
+
+/**
+ * 列表里显示哪些会话：搜索词已发给服务端并取回结果时按服务端结果全显示（命中可能来自消息内容，标题里没有）；
+ * 输入还在防抖中（`typed` 与已应用的 `applied` 不同）则先按标题本地过滤，即时反馈。
+ */
+export function visibleSessions(items: readonly AssistantSessionDto[], applied: string, typed: string): AssistantSessionDto[] {
+  return typed.trim() === applied.trim() ? [...items] : filterSessions(items, typed)
+}
+
+/** 键盘光标移动一步（不循环）；`current` 为当前下标，`length` 为可见条数；没有可见条目时为 null。 */
+export function stepCursor(current: number | null, length: number, forward: boolean): number | null {
+  if (length === 0) return null
+  const last = length - 1
+  if (current === null) return forward ? 0 : last
+  return forward ? Math.min(current + 1, last) : Math.max(0, Math.min(current, last) - 1)
 }
 
 // ───────────────────────── 时钟偏差 ─────────────────────────

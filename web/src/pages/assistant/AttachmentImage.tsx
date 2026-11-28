@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react'
 import { useT } from '../../i18n'
 import { Button, Icon, Spinner } from '../../ui'
 import type { AssistantController } from './controller'
+import { PreviewableImage } from './ImagePreview'
 
 type Load = { status: 'loading' } | { status: 'ready'; dataUrl: string } | { status: 'failed' }
 
@@ -44,7 +45,7 @@ export function AttachmentImage({
 
   const label = t('assistantImageLabel', { n: number })
   if (load.status === 'ready') {
-    return <img src={load.dataUrl} alt={label} className="max-h-40 max-w-full rounded-md border border-hairline object-contain" />
+    return <PreviewableImage src={load.dataUrl} alt={label} number={number} imageClassName="max-h-40 max-w-full rounded-md border border-hairline object-contain" />
   }
   if (load.status === 'failed') {
     return (

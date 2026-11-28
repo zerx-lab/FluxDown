@@ -142,6 +142,16 @@ export interface AssistantRunDto {
   question: string;
   /** 提问附带的图片张数（执行中提问气泡据此显示占位 / 本地缩略图）。 */
   imageCount?: number;
+  /**
+   * 沿用的旧图（`keepImages` 重新生成 / 编辑重发）的附件 ID，经 `agent.assistant.attachment` 取图；
+   * 与 `imageCount`（本次新附的张数）分开计。旧 agent 缺省为空。
+   */
+  imageIds?: string[];
+  /**
+   * 旁观执行：由其他设备或本机重启前发起、本机只接回事件流显示进度。本机不执行它的客户端工具，也不能确认 / 拒绝
+   * 其中的待确认调用；界面显示 `assistantRunObserving` 提示并隐藏确认按钮。旧 agent 缺省为 `false`。
+   */
+  observing?: boolean;
   startedAtUnixMs: number;
   items?: AssistantRunItemDto[];
   messageId?: string | null;
@@ -196,6 +206,8 @@ export interface AssistantSessionDto {
   rating?: string | null;
   /** 云端正在回答中。 */
   active?: boolean;
+  /** 云端正在进行的执行 ID（`active` 为真时有值；agent 据此接回本机没有跟踪的执行）。旧 agent 缺省为 `null`。 */
+  activeRunId?: string | null;
   createdAt: string;
   updatedAt: string;
 }

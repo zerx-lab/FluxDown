@@ -107,9 +107,10 @@ function ConfirmCard({
   call,
   rowKey,
   confirmation,
+  observing,
   view,
   controller,
-}: { call: AssistantToolCallDto; rowKey: string; confirmation: ConfirmView } & Shared) {
+}: { call: AssistantToolCallDto; rowKey: string; confirmation: ConfirmView; observing: boolean } & Shared) {
   const t = useT()
   const requestId = call.requestId ?? null
   const busy = requestId !== null && view.confirming.has(requestId)
@@ -196,15 +197,20 @@ function ConfirmCard({
           </>
         ) : null}
       </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="min-w-0 flex-1">{status}</div>
-        <Button variant="outline" disabled={!enabled} onClick={() => requestId !== null && controller.confirmTool(requestId, false)}>
-          {t('assistantDeny')}
-        </Button>
-        <Button variant={destructive ? 'danger' : 'primary'} loading={busy} disabled={!enabled} onClick={() => requestId !== null && controller.confirmTool(requestId, true)}>
-          {t('assistantAllow')}
-        </Button>
-      </div>
+      {/* 旁观执行（其他设备 / 重启前发起）：本机不能确认它的待确认调用，不给确认 / 拒绝按钮（轮次顶部已有说明）。 */}
+      {observing && confirmation.kind === 'pending' ? (
+        <div className="min-w-0">{status}</div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="min-w-0 flex-1">{status}</div>
+          <Button variant="outline" disabled={!enabled} onClick={() => requestId !== null && controller.confirmTool(requestId, false)}>
+            {t('assistantDeny')}
+          </Button>
+          <Button variant={destructive ? 'danger' : 'primary'} loading={busy} disabled={!enabled} onClick={() => requestId !== null && controller.confirmTool(requestId, true)}>
+            {t('assistantAllow')}
+          </Button>
+        </div>
+      )}
     </div>
   )
 }
@@ -238,7 +244,15 @@ function DetailSection({ title, text }: { title: string; text: string }) {
   )
 }
 
-function ToolRow({ call, rowKey, runActive, view, controller, now }: { call: AssistantToolCallDto; rowKey: string; runActive: boolean } & Shared) {
+function ToolRow({
+  call,
+  rowKey,
+  runActive,
+  observing,
+  view,
+  controller,
+  now,
+}: { call: AssistantToolCallDto; rowKey: string; runActive: boolean; observing: boolean } & Shared) {
   const t = useT()
   const state = toolState(call, runActive)
   const confirmation = confirmView(call, runActive, now)
@@ -269,7 +283,9 @@ function ToolRow({ call, rowKey, runActive, view, controller, now }: { call: Ass
 
   return (
     <div className="flex w-full min-w-0 flex-col gap-1">
-      {confirmation !== null ? <ConfirmCard call={call} rowKey={rowKey} confirmation={confirmation} view={view} controller={controller} now={now} /> : null}
+      {confirmation !== null ? (
+        <ConfirmCard call={call} rowKey={rowKey} confirmation={confirmation} observing={observing} view={view} controller={controller} now={now} />
+      ) : null}
       {expandable ? (
         <button
           type="button"
@@ -328,7 +344,18 @@ export function Steps({ turn, view, controller, now }: { turn: Turn } & Shared) 
             if (block.type === 'tool') {
               // 历史里没有 `toolCallId` 的工具 ID 可能为空 / 重复：键与展开状态都带上位置。
               const rowKey = `${turn.key}:${index}:${block.call.callId}`
-              return <ToolRow key={rowKey} call={block.call} rowKey={rowKey} runActive={running} view={view} controller={controller} now={now} />
+              return (
+                <ToolRow
+                  key={rowKey}
+                  call={block.call}
+                  rowKey={rowKey}
+                  runActive={running}
+                  observing={turn.live?.observing === true}
+                  view={view}
+                  controller={controller}
+                  now={now}
+                />
+              )
             }
             return null
           })}

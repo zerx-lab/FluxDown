@@ -45,14 +45,15 @@ export const ASSISTANT_PANEL_TRIGGER_ATTR = 'data-assistant-trigger'
 
 /**
  * AI 助手入口：不是路由，点击开关窗口右侧面板；面板打开时呈选中态。
- * 面板收起时若有工具在等确认（有截止时间），右上角显示待确认数量，避免确认窗口无声过期。
+ * 用户看不到对话时（面板收起，或停在历史视图）若有本机工具在等确认（有截止时间），右上角显示待确认数量，
+ * 避免确认窗口无声过期；旁观执行（其他设备发起）的待确认本机不能处理，不计。
  */
 export function AssistantPanelItem({ entry, orientation = 'horizontal', side }: WidgetProps & { entry: ActivityEntry }) {
   const t = useT()
-  const { open } = useAssistantPanel()
+  const { open, view } = useAssistantPanel()
   const pending = usePendingConfirmationCount()
   const rail = orientation === 'rail'
-  const badge = !open && pending > 0 ? pending : 0
+  const badge = (!open || view === 'history') && pending > 0 ? pending : 0
   const label = badge > 0 ? `${t(entry.labelKey)} · ${t('assistantPendingBadge', { n: pending })}` : t(entry.labelKey)
   return (
     <Tooltip content={label} side={resolveSide(orientation, side)}>

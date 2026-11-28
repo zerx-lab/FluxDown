@@ -7,6 +7,7 @@ import { useT } from '../../i18n'
 import type { AssistantIssueDto } from '../../lib/rpc'
 import { Badge, Button, Card, FieldLabel, Icon, Input, Textarea } from '../../ui'
 import type { AssistantController, ViewState } from './controller'
+import { safeUrl } from './markdown'
 import { ResultLabel } from './Steps'
 
 function IssueEditor({ issue, busy, stale, controller }: { issue: AssistantIssueDto; busy: boolean; stale: boolean; controller: AssistantController }) {
@@ -67,8 +68,8 @@ function IssueStatus({ issue, busy, stale, controller }: { issue: AssistantIssue
   const note = issue.reviewNote?.trim() ? t('assistantIssueReviewNote', { note: issue.reviewNote }) : null
   const failure = issue.status === 'failed' && issue.error?.trim() ? issue.error : null
   const detail = note ?? failure
-  // 只接受 https 链接（与 GPUI 一致）。
-  const url = issue.githubUrl?.startsWith('https://') ? issue.githubUrl : null
+  // 只接受 https 链接,并与对话里的链接同一套校验(无 userinfo、长度上限)。
+  const url = issue.githubUrl?.startsWith('https://') ? safeUrl(issue.githubUrl) : null
   return (
     <div className="flex min-w-0 flex-col gap-1.5">
       <ResultLabel icon={icon} text={t(key)} tone={tone} />

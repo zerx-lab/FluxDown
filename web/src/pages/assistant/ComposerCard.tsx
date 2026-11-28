@@ -15,7 +15,6 @@ import { formatBytes } from '../downloads/dialogs/utils'
 import {
   ATTACHABLE_IMAGE_TYPES,
   BROWSER_IMAGE_CODEC,
-  EMPTY_COMPOSER,
   checkAttachable,
   endEdit,
   imagesEnabled,
@@ -24,9 +23,11 @@ import {
   prepareImage,
   reconcileDraft,
   removePlaceholder,
+  settleSent,
 } from './composer'
 import type { AttachError, Attachment, ComposerState } from './composer'
 import type { AssistantController, ViewState } from './controller'
+import { PreviewableImage } from './ImagePreview'
 import { ACTION_FAILURE_KEY, SEND_FAILURE_KEY, canSend, charCount, currentKind, currentSession, sessionLimitState } from './model'
 
 /** 输入框最多增高到几行（GPUI `INPUT_MAX_ROWS`）。 */
@@ -64,8 +65,14 @@ function Thumbnail({ attachment, number, removable, onRemove }: { attachment: At
   const label = t('assistantImageLabel', { n: number })
   return (
     <div className="relative size-14 shrink-0">
-      <img src={attachment.dataUrl} alt={attachment.name || label} title={attachment.name || label} className="size-full rounded-md border border-hairline object-cover" />
-      <span className="absolute bottom-0.5 left-0.5 rounded-sm bg-background/80 px-1 text-caption font-medium text-foreground tabular">#{number}</span>
+      <PreviewableImage
+        src={attachment.dataUrl}
+        alt={attachment.name || label}
+        number={number}
+        className="size-full"
+        imageClassName="size-full rounded-md border border-hairline object-cover"
+      />
+      <span className="pointer-events-none absolute bottom-0.5 left-0.5 rounded-sm bg-background/80 px-1 text-caption font-medium text-foreground tabular">#{number}</span>
       <button
         type="button"
         aria-label={t('assistantImageRemove', { n: number })}
@@ -161,7 +168,14 @@ export function Composer({
     element.setSelectionRange(element.value.length, element.value.length)
   }, [editQuestion])
 
-  if (quotaExhausted) {
+  const stale = view.env.stale
+  const run = controller.activeRun()
+  // 提问请求还在途中（尚未被接受）：本会话里也算「进行中」，可以停止。
+  const outgoing = view.sending && view.sendingFrom === view.current
+  const running = run !== undefined || outgoing
+
+  // 额度用尽：换成提示卡；但当天最后一问还在进行时（云端把进行中的执行也计入额度）仍保留输入区与停止按钮。
+  if (quotaExhausted && !running) {
     return (
       <div className="flex w-full flex-none flex-col items-center px-4 pt-1 pb-3">
         <Card className="flex w-full max-w-3xl flex-col gap-1 p-3">
@@ -172,9 +186,6 @@ export function Composer({
     )
   }
 
-  const stale = view.env.stale
-  const run = controller.activeRun()
-  const running = run !== undefined
   const sessionLimit = sessionLimitState(config, view.current, view.detail.questionsUsed, running)
   const failureKey =
     view.sendFailure !== null ? SEND_FAILURE_KEY[view.sendFailure] : view.actionFailure !== null ? ACTION_FAILURE_KEY[view.actionFailure] : null
@@ -210,10 +221,11 @@ export function Composer({
   const count = charCount(value.draft)
   const tooLong = maxChars > 0 && count > maxChars
   const sendable = canSend({
-    gate: { kind: 'open', quotaExhausted: false },
+    gate: { kind: 'open', quotaExhausted },
     stale,
     sending: view.sending,
     hasActiveRun: running,
+    cooldown: view.cooldown,
     draft: trimmed,
     maxMessageChars: maxChars,
   })
@@ -227,13 +239,15 @@ export function Composer({
   const submit = () => {
     if (!sendable) return
     const target = editActive ? editing : null
+    const sent = value
     const dataUrls = value.attachments.map((attachment) => attachment.dataUrl)
     const request =
       target === null
         ? controller.send(trimmed, dataUrls)
         : controller.send(trimmed, target.keepImages ? [] : dataUrls, { replaceFrom: target.questionId, keepImages: target.keepImages })
+    // 发送期间用户新写的内容不能被清掉：只有输入仍是发送时的样子才清空。
     void request.then((ok) => {
-      if (ok) onChange(target === null ? EMPTY_COMPOSER : endEdit(latest.current))
+      if (ok) onChange(settleSent(sent, latest.current))
     })
   }
 
@@ -464,7 +478,7 @@ export function Composer({
                   onClick={running ? () => controller.stop() : submit}
                   className="relative z-10 grid size-8 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground transition-opacity hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-40 coarse:size-10"
                 >
-                  {view.sending || view.cancelling ? (
+                  {view.cancelling ? (
                     <Spinner size="md" className="text-primary-foreground" />
                   ) : (
                     <Icon icon={running ? Square : ArrowUp} size="md" className={running ? 'fill-current' : undefined} />

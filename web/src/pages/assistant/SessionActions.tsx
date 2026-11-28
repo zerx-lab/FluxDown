@@ -1,19 +1,23 @@
-// 会话级动作：改名（行内输入，Enter 保存 / Esc 取消）与导出（Markdown / JSON，云端生成、浏览器保存）。
+// 会话级动作：改名（行内输入，Enter 保存 / Esc 取消，带字数计数）与导出（Markdown / JSON，云端生成、浏览器保存）。
 // 会话列表的每一行与面板顶栏（当前会话）共用。
 
 import { Download } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import type { KeyboardEvent } from 'react'
 import { useT } from '../../i18n'
 import { ASSISTANT_MAX_TITLE_CHARS } from '../../lib/rpc'
 import type { AssistantExportFormat } from '../../lib/rpc'
+import { cn } from '../../lib/cn'
 import { ActionMenu, Button, Icon, Input, Spinner, toast } from '../../ui'
 import type { MenuEntry } from '../../ui'
 import type { AssistantController, ViewState } from './controller'
 import { saveExport } from './exportFile'
-import { validTitle } from './model'
+import { charCount, validTitle } from './model'
 
-/** 行内改名：Enter 保存（标题去首尾空白后 1–80 字符）、Esc / 失焦取消；保存中禁用输入。 */
+/**
+ * 行内改名：Enter 保存（标题去首尾空白后 1–80 个字符，按码点计）、Esc / 失焦取消；保存中禁用输入。
+ * 输入框旁显示 `已输入/上限`，超限为错误态且不能提交，不会静默截断。
+ */
 export function RenameField({
   sessionId,
   initial,
@@ -71,22 +75,31 @@ export function RenameField({
     save()
   }
 
+  const count = charCount(value.trim())
+  const tooLong = count > ASSISTANT_MAX_TITLE_CHARS
+  const countId = useId()
+
   return (
-    <Input
-      ref={ref}
-      value={value}
-      invalid={valid === null}
-      disabled={saving}
-      maxLength={ASSISTANT_MAX_TITLE_CHARS * 2}
-      placeholder={t('assistantRenamePlaceholder')}
-      aria-label={t('assistantRename')}
-      className="h-7 min-w-0 flex-1 text-sm"
-      onChange={(event) => setValue(event.target.value)}
-      onKeyDown={onKeyDown}
-      onBlur={() => {
-        if (!saving) onDone()
-      }}
-    />
+    <>
+      <Input
+        ref={ref}
+        value={value}
+        invalid={valid === null}
+        disabled={saving}
+        placeholder={t('assistantRenamePlaceholder')}
+        aria-label={t('assistantRename')}
+        aria-describedby={countId}
+        className="h-7 min-w-0 flex-1 text-sm"
+        onChange={(event) => setValue(event.target.value)}
+        onKeyDown={onKeyDown}
+        onBlur={() => {
+          if (!saving) onDone()
+        }}
+      />
+      <span id={countId} className={cn('shrink-0 text-xs tabular', tooLong ? 'text-destructive' : 'text-text-tertiary')}>
+        {t('assistantRenameCount', { count, max: ASSISTANT_MAX_TITLE_CHARS })}
+      </span>
+    </>
   )
 }
 

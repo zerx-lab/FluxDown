@@ -2,7 +2,7 @@
 import { describe, expect, test } from 'bun:test'
 import { METHOD } from './method'
 import { ASSISTANT_MAX_TITLE_CHARS, ASSISTANT_PREVIEW_MAX_ITEMS, EMPTY_ASSISTANT_STATE } from './assistant'
-import type { AssistantAskParams, AssistantExportResult, AssistantRunDto, AssistantToolCallDto } from './assistant'
+import type { AssistantAskParams, AssistantExportResult, AssistantRunDto, AssistantSessionDto, AssistantToolCallDto } from './assistant'
 import type { ErrorReason } from './error'
 import { PROTOCOL_VERSION } from './rpc'
 
@@ -97,5 +97,32 @@ describe('AI 助手协议镜像与 Rust 对齐', () => {
     const ask: AssistantAskParams = { sessionId: 's1', text: 'again', replaceFrom: 'm1', keepImages: true }
     const exported: AssistantExportResult = { fileName: 'chat.md', mime: 'text/markdown', content: '# x' }
     for (const value of [call, run, ask, exported]) expect(JSON.parse(JSON.stringify(value))).toEqual(value)
+  })
+
+  test('旁观执行与沿用旧图的字段在 Rust 里同名，JSON 形状往返不变', async () => {
+    const source = await read('assistant.rs')
+    for (const field of ['image_ids', 'observing', 'active_run_id']) expect(source.includes(`pub ${field}:`)).toBe(true)
+    const run: AssistantRunDto = {
+      sessionId: 's1',
+      status: 'running',
+      question: 'q',
+      imageCount: 1,
+      imageIds: ['att-1', 'att-2'],
+      observing: true,
+      startedAtUnixMs: 1,
+      items: [],
+    }
+    const session: AssistantSessionDto = {
+      id: 's1',
+      channel: 'web',
+      kind: 'ask',
+      title: 't',
+      messageCount: 2,
+      active: true,
+      activeRunId: 'r1',
+      createdAt: '',
+      updatedAt: '',
+    }
+    for (const value of [run, session]) expect(JSON.parse(JSON.stringify(value))).toEqual(value)
   })
 })

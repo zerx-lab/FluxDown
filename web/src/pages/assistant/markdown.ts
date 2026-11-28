@@ -328,9 +328,20 @@ function charAfter(text: string, index: number): string | undefined {
   return index >= text.length ? undefined : String.fromCodePoint(text.codePointAt(index) ?? 0)
 }
 
-/** 链接目标只认 http / https。 */
-function safeUrl(url: string): string | null {
-  return /^https?:\/\/[^\s<>]+$/i.test(url) ? url : null
+/** 链接目标的长度上限(与 GPUI / 官网一致)。 */
+const MAX_LINK_CHARS = 2048
+
+/**
+ * 链接目标只认 http / https:非空主机、不带 userinfo(`https://docs.example.com@evil.test/` 这类伪装)、
+ * 无空白 / 控制字符、长度 ≤ 2048。其余不成为链接,按纯文本显示。
+ */
+export function safeUrl(url: string): string | null {
+  if (url.length > MAX_LINK_CHARS || /[\s<>\p{Cc}]/u.test(url)) return null
+  const match = /^https?:\/\/([^/?#]*)/i.exec(url)
+  if (match === null) return null
+  const host = match[1] ?? ''
+  if (host === '' || host.includes('@')) return null
+  return url
 }
 
 /** `[` 在 `from` 处：返回匹配的 `]` 位置（计嵌套与转义，跳过代码段），找不到返回 -1。 */
@@ -498,7 +509,7 @@ function tokenize(text: string): Token[] {
       const match = URL_START.exec(text)
       if (match) {
         const url = trimUrl(match[0])
-        if (/^https?:\/\/[^/\s]+/i.test(url)) {
+        if (safeUrl(url) !== null) {
           flush()
           tokens.push({ t: 'node', segment: { type: 'link', url, children: [{ type: 'text', text: url }] } })
           index += url.length

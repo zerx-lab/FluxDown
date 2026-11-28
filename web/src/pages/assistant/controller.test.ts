@@ -20,9 +20,9 @@ import type {
   ApplicationErrorCode,
   ErrorReason,
 } from '../../lib/rpc/protocol'
-import { AssistantController, INITIAL_ENV } from './controller'
-import type { AssistantEnv, AssistantPort } from './controller'
-import { SESSION_PAGE_SIZE, gate } from './model'
+import { ATTACHMENT_CACHE_BYTES, AssistantController, CONFIRM_TIMEOUT_MS, INITIAL_ENV, RATE_LIMIT_COOLDOWN_MS } from './controller'
+import type { AssistantDeps, AssistantEnv, AssistantPort } from './controller'
+import { SEND_FAILURE_KEY, SESSION_PAGE_SIZE, gate } from './model'
 
 // ───────────────────────── 替身 ─────────────────────────
 
@@ -165,11 +165,37 @@ class FakePort implements AssistantPort {
   attachment = (params: AssistantAttachmentParams) => this.enqueue<'attachment', AssistantAttachmentResult>('attachment', params)
 }
 
-const env = (extra: Partial<AssistantEnv> = {}): AssistantEnv => ({ state: state(), signedIn: true, stale: false, locale: 'zh-CN', ...extra })
+const env = (extra: Partial<AssistantEnv> = {}): AssistantEnv => ({ state: state(), signedIn: true, userId: 'u1', stale: false, locale: 'zh-CN', ...extra })
 
 function setup(extra: Partial<AssistantEnv> = {}) {
   const port = new FakePort()
   const controller = new AssistantController(port, INITIAL_ENV)
+  controller.sync(env(extra))
+  return { port, controller, view: () => controller.getSnapshot() }
+}
+
+/** 可手动触发的定时器替身：记录每次安排的延时，`fire` 执行所有未取消的任务。 */
+function fakeTimers() {
+  const jobs: { run: () => void; delayMs: number; cancelled: boolean }[] = []
+  return {
+    jobs,
+    schedule: (run: () => void, delayMs: number) => {
+      const job = { run, delayMs, cancelled: false }
+      jobs.push(job)
+      return () => {
+        job.cancelled = true
+      }
+    },
+    live: () => jobs.filter((job) => !job.cancelled),
+    fire: () => {
+      for (const job of jobs.splice(0)) if (!job.cancelled) job.run()
+    },
+  }
+}
+
+function setupWith(deps: AssistantDeps, extra: Partial<AssistantEnv> = {}) {
+  const port = new FakePort()
+  const controller = new AssistantController(port, INITIAL_ENV, deps)
   controller.sync(env(extra))
   return { port, controller, view: () => controller.getSnapshot() }
 }
@@ -1302,5 +1328,390 @@ describe('search', () => {
     settle(port.pending.sessions, page([session('c1')]))
     await flush()
     expect(view().sessions.items.map((item) => item.id)).toEqual(['c1'])
+  })
+})
+
+describe('rate limit cooldown', () => {
+  test('a rate limited question pauses sending and retrying for ten seconds', async () => {
+    const timers = fakeTimers()
+    const { port, controller, view } = setupWith({ schedule: timers.schedule })
+    const result = controller.send('x', [])
+    port.pending.ask.shift()?.reject(rpcError('internal', 'rateLimited'))
+    await result
+    expect(view().sendFailure).toBe('rateLimited')
+    expect(view().cooldown).toBe(true)
+    expect(timers.live().map((job) => job.delayMs)).toEqual([RATE_LIMIT_COOLDOWN_MS])
+    expect(RATE_LIMIT_COOLDOWN_MS).toBe(10_000)
+    // 冷却期内提问与重试都不发请求。
+    expect(await controller.send('y', [])).toBe(false)
+    expect(await controller.retry({ kind: 'resend', text: 'y', images: [] })).toBe(false)
+    expect(port.count('ask')).toBe(1)
+
+    timers.fire()
+    expect(view().cooldown).toBe(false)
+    const again = controller.send('y', [])
+    expect(port.count('ask')).toBe(2)
+    settle(port.pending.ask, { sessionId: 's' })
+    expect(await again).toBe(true)
+  })
+
+  test('a second limit restarts the timer instead of stacking another', async () => {
+    const timers = fakeTimers()
+    const { port, controller, view } = setupWith({ schedule: timers.schedule })
+    for (let round = 0; round < 2; round += 1) {
+      timers.fire()
+      const result = controller.send('x', [])
+      port.pending.ask.shift()?.reject(rpcError('internal', 'rateLimited'))
+      await result
+    }
+    expect(view().cooldown).toBe(true)
+    expect(timers.live()).toHaveLength(1)
+  })
+
+  test('signing out cancels the cooldown', async () => {
+    const timers = fakeTimers()
+    const { port, controller, view } = setupWith({ schedule: timers.schedule })
+    const result = controller.send('x', [])
+    port.pending.ask[0]?.reject(rpcError('internal', 'rateLimited'))
+    await result
+    controller.sync(env({ signedIn: false, userId: null, state: state() }))
+    expect(timers.live()).toHaveLength(0)
+    expect(view().cooldown).toBe(false)
+  })
+})
+
+describe('stop before the question is accepted', () => {
+  test('a stop while the request is in flight cancels the run as soon as it is accepted', async () => {
+    const { port, controller, view } = setup()
+    const result = controller.send('x', [])
+    controller.stop()
+    expect(view().cancelling).toBe(true)
+    expect(port.count('cancel')).toBe(0)
+    // 重复点击不重复登记。
+    controller.stop()
+    settle(port.pending.ask, { sessionId: 'new' })
+    expect(await result).toBe(true)
+    expect(port.count('cancel')).toBe(1)
+    expect(port.last('cancel')).toEqual({ sessionId: 'new' })
+    settle(port.pending.cancel, { ok: true })
+    await flush()
+    expect(view().cancelling).toBe(false)
+  })
+
+  test('a rejected question drops the pending stop without cancelling anything', async () => {
+    const { port, controller, view } = setup()
+    const result = controller.send('x', [])
+    controller.stop()
+    port.pending.ask[0]?.reject(rpcError('unavailable'))
+    expect(await result).toBe(false)
+    expect(view().cancelling).toBe(false)
+    expect(port.count('cancel')).toBe(0)
+  })
+
+  test('the stop only applies where the question was asked', () => {
+    const { port, controller, view } = setup()
+    void controller.send('x', [])
+    controller.selectSession('other')
+    controller.stop()
+    expect(view().cancelling).toBe(false)
+    expect(port.count('cancel')).toBe(0)
+  })
+})
+
+describe('send failure after leaving the origin', () => {
+  test('goes to a toast and is not written into the other conversation', async () => {
+    const notes: string[] = []
+    const { port, controller, view } = setupWith({ notify: (key) => notes.push(key) })
+    const result = controller.send('x', [])
+    controller.selectSession('other')
+    port.pending.ask[0]?.reject(rpcError('unavailable'))
+    expect(await result).toBe(false)
+    expect(view().sendFailure).toBeNull()
+    expect(notes).toEqual([SEND_FAILURE_KEY.unavailable])
+  })
+
+  test('stays inline without a toast while the user is still there', async () => {
+    const notes: string[] = []
+    const { port, controller, view } = setupWith({ notify: (key) => notes.push(key) })
+    const result = controller.send('x', [])
+    port.pending.ask[0]?.reject(rpcError('unavailable'))
+    await result
+    expect(view().sendFailure).toBe('unavailable')
+    expect(notes).toEqual([])
+  })
+})
+
+describe('retry of a failed turn', () => {
+  const open = async (extra: Partial<AssistantEnv> = {}, questionsUsed = 1) => {
+    const ctx = setup(extra)
+    ctx.controller.selectSession('a')
+    settle(ctx.port.pending.session, { session: session('a'), messages: [message('m1', 1, 'user')], questionsUsed })
+    await flush()
+    return ctx
+  }
+
+  test('a persisted failure replaces the question and keeps its images', async () => {
+    const { port, controller } = await open()
+    const result = controller.retry({ kind: 'replace', questionId: 'm1', text: 'q', keepImages: true })
+    expect(port.last('ask')).toMatchObject({ sessionId: 'a', text: 'q', images: [], replaceFrom: 'm1', keepImages: true })
+    settle(port.pending.ask, { sessionId: 'a' })
+    expect(await result).toBe(true)
+  })
+
+  test('an unsaved failure is asked again in the same conversation with its images', async () => {
+    const { port, controller } = await open()
+    const images = ['data:image/png;base64,AA']
+    const result = controller.retry({ kind: 'resend', text: 'q', images })
+    const params = port.last('ask') as Record<string, unknown>
+    expect(params).toMatchObject({ sessionId: 'a', text: 'q', images })
+    expect('replaceFrom' in params).toBe(false)
+    settle(port.pending.ask, { sessionId: 'a' })
+    expect(await result).toBe(true)
+  })
+
+  test('uses the same gates as a new question', async () => {
+    const plan = { kind: 'resend', text: 'q', images: [] } as const
+    // 额度用尽。
+    const exhausted = await open({ state: state([], { config: config({ dailyLimit: 5, usedToday: 5 }) }) })
+    expect(await exhausted.controller.retry(plan)).toBe(false)
+    // 单会话提问数已达上限。
+    const limited = await open({ state: state([], { config: config({ sessionLimit: 3 }) }) }, 3)
+    expect(await limited.controller.retry(plan)).toBe(false)
+    // 本会话还有进行中的执行。
+    const running = await open({ state: state([run('a', 'running')]) })
+    expect(await running.controller.retry(plan)).toBe(false)
+    // 断线。
+    const offline = await open({ stale: true })
+    expect(await offline.controller.retry(plan)).toBe(false)
+    // 新对话没有可重试的会话。
+    const fresh = setup()
+    expect(await fresh.controller.retry(plan)).toBe(false)
+    for (const ctx of [exhausted, limited, running, offline, fresh]) expect(ctx.port.count('ask')).toBe(0)
+  })
+})
+
+describe('rating comment', () => {
+  const rated = async () => {
+    const ctx = setup()
+    ctx.controller.selectSession('a')
+    ctx.controller.rate('m2', null, 'down')
+    settle(ctx.port.pending.rate, { ok: true })
+    await flush()
+    return ctx
+  }
+
+  test('a thumbs-down invites a comment and submitting resends the same rating with it', async () => {
+    const { port, controller, view } = await rated()
+    expect(port.last('rate')).toEqual({ sessionId: 'a', messageId: 'm2', rating: 'down', comment: null })
+    expect(view().commentPrompt).toBe('m2')
+
+    const result = controller.submitRatingComment('m2', '  too vague  ')
+    expect(port.last('rate')).toEqual({ sessionId: 'a', messageId: 'm2', rating: 'down', comment: 'too vague' })
+    expect(view().ratingBusy.has('m2')).toBe(true)
+    settle(port.pending.rate, { ok: true })
+    expect(await result).toBe(true)
+    expect(view().commentPrompt).toBeNull()
+    expect(view().commentThanks).toBe('m2')
+    expect(view().ratingBusy.has('m2')).toBe(false)
+    expect(view().ratingOverrides.get('m2')).toBe('down')
+  })
+
+  test('a thumbs-up and clearing a rating do not invite a comment', async () => {
+    const { port, controller, view } = setup()
+    controller.selectSession('a')
+    controller.rate('m2', null, 'up')
+    settle(port.pending.rate, { ok: true })
+    await flush()
+    expect(view().commentPrompt).toBeNull()
+    controller.rate('m3', 'down', 'down')
+    settle(port.pending.rate, { ok: true })
+    await flush()
+    expect(view().commentPrompt).toBeNull()
+  })
+
+  test('a failed thumbs-down rolls back and does not ask for a comment', async () => {
+    const { port, controller, view } = setup()
+    controller.selectSession('a')
+    controller.rate('m2', null, 'down')
+    port.pending.rate[0]?.reject(rpcError('unavailable'))
+    await flush()
+    expect(view().commentPrompt).toBeNull()
+    expect(view().ratingOverrides.has('m2')).toBe(false)
+  })
+
+  test('blank and over-long comments never reach the port', async () => {
+    const { port, controller } = await rated()
+    expect(await controller.submitRatingComment('m2', '   ')).toBe(false)
+    expect(await controller.submitRatingComment('m2', 'x'.repeat(501))).toBe(false)
+    expect(port.count('rate')).toBe(1)
+    const exact = controller.submitRatingComment('m2', 'x'.repeat(500))
+    expect(port.count('rate')).toBe(2)
+    settle(port.pending.rate, { ok: true })
+    expect(await exact).toBe(true)
+  })
+
+  test('a failed submit keeps the prompt and reports', async () => {
+    const { port, controller, view } = await rated()
+    const result = controller.submitRatingComment('m2', 'bad')
+    port.pending.rate[0]?.reject(rpcError('unavailable'))
+    expect(await result).toBe(false)
+    expect(view().commentPrompt).toBe('m2')
+    expect(view().commentThanks).toBeNull()
+    expect(view().actionFailure).toBe('failed')
+    expect(view().ratingBusy.has('m2')).toBe(false)
+  })
+
+  test('skipping, switching conversation and changing the rating all close the prompt', async () => {
+    const skipped = await rated()
+    skipped.controller.dismissRatingComment()
+    expect(skipped.view().commentPrompt).toBeNull()
+
+    const switched = await rated()
+    switched.controller.selectSession('b')
+    expect(switched.view().commentPrompt).toBeNull()
+
+    const changed = await rated()
+    changed.controller.rate('m2', 'down', 'up')
+    expect(changed.view().commentPrompt).toBeNull()
+  })
+})
+
+describe('two-step confirmations time out', () => {
+  test('a pending delete is cancelled after four seconds', () => {
+    const timers = fakeTimers()
+    const { controller, view } = setupWith({ schedule: timers.schedule })
+    controller.requestDelete('a')
+    expect(view().deletePending).toBe('a')
+    expect(timers.live().map((job) => job.delayMs)).toEqual([CONFIRM_TIMEOUT_MS])
+    expect(CONFIRM_TIMEOUT_MS).toBe(4_000)
+    timers.fire()
+    expect(view().deletePending).toBeNull()
+  })
+
+  test('a pending clear-all is cancelled after four seconds', () => {
+    const timers = fakeTimers()
+    const { controller, view } = setupWith({ schedule: timers.schedule })
+    controller.requestClear()
+    expect(view().clearPending).toBe(true)
+    timers.fire()
+    expect(view().clearPending).toBe(false)
+  })
+
+  test('asking again restarts the countdown and leaves one timer', () => {
+    const timers = fakeTimers()
+    const { controller, view } = setupWith({ schedule: timers.schedule })
+    controller.requestDelete('a')
+    controller.requestDelete('b')
+    expect(timers.live()).toHaveLength(1)
+    expect(view().deletePending).toBe('b')
+    controller.requestClear()
+    expect(view().deletePending).toBeNull()
+    expect(view().clearPending).toBe(true)
+    expect(timers.live()).toHaveLength(1)
+  })
+
+  test('a timeout after the user already confirmed changes nothing', async () => {
+    const timers = fakeTimers()
+    const { port, controller, view } = setupWith({ schedule: timers.schedule })
+    controller.reloadSessions()
+    settle(port.pending.sessions, page([session('a')]))
+    await flush()
+    controller.requestDelete('a')
+    controller.deleteSession('a')
+    timers.fire()
+    expect(view().deletePending).toBeNull()
+    expect(port.count('deleteSession')).toBe(1)
+  })
+})
+
+describe('account switch without signing out', () => {
+  test('going straight from one user to another drops every cache and the open conversation', async () => {
+    const { port, controller, view } = setup()
+    controller.reloadSessions()
+    settle(port.pending.sessions, page([session('a')]))
+    await flush()
+    controller.selectSession('a')
+    settle(port.pending.session, { session: session('a'), messages: [message('m1', 1, 'user')] })
+    await flush()
+    const first = controller.attachment('att1')
+    settle(port.pending.attachment, { dataUrl: 'data:image/png;base64,AA==' })
+    await first
+    expect(view().current).toBe('a')
+
+    controller.sync(env({ userId: 'u2' }))
+    expect(view().sessions.items).toEqual([])
+    expect(view().sessions.load).toBe('idle')
+    expect(view().current).toBeNull()
+    expect(view().detail.messages).toEqual([])
+    // 旧账号的附图缓存不再命中。
+    void controller.attachment('att1')
+    expect(port.count('attachment')).toBe(2)
+  })
+
+  test('a response of the previous user is dropped', async () => {
+    const { port, controller, view } = setup()
+    controller.reloadSessions()
+    controller.sync(env({ userId: 'u2' }))
+    settle(port.pending.sessions, page([session('stale')]))
+    await flush()
+    expect(view().sessions.items).toEqual([])
+  })
+
+  test('an unchanged user keeps everything', async () => {
+    const { port, controller, view } = setup()
+    controller.reloadSessions()
+    settle(port.pending.sessions, page([session('a')]))
+    await flush()
+    controller.sync(env({ state: state([], { config: config({ usedToday: 4 }) }) }))
+    expect(view().sessions.items).toHaveLength(1)
+  })
+})
+
+describe('history image cache by bytes', () => {
+  const url = (tag: string) => `data:${tag.repeat(11)}`
+
+  test('the default limit is 64 MiB', () => {
+    expect(ATTACHMENT_CACHE_BYTES).toBe(64 * 1024 * 1024)
+  })
+
+  test('the least recently used picture goes first once the byte limit is exceeded', async () => {
+    const port = new FakePort()
+    const controller = new AssistantController(port, INITIAL_ENV, { attachmentCacheBytes: 40 })
+    controller.sync(env())
+    const load = async (id: string, tag: string) => {
+      const request = controller.attachment(id)
+      settle(port.pending.attachment, { dataUrl: url(tag) })
+      await request
+    }
+    await load('a', 'a')
+    await load('b', 'b')
+    await load('c', 'c')
+    // 三张共 48 字节超过 40：最早取用的 a 被丢，b 与 c 留下。
+    expect(port.count('attachment')).toBe(3)
+    void controller.attachment('b')
+    expect(port.count('attachment')).toBe(3)
+    void controller.attachment('a')
+    expect(port.count('attachment')).toBe(4)
+  })
+
+  test('a request still in flight is never evicted', async () => {
+    const port = new FakePort()
+    const controller = new AssistantController(port, INITIAL_ENV, { attachmentCacheBytes: 10 })
+    controller.sync(env())
+    const slow = controller.attachment('slow')
+    const fast = controller.attachment('fast')
+    port.pending.attachment[1]?.resolve({ dataUrl: url('f') })
+    await fast
+    // 刚取回的一张超过上限也不丢，在途的 slow 也还在缓存里：再取都不会发新请求。
+    void controller.attachment('slow')
+    void controller.attachment('fast')
+    expect(port.count('attachment')).toBe(2)
+    // slow 取回后总量超限：先丢最久没用过的 fast。
+    port.pending.attachment[0]?.resolve({ dataUrl: url('s') })
+    await slow
+    void controller.attachment('slow')
+    expect(port.count('attachment')).toBe(2)
+    void controller.attachment('fast')
+    expect(port.count('attachment')).toBe(3)
   })
 })

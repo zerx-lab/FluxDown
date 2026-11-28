@@ -53,7 +53,15 @@ import {
   toolStatusKey,
   turnTranscript,
   validTitle,
+  validRatingComment,
   withoutReplaced,
+  MAX_RATING_COMMENT_CHARS,
+  canResend,
+  filterSessions,
+  retryPlan,
+  awaitsHistory,
+  stepCursor,
+  visibleSessions,
 } from './model'
 import type { IssueOverrides, RatingOverrides, Turn } from './model'
 
@@ -945,5 +953,167 @@ describe('turnTranscript', () => {
     expect(out.includes('answer')).toBe(true)
     expect(out.includes('[assistantRunFailed]')).toBe(false)
     expect(out.includes('[assistantAnswerInterrupted]')).toBe(false)
+  })
+})
+
+describe('observing runs and kept images', () => {
+  const observing = (extra: Partial<AssistantRunDto> = {}): AssistantRunDto => ({ ...run('s1', 'r1', 'running', []), observing: true, ...extra })
+
+  test('imageIds and observing flow into the live turn; kept images are counted with new ones', () => {
+    const [turn] = buildTimeline('s1', [], [], [observing({ imageIds: ['a1', 'a2'], imageCount: 1 })], none, noRatings)
+    expect(turn?.live?.observing).toBe(true)
+    expect(turn?.images).toEqual(['a1', 'a2'])
+    expect(turn?.imageCount).toBe(3)
+    const [plain] = buildTimeline('s1', [], [], [run('s1', 'r1', 'running', [])], none, noRatings)
+    expect(plain?.live?.observing).toBe(false)
+    expect(plain?.images).toEqual([])
+  })
+
+  test('a pending confirmation of an observed run is not counted for the badge or the jump hint', () => {
+    const now = 1_000
+    const pending = (): AssistantRunItemDto => ({ type: 'tool', call: pendingCall(now + 5_000) })
+    const snapshot = state([observing({ items: [pending()] }), run('b', 'r2', 'running', [pending()])])
+    expect(pendingConfirmations(snapshot, now)).toBe(1)
+    // 倒计时仍要走表：算上旁观执行。
+    expect(pendingConfirmations(snapshot, now, true)).toBe(2)
+    expect(pendingElsewhere(state([observing({ items: [pending()] })]), null, now)).toBeNull()
+    expect(pendingElsewhere(snapshot, 's1', now)).toBe('b')
+  })
+})
+
+describe('retry plan for a failed turn', () => {
+  const failed = (extra: Partial<AssistantRunDto> = {}): AssistantRunDto => ({ ...run('s1', 'r1', 'failed', []), errorReason: 'timeout', ...extra })
+
+  test('a persisted question is replaced and keeps its images', () => {
+    const history = [message('m1', 'r1', 1, 'user', 'how fast?')]
+    const [turn] = buildTimeline('s1', history, [], [failed()], none, noRatings)
+    expect(retryPlan(turn as Turn, true)).toEqual({ kind: 'replace', questionId: 'm1', text: 'how fast?', keepImages: false })
+    const withImages = [{ ...message('m1', 'r1', 1, 'user', 'see'), images: ['att-1'] }]
+    const [pictured] = buildTimeline('s1', withImages, [], [failed()], none, noRatings)
+    expect(retryPlan(pictured as Turn, true)).toEqual({ kind: 'replace', questionId: 'm1', text: 'see', keepImages: true })
+  })
+
+  test('an unsaved question that was never accepted is resent as typed, with its local images when it had any', () => {
+    const [plain] = buildTimeline('s1', [], [], [failed({ runId: null, question: '  hello  ' })], none, noRatings)
+    expect(plain?.live?.runId).toBeNull()
+    expect(awaitsHistory(plain as Turn)).toBe(false)
+    expect(retryPlan(plain as Turn, true)).toEqual({ kind: 'resend', text: 'hello', images: [] })
+    const sent = { sessionId: 's1', text: 'live question', images: ['data:image/png;base64,AA'] }
+    const [pictured] = buildTimeline('s1', [], [], [failed({ runId: null, imageCount: 1 })], none, noRatings, sent)
+    expect(retryPlan(pictured as Turn, true)).toEqual({ kind: 'resend', text: 'live question', images: ['data:image/png;base64,AA'] })
+  })
+
+  test('an unsaved question whose images are gone cannot be resent', () => {
+    const [turn] = buildTimeline('s1', [], [], [failed({ runId: null, imageCount: 2 })], none, noRatings)
+    expect(retryPlan(turn as Turn, true)).toBeNull()
+  })
+
+  test('an accepted run whose question is not in the history yet is never resent', () => {
+    // 云端先保存用户消息再返回执行流：有执行 ID 说明提问已落库，只是历史还没读到；重发会重复提问并多占一次额度。
+    const [turn] = buildTimeline('s1', [], [], [failed({ question: 'hello' })], none, noRatings)
+    expect(turn?.questionId).toBeNull()
+    expect(awaitsHistory(turn as Turn)).toBe(true)
+    expect(retryPlan(turn as Turn, true)).toBeNull()
+    // 带本地缩略图的刚发出的提问同样不重发。
+    const sent = { sessionId: 's1', text: 'hello', images: ['data:image/png;base64,AA'] }
+    const [pictured] = buildTimeline('s1', [], [], [failed({ question: 'hello', imageCount: 1 })], none, noRatings, sent)
+    expect(retryPlan(pictured as Turn, true)).toBeNull()
+    // 历史读到后才有替换方案。
+    const history = [message('m1', 'r1', 1, 'user', 'hello')]
+    const [loaded] = buildTimeline('s1', history, [], [failed({ question: 'hello' })], none, noRatings)
+    expect(awaitsHistory(loaded as Turn)).toBe(false)
+    expect(retryPlan(loaded as Turn, true)).toEqual({ kind: 'replace', questionId: 'm1', text: 'hello', keepImages: false })
+    // 只有失败的轮次才算在等历史。
+    const [running] = buildTimeline('s1', [], [], [run('s1', 'r1', 'running', [])], none, noRatings)
+    expect(awaitsHistory(running as Turn)).toBe(false)
+  })
+
+  test('only the last failed turn offers a retry', () => {
+    const history = [message('m1', 'r1', 1, 'user', 'q')]
+    const [failedTurn] = buildTimeline('s1', history, [], [failed()], none, noRatings)
+    expect(retryPlan(failedTurn as Turn, false)).toBeNull()
+    const [canceled] = buildTimeline('s1', history, [], [{ ...failed(), status: 'canceled' }], none, noRatings)
+    expect(retryPlan(canceled as Turn, true)).toBeNull()
+    const [clean] = buildTimeline('s1', [...history, message('m2', 'r1', 2, 'assistant', 'ok')], [], [], none, noRatings)
+    expect(retryPlan(clean as Turn, true)).toBeNull()
+  })
+})
+
+describe('resend gating', () => {
+  const open = { kind: 'open', quotaExhausted: false } as const
+  const base = { gate: open, stale: false, sending: false, cooldown: false, hasActiveRun: false, hasSession: true, limitReached: false }
+
+  test('regenerate, edit and retry need an open gate, a session and no blocker', () => {
+    expect(canResend(base)).toBe(true)
+    expect(canResend({ ...base, gate: { kind: 'open', quotaExhausted: true } })).toBe(false)
+    expect(canResend({ ...base, gate: { kind: 'planDisabled' } })).toBe(false)
+    for (const blocker of [{ stale: true }, { sending: true }, { cooldown: true }, { hasActiveRun: true }, { hasSession: false }, { limitReached: true }]) {
+      expect(canResend({ ...base, ...blocker })).toBe(false)
+    }
+  })
+
+  test('a cooldown also blocks a plain send', () => {
+    const check = { gate: open, stale: false, sending: false, hasActiveRun: false, draft: 'hi', maxMessageChars: 10 }
+    expect(canSend(check)).toBe(true)
+    expect(canSend({ ...check, cooldown: true })).toBe(false)
+  })
+})
+
+describe('rating comment', () => {
+  test('1-500 characters after trimming, counted by code points', () => {
+    expect(validRatingComment('  too slow  ')).toBe('too slow')
+    expect(validRatingComment('   ')).toBeNull()
+    expect(validRatingComment('界'.repeat(MAX_RATING_COMMENT_CHARS))).toBe('界'.repeat(MAX_RATING_COMMENT_CHARS))
+    expect(validRatingComment('界'.repeat(MAX_RATING_COMMENT_CHARS + 1))).toBeNull()
+    expect(validRatingComment('😀'.repeat(MAX_RATING_COMMENT_CHARS))).not.toBeNull()
+  })
+})
+
+describe('history search while typing', () => {
+  const sess = (id: string, title: string): AssistantSessionDto => ({
+    id,
+    channel: 'web',
+    kind: 'ask',
+    title,
+    messageCount: 1,
+    createdAt: '',
+    updatedAt: '',
+  })
+  const items = [sess('a', 'Proxy setup'), sess('b', 'Speed limit'), sess('c', '代理设置')]
+
+  test('the local filter matches titles case-insensitively and ignores blank queries', () => {
+    expect(filterSessions(items, 'PROXY').map((item) => item.id)).toEqual(['a'])
+    expect(filterSessions(items, '  设置 ').map((item) => item.id)).toEqual(['c'])
+    expect(filterSessions(items, '   ')).toHaveLength(3)
+    expect(filterSessions(items, 'nothing')).toEqual([])
+  })
+
+  test('the server result is shown whole once the typed query was applied', () => {
+    // 命中可能来自消息内容，标题里没有：已应用的结果不再按标题过滤。
+    expect(visibleSessions(items, 'speed', 'speed ')).toHaveLength(3)
+    expect(visibleSessions(items, '', '')).toHaveLength(3)
+  })
+
+  test('while the typed query is still debouncing the list is filtered by title', () => {
+    expect(visibleSessions(items, '', 'proxy').map((item) => item.id)).toEqual(['a'])
+    expect(visibleSessions(items, 'proxy', 'proxy s').map((item) => item.id)).toEqual(['a'])
+  })
+})
+
+describe('keyboard cursor', () => {
+  test('moves one step without wrapping', () => {
+    expect(stepCursor(null, 3, true)).toBe(0)
+    expect(stepCursor(null, 3, false)).toBe(2)
+    expect(stepCursor(0, 3, true)).toBe(1)
+    expect(stepCursor(2, 3, true)).toBe(2)
+    expect(stepCursor(2, 3, false)).toBe(1)
+    expect(stepCursor(0, 3, false)).toBe(0)
+  })
+
+  test('an empty list has no cursor and a stale one is clamped', () => {
+    expect(stepCursor(null, 0, true)).toBeNull()
+    expect(stepCursor(4, 0, false)).toBeNull()
+    expect(stepCursor(7, 3, false)).toBe(1)
+    expect(stepCursor(7, 3, true)).toBe(2)
   })
 })

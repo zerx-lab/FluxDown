@@ -11,6 +11,7 @@ import type { KeyboardEvent, PointerEvent, ReactNode } from 'react'
 import { useBlocker, useNavigate } from '@tanstack/react-router'
 import { useT } from '../../i18n'
 import { cn } from '../../lib/cn'
+import { useAgent } from '../../lib/rpc'
 import {
   PANEL_MAIN_MIN_WIDTH,
   PANEL_MAX_WIDTH,
@@ -24,6 +25,7 @@ import {
 } from '../../shell/assistantPanelStore'
 import { ASSISTANT_PANEL_TRIGGER_ATTR, BUTTON_ACTIVE } from '../../shell/ActivityItem'
 import { Button, EmptyState, Icon, Spinner, Tooltip, useIsMobile } from '../../ui'
+import { PlanDialog } from '../settings/sections/account/PlanDialog'
 import { ChatPane } from './ChatPane'
 import { EMPTY_COMPOSER } from './composer'
 import type { ComposerState } from './composer'
@@ -37,6 +39,9 @@ import { useAssistant } from './useAssistant'
 const KEYBOARD_STEP = 16
 
 const PANEL_ID = 'assistant-panel'
+
+/** 文档站（「未开放」页的出口；与 GPUI `DOCS_URL` 一致）。 */
+const DOCS_URL = 'https://fluxdown.com/docs'
 
 const FOCUSABLE = 'a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]):not([type=hidden]),select:not([disabled]),[tabindex]:not([tabindex="-1"])'
 
@@ -130,6 +135,9 @@ function PanelBody({ mobile, active }: { mobile: boolean; active: boolean }) {
   const [composer, setComposer] = useState<ComposerState>(EMPTY_COMPOSER)
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
+  const account = useAgent((snapshot) => snapshot.session, null)
+  const [planOpen, setPlanOpen] = useState(false)
+  const lastUser = useRef<string | null>(null)
 
   const { env } = view
   // 快照到手之前登录态未知：先显示加载，避免闪出「请登录」。
@@ -149,10 +157,12 @@ function PanelBody({ mobile, active }: { mobile: boolean; active: boolean }) {
     if (ready) controller.ensureLoaded()
   }, [controller, ready, env.signedIn, env.stale, env.state.config, view.configFailed, view.sessions.load])
 
-  // 账号相关内容被清空（登出）：草稿不再属于任何会话，附图一并丢弃。
+  // 账号变化（登出，或 A 直接换成 B）：草稿不再属于当前账号，附图一并丢弃；首次拿到登录态不算换号。
   useEffect(() => {
-    if (!env.signedIn) setComposer(EMPTY_COMPOSER)
-  }, [env.signedIn])
+    const previous = lastUser.current
+    lastUser.current = env.userId
+    if (previous !== env.userId && (previous !== null || env.userId === null)) setComposer(EMPTY_COMPOSER)
+  }, [env.userId])
 
   const goAccount = () => {
     void navigate({ to: '/settings/$category', params: { category: 'account' } })
@@ -211,7 +221,19 @@ function PanelBody({ mobile, active }: { mobile: boolean; active: boolean }) {
       )
       break
     case 'notOpen':
-      main = <EmptyState className="h-full" icon={Sparkles} title={t('assistantUnavailableTitle')} description={t('assistantUnavailableDesc')} />
+      main = (
+        <EmptyState
+          className="h-full"
+          icon={Sparkles}
+          title={t('assistantUnavailableTitle')}
+          description={t('assistantUnavailableDesc')}
+          action={
+            <Button variant="outline" onClick={() => window.open(DOCS_URL, '_blank', 'noopener,noreferrer')}>
+              {t('assistantOpenDocs')}
+            </Button>
+          }
+        />
+      )
       break
     case 'planDisabled':
       main = (
@@ -221,7 +243,7 @@ function PanelBody({ mobile, active }: { mobile: boolean; active: boolean }) {
           title={t('assistantPlanTitle')}
           description={t('assistantPlanDesc')}
           action={
-            <Button variant="primary" onClick={goAccount}>
+            <Button variant="primary" disabled={env.stale || account === null} onClick={() => setPlanOpen(true)}>
               {t('assistantViewPlans')}
             </Button>
           }
@@ -296,6 +318,16 @@ function PanelBody({ mobile, active }: { mobile: boolean; active: boolean }) {
       <div ref={bodyRef} className={cn('min-h-0 min-w-0 flex-1', mobile && 'pb-safe')}>
         {main}
       </div>
+      {/* 「套餐不含」页直接打开套餐对话框；关闭后重取配置（购买成功后助手随即开放）。 */}
+      {planOpen && account !== null && !env.stale ? (
+        <PlanDialog
+          session={account}
+          onClose={() => {
+            setPlanOpen(false)
+            controller.fetchConfig(true)
+          }}
+        />
+      ) : null}
     </>
   )
 }

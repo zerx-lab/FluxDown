@@ -2,15 +2,20 @@ import { describe, expect, test } from 'bun:test'
 import type { AssistantConfigDto } from '../../lib/rpc/protocol'
 import {
   ATTACHABLE_IMAGE_TYPES,
+  EMPTY_COMPOSER,
   checkAttachable,
   imagesEnabled,
   insertPlaceholder,
+  mergeStashedDraft,
   orphanedImages,
   pasteTakesImages,
   placeholderRemnant,
   prepareImage,
   reconcileDraft,
   removePlaceholder,
+  settleSent,
+  startEdit,
+  stripPlaceholders,
 } from './composer'
 import type { Attachment, ImageCodec } from './composer'
 
@@ -143,37 +148,37 @@ describe('pasteTakesImages', () => {
 
 describe('insertPlaceholder', () => {
   test('writes the placeholder at the caret and moves the caret behind it', () => {
-    expect(insertPlaceholder('see this', 4, 4, 1)).toEqual({ text: 'see [Image #1]this', caret: 14 })
-    expect(insertPlaceholder('', 0, 0, 1)).toEqual({ text: '[Image #1]', caret: 10 })
-    expect(insertPlaceholder('abc', 3, 3, 2)).toEqual({ text: 'abc[Image #2]', caret: 13 })
+    expect(insertPlaceholder('see this', 4, 4, 1)).toEqual({ text: 'see [Image #1] this', caret: 15 })
+    expect(insertPlaceholder('', 0, 0, 1)).toEqual({ text: '[Image #1] ', caret: 11 })
+    expect(insertPlaceholder('abc', 3, 3, 2)).toEqual({ text: 'abc [Image #2] ', caret: 15 })
   })
 
   test('replaces the selection like a paste does', () => {
     expect(insertPlaceholder('see this one', 4, 8, 1)).toEqual({ text: 'see [Image #1] one', caret: 14 })
-    expect(insertPlaceholder('abc', 3, 0, 1).text).toBe('[Image #1]')
+    expect(insertPlaceholder('abc', 3, 0, 1).text).toBe('[Image #1] ')
   })
 
   test('clamps a selection outside the text', () => {
-    expect(insertPlaceholder('ab', 99, 99, 1)).toEqual({ text: 'ab[Image #1]', caret: 12 })
-    expect(insertPlaceholder('ab', -5, -5, 1)).toEqual({ text: '[Image #1]ab', caret: 10 })
+    expect(insertPlaceholder('ab', 99, 99, 1)).toEqual({ text: 'ab [Image #1] ', caret: 14 })
+    expect(insertPlaceholder('ab', -5, -5, 1)).toEqual({ text: '[Image #1] ab', caret: 11 })
   })
 
   test('keeps CJK and emoji around the caret intact', () => {
     // 光标下标是 UTF-16 码元：「界」1 个码元，🙂 2 个。
-    expect(insertPlaceholder('界🙂x', 3, 3, 1).text).toBe('界🙂[Image #1]x')
+    expect(insertPlaceholder('界🙂x', 3, 3, 1).text).toBe('界🙂 [Image #1] x')
   })
 })
 
 describe('removePlaceholder', () => {
   test('removes the placeholder and renumbers the ones behind it', () => {
     const text = 'a [Image #1] b [Image #2] c [Image #3]'
-    expect(removePlaceholder(text, text.length, 2, 3).text).toBe('a [Image #1] b  c [Image #2]')
-    expect(removePlaceholder(text, text.length, 1, 3).text).toBe('a  b [Image #1] c [Image #2]')
+    expect(removePlaceholder(text, text.length, 2, 3).text).toBe('a [Image #1] b c [Image #2]')
+    expect(removePlaceholder(text, text.length, 1, 3).text).toBe('a b [Image #1] c [Image #2]')
     expect(removePlaceholder(text, text.length, 3, 3).text).toBe('a [Image #1] b [Image #2] c ')
   })
 
   test('removes every reference of the removed number', () => {
-    expect(removePlaceholder('[Image #1] x [Image #1] [Image #2]', 0, 1, 2).text).toBe(' x  [Image #1]')
+    expect(removePlaceholder('[Image #1] x [Image #1] [Image #2]', 0, 1, 2).text).toBe('x [Image #1]')
   })
 
   test('leaves numbers outside the attachment range alone', () => {
@@ -194,8 +199,8 @@ describe('removePlaceholder', () => {
 
   test('the caret follows the text', () => {
     const text = 'ab [Image #1] cd [Image #2] ef'
-    // 光标在末尾：#1 被删（-10）、#2 → #1（-0）。
-    expect(removePlaceholder(text, text.length, 1, 2)).toEqual({ text: 'ab  cd [Image #1] ef', caret: text.length - 10 })
+    // 光标在末尾：#1 连同后面的空格被删（-11）、#2 → #1（-0）。
+    expect(removePlaceholder(text, text.length, 1, 2)).toEqual({ text: 'ab cd [Image #1] ef', caret: text.length - 11 })
     // 光标在被删占位符之前：不动。
     expect(removePlaceholder(text, 1, 1, 2).caret).toBe(1)
     // 光标落在被删占位符中间：回到它的起点。
@@ -212,9 +217,9 @@ describe('removePlaceholder', () => {
   test('insert and remove round trip', () => {
     const first = insertPlaceholder('hello world', 5, 5, 1)
     const second = insertPlaceholder(first.text, first.caret, first.caret, 2)
-    expect(second.text).toBe('hello[Image #1][Image #2] world')
+    expect(second.text).toBe('hello [Image #1] [Image #2] world')
     const after = removePlaceholder(second.text, second.caret, 1, 2)
-    expect(after.text).toBe('hello[Image #1] world')
+    expect(after.text).toBe('hello [Image #1] world')
   })
 })
 
@@ -306,5 +311,139 @@ describe('reconcileDraft', () => {
 
   test('without attachments the text is returned as typed', () => {
     expect(reconcileDraft('a', '', 0, [])).toEqual({ draft: '', caret: 0, attachments: [] })
+  })
+})
+
+describe('placeholder edge cases shared with GPUI and the website', () => {
+  test('removing swallows one following space only after a boundary', () => {
+    expect(removePlaceholder('see[Image #1] now', 0, 1, 1).text).toBe('see now')
+    expect(removePlaceholder('see [Image #1]', 0, 1, 1).text).toBe('see ')
+    expect(removePlaceholder('[Image #1] [Image #2] what', 0, 1, 2).text).toBe('[Image #1] what')
+  })
+
+  test('a half deleted placeholder takes the following space with it', () => {
+    const old = 'a [Image #1] b'
+    const next = 'a [Image #1 b'
+    expect(placeholderRemnant(old, next, 1)).toEqual({ start: 2, end: 12 })
+    expect(reconcileDraft(old, next, 11, [attachment(1)]).draft).toBe('a b')
+  })
+
+  test('look-alikes with a leading zero or an out of range number are plain text', () => {
+    const text = '[Image #9] [Image #01] [Image #] [Image #1 [Image #x] [Image #2]'
+    expect(removePlaceholder(text, 0, 1, 2).text).toBe('[Image #9] [Image #01] [Image #] [Image #1 [Image #x] [Image #1]')
+    expect(orphanedImages('[Image #0] [Image #01]', 1)).toEqual([1])
+  })
+
+  test('insertion pads each side only where needed', () => {
+    expect(insertPlaceholder('see ', 4, 4, 2).text).toBe('see [Image #2] ')
+    expect(insertPlaceholder('a  b', 2, 2, 1).text).toBe('a [Image #1] b')
+    expect(insertPlaceholder('ab', 1, 1, 1).text).toBe('a [Image #1] b')
+    expect(insertPlaceholder('看图', 1, 1, 1).text).toBe('看 [Image #1] 图')
+  })
+})
+
+describe('settleSent', () => {
+  const sent = { ...EMPTY_COMPOSER, draft: 'question', attachments: [attachment(1), attachment(2)] }
+
+  test('an untouched composer is cleared after the send', () => {
+    expect(settleSent(sent, { ...sent })).toEqual(EMPTY_COMPOSER)
+  })
+
+  test('text typed while the request was in flight is kept', () => {
+    const typed = { ...sent, draft: 'question and more' }
+    expect(settleSent(sent, typed)).toBe(typed)
+  })
+
+  test('images added or removed while the request was in flight keep the composer', () => {
+    const more = { ...sent, attachments: [...sent.attachments, attachment(3)] }
+    expect(settleSent(sent, more)).toBe(more)
+    const swapped = { ...sent, attachments: [attachment(1), attachment(9)] }
+    expect(settleSent(sent, swapped)).toBe(swapped)
+  })
+
+  test('a sent edit restores the draft from before the edit', () => {
+    const before = { ...EMPTY_COMPOSER, draft: 'half written' }
+    const editing = startEdit(before, { sessionId: 's', questionId: 'q1', text: 'old question', imageCount: 0 })
+    expect(settleSent(editing, { ...editing })).toEqual(before)
+  })
+
+  test('new text typed during a sent edit stays and leaves the edit state', () => {
+    const editing = startEdit(EMPTY_COMPOSER, { sessionId: 's', questionId: 'q1', text: 'old question', imageCount: 0 })
+    const typed = { ...editing, draft: 'old question, edited again' }
+    const result = settleSent(editing, typed)
+    expect(result.draft).toBe('old question, edited again')
+    expect(result.editing).toBeNull()
+  })
+
+  describe('a sent edit whose input changed meanwhile never loses the stashed draft', () => {
+    const edit = (stash: { draft: string; attachments: Attachment[] }, imageCount = 0) =>
+      startEdit({ ...EMPTY_COMPOSER, ...stash }, { sessionId: 's', questionId: 'q1', text: 'old question', imageCount })
+
+    test('the new input stays and the stash follows after a blank line', () => {
+      const sentEdit = edit({ draft: 'half written', attachments: [] })
+      const result = settleSent(sentEdit, { ...sentEdit, draft: 'new words  ' })
+      expect(result).toEqual({ draft: 'new words\n\nhalf written', attachments: [], editing: null })
+    })
+
+    test('an empty stash or an emptied input needs no separator', () => {
+      const none = edit({ draft: '   ', attachments: [] })
+      expect(settleSent(none, { ...none, draft: 'new words' }).draft).toBe('new words')
+      const some = edit({ draft: 'half written', attachments: [] })
+      expect(settleSent(some, { ...some, draft: '  ' }).draft).toBe('half written')
+    })
+
+    test('the stashed images come back when no image is left in the composer', () => {
+      const stash = { draft: 'see [Image #1] please', attachments: [attachment(5)] }
+      const sentEdit = edit(stash, 1)
+      const result = settleSent(sentEdit, { ...sentEdit, draft: 'typed' })
+      expect(result.draft).toBe('typed\n\nsee [Image #1] please')
+      expect(result.attachments).toEqual(stash.attachments)
+      expect(result.editing).toBeNull()
+    })
+
+    test('with images still in the composer the stashed ones are dropped together with their placeholders', () => {
+      const stash = { draft: 'look [Image #1] here', attachments: [attachment(5)] }
+      const sentEdit = { ...edit(stash), draft: 'old question', attachments: [attachment(9)] }
+      const result = settleSent(sentEdit, { ...sentEdit, draft: 'typed' })
+      expect(result.draft).toBe('typed\n\nlook here')
+      expect(result.attachments).toEqual([attachment(9)])
+      expect(result.editing).toBeNull()
+    })
+
+    test('an untouched composer still restores the stash whole, images included', () => {
+      const stash = { draft: 'see [Image #1] please', attachments: [attachment(5)] }
+      const sentEdit = edit(stash, 1)
+      expect(settleSent(sentEdit, { ...sentEdit })).toEqual({ ...stash, editing: null })
+    })
+
+    test('an edit that already ended or was replaced is not settled by this send', () => {
+      const sentEdit = edit({ draft: 'half written', attachments: [] })
+      // 发送期间切走会话：编辑已结束、暂存草稿已还原，输入区原样保留。
+      const ended = { ...EMPTY_COMPOSER, draft: 'half written' }
+      expect(settleSent(sentEdit, ended)).toBe(ended)
+      // 被另一条编辑取代：它自己的暂存草稿不能被这次发送吞掉。
+      const other = startEdit(EMPTY_COMPOSER, { sessionId: 's', questionId: 'q2', text: 'another', imageCount: 0 })
+      expect(settleSent(sentEdit, other)).toBe(other)
+      // 普通提问发出期间开始了编辑：同样不动。
+      const plain = { ...EMPTY_COMPOSER, draft: 'question' }
+      expect(settleSent(plain, other)).toBe(other)
+    })
+  })
+
+  describe('merge helpers', () => {
+    test('mergeStashedDraft joins by a blank line and drops placeholders it cannot restore', () => {
+      expect(mergeStashedDraft('a', 'b', 0, true)).toBe('a\n\nb')
+      expect(mergeStashedDraft('a  \n', 'b', 0, true)).toBe('a\n\nb')
+      expect(mergeStashedDraft('a', ' ', 0, true)).toBe('a')
+      expect(mergeStashedDraft(' ', 'b', 0, true)).toBe('b')
+      expect(mergeStashedDraft('a', 'x [Image #1] y', 1, false)).toBe('a\n\nx y')
+      expect(mergeStashedDraft('a', '[Image #1]', 1, false)).toBe('a')
+    })
+
+    test('stripPlaceholders removes numbers 1..=count and leaves the rest as text', () => {
+      expect(stripPlaceholders('a [Image #1] b [Image #2] c', 2)).toBe('a b c')
+      expect(stripPlaceholders('[Image #1] [Image #9]', 1)).toBe('[Image #9]')
+      expect(stripPlaceholders('plain', 3)).toBe('plain')
+    })
   })
 })

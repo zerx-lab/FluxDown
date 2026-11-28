@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { markdownBlocks, parseInline } from './markdown'
+import { markdownBlocks, parseInline, safeUrl } from './markdown'
 import type { InlineSegment, MarkdownBlock } from './markdown'
 
 const text = (value: string): InlineSegment => ({ type: 'text', text: value })
@@ -208,6 +208,17 @@ describe('parseInline', () => {
     expect(parseInline('[x](javascript:alert(1))')).toEqual([text('[x](javascript:alert(1))')])
     expect(parseInline('[x](ftp://a/b)')).toEqual([text('[x](ftp://a/b)')])
     expect(parseInline('[x](data:text/html,hi)')).toEqual([text('[x](data:text/html,hi)')])
+  })
+
+  test('links with userinfo, empty hosts or over-long targets stay literal text', () => {
+    expect(safeUrl('https://docs.example.com@evil.test/')).toBeNull()
+    expect(safeUrl('https://user:pw@e.com')).toBeNull()
+    expect(safeUrl('https:///path')).toBeNull()
+    expect(safeUrl('https://e.com/?next=a@b')).toBe('https://e.com/?next=a@b')
+    expect(safeUrl(`https://e.com/${'a'.repeat(2048)}`)).toBeNull()
+    expect(safeUrl(`https://e.com/${'a'.repeat(2048 - 'https://e.com/'.length)}`)).not.toBeNull()
+    expect(parseInline('[x](https://docs.example.com@evil.test/)')).toEqual([text('[x](https://docs.example.com@evil.test/)')])
+    expect(parseInline('go https://a@b.com now')).toEqual([text('go https://a@b.com now')])
   })
 
   test('images degrade to a plain link and never load remotely', () => {

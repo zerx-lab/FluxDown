@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { useI18n } from '../../i18n'
 import { EMPTY_ASSISTANT_STATE, rpc, useAgent, useConnection } from '../../lib/rpc'
+import { toast } from '../../ui'
 import { AssistantController } from './controller'
 import type { AssistantEnv, ViewState } from './controller'
 import { agentNowMs, clockSkewMs, pendingConfirmations } from './model'
@@ -21,12 +22,14 @@ export function useAssistant(): AssistantHandle {
   const { phase } = useConnection()
   const state = useAgent((snapshot) => snapshot.assistant ?? EMPTY_ASSISTANT_STATE, EMPTY_ASSISTANT_STATE)
   const signedIn = useAgent((snapshot) => snapshot.session !== null, false)
+  // 账号按用户 ID 区分：A 直接换成 B 时登录态不变，只有它变化（缓存 / 列表 / 附图 / 草稿都要作废）。
+  const userId = useAgent((snapshot) => snapshot.session?.user.id ?? null, null)
   const ready = useAgent(() => true, false)
   // 助手由 agent 本身承载：只要连着 agent 就可用（与 daemon 是否在线无关）。
   const stale = phase !== 'ready'
 
-  const env = useMemo<AssistantEnv>(() => ({ state, signedIn, stale, locale }), [state, signedIn, stale, locale])
-  const [controller] = useState(() => new AssistantController(rpc.agent.assistant, env))
+  const env = useMemo<AssistantEnv>(() => ({ state, signedIn, userId, stale, locale }), [state, signedIn, userId, stale, locale])
+  const [controller] = useState(() => new AssistantController(rpc.agent.assistant, env, { notify: (key) => toast.key(key, 'error') }))
   useEffect(() => controller.sync(env), [controller, env])
   const view = useSyncExternalStore(controller.subscribe, controller.getSnapshot)
 
@@ -49,7 +52,8 @@ function useNowMs(state: AssistantEnv['state']): number {
   const [calibration, setCalibration] = useState(() => ({ state, skew: clockSkewMs(state, Date.now()) }))
   if (calibration.state !== state) setCalibration({ state, skew: clockSkewMs(state, Date.now()) })
   const now = agentNowMs(local, calibration.skew)
-  const ticking = pendingConfirmations(state, now) > 0
+  // 旁观执行的待确认也要走表：对话里仍显示它的倒计时 / 过期状态。
+  const ticking = pendingConfirmations(state, now, true) > 0
   useEffect(() => {
     setLocal(Date.now())
   }, [state])
