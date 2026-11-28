@@ -251,6 +251,11 @@ pub struct AssistantRunDto {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct AssistantStateDto {
+    /// 云端开放了 AI 助手入口（FluxCloud 判定：`mode = enabled`，或 `internal` 且为内部账号；与套餐无关）。
+    /// 已登录取 `GET /ai/config` 的 `visible`，未登录取免鉴权 `GET /ai/status`；拉取失败保留上次值，
+    /// 初始为 `false`。为 `false` 时各 UI 隐藏全部助手入口。
+    #[serde(default)]
+    pub visible: bool,
     /// 最近一次成功拉取的云端配置；未登录或从未拉取成功为 `None`。
     #[serde(default)]
     pub config: Option<AssistantConfigDto>,

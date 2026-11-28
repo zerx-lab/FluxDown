@@ -45,6 +45,8 @@ use tools::{ClientTools, ToolCall, ToolOutput};
 const CONFIG_TTL: Duration = Duration::from_secs(5 * 60);
 /// 后台刷新配置失败后的最短重试间隔（`get` 被频繁轮询也不会反复打云端）。
 const CONFIG_RETRY: Duration = Duration::from_secs(30);
+/// 入口可见性的周期刷新间隔（后台开关改动最迟这么久后生效；失败按 [`CONFIG_RETRY`] 重试）。
+const VISIBILITY_TTL: Duration = Duration::from_secs(30 * 60);
 /// 文本增量的最长推送间隔：到达的 token 先攒着，避免每个增量都整体序列化一次状态。
 const FLUSH_INTERVAL: Duration = Duration::from_millis(50);
 /// 云端未给出确认窗口时的兜底（与 FluxCloud `clientConfirmTimeoutSecs` 默认一致）。
@@ -146,6 +148,8 @@ struct PendingCall {
 
 #[derive(Default)]
 struct Inner {
+    /// 云端开放了助手入口（`AssistantStateDto.visible`）；账号变化时保留，重新拉取后按需更新。
+    visible: bool,
     config: Option<AssistantConfigDto>,
     config_fetched: Option<Instant>,
     config_attempted: Option<Instant>,
@@ -158,6 +162,7 @@ struct Inner {
 impl Inner {
     fn to_dto(&self) -> AssistantStateDto {
         AssistantStateDto {
+            visible: self.visible,
             config: self.config.clone(),
             loading: self.loading,
             last_error_reason: self.last_error.as_ref().and_then(|(reason, _)| *reason),
@@ -656,12 +661,13 @@ impl AssistantService {
 
     // ---------------------------------------------------------------- 后台循环
 
-    /// 后台循环：响应账号会话变化（登出 / 切换 = 取消全部执行并清空状态）、回收已结束的任务；
-    /// 关停时收回全部任务并断开与网关的循环引用。
+    /// 后台循环：响应账号会话变化（登出 / 切换 = 取消全部执行并清空状态）、回收已结束的任务、
+    /// 刷新入口可见性（启动即拉、账号变化后重拉、之后按周期）；关停时收回全部任务并断开与网关的循环引用。
     pub(crate) async fn run(self: Arc<Self>) {
         let mut session = self.cloud.session_changes();
         session.borrow_and_update();
         let mut reap = tokio::time::interval(REAP_INTERVAL);
+        let mut visibility_due = Instant::now();
         loop {
             tokio::select! {
                 () = self.cancel.cancelled() => break,
@@ -671,6 +677,15 @@ impl AssistantService {
                     }
                     session.borrow_and_update();
                     self.reset();
+                    visibility_due = Instant::now();
+                }
+                () = tokio::time::sleep_until(visibility_due) => {
+                    let fresh = tokio::select! {
+                        () = self.cancel.cancelled() => break,
+                        fresh = self.refresh_visibility() => fresh,
+                    };
+                    visibility_due =
+                        Instant::now() + if fresh { VISIBILITY_TTL } else { CONFIG_RETRY };
                 }
                 _ = reap.tick() => self.reap(),
             }
@@ -687,7 +702,10 @@ impl AssistantService {
                 ctl.cancel.cancel();
             }
         }
-        *inner = Inner::default();
+        *inner = Inner {
+            visible: inner.visible,
+            ..Inner::default()
+        };
         if !was_blank {
             self.publish(&inner);
         }
@@ -720,6 +738,38 @@ impl AssistantService {
             tasks.shutdown().await;
         }
         *lock(&self.tools) = None;
+    }
+
+    /// 刷新入口可见性，返回是否拿到了云端结果。已登录走 `ai/config`（顺带刷新配置缓存），
+    /// 未登录走免鉴权 `ai/status`；失败保留上次值。只在值变化时推送。
+    async fn refresh_visibility(&self) -> bool {
+        if self.cloud.is_authenticated().await {
+            return match self.fetch_config(false).await {
+                Ok(()) => true,
+                Err(error) => {
+                    tracing::debug!(error = %error.message, "assistant visibility refresh failed");
+                    false
+                }
+            };
+        }
+        let epoch = self.cloud.request_epoch();
+        let status = match self.cloud.status().await {
+            Ok(status) => status,
+            Err(error) => {
+                tracing::debug!(error = %error.message, "assistant status refresh failed");
+                return false;
+            }
+        };
+        let mut inner = self.lock();
+        if self.cloud.request_epoch() != epoch {
+            // 拉取期间登录了：匿名结果作废，账号变化会触发重新拉取。
+            return false;
+        }
+        if inner.visible != status.visible {
+            inner.visible = status.visible;
+            self.publish(&inner);
+        }
+        true
     }
 
     // ---------------------------------------------------------------- 配置
@@ -779,6 +829,7 @@ impl AssistantService {
         inner.loading = false;
         let outcome = match result {
             Ok(body) => {
+                inner.visible = body.visible();
                 inner.config = Some(body.into_dto(&declared));
                 inner.config_fetched = Some(Instant::now());
                 inner.last_error = None;

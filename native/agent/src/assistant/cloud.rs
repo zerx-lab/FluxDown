@@ -108,6 +108,9 @@ pub(crate) struct ConfigBody {
     available: bool,
     #[serde(default)]
     reason: Option<String>,
+    /// 本账号可见 AI 助手入口（与套餐无关）。
+    #[serde(default)]
+    visible: bool,
     #[serde(default)]
     client_tool_protocol: u32,
     #[serde(default)]
@@ -132,7 +135,17 @@ struct CloudToolRef {
     version: u32,
 }
 
+/// `GET /ai/status`（免鉴权）的响应：未登录时的入口可见性。
+#[derive(Debug, Deserialize)]
+pub(crate) struct StatusBody {
+    pub(crate) visible: bool,
+}
+
 impl ConfigBody {
+    pub(crate) const fn visible(&self) -> bool {
+        self.visible
+    }
+
     /// `declared` 是本机实现的 `(name, version)`；云端工具协议一致且至少一个本机工具在云端目录里，
     /// 才算 `tools_enabled`。
     pub(crate) fn into_dto(self, declared: &[(&'static str, u32)]) -> AssistantConfigDto {
@@ -444,6 +457,11 @@ impl AiCloud {
         self.api
             .ai_call(Method::GET, "/config", None::<&Value>)
             .await
+    }
+
+    /// 免鉴权的入口可见性（未登录时用）。
+    pub(crate) async fn status(&self) -> Result<StatusBody, CloudError> {
+        self.api.ai_status().await
     }
 
     /// 建会话并声明本机实现的客户端工具（云端只对声明了且协议一致的会话下发工具）。

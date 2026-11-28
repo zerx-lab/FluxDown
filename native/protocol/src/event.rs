@@ -786,7 +786,11 @@ pub fn apply_agent_event(snapshot: &mut AgentSnapshot, event: &AgentEvent) {
                 snapshot.cloud_notify.updated_at_unix_ms = None;
                 snapshot.cloud_notify.recent_deliveries.clear();
                 snapshot.cloud_notify.recent_next_cursor = None;
-                snapshot.assistant = crate::AssistantStateDto::default();
+                // 入口可见性由 agent 在登出后改按匿名口径重新拉取、仅变化时推送，这里保留旧值。
+                snapshot.assistant = crate::AssistantStateDto {
+                    visible: snapshot.assistant.visible,
+                    ..crate::AssistantStateDto::default()
+                };
             }
         }
         AgentEvent::SyncChanged(sync) => snapshot.sync.clone_from(sync),

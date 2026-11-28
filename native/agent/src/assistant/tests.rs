@@ -172,6 +172,7 @@ struct MockCloud {
     confirm_status: Mutex<Option<StatusCode>>,
     cancels: AtomicUsize,
     config: Mutex<Value>,
+    status: Mutex<Value>,
 }
 
 type Mock = Arc<MockCloud>;
@@ -182,6 +183,10 @@ fn record(mock: &MockCloud, entry: String) {
 
 async fn mock_config(State(mock): State<Mock>) -> axum::Json<Value> {
     axum::Json(lock(&mock.config).clone())
+}
+
+async fn mock_status(State(mock): State<Mock>) -> axum::Json<Value> {
+    axum::Json(lock(&mock.status).clone())
 }
 
 async fn mock_create_session(
@@ -334,11 +339,13 @@ impl Harness {
         let (frames, receiver) = mpsc::unbounded_channel();
         let mock: Mock = Arc::new(MockCloud {
             stream: Mutex::new(Some(receiver)),
-            config: Mutex::new(json!({"available": true})),
+            config: Mutex::new(json!({"available": true, "visible": true})),
+            status: Mutex::new(json!({"visible": false})),
             ..MockCloud::default()
         });
         let router = Router::new()
             .route("/api/v1/ai/config", get(mock_config))
+            .route("/api/v1/ai/status", get(mock_status))
             .route("/api/v1/ai/sessions", post(mock_create_session))
             .route("/api/v1/ai/sessions/{id}/messages", post(mock_ask))
             .route("/api/v1/ai/sessions/{id}/cancel", post(mock_cancel))
@@ -948,6 +955,27 @@ async fn account_change_cancels_runs_and_clears_the_state() {
         })
         .await;
     assert!(!harness.has_log("result"));
+    harness.cancel.cancel();
+    background.await.expect("assistant loop stops");
+    harness.finish().await;
+}
+
+#[tokio::test]
+async fn visibility_follows_config_when_signed_in_and_status_after_logout() {
+    let harness = Harness::new("visibility").await;
+    // 套餐不含助手时入口照常可见：可见性只看云端给的 `visible`。
+    *lock(&harness.mock.config) =
+        json!({"available": false, "reason": "plan_disabled", "visible": true});
+    let background = tokio::spawn(harness.service.clone().run());
+    harness
+        .eventually("visible from config", |h| h.service.state().visible)
+        .await;
+    harness.cloud.clear_session().await.expect("clear session");
+    harness
+        .eventually("hidden from anonymous status", |h| {
+            h.service.state() == AssistantStateDto::default()
+        })
+        .await;
     harness.cancel.cancel();
     background.await.expect("assistant loop stops");
     harness.finish().await;
