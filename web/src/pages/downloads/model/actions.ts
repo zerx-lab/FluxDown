@@ -279,22 +279,29 @@ export function taskInfoRow({ name, url, originUrl, sizeBytes }: TaskInfoFields)
   return { name, url, originUrl, sizeBytes: sizeBytes > 0 ? sizeBytes : null }
 }
 
+export type TaskInfoHeader = readonly [name: string, url: string, size: string]
+
+export function taskInfoHeader(translate: (key: string) => string): TaskInfoHeader {
+  return [translate('taskInfoColumnName'), translate('taskInfoColumnUrl'), translate('taskInfoColumnSize')]
+}
+
 export function taskInfoText(
   views: readonly TaskInfoRow[],
+  header: TaskInfoHeader,
   clipboard = true,
 ): string {
   return [
-    'Name\tURL\tSize (bytes)',
+    header.map((label) => taskInfoCell(label, false)).join('\t'),
     ...views.map((view) =>
       `${taskInfoCell(view.name, clipboard)}\t${taskInfoCell(copyableShareUrl(view), clipboard)}\t${view.sizeBytes ?? ''}`,
     ),
   ].join('\n')
 }
 
-export function exportTaskInfo(views: Parameters<typeof taskInfoText>[0]): void {
+export function exportTaskInfo(views: readonly TaskInfoRow[], header: TaskInfoHeader): void {
   if (views.length === 0) return
   try {
-    const url = URL.createObjectURL(new Blob([taskInfoText(views, false)], { type: 'text/plain;charset=utf-8' }))
+    const url = URL.createObjectURL(new Blob([taskInfoText(views, header, false)], { type: 'text/plain;charset=utf-8' }))
     let anchor: HTMLAnchorElement | undefined
     try {
       anchor = document.createElement('a')
@@ -312,9 +319,9 @@ export function exportTaskInfo(views: Parameters<typeof taskInfoText>[0]): void 
   }
 }
 
-export async function copyTaskInfo(views: readonly DownloadTaskView[]): Promise<void> {
+export async function copyTaskInfo(views: readonly DownloadTaskView[], header: TaskInfoHeader): Promise<void> {
   if (views.length === 0) return
-  if (await copyText(taskInfoText(views.map(taskInfoRow)))) {
+  if (await copyText(taskInfoText(views.map(taskInfoRow), header))) {
     toast.key('taskInfoCopied', 'success')
   } else {
     toast.key('copyFileFailed', 'error')

@@ -39,7 +39,24 @@ fn push_task_info_cell(text: &mut String, value: &str, clipboard: bool) {
     }
 }
 
-const TASK_INFO_HEADER: &str = "Name\tURL\tSize (bytes)";
+/// Header row in the current UI language, escaped like any other cell.
+pub(crate) fn task_info_header(translator: &fluxdown_ui_i18n::Translator) -> String {
+    let mut text = String::new();
+    for (index, key) in [
+        "taskInfoColumnName",
+        "taskInfoColumnUrl",
+        "taskInfoColumnSize",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if index > 0 {
+            text.push('\t');
+        }
+        push_task_info_cell(&mut text, translator.text(key), false);
+    }
+    text
+}
 
 fn push_task_info_row(
     text: &mut String,
@@ -62,9 +79,10 @@ fn push_task_info_row(
 }
 
 pub(crate) fn batch_link_info_text<'a>(
+    header: String,
     entries: impl IntoIterator<Item = &'a crate::model::new_download::UrlEntry>,
 ) -> String {
-    let mut text = TASK_INFO_HEADER.to_owned();
+    let mut text = header;
     for entry in entries {
         let name = batch_entry_name(entry);
         let size = batch_entry_size(&entry.url);
@@ -145,9 +163,10 @@ fn batch_entry_name(entry: &crate::model::new_download::UrlEntry) -> std::borrow
 }
 
 pub(crate) fn export_task_info_text(
+    header: String,
     rows: impl IntoIterator<Item = (impl AsRef<str>, u64)>,
 ) -> String {
-    let mut text = TASK_INFO_HEADER.to_owned();
+    let mut text = header;
     for (name, size) in rows {
         let size = (size > 0).then_some(size);
         push_task_info_row(&mut text, name.as_ref(), "", size, false);
@@ -156,12 +175,13 @@ pub(crate) fn export_task_info_text(
 }
 
 fn task_info_text<'a>(
+    header: String,
     rows: impl IntoIterator<Item = std::cell::Ref<'a, DownloadTaskView>>,
     clipboard: bool,
 ) -> Option<String> {
     let mut rows = rows.into_iter().peekable();
     rows.peek()?;
-    let mut text = TASK_INFO_HEADER.to_owned();
+    let mut text = header;
     for row in rows {
         push_task_info_row(
             &mut text,
@@ -258,7 +278,8 @@ impl DownloadView {
             .read(cx)
             .delegate()
             .selected_rows_in_order();
-        if let Some(text) = task_info_text(rows, true) {
+        let header = task_info_header(self.translator.read(cx));
+        if let Some(text) = task_info_text(header, rows, true) {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
             let label = self.translator.read(cx).text("taskInfoCopied").to_owned();
             window.push_notification(toast::success(label), cx);
@@ -271,7 +292,8 @@ impl DownloadView {
             .read(cx)
             .delegate()
             .selected_rows_in_order();
-        if let Some(text) = task_info_text(rows, false) {
+        let header = task_info_header(self.translator.read(cx));
+        if let Some(text) = task_info_text(header, rows, false) {
             let failed = self
                 .translator
                 .read(cx)
@@ -667,7 +689,7 @@ impl DownloadView {
 
 #[cfg(test)]
 mod tests {
-    use super::{TaskCleanup, batch_link_info_text, task_info_text};
+    use super::{TaskCleanup, batch_link_info_text, task_info_header, task_info_text};
     use crate::model::{DownloadTaskView, RowKey, TaskStore};
 
     fn local(id: &str, status: i32, missing: bool) -> DownloadTaskView {
@@ -771,6 +793,18 @@ mod tests {
         ids.iter().map(|id| RowKey::Local((*id).into())).collect()
     }
 
+    const EN_HEADER: &str = "Name\tURL\tSize (bytes)";
+
+    #[test]
+    fn task_info_header_follows_ui_language() {
+        let catalog = fluxdown_ui_i18n::I18nCatalog::load_embedded().unwrap();
+        assert_eq!(task_info_header(&catalog.translator("en")), EN_HEADER);
+        assert_eq!(
+            task_info_header(&catalog.translator("zh")),
+            "名称\t链接\t大小（字节）"
+        );
+    }
+
     #[test]
     fn task_info_preserves_selected_rows_and_escapes_cell_boundaries() {
         let store = TaskStore::default();
@@ -783,13 +817,23 @@ mod tests {
         store.replace_local(vec![known, unknown, local("unselected", 3, false)]);
         let selected = keys(&["known", "removed", "unknown"]);
         assert_eq!(
-            task_info_text(selected.iter().filter_map(|key| store.get(key)), true).as_deref(),
+            task_info_text(
+                EN_HEADER.to_owned(),
+                selected.iter().filter_map(|key| store.get(key)),
+                true
+            )
+            .as_deref(),
             Some(
                 "Name\tURL\tSize (bytes)\n'=报告\\tpart\\n2\thttps://example.com/original\t1\nfile.bin\t\t"
             )
         );
         assert_eq!(
-            task_info_text(selected.iter().filter_map(|key| store.get(key)), false).as_deref(),
+            task_info_text(
+                EN_HEADER.to_owned(),
+                selected.iter().filter_map(|key| store.get(key)),
+                false
+            )
+            .as_deref(),
             Some(
                 "Name\tURL\tSize (bytes)\n=报告\\tpart\\n2\thttps://example.com/original\t1\nfile.bin\t\t"
             )
@@ -812,7 +856,7 @@ mod tests {
             false,
         );
         assert_eq!(
-            batch_link_info_text(&p2p),
+            batch_link_info_text(EN_HEADER.to_owned(), &p2p),
             format!(
                 "Name\tURL\tSize (bytes)\nMy+Show!\t{magnet}\t\nf x.iso\t{ed2k}\t5044211712\n\t{unnamed_magnet}\t\n\t{unnamed_ed2k}\t\nkeep%20name\t{renamed}\t100\nempty.txt\t{empty}\t0\ninvalid.txt\t{wrong_hash}\t"
             )
@@ -823,7 +867,7 @@ mod tests {
             false,
         );
         assert_eq!(
-            batch_link_info_text(&entries),
+            batch_link_info_text(EN_HEADER.to_owned(), &entries),
             "Name\tURL\tSize (bytes)\na b.zip\thttps://example.com/a%20b.zip?key=v\t\n报告.zip\tftp://example.com/f\t\n\thttps://example.com/\t"
         );
     }

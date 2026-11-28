@@ -21,7 +21,9 @@ import kotlinx.coroutines.withContext
 
 internal data class TaskInfoRow(val name: String, val url: String, val size: Long? = null)
 
-internal fun taskInfoText(rows: List<TaskInfoRow>): String = buildString {
+internal data class TaskInfoLabels(val name: String, val url: String, val size: String)
+
+internal fun taskInfoText(rows: List<TaskInfoRow>, labels: TaskInfoLabels): String = buildString {
     fun cell(value: String) {
         for (ch in value) {
             when (ch) {
@@ -33,7 +35,11 @@ internal fun taskInfoText(rows: List<TaskInfoRow>): String = buildString {
             }
         }
     }
-    append("Name\tURL\tSize (bytes)")
+    cell(labels.name)
+    append('\t')
+    cell(labels.url)
+    append('\t')
+    cell(labels.size)
     for (row in rows) {
         append('\n')
         cell(row.name)
@@ -54,6 +60,11 @@ internal fun rememberTaskInfoExport(): (List<TaskInfoRow>) -> Unit {
     val scope = LocalAppContainer.current.appScope
     val overlays = LocalFluxOverlays.current
     val failed = str(R.string.taskInfoExportFailed)
+    val labels = TaskInfoLabels(
+        str(R.string.taskInfoColumnName),
+        str(R.string.taskInfoColumnUrl),
+        str(R.string.taskInfoColumnSize),
+    )
     var pending by remember { mutableStateOf<String?>(null) }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
         val text = pending
@@ -76,7 +87,7 @@ internal fun rememberTaskInfoExport(): (List<TaskInfoRow>) -> Unit {
     }
     return { rows ->
         if (pending == null && rows.isNotEmpty()) {
-            pending = taskInfoText(rows)
+            pending = taskInfoText(rows, labels)
             try {
                 launcher.launch("fluxdown-tasks.txt")
             } catch (_: android.content.ActivityNotFoundException) {

@@ -17,7 +17,7 @@ use gpui_component::{
 
 use super::ManifestView;
 use crate::{
-    components::selection_bar::{export_task_info_text, save_task_info},
+    components::selection_bar::{export_task_info_text, save_task_info, task_info_header},
     model::manifest::ManifestSort,
 };
 
@@ -274,7 +274,9 @@ impl ManifestView {
                     .disabled(count == 0 || self.submitting)
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         // The resolver returns item IDs, not direct download URLs.
-                        let text = export_task_info_text(this.selection.selected_export_rows());
+                        let header = task_info_header(this.translator.read(cx));
+                        let text =
+                            export_task_info_text(header, this.selection.selected_export_rows());
                         let failed = this.t("taskInfoExportFailed", cx).to_string();
                         save_task_info(text, failed, window, cx);
                     })),

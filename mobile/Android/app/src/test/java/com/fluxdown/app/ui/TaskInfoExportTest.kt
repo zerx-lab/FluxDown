@@ -14,6 +14,8 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 
+private val EN = TaskInfoLabels("Name", "URL", "Size (bytes)")
+
 class TaskInfoExportTest {
     @get:Rule val temp = TemporaryFolder()
 
@@ -37,11 +39,11 @@ class TaskInfoExportTest {
 
         assertEquals(
             "$header$remoteLine\nlocal.bin\thttps://example.com/original\t\nhidden.bin\t\t",
-            taskInfoText(selectedTaskInfoRows(listOf(local), listOf(hidden, remote), visibleIds)),
+            taskInfoText(selectedTaskInfoRows(listOf(local), listOf(hidden, remote), visibleIds), EN),
         )
         assertEquals(
             "$header$remoteLine",
-            taskInfoText(selectedTaskInfoRows(emptyList(), listOf(remote), visibleIds)),
+            taskInfoText(selectedTaskInfoRows(emptyList(), listOf(remote), visibleIds), EN),
         )
     }
 
@@ -61,7 +63,7 @@ class TaskInfoExportTest {
             TaskInfoRow("file.bin", "torrent-file://local"),
         ) + batch.map { TaskInfoRow(it.batchExportName(), it.url, it.batchExportSize()) }
         val file = temp.newFile("fluxdown-tasks.txt")
-        writeTaskInfo(file.outputStream(), taskInfoText(rows))
+        writeTaskInfo(file.outputStream(), taskInfoText(rows, EN))
         assertEquals(
             "Name\tURL\tSize (bytes)\n=报告\\\\x\\tpart\\r\\n2\thttps://example.com/original\t4294967296" +
                 "\nfile.bin\t\t\na b.zip\thttps://example.com/a%20b.zip?key=v\t\n报告.zip\tftp://example.com/f\t" +
@@ -91,7 +93,20 @@ class TaskInfoExportTest {
                 "caf%E9%20final.zip\thttps://example.com/caf%E9%20final.zip\t\n" +
                 "报告+€\tmagnet:?xt=urn:btih:a&dn=报告+%E2%82%AC\t\n" +
                 "\uFFFD.zip\thttps://example.com/%EF%BF%BD.zip\t",
-            taskInfoText(batch.map { TaskInfoRow(it.batchExportName(), it.url) }),
+            taskInfoText(batch.map { TaskInfoRow(it.batchExportName(), it.url) }, EN),
+        )
+    }
+
+    @Test
+    fun usesLocalizedHeaderEscapedAndWithoutFormulaPrefix() {
+        val zh = TaskInfoLabels("名称", "链接", "大小（字节）")
+        assertEquals(
+            "名称\t链接\t大小（字节）\na\tb\t1",
+            taskInfoText(listOf(TaskInfoRow("a", "b", 1)), zh),
+        )
+        assertEquals(
+            "=a\\\\\\tb\\n\tu\\r\t",
+            taskInfoText(emptyList(), TaskInfoLabels("=a\\\t" + "b\n", "u\r", "")),
         )
     }
 

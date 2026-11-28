@@ -27,7 +27,7 @@ use std::{
 use super::download_name::DownloadName;
 use crate::{
     components::{
-        selection_bar::{batch_link_info_text, save_task_info},
+        selection_bar::{batch_link_info_text, save_task_info, task_info_header},
         threads_risk::threads_risk_callout,
     },
     controller::{
@@ -2664,7 +2664,9 @@ impl NewDownloadView {
                                 .read(cx)
                                 .text("taskInfoExportFailed")
                                 .to_owned();
-                            save_task_info(batch_link_info_text(&this.entries), failed, window, cx);
+                            let header = task_info_header(this.translator.read(cx));
+                            let text = batch_link_info_text(header, &this.entries);
+                            save_task_info(text, failed, window, cx);
                         })),
                 )
             })

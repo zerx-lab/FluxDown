@@ -4,7 +4,7 @@ import { useT } from '../../../i18n'
 import { cn } from '../../../lib/cn'
 import { ActionMenu, Icon, Tooltip } from '../../../ui'
 import type { MenuEntry } from '../../../ui'
-import { confirmDeleteWithFiles, copyTaskInfo, deleteViews, downloadViewsFiles, exportTaskInfo, pauseViews, resumeViews, taskInfoRow } from '../model/actions'
+import { confirmDeleteWithFiles, copyTaskInfo, deleteViews, downloadViewsFiles, exportTaskInfo, pauseViews, resumeViews, taskInfoHeader, taskInfoRow } from '../model/actions'
 import { useDownloads } from '../state'
 
 const BTN =
@@ -69,10 +69,10 @@ function SelectionActions({ inline }: { inline?: boolean }) {
           <Icon icon={Download} size="md" />
         </Action>
       )}
-      <Action label={t('copyTaskInfo')} className={btn} onClick={() => void copyTaskInfo(selectedViewsInOrder())}>
+      <Action label={t('copyTaskInfo')} className={btn} onClick={() => void copyTaskInfo(selectedViewsInOrder(), taskInfoHeader(t))}>
         <Icon icon={Copy} size="md" />
       </Action>
-      <Action label={t('exportTaskInfoTxt')} className={btn} onClick={() => exportTaskInfo(selectedViewsInOrder().map(taskInfoRow))}>
+      <Action label={t('exportTaskInfoTxt')} className={btn} onClick={() => exportTaskInfo(selectedViewsInOrder().map(taskInfoRow), taskInfoHeader(t))}>
         <Icon icon={FileDown} size="md" />
       </Action>
       <ActionMenu

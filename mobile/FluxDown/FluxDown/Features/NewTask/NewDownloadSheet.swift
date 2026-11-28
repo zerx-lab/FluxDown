@@ -336,7 +336,7 @@ private struct NewDownloadContent: View {
                 Button(L("exportTaskInfoTxt"), systemImage: "square.and.arrow.down") {
                     taskInfoExport = TaskInfoDocument(entries.map {
                         TaskInfoRow(name: batchExportName($0), url: $0.url, size: batchExportSize($0.url))
-                    })
+                    }, labels: .localized)
                 }
                 .disabled(form.submitting)
             }

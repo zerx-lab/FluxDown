@@ -227,7 +227,10 @@ fn export_includes_checked_files_outside_search_with_paths_and_effective_sizes()
     model.set_search("skip.bin");
 
     assert_eq!(
-        export_task_info_text(model.selected_export_rows()),
+        export_task_info_text(
+            "Name\tURL\tSize (bytes)".to_owned(),
+            model.selected_export_rows()
+        ),
         "Name\tURL\tSize (bytes)\nfirst/same.bin\t\t150\nsecond/nested/same.bin\t\t"
     );
     model.clear();
@@ -265,7 +268,10 @@ fn explicit_variant_controls_token_size_and_unknown_statistics_only_for_its_item
         ("opaque-episode@unknown", 0)
     );
     assert_eq!(
-        crate::components::selection_bar::export_task_info_text(model.selected_export_rows()),
+        crate::components::selection_bar::export_task_info_text(
+            "Name\tURL\tSize (bytes)".to_owned(),
+            model.selected_export_rows()
+        ),
         "Name\tURL\tSize (bytes)\nfolder/original.bin\t\t\nother.bin\t\t20"
     );
     model.toggle_file(0);

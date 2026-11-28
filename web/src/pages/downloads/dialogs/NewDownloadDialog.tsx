@@ -14,7 +14,7 @@ import { CUSTOM_CATEGORIES_PREF_KEY, LATER_QUEUE_ID, MAIN_QUEUE_ID, METHOD, RpcE
 import { LAST_CATEGORY_MODE_PREF, autoFollowDir, categoryModeFromPreference, categoryModePreference, eligibleRoute, matchedCategory, modeDir, pickableCategories, routeBaseDir, routeFollows, routeFromCategories, routeSaveDir } from '../../../lib/categoryRoute'
 import type { CategoryPickMode } from '../../../lib/categoryRoute'
 import { categoriesFromPreference } from '../model/categories'
-import { exportTaskInfo } from '../model/actions'
+import { exportTaskInfo, taskInfoHeader } from '../model/actions'
 import { cloudPresenceKnown } from '../../../lib/cloud-presence'
 import { describeUploadError } from '../../../lib/rpcErrorText'
 import { ThreadsRiskCallout } from '../../../lib/ThreadsRiskCallout'
@@ -870,7 +870,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
           ) : (
             <DialogFooter className="flex-wrap">
               {batch ? (
-                <Button variant="outline" disabled={busy} onClick={() => exportTaskInfo(entries.map(batchExportRow))}>
+                <Button variant="outline" disabled={busy} onClick={() => exportTaskInfo(entries.map(batchExportRow), taskInfoHeader(t))}>
                   {t('exportTaskInfoTxt')}
                 </Button>
               ) : null}

@@ -4,13 +4,18 @@ import Foundation
 import Testing
 @testable import FluxDown
 
+private let englishLabels = TaskInfoLabels(name: "Name", url: "URL", size: "Size (bytes)")
+
 @Test func taskInfoDocumentWritesReversibleUTF8() {
-    let document = TaskInfoDocument([
+    let rows = [
         TaskInfoRow(name: "=报告\\x\tpart\r\n2", url: "https://example.com/original", size: 4294967296),
         TaskInfoRow(name: "file.bin", url: "torrent-file://local"),
-    ])
+    ]
+    let document = TaskInfoDocument(rows, labels: englishLabels)
     #expect(String(decoding: document.data, as: UTF8.self) ==
         "Name\tURL\tSize (bytes)\n=报告\\\\x\\tpart\\r\\n2\thttps://example.com/original\t4294967296\nfile.bin\t\t")
+    let zh = TaskInfoDocument(rows, labels: TaskInfoLabels(name: "名称", url: "链接", size: "大小（字节）"))
+    #expect(String(decoding: zh.data, as: UTF8.self).hasPrefix("名称\t链接\t大小（字节）\n=报告"))
 }
 
 @MainActor @Test func taskInfoDocumentIncludesMixedAndRemoteOnlySelectionsInListOrder() {
@@ -21,10 +26,10 @@ import Testing
     let header = "Name\tURL\tSize (bytes)"
     let remoteLine = "\nremote.bin\thttps://example.com/remote\t42"
 
-    let mixed = TaskInfoDocument(TaskInfoRow.selected(local: [local], remote: [hidden, remote], visibleIds: visibleIds))
+    let mixed = TaskInfoDocument(TaskInfoRow.selected(local: [local], remote: [hidden, remote], visibleIds: visibleIds), labels: englishLabels)
     #expect(String(decoding: mixed.data, as: UTF8.self) == "\(header)\(remoteLine)\nlocal.bin\thttps://example.com/local\t\nhidden.bin\t\t")
 
-    let remoteOnly = TaskInfoDocument(TaskInfoRow.selected(local: [], remote: [remote], visibleIds: visibleIds))
+    let remoteOnly = TaskInfoDocument(TaskInfoRow.selected(local: [], remote: [remote], visibleIds: visibleIds), labels: englishLabels)
     #expect(String(decoding: remoteOnly.data, as: UTF8.self) == "\(header)\(remoteLine)")
 }
 
@@ -45,7 +50,7 @@ import Testing
         """)
     let document = TaskInfoDocument(entries.map {
         TaskInfoRow(name: batchExportName($0), url: $0.url, size: batchExportSize($0.url))
-    })
+    }, labels: englishLabels)
     #expect(String(decoding: document.data, as: UTF8.self) == [
         "Name\tURL\tSize (bytes)",
         "a b.zip\thttps://example.com/a%20b.zip?key=v\t",
@@ -70,7 +75,7 @@ import Testing
     selection.chooseVariant("unknown", for: "a")
     let document = TaskInfoDocument(selection.selectedExportRows().map {
         TaskInfoRow(name: $0.name, url: "", size: $0.size > 0 ? $0.size : nil)
-    })
+    }, labels: englishLabels)
     #expect(String(decoding: document.data, as: UTF8.self) == "Name\tURL\tSize (bytes)\nfolder/video.mp4\t\t")
     #expect(selection.selectedSize == (0, 1))
     #expect(selection.requestItems() == [

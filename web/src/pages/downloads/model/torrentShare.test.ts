@@ -46,7 +46,8 @@ test('task info keeps rows without links and escapes cell boundaries', () => {
   expect(taskInfoText([
     { name: '=报告\tpart\n2', url: 'https://example.com/resolved', originUrl: 'https://example.com/original', sizeBytes: 1 },
     { name: 'file.bin', url: 'torrent-file://local', originUrl: '', sizeBytes: 0 },
-  ].map(taskInfoRow))).toBe("Name\tURL\tSize (bytes)\n'=报告\\tpart\\n2\thttps://example.com/original\t1\nfile.bin\t\t")
+  ].map(taskInfoRow), ['Name', 'URL', 'Size (bytes)'])).toBe("Name\tURL\tSize (bytes)\n'=报告\\tpart\\n2\thttps://example.com/original\t1\nfile.bin\t\t")
+  expect(taskInfoText([], ['名称', '链接', '大小（字节）'])).toBe('名称\t链接\t大小（字节）')
 })
 
 test('downloaded TXT preserves task fields and the complete parsed batch', async () => {
@@ -67,7 +68,7 @@ test('downloaded TXT preserves task fields and the complete parsed batch', async
     exportTaskInfo([
       { name: '=报告\\x\tpart\r\n2', url: 'https://example.com/resolved', originUrl: 'https://example.com/original', sizeBytes: 4294967296 },
       { name: 'file.bin', url: 'torrent-file://local', originUrl: '', sizeBytes: 0 },
-    ].map(taskInfoRow))
+    ].map(taskInfoRow), ['Name', 'URL', 'Size (bytes)'])
     const entries = parseEntries([
       'https://example.com/a%20b.zip?key=v',
       'ftp://example.com/f',
@@ -82,7 +83,7 @@ test('downloaded TXT preserves task fields and the complete parsed batch', async
       'ed2k://|file|empty.txt|0|31D6CFE0D16AE931B73C59D7E0C089C0|/',
       'ed2k://|file|invalid.txt|0|1555B7DCA052B5958EE68DB58A42408D|/',
     ].join('\n'), false)
-    exportTaskInfo(entries.map(batchExportRow))
+    exportTaskInfo(entries.map(batchExportRow), ['Name', 'URL', 'Size (bytes)'])
     expect(downloaded).toEqual(['fluxdown-tasks.txt', 'fluxdown-tasks.txt'])
     expect(blobs[0]?.type).toBe('text/plain;charset=utf-8')
     const readRows = async (blob: Blob | undefined) => (await blob?.text())?.split('\n').slice(1).map((line) =>
