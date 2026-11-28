@@ -7,8 +7,9 @@ use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_theme::active_theme;
 use gpui::{
     AnyElement, AnyView, AnyWindowHandle, App, AppContext as _, Context, DragMoveEvent, Empty,
-    Entity, FontWeight, InteractiveElement as _, IntoElement, MouseButton, ParentElement, Pixels,
-    Render, SharedString, StatefulInteractiveElement as _, Styled, Window, div, img, px,
+    Entity, FocusHandle, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent,
+    MouseButton, ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement as _,
+    Styled, Window, div, img, px,
 };
 use gpui_component::{Icon, TitleBar, h_flex, menu::AppMenuBar, v_flex};
 use serde_json::Value;
@@ -273,6 +274,8 @@ const SIDE_PANEL_MAX_WIDTH: Pixels = px(720.);
 const SIDE_PANEL_MAIN_MIN_WIDTH: Pixels = px(360.);
 /// 面板左缘拖动调宽的命中区宽度（骑在分界线上）。
 const SIDE_PANEL_RESIZER_WIDTH: f32 = 6.;
+/// 焦点在拖动条上时，左右方向键每次调宽的步长（与 Web 助手面板一致）。
+const SIDE_PANEL_KEYBOARD_STEP: f32 = 16.;
 
 /// 面板宽度夹在可拖动范围内，且不把主区挤到最小宽度以下（窗口过窄时让面板退到最小宽度）。
 fn clamp_side_panel_width(width: Pixels, viewport: Pixels) -> Pixels {
@@ -280,6 +283,18 @@ fn clamp_side_panel_width(width: Pixels, viewport: Pixels) -> Pixels {
         .min(viewport - SIDE_PANEL_MAIN_MIN_WIDTH)
         .max(SIDE_PANEL_MIN_WIDTH);
     width.clamp(SIDE_PANEL_MIN_WIDTH, max)
+}
+
+/// 方向键调宽：向左变宽、向右变窄；其他键或夹取后宽度不变返回 `None`。
+fn keyboard_resized_width(width: Pixels, key: &str, viewport: Pixels) -> Option<Pixels> {
+    let delta = match key {
+        "left" => SIDE_PANEL_KEYBOARD_STEP,
+        "right" => -SIDE_PANEL_KEYBOARD_STEP,
+        _ => return None,
+    };
+    let current = clamp_side_panel_width(width, viewport);
+    let next = clamp_side_panel_width(current + px(delta), viewport);
+    (next != current).then_some(next)
 }
 
 /// 面板左缘拖动调宽的拖拽载荷。
@@ -529,6 +544,8 @@ pub struct ShellView {
     side_panel_open: bool,
     /// 用户拖出的面板宽度（渲染时再按窗口宽度夹取）。
     side_panel_width: Pixels,
+    /// 面板左缘拖动条的焦点（Tab 可达；聚焦时方向键调宽）。
+    side_panel_resizer_focus: FocusHandle,
 }
 
 impl ShellView {
@@ -571,6 +588,7 @@ impl ShellView {
             side_panel: None,
             side_panel_open: false,
             side_panel_width: SIDE_PANEL_WIDTH,
+            side_panel_resizer_focus: cx.focus_handle().tab_stop(true),
         }
     }
 
@@ -885,10 +903,12 @@ impl ShellView {
         )
     }
 
-    /// 面板左缘的拖动调宽命中区（骑在分界线上，盖住两侧各一半）。
+    /// 面板左缘的拖动调宽命中区（骑在分界线上，盖住两侧各一半）；可聚焦，方向键调宽。
     fn render_side_panel_resizer(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let ring = active_theme(cx).tokens().colors.ring;
         div()
             .id("shell-side-panel-resizer")
+            .track_focus(&self.side_panel_resizer_focus)
             .absolute()
             .top_0()
             .bottom_0()
@@ -896,6 +916,23 @@ impl ShellView {
             .w(px(SIDE_PANEL_RESIZER_WIDTH))
             .occlude()
             .cursor_col_resize()
+            .focus_visible(move |style| style.bg(ring.opacity(0.6)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    window.focus(&this.side_panel_resizer_focus, cx);
+                }),
+            )
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                let viewport = window.viewport_size().width;
+                if let Some(width) =
+                    keyboard_resized_width(this.side_panel_width, &event.keystroke.key, viewport)
+                {
+                    this.side_panel_width = width;
+                    cx.notify();
+                    cx.stop_propagation();
+                }
+            }))
             .on_drag(SidePanelResize, |_, _, _, cx| cx.new(|_| Empty))
             .on_drag_move(cx.listener(
                 |this, event: &DragMoveEvent<SidePanelResize>, window, cx| {
@@ -1014,6 +1051,35 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn keyboard_resize_steps_and_clamps() {
+        let viewport = px(1600.);
+        assert_eq!(
+            keyboard_resized_width(px(400.), "left", viewport),
+            Some(px(416.))
+        );
+        assert_eq!(
+            keyboard_resized_width(px(400.), "right", viewport),
+            Some(px(384.))
+        );
+        assert_eq!(keyboard_resized_width(px(400.), "up", viewport), None);
+        // 到顶 / 到底不再变化。
+        assert_eq!(
+            keyboard_resized_width(SIDE_PANEL_MAX_WIDTH, "left", viewport),
+            None
+        );
+        assert_eq!(
+            keyboard_resized_width(SIDE_PANEL_MIN_WIDTH, "right", viewport),
+            None
+        );
+        // 窗口过窄时主区至少留 360：上限随视口收窄（900 - 360 = 540）。
+        assert_eq!(
+            keyboard_resized_width(px(500.), "left", px(900.)),
+            Some(px(516.))
+        );
+        assert_eq!(keyboard_resized_width(px(540.), "left", px(900.)), None);
+    }
 
     struct Host {
         shell: Entity<ShellView>,
