@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type 
 import { ArrowUp, ImagePlus, LoaderCircle, Square, X } from "lucide-react";
 import type { AssistantMessages } from "@/i18n/messages/assistant";
 import { charCount } from "@/components/account/dashboard/format";
-import { filesOf, IMAGE_ACCEPT, prepareImage, type AttachError, type Attachment } from "./attachments";
+import { filesOf, IMAGE_ACCEPT, pasteTakesImages, prepareImage, type AttachError, type Attachment } from "./attachments";
 import ImageViewer, { type ViewerImage } from "./ImageViewer";
 import { insertPlaceholder, reconcileDraft, removePlaceholder } from "./placeholders";
 import { AI_ROOT_ATTR } from "./shortcuts";
@@ -21,7 +21,7 @@ interface Props {
   streaming: boolean;
   /** 另一个会话正在回答：同一时间只允许一条流，输入照常但不能发送，并说明原因。 */
   busyElsewhere: boolean;
-  /** 不可输入时的说明（额度用完 / 只读会话）；null = 可输入。 */
+  /** 不可输入时的说明（额度用完）；null = 可输入。 */
   blockedReason: string | null;
   /** 本对话已达提问上限：输入区换成提示卡（草稿保留在组件里，不显示输入框 / 附图 / 发送）；null = 未达上限。 */
   sessionLimit: { limit: number; onNewChat: () => void } | null;
@@ -218,10 +218,11 @@ export default function Composer({
     void submit();
   };
 
-  // 剪贴板里有文件（截图、复制的图片）就当附件处理，不再粘贴随附的文字（多是文件名）；纯文字照常粘贴
+  // 剪贴板里有文件且文字只是文件名（截图、复制的图片）才当附件处理；带着正文的（Word / Excel / 网页复制常附一张截图）
+  // 让浏览器照常粘贴文字；当前模型不支持图片时一律照常粘贴
   const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
     const files = filesOf(event.clipboardData.items);
-    if (files.length === 0) return;
+    if (!images || !pasteTakesImages(files, event.clipboardData.getData("text/plain"))) return;
     event.preventDefault();
     void addFiles(files);
   };

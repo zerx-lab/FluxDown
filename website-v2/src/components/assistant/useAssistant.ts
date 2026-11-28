@@ -44,6 +44,9 @@ export interface RunNotice {
   sessionId: string;
   /** 这次执行的 ID（用来判断历史里是否已经有它的消息）。 */
   runId: string | null;
+  /** 这次执行的提问（原样重发用）与附图：刚发出的是 data URL，续读自历史的是附件地址。 */
+  question: string;
+  images: string[];
   phase: "stopped" | "failed" | "interrupted";
   reason: AiFailReason | null;
   segments: Segment[];
@@ -102,8 +105,8 @@ export interface AssistantState {
   rename: (sessionId: string, title: string) => Promise<string | null>;
   /** 导出并下载；失败返回错误码。 */
   exportSession: (sessionId: string, format: ExportFormat) => Promise<string | null>;
-  /** 评价一条回答（assistant 消息 ID）；`null` 清除。失败返回错误码（已回滚）。 */
-  rate: (messageId: string, rating: AiRating | null) => Promise<string | null>;
+  /** 评价一条回答（assistant 消息 ID）；`null` 清除。`comment` 是点踩后可选的说明（≤ 500 字符）。失败返回错误码（已回滚）。 */
+  rate: (messageId: string, rating: AiRating | null, comment?: string) => Promise<string | null>;
   updateIssue: (issue: AiIssue) => void;
 }
 
@@ -126,6 +129,8 @@ function noticeOf(run: LiveRun): RunNotice | null {
   return {
     sessionId: run.sessionId,
     runId: run.runId,
+    question: run.question,
+    images: run.images,
     phase: run.phase,
     reason: run.failReason,
     segments: run.segments,
@@ -282,6 +287,8 @@ export function useAssistant(lang: Lang, guard: Guard, initialConfig: AiConfig, 
 
   /** 拉取会话详情；成功返回 true（调用方据此收起进行中的展示）。 */
   const loadDetail = useCallback(async (sessionId: string, quiet = false): Promise<boolean> => {
+    // 后台刷新只服务当前会话：已切走就不发请求，也不能抬高序号（否则会作废用户刚发起的详情加载，界面停在骨架屏）
+    if (quiet && selectedRef.current !== sessionId) return false;
     const id = ++detailSeq.current;
     if (!quiet) setDetail({ status: "loading", data: null, errorCode: null });
     const res = await accountApi<AiSessionDetail>(`ai/sessions/${encodeURIComponent(sessionId)}`);
@@ -363,6 +370,19 @@ export function useAssistant(lang: Lang, guard: Guard, initialConfig: AiConfig, 
     [putLive],
   );
 
+  /** 提问被拒时删掉本次刚建的空会话（云端列表不过滤空会话）；删不掉就重拉列表，以云端为准。 */
+  const discardEmptySession = useCallback(
+    async (sessionId: string) => {
+      setSessions((s) => {
+        const items = s.items.filter((item) => item.id !== sessionId);
+        return items.length === s.items.length ? s : { ...s, items, total: Math.max(0, s.total - 1) };
+      });
+      const res = await accountApi(`ai/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+      if (!res.ok && !guardRef.current(res)) await loadSessions();
+    },
+    [loadSessions],
+  );
+
   /** 发送一条提问；请求被拒（未开始回答）时返回 false，调用方把文字与图片放回输入框。 */
   const send = useCallback(
     async (text: string, kind: AiSessionKind, images: string[] = [], options: SendOptions = {}): Promise<boolean> => {
@@ -375,18 +395,25 @@ export function useAssistant(lang: Lang, guard: Guard, initialConfig: AiConfig, 
       const controller = new AbortController();
       try {
         let sessionId = selectedRef.current;
+        /** 本次提问刚建的会话：提问被拒时删掉，免得云端列表里留一条空会话。 */
+        let createdId: string | null = null;
         if (sessionId === null) {
-          const created = await accountApi<AiSession>("ai/sessions", { body: { kind, locale } });
-          if (!created.ok) {
-            if (!guardRef.current(created)) setSendError(created);
+          const made = await accountApi<AiSession>("ai/sessions", { body: { kind, locale } });
+          if (!made.ok) {
+            // 建会话期间用户已切走：这条失败和现在看着的会话无关，不显示
+            if (!guardRef.current(made) && selectedRef.current === null) setSendError(made);
             return false;
           }
-          const session = created.data;
+          const session = made.data;
           sessionId = session.id;
-          selectedRef.current = sessionId;
-          setSelectedId(sessionId);
-          setDetail({ status: "ready", data: { session, messages: [], issues: [] }, errorCode: null });
+          createdId = session.id;
           setSessions((s) => ({ ...s, items: [session, ...s.items], total: s.total + 1 }));
+          // 建会话期间用户已切到别的会话：不抢走当前视图，提问在后台照常进行（答完后在列表里能找到）
+          if (selectedRef.current === null) {
+            selectedRef.current = session.id;
+            setSelectedId(session.id);
+            setDetail({ status: "ready", data: { session, messages: [], issues: [] }, errorCode: null });
+          }
         }
 
         abortRef.current = controller;
@@ -411,7 +438,19 @@ export function useAssistant(lang: Lang, guard: Guard, initialConfig: AiConfig, 
         if (!result.ok && !run.started && !controller.signal.aborted) {
           putLive(null);
           const guarded = guardRef.current(result);
-          if (!guarded) setSendError(result);
+          // 提问期间用户已切走：失败提示与现在看着的会话无关，不显示
+          const here = selectedRef.current === sessionId;
+          if (createdId !== null) {
+            // 被拒时刚建的会话还是空的：删掉（与 agent 一致）；正看着它就退回新对话
+            void discardEmptySession(createdId);
+            if (here) {
+              selectedRef.current = null;
+              setSelectedId(null);
+              detailSeq.current += 1;
+              setDetail({ status: "idle", data: null, errorCode: null });
+            }
+          }
+          if (!guarded && here) setSendError(result);
           const limited = !guarded && result.code === SESSION_LIMIT_CODE;
           if (limited) {
             // 本对话已达上限：先按配置的上限视作用满，再以服务端的详情 / 配置为准（输入区随之换成提示卡）
@@ -432,7 +471,7 @@ export function useAssistant(lang: Lang, guard: Guard, initialConfig: AiConfig, 
         streamingRef.current = false;
       }
     },
-    [lang, finalize, loadDetail, putLive, refreshConfig, track],
+    [lang, discardEmptySession, finalize, loadDetail, putLive, refreshConfig, track],
   );
 
   /** 接回云端还在跑的执行：从头补发事件，重建进行中的展示。 */
@@ -471,12 +510,13 @@ export function useAssistant(lang: Lang, guard: Guard, initialConfig: AiConfig, 
 
   const sessionActive = detail.data !== null && detail.data.session.id === selectedId && detail.data.session.active;
 
-  // 打开一个云端仍在回答的官网会话（换页 / 关闭再打开悬浮面板 / 刷新后）：接回它的流，显示「回答中 / 停止」
+  // 打开一个云端仍在回答的会话（官网或别的端发起；换页 / 关闭再打开悬浮面板 / 刷新后）：接回它的流，显示「回答中 / 停止」。
+  // 官网不执行本机工具（BFF 丢弃 `clientToolCall`），旁观桌面 / Web 端的执行时只显示进度。
   useEffect(() => {
     const data = detail.data;
     if (!data || live !== null || streamingRef.current || !data.session.active) return;
-    if (data.session.id !== selectedId || data.session.channel !== "website") return;
-    const target = resumeTarget(data.messages);
+    if (data.session.id !== selectedId) return;
+    const target = resumeTarget(data.messages, data.session.activeRunId);
     if (!target) return;
     const key = `${data.session.id}:${target.runId}`;
     if (attachedRef.current === key) return;
@@ -545,21 +585,22 @@ export function useAssistant(lang: Lang, guard: Guard, initialConfig: AiConfig, 
   }, []);
 
   /**
-   * 评价一条回答（`rating` = null 清除）；乐观更新，失败回滚并返回错误码。
-   * 同一条回答的上一次请求未结束时忽略新的点击。
+   * 评价一条回答（`rating` = null 清除）；乐观更新，失败回滚并返回错误码。`comment` 是点踩后可选的说明（trim 后非空才发送，
+   * 只对非 null 的评价有意义；云端按条覆盖旧说明）。同一条回答的上一次请求未结束时忽略新的点击。
    */
   const rate = useCallback(
-    async (messageId: string, rating: AiRating | null): Promise<string | null> => {
+    async (messageId: string, rating: AiRating | null, comment?: string): Promise<string | null> => {
       const sessionId = selectedRef.current;
       if (sessionId === null) return "fallback";
       if (ratingBusy.current.has(messageId)) return null;
       ratingBusy.current.add(messageId);
       const previous = ratingsRef.current;
       putRatings(new Map(previous).set(messageId, rating));
+      const note = comment?.trim() ?? "";
       try {
         const res = await accountApi(
           `ai/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/rating`,
-          { method: "PUT", body: { rating } },
+          { method: "PUT", body: rating !== null && note !== "" ? { rating, comment: note } : { rating } },
         );
         if (res.ok) return null;
         // 回滚只撤销这一条回答的覆盖，不动期间其它回答的评价

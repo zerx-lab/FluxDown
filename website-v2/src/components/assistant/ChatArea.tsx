@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { TriangleAlert } from "lucide-react";
 import type { Lang } from "@/i18n/config";
 import type { AssistantMessages } from "@/i18n/messages/assistant";
@@ -11,6 +11,7 @@ import Composer from "./Composer";
 import Conversation from "./Conversation";
 import { Greeting } from "./parts";
 import { sendErrorKind, sessionLimitView } from "./sessionLimit";
+import { retryNeedsRefresh, retryPlan } from "./timeline";
 import type { AssistantState } from "./useAssistant";
 
 interface Props {
@@ -55,12 +56,11 @@ export default function ChatArea({ lang, t, guard, s, compact = false, newChatNo
 
   const live = s.live && s.live.sessionId === selectedId ? s.live : null;
   const session = selectedId === null ? null : (s.detail.data?.session ?? s.sessions.items.find((i) => i.id === selectedId) ?? null);
-  const readOnly = session !== null && session.channel !== "website";
   const quotaFull = s.config.dailyLimit > 0 && s.config.usedToday >= s.config.dailyLimit;
   // 单会话提问上限：只针对已存在、已加载详情的当前会话；用量以服务端详情为准，不在客户端累加
   const questionsUsed = selectedId !== null && s.detail.data?.session.id === selectedId ? s.detail.data.questionsUsed : undefined;
-  const limitView = sessionLimitView(readOnly ? undefined : s.config.sessionLimit, questionsUsed, s.answering);
-  const blocked = readOnly ? t.chat.readOnly : limitView.reached ? null : quotaFull && !live ? t.chat.quotaReached : null;
+  const limitView = sessionLimitView(s.config.sessionLimit, questionsUsed, s.answering);
+  const blocked = limitView.reached ? null : quotaFull && !live ? t.chat.quotaReached : null;
   const sendFailure = s.sendError;
   const sendError = sendFailure
     ? sendErrorKind(sendFailure.status, sendFailure.code) === "busy"
@@ -70,7 +70,7 @@ export default function ChatArea({ lang, t, guard, s, compact = false, newChatNo
   const effectiveKind = session?.kind ?? kind;
   /** 另一个会话正在回答：同一时间只允许一条流。 */
   const busyElsewhere = s.busy && !live;
-  const canRevise = !readOnly && !s.busy && !s.answering && !quotaFull && !limitView.reached && s.detail.status === "ready";
+  const canRevise = !s.busy && !s.answering && !quotaFull && !limitView.reached && s.detail.status === "ready";
   const pad = compact ? "px-4" : "px-4 sm:px-6";
 
   const edit = (message: AiMessage) => {
@@ -95,6 +95,25 @@ export default function ChatArea({ lang, t, guard, s, compact = false, newChatNo
     if (ok) setEditing(null);
     return ok;
   };
+
+  // 重试失败 / 中断的轮次：只在能安全重试时给方案（见 `retryPlan`）
+  const notice = s.notice?.sessionId === selectedId ? s.notice : null;
+  const history = s.detail.data?.messages ?? [];
+  const plan = notice === null ? null : retryPlan(history, notice);
+  const retry = () => {
+    if (plan === null) return;
+    if (plan.kind === "regenerate") regenerate(plan.message);
+    else void s.send(plan.question, effectiveKind, plan.images);
+  };
+  // 执行已有 runId、详情里却还没有它的提问（详情是旧的）：静默刷新一次，让重试能走重新生成而不是重发
+  const staleRun = notice !== null && !live && s.detail.status === "ready" && retryNeedsRefresh(history, notice) ? notice.runId : null;
+  const refreshedRun = useRef<string | null>(null);
+  const { loadDetail } = s;
+  useEffect(() => {
+    if (staleRun === null || selectedId === null || refreshedRun.current === staleRun) return;
+    refreshedRun.current = staleRun;
+    void loadDetail(selectedId, true);
+  }, [staleRun, selectedId, loadDetail]);
 
   let body: ReactNode;
   if (selectedId === null && !live) {
@@ -126,12 +145,13 @@ export default function ChatArea({ lang, t, guard, s, compact = false, newChatNo
         messages={s.detail.data?.messages ?? []}
         issues={s.detail.data?.issues ?? []}
         live={live}
-        notice={s.notice?.sessionId === selectedId ? s.notice : null}
+        notice={notice}
         ratings={s.ratings}
         onRate={s.rate}
         onIssueChange={s.updateIssue}
         onEdit={canRevise ? edit : undefined}
         onRegenerate={canRevise ? regenerate : undefined}
+        onRetry={canRevise && plan !== null ? retry : undefined}
       />
     );
   }

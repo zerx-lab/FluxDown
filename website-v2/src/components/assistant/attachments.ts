@@ -161,3 +161,19 @@ export function filesOf(list: FileList | DataTransferItemList | null | undefined
   }
   return out;
 }
+
+/**
+ * 粘贴时附件是否接管：剪贴板里有文件，且随附的文字为空或只是这些文件的名字（截图、复制图片 / 文件）才接管；
+ * 文字另有内容（Word / Excel / 网页复制常带一张截图）就让浏览器照常粘贴文字，不能丢。口径同 Web `composer.ts::pasteTakesImages`。
+ */
+export function pasteTakesImages(files: readonly { name: string }[], text: string): boolean {
+  if (files.length === 0) return false;
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+  if (lines.length === 0) return true;
+  return lines.every((line) =>
+    files.some((file) => file.name !== "" && (line === file.name || line.endsWith(`/${file.name}`) || line.endsWith(`\\${file.name}`))),
+  );
+}

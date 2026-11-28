@@ -72,3 +72,31 @@ export function lastUserMessage(messages: readonly AiMessage[]): AiMessage | nul
   }
   return null;
 }
+
+/** 失败 / 中断轮次的重试方案：提问已落库就重新生成它；执行还没开始（没有 `runId`）就按原问题（与刚发出的 data URL 附图）重发；都不适用则不提供重试。 */
+export type RetryPlan = { kind: "regenerate"; message: AiMessage } | { kind: "resend"; question: string; images: string[] };
+
+/** 失败 / 中断的轮次：`runId` 为 `null` = 连 `run` 事件都没收到。 */
+type FailedRun = { runId: string | null; question: string; images: readonly string[] };
+
+/**
+ * 为失败 / 中断的轮次选重试方案。FluxCloud 在返回执行流之前就已落库提问，所以 `runId` 已知 = 提问已在云端：
+ * 只在最后一条提问就是该次执行的提问时重新生成它；对不上说明历史还没刷新（或它不是最后一条），不能重发（会重复提问、多计一次额度），
+ * 返回 `null`（历史过期的情况见 {@link retryNeedsRefresh}）。
+ * 只有 `runId` 为空才可能没落库：先按文字匹配最后一条提问，对不上就按原问题重发；
+ * 附图必须都是刚发出的 data URL（历史附件地址不能当新图再发，占位符会悬空），否则不提供重试。
+ */
+export function retryPlan(messages: readonly AiMessage[], failed: FailedRun): RetryPlan | null {
+  const saved = lastUserMessage(messages);
+  if (failed.runId !== null) {
+    return saved !== null && saved.runId === failed.runId ? { kind: "regenerate", message: saved } : null;
+  }
+  if (saved !== null && saved.content === failed.question) return { kind: "regenerate", message: saved };
+  if (!failed.images.every((src) => src.startsWith("data:"))) return null;
+  return { kind: "resend", question: failed.question, images: [...failed.images] };
+}
+
+/** `runId` 已知、历史里却还没有这次执行的提问：详情是旧的，刷新后重试才可用。 */
+export function retryNeedsRefresh(messages: readonly AiMessage[], failed: FailedRun): boolean {
+  return failed.runId !== null && !messages.some((message) => message.role === "user" && message.runId === failed.runId);
+}

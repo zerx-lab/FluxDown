@@ -13,6 +13,8 @@
  *   BFF 只做形状与长度预检，格式识别与解码后大小由 FluxCloud 判定。
  * - 重新生成 / 编辑重发走提问的 `replaceFrom` / `keepImages`；另有重命名（PATCH）、搜索（`q`）、
  *   导出（GET `…/export`，`format` 只认 markdown / json）、清空全部（DELETE `ai/sessions`）。
+ * - 每次提问都带 `clientTools: []`（官网不执行本机工具），所以任何渠道建的本人会话都能在官网继续；
+ *   会话 DTO 的 `activeRunId`（进行中的执行 ID，旧版 FluxCloud 不带）透传给浏览器，用来接回别处发起的执行。
  */
 import { callUpstream, failureResponse, NOINDEX_ROBOTS, proxyNoContent } from "@/lib/cloud-proxy";
 import { isRecord, pick } from "@/lib/is-record";
@@ -46,7 +48,7 @@ const CONFIG_KEYS = [
   "available", "reason", "visible", "maxMessageChars", "sessionLimit", "dailyLimit", "usedToday", "imagesSupported", "maxImages", "maxImageBytes",
 ] as const;
 const SESSION_KEYS = [
-  "id", "channel", "kind", "title", "messageCount", "rating", "active", "createdAt", "updatedAt",
+  "id", "channel", "kind", "title", "messageCount", "rating", "active", "activeRunId", "createdAt", "updatedAt",
 ] as const;
 const MESSAGE_KEYS = ["id", "runId", "seq", "role", "content", "rating", "ratingComment", "interrupted", "createdAt"] as const;
 /** 下发给浏览器的消息角色：`assistant_step` 是工具调用前的说明文字，历史里归入「过程」。 */
@@ -316,7 +318,8 @@ export const AI_ROUTES: Route[] = [
       const locale = askLocale(body);
       const replace = images === null ? null : askReplace(body, images);
       if (!validId(id) || question === null || images === null || locale === null || replace === null) return validationError();
-      const payload: Body = images.length > 0 ? { text: question, images } : { text: question };
+      // 官网没有本机工具：每次提问都声明空的客户端工具，云端据此不向本次执行下发 `fd_*`（含从应用建的会话在官网继续时）。
+      const payload: Body = images.length > 0 ? { text: question, images, clientTools: [] } : { text: question, clientTools: [] };
       if (locale !== undefined) payload.locale = locale;
       Object.assign(payload, replace);
       const res = await callAuthedStream(ctx, sessionPath(id, "/messages"), jsonInit("POST", payload));

@@ -172,9 +172,9 @@ function parseList(lines: string[], start: number): [Block, number] {
 const INLINE_RE =
   /(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)|\*\*(?=\S)([\s\S]*?\S)\*\*|__(?=\S)([\s\S]*?\S)__|~~(?=\S)([\s\S]*?\S)~~|\*(?=[^\s*])([^*]*?[^\s*])\*|(?<![\p{L}\p{N}_])_(?=[^\s_])([^_]*?[^\s_])_(?![\p{L}\p{N}_])|\[([^\]\n]+)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)|(https?:\/\/[^\s<>]*[^\s<>.,;:!?'")\]}*_~])/gu;
 
-/** 链接只放行 http(s) / mailto 与站内路径；其余只显示文字。 */
+/** 链接只放行 http(s) / mailto 与站内路径（`/` 后不能再跟 `/` 或 `\`：浏览器会把 `/\` 当 `//`，变成外站链接）；其余只显示文字。 */
 export function safeHref(raw: string): string | null {
-  if (raw.startsWith("/") && !raw.startsWith("//")) return raw;
+  if (/^\/(?![\/\\])/.test(raw)) return raw;
   if (raw.startsWith("#")) return raw;
   try {
     const url = new URL(raw);

@@ -122,11 +122,20 @@ export function toolLabel(name: string): ToolLabel {
   return "other";
 }
 
-/** 会话仍在回答中时，从历史里认出该续读的那次执行：最后一条带 `runId` 的提问（`imageIds` 为附件 ID）。 */
-export function resumeTarget(messages: AiMessage[]): { runId: string; question: string; imageIds: string[] } | null {
+/**
+ * 会话仍在回答中时，从历史里认出该接回的那次执行（`imageIds` 为附件 ID）。
+ * `activeRunId` 是云端给的进行中执行 ID：按它找对应的提问，历史里还没有它就不接回（交给详情轮询）；
+ * `null` = 云端说此刻没有进行中的执行；`undefined` = 旧版云端不带，退回「最后一条带 `runId` 的提问」。
+ */
+export function resumeTarget(
+  messages: AiMessage[],
+  activeRunId: string | null | undefined,
+): { runId: string; question: string; imageIds: string[] } | null {
+  if (activeRunId === null) return null;
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
-    if (message?.role === "user" && message.runId !== null) {
+    if (message?.role !== "user" || message.runId === null) continue;
+    if (activeRunId === undefined || message.runId === activeRunId) {
       return { runId: message.runId, question: message.content, imageIds: message.images };
     }
   }

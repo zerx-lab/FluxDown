@@ -202,6 +202,8 @@ export interface AiSession {
   rating: AiRating | null;
   /** 正在回答中。 */
   active: boolean;
+  /** 进行中的执行 ID（`active` 时有值；旧版 FluxCloud 不带，此时只能按历史里最后一条带 `runId` 的提问推断）。 */
+  activeRunId?: string | null;
   /** RFC 3339 */
   createdAt: string;
   /** RFC 3339 */

@@ -141,7 +141,7 @@ test("ask: forwards only whitelisted events and fields, even when frames are spl
   expect(seen).toHaveLength(1);
   expect(seen[0]?.url).toBe(`http://cloud.test/api/v1/ai/sessions/${SESSION_ID}/messages`);
   expect(seen[0]?.headers.authorization).toBe("Bearer at-0");
-  expect(seen[0]?.body).toEqual({ text: "hi", images: [PNG_URL] });
+  expect(seen[0]?.body).toEqual({ text: "hi", images: [PNG_URL], clientTools: [] });
 });
 
 test("ask: refusals before the stream starts pass through as JSON errors", async () => {
@@ -186,7 +186,7 @@ test("ask: forwards the current site locale; malformed locales never reach FluxC
   reply = () => sse([]);
   const ask = (locale: unknown) => call(`ai/sessions/${SESSION_ID}/messages`, { method: "POST", body: { text: "hi", locale } });
   expect((await ask("pt-BR")).status).toBe(200);
-  expect(seen[0]?.body).toEqual({ text: "hi", locale: "pt-BR" });
+  expect(seen[0]?.body).toEqual({ text: "hi", locale: "pt-BR", clientTools: [] });
   for (const bad of ["english", "en US", 42, "en-"]) expect((await ask(bad)).status).toBe(400);
   expect(seen).toHaveLength(1);
 });
@@ -342,6 +342,17 @@ test("sessions: detail forwards questionsUsed only when it is a non-negative int
   }
 });
 
+test("sessions: activeRunId is forwarded on detail and list; unknown session fields stay dropped", async () => {
+  const session = { id: SESSION_ID, channel: "desktop", kind: "ask", title: "Q", messageCount: 1, rating: null, active: true, activeRunId: "run-9", createdAt: "t", updatedAt: "t", userId: "u1" };
+  reply = () => Response.json({ session, messages: [], issues: [] });
+  const detail = (await (await call(`ai/sessions/${SESSION_ID}`)).json()) as { session: Record<string, unknown> };
+  expect(detail.session.activeRunId).toBe("run-9");
+  expect(detail.session).not.toHaveProperty("userId");
+  reply = () => Response.json({ total: 1, items: [session] });
+  const list = (await (await call("ai/sessions")).json()) as { items: Record<string, unknown>[] };
+  expect(list.items[0]?.activeRunId).toBe("run-9");
+});
+
 test("ask: the per-session question limit refusal passes through as ai_session_limit", async () => {
   reply = () => Response.json({ code: "ai_session_limit", message: "本对话已达提问上限" }, { status: 403 });
   const res = await call(`ai/sessions/${SESSION_ID}/messages`, { method: "POST", body: { text: "hi" } });
@@ -489,7 +500,7 @@ test("ask: replaceFrom / keepImages are validated and forwarded", async () => {
   const ok = await call(`ai/sessions/${SESSION_ID}/messages`, { method: "POST", body: { text: "again", replaceFrom: "m1", keepImages: true } });
   expect(ok.status).toBe(200);
   await ok.text();
-  expect(seen[0]?.body).toEqual({ text: "again", replaceFrom: "m1", keepImages: true });
+  expect(seen[0]?.body).toEqual({ text: "again", replaceFrom: "m1", keepImages: true, clientTools: [] });
 
   seen = [];
   // keepImages 与新图片互斥，且必须带 replaceFrom
