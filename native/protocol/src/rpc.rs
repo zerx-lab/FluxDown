@@ -207,6 +207,14 @@ impl RpcRequest {
     }
 }
 
+/// [`crate::method::SYSTEM_CANCEL`] 的参数：要中止的在途请求 ID。
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct CancelRequestParams {
+    pub id: RequestId,
+}
+
 /// 校验连接首个 RPC 调用并解析 `system.hello`。
 ///
 /// 服务端必须在读取任何其他方法前调用此函数；成功后才可进入正常分发。

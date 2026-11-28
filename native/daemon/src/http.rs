@@ -390,7 +390,7 @@ async fn run_socket(
                         let reply = match session.accept(&text) {
                             Step::Reply(reply) => reply,
                             Step::Call(call) if call.is_slow() => {
-                                match slow.spawn(call.id(), call.run()) {
+                                match slow.spawn(call.id(), call.is_cancellable(), call.run()) {
                                     Ok(()) => continue,
                                     Err(rejection) => SessionReply::reply(*rejection),
                                 }
@@ -398,6 +398,13 @@ async fn run_socket(
                             Step::Call(call) => {
                                 ordered.as_mut().set(Some(call.run()));
                                 continue;
+                            }
+                            Step::Cancel { id, target } => {
+                                let cancelled = slow.cancel(&target);
+                                SessionReply::reply(RpcResponse::success(
+                                    id,
+                                    serde_json::json!({ "cancelled": cancelled }),
+                                ))
                             }
                         };
                         if reply.became_ready {

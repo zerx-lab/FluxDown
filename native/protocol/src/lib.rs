@@ -188,11 +188,11 @@ pub use plugin_view::{
     normalize_view, plugin_route_id, view_schema,
 };
 pub use rpc::{
-    APP_VERSION, CLOSE_REASON_SERVICE_QUIT, CLOSE_REASON_SERVICE_RESTART, ClientHello,
-    JSONRPC_VERSION, MAX_INBOUND_RPC_MESSAGE_BYTES, MIN_PROTOCOL_VERSION, PROTOCOL_VERSION,
-    RequestId, RpcFailureResponse, RpcIncoming, RpcNotification, RpcRequest, RpcResponse,
-    RpcSuccessResponse, ServiceHello, ServiceRole, is_older_app_version, negotiate_protocol,
-    validate_first_request,
+    APP_VERSION, CLOSE_REASON_SERVICE_QUIT, CLOSE_REASON_SERVICE_RESTART, CancelRequestParams,
+    ClientHello, JSONRPC_VERSION, MAX_INBOUND_RPC_MESSAGE_BYTES, MIN_PROTOCOL_VERSION,
+    PROTOCOL_VERSION, RequestId, RpcFailureResponse, RpcIncoming, RpcNotification, RpcRequest,
+    RpcResponse, RpcSuccessResponse, ServiceHello, ServiceRole, is_older_app_version,
+    negotiate_protocol, validate_first_request,
 };
 pub use settings::{
     CUSTOM_THEMES_KEY, FILE_ICON_PACK_KEY, MAX_CUSTOM_THEME_ID_LEN, MAX_SYNC_VALUE_BYTES,
