@@ -33,7 +33,7 @@ import type { FillTracking, RequestHints } from './aria2c'
 import { IMPORT_CHUNK_SIZE, importNotice, runImport } from './importRunner'
 import type { ImportProgress } from './importRunner'
 import { SplitButton } from './SplitButton'
-import { capturesShown, closeNewDownload, openNewDownload, openSeedLocal } from './store'
+import { captureGroupOf, capturesShown, closeNewDownload, openNewDownload, openSeedLocal } from './store'
 import type { NewDownloadSession } from './store'
 import { isTorrentFile, submitTorrentFiles } from './torrents'
 import { SaveDirCombo } from './SaveDirCombo'
@@ -108,7 +108,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
     [cloudDevices, linkedDevices, cloudReady, localReady],
   )
   const [targetValue, setTargetValue] = useState(session.target ?? LOCAL_TARGET)
-  // 目标设备消失（登出 / 解除配对）时回落到本服务器。
+  // A missing rule destination requires an explicit replacement instead of a silent local fallback.
   const target: RemoteTarget | null = resolveTargetValue(targetValue, remoteTargets)
   const [remoteSaveDir, setRemoteSaveDir] = useState('')
   const historyEnabled = useAgent((snapshot) => snapshot.preferences.values[SAVE_DIR_HISTORY_ENABLED_PREF] !== false, true)
@@ -205,7 +205,11 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   const allMagnet = count > 0 && entries.every((entry) => isMagnetUrl(entry.url))
   const busy = phase !== 'idle' || busyFiles
   const remoteDirCheck = target ? checkRemoteSaveDir(remoteSaveDir, target.pathStyle) : 'ok'
-  const canSubmit = !busy && !parsed.rangeLimitExceeded && count > 0 && (target ? remoteDirCheck === 'ok' : saveDir.trim() !== '')
+  const captureNeedsContext = captures.some((capture) => capture.routingError === 'captureRoutingContextRequired')
+  const unresolvedRuleTarget = session.captureGroup !== undefined && session.target !== undefined &&
+    targetValue !== LOCAL_TARGET && target === null
+  const canSubmit = !busy && !parsed.rangeLimitExceeded && count > 0 && !unresolvedRuleTarget &&
+    (target ? !captureNeedsContext && remoteDirCheck === 'ok' : saveDir.trim() !== '')
 
   // Task matches take precedence, using the complete host table rather than the visible download rows.
   const tasksLoading = useTasksLoading()
@@ -322,7 +326,9 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   textRef.current = text
 
   useEffect(() => {
-    const fresh = pendingCaptures.filter((capture) => !capturesShown.has(capture.transactionId))
+    const fresh = pendingCaptures.filter((capture) =>
+      !capturesShown.has(capture.transactionId) && captureGroupOf(capture) === (session.captureGroup ?? '|'),
+    )
     if (fresh.length > 0) {
       for (const capture of fresh) capturesShown.add(capture.transactionId)
       const current = textRef.current
@@ -352,7 +358,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
       const kept = prev.filter((capture) => pendingCaptures.some((pending) => pending.transactionId === capture.transactionId))
       return kept.length === prev.length ? prev : kept
     })
-  }, [pendingCaptures, categoryRoute, context.saveDir])
+  }, [pendingCaptures, categoryRoute, context.saveDir, session.captureGroup])
 
   // 关闭 / 取消时，仍未确认的捕获一并忽略（agent 不留悬挂事务）。
   useEffect(
@@ -530,7 +536,20 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
     remoteAbort.current = controller
     setCancelling(false)
     setProgress({ total: entries.length, done: 0, failed: 0, retry: null })
-    const summary = await dispatchSequentially(entries, (entry) => {
+    const consumed = new Set<string>()
+    const summary = await dispatchSequentially(entries, async (entry) => {
+      const capture = captures.find((item) => item.url === entry.url && (item.suggestedTarget || item.routingError))
+      if (capture) {
+        const [request] = buildRequests([entry], { ...draftOptions(false, undefined), saveDir: remoteSaveDir, rename: renamed })
+        await rpc.agent.capture.resolve({
+          transactionId: capture.transactionId,
+          accepted: true,
+          remoteTarget: remote.value,
+          request,
+        })
+        consumed.add(capture.transactionId)
+        return
+      }
       const input = { url: entry.url, fileName: renamed !== '' ? renamed : entry.fileName }
       return route.via === 'cloud'
         ? rpc.agent.remote.dispatch(remoteDispatchParams(remote.id, input, remoteSaveDir))
@@ -540,6 +559,10 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
     })
     if (remoteAbort.current !== controller) return
     remoteAbort.current = null
+    if (consumed.size > 0) {
+      capturesRef.current = capturesRef.current.filter((capture) => !consumed.has(capture.transactionId))
+      setCaptures(capturesRef.current)
+    }
     setProgress(null)
     if (summary.unsent.length > 0) {
       setNotice(t('importCancelled', { added: summary.ok.toLocaleString(), total: entries.length.toLocaleString() }))
@@ -958,6 +981,8 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
               </div>
             ) : null}
             {captures.length > 0 ? <FieldHint>{t('newDownloadCaptureContextHint')}</FieldHint> : null}
+            {captures[0]?.routingError ? <FieldError>{t(captures[0].routingError)}</FieldError> : null}
+            {unresolvedRuleTarget ? <FieldError>{t('captureRoutingTargetUnavailable')}</FieldError> : null}
             {notice ? <FieldError className="break-all">{notice}</FieldError> : null}
             {failures.map((failure, index) => (
               <FieldError key={`${index}:${failure.url}`} className="break-all">
@@ -989,7 +1014,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
           </div>
 
           {/* 下载到：本服务器 / 云账号其他设备 / 已配对设备 */}
-          {remoteTargets.length > 0 ? (
+          {!captureNeedsContext && (remoteTargets.length > 0 || unresolvedRuleTarget) ? (
             <FormField
               label={t('downloadTo')}
               htmlFor="new-download-target"
@@ -999,9 +1024,10 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
             >
               <Select
                 id="new-download-target"
-                value={target ? target.value : LOCAL_TARGET}
+                value={target?.value ?? (unresolvedRuleTarget ? targetValue : LOCAL_TARGET)}
                 options={[
                   { value: LOCAL_TARGET, label: t('webDownloadToServer') },
+                  ...(unresolvedRuleTarget ? [{ value: targetValue, label: t('captureRoutingTargetUnavailable') }] : []),
                   ...remoteTargets.map((item) => ({
                     value: item.value,
                     label: `${item.name} · ${item.kind === 'link' ? `${t('deviceLocalTag')} · ` : ''}${t(item.online === null ? 'devicePresenceUnknown' : item.online ? 'deviceOnline' : 'deviceOffline')}`,

@@ -16,6 +16,7 @@ mod bt_guard_bans;
 mod bt_guard_client_rule_dialog;
 mod bt_guard_client_rules;
 mod bt_guard_events;
+mod capture_device_rules;
 pub(crate) mod categories;
 pub(crate) mod category_dialog;
 pub(crate) mod cloud_channel_dialog;

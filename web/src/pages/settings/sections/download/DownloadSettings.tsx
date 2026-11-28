@@ -36,6 +36,7 @@ import { UserAgentRow } from './UserAgentField'
 import { AutoCountRow } from './AutoCountRow'
 import { RetentionRow } from './RetentionRow'
 import { CategoriesGroup } from './CategoriesGroup'
+import { CaptureDeviceRules } from './CaptureDeviceRules'
 
 import { Aria2OptionsEditor } from './Aria2OptionsEditor'
 const NO_QUEUES: readonly QueueDto[] = []
@@ -54,6 +55,9 @@ export function DownloadSettings() {
         <>
           <SaveLocationSection />
           <BehaviorSection />
+          <SettingsSection title={t('captureDeviceRules')}>
+            <CaptureDeviceRules />
+          </SettingsSection>
         </>
       ),
     },

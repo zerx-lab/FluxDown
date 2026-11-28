@@ -887,6 +887,8 @@ mod tests {
             save_dir: String::new(),
             has_cookies: false,
             header_names: Vec::new(),
+            suggested_target: None,
+            routing_error: None,
         }
     }
 

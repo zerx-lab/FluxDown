@@ -359,6 +359,8 @@ mod tests {
             save_dir: String::new(),
             has_cookies: false,
             header_names: Vec::new(),
+            suggested_target: None,
+            routing_error: None,
         }
     }
 
@@ -421,6 +423,30 @@ mod tests {
             )
         });
         win.update(check);
+    }
+
+    #[test]
+    fn routed_capture_keeps_literal_brackets_and_requires_a_live_target_or_override() {
+        const ROUTED_URL: &str = "https://example.com/app[01-02].apk";
+        with_download_view(|view, window, cx| {
+            let mut routed = capture(ROUTED_URL, "app.apk", 0);
+            routed.suggested_target = Some("cloud:phone".to_owned());
+            view.add_captures(vec![routed.clone()], window, cx);
+
+            assert!(matches!(view.entries.as_slice(), [entry] if entry.url == ROUTED_URL));
+            assert!(view.needs_capture_target());
+
+            routed.transaction_id = "next".to_owned();
+            routed.url = URL.to_owned();
+            assert!(view.can_append_captures(std::slice::from_ref(&routed)));
+            view.checking_subfolder = true;
+            assert!(!view.can_append_captures(std::slice::from_ref(&routed)));
+            view.checking_subfolder = false;
+
+            view.set_target(crate::DispatchTarget::Local, window, cx);
+            assert!(!view.needs_capture_target());
+            assert!(!view.can_append_captures(&[routed]));
+        });
     }
 
     #[test]

@@ -314,6 +314,37 @@ struct AuthAutofill {
     target: Option<String>,
 }
 
+#[derive(PartialEq, Eq)]
+struct CaptureRouting {
+    target: Option<DispatchTarget>,
+    error: Option<String>,
+}
+
+impl CaptureRouting {
+    fn from_capture(capture: &PendingCaptureDto) -> Self {
+        Self {
+            target: capture
+                .suggested_target
+                .as_deref()
+                .and_then(DispatchTarget::from_pref)
+                .filter(|target| *target != DispatchTarget::Local),
+            error: capture.routing_error.clone(),
+        }
+    }
+
+    fn needs_local_context(&self) -> bool {
+        self.error.as_deref() == Some("captureRoutingContextRequired")
+    }
+
+    fn needs_target(&self, selected: &DispatchTarget, available: bool, explicit: bool) -> bool {
+        (*selected != DispatchTarget::Local && !available)
+            || (!explicit
+                && self.target.is_none()
+                && self.error.is_some()
+                && !self.needs_local_context())
+    }
+}
+
 /// 独立窗口承载的「新建下载」表单。
 ///
 /// 提交或取消都会关闭自身所在窗口（「打开种子文件」只提交种子：表单里还有待处理链接时
@@ -336,6 +367,8 @@ pub struct NewDownloadView {
     literal_urls: HashSet<String>,
     /// 尚未确认 / 忽略的外部捕获；按 URL 与链接行对应。
     captures: Vec<PendingCaptureDto>,
+    capture_routing: Option<CaptureRouting>,
+    target_explicit: bool,
     save_dir: Entity<InputState>,
     use_subfolder: bool,
     checking_subfolder: bool,
@@ -368,7 +401,7 @@ pub struct NewDownloadView {
     headers: Vec<HeaderRow>,
     header_seq: usize,
     picking: bool,
-    /// 「下载到」当前目标；非本机时必然存在于 `context.targets`（设备消失即回退本机）。
+    /// 当前目标。捕获规则里的设备消失时保留其身份，直到用户覆盖或设备重新出现。
     target: DispatchTarget,
     /// 远端保存目录（与本机 `save_dir` 各自保留，来回切换目标不互相覆盖）；
     /// 空 = 使用目标设备默认目录。
@@ -487,6 +520,8 @@ impl NewDownloadView {
             ranges: UrlRangeExpansion::default(),
             literal_urls,
             captures: Vec::new(),
+            capture_routing: None,
+            target_explicit: false,
             save_dir,
             use_subfolder: false,
             checking_subfolder: false,
@@ -684,6 +719,22 @@ impl NewDownloadView {
         cx.notify();
     }
 
+    /// Whether another capture group can safely join this open confirmation.
+    #[must_use]
+    pub fn can_append_captures(&self, captures: &[PendingCaptureDto]) -> bool {
+        !self.target_explicit
+            && !self.picking
+            && !self.checking_subfolder
+            && !self.preview_gate.is_active()
+            && self.manifest.is_none()
+            && captures.first().is_some_and(|first| {
+                self.capture_routing.as_ref() == Some(&CaptureRouting::from_capture(first))
+            })
+            && captures
+                .iter()
+                .all(|capture| !self.entries.iter().any(|entry| entry.url == capture.url))
+    }
+
     /// 追加外部捕获：未见过的事务按链接行（含 `out=` 文件名）追加到链接框末尾，不改动
     /// 已有文本；表单原本为空时沿用捕获方指定的保存目录。
     pub fn add_captures(
@@ -703,6 +754,20 @@ impl NewDownloadView {
             .collect::<Vec<_>>();
         if fresh.is_empty() {
             return;
+        }
+        if self.capture_routing.is_none()
+            && let Some(capture) = fresh.first()
+        {
+            let routing = CaptureRouting::from_capture(capture);
+            if !self.target_explicit && (routing.target.is_some() || routing.error.is_some()) {
+                self.target = if routing.needs_local_context() {
+                    DispatchTarget::Local
+                } else {
+                    routing.target.clone().unwrap_or_default()
+                };
+            }
+            self.capture_routing = Some(routing);
+            self.refresh_remote_placeholder(window, cx);
         }
         let current = self.urls.read(cx).value().to_string();
         if current.trim().is_empty()
@@ -764,8 +829,8 @@ impl NewDownloadView {
         self.refresh_entries(window, cx);
     }
 
-    /// 只保留 agent 仍在等待确认的捕获（其余已在别处处理 / agent 重启丢失）；对应链接行
-    /// 保留为普通链接。
+    /// An expired routed capture remains bound to its transaction: turning its edited link
+    /// into a plain URL would bypass capture resolution and could duplicate a download.
     pub fn retain_captures(
         &mut self,
         pending: &[PendingCaptureDto],
@@ -774,9 +839,11 @@ impl NewDownloadView {
     ) {
         let before = self.captures.len();
         self.captures.retain(|capture| {
-            pending
-                .iter()
-                .any(|pending| pending.transaction_id == capture.transaction_id)
+            capture.suggested_target.is_some()
+                || capture.routing_error.is_some()
+                || pending
+                    .iter()
+                    .any(|pending| pending.transaction_id == capture.transaction_id)
         });
         if self.captures.len() != before {
             self.refresh_entries(window, cx);
@@ -938,18 +1005,51 @@ impl NewDownloadView {
 
     /// 当前远端目标；本机为 `None`。
     fn target_entry(&self) -> Option<&DeviceEntry> {
-        match &self.target {
-            DispatchTarget::Local => None,
-            target => self
-                .context
-                .targets
-                .iter()
-                .find(|entry| entry.target() == *target),
-        }
+        self.target_entry_for(&self.target)
+    }
+
+    fn target_entry_for(&self, target: &DispatchTarget) -> Option<&DeviceEntry> {
+        self.context.targets.iter().find(|entry| match target {
+            DispatchTarget::Local => false,
+            DispatchTarget::Cloud(id) => entry.kind == DeviceKind::Cloud && entry.id == *id,
+            DispatchTarget::Paired(id) => {
+                (entry.kind == DeviceKind::Paired && entry.id == *id)
+                    || entry.link_fingerprint.as_deref() == Some(id.as_str())
+            }
+        })
     }
 
     fn is_remote(&self) -> bool {
         self.target_entry().is_some()
+    }
+
+    fn needs_local_capture_context(&self) -> bool {
+        self.capture_routing
+            .as_ref()
+            .is_some_and(CaptureRouting::needs_local_context)
+    }
+
+    fn needs_capture_target(&self) -> bool {
+        self.capture_routing.as_ref().is_some_and(|routing| {
+            routing.needs_target(
+                &self.target,
+                self.target_entry().is_some(),
+                self.target_explicit,
+            )
+        })
+    }
+
+    fn capture_routing_error(&self, cx: &App) -> Option<SharedString> {
+        let routing = self.capture_routing.as_ref()?;
+        let key = match routing.error.as_deref() {
+            Some("captureRoutingContextRequired") => "captureRoutingContextRequired",
+            _ if self.needs_capture_target() => "captureRoutingTargetUnavailable",
+            Some("captureRoutingTargetUnavailable") if self.target_explicit => return None,
+            Some("captureRoutingTargetUnavailable") => "captureRoutingTargetUnavailable",
+            Some(_) => "captureRoutingDispatchFailed",
+            None => return None,
+        };
+        Some(self.translator.read(cx).text(key).into())
     }
 
     /// 远端保存目录输入按目标路径风格的校验。
@@ -964,6 +1064,7 @@ impl NewDownloadView {
             || self.manifest.is_some()
             || self.entries.is_empty()
             || self.ranges.limit_exceeded
+            || self.needs_capture_target()
         {
             return false;
         }
@@ -974,33 +1075,49 @@ impl NewDownloadView {
     }
 
     fn target_label(&self, entry: &DeviceEntry) -> SharedString {
-        let status = match entry.online {
+        self.device_label(entry, entry.is_standalone_link(), entry.online)
+    }
+
+    fn device_label(
+        &self,
+        entry: &DeviceEntry,
+        paired: bool,
+        online: Option<bool>,
+    ) -> SharedString {
+        let status = match online {
             Some(true) => &self.strings.device_online,
             Some(false) => &self.strings.device_offline,
             None => &self.strings.device_presence_unknown,
         };
-        if entry.is_standalone_link() {
-            SharedString::from(format!(
-                "{} · {} · {status}",
-                entry.label, self.strings.device_lan_tag
-            ))
+        let name = &entry.label;
+        let label = if name.chars().nth(36).is_some() {
+            let mut shortened: String = name.chars().take(22).collect();
+            shortened.push('…');
+            if let Some((tail, _)) = name.char_indices().rev().nth(12)
+                && let Some(suffix) = name.get(tail..)
+            {
+                shortened.push_str(suffix);
+            }
+            std::borrow::Cow::Owned(shortened)
         } else {
-            SharedString::from(format!("{} · {status}", entry.label))
+            std::borrow::Cow::Borrowed(name.as_str())
+        };
+        if paired {
+            format!("{label} · {} · {status}", self.strings.device_lan_tag).into()
+        } else {
+            format!("{label} · {status}").into()
         }
     }
 
     /// 切换「下载到」目标：远端保存目录占位随目标默认目录刷新。
     fn set_target(&mut self, target: DispatchTarget, window: &mut Window, cx: &mut Context<Self>) {
         if target != DispatchTarget::Local
-            && !self
-                .context
-                .targets
-                .iter()
-                .any(|entry| entry.target() == target)
+            && (self.needs_local_capture_context() || self.target_entry_for(&target).is_none())
         {
             return;
         }
         self.target = target;
+        self.target_explicit = true;
         self.refresh_remote_placeholder(window, cx);
         self.sync_duplicate_hint(window, cx);
         cx.notify();
@@ -1016,7 +1133,7 @@ impl NewDownloadView {
         });
     }
 
-    /// 宿主推送最新的设备名册（在线状态 / 默认目录 / 增减设备）。当前目标已消失则回退本机。
+    /// Refresh device details; only a manual draft falls back when its target disappears.
     pub fn set_targets(
         &mut self,
         targets: Vec<DeviceEntry>,
@@ -1026,9 +1143,15 @@ impl NewDownloadView {
         if self.context.targets == targets {
             return;
         }
+        let was_remote = self.is_remote();
         self.context.targets = targets;
-        if self.target != DispatchTarget::Local && self.target_entry().is_none() {
+        if self.capture_routing.is_none()
+            && self.target != DispatchTarget::Local
+            && self.target_entry().is_none()
+        {
             self.target = DispatchTarget::Local;
+        }
+        if was_remote != self.is_remote() {
             self.sync_duplicate_hint(window, cx);
         }
         self.refresh_remote_placeholder(window, cx);
@@ -1521,8 +1644,7 @@ impl NewDownloadView {
         .detach();
     }
 
-    /// 下发到其他设备：每条链接一次下发，目录空 = 目标设备默认目录；已随下发处理的外部
-    /// 捕获从表单摘出（宿主忽略 agent 里对应的待确认事务）。
+    /// Send plain links directly and resolve routed captures through their agent transaction.
     fn submit_remote(&mut self, entry: &DeviceEntry, window: &mut Window, cx: &mut Context<Self>) {
         let save_dir = match self.remote_dir_check(entry, cx) {
             RemoteDirCheck::Invalid => return,
@@ -1531,39 +1653,52 @@ impl NewDownloadView {
         };
         let single = self.entries.len() == 1;
         let rename = self.rename_value(cx);
+        let captures = &mut self.captures;
+        let mut legacy_captures = Vec::new();
         let items = self
             .entries
             .iter()
-            .map(|item| RemoteItem {
-                url: item.url.clone(),
-                file_name: if single && !rename.is_empty() {
-                    Some(rename.clone())
-                } else {
-                    Some(item.file_name.clone()).filter(|name| !name.is_empty())
-                },
+            .map(|item| {
+                let capture_id = captures
+                    .iter()
+                    .position(|capture| capture.url == item.url)
+                    .and_then(|index| {
+                        let capture = captures.remove(index);
+                        if capture.suggested_target.is_some() || capture.routing_error.is_some() {
+                            Some(capture.transaction_id)
+                        } else {
+                            legacy_captures.push(capture.transaction_id);
+                            None
+                        }
+                    });
+                RemoteItem {
+                    url: item.url.clone(),
+                    file_name: if single && !rename.is_empty() {
+                        Some(rename.clone())
+                    } else if item.file_name.is_empty() {
+                        None
+                    } else {
+                        Some(item.file_name.clone())
+                    },
+                    capture_id,
+                }
             })
             .collect::<Vec<_>>();
-        let mut captures = Vec::new();
-        for item in &items {
-            if let Some(index) = self
-                .captures
-                .iter()
-                .position(|capture| capture.url == item.url)
-            {
-                captures.push(self.captures.remove(index).transaction_id);
-            }
-        }
         // 挂接直连且在线 → 局域网直连（一次性投递），否则云端 / 独立直连按条目本身。
-        let route = entry.route();
+        let route = match &self.target {
+            DispatchTarget::Paired(_) => self.target.clone(),
+            _ => entry.route(),
+        };
         (self.on_submit)(
             NewDownloadSubmission::Remote(RemoteSubmission {
+                selected_target: self.target.clone(),
                 target: route.clone(),
                 device_label: entry.label.clone(),
                 target_offline: matches!(route, DispatchTarget::Cloud(_))
                     && entry.online == Some(false),
                 items,
                 save_dir,
-                captures,
+                legacy_captures,
             }),
             window,
             cx,
@@ -1735,28 +1870,33 @@ impl NewDownloadView {
                 Some(width) => button.flex_none().w(width),
                 None => button.w_full(),
             })
-            .dropdown_menu_with_anchor(Anchor::TopLeft, move |menu, _, _| {
-                options.iter().fold(menu, |menu, (value, label, disabled)| {
-                    let checked = *value == current;
-                    let this = this.clone();
-                    let value = value.clone();
-                    let on_pick = on_pick.clone();
-                    menu.item(
-                        PopupMenuItem::new(label.clone())
-                            .checked(checked)
-                            .disabled(*disabled)
-                            .on_click(move |_, window, cx| {
-                                let value = value.clone();
+            .dropdown_menu_with_anchor(Anchor::TopLeft, move |menu, window, cx| {
+                let height = (active_theme(cx).density().nav_row * 8.)
+                    .min(window.viewport_size().height * 0.5);
+                options.iter().fold(
+                    menu.scrollable(true).max_h(height),
+                    |menu, (value, label, disabled)| {
+                        let checked = *value == current;
+                        let this = this.clone();
+                        let value = value.clone();
+                        let on_pick = on_pick.clone();
+                        menu.item(
+                            PopupMenuItem::new(label.clone())
+                                .checked(checked)
+                                .disabled(*disabled)
+                                .on_click(move |_, window, cx| {
+                                    let value = value.clone();
 
-                                let Ok(()) = this.update(cx, |this, cx| {
-                                    on_pick(this, value, window, cx);
-                                }) else {
-                                    // 视图已释放，结束这次回调而不再更新状态。
-                                    return;
-                                };
-                            }),
-                    )
-                })
+                                    let Ok(()) = this.update(cx, |this, cx| {
+                                        on_pick(this, value, window, cx);
+                                    }) else {
+                                        // 视图已释放，结束这次回调而不再更新状态。
+                                        return;
+                                    };
+                                }),
+                        )
+                    },
+                )
             })
             .into_any_element()
     }
@@ -1901,6 +2041,10 @@ impl NewDownloadView {
             )
             .children(self.render_probe_status(cx))
             .children(self.render_duplicate_hint(cx))
+            .children(
+                self.capture_routing_error(cx)
+                    .map(|error| field_error(error, cx)),
+            )
             .when(!self.captures.is_empty() && !self.is_remote(), |this| {
                 this.child(field_hint(self.strings.capture_context_hint.clone(), cx))
             })
@@ -1936,32 +2080,71 @@ impl NewDownloadView {
 
     /// 「下载到」目标选择：本机 / 云设备 / 已配对设备；没有其他设备时不显示。
     fn render_target(&self, cx: &mut Context<Self>) -> Option<Div> {
-        if self.context.targets.is_empty() {
+        let needs_target = self.needs_capture_target();
+        if (self.context.targets.is_empty() && !needs_target) || self.needs_local_capture_context()
+        {
             return None;
         }
         let mut options = vec![(
-            DispatchTarget::Local,
+            Some(DispatchTarget::Local),
             self.strings.this_device.clone(),
             false,
         )];
+        if needs_target {
+            options.insert(
+                0,
+                (
+                    None,
+                    self.translator
+                        .read(cx)
+                        .text("captureDeviceRuleTarget")
+                        .into(),
+                    true,
+                ),
+            );
+        }
         options.extend(
             self.context
                 .targets
                 .iter()
-                .map(|entry| (entry.target(), self.target_label(entry), false)),
+                .map(|entry| (Some(entry.target()), self.target_label(entry), false)),
         );
+        if let Some(target @ DispatchTarget::Paired(_)) = self
+            .capture_routing
+            .as_ref()
+            .and_then(|routing| routing.target.as_ref())
+            && let Some(entry) = self.target_entry_for(target)
+            && entry.kind == DeviceKind::Cloud
+        {
+            options.push((
+                Some(target.clone()),
+                self.device_label(entry, true, entry.link_online),
+                false,
+            ));
+        }
         let dropdown = self.dropdown(
             "new-download-target",
             None,
-            self.target.clone(),
+            (!needs_target).then(|| self.target.clone()),
             options,
-            |this, target, window, cx| this.set_target(target, window, cx),
+            |this, target, window, cx| {
+                if let Some(target) = target {
+                    this.set_target(target, window, cx);
+                }
+            },
             cx,
         );
         let hint = match self.target_entry() {
             None => self.strings.download_to_hint.clone(),
             Some(entry) => {
-                let offline = match (entry.online, entry.kind) {
+                let (presence, kind) = if matches!(self.target, DispatchTarget::Paired(_))
+                    && entry.kind == DeviceKind::Cloud
+                {
+                    (entry.link_online, DeviceKind::Paired)
+                } else {
+                    (entry.online, entry.kind)
+                };
+                let offline = match (presence, kind) {
                     (Some(true), _) => None,
                     (Some(false), DeviceKind::Cloud) => Some(&self.strings.target_offline_hint),
                     (Some(false), DeviceKind::Paired) => {
@@ -2811,6 +2994,31 @@ mod context_tests {
 
     fn cloud(id: &str) -> DispatchTarget {
         DispatchTarget::Cloud(id.to_owned())
+    }
+
+    #[test]
+    fn missing_rule_target_requires_an_explicit_override() {
+        let target = cloud("phone");
+        let rule = CaptureRouting {
+            target: Some(target.clone()),
+            error: None,
+        };
+        assert!(!rule.needs_target(&target, true, false));
+        assert!(rule.needs_target(&target, false, false));
+        assert!(!rule.needs_target(&DispatchTarget::Local, false, true));
+
+        let unavailable = CaptureRouting {
+            target: None,
+            error: Some("captureRoutingTargetUnavailable".to_owned()),
+        };
+        assert!(unavailable.needs_target(&DispatchTarget::Local, false, false));
+        assert!(!unavailable.needs_target(&DispatchTarget::Local, false, true));
+        let context_required = CaptureRouting {
+            target: None,
+            error: Some("captureRoutingContextRequired".to_owned()),
+        };
+        assert!(context_required.needs_local_context());
+        assert!(!context_required.needs_target(&DispatchTarget::Local, false, false));
     }
 
     #[test]

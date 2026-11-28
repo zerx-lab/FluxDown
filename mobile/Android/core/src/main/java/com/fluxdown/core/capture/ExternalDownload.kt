@@ -26,7 +26,11 @@ data class ExternalDownload(
     val headers: Map<String, String> = emptyMap(),
     val saveDir: String? = null,
     val autoStart: Boolean? = null,
+    val hasUnusableRequestContext: Boolean = false,
 ) {
+    val hasRequestContext: Boolean
+        get() = cookies.isNotEmpty() || referrer.isNotEmpty() || headers.isNotEmpty() || hasUnusableRequestContext
+
     /**
      * 命中分类（且该分类配置了目录）的保存目录，规则同 agent `capture.rs::with_category_dir`：
      * 外部唤起不指定目录时按文件名 / 链接路径末段归类；无命中 / 未配置目录返回 null。
@@ -62,8 +66,12 @@ object ExternalIntake {
         RegexOption.IGNORE_CASE,
     )
 
-    /** 分享文本（`EXTRA_TEXT` / ClipData）：提取其中首个链接（允许夹带描述文字）；无链接返回 null。 */
-    fun fromSharedText(text: String?): ExternalDownload? = normalize(text, "", "", "", emptyMap())
+    /** 分享文本（`EXTRA_TEXT` / ClipData）：提取所有链接并保留首次出现的顺序。 */
+    fun fromSharedText(text: String?): List<ExternalDownload> =
+        urlPattern.findAll(text.orEmpty()).map { match ->
+            val url = match.value
+            ExternalDownload(url.take(MAX_URL_LEN), hasUnusableRequestContext = url.length > MAX_URL_LEN)
+        }.distinctBy { it.url }.toList()
 
     /**
      * VIEW 的 data：`fluxdown://download?url=…&filename=…&cookies=…&referrer=…&headers=<JSON>` 走协议解析；
@@ -82,12 +90,16 @@ object ExternalIntake {
         val raw = data?.trim().orEmpty()
         if (raw.isEmpty()) return null
         if (raw.startsWith(PROTOCOL_PREFIX, ignoreCase = true)) return fromProtocol(raw)
-        val headers = LinkedHashMap(decodeHeaders(headersJson))
+        val decoded = inspectHeaders(headersJson)
+        val headers = LinkedHashMap(decoded.values)
         val ua = userAgent?.trim().orEmpty()
         if (ua.isNotEmpty() && headers.keys.none { it.equals("User-Agent", ignoreCase = true) } && headers.size < MAX_HEADERS) {
             headers["User-Agent"] = ua.take(MAX_HEADER_VALUE_LEN)
         }
-        return normalize(raw, fileName.orEmpty(), cookie.orEmpty(), referer.orEmpty(), headers)
+        return normalize(
+            raw, fileName.orEmpty(), cookie.orEmpty(), referer.orEmpty(), headers,
+            decoded.incomplete || ua.length > MAX_HEADER_VALUE_LEN,
+        )
     }
 
     /** 从文本中提取首个可下载链接；无匹配返回 null。 */
@@ -101,17 +113,30 @@ object ExternalIntake {
      * `headers` 参数（JSON 对象）→ 请求头：非对象 / 损坏为空；非字符串值与超长键跳过，值截断，
      * 至多 [MAX_HEADERS] 项（保持出现顺序）。
      */
-    fun decodeHeaders(json: String?): Map<String, String> {
-        if (json.isNullOrEmpty() || json.length > MAX_HEADERS_JSON_LEN) return emptyMap()
-        val fields = Json.parseOrNull(json).objOrNull ?: return emptyMap()
+    fun decodeHeaders(json: String?): Map<String, String> = inspectHeaders(json).values
+
+    private data class CapturedHeaders(val values: Map<String, String>, val incomplete: Boolean = false)
+
+    private fun inspectHeaders(json: String?): CapturedHeaders {
+        if (json.isNullOrBlank()) return CapturedHeaders(emptyMap())
+        if (json.length > MAX_HEADERS_JSON_LEN) return CapturedHeaders(emptyMap(), incomplete = true)
+        val fields = Json.parseOrNull(json).objOrNull ?: return CapturedHeaders(emptyMap(), incomplete = true)
         val out = LinkedHashMap<String, String>()
+        var incomplete = false
         for ((key, value) in fields) {
-            if (out.size >= MAX_HEADERS) break
-            val text = value.stringOrNull ?: continue
-            if (key.length > MAX_HEADER_KEY_LEN) continue
+            if (out.size >= MAX_HEADERS) {
+                incomplete = true
+                break
+            }
+            val text = value.stringOrNull
+            if (text == null || key.isBlank() || key.length > MAX_HEADER_KEY_LEN) {
+                incomplete = true
+                continue
+            }
+            if (text.length > MAX_HEADER_VALUE_LEN) incomplete = true
             out[key] = text.take(MAX_HEADER_VALUE_LEN)
         }
-        return out
+        return CapturedHeaders(out, incomplete)
     }
 
     /** `fluxdown://download?…`：主机必须是 `download`，`url` 必填。 */
@@ -126,13 +151,18 @@ object ExternalIntake {
         if (url.isEmpty()) return null
         val saveDir = (params["saveDir"] ?: params["dir"])?.trim()?.takeIf { it.isNotEmpty() }
         val fileName = params["filename"].orEmpty()
+        val headers = inspectHeaders(params["headers"])
+        val method = params["method"].orEmpty().trim()
         return normalize(
             text = url,
             // 显式目录须是经校验的最终目录，不能由引擎再按文件名追加子目录。
             fileName = if (saveDir != null) fileName.substringAfterLast('/').substringAfterLast('\\') else fileName,
             cookies = params["cookies"].orEmpty(),
             referrer = params["referrer"].orEmpty(),
-            headers = decodeHeaders(params["headers"]),
+            headers = headers.values,
+            hasUnusableRequestContext = headers.incomplete ||
+                (method.isNotEmpty() && !method.equals("GET", ignoreCase = true)) ||
+                !params["body"].isNullOrEmpty() || !params["audioUrl"].isNullOrEmpty(),
         )
             ?.copy(
                 saveDir = saveDir,
@@ -146,6 +176,7 @@ object ExternalIntake {
         cookies: String,
         referrer: String,
         headers: Map<String, String>,
+        hasUnusableRequestContext: Boolean,
     ): ExternalDownload? {
         val url = extractUrl(text) ?: return null
         return ExternalDownload(
@@ -154,6 +185,8 @@ object ExternalIntake {
             cookies = cookies.take(MAX_COOKIES_LEN),
             referrer = referrer.trim().take(MAX_REFERRER_LEN),
             headers = headers,
+            hasUnusableRequestContext = hasUnusableRequestContext || url.length > MAX_URL_LEN ||
+                cookies.length > MAX_COOKIES_LEN || referrer.length > MAX_REFERRER_LEN,
         )
     }
 }
@@ -178,7 +211,7 @@ data class SilentCapture(val request: CreateTaskRequest) {
         /** 不满足静默策略，或算不出保存目录（应退回确认弹层）时返回 null。 */
         fun plan(download: ExternalDownload, state: HostState): SilentCapture? {
             val prefs = state.preferences
-            if (!prefs.bool(SILENT_PREF, false) || download.autoStart == false ||
+            if (download.hasUnusableRequestContext || !prefs.bool(SILENT_PREF, false) || download.autoStart == false ||
                 (download.saveDir != null && download.autoStart != true)
             ) return null
             val fixedDestination = download.autoStart == true

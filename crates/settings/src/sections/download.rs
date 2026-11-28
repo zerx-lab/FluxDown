@@ -10,7 +10,8 @@ use gpui::{App, ParentElement, SharedString, Styled, Window, prelude::FluentBuil
 use gpui_component::{Disableable as _, h_flex, switch::Switch};
 
 use super::{
-    SectionContext, aria2_options, auto_quantity, categories, rate_limit, retention, user_agent,
+    SectionContext, aria2_options, auto_quantity, capture_device_rules, categories, rate_limit,
+    retention, user_agent,
 };
 use crate::ui::{
     Control, Explain, SettingsPage, SettingsSection, SettingsTab, body_text, meta_text,
@@ -34,8 +35,11 @@ pub(crate) fn page(ctx: &SectionContext, cx: &mut App) -> SettingsPage {
         FluxIcon::Download,
     )
     .tab(
-        SettingsTab::new("general", ctx.t("settingsTabGeneral"))
-            .sections([save_location_section(ctx), behavior_section(ctx, cx)]),
+        SettingsTab::new("general", ctx.t("settingsTabGeneral")).sections([
+            save_location_section(ctx),
+            behavior_section(ctx, cx),
+            capture_device_rules::group(ctx),
+        ]),
     )
     .tab(
         SettingsTab::new("connection", ctx.t("settingsTabConnection"))

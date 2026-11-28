@@ -139,6 +139,10 @@ private val DlRows: List<DlRow> = listOf(
         R.string.silentDownload, R.string.silentDownloadDesc,
     ),
     DlRow(
+        CAPTURE_DEVICE_RULES_ROW, "download.capture_device_rules", DlSection.Behavior,
+        R.string.captureDeviceRules, R.string.captureDeviceRulesDesc,
+    ),
+    DlRow(
         "download.silentAutoCategory", "download.silent_auto_category", DlSection.Behavior,
         R.string.silentAutoCategory, R.string.silentAutoCategoryDesc,
         visible = { f, _ -> f.has("download.silent_auto_category") && f.bool("download.silent_download") },
@@ -235,6 +239,7 @@ internal fun DownloadPage() {
     var picker by remember { mutableStateOf<PickerSpec?>(null) }
     var showNicHelp by remember { mutableStateOf(false) }
     var showRemotePicker by remember { mutableStateOf(false) }
+    var showCaptureRules by remember(hostRef.id) { mutableStateOf(false) }
     var uaForceCustom by rememberSaveable { mutableStateOf(false) }
     var retentionForceCustom by rememberSaveable { mutableStateOf(false) }
     var connCount by remember { mutableStateOf<Long?>(null) }
@@ -429,7 +434,11 @@ internal fun DownloadPage() {
                         when (section) {
                             DlSection.Save -> saveRows(ctx, shown, onBrowse = { showRemotePicker = true })
                             DlSection.Categories -> Unit
-                            DlSection.Behavior -> behaviorRows(ctx, shown, queues, retentionForceCustom) { retentionForceCustom = it }
+                            DlSection.Behavior -> behaviorRows(
+                                ctx, shown, queues, retentionForceCustom,
+                                onEditCaptureRules = { showCaptureRules = true },
+                                setRetentionForceCustom = { retentionForceCustom = it },
+                            )
                             DlSection.Connection -> connectionRows(
                                 ctx, shown, onCdnToggle, onNicHelp = { showNicHelp = true },
                                 policy = ConnPolicyUi(connCount, connFailed, connClearing),
@@ -443,6 +452,7 @@ internal fun DownloadPage() {
             }
         }
         PickerSheetHost(picker = picker, onDismiss = { picker = null })
+        CaptureDeviceRulesSheet(ctx, visible = showCaptureRules, onDismiss = { showCaptureRules = false })
         NicHelpSheet(visible = showNicHelp, onDismiss = { showNicHelp = false })
         RemoteDirectoryPickerSheet(
             visible = showRemotePicker,
@@ -573,6 +583,7 @@ private fun GlassSectionScope.behaviorRows(
     shown: Set<String>,
     queues: List<com.fluxdown.core.model.Queue>,
     retentionForceCustom: Boolean,
+    onEditCaptureRules: () -> Unit,
     setRetentionForceCustom: (Boolean) -> Unit,
 ) {
     if ("download.silentDownload" in shown) {
@@ -580,6 +591,9 @@ private fun GlassSectionScope.behaviorRows(
             ctx, "download.silent_download", R.string.silentDownload, R.string.silentDownloadDesc,
             id = "download.silentDownload",
         )
+    }
+    if (CAPTURE_DEVICE_RULES_ROW in shown) {
+        captureDeviceRulesRow(ctx, onEditCaptureRules)
     }
     if ("download.silentAutoCategory" in shown) {
         settingSwitch(

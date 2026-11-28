@@ -6,12 +6,18 @@ import { submitTorrentFiles } from './torrents'
 /** 已并入过「新建下载」表单的外部捕获事务 id：避免关闭后（忽略失败时）反复弹出。 */
 export const capturesShown = new Set<string>()
 
+/** Never put captures with different rule destinations or failures in one form. */
+export function captureGroupOf(capture: { suggestedTarget?: string; routingError?: string }): string {
+  return `${capture.routingError ?? ''}|${capture.suggestedTarget ?? ''}`
+}
+
 export interface NewDownloadOptions {
   urls?: string[]
   torrentFiles?: File[]
   queueId?: string
   /** 预选「下载到」目标（`cloud:<deviceId>` / `link:<fingerprint>`）；缺省 = 本服务器。 */
   target?: string
+  captureGroup?: string
 }
 
 /** 打开中的「新建下载」会话；已打开时再次 `openNewDownload` 只追加注入项。 */
@@ -20,6 +26,7 @@ export interface NewDownloadSession {
   session: number
   queueId?: string
   target?: string
+  captureGroup?: string
   /** 打开时预填的链接。 */
   initialUrls: string[]
   /** 会话期间追加的链接 / 种子（id 递增，组件按 id 去重处理）。 */
@@ -100,6 +107,7 @@ export function openNewDownload(options: NewDownloadOptions = {}): void {
       session: counter,
       queueId: options.queueId,
       target: options.target,
+      captureGroup: options.captureGroup,
       initialUrls: urls,
       injections: torrentFiles.length > 0 ? [{ id: counter, urls: [], torrentFiles }] : [],
     },

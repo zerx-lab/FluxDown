@@ -39,6 +39,16 @@ final class AdvancedState {
         nextHeaderId += 1
     }
 
+    func prefill(from request: ExternalDownload) {
+        cookie = request.cookies
+        referrer = request.referrer
+        for key in request.headers.keys.sorted() {
+            guard let value = request.headers[key] else { continue }
+            headers.append(HeaderDraft(id: nextHeaderId, key: key, value: value))
+            nextHeaderId += 1
+        }
+    }
+
     /// 按“当前会被提交”的口径列出已改动分区；`single` = 本次只有一条链接（单条专属项才计入）。
     func modified(single: Bool, singleHttp: Bool) -> [AdvancedItem] {
         var items: [AdvancedItem] = []
@@ -84,6 +94,8 @@ final class AdvancedState {
 @Observable
 final class NewDownloadForm {
     var urlText: String
+    let external: ExternalDownload?
+    let locksExternalLinks: Bool
     var saveDir: String
     var rename = ""
     var queueId: String
@@ -108,7 +120,7 @@ final class NewDownloadForm {
     @ObservationIgnored private let initialSaveDir: String
     @ObservationIgnored private let initialQueueId: String
 
-    init(prefill: String, state: HostState) {
+    init(prefill: String, state: HostState, capture: ExternalDownloadConfirmation? = nil) {
         let cfg = state.config
         let queue = cfg["default_queue_id"].flatMap { id in state.queues.contains { $0.queueId == id } ? id : nil }
             ?? state.queues.first { $0.queueId == TaskQueue.main }?.queueId
@@ -117,6 +129,9 @@ final class NewDownloadForm {
         let dir = (cfg["default_save_dir"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let segments = Int(cfg["default_segments"] ?? "") ?? 0
         urlText = prefill.trimmingCharacters(in: .whitespacesAndNewlines)
+        external = capture?.request
+        locksExternalLinks = capture?.targetId != nil || capture?.request.hasRequestContext == true
+        targetId = capture?.targetId
         saveDir = dir
         queueId = queue
         initialSaveDir = dir
@@ -132,9 +147,18 @@ final class NewDownloadForm {
         if let restoredDir = categoryState.select(mode, offered: dir, options: options, predicted: nil) {
             saveDir = restoredDir
         }
+        if let request = external {
+            rename = request.fileName
+            advanced.prefill(from: request)
+        }
     }
 
-    var entries: [UrlEntry] { parseEntries(urlText).dedupe() }
+    var entries: [UrlEntry] {
+        if let external, external.url == urlText {
+            return external.entry.map { [$0] } ?? []
+        }
+        return parseEntries(urlText).dedupe()
+    }
 
     var segments: Int {
         switch threadMode {
@@ -199,7 +223,7 @@ final class NewDownloadForm {
             || !advanced.modified(single: true, singleHttp: true).isEmpty
     }
 
-    /// 当前选中的远端目标；目标已不在候选里（登出 / 解除配对）时回落到当前主机。
+    /// 一个已选择但消失的目标仍保留其 id，调用方不能把它悄悄当成本机。
     func target(in targets: [DispatchTarget]) -> DispatchTarget? {
         guard let targetId else { return nil }
         return DeviceRules.resolveTarget(id: targetId, in: targets)

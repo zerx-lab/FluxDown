@@ -47,6 +47,7 @@ nonisolated enum AppIntent: Hashable {
 nonisolated enum SheetRoute: Identifiable, Hashable {
     /// N1：`prefill` = 预填链接（粘贴 / 分享 / magnet:// 唤起）。
     case newDownload(prefill: String)
+    case externalDownload(ExternalDownloadConfirmation)
     /// D9：全局活动面板。
     case activity
     /// V2：添加远程（`--server`）主机。
@@ -67,6 +68,7 @@ nonisolated enum SheetRoute: Identifiable, Hashable {
     var id: String {
         switch self {
         case let .newDownload(prefill): "new:\(prefill)"
+        case let .externalDownload(confirmation): "external:\(confirmation.id)"
         case .activity: "activity"
         case .addHost: "addHost"
         case let .moveToQueue(ids): "move:\(ids.joined(separator: ","))"

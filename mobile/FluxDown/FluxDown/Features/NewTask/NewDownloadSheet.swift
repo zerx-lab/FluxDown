@@ -10,6 +10,7 @@ import UniformTypeIdentifiers
 /// - 表单每次打开新建一份，默认值来自主机配置。
 struct NewDownloadSheet: View {
     let prefill: String
+    var confirmation: ExternalDownloadConfirmation? = nil
 
     @Environment(AppContainer.self) private var container
     @Environment(\.dismiss) private var dismiss
@@ -18,7 +19,10 @@ struct NewDownloadSheet: View {
     var body: some View {
         Group {
             if let draft {
-                NewDownloadContent(form: draft.form, hostID: draft.hostID, close: { dismiss() })
+                NewDownloadContent(
+                    form: draft.form, hostID: draft.hostID,
+                    close: { dismiss() }, initialFailure: confirmation?.failure
+                )
             } else {
                 Color.clear
             }
@@ -26,7 +30,10 @@ struct NewDownloadSheet: View {
         .task {
             if draft == nil {
                 container.supersedeHostRestore()
-                draft = (container.host.id, NewDownloadForm(prefill: prefill, state: container.store.state))
+                draft = (
+                    container.host.id,
+                    NewDownloadForm(prefill: prefill, state: container.store.state, capture: confirmation)
+                )
             }
         }
         // 关闭 Sheet 即取消进行中的清单预解析（在途 RPC 的晚到结果被忽略）。
@@ -51,13 +58,19 @@ private struct NewDownloadContent: View {
     #endif
     @State private var dropTargeted = false
     @State private var path: [NewDownloadRoute] = []
-    /// 「下载到」候选的分区缓存（云端 presence）。
     @State private var sections = AgentSections()
     /// 下发进行中的进度（已完成 / 总数）；nil = 未在下发。
     @State private var dispatchProgress: (done: Int, total: Int)?
     /// 下发失败的内联说明（失败的链接留在文本框里供重试）。
     @State private var dispatchFailure: String?
     @FocusState private var linksFocused: Bool
+
+    init(form: NewDownloadForm, hostID: String, close: @escaping () -> Void, initialFailure: String?) {
+        self.form = form
+        self.hostID = hostID
+        self.close = close
+        _dispatchFailure = State(initialValue: initialFailure)
+    }
 
     private static let probeId = "manifestProbe"
     /// 「下载到」里当前主机的选择键（远端目标为 `cloud:` / `link:` 前缀，不会冲突）。
@@ -66,17 +79,9 @@ private struct NewDownloadContent: View {
     private var state: HostState { container.store.state }
     private var isDraftHostLive: Bool { container.host.id == hostID && state.connection == .live }
 
-    /// 「下载到」候选：云账号其他设备 + 局域网已配对设备（快照实时投影）。
-    private var dispatchTargets: [DispatchTarget] {
-        let state = state
-        let live = state.connection == .live
-        return DeviceRules.dispatchTargets(
-            cloud: state.cloudDevices,
-            link: state.linkDevices,
-            cloudPresenceKnown: CloudPresence.isKnown(sections.connection(state), localReady: live),
-            localReady: live
-        )
-    }
+    private var dispatchTargets: [DispatchTarget] { state.downloadDispatchTargets(sections: sections) }
+
+    private var blocksRemoteDispatch: Bool { form.external?.blocksRemoteDispatch == true }
 
     var body: some View {
         let entries = form.entries
@@ -88,13 +93,14 @@ private struct NewDownloadContent: View {
                     #if FULL_FLAVOR
                     if let probe = form.probe { probeSection(probe) }
                     #endif
-                    linksSection(entries, remote: target != nil)
+                    linksSection(entries, remote: form.targetId != nil)
                     if !entries.isEmpty { previewSection(entries) }
-                    if !targets.isEmpty { targetSection(targets, selected: target) }
+                    if !targets.isEmpty || form.targetId != nil { targetSection(targets, selected: target) }
+                    captureStatusSection(target)
+                    dispatchStatusSection
                     if let target {
                         remoteDestinationSection(entries, target: target)
-                        dispatchStatusSection
-                    } else {
+                    } else if form.targetId == nil {
                         destinationSection(entries)
                         optionsSection(entries)
                         advancedSection(entries)
@@ -220,37 +226,28 @@ private struct NewDownloadContent: View {
             else if !hasText, form.showEmptyError { L("mobileEnterUrl") }
             else { nil }
         return Section {
-            TextEditor(text: $form.urlText)
-                .font(.callout.monospaced())
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .keyboardType(.URL)
-                .focused($linksFocused)
-                .disabled(form.submitting || form.probe != nil)
-                .frame(minHeight: 110)
-                .overlay(alignment: .topLeading) {
-                    if form.urlText.isEmpty {
-                        Text(L(BuildFlavor.key(full: "batchUrlPlaceholder", store: "batchUrlPlaceholderGeneric")))
-                            .font(.callout.monospaced())
-                            .foregroundStyle(.tertiary)
-                            .padding(.top, 8)
-                            .padding(.leading, 5)
-                            .allowsHitTesting(false)
-                            .accessibilityHidden(true)
-                    }
-                }
-                .accessibilityLabel(L("downloadUrl"))
-                .onChange(of: form.urlText) { form.showEmptyError = false }
+            if form.locksExternalLinks {
+                Text(form.urlText)
+                    .font(.callout.monospaced())
+                    .lineLimit(4)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                    .accessibilityLabel(L("downloadUrl") + ": " + form.urlText)
+            } else {
+                linkEditor
+            }
             if let error {
                 Label(error, systemImage: FluxSymbol.failure)
                     .font(.footnote)
                     .foregroundStyle(Color.fdStatusFailedText)
             }
-            pasteButton
-            #if FULL_FLAVOR
-            torrentButton(remote: remote)
-            #endif
-            importButton
+            if !form.locksExternalLinks {
+                pasteButton
+                #if FULL_FLAVOR
+                torrentButton(remote: remote)
+                #endif
+                importButton
+            }
         } header: {
             HStack {
                 Text(L("downloadUrl"))
@@ -264,6 +261,30 @@ private struct NewDownloadContent: View {
         } footer: {
             Text(L(BuildFlavor.key(full: "batchDownloadDesc", store: "batchDownloadDescGeneric")))
         }
+    }
+
+    private var linkEditor: some View {
+        TextEditor(text: $form.urlText)
+            .font(.callout.monospaced())
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .keyboardType(.URL)
+            .focused($linksFocused)
+            .disabled(form.submitting || form.probe != nil)
+            .frame(minHeight: 110)
+            .overlay(alignment: .topLeading) {
+                if form.urlText.isEmpty {
+                    Text(L(BuildFlavor.key(full: "batchUrlPlaceholder", store: "batchUrlPlaceholderGeneric")))
+                        .font(.callout.monospaced())
+                        .foregroundStyle(.tertiary)
+                        .padding(.top, 8)
+                        .padding(.leading, 5)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
+            .accessibilityLabel(L("downloadUrl"))
+            .onChange(of: form.urlText) { form.showEmptyError = false }
     }
 
     private var pasteButton: some View {
@@ -359,8 +380,11 @@ private struct NewDownloadContent: View {
         Section {
             Picker(L("downloadTo"), selection: targetChoice(selected)) {
                 Text(hostTargetLabel).tag(Self.hostTargetTag)
+                if selected == nil, let id = form.targetId {
+                    Text(L("marketUnavailableButton")).tag(id)
+                }
                 ForEach(targets) { target in
-                    Text(targetLabel(target)).tag(target.id)
+                    Text(targetLabel(target)).lineLimit(1).truncationMode(.middle).tag(target.id)
                 }
             }
             .pickerStyle(.menu)
@@ -405,10 +429,10 @@ private struct NewDownloadContent: View {
         }
     }
 
-    /// 所选目标消失（登出 / 解除配对）时读作当前主机。
+    /// 仅用户明确选择当前主机时清除目标；设备消失时仍保留其选择。
     private func targetChoice(_ selected: DispatchTarget?) -> Binding<String> {
         Binding(
-            get: { selected?.id ?? Self.hostTargetTag },
+            get: { selected?.id ?? form.targetId ?? Self.hostTargetTag },
             set: { value in
                 form.targetId = value == Self.hostTargetTag ? nil : value
                 dispatchFailure = nil
@@ -547,6 +571,22 @@ private struct NewDownloadContent: View {
         }
     }
 
+    @ViewBuilder
+    private func captureStatusSection(_ target: DispatchTarget?) -> some View {
+        let warning: String? =
+            if form.external?.hasUnreadableContext == true { L("captureDeviceRuleInvalidContext") }
+            else if form.targetId != nil, blocksRemoteDispatch { L("captureRoutingContextRequired") }
+            else if form.targetId != nil, target == nil, dispatchFailure == nil { L("captureRoutingTargetUnavailable") }
+            else { nil }
+        if let warning {
+            Section {
+                Banner(text: warning, tone: .warning, systemImage: FluxSymbol.failure, slim: true)
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets())
+            }
+        }
+    }
+
     /// 下发进度 / 失败说明（同设备页下发表单）。
     @ViewBuilder
     private var dispatchStatusSection: some View {
@@ -681,9 +721,9 @@ private struct NewDownloadContent: View {
             ToolbarSpacer(.flexible, placement: .bottomBar)
             ToolbarItem(placement: .bottomBar) {
                 startButton(startLabel) { submitRemote(target) }
-                    .disabled(!canSubmit)
+                    .disabled(!canSubmit || blocksRemoteDispatch)
             }
-        } else {
+        } else if form.targetId == nil {
             localBottomBar(queues: queues, queueId: queueId, startLabel: startLabel, canSubmit: canSubmit)
         }
     }
@@ -759,7 +799,7 @@ private struct NewDownloadContent: View {
     private func reject() { FluxHaptic.error.play() }
 
     private func submit(startPaused: Bool, queueId: String) {
-        guard !form.submitting, form.probe == nil else { return }
+        guard !form.submitting, form.probe == nil, form.targetId == nil else { return }
         guard container.host.id == hostID else {
             reject()
             container.toasts.show(text: L("mobileDownloadDraftHostChanged"), tone: .warning)
@@ -885,7 +925,7 @@ private struct NewDownloadContent: View {
     /// 「下载到」其他设备：逐条下发链接 / 文件名 / 保存目录；不探测插件清单（由目标设备解析）。
     /// 全部成功关闭表单；有失败时只把失败的链接留在文本框里，成功的不会被重复下发。
     private func submitRemote(_ target: DispatchTarget) {
-        guard !form.submitting, form.probe == nil else { return }
+        guard !form.submitting, form.probe == nil, !blocksRemoteDispatch else { return }
         guard container.host.id == hostID else {
             reject()
             container.toasts.show(text: L("mobileDownloadDraftHostChanged"), tone: .warning)
@@ -1011,7 +1051,7 @@ private struct NewDownloadContent: View {
 
     /// iPad 拖放：`.txt/.url/.list` → TXT 导入路径；full 构建另支持 `.torrent` → 导入；其余 → 不支持提示。
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
-        guard !providers.isEmpty, !form.submitting else { return false }
+        guard !providers.isEmpty, !form.submitting, !form.locksExternalLinks else { return false }
         Task {
             let loaded = await DroppedFiles.load(providers)
             defer { DroppedFiles.discard(loaded.files) }

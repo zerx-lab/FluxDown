@@ -44,8 +44,8 @@ use crate::{
     pages::task_detail::TaskDetailView,
     strings::{DownloadStrings, error_text},
     submission::{
-        CancelToken, NewDownloadSubmission, SubmissionHooks, SubmissionProgress, SubmitNotice,
-        run_submission,
+        CancelToken, FailedRemoteCapture, NewDownloadSubmission, SubmissionHooks,
+        SubmissionProgress, SubmitNotice, run_submission,
     },
 };
 use fluxdown_ui_components::toast;
@@ -641,7 +641,7 @@ impl DownloadView {
         &mut self,
         submission: NewDownloadSubmission,
         cx: &mut Context<Self>,
-    ) -> gpui::Task<SubmitNotice> {
+    ) -> gpui::Task<(SubmitNotice, Vec<FailedRemoteCapture>)> {
         let starts_immediately = submission.starts_immediately();
         let port = Arc::clone(&self.port);
         let on_user_started = self.host.on_user_started.clone();
@@ -691,18 +691,20 @@ impl DownloadView {
                 ok: !report.failed(),
                 message: String::new(),
             };
-            this.update(cx, |this, cx| {
-                if let Some(id) = job {
-                    this.imports.retain(|import| import.id != id);
-                }
-                let notice = report.notice(this.translator.read(cx));
-                this.last_error = report
-                    .failed()
-                    .then(|| SharedString::from(notice.message.clone()));
-                cx.notify();
-                notice
-            })
-            .unwrap_or(fallback)
+            let notice = this
+                .update(cx, |this, cx| {
+                    if let Some(id) = job {
+                        this.imports.retain(|import| import.id != id);
+                    }
+                    let notice = report.notice(this.translator.read(cx));
+                    this.last_error = report
+                        .failed()
+                        .then(|| SharedString::from(notice.message.clone()));
+                    cx.notify();
+                    notice
+                })
+                .unwrap_or(fallback);
+            (notice, report.into_failed_remote_captures())
         })
     }
 

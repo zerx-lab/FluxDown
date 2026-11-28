@@ -5,7 +5,7 @@ import { useAgent } from '../../../lib/rpc'
 import type { PendingCaptureDto } from '../../../lib/rpc'
 import { GroupDetailDialog } from './GroupDetailDialog'
 import { QueueManagerDialog } from './QueueManagerDialog'
-import { capturesShown, openNewDownload, useDialogsState } from './store'
+import { captureGroupOf, capturesShown, openNewDownload, useDialogsState } from './store'
 import { AddWebSeedDialog, ChangeSegmentsDialog, ChangeUrlDialog, MoveStorageDialog, RenameDialog, TaskLimitsDialog } from './TaskEditDialogs'
 import { TaskPropertiesDialog } from './TaskPropertiesDialog'
 
@@ -16,10 +16,12 @@ export function DownloadDialogsHost() {
   const captures = useAgent((snapshot) => snapshot.pendingCaptures, EMPTY_CAPTURES)
 
   // 外部捕获（浏览器扩展 / 协议关联）到达：拉起新建下载表单并把捕获并入链接行。
-  const hasFreshCapture = captures.some((capture) => !capturesShown.has(capture.transactionId))
+  const firstCapture = captures.find((capture) => !capturesShown.has(capture.transactionId))
   useEffect(() => {
-    if (hasFreshCapture && state.newDownload === null) openNewDownload()
-  }, [hasFreshCapture, state.newDownload])
+    if (firstCapture && state.newDownload === null) {
+      openNewDownload({ captureGroup: captureGroupOf(firstCapture), target: firstCapture.suggestedTarget })
+    }
+  }, [firstCapture, state.newDownload])
 
   return (
     <>

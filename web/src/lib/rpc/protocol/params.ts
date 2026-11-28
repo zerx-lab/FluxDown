@@ -640,17 +640,19 @@ export interface CaptureSubmitParams {
 }
 
 /**
- * `agent.capture.submit` 结果三选一：
- * `{ taskIds }` 直接建成（批量中途失败则整个调用报错，已建成的任务仍保留）、
- * `{ transactionIds }` 已排入确认队列、`{ ignored: true }` 关联被关闭而忽略。
+ * `agent.capture.submit` 结果：直接创建返回 `{ taskIds }`，排入确认队列返回
+ * `{ transactionIds }`，后缀设备规则可在同一批返回两者及 `dispatchedCount`；
+ * 系统关联关闭时返回 `{ ignored: true }`。
  */
 export type CaptureSubmitResult =
   | { taskIds: (string | null)[] }
   | { transactionIds: string[] }
+  | { taskIds: (string | null)[]; transactionIds: string[]; dispatchedCount: number }
   | { ignored: true };
 
 export interface CaptureResolveParams {
   transactionId: string;
+  remoteTarget?: string;
   accepted: boolean;
   /** 显式指定时，即使目录等于捕获表单的预填分类目录也禁止分类路由。 */
   disableCategoryRoute?: boolean;

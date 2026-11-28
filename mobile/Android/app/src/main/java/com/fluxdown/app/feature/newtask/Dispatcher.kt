@@ -65,7 +65,7 @@ internal object Dispatcher {
         return DispatchSummary(successes, failed.size, firstError, failed)
     }
 
-    private suspend fun dispatch(item: DispatchItem, target: DispatchTarget, saveDir: String?, session: HostSession) {
+    suspend fun dispatch(item: DispatchItem, target: DispatchTarget, saveDir: String?, session: HostSession) {
         val url = item.entry.url
         // 独立直连条目 / 挂接且直连在线的云条目走局域网（一次性投递），其余走云
         val fingerprint = target.linkRouteFingerprint

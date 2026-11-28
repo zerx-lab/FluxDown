@@ -169,7 +169,8 @@ fn is_non_idempotent_submission(command: &DownloadsCommand) -> bool {
             | DownloadsCommand::SubmitTorrentFile { .. }
             | DownloadsCommand::SeedLocal(_)
             | DownloadsCommand::Redownload(..)
-    ) || matches!(command, DownloadsCommand::CaptureResolve(params) if params.accepted)
+    ) || matches!(command, DownloadsCommand::CaptureResolve(params)
+        if params.accepted && params.remote_target.is_none())
 }
 
 fn queue_fields(fields: &fluxdown_ui_downloads::QueueFields) -> Value {

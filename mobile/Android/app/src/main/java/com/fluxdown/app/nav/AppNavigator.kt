@@ -36,12 +36,13 @@ sealed interface SheetRoute {
     /**
      * N1：[prefill] = 预填链接（粘贴 / 扫码）；[external] = 外部唤起（浏览器外部下载器 / 分享 / 协议链接）的
      * 请求，带 Cookie / 来源页 / 请求头 / 建议文件名；[targetId] = 「下载到」预选的 [com.fluxdown.core.protocol.DispatchTarget.id]
-     * （设备页「下发」；null = 当前主机）。Sheet 打开期间再次打开 = 追加到当前表单。
+     * （设备页「下发」；null = 当前主机）。同一外部批次分目标依次打开，各组保留自己的下发失败原因。
      */
     data class NewDownload(
         val prefill: String = "",
-        val external: ExternalDownload? = null,
+        val external: List<ExternalDownload> = emptyList(),
         val targetId: String? = null,
+        val captureFailure: String? = null,
     ) : SheetRoute
     /** R3：新建（[sourceId] = null，[prefillUrl] 预填地址）/ 编辑订阅。 */
     data class RssEditor(val sourceId: String? = null, val prefillUrl: String = "") : SheetRoute

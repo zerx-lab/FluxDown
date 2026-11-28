@@ -1417,6 +1417,13 @@ impl GatewayService {
                 tracing::debug!(error = %error, "rejected capture resolve params");
                 RpcErrorData::new(ApplicationErrorCode::InvalidArgument, false)
             })?;
+        if let Some(target) = params.remote_target.filter(|_| params.accepted) {
+            return capture_value(
+                self.capture
+                    .resolve_remote(&params.transaction_id, target, params.request)
+                    .await,
+            );
+        }
         capture_value(
             self.capture
                 .resolve(

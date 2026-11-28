@@ -128,8 +128,8 @@ pub struct SettingsStore {
     cloud_log: CloudDeliveryLog,
     /// 最近一次云端推送上报开关 / 隐私设置失败的原因。
     cloud_action_error: Option<RpcErrorData>,
-    /// 已配对局域网设备数：侧栏设备区「未设置时自动显示」的依据。
-    linked_devices: usize,
+    /// 已配对局域网设备，用于捕获设备规则的目标选择与侧栏设备区默认可见性。
+    linked_devices: Vec<fluxdown_protocol::LinkDeviceInfo>,
     daemon_connected: bool,
     stale: bool,
 
@@ -201,7 +201,7 @@ impl SettingsStore {
             cloud_notify: fluxdown_protocol::CloudNotifyStateDto::default(),
             cloud_log: CloudDeliveryLog::default(),
             cloud_action_error: None,
-            linked_devices: 0,
+            linked_devices: Vec::new(),
             daemon_connected: false,
             stale: true,
             pending_daemon: BTreeMap::new(),
@@ -253,7 +253,7 @@ impl SettingsStore {
         self.session.clone_from(&snapshot.session);
         self.cloud_devices.clone_from(&snapshot.cloud_devices);
         self.cloud_notify.clone_from(&snapshot.cloud_notify);
-        self.linked_devices = snapshot.linked_devices.len();
+        self.linked_devices.clone_from(&snapshot.linked_devices);
         self.daemon_connected = snapshot.daemon_connected;
         self.overlay_local_edits();
         self.last_error = None;
@@ -341,7 +341,7 @@ impl SettingsStore {
             }
             AgentEvent::CloudDevicesChanged(devices) => self.cloud_devices.clone_from(devices),
             AgentEvent::CloudNotifyChanged(state) => self.cloud_notify.clone_from(state),
-            AgentEvent::LinkedDevicesChanged(devices) => self.linked_devices = devices.len(),
+            AgentEvent::LinkedDevicesChanged(devices) => self.linked_devices.clone_from(devices),
             AgentEvent::DaemonSnapshotReplaced(snapshot) => {
                 self.daemon.clone_from(&snapshot.config);
                 self.refresh_daemon_baselines();
@@ -528,8 +528,19 @@ impl SettingsStore {
     /// 是否存在「其他设备」（云账号的其他设备或已配对的局域网设备）。
     #[must_use]
     pub fn has_other_devices(&self) -> bool {
-        self.cloud_devices.iter().any(|device| !device.is_current) || self.linked_devices > 0
+        self.cloud_devices.iter().any(|device| !device.is_current)
+            || !self.linked_devices.is_empty()
     }
+
+    pub(crate) fn capture_devices(
+        &self,
+    ) -> (
+        &[fluxdown_protocol::CloudDevice],
+        &[fluxdown_protocol::LinkDeviceInfo],
+    ) {
+        (&self.cloud_devices, &self.linked_devices)
+    }
+
     #[must_use]
     pub fn session(&self) -> Option<&fluxdown_protocol::AgentSessionDto> {
         self.session.as_ref()

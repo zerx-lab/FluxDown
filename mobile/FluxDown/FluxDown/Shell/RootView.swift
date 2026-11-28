@@ -19,15 +19,22 @@ struct RootView: View {
     @State private var previousTab: AppTab = .downloads
     /// 最近一次呈现的 Sheet（`onDismiss` 时判断是否为被划走的选择请求）。
     @State private var presented: SheetRoute?
+    @State private var externalRequests: [ExternalDownload] = []
+    @State private var externalConfirmations: [ExternalDownloadConfirmation] = []
+    @State private var processingExternalRequests = false
+    @State private var captureSections = AgentSections()
 
     var body: some View {
-        if let actions {
-            shell
-                .environment(actions)
-                .taskActionDialogs(actions)
-        } else {
-            Color.clear.onAppear { actions = TaskActions(container: container) }
+        Group {
+            if let actions {
+                shell
+                    .environment(actions)
+                    .taskActionDialogs(actions)
+            } else {
+                Color.clear.onAppear { actions = TaskActions(container: container) }
+            }
         }
+        .onOpenURL(perform: handle)
     }
 
     private var shell: some View {
@@ -44,7 +51,6 @@ struct RootView: View {
             #if FULL_FLAVOR
             .pluginAutoDisabledToasts()
             #endif
-            .onOpenURL(perform: handle)
             .onChange(of: router.tab) { _, new in
                 if new == .newTask {
                     router.tab = previousTab
@@ -53,8 +59,7 @@ struct RootView: View {
                     previousTab = new
                 }
             }
-            .onChange(of: state.selections.presentable.map(\.requestId), initial: true) { presentNextSelection() }
-            .onChange(of: router.sheet == nil) { presentNextSelection() }
+            .onChange(of: state.selections.presentable.map(\.requestId), initial: true) { presentNextSheet() }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active { container.rescanOnForeground() }
             }
@@ -104,6 +109,8 @@ struct RootView: View {
     private func sheetContent(_ route: SheetRoute) -> some View {
         switch route {
         case let .newDownload(prefill): NewDownloadSheet(prefill: prefill)
+        case let .externalDownload(confirmation):
+            NewDownloadSheet(prefill: confirmation.request.url, confirmation: confirmation)
         case .activity: ActivitySheet()
         case .addHost: AddHostSheet()
         case let .moveToQueue(ids): MoveToQueueSheet(taskIds: ids)
@@ -120,10 +127,15 @@ struct RootView: View {
         }
     }
 
-    /// 选择请求（X1–X3）排队：无其他 Sheet 时呈现第一个未被用户划走、且本构建可处理的请求。
-    private func presentNextSelection() {
+    /// Keep a capture awaiting confirmation separate from any open form (and from captures for other devices).
+    private func presentNextSheet() {
         let router = container.router
-        guard router.sheet == nil else { return }
+        guard router.sheet == nil, presented == nil else { return }
+        if !externalConfirmations.isEmpty {
+            router.tab = .downloads
+            router.sheet = .externalDownload(externalConfirmations.removeFirst())
+            return
+        }
         let pending = container.store.state.selections.presentable
         router.dismissedSelections.formIntersection(pending.map(\.requestId))
         if let next = pending.first(where: { !router.dismissedSelections.contains($0.requestId) }) {
@@ -133,9 +145,11 @@ struct RootView: View {
 
     /// 选择请求 Sheet 被划走而主机仍在等待：不再自动弹出（下载页横幅可重新打开；到期按默认处理）。
     private func sheetDismissed() {
-        defer { presented = nil }
+        let dismissed = presented
+        presented = nil
+        defer { presentNextSheet() }
         let pending = container.store.state.selections
-        switch presented {
+        switch dismissed {
         case let .selection(requestId)?:
             guard pending.contains(where: { $0.requestId == requestId }) else { return }
             container.router.dismissedSelections.insert(requestId)
@@ -147,8 +161,7 @@ struct RootView: View {
         }
     }
 
-    /// N4：`fluxdown://…?url=` 唤起 → 预填「新建下载」（full 另接 `magnet:` / `ed2k://`）；
-    /// N3：「文件」App 里「用 FluxDown 打开」文件 → full 直接导入 `.torrent`，store 与不支持的文件一律给出提示。
+    /// External links use device rules; files keep the system torrent import path.
     private func handle(_ url: URL) {
         if url.isFileURL {
             container.router.tab = .downloads
@@ -160,14 +173,59 @@ struct RootView: View {
             #endif
             return
         }
-        var link = url.absoluteString
-        if url.scheme?.lowercased() == "fluxdown",
-           let item = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "url" }),
-           let value = item.value, !value.isEmpty {
-            link = value
+        // Keep an accepted system download on the current host while routing or waiting for its sheet.
+        container.supersedeHostRestore()
+        externalRequests += ExternalDownload.capture(from: url)
+        guard !processingExternalRequests else { return }
+        processingExternalRequests = true
+        Task { await processExternalRequests() }
+    }
+
+    /// A cold launch must not read the empty placeholder snapshot as the user's saved rules.
+    private func processExternalRequests() async {
+        defer { processingExternalRequests = false }
+        let deadline = ContinuousClock.now + .seconds(8)
+        while container.store.state.connection == .connecting, ContinuousClock.now < deadline {
+            do { try await Task.sleep(for: .milliseconds(50)) } catch { break }
         }
-        container.router.tab = .downloads
-        container.router.openNewDownload(prefill: link)
+        while !externalRequests.isEmpty {
+            let batch = externalRequests
+            externalRequests = []
+            for request in batch {
+                if let confirmation = await routeExternal(request) {
+                    externalConfirmations.append(confirmation)
+                    presentNextSheet()
+                }
+            }
+        }
+    }
+
+    private func routeExternal(_ request: ExternalDownload) async -> ExternalDownloadConfirmation? {
+        let state = container.store.state
+        let rules = CaptureDeviceRule.parse(state.preferences.string(CaptureDeviceRule.preferenceKey, default: ""))
+        let id = CaptureDeviceRule.match(url: request.url, fileName: request.fileName, rules: rules)
+        var confirmation = ExternalDownloadConfirmation(request: request, targetId: id)
+        guard let id, state.preferences.bool("download.silent_download", default: false) else { return confirmation }
+        guard request.canDispatch else { return confirmation }
+        guard !state.isReadOnly,
+              let target = DeviceRules.resolveTarget(id: id, in: state.downloadDispatchTargets(sections: captureSections)) else {
+            confirmation.failure = L("captureRoutingTargetUnavailable")
+            return confirmation
+        }
+        if !target.isCloud, target.isOffline {
+            confirmation.failure = L("captureRoutingDispatchFailed") + "\n" + L("errReasonPeerOffline")
+            return confirmation
+        }
+        let item = DispatchItem(
+            entry: UrlEntry(url: request.url, fileName: request.fileName),
+            fileName: request.fileName.isEmpty ? nil : request.fileName
+        )
+        let result = await Dispatcher.run([item], to: target, saveDir: nil, agent: container.agent)
+        if let details = Dispatcher.announce(result, target: target, toasts: container.toasts) {
+            confirmation.failure = L("captureRoutingDispatchFailed") + "\n" + details
+            return confirmation
+        }
+        return nil
     }
 }
 
