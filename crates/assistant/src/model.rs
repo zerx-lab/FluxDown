@@ -20,6 +20,9 @@ const ARGUMENT_SUMMARY_CHARS: usize = 120;
 const OUTPUT_PREVIEW_CHARS: usize = 400;
 /// 时间戳比较只取到秒（`YYYY-MM-DDTHH:MM:SS`），避免小数位数不同导致的字典序误判。
 const TIMESTAMP_SECOND_CHARS: usize = 19;
+/// 服务端「开通会员」工具名：执行 / 历史里出现它就在该轮回答下显示开通会员卡片，条目本身不进
+/// 「过程」。与 FluxCloud `ai::catalog::OFFER_MEMBERSHIP` 保持一致。
+pub(crate) const MEMBERSHIP_OFFER_TOOL: &str = "offer_membership";
 
 // ───────────────────────── 时间线 ─────────────────────────
 
@@ -54,6 +57,8 @@ pub(crate) struct Turn {
     pub(crate) steps: Vec<Block>,
     /// 最终回答（Markdown）；尚未产出时为 `None`。
     pub(crate) answer: Option<String>,
+    /// 本轮是否显示开通会员卡片：有成功的 `offer_membership` 工具调用（同轮多次也只一张）。
+    pub(crate) membership_offer: bool,
     pub(crate) issues: Vec<AssistantIssueDto>,
     pub(crate) live: Option<Live>,
     /// 云端历史轮次的起始时间（RFC 3339），用于把问题单挂到对应轮次；实时轮次为 `None`。
@@ -113,13 +118,26 @@ pub(crate) fn steps_open(turn: &Turn, user_choice: Option<bool>, now_ms: i64) ->
     user_choice.unwrap_or_else(|| turn.run_active() && turn.answer.is_none())
 }
 
-fn split_blocks(blocks: Vec<Block>) -> (Vec<Block>, Option<String>, Vec<AssistantIssueDto>) {
+/// 一轮条目拆分后的结果。
+struct SplitBlocks {
+    steps: Vec<Block>,
+    answer: Option<String>,
+    issues: Vec<AssistantIssueDto>,
+    membership_offer: bool,
+}
+
+fn split_blocks(blocks: Vec<Block>) -> SplitBlocks {
     let mut issues = Vec::new();
     let mut rest = Vec::new();
+    let mut membership_offer = false;
     for block in blocks {
         match block {
             Block::Issue(issue) => issues.push(issue),
             Block::Text(text) if text.trim().is_empty() => {}
+            // 开通会员工具只以卡片呈现：不论状态都不进过程，成功才出卡片。
+            Block::Tool(call) if call.name == MEMBERSHIP_OFFER_TOOL => {
+                membership_offer |= call.status == AssistantToolStatus::Succeeded;
+            }
             other => rest.push(other),
         }
     }
@@ -134,7 +152,12 @@ fn split_blocks(blocks: Vec<Block>) -> (Vec<Block>, Option<String>, Vec<Assistan
         },
         _ => None,
     };
-    (rest, answer, issues)
+    SplitBlocks {
+        steps: rest,
+        answer,
+        issues,
+        membership_offer,
+    }
 }
 
 fn live_turn(run: &AssistantRunDto, overrides: &HashMap<String, AssistantIssueDto>) -> Turn {
@@ -149,7 +172,12 @@ fn live_turn(run: &AssistantRunDto, overrides: &HashMap<String, AssistantIssueDt
             }
         })
         .collect();
-    let (steps, answer, issues) = split_blocks(blocks);
+    let SplitBlocks {
+        steps,
+        answer,
+        issues,
+        membership_offer,
+    } = split_blocks(blocks);
     let key = run.run_id.as_ref().map_or_else(
         || format!("live:{}", run.started_at_unix_ms),
         |id| format!("run:{id}"),
@@ -168,6 +196,7 @@ fn live_turn(run: &AssistantRunDto, overrides: &HashMap<String, AssistantIssueDt
         steps,
         answer,
         issues,
+        membership_offer,
         live: Some(Live {
             status: run.status,
             error: run.error.clone().filter(|error| !error.is_empty()),
@@ -267,7 +296,12 @@ impl HistoryTurn {
     }
 
     fn into_turn(self) -> Turn {
-        let (steps, answer, issues) = split_blocks(self.blocks);
+        let SplitBlocks {
+            steps,
+            answer,
+            issues,
+            membership_offer,
+        } = split_blocks(self.blocks);
         let (message_id, rating) = self
             .answer_message
             .map_or((None, None), |(id, rating)| (Some(id), rating));
@@ -280,6 +314,7 @@ impl HistoryTurn {
             steps,
             answer,
             issues,
+            membership_offer,
             live: None,
             started_at: Some(self.started_at),
         }
@@ -408,6 +443,7 @@ fn place_issues(
                 steps: Vec::new(),
                 answer: None,
                 issues: vec![issue],
+                membership_offer: false,
                 live: None,
                 started_at: None,
             }),
@@ -801,6 +837,10 @@ pub(crate) fn turn_transcript(turn: &Turn, now_ms: i64, t: impl Fn(&str) -> Stri
     }
     if let Some(answer) = &turn.answer {
         push_paragraph(&mut out, answer.trim());
+    }
+    if turn.membership_offer {
+        push_paragraph(&mut out, &format!("### {}", t("assistantMembershipTitle")));
+        push_paragraph(&mut out, &t("assistantMembershipBody"));
     }
     if let Some(live) = &turn.live {
         match live.status {
@@ -1216,6 +1256,156 @@ mod tests {
         assert_eq!(turns[0].steps.len(), 2);
         assert_eq!(turns[0].answer.as_deref(), Some("final"));
         assert_eq!(turns[0].issues.len(), 1);
+    }
+
+    fn offer_call(call_id: &str, status: AssistantToolStatus) -> AssistantRunItemDto {
+        AssistantRunItemDto::Tool {
+            call: AssistantToolCallDto {
+                call_id: call_id.to_owned(),
+                name: MEMBERSHIP_OFFER_TOOL.to_owned(),
+                kind: "server".to_owned(),
+                status,
+                ..AssistantToolCallDto::default()
+            },
+        }
+    }
+
+    fn offer_message(id: &str, seq: i64, role: &str, is_error: bool) -> AssistantMessageDto {
+        AssistantMessageDto {
+            tool_kind: Some("server".to_owned()),
+            ..tool_message(
+                id,
+                "r1",
+                seq,
+                role,
+                "offer-r1",
+                MEMBERSHIP_OFFER_TOOL,
+                is_error,
+            )
+        }
+    }
+
+    #[test]
+    fn live_membership_offer_needs_a_succeeded_call_and_never_enters_steps() {
+        let turn_of = |status: AssistantToolStatus| {
+            let runs = [run(
+                "s1",
+                Some("r1"),
+                AssistantRunStatus::Running,
+                vec![text("intro"), offer_call("offer-r1", status)],
+            )];
+            build_timeline("s1", &[], &[], &runs, &none()).remove(0)
+        };
+        let succeeded = turn_of(AssistantToolStatus::Succeeded);
+        assert!(succeeded.membership_offer);
+        assert_eq!(succeeded.tool_count(), 0);
+        // 移除工具条目后，最后一个 Text 仍是回答。
+        assert_eq!(succeeded.answer.as_deref(), Some("intro"));
+        assert!(succeeded.steps.is_empty());
+        for status in [AssistantToolStatus::Running, AssistantToolStatus::Failed] {
+            let turn = turn_of(status);
+            assert!(!turn.membership_offer);
+            assert_eq!(turn.tool_count(), 0);
+            assert!(turn.steps.is_empty());
+            assert_eq!(turn.answer.as_deref(), Some("intro"));
+        }
+    }
+
+    #[test]
+    fn live_membership_offer_keeps_other_steps_and_answer_after_it() {
+        let runs = [run(
+            "s1",
+            Some("r1"),
+            AssistantRunStatus::Completed,
+            vec![
+                text("let me look"),
+                AssistantRunItemDto::Tool {
+                    call: pending_call(None),
+                },
+                offer_call("offer-r1", AssistantToolStatus::Succeeded),
+                text("final"),
+            ],
+        )];
+        let turns = build_timeline("s1", &[], &[], &runs, &none());
+        assert!(turns[0].membership_offer);
+        // 过程只剩前面的文本与另一个工具；回答是最后的文本。
+        assert_eq!(turns[0].steps.len(), 2);
+        assert_eq!(turns[0].tool_count(), 1);
+        assert_eq!(turns[0].answer.as_deref(), Some("final"));
+    }
+
+    #[test]
+    fn membership_offer_is_one_card_per_turn_and_any_success_counts() {
+        let runs = [run(
+            "s1",
+            Some("r1"),
+            AssistantRunStatus::Completed,
+            vec![
+                offer_call("c1", AssistantToolStatus::Failed),
+                offer_call("c2", AssistantToolStatus::Succeeded),
+                offer_call("c3", AssistantToolStatus::Succeeded),
+                text("final"),
+            ],
+        )];
+        let turns = build_timeline("s1", &[], &[], &runs, &none());
+        assert_eq!(turns.len(), 1);
+        assert!(turns[0].membership_offer);
+        assert_eq!(turns[0].tool_count(), 0);
+        assert!(turns[0].steps.is_empty());
+        assert_eq!(turns[0].answer.as_deref(), Some("final"));
+    }
+
+    #[test]
+    fn history_membership_offer_follows_the_tool_result() {
+        let history = |is_error: bool| {
+            [
+                message("m1", Some("r1"), 1, "user", "how to upgrade?"),
+                offer_message("m2", 2, "tool_call", false),
+                offer_message("m3", 3, "tool_result", is_error),
+                message("m4", Some("r1"), 4, "assistant", "here you go"),
+            ]
+        };
+        let ok = build_timeline("s1", &history(false), &[], &[], &none());
+        assert!(ok[0].membership_offer);
+        assert_eq!(ok[0].tool_count(), 0);
+        assert!(ok[0].steps.is_empty());
+        assert_eq!(ok[0].answer.as_deref(), Some("here you go"));
+
+        let failed = build_timeline("s1", &history(true), &[], &[], &none());
+        assert!(!failed[0].membership_offer);
+        assert_eq!(failed[0].tool_count(), 0);
+        assert!(failed[0].steps.is_empty());
+        assert_eq!(failed[0].answer.as_deref(), Some("here you go"));
+    }
+
+    #[test]
+    fn history_membership_offer_without_result_shows_no_card() {
+        let history = [
+            message("m1", Some("r1"), 1, "user", "q"),
+            offer_message("m2", 2, "tool_call", false),
+        ];
+        let turns = build_timeline("s1", &history, &[], &[], &none());
+        assert!(!turns[0].membership_offer);
+        assert!(turns[0].steps.is_empty());
+    }
+
+    #[test]
+    fn transcript_mentions_the_membership_card_after_the_answer() {
+        let runs = [run(
+            "s1",
+            Some("r1"),
+            AssistantRunStatus::Completed,
+            vec![
+                offer_call("offer-r1", AssistantToolStatus::Succeeded),
+                text("final"),
+            ],
+        )];
+        let turns = build_timeline("s1", &[], &[], &runs, &none());
+        let out = turn_transcript(&turns[0], 0, |key| format!("<{key}>"));
+        assert!(!out.contains(MEMBERSHIP_OFFER_TOOL));
+        let answer_at = out.find("final");
+        let card_at = out.find("### <assistantMembershipTitle>");
+        assert!(answer_at < card_at && card_at.is_some());
     }
 
     #[test]

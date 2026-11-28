@@ -118,6 +118,11 @@ export default {
     openGithub: (n: number) => `View #${n} on GitHub`,
     reviewNote: "Reviewer note",
   },
+  membership: {
+    title: "Upgrade membership",
+    body: "Pick a plan and scan the QR code to pay. It takes effect as soon as payment completes.",
+    plansLabel: "Plans on sale",
+  },
   widget: {
     launcher: "AI Assistant",
     launcherHint: "Questions? Ask AI",

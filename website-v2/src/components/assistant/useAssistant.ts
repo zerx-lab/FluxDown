@@ -32,6 +32,8 @@ export interface RunNotice {
   phase: "stopped" | "failed" | "interrupted";
   reason: AiFailReason | null;
   segments: Segment[];
+  /** 这次执行里 `offer_membership` 已成功：提示之上仍显示开通会员卡片。 */
+  membershipOffer: boolean;
 }
 
 /** 本地已知的回答评价：消息 ID → 评价（`null` = 已清除）。 */
@@ -235,7 +237,7 @@ export function useAssistant(lang: Lang, guard: Guard, initialConfig: AiConfig, 
         const [loaded] = await Promise.all([loadDetail(sessionId, true), loadSessions(), refreshConfig()]);
         if (loaded) setLive((current) => (current === finished ? null : current));
         if (finished.phase !== "done" && finished.phase !== "streaming") {
-          setNotice({ sessionId, phase: finished.phase, reason: finished.failReason, segments: finished.segments });
+          setNotice({ sessionId, phase: finished.phase, reason: finished.failReason, segments: finished.segments, membershipOffer: finished.membershipOffer });
         }
         return true;
       } finally {

@@ -11,6 +11,7 @@ import type { ComposerState } from './composer'
 import type { AssistantController, ViewState } from './controller'
 import { IssueCard } from './IssueCard'
 import { Markdown } from './MarkdownView'
+import { MembershipCard } from './MembershipCard'
 import { buildTimeline, pendingElsewhere, runActive } from './model'
 import type { Turn } from './model'
 import { Steps } from './Steps'
@@ -100,6 +101,7 @@ function TurnView({ turn, saved, view, controller, now }: { turn: Turn; saved: b
           </div>
         ) : null}
         {live?.status === 'canceled' ? <div className="text-xs text-text-tertiary">{t('assistantStopped')}</div> : null}
+        {turn.membershipOffer ? <MembershipCard disabled={view.env.stale} /> : null}
         {turn.issues.map((issue) => (
           <IssueCard key={issue.id} issue={issue} view={view} controller={controller} />
         ))}

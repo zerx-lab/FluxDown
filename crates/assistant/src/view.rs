@@ -52,6 +52,8 @@ pub type WindowAction = Rc<dyn Fn(&mut Window, &mut App)>;
 pub struct AssistantHost {
     /// 打开账户页（登录、套餐都在那里）。
     pub open_account: WindowAction,
+    /// 打开套餐购买对话框（选套餐 → 扫码 → 成功）。
+    pub open_plan_purchase: WindowAction,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

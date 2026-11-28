@@ -209,7 +209,8 @@ export interface AiMessage {
   id: string;
   runId: string | null;
   seq: number;
-  role: "user" | "assistant";
+  /** `membership_offer` 由官网 BFF 合成（上游 `offer_membership` 成功的工具结果），无文本，仅表示该轮（同 `runId`）要显示开通会员卡片。 */
+  role: "user" | "assistant" | "membership_offer";
   content: string;
   /** 提问附带的图片 id（只有用户消息可能非空），经 `/api/account/ai/attachments/<id>` 取。 */
   images: string[];

@@ -124,7 +124,7 @@ struct PlanPurchaseDialog {
     _input_subscription: Subscription,
 }
 
-pub(crate) fn open(host: &Entity<AccountHost>, window: &mut Window, cx: &mut App) {
+pub fn open(host: &Entity<AccountHost>, window: &mut Window, cx: &mut App) {
     if host.read(cx).controller.session().is_none() {
         return;
     }

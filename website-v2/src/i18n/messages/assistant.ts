@@ -119,6 +119,11 @@ export const assistant = defineMessages("assistant", {
       openGithub: (n: number) => `View #${n} on GitHub`,
       reviewNote: "Reviewer note",
     },
+    membership: {
+      title: "Upgrade membership",
+      body: "Pick a plan and scan the QR code to pay. It takes effect as soon as payment completes.",
+      plansLabel: "Plans on sale",
+    },
     widget: {
       launcher: "AI Assistant",
       launcherHint: "Questions? Ask AI",
@@ -252,6 +257,11 @@ export const assistant = defineMessages("assistant", {
       discard: "放弃",
       openGithub: (n: number) => `在 GitHub 查看 #${n}`,
       reviewNote: "审核备注",
+    },
+    membership: {
+      title: "开通会员",
+      body: "选择套餐并扫码支付，支付完成后立即生效。",
+      plansLabel: "在售套餐",
     },
     widget: {
       launcher: "AI 助手",

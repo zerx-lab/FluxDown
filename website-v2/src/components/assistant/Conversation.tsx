@@ -10,6 +10,7 @@ import ImageViewer, { type ViewerImage } from "./ImageViewer";
 import IssueCard from "./IssueCard";
 import { toolLabel, type LiveRun, type Segment } from "./live";
 import Markdown from "./Markdown";
+import MembershipCard from "./MembershipCard";
 import { ratingOf, type Ratings, type RunNotice } from "./useAssistant";
 
 interface Props {
@@ -264,6 +265,18 @@ export default function Conversation({ lang, t, guard, messages, issues, live, n
   const shownIssues = live ? [...issues.filter((i) => !live.issues.some((l) => l.id === i.id)), ...live.issues] : issues;
   const liveText = live?.segments.some((s) => s.kind === "text") ?? false;
 
+  // 开通会员卡片：历史里由 `membership_offer` 消息标出所属执行（runId），卡片挂在该轮回答之后；同一轮只一张。
+  // 该轮没有落库的回答时（理论上不会出现）就地显示。
+  const offerRuns = new Set(messages.flatMap((m) => (m.role === "membership_offer" && m.runId !== null ? [m.runId] : [])));
+  const answeredRuns = new Set(messages.flatMap((m) => (m.role === "assistant" && m.runId !== null ? [m.runId] : [])));
+  const offerShown = new Set<string>();
+  const takeOffer = (runId: string | null): boolean => {
+    if (runId === null || !offerRuns.has(runId) || offerShown.has(runId)) return false;
+    offerShown.add(runId);
+    return true;
+  };
+  const card = <MembershipCard lang={lang} t={t} guard={guard} />;
+
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
     <div
@@ -279,16 +292,25 @@ export default function Conversation({ lang, t, guard, messages, issues, live, n
       aria-live="off"
     >
       <div ref={content} className="mx-auto flex max-w-[760px] flex-col gap-6">
-        {messages.map((message) =>
-          message.role === "user" ? (
-            <UserBubble key={message.id} text={message.content} images={message.images.map(attachmentUrl)} t={t} />
-          ) : (
+        {messages.map((message) => {
+          if (message.role === "user") {
+            return <UserBubble key={message.id} text={message.content} images={message.images.map(attachmentUrl)} t={t} />;
+          }
+          if (message.role === "membership_offer") {
+            return message.runId !== null && !answeredRuns.has(message.runId) && takeOffer(message.runId) ? (
+              <AssistantTurn key={message.id} t={t}>
+                {card}
+              </AssistantTurn>
+            ) : null;
+          }
+          return (
             <AssistantTurn key={message.id} t={t}>
               <Markdown text={message.content} labels={t.chat} />
               <RateBar lang={lang} t={t} messageId={message.id} rating={ratingOf(ratings, message.id, message.rating)} onRate={onRate} />
+              {takeOffer(message.runId) && card}
             </AssistantTurn>
-          ),
-        )}
+          );
+        })}
         {live && (
           <>
             <UserBubble text={live.question} images={live.images} t={t} />
@@ -304,16 +326,21 @@ export default function Conversation({ lang, t, guard, messages, issues, live, n
               {live.phase === "done" && live.messageId !== null && (
                 <RateBar lang={lang} t={t} messageId={live.messageId} rating={ratingOf(ratings, live.messageId, null)} onRate={onRate} />
               )}
+              {/* 回答结束后才出现：流式输出期间不让购买弹窗开着被后续重渲染 / 详情刷新打断 */}
+              {live.membershipOffer && live.phase !== "streaming" && card}
             </AssistantTurn>
           </>
         )}
-        {!live && notice && notice.segments.length > 0 && (
+        {!live && notice && (notice.segments.length > 0 || notice.membershipOffer) && (
           <AssistantTurn t={t}>
             <Segments segments={notice.segments} t={t} />
             <Notice text={noticeText(notice.phase, notice.reason, t)} />
+            {notice.membershipOffer && card}
           </AssistantTurn>
         )}
-        {!live && notice && notice.segments.length === 0 && <Notice text={noticeText(notice.phase, notice.reason, t)} />}
+        {!live && notice && notice.segments.length === 0 && !notice.membershipOffer && (
+          <Notice text={noticeText(notice.phase, notice.reason, t)} />
+        )}
         {shownIssues.map((issue) => (
           <IssueCard key={issue.id} issue={issue} lang={lang} t={t} guard={guard} onChange={onIssueChange} />
         ))}

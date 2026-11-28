@@ -32,6 +32,7 @@ pub use controller::AccountController;
 pub use dialogs::add_device::open as open_add_device;
 pub use dialogs::device::{confirm_unpair_by_fingerprint, open_link_rename_by_fingerprint};
 pub use dialogs::pairing_prompt::open as open_pairing_prompt;
+pub use dialogs::plan_purchase::open as open_plan_purchase;
 pub use host::{AccountHost, AccountHostEvent};
 pub use rail::AccountRailButton;
 pub use referral::ReferralView;

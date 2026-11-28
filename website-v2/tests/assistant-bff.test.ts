@@ -316,3 +316,29 @@ test("markdown: model output can't produce unsafe links and an unclosed fence ru
     },
   ]);
 });
+
+test("sessions: detail turns a successful offer_membership result into a membership_offer message", async () => {
+  const offer = (id: string, seq: number, extra: Record<string, unknown>) => ({
+    id, runId: "r1", seq, role: "tool_result", content: "plans: secret summary", images: [], createdAt: "t", toolName: "offer_membership", isError: false, ...extra,
+  });
+  reply = () =>
+    Response.json({
+      session: { id: SESSION_ID, channel: "website", kind: "ask", title: "Q", messageCount: 6, rating: null, active: false, createdAt: "t", updatedAt: "t" },
+      messages: [
+        { id: "m1", runId: "r1", seq: 1, role: "user", content: "Q", images: [], createdAt: "t", toolName: null },
+        { id: "m2", runId: "r1", seq: 2, role: "tool_call", content: "{}", images: [], createdAt: "t", toolName: "offer_membership" },
+        offer("m3", 3, {}),
+        offer("m4", 4, { isError: true }),
+        offer("m5", 5, { toolName: "source_read" }),
+        offer("m6", 6, { runId: null }),
+        { id: "m7", runId: "r1", seq: 7, role: "assistant", content: "A", images: [], createdAt: "t", toolName: null },
+      ],
+      issues: [],
+    });
+  const detail = (await (await call(`ai/sessions/${SESSION_ID}`)).json()) as { messages: unknown[] };
+  expect(detail.messages).toEqual([
+    { id: "m1", runId: "r1", seq: 1, role: "user", content: "Q", createdAt: "t", images: [] },
+    { id: "m3", runId: "r1", seq: 3, role: "membership_offer", content: "", createdAt: "t", images: [] },
+    { id: "m7", runId: "r1", seq: 7, role: "assistant", content: "A", createdAt: "t", images: [] },
+  ]);
+});

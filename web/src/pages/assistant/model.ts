@@ -26,6 +26,8 @@ const OUTPUT_PREVIEW_CHARS = 400
 const TIMESTAMP_SECOND_CHARS = 19
 /** 会话日期取 `updatedAt` 的前 10 位（`YYYY-MM-DD`）。 */
 export const SESSION_DATE_CHARS = 10
+/** 「开通会员」卡片的唯一信号：服务端工具 `offer_membership`（与 FluxCloud 约定）。 */
+export const MEMBERSHIP_OFFER_TOOL = 'offer_membership'
 
 /** 本地确认 / 丢弃后的问题单最新状态（键 = 问题单 ID）。 */
 export type IssueOverrides = ReadonlyMap<string, AssistantIssueDto>
@@ -69,6 +71,8 @@ export interface Turn {
   /** 最终回答的评价（`up` / `down`）；未评价为 null。 */
   rating: string | null
   issues: AssistantIssueDto[]
+  /** 本轮是否显示「开通会员」卡片：存在成功的 `offer_membership` 工具调用（该工具条目不进 `steps`）。 */
+  membershipOffer: boolean
   live: Live | null
   /** 云端历史轮次的起始时间（RFC 3339），用于把问题单挂到对应轮次；实时轮次为 null。 */
   startedAt: string | null
@@ -102,19 +106,24 @@ function splitBlocks(blocks: readonly Block[]): {
   answer: string | null
   answerMessage: AnswerMessage | null
   issues: AssistantIssueDto[]
+  membershipOffer: boolean
 } {
   const issues: AssistantIssueDto[] = []
   const steps: Block[] = []
+  let membershipOffer = false
   for (const block of blocks) {
     if (block.type === 'issue') issues.push(block.issue)
-    else if (block.type !== 'text' || block.text.trim() !== '') steps.push(block)
+    else if (block.type === 'tool' && block.call.name === MEMBERSHIP_OFFER_TOOL) {
+      // 不论状态都不进过程；仅成功的调用触发卡片，同轮多次只算一张。
+      if (block.call.status === 'succeeded') membershipOffer = true
+    } else if (block.type !== 'text' || block.text.trim() !== '') steps.push(block)
   }
   const last = steps[steps.length - 1]
   if (last?.type === 'text') {
     steps.pop()
-    return { steps, answer: last.text, answerMessage: last.message ?? null, issues }
+    return { steps, answer: last.text, answerMessage: last.message ?? null, issues, membershipOffer }
   }
-  return { steps, answer: null, answerMessage: null, issues }
+  return { steps, answer: null, answerMessage: null, issues, membershipOffer }
 }
 
 /** 问题单在本地确认 / 丢弃后的最新状态优先于推送与历史里的旧副本。 */
@@ -138,7 +147,7 @@ function liveTurn(run: AssistantRunDto, overrides: IssueOverrides, ratings: Rati
         return { type: 'issue', issue: resolveIssue(item.issue, overrides) }
     }
   })
-  const { steps, answer, issues } = splitBlocks(blocks)
+  const { steps, answer, issues, membershipOffer } = splitBlocks(blocks)
   const answerId = answer !== null && run.messageId ? run.messageId : null
   return {
     key: run.runId ? `run:${run.runId}` : `live:${run.startedAtUnixMs}`,
@@ -149,6 +158,7 @@ function liveTurn(run: AssistantRunDto, overrides: IssueOverrides, ratings: Rati
     answerId,
     rating: answerId === null ? null : resolveRating(answerId, null, ratings),
     issues,
+    membershipOffer,
     live: { status: run.status, error: run.error ? run.error : null },
     startedAt: null,
   }
@@ -240,7 +250,7 @@ function pushMessage(turn: HistoryTurn, message: AssistantMessageDto): void {
 }
 
 function intoTurn(turn: HistoryTurn, ratings: RatingOverrides): Turn {
-  const { steps, answer, answerMessage, issues } = splitBlocks(turn.blocks)
+  const { steps, answer, answerMessage, issues, membershipOffer } = splitBlocks(turn.blocks)
   return {
     key: turn.key,
     question: turn.question,
@@ -250,6 +260,7 @@ function intoTurn(turn: HistoryTurn, ratings: RatingOverrides): Turn {
     answerId: answerMessage?.id ?? null,
     rating: answerMessage ? resolveRating(answerMessage.id, answerMessage.rating, ratings) : null,
     issues,
+    membershipOffer,
     live: null,
     startedAt: turn.startedAt,
   }
@@ -336,6 +347,7 @@ function placeIssues(turns: Turn[], issues: readonly AssistantIssueDto[], overri
       answerId: null,
       rating: null,
       issues: [issue],
+      membershipOffer: false,
       live: null,
       startedAt: null,
     })

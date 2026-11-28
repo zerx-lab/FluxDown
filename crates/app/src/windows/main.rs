@@ -66,6 +66,7 @@ fn open_with(cx: &mut App, focus: bool) -> Option<WindowHandle<Root>> {
                 assistant_port,
                 AssistantHost {
                     open_account: Rc::new(|_, cx| activity::open_account(cx)),
+                    open_plan_purchase: Rc::new(crate::account_host::open_plan_purchase_dialog),
                 },
                 window,
                 cx,

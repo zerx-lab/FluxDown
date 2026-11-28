@@ -450,6 +450,9 @@ impl AssistantView {
             }
             reply = reply.child(actions);
         }
+        if turn.membership_offer {
+            reply = reply.child(self.render_membership_offer(&turn.key, cx));
+        }
         for issue in &turn.issues {
             reply = reply.child(self.render_issue(issue, cx));
         }
@@ -459,6 +462,55 @@ impl AssistantView {
             .gap(tokens.spacing.md)
             .child(bubble_column)
             .child(reply)
+            .into_any_element()
+    }
+
+    /// 开通会员卡片：不带套餐数据（价格实时取），按钮打开现有套餐购买对话框。
+    fn render_membership_offer(&self, turn_key: &str, cx: &mut Context<Self>) -> AnyElement {
+        let theme = active_theme(cx);
+        let tokens = theme.tokens().clone();
+        let ext = theme.extended().clone();
+        let colors = tokens.colors;
+
+        let heading = h_flex()
+            .items_center()
+            .gap(tokens.spacing.xs)
+            .child(
+                Icon::new(FluxIcon::Crown)
+                    .size(ext.icon.sm)
+                    .text_color(ext.colors.warning),
+            )
+            .child(
+                body_text(cx)
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(self.t("assistantMembershipTitle", cx)),
+            );
+        let action = Button::new(SharedString::from(format!(
+            "assistant-membership-{turn_key}"
+        )))
+        .primary()
+        .label(self.t("assistantMembershipAction", cx))
+        .control(cx)
+        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+            (this.host.open_plan_purchase)(window, cx);
+        }));
+
+        card(cx)
+            .w_full()
+            .p(tokens.spacing.md)
+            .border_color(ext.colors.hairline)
+            .child(
+                v_flex()
+                    .w_full()
+                    .gap(tokens.spacing.sm)
+                    .child(heading)
+                    .child(
+                        body_text(cx)
+                            .text_color(colors.muted_foreground)
+                            .child(self.t("assistantMembershipBody", cx)),
+                    )
+                    .child(h_flex().child(action)),
+            )
             .into_any_element()
     }
 

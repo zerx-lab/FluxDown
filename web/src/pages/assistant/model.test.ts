@@ -322,6 +322,99 @@ describe('buildTimeline', () => {
   })
 })
 
+const offerCall = (status: AssistantToolCallDto['status'], callId = 'offer-r1'): AssistantRunItemDto => ({
+  type: 'tool',
+  call: { callId, name: 'offer_membership', kind: 'server', status },
+})
+
+const offerMessage = (id: string, seq: number, role: string, callId: string, isError: boolean): AssistantMessageDto => ({
+  ...toolMessage(id, 'r1', seq, role, callId, 'offer_membership', isError),
+  toolKind: 'server',
+})
+
+describe('membership offer', () => {
+  test('live: only a succeeded offer_membership tool shows the card; the tool never enters steps', () => {
+    for (const [status, expected] of [
+      ['succeeded', true],
+      ['running', false],
+      ['failed', false],
+    ] as const) {
+      const [turn] = buildTimeline('s1', [], [], [run('s1', 'r1', 'running', [offerCall(status)])], none, noRatings)
+      expect(turn?.membershipOffer).toBe(expected)
+      expect(turn?.steps).toEqual([])
+      expect(toolCount(turn as Turn)).toBe(0)
+    }
+  })
+
+  test('live: answer is judged after the offer tool is removed, other tools stay counted', () => {
+    const items: AssistantRunItemDto[] = [
+      { type: 'tool', call: readOnlyCall() },
+      text('thinking'),
+      offerCall('succeeded'),
+      text('final'),
+      offerCall('succeeded', 'offer-r1b'),
+    ]
+    const [turn] = buildTimeline('s1', [], [], [run('s1', 'r1', 'completed', items)], none, noRatings)
+    // 末尾的 offer 工具被移除后，最后一个文本块才是回答。
+    expect(turn?.answer).toBe('final')
+    expect(turn?.membershipOffer).toBe(true)
+    expect(turn?.steps).toHaveLength(2)
+    expect(toolCount(turn as Turn)).toBe(1)
+  })
+
+  test('live: one succeeded offer among several calls still yields a single card flag', () => {
+    const items: AssistantRunItemDto[] = [offerCall('failed', 'o1'), offerCall('succeeded', 'o2'), offerCall('succeeded', 'o3'), text('ok')]
+    const [turn] = buildTimeline('s1', [], [], [run('s1', 'r1', 'completed', items)], none, noRatings)
+    expect(turn?.membershipOffer).toBe(true)
+    expect(turn?.steps).toEqual([])
+    expect(turn?.answer).toBe('ok')
+  })
+
+  test('history: tool_call + tool_result success shows the card, error does not', () => {
+    const build = (isError: boolean) =>
+      buildTimeline(
+        's1',
+        [
+          message('m1', 'r1', 1, 'user', 'upgrade?'),
+          offerMessage('m2', 2, 'tool_call', 'offer-r1', false),
+          offerMessage('m3', 3, 'tool_result', 'offer-r1', isError),
+          message('m4', 'r1', 4, 'assistant', 'here you go'),
+        ],
+        [],
+        [],
+        none,
+        noRatings,
+      )[0]
+    const ok = build(false)
+    expect(ok?.membershipOffer).toBe(true)
+    expect(ok?.steps).toEqual([])
+    expect(ok?.answer).toBe('here you go')
+    expect(ok?.answerId).toBe('m4')
+    expect(toolCount(ok as Turn)).toBe(0)
+    const failed = build(true)
+    expect(failed?.membershipOffer).toBe(false)
+    expect(failed?.steps).toEqual([])
+    expect(failed?.answer).toBe('here you go')
+  })
+
+  test('history: a tool_call without result and other turns stay unaffected', () => {
+    const history = [
+      message('m1', 'r1', 1, 'user', 'a'),
+      offerMessage('m2', 2, 'tool_call', 'offer-r1', false),
+      message('m3', 'r1', 3, 'assistant', 'x'),
+      message('m4', 'r2', 4, 'user', 'b'),
+      message('m5', 'r2', 5, 'assistant', 'y'),
+    ]
+    const turns = buildTimeline('s1', history, [], [], none, noRatings)
+    expect(turns.map((turn) => turn.membershipOffer)).toEqual([false, false])
+  })
+
+  test('an issue-only placeholder turn has no membership offer', () => {
+    const turns = buildTimeline('s1', [], [issue('i1')], [], none, noRatings)
+    expect(turns[0]?.membershipOffer).toBe(false)
+  })
+})
+
 describe('confirmView', () => {
   test('confirmation states', () => {
     const now = 10_000

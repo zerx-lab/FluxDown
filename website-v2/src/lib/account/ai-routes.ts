@@ -3,7 +3,10 @@
  * 挂在账户 BFF 下，复用会话 Cookie（Path `/api/account`）、刷新与 CSRF 闸。
  *
  * - 会话一律以 `channel: "website"` 创建，不声明客户端工具（官网没有本机状态可查）。
- * - 会话详情只回用户 / 助手消息（工具调用与结果不下发），用户消息带图片 id，图片经 `ai/attachments/{id}` 取。
+ * - 会话详情只回用户 / 助手消息，用户消息带图片 id，图片经 `ai/attachments/{id}` 取。工具调用与结果不下发，唯一例外：
+ *   上游 `offer_membership` 成功的工具结果（`role: "tool_result"`、`isError: false`）以官网本地合成的
+ *   `role: "membership_offer"` 消息下发（`content` 置空，只带白名单字段，`runId` 即所属执行），
+ *   前端据此在该轮显示开通会员卡片；失败的结果与其它工具消息一律不下发。
  * - 提问的 SSE 按 `ai-stream.ts` 白名单逐帧裁剪后转发；访客断开即中止上游，FluxCloud 随之取消本次执行。
  * - 提问可带图片（`data:image/(png|jpeg|gif|webp);base64,...`，张数 / 单张大小同 FluxCloud `ai::attachments`）；
  *   BFF 只做形状与长度预检，格式识别与解码后大小由 FluxCloud 判定。
@@ -41,6 +44,9 @@ const SESSION_KEYS = [
 ] as const;
 const MESSAGE_KEYS = ["id", "runId", "seq", "role", "content", "rating", "ratingComment", "createdAt"] as const;
 const SHOWN_ROLES: Record<string, true> = { user: true, assistant: true };
+/** 开通会员卡片的唯一信号：FluxCloud 的服务端工具名与官网本地合成的消息角色。 */
+const OFFER_MEMBERSHIP_TOOL = "offer_membership";
+const MEMBERSHIP_OFFER_ROLE = "membership_offer";
 
 const SSE_HEADERS = {
   "Content-Type": "text/event-stream; charset=utf-8",
@@ -83,13 +89,42 @@ function askLocale(body: Body): string | undefined | null {
   return locale !== null && LOCALE_RE.test(locale) ? locale : null;
 }
 
+/** 上游成功的 `offer_membership` 工具结果（须带所属执行 `runId`，卡片按它挂到轮次上）。 */
+function isMembershipOfferResult(message: Record<string, unknown>): boolean {
+  return (
+    message.role === "tool_result" &&
+    message.toolName === OFFER_MEMBERSHIP_TOOL &&
+    message.isError === false &&
+    typeof message.runId === "string"
+  );
+}
+
+/** 工具结果 → 合成的 `membership_offer` 消息：只留白名单字段，正文清空（工具输出是给模型看的）。 */
+function membershipOfferOf(message: unknown): Body | null {
+  const out = pick(message, MESSAGE_KEYS);
+  return out && { ...out, role: MEMBERSHIP_OFFER_ROLE, content: "", images: [] };
+}
+
+function messagesOf(upstream: unknown): Body[] | null {
+  if (!Array.isArray(upstream)) return null;
+  const out: Body[] = [];
+  for (const message of upstream) {
+    if (!isRecord(message)) continue;
+    const mapped = Object.hasOwn(SHOWN_ROLES, String(message.role))
+      ? messageOf(message)
+      : isMembershipOfferResult(message)
+        ? membershipOfferOf(message)
+        : undefined;
+    if (mapped === null) return null;
+    if (mapped !== undefined) out.push(mapped);
+  }
+  return out;
+}
+
 function detailOf(body: unknown): Body | null {
   if (!isRecord(body)) return null;
   const session = sessionOf(body.session);
-  const shown = Array.isArray(body.messages)
-    ? body.messages.filter((m) => isRecord(m) && typeof m.role === "string" && Object.hasOwn(SHOWN_ROLES, m.role))
-    : null;
-  const messages = all(shown, messageOf);
+  const messages = messagesOf(body.messages);
   const issues = all(body.issues, issueOf);
   return session && messages && issues ? { session, messages, issues } : null;
 }

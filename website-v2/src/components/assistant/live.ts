@@ -4,6 +4,9 @@
 import { isRecord } from "@/lib/is-record";
 import type { AiFailReason, AiIssue, AiStreamEvent } from "@/lib/account/types";
 
+/** FluxCloud 的服务端工具：成功即该轮显示开通会员卡片，条目本身不进过程步骤。 */
+const OFFER_MEMBERSHIP_TOOL = "offer_membership";
+
 export type Segment =
   | { kind: "text"; text: string }
   | { kind: "tool"; callId: string; name: string; state: "running" | "ok" | "error" };
@@ -19,6 +22,8 @@ export interface LiveRun {
   /** 按到达顺序的回答文本与工具调用。 */
   segments: Segment[];
   issues: AiIssue[];
+  /** 本轮调用过 `offer_membership` 且成功：回答后显示开通会员卡片。 */
+  membershipOffer: boolean;
   phase: LivePhase;
   /** `failed` / `stopped` 时云端给出的原因（旧版 FluxCloud 不带）。 */
   failReason: AiFailReason | null;
@@ -29,7 +34,7 @@ export interface LiveRun {
 }
 
 export function startRun(sessionId: string, question: string, images: string[] = []): LiveRun {
-  return { sessionId, question, images, segments: [], issues: [], phase: "streaming", failReason: null, messageId: null, started: false };
+  return { sessionId, question, images, segments: [], issues: [], membershipOffer: false, phase: "streaming", failReason: null, messageId: null, started: false };
 }
 
 /** BFF 已按白名单裁剪，这里只确认是带 `type` 的对象。 */
@@ -54,9 +59,14 @@ export function applyEvent(run: LiveRun, event: AiStreamEvent): LiveRun {
       if (last?.kind === "text") next.segments = run.segments.slice(0, -1);
       return next;
     case "toolStarted":
+      if (event.name === OFFER_MEMBERSHIP_TOOL) return next;
       next.segments = [...run.segments, { kind: "tool", callId: event.callId, name: event.name, state: "running" }];
       return next;
     case "toolFinished":
+      if (event.name === OFFER_MEMBERSHIP_TOOL) {
+        if (!event.isError) next.membershipOffer = true;
+        return next;
+      }
       next.segments = run.segments.map((segment) =>
         segment.kind === "tool" && segment.callId === event.callId
           ? { ...segment, state: event.isError ? "error" : "ok" }
