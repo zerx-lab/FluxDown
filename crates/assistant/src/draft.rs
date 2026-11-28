@@ -113,6 +113,7 @@ impl AssistantView {
                 quota_exhausted: false
             }
         ) && !self.stale
+            && !self.session_limit_reached()
             && self.outgoing.is_none()
             && self.image_limits().is_some()
     }

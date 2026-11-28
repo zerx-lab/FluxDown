@@ -29,8 +29,8 @@ use crate::{
     history::{Load, Rename, SessionList},
     images::ImageCache,
     model::{
-        ActionError, Gate, SendFailure, Turn, agent_now_ms, build_timeline, clock_offset_ms, gate,
-        pending_confirmations, turn_transcript,
+        ActionError, Gate, SendFailure, SessionQuota, Turn, agent_now_ms, build_timeline,
+        clock_offset_ms, gate, pending_confirmations, session_quota, turn_transcript,
     },
 };
 
@@ -66,6 +66,8 @@ pub(crate) struct Detail {
     pub(crate) session: Option<AssistantSessionDto>,
     pub(crate) messages: Vec<AssistantMessageDto>,
     pub(crate) issues: Vec<AssistantIssueDto>,
+    /// 本会话已计入单会话提问上限的次数（云端口径；执行结束后随详情重读更新）。
+    pub(crate) questions_used: u64,
     /// 只增不减：任何会让在途读取作废的变化（换会话、重读、账号变化）都递增。
     epoch: u64,
 }
@@ -77,6 +79,7 @@ impl Detail {
             session: None,
             messages: Vec::new(),
             issues: Vec::new(),
+            questions_used: 0,
             epoch,
         }
     }
@@ -164,6 +167,8 @@ pub struct AssistantView {
     pub(crate) outgoing_gen: u64,
     pub(crate) cancelling: bool,
     pub(crate) send_failure: Option<SendFailure>,
+    /// 被限频后本地冷却到此刻：期间不再发出提问，避免反复回车让气泡与提示来回闪。
+    pub(crate) send_cooldown_until: Option<std::time::Instant>,
     /// 其他动作失败的提示（确认 / 评分 / 问题单 / 取消 / 重命名）。
     pub(crate) action_error: Option<ActionError>,
     /// 已发出、等待结果的确认请求（避免重复点击）。
@@ -300,6 +305,7 @@ impl AssistantView {
             outgoing_gen: 0,
             cancelling: false,
             send_failure: None,
+            send_cooldown_until: None,
             action_error: None,
             confirming: HashSet::new(),
             steps_choice: HashMap::new(),
@@ -473,6 +479,38 @@ impl AssistantView {
         gate(self.signed_in, &self.state, self.config_failed)
     }
 
+    /// 当前会话的提问上限状态：新对话（尚无会话）与不限（`sessionLimit` 为 0 / 缺失）都是 `Free`。
+    pub(crate) fn current_session_quota(&self) -> SessionQuota {
+        if self.current.is_none() {
+            return SessionQuota::Free;
+        }
+        let limit = self
+            .state
+            .config
+            .as_ref()
+            .map_or(0, |config| config.session_limit);
+        session_quota(limit, self.detail.questions_used)
+    }
+
+    /// 当前会话已达提问上限、且没有进行中的执行（进行中的提问已先占用名额，那时仍显示输入区）。
+    pub(crate) fn session_limit_reached(&self) -> bool {
+        self.current_session_quota() == SessionQuota::Reached
+            && self.current_run().is_none()
+            && self.visible_outgoing().is_none()
+    }
+
+    /// 被服务端以会话上限拒绝：把本地状态视为已达上限，输入区随即换成提示卡。
+    pub(crate) fn mark_session_limit_reached(&mut self) {
+        let limit = self
+            .state
+            .config
+            .as_ref()
+            .map_or(0, |config| u64::from(config.session_limit));
+        if self.current.is_some() {
+            self.detail.questions_used = self.detail.questions_used.max(limit);
+        }
+    }
+
     /// 现在的 agent 时钟（与 `confirm_deadline_unix_ms` 同一时钟）。
     pub(crate) fn agent_now(&self) -> i64 {
         agent_now_ms(now_unix_ms(), self.clock_offset)
@@ -553,6 +591,7 @@ impl AssistantView {
         self.config_refetch = false;
         self.config_loaded_at = None;
         self.send_failure = None;
+        self.send_cooldown_until = None;
         self.action_error = None;
         self.history_error = None;
         self.history_cursor = None;
@@ -832,6 +871,7 @@ impl AssistantView {
                     this.detail.session = Some(detail.session);
                     this.detail.messages = detail.messages;
                     this.detail.issues = detail.issues;
+                    this.detail.questions_used = detail.questions_used;
                     // 新读到的历史里问题单状态以云端为准。
                     this.issue_overrides.clear();
                     this.rebuild_timeline(cx);

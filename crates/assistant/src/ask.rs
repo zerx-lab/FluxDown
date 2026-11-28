@@ -3,7 +3,10 @@
 //! 发送在途时用户可以切会话 / 继续输入：回写只在「发起时的会话仍是当前会话」时做，输入框只在文本
 //! 与发送时一致时清空。提问被 agent 推送为实时执行之前，用 [`Outgoing`] 在本地显示提问气泡与停止按钮。
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use fluxdown_protocol::{
     AssistantAskParams, AssistantAskResult, AssistantChannel, AssistantMessageDto, RpcErrorData,
@@ -23,6 +26,8 @@ use crate::{
 const RUN_START_SLACK_MS: i64 = 5_000;
 /// 提问被接受后仍没等到对应的实时执行推送时，本地气泡的保留时长。
 const OUTGOING_TIMEOUT: Duration = Duration::from_secs(15);
+/// 被限频后本地暂停发送的时长：云端只返回「限频」不带重试时刻，按固定冷却处理。
+const RATE_LIMIT_COOLDOWN: Duration = Duration::from_secs(10);
 
 /// 已发出、尚未由实时执行接管显示的提问：本地气泡 + 可用的停止按钮。
 pub(crate) struct Outgoing {
@@ -129,7 +134,9 @@ impl AssistantView {
             return false;
         };
         if self.stale
+            || self.session_limit_reached()
             || self.outgoing.is_some()
+            || self.send_cooldown_until.is_some()
             || self.attaching > 0
             || self.current_run().is_some()
         {
@@ -214,7 +221,7 @@ impl AssistantView {
             stop_requested: false,
             sent_at_agent_ms: self.agent_now(),
         });
-        self.send_failure = None;
+        // 上一次的失败提示保留到这次有结果：发送期间提示行不消失，输入区不跳动。
         self.action_error = None;
         self.scroll.scroll_to_bottom();
         let params = AssistantAskParams {
@@ -261,6 +268,7 @@ impl AssistantView {
                     .as_ref()
                     .is_some_and(|outgoing| outgoing.id == done.id && outgoing.stop_requested);
                 if same_view {
+                    self.send_failure = None;
                     if done.started.is_none() {
                         self.current = Some(answer.session_id.clone());
                         // 新会话在云端还没有任何已落库的历史：直接以空历史起步，
@@ -319,9 +327,36 @@ impl AssistantView {
                 if matches!(failure, SendFailure::QuotaExceeded | SendFailure::NotOpen) {
                     self.fetch_config(true, cx);
                 }
+                if failure == SendFailure::RateLimited {
+                    self.start_send_cooldown(cx);
+                }
+                // 本会话提问数已满：本地视为已达上限，输入区换成提示卡（输入框内容保留）。
+                if same_view && failure == SendFailure::SessionLimit {
+                    self.mark_session_limit_reached();
+                }
             }
         }
         cx.notify();
+    }
+
+    /// 限频冷却：到点恢复发送（期间再次限频会把截止时刻往后推，旧计时器到点不提前解除）。
+    fn start_send_cooldown(&mut self, cx: &mut Context<Self>) {
+        self.send_cooldown_until = Some(Instant::now() + RATE_LIMIT_COOLDOWN);
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(RATE_LIMIT_COOLDOWN).await;
+            let Ok(()) = this.update(cx, |this, cx| {
+                if this
+                    .send_cooldown_until
+                    .is_some_and(|until| until <= Instant::now())
+                {
+                    this.send_cooldown_until = None;
+                    cx.notify();
+                }
+            }) else {
+                return;
+            };
+        })
+        .detach();
     }
 
     /// 提问发出后输入框的收尾：文本仍与发送时一致才清空（用户发送期间新输入的、⌘K 带进来的
@@ -418,7 +453,9 @@ impl AssistantView {
         ) && !self.stale
             && self.current.is_some()
             && self.outgoing.is_none()
+            && self.send_cooldown_until.is_none()
             && self.current_run().is_none()
+            && !self.session_limit_reached()
     }
 
     /// 重新生成最后一轮的回答：以原提问（沿用原附图）替换它。

@@ -1053,6 +1053,8 @@ pub(crate) enum SendFailure {
     /// 参数被拒（过长等）。
     Rejected,
     Failed,
+    /// 本会话提问数已达套餐上限：开始新对话才能继续。
+    SessionLimit,
 }
 
 /// 按失败原因（`reason`）归类，其次按错误码：额度用尽与每分钟限频是两回事，不能混用文案。
@@ -1060,6 +1062,7 @@ pub(crate) fn classify_send_error(error: &RpcErrorData) -> SendFailure {
     match error.reason {
         Some(ErrorReason::AssistantQuotaExceeded) => return SendFailure::QuotaExceeded,
         Some(ErrorReason::RateLimited) => return SendFailure::RateLimited,
+        Some(ErrorReason::AssistantSessionLimit) => return SendFailure::SessionLimit,
         Some(ErrorReason::SessionExpired) => return SendFailure::SignedOut,
         Some(ErrorReason::CloudUnreachable) => return SendFailure::Unavailable,
         _ => {}
@@ -1073,6 +1076,37 @@ pub(crate) fn classify_send_error(error: &RpcErrorData) -> SendFailure {
         }
         ApplicationErrorCode::InvalidArgument => SendFailure::Rejected,
         _ => SendFailure::Failed,
+    }
+}
+
+/// 剩余提问次数不超过这个数时，输入区提示还能问几次。
+pub(crate) const SESSION_REMAINING_HINT_MAX: u64 = 3;
+
+/// 当前会话的提问上限状态。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SessionQuota {
+    /// 不限，或剩余次数还多：界面不变。
+    Free,
+    /// 还剩这么多次（1..=[`SESSION_REMAINING_HINT_MAX`]）：输入区附近提示。
+    Low(u64),
+    /// 已达上限：不能再提问（是否还有进行中的执行由调用方判断）。
+    Reached,
+}
+
+/// `limit` = 配置的 `sessionLimit`（0 = 不限），`used` = 会话详情的 `questionsUsed`。
+pub(crate) const fn session_quota(limit: u32, used: u64) -> SessionQuota {
+    if limit == 0 {
+        return SessionQuota::Free;
+    }
+    let limit = limit as u64;
+    if used >= limit {
+        return SessionQuota::Reached;
+    }
+    let remaining = limit - used;
+    if remaining <= SESSION_REMAINING_HINT_MAX {
+        SessionQuota::Low(remaining)
+    } else {
+        SessionQuota::Free
     }
 }
 
@@ -1112,6 +1146,7 @@ impl SendFailure {
             Self::Unavailable => "assistantErrUnavailable",
             Self::Rejected => "assistantErrRejected",
             Self::Failed => "assistantErrFailed",
+            Self::SessionLimit => "assistantErrSessionLimit",
         }
     }
 }
@@ -2576,6 +2611,40 @@ mod tests {
     }
 
     #[test]
+    fn session_limit_reason_is_its_own_failure() {
+        let error = RpcErrorData::new(ApplicationErrorCode::Conflict, false);
+        // reason 压过 Conflict（否则会被归成 Busy）。
+        assert_eq!(
+            classify_send_error(
+                &error
+                    .clone()
+                    .with_reason(ErrorReason::AssistantSessionLimit)
+            ),
+            SendFailure::SessionLimit
+        );
+        assert_eq!(classify_send_error(&error), SendFailure::Busy);
+    }
+
+    #[test]
+    fn session_quota_follows_limit_and_used() {
+        // 0 = 不限：无论用了多少都不变。
+        assert_eq!(session_quota(0, 0), SessionQuota::Free);
+        assert_eq!(session_quota(0, 999), SessionQuota::Free);
+        // 剩余较多：不提示。
+        assert_eq!(session_quota(10, 0), SessionQuota::Free);
+        assert_eq!(session_quota(10, 6), SessionQuota::Free);
+        // 剩余 3 / 2 / 1：提示。
+        assert_eq!(session_quota(10, 7), SessionQuota::Low(3));
+        assert_eq!(session_quota(10, 8), SessionQuota::Low(2));
+        assert_eq!(session_quota(10, 9), SessionQuota::Low(1));
+        // 剩余 0 与超出：已达上限。
+        assert_eq!(session_quota(10, 10), SessionQuota::Reached);
+        assert_eq!(session_quota(10, 11), SessionQuota::Reached);
+        // 上限不超过提示阈值时一开始就提示。
+        assert_eq!(session_quota(2, 0), SessionQuota::Low(2));
+    }
+
+    #[test]
     fn send_failure_keys_are_distinct_and_stable() {
         let all = [
             (SendFailure::SignedOut, "assistantErrSignedOut"),
@@ -2586,6 +2655,7 @@ mod tests {
             (SendFailure::Unavailable, "assistantErrUnavailable"),
             (SendFailure::Rejected, "assistantErrRejected"),
             (SendFailure::Failed, "assistantErrFailed"),
+            (SendFailure::SessionLimit, "assistantErrSessionLimit"),
         ];
         for (failure, key) in all {
             assert_eq!(failure.key(), key);

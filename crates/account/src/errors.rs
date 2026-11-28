@@ -132,9 +132,10 @@ pub(crate) fn reason_key(reason: ErrorReason, context: ErrorContext) -> Option<&
         | ErrorReason::ReferralAlreadyUsed
         | ErrorReason::ReferralPlanExcluded
         | ErrorReason::ReferralCodeTaken => return crate::billing::billing_reason_key(reason),
-        // 插件市场、Doctor、API 服务切换与云端推送由各自页面展示;AI 助手的额度与确认过期由助手面板
-        // 展示;这里退回按 code 的通用文案。
+        // 插件市场、Doctor、API 服务切换与云端推送由各自页面展示;AI 助手的额度、会话上限与确认过期由
+        // 助手面板展示;这里退回按 code 的通用文案。
         ErrorReason::AssistantQuotaExceeded
+        | ErrorReason::AssistantSessionLimit
         | ErrorReason::AssistantConfirmExpired
         | ErrorReason::MarketUnreachable
         | ErrorReason::MarketIndexInvalid

@@ -1,4 +1,4 @@
-//! 助手页共用的小部件：文字档位、徽标、转圈、圆形按钮、缩略图等。
+//! 助手页共用的小部件：文字档位、徽标、转圈、等待点阵、圆形按钮、缩略图等。
 
 use std::{sync::Arc, time::Duration};
 
@@ -70,46 +70,53 @@ pub(crate) fn spinner(size: Pixels) -> Spinner {
     Spinner::new().with_size(size)
 }
 
-/// 回复 / 执行中的停止按钮外圈：两道错相向外扩散淡出的光环 + 一圈旋转弧线。
-pub(crate) fn busy_halo(side: Pixels, button: AnyElement, cx: &App) -> AnyElement {
-    let primary = active_theme(cx).tokens().colors.primary;
-    let ripple = move |id: &'static str, phase: f32| {
-        div()
-            .absolute()
-            .rounded_full()
-            .border_2()
-            .border_color(primary)
-            .with_animation(
-                id,
-                Animation::new(Duration::from_millis(1800)).repeat(),
+/// 等待回复的点阵指示：19 颗圆点排成六边形（3-4-5-4-3），一道彗星状亮带绕中心旋转，
+/// 内圈相位略超前形成螺旋，中心点按两倍频率呼吸；被扫过的点同时变亮、略微放大。
+/// `extent` 是点阵外接宽度。
+pub(crate) fn dot_matrix(extent: Pixels, color: Hsla) -> AnyElement {
+    const ROWS: [usize; 5] = [3, 4, 5, 4, 3];
+    const SPIN_MS: u64 = 1400;
+    // 宽度 = 4 个点距 + 1 个点径，点径取点距的 0.7。
+    let pitch = extent * (1. / 4.7);
+    let dot = pitch * 0.7;
+    let row_step = 0.75_f32.sqrt();
+    let height = pitch * (4. * row_step) + dot;
+    let mut matrix = div().relative().flex_none().w(extent).h(height);
+    let mut index = 0_usize;
+    for (row, &count) in ROWS.iter().enumerate() {
+        let y = (row as f32 - 2.) * row_step;
+        for column in 0..count {
+            let x = column as f32 - (count as f32 - 1.) / 2.;
+            let radius = x.hypot(y);
+            let angle = y.atan2(x);
+            let center = radius < 0.5;
+            // 内圈（半径 1）相位超前，外圈滞后，亮带呈螺旋。
+            let lead = if radius < 1.5 { 0.9 } else { 0. };
+            let (cx_dot, cy_dot) = (
+                pitch * (x + 2.) + dot / 2.,
+                pitch * (y + 2. * row_step) + dot / 2.,
+            );
+            matrix = matrix.child(div().absolute().rounded_full().bg(color).with_animation(
+                ("assistant-dot", index),
+                Animation::new(Duration::from_millis(SPIN_MS)).repeat(),
                 move |this, delta| {
-                    let t = (delta + phase) % 1.;
-                    let grow = side * (1. + 0.7 * t);
-                    let offset = (side - grow) / 2.;
-                    this.size(grow)
-                        .top(offset)
-                        .left(offset)
-                        .opacity(0.55 * (1. - t) * (1. - t))
+                    let turn = delta * std::f32::consts::TAU;
+                    let glow = if center {
+                        (1. - (turn * 2.).cos()) / 2.
+                    } else {
+                        ((angle - turn + lead).cos().max(0.)).powi(3)
+                    };
+                    let size = dot * (0.72 + 0.28 * glow);
+                    this.size(size)
+                        .left(cx_dot - size / 2.)
+                        .top(cy_dot - size / 2.)
+                        .opacity(0.22 + 0.78 * glow)
                 },
-            )
-    };
-    let ring = side + px(8.);
-    div()
-        .relative()
-        .flex_none()
-        .size(side)
-        .child(ripple("assistant-busy-ripple-a", 0.))
-        .child(ripple("assistant-busy-ripple-b", 0.5))
-        .child(
-            div()
-                .absolute()
-                .top(px(-4.))
-                .left(px(-4.))
-                .size(ring)
-                .child(spinner(ring).color(primary)),
-        )
-        .child(div().absolute().inset_0().child(button))
-        .into_any_element()
+            ));
+            index += 1;
+        }
+    }
+    matrix.into_any_element()
 }
 
 /// 方形缩略图：圆角 + 细边框，图片按 cover 裁切。

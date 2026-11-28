@@ -1,7 +1,7 @@
 //! 助手页输入区：提问 / 反馈切换、图片附件、发送与停止、编辑重发提示与各类失败提示。
 
 use fluxdown_protocol::AssistantSessionKind;
-use fluxdown_ui_components::{FluxIcon, card, choice_chip, field_error};
+use fluxdown_ui_components::{ButtonVariant, FluxIcon, button, card, choice_chip, field_error};
 use fluxdown_ui_theme::active_theme;
 use gpui::{
     AnyElement, App, ClickEvent, Context, ExternalPaths, FontWeight, InteractiveElement as _,
@@ -10,10 +10,11 @@ use gpui::{
 use gpui_component::{Icon, h_flex, input::Textarea, v_flex};
 
 use crate::{
+    model::SessionQuota,
     render::COLUMN_WIDTH,
     view::AssistantView,
     widgets::{
-        CircleTone, body_text, busy_halo, circle_button, compact_button, meta_text, spinner,
+        CircleTone, body_text, circle_button, compact_button, dot_matrix, meta_text, spinner,
         thumbnail,
     },
 };
@@ -24,6 +25,8 @@ const THUMBNAIL_SIDE: f32 = 56.;
 const REMOVE_BUTTON_SIDE: f32 = 18.;
 /// 发送 / 停止 / 添加图片按钮的直径。
 const ROUND_BUTTON_SIDE: f32 = 32.;
+/// 停止按钮内容的悬停组：悬停时点阵换成停止方块。
+const STOP_GROUP: &str = "assistant-stop-content";
 
 impl AssistantView {
     pub(crate) fn render_composer(&self, quota_exhausted: bool, cx: &Context<Self>) -> AnyElement {
@@ -59,6 +62,50 @@ impl AssistantView {
                                 &[("limit", &limit.to_string())],
                                 cx,
                             ))),
+                    ),
+                )
+                .into_any_element();
+        }
+
+        if self.session_limit_reached() {
+            let limit = self
+                .state
+                .config
+                .as_ref()
+                .map_or(0, |config| config.session_limit);
+            return outer
+                .child(
+                    card(cx).w_full().max_w(width).p(tokens.spacing.md).child(
+                        v_flex()
+                            .items_start()
+                            .gap(tokens.spacing.sm)
+                            .child(
+                                v_flex()
+                                    .gap(tokens.spacing.xs)
+                                    .child(
+                                        body_text(cx)
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .child(self.t("assistantSessionLimitTitle", cx)),
+                                    )
+                                    .child(meta_text(cx).child(self.with(
+                                        "assistantSessionLimitDesc",
+                                        &[("limit", &limit.to_string())],
+                                        cx,
+                                    ))),
+                            )
+                            .child(
+                                button(
+                                    "assistant-session-limit-new",
+                                    self.t("assistantNewChat", cx),
+                                    ButtonVariant::Primary,
+                                    cx,
+                                )
+                                .on_click(cx.listener(
+                                    |this, _: &ClickEvent, window, cx| {
+                                        this.new_chat(window, cx);
+                                    },
+                                )),
+                            ),
                     ),
                 )
                 .into_any_element();
@@ -119,31 +166,60 @@ impl AssistantView {
 
         let side = theme.text_extent(ROUND_BUTTON_SIDE);
         let action: AnyElement = if working {
-            let content: AnyElement = if self.cancelling {
-                spinner(ext.icon.sm).into_any_element()
+            // 等待回复：按钮内是旋转点阵；悬停时换成停止方块，提示可以点击停止。
+            let can_stop = self.can_stop();
+            let dots = if can_stop {
+                colors.primary_foreground
             } else {
-                // 停止 = 实心小方块。
-                div()
-                    .size(px(10.))
-                    .rounded(px(2.))
-                    .bg(colors.primary_foreground)
-                    .into_any_element()
+                colors.muted_foreground
             };
-            let button = circle_button(
+            let content = div()
+                .group(STOP_GROUP)
+                .relative()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .when(can_stop, |this| {
+                            this.group_hover(STOP_GROUP, |style| style.invisible())
+                        })
+                        .child(dot_matrix(side * 0.56, dots)),
+                )
+                .when(can_stop, |this| {
+                    this.child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .invisible()
+                            .group_hover(STOP_GROUP, |style| style.visible())
+                            .child(
+                                // 停止 = 实心小方块。
+                                div()
+                                    .size(px(10.))
+                                    .rounded(px(2.))
+                                    .bg(colors.primary_foreground),
+                            ),
+                    )
+                });
+            circle_button(
                 "assistant-stop",
                 self.t("assistantStop", cx),
                 content,
                 side,
                 crate::widgets::CircleTone::Filled,
-                self.can_stop(),
+                can_stop,
                 cx,
             )
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.stop(cx)))
-            .into_any_element();
-            busy_halo(side, button, cx)
+            .into_any_element()
         } else {
             let content: AnyElement = if self.sending() {
-                spinner(ext.icon.sm).into_any_element()
+                dot_matrix(side * 0.56, colors.muted_foreground)
             } else {
                 Icon::new(FluxIcon::ArrowUp)
                     .size(ext.icon.md)
@@ -251,6 +327,13 @@ impl AssistantView {
             inner = inner.child(field_error(text, cx));
         }
         inner = inner.child(field);
+        if let SessionQuota::Low(remaining) = self.current_session_quota() {
+            inner = inner.child(meta_text(cx).px(tokens.spacing.sm).child(self.with(
+                "assistantSessionRemaining",
+                &[("count", &remaining.to_string())],
+                cx,
+            )));
+        }
         outer.child(inner).into_any_element()
     }
 
