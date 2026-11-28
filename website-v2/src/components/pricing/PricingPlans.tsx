@@ -5,6 +5,7 @@ import { pricing } from "@/i18n/messages/pricing";
 import { BrandIcon } from "@/components/icons/brand";
 import { formatMinor } from "@/components/pay/money";
 import { PlanBadge, PlanRibbon } from "./PlanBadge";
+import { isCard, planBrief } from "./plans";
 import WebPurchase from "./WebPurchase";
 import type { CloudPlan } from "./types";
 import { withBase } from "@/lib/base";
@@ -25,11 +26,6 @@ function lgCols(total: number): number {
 }
 
 const LG_GRID: Record<number, string> = { 2: "lg:grid-cols-2", 3: "lg:grid-cols-3", 4: "lg:grid-cols-4" };
-
-/** Periodic membership card: a membership with a positive billing period (missing / null = permanent). */
-function isCard(plan: CloudPlan): boolean {
-  return typeof plan.billingPeriodDays === "number" && plan.billingPeriodDays > 0;
-}
 
 /**
  * Plan columns: the always-free desktop app first, then the live FluxCloud catalog.
@@ -186,7 +182,7 @@ function CloudPlanCell({ plan, lang }: { plan: CloudPlan; lang: Lang }) {
         (plan.purchasable !== false ? (
           <>
             {/* USDT checkout hidden on the mainland-filed site (crypto payments are not allowed in mainland China); FluxCloud still supports it. */}
-            <WebPurchase plan={{ code: plan.code, name: plan.name, priceMinor, currency: plan.currency, basePriceMinor: plan.priceMinor, priceUsdtMicros: null, waffoPriceMinor: plan.waffoPriceMinor ?? null }} lang={lang} />
+            <WebPurchase plan={planBrief(plan)} lang={lang} />
             <p className="mt-2.5 text-center text-xs text-subtle">{t.buyInApp}</p>
           </>
         ) : (

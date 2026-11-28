@@ -2,6 +2,7 @@ import { useEffect, useMemo } from "react";
 import { Check, Zap } from "lucide-react";
 import { PlanBadge } from "@/components/pricing/PlanBadge";
 import WebPurchase, { signedInFromMe, type SignedInAccount } from "@/components/pricing/WebPurchase";
+import { effectivePrice, isBuyablePlan, isCard, planBrief } from "@/components/pricing/plans";
 import type { CloudPlan } from "@/components/pricing/types";
 import { formatMinor } from "@/components/pay/money";
 import { pricing } from "@/i18n/messages/pricing";
@@ -11,9 +12,6 @@ import { daysUntil, formatDay } from "./format";
 import OrdersList from "./OrdersList";
 import { planLabel } from "./plan";
 import { Clip, LoadFailed, Panel, RefreshButton, SectionHead, Skeleton, SubHead } from "./ui";
-
-const effectivePrice = (plan: CloudPlan) => plan.campaign?.effectivePriceMinor ?? plan.priceMinor;
-const isCard = (plan: CloudPlan) => typeof plan.billingPeriodDays === "number" && plan.billingPeriodDays > 0;
 
 function CurrentPlan({ ctx }: { ctx: DashboardCtx }) {
   const { me, t, lang } = ctx;
@@ -115,16 +113,7 @@ function PlanCard({
         {buyable ? (
           <WebPurchase
             lang={lang}
-            plan={{
-              code: plan.code,
-              name: plan.name,
-              priceMinor: price,
-              currency: plan.currency,
-              basePriceMinor: plan.priceMinor,
-              // 官网不提供 USDT(大陆备案站点政策),与定价页一致。
-              priceUsdtMicros: null,
-              waffoPriceMinor: plan.waffoPriceMinor ?? null,
-            }}
+            plan={planBrief(plan)}
             signedIn={signedIn}
             onPaid={() => {
               void ctx.refreshMe();
@@ -168,7 +157,7 @@ export default function MembershipSection({ ctx }: { ctx: DashboardCtx }) {
 
   const signedIn = useMemo(() => signedInFromMe(me), [me]);
   const buyablePlans = useMemo(
-    () => (plans.data ?? []).filter((p) => p.purchasable !== false && effectivePrice(p) > 0),
+    () => (plans.data ?? []).filter(isBuyablePlan),
     [plans.data],
   );
   const refreshing = plans.refreshing || orders.refreshing || plans.status === "loading" || orders.status === "loading";
