@@ -331,7 +331,7 @@ impl PlanPurchaseDialog {
                         .is_some_and(CardState::selectable)
                 });
                 if !still_available {
-                    this.selected = None;
+                    this.selected = this.first_selectable(cx);
                 }
                 cx.notify();
             }) else {
@@ -345,6 +345,19 @@ impl PlanPurchaseDialog {
     fn card_state_of(&self, code: &str, cx: &App) -> Option<CardState> {
         let plan = self.plans.iter().find(|plan| plan.code == code)?;
         Some(self.state_of_plan(plan, cx))
+    }
+
+    /// 按展示顺序（买断在前、期卡在后）第一个可选套餐：打开对话框即默认选中它。
+    fn first_selectable(&self, cx: &App) -> Option<String> {
+        let visible = purchasable_plans(&self.plans);
+        let (periodic, lifetime): (Vec<&CloudPlan>, Vec<&CloudPlan>) = visible
+            .into_iter()
+            .partition(|plan| is_subscription_plan(plan));
+        lifetime
+            .into_iter()
+            .chain(periodic)
+            .find(|plan| self.state_of_plan(plan, cx).selectable())
+            .map(|plan| plan.code.clone())
     }
 
     fn select(&mut self, code: &str, cx: &mut Context<Self>) {
