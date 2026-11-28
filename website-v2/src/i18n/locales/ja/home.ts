@@ -170,6 +170,7 @@ export default {
       { k: "ファイル名とURL", note: "", sent: false, v: "有効にするのはクラウド機能のみ" },
       { k: "BTリーチャーの証拠", note: "オプトイン", sent: false, v: "既定ではオフ · ファイル名なし" },
       { k: "アカウント / ID", note: "", sent: false, v: "ダウンロードに不要" },
+      { k: "AI assistant", note: "only when you ask", sent: true, v: "your question and the task info it reads · nothing if you don't ask" },
     ],
   },
   cta: {

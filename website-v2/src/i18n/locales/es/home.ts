@@ -170,6 +170,7 @@ export default {
       { k: "nombres_de_archivos_y_URLs", note: "", sent: false, v: "solo con las funciones de la nube que habilites" },
       { k: "evidencia de sanguijuela BT", note: "opción de suscripción", sent: false, v: "desactivado por defecto · sin nombres de archivos" },
       { k: "cuenta / identidad", note: "", sent: false, v: "no es obligatorio para descargar" },
+      { k: "AI assistant", note: "only when you ask", sent: true, v: "your question and the task info it reads · nothing if you don't ask" },
     ],
   },
   cta: {

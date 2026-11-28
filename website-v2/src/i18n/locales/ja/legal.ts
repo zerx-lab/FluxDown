@@ -70,6 +70,19 @@ export default {
         ],
       },
       {
+        id: "ai-assistant",
+        title: "AI Assistant",
+        body: "The AI assistant (in the desktop app, the web management interface and on this website) <strong>only sends data when you ask it a question</strong>; if you do not ask, nothing is sent. A conversation you start yourself is content you hand to the assistant to get an answer, not anonymous telemetry. When you ask, we process:",
+        items: [
+          "<strong>Your question and images:</strong> the text you type, the images you attach (only possible when the current model supports images), the interface language and, from the apps, the app version and platform. They are sent to FluxDown's servers (FluxCloud). Where intent classification is enabled, FluxCloud first sends the question text (not the images) to a classifier we operate and host on Alibaba Cloud Function Compute, which decides whether the question needs the model; the question and images are then forwarded to the third-party AI model provider we have configured to generate the answer.",
+          "<strong>Information the assistant reads on your device (desktop app and web management interface only):</strong> to answer questions about your own FluxDown, the assistant can have the app read information locally. The results can include task names, save paths (your home folder is replaced by <code>~</code>), download addresses (credentials removed; for torrents only the tracker's site is kept), settings (sensitive items such as passwords, tokens and keys are masked) and redacted logs, plus version, runtime and network status, installed plugins and components, and diagnostics. This only happens while it is answering a question you asked, and the results are sent to FluxCloud and on to the model provider. The assistant on this website cannot access anything on your device.",
+          "<strong>Actions that need your confirmation:</strong> tools that change something (create or manage tasks, change settings) or that connect to an address you specify or to a third party (such as a download route speed test) run only after you approve a confirmation card in the app.",
+          "<strong>Conversation history:</strong> your questions, the answers, tool calls and their results, and your thumbs-up/down ratings with optional comments are stored with your account on FluxCloud so you can continue and review them across devices and so we can diagnose problems and improve the assistant. Deleting a conversation (or clearing all of them) hides it from you immediately; the data stays on our servers and is deleted automatically once the retention period (90 days by default) ends. The question text passed to the intent classifier is logged separately, without your account, device or IP address, and is deleted after a retention period (90 days by default) as well.",
+          "<strong>Issue reports:</strong> the assistant can draft a bug report or feature request for you. Nothing is submitted until you confirm it (we may review it first); a submitted report is published as a GitHub Issue in our repository and is kept even if you delete the conversation.",
+          "<strong>Third parties:</strong> the AI model providers (and, where enabled, external tool services connected by our administrators) that process the content above are chosen and configured by FluxDown and may change; their handling is governed by their own privacy policies. We do not use your questions for advertising and do not sell them.",
+        ],
+      },
+      {
         id: "収集しない",
         title: "収集しない情報",
         body: "FluxDownは、ローカルファーストのアーキテクチャで設計されています。FluxDownアプリは以下の通りです：",
@@ -120,6 +133,7 @@ export default {
         items: [
           "アプリのアカウント設定で、いつでもサインアウトしたり、個々のデバイスをアカウントから削除したりできます。",
           "設定で、設定の同期、クラウド通知、および匿名の利用状況カウンターのオン／オフを切り替えられます。",
+          "Delete a single AI assistant conversation, or clear all of them, at any time, and choose not to ask the assistant anything; see the AI Assistant section above for how long data is kept.",
           'FluxDown アカウントは、アプリ内でいつでも削除できます：設定 → アカウント → アカウントの削除（パスワードまたはメールコードによる確認が必要です）。これにより、アカウント、サインイン済みのデバイス、同期済みの設定、送信したリンク、通知設定、プライベート拡張機能の権限が完全に削除され、プライベート拡張機能のダウンロード記録も消去されます。管理者によるアクセス権の付与・取り消しに関する操作ログはセキュリティ監査のために保持されますが、それ以降はお客様のアカウントとは関連付けられなくなります。注文記録は、法令で義務付けられている場合にのみ保持されます。ダウンロードしたファイルはデバイス上に残ります。アプリにアクセスできない場合は、アカウントに登録されているメールアドレスから <a href="{feedback}">フィードバックページ</a> までご連絡ください。',
         ],
       },
@@ -130,6 +144,8 @@ export default {
         items: [
           "<strong>GitHub API：</strong>サーバー側でリリース情報の取得やフィードバックの処理に使用されています。お客様のIPアドレスはGitHubに転送されません。",
           "<strong>フォント：</strong>すべてのWebフォントは当ウェブサイトで自己ホストされています。Google Fontsやその他の第三者のフォントサービスへのフォントリクエストは一切行われません。",
+          "<strong>AI model providers:</strong> Only when you ask the AI assistant a question, its content is forwarded through FluxDown's servers to the third-party AI model providers we have configured, to generate the answer. See the AI Assistant section above.",
+          "<strong>Alibaba Cloud (Function Compute):</strong> Where intent classification is enabled, the intent classifier we operate runs as a function on Alibaba Cloud Function Compute. Only when you ask the AI assistant a question, the text of your question (without images, account, device or IP information) is sent to that function to be classified, and the result is returned to FluxDown's servers. See the AI Assistant section above.",
         ],
       },
       {

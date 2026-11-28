@@ -170,6 +170,7 @@ export default {
       { k: "nama berkas & URL", note: "", sent: false, v: "hanya dengan fitur awan yang Anda aktifkan" },
       { k: "bukti leech BT", note: "opt-in", sent: false, v: "mati secara bawaan · tanpa nama berkas" },
       { k: "akun / identitas", note: "", sent: false, v: "tidak diperlukan untuk mengunduh" },
+      { k: "AI assistant", note: "only when you ask", sent: true, v: "your question and the task info it reads · nothing if you don't ask" },
     ],
   },
   cta: {

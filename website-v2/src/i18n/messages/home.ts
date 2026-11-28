@@ -171,9 +171,10 @@ export const home = defineMessages("home", {
         { k: "app_installed", note: "once", sent: true, v: "anonymous" },
         { k: "app_active", note: "daily", sent: true, v: "anonymous · can be disabled" },
         { k: "download history", note: "", sent: false, v: "never" },
-        { k: "file names & URLs", note: "", sent: false, v: "only with cloud features you enable" },
+        { k: "file names & URLs", note: "", sent: false, v: "only with cloud features you enable and questions you ask the AI assistant" },
         { k: "BT leech evidence", note: "opt-in", sent: false, v: "off by default · no file names" },
         { k: "account / identity", note: "", sent: false, v: "not required to download" },
+        { k: "AI assistant", note: "only when you ask", sent: true, v: "your question and the task info it reads · nothing if you don't ask" },
       ],
     },
     cta: {
@@ -387,9 +388,10 @@ export const home = defineMessages("home", {
         { k: "app_installed", note: "一次", sent: true, v: "匿名" },
         { k: "app_active", note: "每日", sent: true, v: "匿名 · 可关闭" },
         { k: "下载历史", note: "", sent: false, v: "从不" },
-        { k: "文件名与链接", note: "", sent: false, v: "仅限你开启的云功能" },
+        { k: "文件名与链接", note: "", sent: false, v: "仅限你开启的云功能与你主动提出的助手提问" },
         { k: "BT 防吸血证据", note: "需同意", sent: false, v: "默认关闭 · 不含文件名" },
         { k: "账号 / 身份", note: "", sent: false, v: "下载无需" },
+        { k: "AI 助手", note: "仅在提问时", sent: true, v: "你的问题与助手读取的任务信息 · 不提问不发送" },
       ],
     },
     cta: {

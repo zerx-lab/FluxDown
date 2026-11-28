@@ -170,6 +170,7 @@ export default {
       { k: "nomes_de_arquivos_e_URLs", note: "", sent: false, v: "apenas com recursos na nuvem você ativa" },
       { k: "evidência de leecher BT", note: "opt-in", sent: false, v: "desativado por padrão · sem nomes de arquivos" },
       { k: "conta / identidade", note: "", sent: false, v: "não é necessário para fazer o Download" },
+      { k: "AI assistant", note: "only when you ask", sent: true, v: "your question and the task info it reads · nothing if you don't ask" },
     ],
   },
   cta: {

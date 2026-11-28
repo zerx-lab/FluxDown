@@ -170,6 +170,7 @@ export default {
       { k: "檔案名稱及 URL", note: "", sent: false, v: "僅在啟用雲功能時可用" },
       { k: "BT 採集證據", note: "選擇加入", sent: false, v: "預設關閉，不顯示檔案名稱" },
       { k: "帳號／身分", note: "", sent: false, v: "下載時無需註冊" },
+      { k: "AI assistant", note: "only when you ask", sent: true, v: "your question and the task info it reads · nothing if you don't ask" },
     ],
   },
   cta: {

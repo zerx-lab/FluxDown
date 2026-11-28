@@ -170,6 +170,7 @@ export default {
       { k: "имена_файлов_и_URLs", note: "", sent: false, v: "только при включенных облачных функциях" },
       { k: "улики BT лич", note: "опционально", sent: false, v: "выкл. по умолчанию · без имен файлов" },
       { k: "аккаунт / идентификация", note: "", sent: false, v: "не требуется для загрузки" },
+      { k: "AI assistant", note: "only when you ask", sent: true, v: "your question and the task info it reads · nothing if you don't ask" },
     ],
   },
   cta: {

@@ -170,6 +170,7 @@ export default {
       { k: "nomi dei file e URL", note: "", sent: false, v: "solo con le funzionalità cloud che abiliti" },
       { k: "prove BT leecher", note: "opt-in", sent: false, v: "disattivato per impostazione predefinita · nessun nome file" },
       { k: "Account / identità", note: "", sent: false, v: "non richiesto per il download" },
+      { k: "AI assistant", note: "only when you ask", sent: true, v: "your question and the task info it reads · nothing if you don't ask" },
     ],
   },
   cta: {

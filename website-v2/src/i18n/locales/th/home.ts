@@ -170,6 +170,7 @@ export default {
       { k: "ชื่อไฟล์และ URL", note: "", sent: false, v: "เฉพาะเมื่อเปิดใช้งานฟีเจอร์บนคลาวด์เท่านั้น" },
       { k: "หลักฐานการลีช BT", note: "เลือกเข้าร่วม", sent: false, v: "ปิดตามค่าเริ่มต้น · ไม่มีชื่อไฟล์" },
       { k: "บัญชี / ตัวตน", note: "", sent: false, v: "ไม่จำเป็นต้องมีเพื่อดาวน์โหลด" },
+      { k: "AI assistant", note: "only when you ask", sent: true, v: "your question and the task info it reads · nothing if you don't ask" },
     ],
   },
   cta: {

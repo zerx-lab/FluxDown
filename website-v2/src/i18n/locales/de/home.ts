@@ -170,6 +170,7 @@ export default {
       { k: "Dateinamen & URLs", note: "", sent: false, v: "nur mit aktivierten Cloud-Funktionen" },
       { k: "BT-Leecher-Beweismeldung", note: "Opt-in", sent: false, v: "standardmäßig aus · keine Dateinamen" },
       { k: "Konto / Identität", note: "", sent: false, v: "nicht erforderlich für den Download" },
+      { k: "AI assistant", note: "only when you ask", sent: true, v: "your question and the task info it reads · nothing if you don't ask" },
     ],
   },
   cta: {

@@ -170,6 +170,7 @@ export default {
       { k: "nazwy_plików_i_URL-y", note: "", sent: false, v: "tylko jeśli włączysz funkcje chmurowe" },
       { k: "dowody licha w BT", note: "opcjonalne", sent: false, v: "wyłączone domyślnie · brak nazw plików" },
       { k: "konto / tożsamość", note: "", sent: false, v: "nie jest wymagane do pobierania" },
+      { k: "AI assistant", note: "only when you ask", sent: true, v: "your question and the task info it reads · nothing if you don't ask" },
     ],
   },
   cta: {

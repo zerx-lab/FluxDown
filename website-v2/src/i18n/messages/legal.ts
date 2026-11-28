@@ -70,11 +70,24 @@ export const legal = defineMessages("legal", {
           ],
         },
         {
+          id: "ai-assistant",
+          title: "AI Assistant",
+          body: "The AI assistant (in the desktop app, the web management interface and on this website) <strong>only sends data when you ask it a question</strong>; if you do not ask, nothing is sent. A conversation you start yourself is content you hand to the assistant to get an answer, not anonymous telemetry. When you ask, we process:",
+          items: [
+            "<strong>Your question and images:</strong> the text you type, the images you attach (only possible when the current model supports images), the interface language and, from the apps, the app version and platform. They are sent to FluxDown's servers (FluxCloud). Where intent classification is enabled, FluxCloud first sends the question text (not the images) to a classifier we operate and host on Alibaba Cloud Function Compute, which decides whether the question needs the model; the question and images are then forwarded to the third-party AI model provider we have configured to generate the answer.",
+            "<strong>Information the assistant reads on your device (desktop app and web management interface only):</strong> to answer questions about your own FluxDown, the assistant can have the app read information locally. The results can include task names, save paths (your home folder is replaced by <code>~</code>), download addresses (credentials removed; for torrents only the tracker's site is kept), settings (sensitive items such as passwords, tokens and keys are masked) and redacted logs, plus version, runtime and network status, installed plugins and components, and diagnostics. This only happens while it is answering a question you asked, and the results are sent to FluxCloud and on to the model provider. The assistant on this website cannot access anything on your device.",
+            "<strong>Actions that need your confirmation:</strong> tools that change something (create or manage tasks, change settings) or that connect to an address you specify or to a third party (such as a download route speed test) run only after you approve a confirmation card in the app.",
+            "<strong>Conversation history:</strong> your questions, the answers, tool calls and their results, and your thumbs-up/down ratings with optional comments are stored with your account on FluxCloud so you can continue and review them across devices and so we can diagnose problems and improve the assistant. Deleting a conversation (or clearing all of them) hides it from you immediately; the data stays on our servers and is deleted automatically once the retention period (90 days by default) ends. The question text passed to the intent classifier is logged separately, without your account, device or IP address, and is deleted after a retention period (90 days by default) as well.",
+            "<strong>Issue reports:</strong> the assistant can draft a bug report or feature request for you. Nothing is submitted until you confirm it (we may review it first); a submitted report is published as a GitHub Issue in our repository and is kept even if you delete the conversation.",
+            "<strong>Third parties:</strong> the AI model providers (and, where enabled, external tool services connected by our administrators) that process the content above are chosen and configured by FluxDown and may change; their handling is governed by their own privacy policies. We do not use your questions for advertising and do not sell them.",
+          ],
+        },
+        {
           id: "not-collect",
           title: "Information We Do NOT Collect",
           body: "FluxDown is designed with a local-first architecture. The FluxDown apps:",
           items: [
-            "Do NOT collect or store your download history on any remote server. Download tasks, file paths and progress are stored locally in a SQLite database on your device. Download links only leave your device when you explicitly send them to another of your devices or enable the notification options described above.",
+            "Do NOT collect or store your download history on any remote server. Download tasks, file paths and progress are stored locally in a SQLite database on your device. Download links only leave your device when you explicitly send them to another of your devices, enable the notification options described above, or ask the AI assistant a question (see the AI Assistant section above).",
             "Do NOT include advertising, third-party trackers, or crash reporting.",
             "Do NOT require an account, login, or registration to download files.",
             "Do NOT sell or share your personal data with third parties for advertising or tracking.",
@@ -120,6 +133,7 @@ export const legal = defineMessages("legal", {
           items: [
             "Sign out at any time, or remove individual devices from your account, in the app's account settings.",
             "Turn settings sync, cloud notifications and the anonymous usage counters on or off in settings.",
+            "Delete a single AI assistant conversation, or clear all of them, at any time, and choose not to ask the assistant anything; see the AI Assistant section above for how long data is kept.",
             'Delete your FluxDown account at any time in the app: Settings → Account → Delete Account (confirmed with your password or an email code). This permanently removes your account, signed-in devices, synced settings, sent links, notification settings and private extension grants, and deletes your private extension download records. Administrators\' operation logs of granting and revoking access are kept for security auditing but are no longer linked to your account. Order records are kept only where we are legally required to. Files you downloaded stay on your device. If you cannot access the app, contact us through the <a href="{feedback}">Feedback page</a> from your account email.',
           ],
         },
@@ -130,6 +144,8 @@ export const legal = defineMessages("legal", {
           items: [
             "<strong>GitHub API:</strong> Used server-side to fetch release information and process feedback submissions. Your IP address is not forwarded to GitHub.",
             "<strong>Fonts:</strong> All web fonts are self-hosted on this website. No font requests are made to Google Fonts or any other third-party font service.",
+            "<strong>AI model providers:</strong> Only when you ask the AI assistant a question, its content is forwarded through FluxDown's servers to the third-party AI model providers we have configured, to generate the answer. See the AI Assistant section above.",
+            "<strong>Alibaba Cloud (Function Compute):</strong> Where intent classification is enabled, the intent classifier we operate runs as a function on Alibaba Cloud Function Compute. Only when you ask the AI assistant a question, the text of your question (without images, account, device or IP information) is sent to that function to be classified, and the result is returned to FluxDown's servers. See the AI Assistant section above.",
           ],
         },
         {
@@ -388,11 +404,24 @@ export const legal = defineMessages("legal", {
           ],
         },
         {
+          id: "ai-assistant",
+          title: "AI 助手",
+          body: "AI 助手（桌面应用、网页管理界面与本网站内的对话）<strong>只在您主动提问时才会发送数据</strong>；不提问就不会发送任何内容。您主动发起的助手对话是您交给助手用来获得回答的内容，不属于匿名遥测。提问时，我们会处理：",
+          items: [
+            "<strong>您的问题与图片：</strong>您输入的文字、附带的图片（仅当当前模型支持图片时可附）、界面语言，以及应用端的应用版本与平台。这些内容发送到 FluxDown 服务器（FluxCloud）。启用意图分类时，FluxCloud 会先把问题文字（不含图片）发送到我们运营、部署在阿里云函数计算上的分类器，由它判断问题是否需要交给大模型；随后问题与图片转交给我们配置的第三方 AI 模型服务商生成回答。",
+            "<strong>助手在您设备上读取的信息（仅桌面应用与网页管理界面）：</strong>为回答关于您自己 FluxDown 的问题，助手可以让应用在本机读取信息。结果可能包含任务名、保存路径（主目录以 <code>~</code> 代替）、下载地址（已去除凭据；BT 的 tracker 只保留站点）、设置（密码、令牌、密钥等敏感项已遮蔽）与经过脱敏的日志，以及版本、运行状态、网络状态、已安装的插件 / 组件与诊断结果。这些读取只发生在回答您提出的问题期间，结果会发送到 FluxCloud 并转交给模型服务商。本网站上的助手无法访问您设备上的任何内容。",
+            "<strong>需要您确认的操作：</strong>会修改内容的工具（新建或管理任务、修改设置）以及会连接您指定的地址或第三方的工具（例如下载线路测速），只有在您于应用内批准确认卡片后才会执行。",
+            "<strong>对话记录：</strong>您的提问、回答、工具调用及其结果，以及您的点赞 / 点踩与可选的说明，会随账户保存在 FluxCloud，方便您跨设备继续和回看，也用于排查问题与改进助手。删除对话（或清空全部）后，对话会立即对您隐藏；数据仍保留在我们的服务器上，保留期（默认 90 天）届满后自动清理。传给意图分类器的问题原文会单独记录（不含账户、设备与 IP 地址），同样在保留期（默认 90 天）届满后清理。",
+            "<strong>问题单：</strong>助手可以替您起草缺陷报告或功能建议。您确认之前不会提交（提交前我们可能先审核）；已提交的问题单会作为 GitHub Issue 发布在我们的仓库中，即使您删除了对话也会保留。",
+            "<strong>第三方：</strong>处理上述内容的 AI 模型服务商（以及管理员接入的外部工具服务，如已启用）由 FluxDown 选择与配置，可能调整，其处理方式受各自隐私政策约束。我们不会把您的提问用于广告，也不会出售。",
+          ],
+        },
+        {
           id: "not-collect",
           title: "我们不收集的信息",
           body: "FluxDown 采用本地优先架构设计。FluxDown 各应用：",
           items: [
-            "不会在任何远程服务器上收集或保存您的下载历史。下载任务、文件路径与进度均存储在您设备上的本地 SQLite 数据库中。只有当您主动把链接发送到自己的其他设备，或开启上文所述的推送选项时，下载链接才会离开您的设备。",
+            "不会在任何远程服务器上收集或保存您的下载历史。下载任务、文件路径与进度均存储在您设备上的本地 SQLite 数据库中。只有当您主动把链接发送到自己的其他设备、开启上文所述的推送选项，或主动向 AI 助手提问（见上文「AI 助手」一节）时，相关内容才会离开您的设备。",
             "不包含广告、第三方追踪器或崩溃报告。",
             "下载文件不需要任何形式的账户、登录或注册。",
             "不会出于广告或追踪目的向第三方出售或共享您的个人数据。",
@@ -438,6 +467,7 @@ export const legal = defineMessages("legal", {
           items: [
             "随时在应用的账户设置中退出登录，或从账户中移除单台设备。",
             "在设置中开启或关闭设置同步、云端推送与匿名使用计数。",
+            "随时在 AI 助手中删除单个或清空全部对话，并可以选择不向助手提问；保留与清理规则见上文「AI 助手」一节。",
             '您可以随时在应用中删除 FluxDown 账户：设置 → 账户 → 删除账户（需验证密码或邮箱验证码）。删除后，账户、已登录设备、同步的设置、发送的链接、推送设置与私有扩展授权将被永久移除，您的私有扩展下载记录也会一并删除；管理员对授权与撤销的操作日志会保留用于安全审计，但不再与您的账户关联；仅在法律要求时保留订单记录。已下载的文件仍保留在您的设备上。如果无法使用应用，请用账户邮箱通过<a href="{feedback}">反馈页面</a>联系我们。',
           ],
         },
@@ -448,6 +478,8 @@ export const legal = defineMessages("legal", {
           items: [
             "<strong>GitHub API：</strong>在服务端用于获取发布信息和处理反馈提交。您的 IP 地址不会转发至 GitHub。",
             "<strong>字体：</strong>本网站所有网页字体均为自托管，不会向 Google Fonts 或任何第三方字体服务发起请求。",
+            "<strong>AI 模型服务商：</strong>仅当您主动向 AI 助手提问时，问题内容会经 FluxDown 服务器转交给我们配置的第三方 AI 模型服务商，用于生成回答，详见上文「AI 助手」一节。",
+            "<strong>阿里云（函数计算）：</strong>启用意图分类时，我们运营的意图分类器作为函数运行在阿里云函数计算上。仅当您主动向 AI 助手提问时，您的问题文字（不含图片、账户、设备与 IP 信息）会发送到该函数做一次分类，结果返回 FluxDown 服务器，详见上文「AI 助手」一节。",
           ],
         },
         {

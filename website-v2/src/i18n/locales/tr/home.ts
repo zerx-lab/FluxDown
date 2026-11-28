@@ -170,6 +170,7 @@ export default {
       { k: "dosya_adları_ve_URL'ler", note: "", sent: false, v: "yalnızca etkinleştirdiğiniz bulut özellikleriyle" },
       { k: "BT leech kanıtı", note: "isteğe bağlı", sent: false, v: "varsayılan olarak kapalı · dosya adları yok" },
       { k: "hesap / kimlik", note: "", sent: false, v: "indirme için gerekli değil" },
+      { k: "AI assistant", note: "only when you ask", sent: true, v: "your question and the task info it reads · nothing if you don't ask" },
     ],
   },
   cta: {

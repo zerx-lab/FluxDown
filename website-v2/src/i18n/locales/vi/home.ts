@@ -170,6 +170,7 @@ export default {
       { k: "tên tệp & URL", note: "", sent: false, v: "chỉ khi bạn kích hoạt các tính năng đám mây" },
       { k: "bằng chứng leech BT", note: "tùy chọn tham gia", sent: false, v: "tắt theo mặc định · không có tên tệp" },
       { k: "tài khoản / danh tính", note: "", sent: false, v: "không bắt buộc để tải xuống" },
+      { k: "AI assistant", note: "only when you ask", sent: true, v: "your question and the task info it reads · nothing if you don't ask" },
     ],
   },
   cta: {

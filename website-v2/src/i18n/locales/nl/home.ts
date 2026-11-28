@@ -170,6 +170,7 @@ export default {
       { k: "bestandsnamen en URL's", note: "", sent: false, v: "alleen met cloudfuncties schakelt u in" },
       { k: "BT leech-bewijs", note: "opt-in", sent: false, v: "uitstandaard · geen bestandsnamen" },
       { k: "Account / identiteit", note: "", sent: false, v: "niet vereist om te downloaden" },
+      { k: "AI assistant", note: "only when you ask", sent: true, v: "your question and the task info it reads · nothing if you don't ask" },
     ],
   },
   cta: {

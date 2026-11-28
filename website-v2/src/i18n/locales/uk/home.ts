@@ -170,6 +170,7 @@ export default {
       { k: "назви файлів та URL-адреси", note: "", sent: false, v: "лише за умови ввімкнення хмарних функцій" },
       { k: "докази завантаження через BT", note: "опція підписки", sent: false, v: "вимкнено за замовчуванням · без імен файлів" },
       { k: "обліковий запис / особистість", note: "", sent: false, v: "не потрібно для завантаження" },
+      { k: "AI assistant", note: "only when you ask", sent: true, v: "your question and the task info it reads · nothing if you don't ask" },
     ],
   },
   cta: {

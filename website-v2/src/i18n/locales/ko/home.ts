@@ -170,6 +170,7 @@ export default {
       { k: "파일 이름 및 URL", note: "", sent: false, v: "클라우드 기능만 활성화된 경우" },
       { k: "BT 리처 증거", note: "옵트인", sent: false, v: "기본값: 끄기 · 파일 이름 없음" },
       { k: "계정 / 신원", note: "", sent: false, v: "다운로드에 필요하지 않음" },
+      { k: "AI assistant", note: "only when you ask", sent: true, v: "your question and the task info it reads · nothing if you don't ask" },
     ],
   },
   cta: {
