@@ -105,6 +105,7 @@ impl From<CloudError> for AssistantError {
 /// - `ai_disabled`（403，套餐不含 AI 助手）：`Unsupported`；
 /// - `ai_quota_exceeded`（403，当日提问次数用完）：`Conflict` + [`ErrorReason::AssistantQuotaExceeded`]
 ///   （与每分钟限频区分开：后者是 429 `rate_limited`，沿用通用映射的 [`ErrorReason::RateLimited`]）；
+/// - `ai_session_limit`（403，本会话提问次数已达上限）：`Conflict` + [`ErrorReason::AssistantSessionLimit`]；
 /// - 401 等沿用通用映射（带 `reason`，`RateLimited` 可重试）；
 /// - 其余未识别的 409（如该会话已有进行中的执行）：`Conflict`。
 pub(crate) fn rpc_error(error: &CloudError) -> RpcErrorData {
@@ -114,6 +115,8 @@ pub(crate) fn rpc_error(error: &CloudError) -> RpcErrorData {
         (_, Some("ai_disabled")) => RpcErrorData::new(ApplicationErrorCode::Unsupported, false),
         (_, Some("ai_quota_exceeded")) => RpcErrorData::new(ApplicationErrorCode::Conflict, false)
             .with_reason(ErrorReason::AssistantQuotaExceeded),
+        (_, Some("ai_session_limit")) => RpcErrorData::new(ApplicationErrorCode::Conflict, false)
+            .with_reason(ErrorReason::AssistantSessionLimit),
         (Some(409), _) if base.reason.is_none() => {
             RpcErrorData::new(ApplicationErrorCode::Conflict, false)
         }
@@ -149,6 +152,8 @@ pub(crate) struct ConfigBody {
     daily_limit: u32,
     #[serde(default)]
     used_today: u64,
+    #[serde(default)]
+    session_limit: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -187,6 +192,7 @@ impl ConfigBody {
             max_image_bytes: self.max_image_bytes,
             daily_limit: self.daily_limit,
             used_today: self.used_today,
+            session_limit: self.session_limit,
             tools_enabled,
         }
     }

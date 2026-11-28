@@ -162,6 +162,11 @@ fn cloud_errors_map_to_application_codes_and_reasons() {
             Some(ErrorReason::AssistantQuotaExceeded),
         ),
         (
+            error(403, "ai_session_limit", false),
+            ApplicationErrorCode::Conflict,
+            Some(ErrorReason::AssistantSessionLimit),
+        ),
+        (
             error(409, "conflict", false),
             ApplicationErrorCode::Conflict,
             None,

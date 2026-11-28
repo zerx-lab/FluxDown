@@ -200,6 +200,8 @@ pub enum ErrorReason {
     AssistantQuotaExceeded,
     /// AI 助手：工具确认窗口已过期，该调用未执行。
     AssistantConfirmExpired,
+    /// AI 助手：本会话提问次数已达套餐上限，须开始新对话。
+    AssistantSessionLimit,
     /// 对端发送了本端不认识的原因。
     #[serde(other)]
     Unknown,

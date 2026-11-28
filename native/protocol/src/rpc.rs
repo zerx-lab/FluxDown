@@ -35,7 +35,8 @@ pub const JSONRPC_VERSION: &str = "2.0";
 /// v30 增加 AI 助手（`agent.assistant.*`、`AgentEvent::AssistantChanged` / `AgentSnapshot.assistant`）
 /// 与网络诊断（`daemon.net.interfaces` / `daemon.net.measureRoutes`），v31 扩展 AI 助手：
 /// `agent.assistant.{renameSession,exportSession,attachment}`、会话搜索、重新生成 / 编辑重发、
-/// 确认预览、执行失败原因与 `ErrorReason::{AssistantQuotaExceeded,AssistantConfirmExpired}`（纯增量）。
+/// 确认预览、执行失败原因、单会话提问上限（`sessionLimit` / `questionsUsed`）与
+/// `ErrorReason::{AssistantQuotaExceeded,AssistantConfirmExpired,AssistantSessionLimit}`（纯增量）。
 pub const PROTOCOL_VERSION: u32 = 31;
 /// 旧客户端不能解析 v19 起的协议语义，必须在握手时拒绝混用。
 pub const MIN_PROTOCOL_VERSION: u32 = 19;

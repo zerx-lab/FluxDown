@@ -93,6 +93,9 @@ pub struct AssistantConfigDto {
     /// `0` = 不限。
     pub daily_limit: u32,
     pub used_today: u64,
+    /// 单个会话最多提问次数（套餐能力，重新生成 / 编辑重发也计）；`0` = 不限。
+    #[serde(default)]
+    pub session_limit: u32,
     /// 云端工具协议与本机一致、本机工具会被声明。
     pub tools_enabled: bool,
 }
@@ -411,6 +414,9 @@ pub struct AssistantSessionDetail {
     pub messages: Vec<AssistantMessageDto>,
     #[serde(default)]
     pub issues: Vec<AssistantIssueDto>,
+    /// 本会话已计入 [`AssistantConfigDto::session_limit`] 的提问次数（含已被替换的提问）。
+    #[serde(default)]
+    pub questions_used: u64,
 }
 
 /// `agent.assistant.clearSessions` 的结果。
