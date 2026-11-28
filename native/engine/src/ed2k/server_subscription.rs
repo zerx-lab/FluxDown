@@ -216,7 +216,8 @@ pub struct ServerFetchOutcome {
     pub ok_sources: usize,
     /// 尝试的订阅源总数。
     pub total_sources: usize,
-    /// 仅当**全部**源失败时非空（拼接的错误摘要）。
+    /// 失败源的错误摘要（`源: 原因`，`; ` 拼接）：任一源失败即非空，含部分成功的情形；
+    /// 全部成功时为空。是否成功以 [`Self::is_success`] 为准，不能再用 `error` 是否为空判断。
     pub error: String,
 }
 
@@ -231,7 +232,8 @@ impl ServerFetchOutcome {
 /// 拉取每个订阅 URL（换行分隔，允许 `#` 注释）并返回合并去重后的服务器列表。
 /// 请求经宿主统一出口（[`crate::egress::RoutedClients`]），与下载任务同一套全局代理与站点规则。
 ///
-/// 单源失败可容忍：只要至少一源响应即为成功。所有网络错误都记日志。
+/// 单源失败可容忍：只要至少一源响应即为成功（缓存照常更新），失败源与原因写入
+/// [`ServerFetchOutcome::error`] 供界面展示。所有网络错误都记日志。
 pub async fn fetch_server_subscriptions(
     urls: &str,
     proxy: &crate::proxy_config::ProxyConfig,
@@ -264,48 +266,78 @@ pub async fn fetch_server_subscriptions(
         }
     };
 
+    let mut results: Vec<(&str, Result<Vec<String>, String>)> = Vec::with_capacity(sources.len());
+    for src in &sources {
+        let normalized = normalize_subscription_url(src);
+        let result = match reject_nodes_source(src, &normalized) {
+            Some(reason) => Err(reason),
+            None => fetch_one(&client, &normalized).await,
+        };
+        match &result {
+            Ok(servers) => log_info!(
+                "[ed2k-server-sub] fetched {} servers from {}",
+                servers.len(),
+                src
+            ),
+            Err(e) => log_error!("[ed2k-server-sub] fetch failed: {}: {}", src, e),
+        }
+        results.push((src, result));
+    }
+
+    let outcome = summarize_sources(results);
+    log_info!(
+        "[ed2k-server-sub] refresh done: {}/{} sources ok, {} unique servers",
+        outcome.ok_sources,
+        outcome.total_sources,
+        outcome.servers.len()
+    );
+    outcome
+}
+
+/// 各源结果 → [`ServerFetchOutcome`]：成功源的服务器合并去重，失败源逐条进 `error`。
+fn summarize_sources(results: Vec<(&str, Result<Vec<String>, String>)>) -> ServerFetchOutcome {
+    let total_sources = results.len();
     let mut raw: Vec<String> = Vec::new();
     let mut ok_sources = 0usize;
     let mut errors: Vec<String> = Vec::new();
-
-    for src in &sources {
-        let normalized = normalize_subscription_url(src);
-        match fetch_one(&client, &normalized).await {
+    for (src, result) in results {
+        match result {
             Ok(servers) => {
-                log_info!(
-                    "[ed2k-server-sub] fetched {} servers from {}",
-                    servers.len(),
-                    src
-                );
                 ok_sources += 1;
                 raw.extend(servers);
             }
-            Err(e) => {
-                log_error!("[ed2k-server-sub] fetch failed: {}: {}", src, e);
-                errors.push(format!("{src}: {e}"));
-            }
+            Err(e) => errors.push(format!("{src}: {e}")),
         }
     }
-
-    let servers = merge_dedup(raw.iter().map(String::as_str));
-    log_info!(
-        "[ed2k-server-sub] refresh done: {}/{} sources ok, {} unique servers",
-        ok_sources,
-        total_sources,
-        servers.len()
-    );
-
     ServerFetchOutcome {
-        servers,
+        servers: merge_dedup(raw.iter().map(String::as_str)),
         ok_sources,
         total_sources,
-        error: if ok_sources == 0 {
-            errors.join("; ")
-        } else {
-            String::new()
-        },
+        error: errors.join("; "),
     }
 }
+
+/// Kad 节点列表链接壳前缀（`ed2k://|nodeslist|`）。
+const NODESLIST_PREFIX: &str = "ed2k://|nodeslist|";
+
+/// 订阅源是 Kad `nodes.dat`（`ed2k://|nodeslist|…|/` 链接壳，或 URL 路径文件名为 `nodes.dat`）
+/// 时返回拒绝原因：它应填到 Kad nodes.dat 订阅，按 `server.met` 解析必然失败。
+fn reject_nodes_source(src: &str, normalized: &str) -> Option<String> {
+    let is_nodes_link = src
+        .trim()
+        .get(..NODESLIST_PREFIX.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(NODESLIST_PREFIX));
+    let path = normalized.split(['?', '#']).next().unwrap_or(normalized);
+    let is_nodes_file = path
+        .rsplit('/')
+        .next()
+        .is_some_and(|name| name.eq_ignore_ascii_case("nodes.dat"));
+    (is_nodes_link || is_nodes_file).then(|| {
+        "is a Kad nodes.dat source, not a server.met; add it to the Kad nodes.dat subscription instead"
+            .to_string()
+    })
+}
+
 /// 归一化订阅 URL：解开 eD2K 服务器列表链接壳 `ed2k://|serverlist|<url>|/`，
 /// 取出内层 http(s) URL；普通 URL 原样返回。
 ///
@@ -373,7 +405,10 @@ async fn fetch_one(
 
 #[cfg(test)]
 mod tests {
-    use super::{merge_dedup, normalize_subscription_url, parse_server_met};
+    use super::{
+        merge_dedup, normalize_subscription_url, parse_server_met, reject_nodes_source,
+        summarize_sources,
+    };
 
     /// 拼出 `header + count(4B LE)` 前缀。
     fn header_with_count(header: u8, count: u32) -> Vec<u8> {
@@ -615,5 +650,66 @@ mod tests {
             normalize_subscription_url("  http://z.org/s.met  "),
             "http://z.org/s.met"
         );
+    }
+
+    #[test]
+    fn nodes_dat_sources_are_rejected_with_kad_hint() {
+        for src in [
+            "https://upd.emule-security.org/nodes.dat",
+            "https://x.org/a/NODES.DAT?v=1#top",
+            "ed2k://|nodeslist|http://x.org/n.dat|/",
+            "  ED2K://|NodesList|http://x.org/n.dat|/",
+        ] {
+            let reason = reject_nodes_source(src, &normalize_subscription_url(src))
+                .unwrap_or_else(|| panic!("{src} must be rejected"));
+            assert!(reason.contains("nodes.dat subscription"), "{reason}");
+        }
+    }
+
+    #[test]
+    fn server_met_sources_are_not_rejected_as_nodes() {
+        for src in [
+            "https://upd.emule-security.org/server.met",
+            "ed2k://|serverlist|http://x.org/server.met|/",
+            "https://x.org/nodes.dat/server.met",
+            "https://x.org/mynodes.dat",
+        ] {
+            assert_eq!(
+                reject_nodes_source(src, &normalize_subscription_url(src)),
+                None,
+                "{src}"
+            );
+        }
+    }
+
+    #[test]
+    fn partial_failure_still_succeeds_but_reports_failed_source() {
+        let outcome = summarize_sources(vec![
+            (
+                "https://a.org/server.met",
+                Ok(vec!["1.2.3.4:4661".to_string()]),
+            ),
+            (
+                "https://b.org/nodes.dat",
+                Err("no servers parsed".to_string()),
+            ),
+        ]);
+        assert!(outcome.is_success());
+        assert_eq!((outcome.ok_sources, outcome.total_sources), (1, 2));
+        assert_eq!(outcome.servers, vec!["1.2.3.4:4661".to_string()]);
+        assert_eq!(outcome.error, "https://b.org/nodes.dat: no servers parsed");
+    }
+
+    #[test]
+    fn all_ok_has_empty_error_and_all_failed_joins_errors() {
+        let ok = summarize_sources(vec![("a", Ok(vec!["1.2.3.4:4661".to_string()]))]);
+        assert!(ok.is_success() && ok.error.is_empty());
+
+        let failed = summarize_sources(vec![
+            ("a", Err("timeout".to_string())),
+            ("b", Err("http status 404".to_string())),
+        ]);
+        assert!(!failed.is_success());
+        assert_eq!(failed.error, "a: timeout; b: http status 404");
     }
 }

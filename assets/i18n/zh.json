@@ -1601,6 +1601,7 @@
   "ed2kNodesSubUpdateNow": "立即更新",
   "ed2kNodesSubUpdating": "更新中…",
   "ed2kNodesSubUpdateFailed": "更新失败",
+  "subscriptionUpdatePartial": "已更新，但部分订阅源失败：{error}",
   "ed2kKadBootstrap": "引导",
   "ed2kKadBootstrapDesc": "立即联系 Kad 节点，检查 Kad 网络是否可达并获取最新节点",
   "ed2kKadBootstrapFromNode": "IP 或域名地址",
