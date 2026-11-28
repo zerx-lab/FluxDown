@@ -1,5 +1,5 @@
 ---
-description: FluxDown 粘性红线（git 授权、分支模型、用户拍板的产品决定，含插件国际化准入与静默更新边界）；跨仓额外根目录
+description: FluxDown 粘性红线（git 授权、分支模型、用户拍板的产品决定，含插件国际化准入、静默更新边界与 AI 助手对话数据口径）；跨仓额外根目录
 alwaysApply: true
 ---
 
