@@ -414,8 +414,10 @@ export interface MainFlux extends Omit<Flux, "settings"> {
 /** `resolve(ctx)` argument. */
 export interface ResolveContext {
   taskId: string;
-  /** The original task URL. */
+  /** The task's input URL (the final browser URL for a captured download); never a previously resolved URL. */
   url: string;
+  /** First HTTP(S) URL observed for an eligible Chromium download captured by desktop native messaging, when different from `url`. */
+  browserOriginalUrl?: string;
   /** Default credential reference for this site (empty unless the `auth` permission is granted). */
   authRef: string;
   cookies: string;

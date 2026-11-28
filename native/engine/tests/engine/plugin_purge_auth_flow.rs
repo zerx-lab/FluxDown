@@ -300,6 +300,7 @@ async fn uninstall_config_failure_invalidates_removed_resolver_and_preserves_oth
     let request = |url: &str| ResolveRequest {
         task_id: "uninstall-state".to_string(),
         url: url.to_string(),
+        browser_original_url: None,
         auth_ref: String::new(),
         cookies: String::new(),
         referrer: String::new(),

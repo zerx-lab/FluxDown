@@ -236,13 +236,14 @@ const TRACK_PAIR_FANOUT_CONCURRENCY = 6;
 
 /**
  * 服务端 /download/batch 把整批 URL 共用「首个非空」的 cookies/referrer/headers，
- * 且丢弃 filename/fileSize/mimeType/method/body/audioUrl。因此只有上下文完全相同、
+ * 且丢弃 filename/fileSize/mimeType/method/body/audioUrl/browserOriginalUrl。因此只有上下文完全相同、
  * 且不带这些逐条字段的条目才能安全合并为一次批量 POST；其余逐条 POST /download，
  * 避免 A 站的 Cookie/Authorization 被发往批内其他主机。
  */
 function batchContextKey(item: BatchDownloadItem): string | null {
   if (
     item.audioUrl ||
+    item.browserOriginalUrl ||
     item.filename ||
     item.mimeType ||
     item.method ||

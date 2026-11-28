@@ -1481,6 +1481,7 @@ mod tests {
             app_version: "0.0.0".to_string(),
         };
         let req = ResolveRequest {
+            browser_original_url: None,
             task_id: "t1".to_string(),
             url: "http://example.com/".to_string(),
             auth_ref: String::new(),
@@ -1525,6 +1526,7 @@ mod tests {
             app_version: "0.0.0".to_string(),
         };
         let req = ResolveRequest {
+            browser_original_url: None,
             task_id: "t1".to_string(),
             url: "http://example.com/".to_string(),
             auth_ref: String::new(),
@@ -1616,6 +1618,7 @@ mod tests {
             app_version: "0.0.0".to_string(),
         };
         let req = ResolveRequest {
+            browser_original_url: None,
             task_id: "t".to_string(),
             url: "http://x/".to_string(),
             auth_ref: String::new(),

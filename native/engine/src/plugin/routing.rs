@@ -167,12 +167,24 @@ impl PluginManager {
     /// 链接命中的已启用 resolver 插件（identity 升序）。`multi_only` 只取声明
     /// `"multi": true` 的 resolver（前置预解析用）。
     async fn matching_resolvers(&self, url: &str, multi_only: bool) -> Vec<PluginCandidate> {
+        self.matching_resolvers_for(url, multi_only, false).await
+    }
+
+    async fn matching_resolvers_for(
+        &self,
+        url: &str,
+        multi_only: bool,
+        browser_fallback: bool,
+    ) -> Vec<PluginCandidate> {
         let snapshot = self.plugins.read().await.clone();
         let mut candidates: Vec<PluginCandidate> = snapshot
             .iter()
             .filter(|p| p.enabled)
             .filter(|p| match p.manifest.resolvers.first() {
-                Some(resolver) => !multi_only || resolver.multi,
+                Some(resolver) => {
+                    (!multi_only || resolver.multi)
+                        && (!browser_fallback || resolver.match_decl.browser_original_url)
+                }
                 None => false,
             })
             .filter(|p| {
@@ -192,10 +204,39 @@ impl PluginManager {
         candidates
     }
 
+    async fn task_resolver_candidates<'a>(
+        &self,
+        url: &'a str,
+        browser_original_url: Option<&'a str>,
+        multi_only: bool,
+    ) -> (&'a str, Vec<PluginCandidate>) {
+        let direct = self.matching_resolvers(url, multi_only).await;
+        if direct.is_empty()
+            && let Some(original) = browser_original_url
+        {
+            return (
+                original,
+                self.matching_resolvers_for(original, multi_only, true)
+                    .await,
+            );
+        }
+        (url, direct)
+    }
+
     /// 建任务时的 resolver 绑定：单一命中直接绑定；多个命中时优先用户确认过的站点默认
     /// 插件，否则绑定首个候选并标记待选。无命中返回 `None`。
     pub async fn route_resolver(&self, url: &str) -> Option<ResolverRoute> {
-        let candidates = self.matching_resolvers(url, false).await;
+        self.route_captured_resolver(url, None).await
+    }
+
+    pub(crate) async fn route_captured_resolver(
+        &self,
+        url: &str,
+        browser_original_url: Option<&str>,
+    ) -> Option<ResolverRoute> {
+        let (url, candidates) = self
+            .task_resolver_candidates(url, browser_original_url, false)
+            .await;
         let first = candidates.first()?.identity.clone();
         if candidates.len() == 1 {
             return Some(ResolverRoute {
@@ -226,8 +267,15 @@ impl PluginManager {
     /// 已绑定的插件 `bound` 不再命中链接（被禁用 / 待授权 / 熔断 / 规则不再匹配），但仍有
     /// 其它已启用 resolver 命中——从未起跑的任务据此改按当前路由重新选择。没有任何候选时
     /// 返回 `false`（无处可换，维持 fail-closed）。
-    pub async fn bound_resolver_superseded(&self, url: &str, bound: &str) -> bool {
-        let candidates = self.matching_resolvers(url, false).await;
+    pub(crate) async fn bound_resolver_superseded(
+        &self,
+        url: &str,
+        browser_original_url: Option<&str>,
+        bound: &str,
+    ) -> bool {
+        let (_, candidates) = self
+            .task_resolver_candidates(url, browser_original_url, false)
+            .await;
         !candidates.is_empty() && !candidates.iter().any(|c| c.identity == bound)
     }
 
@@ -245,7 +293,17 @@ impl PluginManager {
     /// # }
     /// ```
     pub async fn match_multi_resolver(&self, url: &str) -> Option<String> {
-        let candidates = self.matching_resolvers(url, true).await;
+        self.match_captured_multi_resolver(url, None).await
+    }
+
+    pub(crate) async fn match_captured_multi_resolver(
+        &self,
+        url: &str,
+        browser_original_url: Option<&str>,
+    ) -> Option<String> {
+        let (url, candidates) = self
+            .task_resolver_candidates(url, browser_original_url, true)
+            .await;
         let first = candidates.first()?.identity.clone();
         if candidates.len() > 1
             && let Some(identity) = self.confirmed_default(url, &candidates).await
@@ -280,21 +338,31 @@ impl PluginManager {
     /// 当前没有任何候选（全部被禁用 / 卸载 / 待授权）时**不写回**：返回 `Use(bound)`，
     /// 本次 resolve 按既有 fail-closed 语义报错，而任务仍保持待选，等插件重新启用后的
     /// 下一次起跑再定案。
-    pub async fn choose_task_resolver(
+    pub(crate) async fn choose_task_resolver(
         &self,
         task_id: &str,
         url: &str,
+        browser_original_url: Option<&str>,
         bound: &str,
         unattended: bool,
         selector: &dyn HostSelection,
     ) -> Result<ResolverChoice, PluginError> {
-        let candidates = self.matching_resolvers(url, false).await;
+        let (match_url, candidates) = self
+            .task_resolver_candidates(url, browser_original_url, false)
+            .await;
         let chosen = match candidates.as_slice() {
             [] => return Ok(ResolverChoice::Use(bound.to_owned())),
             [only] => only.identity.clone(),
             _ => {
                 match self
-                    .choose_among(task_id, url, bound, candidates, unattended, selector)
+                    .choose_among(
+                        task_id,
+                        (match_url, url),
+                        bound,
+                        candidates,
+                        unattended,
+                        selector,
+                    )
                     .await
                 {
                     Some(identity) => identity,
@@ -313,13 +381,13 @@ impl PluginManager {
     async fn choose_among(
         &self,
         task_id: &str,
-        url: &str,
+        (match_url, url): (&str, &str),
         bound: &str,
         candidates: Vec<PluginCandidate>,
         unattended: bool,
         selector: &dyn HostSelection,
     ) -> Option<String> {
-        let site = site_key(url);
+        let site = site_key(match_url);
         let lock = site.as_deref().map(|site| self.site_prompts.get(site));
         let _serial = match &lock {
             Some(lock) => Some(lock.lock().await),

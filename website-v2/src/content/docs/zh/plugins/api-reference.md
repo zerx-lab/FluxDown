@@ -55,7 +55,7 @@ sourceHash: "e868448f5533"
 
 ### `resolve(ctx)`
 
-在协议分派之前调用，任务每次**开始和恢复**时都会调用（前提是匹配 `resolvers[0].match.urls`；解析是惰性的，见[概览](/docs/zh/plugins/overview/)）。清单声明了 `multi: true` 的 resolver，还会被新建下载窗口调用一次做预解析（见[清单结果](#清单结果manifest)）。
+在协议分派之前调用，匹配到 resolver 的任务在每次**开始和恢复**时都会调用（解析是惰性的，见[概览](/docs/zh/plugins/overview/)）。先匹配任务 URL；没有 resolver 命中时，才对声明了 [`match.browserOriginalUrl: true`](/docs/zh/plugins/manifest/#resolvers0) 的 resolver 尝试匹配浏览器的首跳 URL。清单声明了 `multi: true` 的 resolver，还会被新建下载窗口调用一次做预解析（见[清单结果](#清单结果manifest)）。
 
 如果某个必填设置既没有用户值也没有 `default`，调用会在你的脚本运行**之前**以 `缺少必填设置项` 失败。
 
@@ -64,7 +64,8 @@ sourceHash: "e868448f5533"
 | 字段 | 类型 | 含义 |
 |---|---|---|
 | `taskId` | string | 任务 UUID。 |
-| `url` | string | 任务的原始 URL（绝不会是之前解析出来的链接）。 |
+| `url` | string | 任务输入的 URL（绝不会是之前解析出来的链接）。对浏览器捕获的下载，即使 resolver 匹配的是首跳 URL，这里仍是浏览器的最终 URL。 |
+| `browserOriginalUrl` | string（可选） | Chromium 扩展通过桌面原生消息通道（NMH）捕获 HTTP(S) 直链下载时，观察到的首跳 URL。仅在首跳和最终 URL 都是 HTTP(S) 且两者不同时提供。 |
 | `authRef` | string | 「插件 + 站点」的默认凭据引用。只有清单声明了权限 `auth` **且** URL 能推出 http/https 站点时才有值，否则为 `""`。通常直接调用 `flux.fetch` 即可，宿主会按该引用自动查找凭据。 |
 | `cookies` | string | 任务附带的 Cookie 头值，没有则为 `""`。 |
 | `referrer` | string | 任务附带的 Referrer，没有则为 `""`。 |
@@ -73,6 +74,8 @@ sourceHash: "e868448f5533"
 | `resolverItem` | string | 普通调用时为 `""`。当它是被选中的[清单](#清单结果manifest)子项时：为插件自己的 `item.id`；用户明确选了该条目的某个规格时为 `<itemId>@<variantId>`。 |
 
 `cookies`、`referrer`、`userAgent`、`extraHeaders` 是创建任务时存进任务的内容（例如浏览器扩展捕获、新建下载表单）。没有提供时为空字符串 / 空对象。
+
+`browserOriginalUrl` 只提供 URL 信息，不代表重放首跳请求。FluxDown 不会依据此字段附加或重放首跳的 Cookie、授权头或其他凭据。要改用另一个地址下载，请在 resolver 结果中显式返回该地址；放行时仍下载 `ctx.url`。
 
 #### 返回值
 

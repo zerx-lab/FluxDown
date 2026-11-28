@@ -223,6 +223,7 @@ fn create_command(name: &str) -> DownloadsCommand {
         unattended: false,
         hint_file_size: None,
         name_hint: None,
+        browser_original_url: None,
         category_route: None,
     }))
 }

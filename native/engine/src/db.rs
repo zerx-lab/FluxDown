@@ -110,6 +110,7 @@ const SQLITE_SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
     url TEXT NOT NULL,
+    browser_original_url TEXT,
     file_name TEXT NOT NULL,
     save_dir TEXT NOT NULL,
     status INTEGER NOT NULL DEFAULT 0,
@@ -408,6 +409,7 @@ const POSTGRES_SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
     url TEXT NOT NULL,
+    browser_original_url TEXT,
     file_name TEXT NOT NULL,
     save_dir TEXT NOT NULL,
     status INTEGER NOT NULL DEFAULT 0,
@@ -900,6 +902,7 @@ pub struct NewTaskRow<'a> {
     /// 请求头 JSON；空串 = 无。
     pub extra_headers_json: &'a str,
     pub origin_url: &'a str,
+    pub browser_original_url: Option<&'a str>,
     pub audio_url: &'a str,
     pub resolver_plugin_id: &'a str,
     /// 多个插件同时匹配且站点无默认插件：首次起跑时询问用户（`resolver_choice_pending`）。
@@ -1637,6 +1640,8 @@ impl Db {
         // 有真实来源(RSS enclosure 直链)时写这里。空 = 回退 `url`。
         self.add_column_if_missing("tasks", "origin_url", "TEXT NOT NULL DEFAULT ''")
             .await?;
+        self.add_column_if_missing("tasks", "browser_original_url", "TEXT")
+            .await?;
         // ProxyMode::Auto 的任务级最终链路（可追溯性）：wire 标签见
         // `auto_proxy::route`（direct / direct:sampled / direct:pinned /
         // direct:failover / proxy:cached / proxy:sampled / proxy:failover）。
@@ -1945,9 +1950,9 @@ impl Db {
                  created_at, proxy_url, queue_id, checksum, ignore_tls_errors, queue_order, cookies, referrer, \
                  extra_headers, origin_url, audio_url, resolver_plugin_id, group_id, resolver_item, unattended, \
                  bt_selected_files, resolver_choice_pending, category_route, request_method, \
-                 bt_sequential, bt_first_last_pieces_first) \
+                 bt_sequential, bt_first_last_pieces_first, browser_original_url) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, \
-                 $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)",
+                 $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)",
             )
             .bind(row.id)
             .bind(row.url)
@@ -1978,6 +1983,7 @@ impl Db {
             .bind(row.request_method)
             .bind(i32::from(row.bt_sequential))
             .bind(i32::from(row.bt_first_last_pieces_first))
+            .bind(row.browser_original_url)
             .execute(&mut *tx)
             .await?;
             if !row.torrent_file_bytes.is_empty() {
@@ -2032,6 +2038,18 @@ impl Db {
         }
         tx.commit().await?;
         Ok(tasks)
+    }
+
+    #[cfg(any(feature = "plugins", test))]
+    pub(crate) async fn browser_original_url(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<String>, DbError> {
+        sqlx::query_scalar("SELECT browser_original_url FROM tasks WHERE id = $1")
+            .bind(task_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(DbError::from)
     }
 
     /// 持久化任务的浏览器请求上下文（cookies / referrer / extra_headers JSON），
@@ -5182,7 +5200,7 @@ impl Db {
         let mut tx = self.begin_write().await?;
         let row = sqlx::query(
             "SELECT url, proxy_url, queue_id, ignore_tls_errors, segments, resolver_plugin_id, \
-             cookies, referrer, extra_headers, queue_order FROM tasks WHERE id = $1",
+             cookies, referrer, extra_headers, queue_order, browser_original_url FROM tasks WHERE id = $1",
         )
         .bind(&spec.mother_task_id)
         .fetch_one(&mut *tx)
@@ -5196,6 +5214,7 @@ impl Db {
         let cookies: String = row.try_get("cookies").unwrap_or_default();
         let referrer: String = row.try_get("referrer").unwrap_or_default();
         let extra_headers: String = row.try_get("extra_headers").unwrap_or_default();
+        let browser_original_url: Option<String> = row.try_get("browser_original_url")?;
         let base_order: i32 = row.try_get("queue_order").unwrap_or(0);
 
         let now = chrono_now();
@@ -5230,8 +5249,8 @@ impl Db {
             sqlx::query(
                 "INSERT INTO tasks (id, url, file_name, save_dir, status, segments, total_bytes, \
                  created_at, proxy_url, queue_id, checksum, ignore_tls_errors, queue_order, \
-                 group_id, resolver_item, resolver_plugin_id, cookies, referrer, extra_headers) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, '', $11, $12, $13, $14, $15, $16, $17, $18)",
+                 group_id, resolver_item, resolver_plugin_id, cookies, referrer, extra_headers, browser_original_url) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, '', $11, $12, $13, $14, $15, $16, $17, $18, $19)",
             )
             .bind(&sib.id)
             .bind(&url)
@@ -5251,6 +5270,7 @@ impl Db {
             .bind(&cookies)
             .bind(&referrer)
             .bind(&extra_headers)
+            .bind(&browser_original_url)
             .execute(&mut *tx)
             .await?;
         }
@@ -5807,12 +5827,34 @@ impl Db {
     /// 分段/进度行（`task_segments` 按 `task_id` 索引，与 `url` 无关）。续传时由
     /// [`Self::settle_source_change`] 决定已下进度能否沿用。用户换上的是普通链接：同时
     /// 清掉浏览器接管时记录的非 GET 方法（`request_method`），新地址按 GET 续传。
-    pub async fn update_task_url(&self, task_id: &str, url: &str) -> Result<(), DbError> {
+    /// Browser provenance and its resolver binding are invalidated atomically with the URL.
+    /// `replacement_resolver` is the normal route for the new URL, if the old task was captured.
+    pub async fn update_task_url(
+        &self,
+        task_id: &str,
+        previous_url: &str,
+        url: &str,
+        replacement_resolver: Option<(&str, bool)>,
+    ) -> Result<(), DbError> {
+        let changes_origin = !reqwest::Url::parse(previous_url)
+            .ok()
+            .zip(reqwest::Url::parse(url).ok())
+            .is_some_and(|(old, new)| crate::credential_scope::same_origin(&old, &new));
         sqlx::query(
-            "UPDATE tasks SET url = $1, source_changed = 1, request_method = '' WHERE id = $2",
+            "UPDATE tasks SET url = $1, source_changed = 1, request_method = '', \
+             cookies = CASE WHEN $3 = 1 AND browser_original_url IS NOT NULL THEN '' ELSE cookies END, \
+             referrer = CASE WHEN $3 = 1 AND browser_original_url IS NOT NULL THEN '' ELSE referrer END, \
+             extra_headers = CASE WHEN $3 = 1 AND browser_original_url IS NOT NULL THEN '' ELSE extra_headers END, \
+             resolver_plugin_id = CASE WHEN browser_original_url IS NULL THEN resolver_plugin_id ELSE COALESCE($4, '') END, \
+             resolver_item = CASE WHEN browser_original_url IS NULL THEN resolver_item ELSE '' END, \
+             resolver_choice_pending = CASE WHEN browser_original_url IS NULL THEN resolver_choice_pending ELSE $5 END, \
+             browser_original_url = NULL WHERE id = $2",
         )
         .bind(url)
         .bind(task_id)
+        .bind(i32::from(changes_origin))
+        .bind(replacement_resolver.map(|(identity, _)| identity))
+        .bind(i32::from(replacement_resolver.is_some_and(|(_, pending)| pending)))
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -6210,12 +6252,15 @@ mod tests {
                 .await
                 .expect("segments");
         }
-        db.update_task_url("swapped", "http://example.com/other.bin")
-            .await
-            .expect("swap url");
-        db.update_task_url("same", "http://cdn.example.com/file.bin?sig=new")
-            .await
-            .expect("refresh url");
+        for (id, url) in [
+            ("swapped", "http://example.com/other.bin"),
+            ("same", "http://cdn.example.com/file.bin?sig=new"),
+        ] {
+            let previous_url = db.load_task_by_id(id).await.unwrap().unwrap().url;
+            db.update_task_url(id, &previous_url, url, None)
+                .await
+                .expect("swap url");
+        }
 
         // 新文件只大 1 KB：在 CDN 漂移容差内，换源后仍必须判为另一个文件。
         assert!(
@@ -9922,6 +9967,7 @@ mod tests {
             referrer: "",
             extra_headers_json: "",
             origin_url: "",
+            browser_original_url: None,
             audio_url: "",
             resolver_plugin_id: "",
             group_id: "",
@@ -9935,6 +9981,31 @@ mod tests {
             bt_sequential: false,
             bt_first_last_pieces_first: false,
         }
+    }
+
+    #[tokio::test]
+    async fn browser_original_url_is_stored_separately_from_download_url() {
+        let (db, dir) = open_test_db().await;
+        let mut row = new_row("redirect", "q");
+        let original = "https://origin.test/download?id=9";
+        row.browser_original_url = Some(original);
+        let tasks = db
+            .insert_new_tasks(&[row, new_row("direct", "q")], None)
+            .await
+            .expect("insert");
+        assert_eq!(tasks[0].url, "http://example.test/a.bin");
+        assert!(tasks[0].origin_url.is_empty());
+        db.pool.close().await;
+        let db = Db::open(&dir).await.expect("reopen");
+        assert_eq!(
+            db.browser_original_url("redirect")
+                .await
+                .expect("read")
+                .as_deref(),
+            Some(original)
+        );
+        assert_eq!(db.browser_original_url("direct").await.expect("read"), None);
+        close_test_db(&db, dir).await;
     }
 
     #[tokio::test]

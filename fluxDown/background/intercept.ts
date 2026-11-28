@@ -19,7 +19,7 @@
 import { browser } from "wxt/browser";
 import type { Browser } from "wxt/browser";
 import { cancelBeforeFilenameResolution } from "@/utils/download-cancellation";
-import { browserOnlyReason, isReplayableUrl } from "@/utils/download-source";
+import { browserOnlyReason, isReplayableUrl, observedBrowserOriginalUrl } from "@/utils/download-source";
 import type { NetworkEvidence, ServiceWorkerScopes } from "@/utils/download-source";
 import {
   dispositionNeedsPageCharset,
@@ -216,13 +216,21 @@ type MetaResult =
   | { source: "responseCache"; data: ResponseDownloadInfo }
   | { source: "downloadMeta"; data: Browser.downloads.DownloadItem };
 
+function itemFinalUrl(item: Browser.downloads.DownloadItem): string | undefined {
+  const finalUrl = "finalUrl" in item ? item.finalUrl : undefined;
+  return typeof finalUrl === "string" && finalUrl ? finalUrl : undefined;
+}
+
+function chromiumOriginalUrl(url: string, finalUrl?: string): string | undefined {
+  return import.meta.env.FIREFOX ? undefined : observedBrowserOriginalUrl(url, finalUrl);
+}
+
 /** 响应头缓存按响应 URL 记录：重定向下载要用 finalUrl 才能命中（原始 URL 只有 3xx）。 */
 function cachedResponseFor(item: Browser.downloads.DownloadItem): ResponseDownloadInfo | undefined {
   const direct = responseDownloadCache.get(item.url);
   if (direct) return direct;
-  // Chrome 54+ 才有 finalUrl，类型声明里没有：按运行时字段收窄。
-  const finalUrl = "finalUrl" in item ? item.finalUrl : undefined;
-  return typeof finalUrl === "string" ? responseDownloadCache.get(finalUrl) : undefined;
+  const finalUrl = itemFinalUrl(item);
+  return finalUrl ? responseDownloadCache.get(finalUrl) : undefined;
 }
 
 async function waitForMeta(
@@ -367,8 +375,20 @@ async function handleResponseCacheHit(
     return;
   }
 
-  // 优先使用 finalUrl（重定向后的真实 URL）
-  const fallbackAUrl = (originalItem as any).finalUrl || url;
+  let finalUrl = itemFinalUrl(originalItem);
+  if (!import.meta.env.FIREFOX && (!finalUrl || finalUrl === url)) {
+    try {
+      const refreshed = (await browser.downloads.search({ id: downloadId })).find(
+        (item) => item.id === downloadId,
+      );
+      if (!refreshed || refreshed.state === "complete" || refreshed.state === "interrupted") return;
+      finalUrl = itemFinalUrl(refreshed) ?? finalUrl;
+    } catch (error) {
+      logWarn("[FluxDown] Fallback path A: failed to refresh download URL:", error);
+    }
+    if (handledDownloads.has(downloadId)) return;
+  }
+  const fallbackAUrl = finalUrl || url;
   if (isBrowserOnly([url, fallbackAUrl], await loadServiceWorkerScopes())) return;
 
   const dispositionFilename = await resolveResponseDispositionFilename(rc);
@@ -402,6 +422,7 @@ async function handleResponseCacheHit(
       itemInfo,
       // 重定向场景：传入原始 URL，让 sendToFluxDown 可回退查找 headers 缓存
       fallbackAUrl !== url ? url : undefined,
+      chromiumOriginalUrl(url, finalUrl),
     );
   } finally {
     responseDownloadCache.delete(url);
@@ -461,10 +482,8 @@ async function handleDownloadMetaHit(
   if (isAppKnownDown()) return;
 
   // 优先使用 finalUrl（重定向后的真实 URL）
-  const fallbackDownloadUrl =
-    (freshItem as any).finalUrl ||
-    (originalItem as any).finalUrl ||
-    itemInfo.url;
+  const finalUrl = itemFinalUrl(freshItem) || itemFinalUrl(originalItem);
+  const fallbackDownloadUrl = finalUrl || itemInfo.url;
   if (isBrowserOnly([url, fallbackDownloadUrl], await loadServiceWorkerScopes())) return;
 
   const intercept = shouldIntercept(itemInfo, settings, await getCachedProfiles());
@@ -479,6 +498,7 @@ async function handleDownloadMetaHit(
     itemInfo,
     // 重定向场景：传入原始 URL，让 sendToFluxDown 可回退查找 headers 缓存
     fallbackDownloadUrl !== url ? url : undefined,
+    chromiumOriginalUrl(url, finalUrl),
   );
 }
 
@@ -496,6 +516,7 @@ async function executeFallbackIntercept(
   referrer: string | undefined,
   itemInfo: DownloadItemInfo,
   originalUrl?: string,
+  browserOriginalUrl?: string,
 ) {
   // 标记为 fallback 已处理，阻止其他层重复拦截
   handledDownloads.set(downloadId, "fallback");
@@ -524,6 +545,7 @@ async function executeFallbackIntercept(
         fileSize: itemInfo.fileSize,
         mimeType: itemInfo.mime,
         originalUrl,
+        browserOriginalUrl,
         origin: "intercept",
         downloadId,
       })
@@ -569,7 +591,8 @@ const handleDeterminingFilename: DeterminingFilenameListener = (
   const url = downloadItem.url;
   // finalUrl covers every ordinary href redirected through an API/CDN, not just
   // a site-specific preempted URL.
-  const downloadUrl = (downloadItem as any).finalUrl || url;
+  const finalUrl = itemFinalUrl(downloadItem);
+  const downloadUrl = finalUrl || url;
   let filenameResolved = false;
 
   const resolveFilename = () => {
@@ -664,9 +687,9 @@ const handleDeterminingFilename: DeterminingFilenameListener = (
           filename: cleanFilename,
           fileSize: itemInfo.fileSize,
           mimeType: itemInfo.mime,
-          // finalUrl is the engine target; original url remains a cache fallback
-          // for request headers and captured form transactions.
+          // Keep the headers-cache fallback independent of the resolver hint.
           originalUrl: downloadUrl !== url ? url : undefined,
+          browserOriginalUrl: chromiumOriginalUrl(url, finalUrl),
           origin: manual ? undefined : "intercept",
           downloadId: downloadItem.id,
           channel: manual?.channel,

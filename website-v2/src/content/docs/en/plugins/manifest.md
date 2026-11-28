@@ -102,10 +102,13 @@ A resolver turns a page URL into one or more downloadable files.
 | Field | Required | Rules |
 |---|---|---|
 | `match.urls` | yes | Non-empty list of URL patterns (see [URL pattern rules](#url-pattern-rules)). |
+| `match.browserOriginalUrl` | no | Boolean, default `false`. Resolver-only opt-in: if no resolver matches the task's final URL, try these same `match.urls` patterns against the first URL observed by the browser. |
 | `entry` | yes | Script file; safe relative path. Must define `globalThis.resolve`. |
 | `timeoutMs` | no | Per-call timeout in milliseconds. Must not be `0`. Replaces the 10 s default but is capped at the 30 s hard ceiling whatever you write. |
 | `memoryLimitMb` | no | QuickJS heap limit of one call in MiB. Must not be `0`. Replaces the 64 MiB default; anything above 512 MiB is capped at 512 MiB. Meant for resolvers that really process bulky data in script (for example parsing a multi-megabyte site script into a syntax tree); the limit is a ceiling, nothing is reserved up front. |
 | `multi` | no | Boolean, default `false`. `true` declares that this resolver may return a multi-file manifest and should take part in **pre-resolution** (the preview that lists the files before a task is created). With `false`, a single-file resolver is not run ahead of time just to find out; if it returns a multi-file list when the task starts, the engine still splits it into separate tasks, so `multi` is a hint for pre-resolution and not a requirement for returning lists. |
+
+This fallback applies only to direct HTTP(S) downloads captured by the Chromium extension through desktop native messaging (NMH), when it observed distinct first and final HTTP(S) URLs. It neither changes `ctx.url` nor replays credentials from the first request. See [`resolve(ctx)`](/docs/en/plugins/api-reference/#resolvectx).
 
 The `resolve(ctx)` contract and its return shapes are in the [API reference](/docs/en/plugins/api-reference/).
 

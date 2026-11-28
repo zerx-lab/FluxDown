@@ -614,6 +614,7 @@ impl CaptureService {
                     unattended,
                     hint_file_size: spec.hint_file_size,
                     name_hint: spec.name_hint,
+                    browser_original_url: spec.browser_original_url,
                     category_route: spec.category_route,
                 }),
             )
@@ -683,6 +684,7 @@ fn split_batch(request: DownloadRequest) -> Vec<DownloadRequest> {
             method: None,
             body: None,
             audio_url: None,
+            browser_original_url: None,
         })
         .collect()
 }
@@ -694,6 +696,7 @@ struct CaptureCreate {
     hint_file_size: Option<i64>,
     /// 表单改了名时，浏览器定下的原始名：用户名缺扩展名时引擎借它的扩展名补全。
     name_hint: Option<String>,
+    browser_original_url: Option<String>,
     /// 由 [`CategoryPlan::apply`] 设置；`None` = 保存目录即最终目录。
     category_route: Option<CategoryRouteDto>,
 }
@@ -726,6 +729,7 @@ fn captured_create_request(request: DownloadRequest) -> CaptureCreate {
         },
         hint_file_size,
         name_hint: None,
+        browser_original_url: request.browser_original_url,
         category_route: None,
     }
 }
@@ -751,6 +755,7 @@ fn merge_confirmed_request(
     let CaptureCreate {
         request: base,
         hint_file_size,
+        browser_original_url,
         ..
     } = captured_create_request(captured);
     confirmed.url = base.url;
@@ -784,6 +789,7 @@ fn merge_confirmed_request(
         request: confirmed,
         hint_file_size,
         name_hint,
+        browser_original_url,
         category_route: None,
     }
 }
@@ -1382,6 +1388,7 @@ mod tests {
                 raw: "k=v".to_owned(),
             }),
             audio_url: Some("https://example.com/a.m4a".to_owned()),
+            browser_original_url: None,
         }
     }
 

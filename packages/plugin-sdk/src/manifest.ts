@@ -226,11 +226,14 @@ function checkMemoryLimit(errors: string[], where: string, value: unknown) {
   if (!Number.isSafeInteger(value) || (value as number) <= 0) errors.push(`${where} memoryLimitMb 须为正整数`);
 }
 
-function checkMatch(errors: string[], where: string, match: unknown) {
+function checkMatch(errors: string[], where: string, match: unknown, resolver = false) {
   if (!isObject(match)) return void errors.push(`${where} 须为对象`);
-  unknownKeys(errors, where, match, ["urls"]);
+  unknownKeys(errors, where, match, resolver ? ["urls", "browserOriginalUrl"] : ["urls"]);
   if (!Array.isArray(match.urls) || match.urls.length === 0 || !match.urls.every(nonEmptyString)) {
     errors.push(`${where}.urls 须为非空字符串数组`);
+  }
+  if (resolver && match.browserOriginalUrl !== undefined && typeof match.browserOriginalUrl !== "boolean") {
+    errors.push(`${where}.browserOriginalUrl 须为布尔`);
   }
 }
 
@@ -772,7 +775,7 @@ export function validateManifest(
         continue;
       }
       unknownKeys(errors, "resolver", resolver, ["match", "entry", "timeoutMs", "memoryLimitMb", "multi"]);
-      checkMatch(errors, "resolver match", resolver.match);
+      checkMatch(errors, "resolver match", resolver.match, true);
       checkEntry(errors, "resolver entry", resolver.entry, fileSet, strict);
       checkTimeout(errors, "resolver", resolver.timeoutMs);
       checkMemoryLimit(errors, "resolver", resolver.memoryLimitMb);

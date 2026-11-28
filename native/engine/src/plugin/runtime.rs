@@ -59,6 +59,8 @@ pub enum PluginEntryKind {
 pub struct ResolveRequest {
     pub task_id: String,
     pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub browser_original_url: Option<String>,
     /// 当前插件对该站点的默认认证引用；只有声明了 `auth` 权限的插件才会被
     /// 填充（M-5），未授权插件恒为空串。插件通常直接使用 `flux.fetch`，
     /// bridge 会自动按该引用查找并复用凭据。
@@ -172,6 +174,14 @@ pub struct ResolveResult {
     /// 请求改写补丁（与拦截器 `prepare` 返回值同形），每次运行都重新应用，
     /// 失败即任务失败。`extraHeaders` 作为整表替换并入同一补丁。
     pub request: Option<crate::intercept::RequestPatch>,
+    /// Host-only: clear captured credentials before applying resolver overrides.
+    #[doc(hidden)]
+    #[serde(skip)]
+    pub reset_browser_request: bool,
+    /// Host-only: scope unqualified headers to the effective primary origin.
+    #[doc(hidden)]
+    #[serde(skip)]
+    pub browser_request_origin: Option<Arc<reqwest::Url>>,
 }
 
 /// [`ResolveResult::manifest`] —— 插件返回的多文件清单（网盘文件夹/多规格
@@ -1091,6 +1101,7 @@ mod tests {
     #[test]
     fn resolve_request_fields_are_camel_case() {
         let req = ResolveRequest {
+            browser_original_url: None,
             task_id: "t".into(),
             url: "u".into(),
             auth_ref: String::new(),

@@ -2407,6 +2407,90 @@
  "ok": false
 },
 {
+ "name": "resolver opts in to matching the browser original URL",
+ "manifest": {
+  "identity": "a@b",
+  "name": "N",
+  "version": "1.0.0",
+  "resolvers": [
+   { "match": { "urls": ["https://example.com/*"], "browserOriginalUrl": true }, "entry": "resolve.js" }
+  ]
+ },
+ "files": ["resolve.js"],
+ "ok": true,
+ "risk": "standard"
+},
+{
+ "name": "resolver explicitly disables browser original URL matching",
+ "manifest": {
+  "identity": "a@b",
+  "name": "N",
+  "version": "1.0.0",
+  "resolvers": [
+   { "match": { "urls": ["https://example.com/*"], "browserOriginalUrl": false }, "entry": "resolve.js" }
+  ]
+ },
+ "files": ["resolve.js"],
+ "ok": true,
+ "risk": "standard"
+},
+{
+ "name": "resolver browserOriginalUrl must be a boolean",
+ "manifest": {
+  "identity": "a@b",
+  "name": "N",
+  "version": "1.0.0",
+  "resolvers": [
+   { "match": { "urls": ["https://example.com/*"], "browserOriginalUrl": "true" }, "entry": "resolve.js" }
+  ]
+ },
+ "files": ["resolve.js"],
+ "ok": false
+},
+{
+ "name": "resolver browserOriginalUrl cannot be null",
+ "manifest": {
+  "identity": "a@b",
+  "name": "N",
+  "version": "1.0.0",
+  "resolvers": [
+   { "match": { "urls": ["https://example.com/*"], "browserOriginalUrl": null }, "entry": "resolve.js" }
+  ]
+ },
+ "files": ["resolve.js"],
+ "ok": false
+},
+{
+ "name": "hooks match does not accept browserOriginalUrl",
+ "manifest": {
+  "identity": "a@b",
+  "name": "N",
+  "version": "1.0.0",
+  "hooks": {
+   "entry": "hooks.js",
+   "match": { "urls": ["https://example.com/*"], "browserOriginalUrl": true }
+  }
+ },
+ "files": ["hooks.js"],
+ "ok": false
+},
+{
+ "name": "interceptors match does not accept browserOriginalUrl",
+ "manifest": {
+  "identity": "a@b",
+  "name": "N",
+  "version": "1.0.0",
+  "permissions": ["intercept"],
+  "interceptors": {
+   "entry": "intercept.js",
+   "stages": ["prepare"],
+   "match": { "urls": ["https://example.com/*"], "browserOriginalUrl": true }
+  }
+ },
+ "files": ["intercept.js"],
+ "ok": false
+},
+{
  "name": "resolver memoryLimitMb raises the heap budget",
  "manifest": {
   "identity": "a@b",

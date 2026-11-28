@@ -50,6 +50,7 @@ pub enum ActorOperation {
         hint_file_size: i64,
         /// 参照文件名（浏览器捕获的原始名），见 `DaemonCreateTaskParams::name_hint`。
         name_hint: String,
+        browser_original_url: Option<String>,
         unattended: bool,
         /// 分类目录路由，见 `DaemonCreateTaskParams::category_route`。
         category_route: Option<fluxdown_protocol::CategoryRouteDto>,
@@ -1223,6 +1224,7 @@ async fn execute_operation(
             mut torrent_file_bytes,
             hint_file_size,
             name_hint,
+            browser_original_url,
             unattended,
             category_route,
         } => {
@@ -1249,6 +1251,7 @@ async fn execute_operation(
                 .manager
                 .create_task(NewTaskSpec {
                     url: request.url,
+                    browser_original_url,
                     save_dir,
                     file_name: request.file_name,
                     segments: request.segments,
@@ -3890,6 +3893,7 @@ mod tests {
             torrent_file_bytes: torrent,
             hint_file_size: 0,
             name_hint: String::new(),
+            browser_original_url: None,
             unattended: false,
             category_route: None,
         };

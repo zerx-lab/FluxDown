@@ -149,12 +149,25 @@ pub struct MatchDecl {
     pub urls: Vec<String>,
 }
 
+/// Resolver-only matching options.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResolverMatchDecl {
+    pub urls: Vec<String>,
+    #[serde(default, skip_serializing_if = "crate::plugin::manifest::is_false")]
+    pub browser_original_url: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// 单个 resolver 声明。v1 每插件至多一个。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResolverDecl {
     #[serde(rename = "match")]
-    pub match_decl: MatchDecl,
+    pub match_decl: ResolverMatchDecl,
     pub entry: String,
     /// 单次 resolve 超时（毫秒）。可下调宿主预算，不可超 30s 硬顶。
     #[serde(default)]

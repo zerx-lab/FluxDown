@@ -286,6 +286,8 @@ export interface DaemonCreateTaskParams {
   hintFileSize?: number | null;
   /** 参照文件名（浏览器捕获的原始名）：显式名缺扩展名时借它的扩展名补全。 */
   nameHint?: string | null;
+  /** Optional pre-redirect URL supplied by the browser capture pipeline. */
+  browserOriginalUrl?: string | null;
   /** 分类目录路由：`request.saveDir` 为未命中时的基准目录，引擎按初始名与完成时的最终文件名定落点。 */
   categoryRoute?: CategoryRouteDto | null;
 }

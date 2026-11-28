@@ -2819,6 +2819,8 @@ fn due_schedule_actions<'a>(
 pub struct NewTaskSpec {
     /// 下载 URL（http/https/ftp/magnet/ed2k/…）。
     pub url: String,
+    /// Pre-redirect browser URL, used only to select and inform a resolver.
+    pub browser_original_url: Option<String>,
     /// 保存目录。
     pub save_dir: String,
     /// 文件名（空 = 探测/URL 推断）。
@@ -2983,6 +2985,7 @@ struct PreparedTask {
     db_url: String,
     /// 展示用原始来源（thunder 原链接 / 种子任务的 http 来源）；空 = 无。
     origin_url: String,
+    browser_original_url: Option<String>,
     save_dir: String,
     file_name: String,
     /// hint 稍后下载任务的 URL 推断占位名及其「推断」标记；随创建行一并落库。
@@ -3065,6 +3068,7 @@ impl PreparedTask {
             referrer: &self.referrer,
             extra_headers_json: &self.extra_headers_json,
             origin_url: &self.origin_url,
+            browser_original_url: self.browser_original_url.as_deref(),
             audio_url: self
                 .audio_url
                 .as_deref()
@@ -3296,6 +3300,7 @@ struct QueuedTask {
     source_url: String,
     /// resolver 下发的请求补丁（`(插件 ID, 补丁)`），每次运行起跑前应用。
     resolver_patch: Option<(String, crate::intercept::RequestPatch)>,
+    browser_request_origin: Option<Arc<reqwest::Url>>,
 }
 
 impl QueuedTask {
@@ -3329,6 +3334,7 @@ impl QueuedTask {
             resolver_item: String::new(),
             source_url: String::new(),
             resolver_patch: None,
+            browser_request_origin: None,
         }
     }
 }
@@ -3409,6 +3415,16 @@ impl PendingQueue {
     fn push_front(&mut self, queued: QueuedTask) {
         self.counts.add(&queued);
         self.items.push_front(queued);
+    }
+
+    fn reload_edited_task_on_start(&mut self, task_id: &str) {
+        if let Some(queued) = self
+            .items
+            .iter_mut()
+            .find(|queued| queued.task_id == task_id)
+        {
+            queued.is_resume = true;
+        }
     }
 
     /// 队首（仅测试：断言 FIFO 头部）。
@@ -3803,6 +3819,14 @@ fn manifest_item_to_info(item: crate::plugin::ManifestItem) -> crate::model::Man
 /// ephemeral 走 skip-probe hint 路径。
 #[cfg(feature = "plugins")]
 fn apply_resolve_to_queued(queued: &mut QueuedTask, res: crate::plugin::ResolveResult) {
+    if res.reset_browser_request {
+        queued.method = None;
+        queued.body = None;
+        queued.cookies.clear();
+        queued.referrer.clear();
+        queued.extra_headers.clear();
+    }
+    queued.browser_request_origin = res.browser_request_origin;
     if !res.url.is_empty() {
         queued.url = res.url;
     }
@@ -4408,6 +4432,7 @@ impl DownloadManager {
     async fn plugin_bind_resolver(
         &self,
         url: &str,
+        browser_original_url: Option<&str>,
         explicit: &str,
         group_id: &str,
         resolver_item: &str,
@@ -4425,13 +4450,16 @@ impl DownloadManager {
             return (explicit.to_owned(), false, !available);
         }
         let group_member = !group_id.is_empty() && !resolver_item.is_empty();
-        let (identity, pending) = self.plugin_auto_resolver(url, group_member).await;
+        let (identity, pending) = self
+            .plugin_auto_resolver(url, browser_original_url, group_member)
+            .await;
         (identity, pending, false)
     }
     #[cfg(not(feature = "plugins"))]
     async fn plugin_bind_resolver(
         &self,
         _url: &str,
+        _browser_original_url: Option<&str>,
         _explicit: &str,
         _group_id: &str,
         _resolver_item: &str,
@@ -4442,20 +4470,29 @@ impl DownloadManager {
     /// 没有显式绑定时的自动路由：任务组成员按预览同款规则 `match_multi_resolver`（保证
     /// 成员与清单同源），其余任务（含 RSS 二段解析条目）按 `route_resolver`。无命中为空串。
     #[cfg(feature = "plugins")]
-    async fn plugin_auto_resolver(&self, url: &str, group_member: bool) -> (String, bool) {
+    async fn plugin_auto_resolver(
+        &self,
+        url: &str,
+        browser_original_url: Option<&str>,
+        group_member: bool,
+    ) -> (String, bool) {
         let Some(pm) = &self.plugin_manager else {
             return (String::new(), false);
         };
         if group_member {
             return (
-                pm.match_multi_resolver(url).await.unwrap_or_default(),
+                pm.match_captured_multi_resolver(url, browser_original_url)
+                    .await
+                    .unwrap_or_default(),
                 false,
             );
         }
-        pm.route_resolver(url).await.map_or_else(
-            || (String::new(), false),
-            |route| (route.identity, route.choice_pending),
-        )
+        pm.route_captured_resolver(url, browser_original_url)
+            .await
+            .map_or_else(
+                || (String::new(), false),
+                |route| (route.identity, route.choice_pending),
+            )
     }
 
     /// 二段解析任务（`resolver_item` 非空）的绑定为空（旧版 fail-closed 建档、卸载清绑定、
@@ -4475,8 +4512,19 @@ impl DownloadManager {
                 return None;
             }
         };
+        let original = match self.db.browser_original_url(task_id).await {
+            Ok(original) => original,
+            Err(error) => {
+                crate::logger::report_error(
+                    "download-manager",
+                    "load second-stage browser URL",
+                    &error,
+                );
+                return None;
+            }
+        };
         let (identity, _) = self
-            .plugin_auto_resolver(&task.url, !task.group_id.is_empty())
+            .plugin_auto_resolver(&task.url, original.as_deref(), !task.group_id.is_empty())
             .await;
         if identity.is_empty() {
             return None;
@@ -4568,6 +4616,7 @@ impl DownloadManager {
                 return;
             };
             let req = crate::plugin::ResolveRequest {
+                browser_original_url: None,
                 task_id: String::new(),
                 url: url.clone(),
                 auth_ref: String::new(),
@@ -4650,6 +4699,7 @@ impl DownloadManager {
         let selector = self.selector.clone();
         let second_stage = !req.resolver_item.is_empty();
         let subject_url = req.url.clone();
+        let first_hop = req.browser_original_url.is_some();
         handle.spawn(async move {
             let mut identity = identity;
             // 多插件冲突待选：首次 resolve 前定案（站点默认 / 无人值守回退 / 询问用户），
@@ -4659,7 +4709,12 @@ impl DownloadManager {
                     ResolverReselect::No => false,
                     ResolverReselect::Pending => true,
                     ResolverReselect::IfSuperseded => {
-                        pm.bound_resolver_superseded(&req.url, &identity).await
+                        pm.bound_resolver_superseded(
+                            &req.url,
+                            req.browser_original_url.as_deref(),
+                            &identity,
+                        )
+                        .await
                     }
                 };
             if reselect_now {
@@ -4667,6 +4722,7 @@ impl DownloadManager {
                     c = pm.choose_task_resolver(
                         &task_id,
                         &req.url,
+                        req.browser_original_url.as_deref(),
                         &identity,
                         unattended,
                         selector.as_ref(),
@@ -4759,6 +4815,24 @@ impl DownloadManager {
                     if selected {
                         cancelled = Some(crate::plugin::CancelReason::VariantSelectionCancelled);
                     }
+                }
+            }
+            if let Ok(Some(res)) = &mut result {
+                let primary = res
+                    .request
+                    .as_ref()
+                    .and_then(|patch| patch.url.as_deref())
+                    .or_else(|| (!res.url.is_empty()).then_some(res.url.as_str()))
+                    .unwrap_or(&subject_url);
+                if first_hop || primary != subject_url {
+                    let primary = reqwest::Url::parse(primary).ok();
+                    res.reset_browser_request = !reqwest::Url::parse(&subject_url)
+                        .ok()
+                        .zip(primary.as_ref())
+                        .is_some_and(|(source, target)| {
+                            crate::credential_scope::same_origin(&source, target)
+                        });
+                    res.browser_request_origin = primary.map(Arc::new);
                 }
             }
             if tx
@@ -5227,6 +5301,7 @@ impl DownloadManager {
                 resolver_item,
                 source_url: task.url.clone(),
                 resolver_patch: None,
+                browser_request_origin: None,
             };
             self.begin_resolve_start(new_queued).await;
             self.send_tasks_snapshot().await;
@@ -5381,6 +5456,7 @@ impl DownloadManager {
                 resolver_item: mother_resolver_item,
                 source_url: task.url.clone(),
                 resolver_patch: None,
+                browser_request_origin: None,
             };
             self.begin_resolve_start(mother_queued).await;
 
@@ -5415,6 +5491,7 @@ impl DownloadManager {
                     resolver_item: sib.resolver_item,
                     source_url: task.url.clone(),
                     resolver_patch: None,
+                    browser_request_origin: None,
                 };
                 self.enqueue_persisted_task(sib_queued, true).await;
             }
@@ -5518,6 +5595,9 @@ impl DownloadManager {
     #[cfg(feature = "plugins")]
     async fn begin_resolve_start(&mut self, queued: QueuedTask) {
         let task_id = queued.task_id.clone();
+        let Ok(browser_original_url) = self.load_browser_original_url(&task_id).await else {
+            return;
+        };
         let identity = queued.resolver_plugin_id.clone();
         let has_audio_track = queued.audio_url.is_some();
         // 占位插入 active_tasks（用原始 url 算 is_bt，真实 generation/cancel_token）：
@@ -5539,6 +5619,7 @@ impl DownloadManager {
             },
         );
         let req = crate::plugin::ResolveRequest {
+            browser_original_url,
             task_id: task_id.clone(),
             url: queued.url.clone(),
             auth_ref: String::new(),
@@ -5698,6 +5779,9 @@ impl DownloadManager {
                 return;
             }
         };
+        let Ok(browser_original_url) = self.load_browser_original_url(task_id).await else {
+            return;
+        };
         let (cookies, referrer, extra_headers) =
             match crate::task_edit::request_context(&self.db, &task).await {
                 Ok(context) => context,
@@ -5765,6 +5849,7 @@ impl DownloadManager {
             },
         );
         let req = crate::plugin::ResolveRequest {
+            browser_original_url,
             task_id: task_id.to_string(),
             url: task.url.clone(),
             auth_ref: String::new(),
@@ -5796,6 +5881,21 @@ impl DownloadManager {
             reselect,
             resolve_token,
         );
+    }
+
+    #[cfg(feature = "plugins")]
+    async fn load_browser_original_url(&self, task_id: &str) -> Result<Option<String>, DbError> {
+        let original = self.db.browser_original_url(task_id).await;
+        if let Err(error) = &original {
+            persist_task_failure(
+                task_id,
+                format!("load browser redirect metadata: {error:#}"),
+                &self.db,
+                &self.progress_tx,
+            )
+            .await;
+        }
+        original
     }
 
     /// 检查任务是否仍处于"可自动重试的 error(4)"状态，供 actor loop 在自动
@@ -9706,6 +9806,7 @@ impl DownloadManager {
     ) -> PrepareOutcome {
         let NewTaskSpec {
             mut url,
+            browser_original_url,
             save_dir,
             file_name,
             name_hint,
@@ -9889,8 +9990,27 @@ impl DownloadManager {
                 }
             }
         };
+        let browser_original_url = browser_original_url.filter(|original| {
+            fn http_url(raw: &str) -> Option<reqwest::Url> {
+                let parsed = reqwest::Url::parse(raw).ok()?;
+                (matches!(parsed.scheme(), "http" | "https") && parsed.host_str().is_some())
+                    .then_some(parsed)
+            }
+            db_url == url
+                && resolver_item.is_empty()
+                && original.len() <= 8192
+                && http_url(original)
+                    .zip(http_url(&url))
+                    .is_some_and(|(first, last)| first != last)
+        });
         let (resolver_plugin_id, choice_pending, resolver_fail_closed) = self
-            .plugin_bind_resolver(&url, &explicit_resolver, &group_id, &resolver_item)
+            .plugin_bind_resolver(
+                &url,
+                browser_original_url.as_deref(),
+                &explicit_resolver,
+                &group_id,
+                &resolver_item,
+            )
             .await;
         // 二段解析任务（resolver_item 非空）不进入多插件选择：组成员由预览同款规则 / 显式
         // 绑定定案，RSS 条目沿用 `route_resolver` 的首选。
@@ -9963,6 +10083,7 @@ impl DownloadManager {
             url,
             db_url,
             origin_url,
+            browser_original_url,
             save_dir,
             file_name,
             provisional_name,
@@ -10196,6 +10317,7 @@ impl DownloadManager {
             resolver_item,
             source_url: db_url,
             resolver_patch: None,
+            browser_request_origin: None,
         };
         self.enqueue_persisted_task(queued, has_resolver).await;
     }
@@ -10967,6 +11089,7 @@ impl DownloadManager {
             resolver_item: _,
             source_url,
             resolver_patch,
+            browser_request_origin,
         } = queued;
 
         // Four-tier segment count priority:
@@ -11332,6 +11455,7 @@ impl DownloadManager {
                 body.clone(),
             );
             spec.egress = egress_router;
+            spec.browser_request_origin = browser_request_origin;
 
             // 多 CDN 聚合输入：manager 侧条件（开关/TLS/代理）在此折算；
             // pinned client 的 UA 与任务 client 同源（resolved_task_ua）。
@@ -12443,12 +12567,21 @@ impl DownloadManager {
         #[cfg(feature = "plugins")]
         let plugin_resolved = plugin_applied.is_some();
         #[cfg(feature = "plugins")]
+        let reset_browser_request = plugin_applied
+            .as_ref()
+            .is_some_and(|result| result.reset_browser_request);
+        #[cfg(not(feature = "plugins"))]
+        let reset_browser_request = false;
+        #[cfg(not(feature = "plugins"))]
+        let browser_request_origin = None;
+        #[cfg(feature = "plugins")]
         let (
             plugin_patch,
             plugin_audio_url,
             plugin_ephemeral,
             plugin_total_bytes,
             plugin_range_supported,
+            browser_request_origin,
         ) = if let Some(res) = plugin_applied {
             if !res.url.is_empty() {
                 task.url = res.url;
@@ -12472,9 +12605,10 @@ impl DownloadManager {
                 res.ephemeral,
                 res.total_bytes.unwrap_or(0),
                 res.range_supported,
+                res.browser_request_origin,
             )
         } else {
-            (None, None, false, 0, false)
+            (None, None, false, 0, false, None)
         };
 
         // 浏览器 POST 接管的任务：请求体（常含令牌）不落库。同一引擎生命周期内仍在内存的
@@ -12528,7 +12662,9 @@ impl DownloadManager {
         // 恢复持久化的浏览器请求上下文：鉴权站点（cookie+token 双因子的 fnOS、
         // 带 Authorization 的私有服务）缺它们 resume 必然 4xx。
         // 旧任务（升级前创建）三者皆空 → 行为与既往完全一致。
-        let (resume_cookies, resume_referrer, resume_extra_headers) =
+        let (resume_cookies, resume_referrer, resume_extra_headers) = if reset_browser_request {
+            (String::new(), String::new(), HashMap::new())
+        } else {
             match crate::task_edit::request_context(&self.db, &task).await {
                 Ok(context) => context,
                 Err(error) => {
@@ -12541,7 +12677,8 @@ impl DownloadManager {
                     .await;
                     return;
                 }
-            };
+            }
+        };
 
         // resolver 的 extraHeaders / request 补丁在 run_http_family_task 起跑前应用；
         // 这里的 resume_extra_headers 只来自 DB 中的基础请求上下文。
@@ -13069,6 +13206,7 @@ impl DownloadManager {
                         body,
                     );
                     spec.egress = egress_router;
+                    spec.browser_request_origin = browser_request_origin;
                     spec
                 },
                 audio_url,
@@ -16063,7 +16201,32 @@ impl DownloadManager {
         if t.url == decoded_new {
             return Ok(());
         }
-        if let Err(e) = self.db.update_task_url(task_id, &decoded_new).await {
+        #[cfg(feature = "plugins")]
+        let replacement_resolver = if self
+            .db
+            .browser_original_url(task_id)
+            .await
+            .map_err(|error| format!("db: {error:#}"))?
+            .is_some()
+        {
+            Some(self.plugin_auto_resolver(&decoded_new, None, false).await)
+        } else {
+            None
+        };
+        #[cfg(not(feature = "plugins"))]
+        let replacement_resolver: Option<(String, bool)> = None;
+        if let Err(e) = self
+            .db
+            .update_task_url(
+                task_id,
+                &t.url,
+                &decoded_new,
+                replacement_resolver
+                    .as_ref()
+                    .map(|(identity, pending)| (identity.as_str(), *pending)),
+            )
+            .await
+        {
             log_info!("[manager] change_task_url {} db error: {}", task_id, e);
             return Err(format!("db: {e}"));
         }
@@ -16097,6 +16260,7 @@ impl DownloadManager {
         self.auto_failover_attempts.remove(task_id);
         // 换上的是普通链接（库里的非 GET 方法已随换源清空）：旧表单事务不再适用。
         self.replayable_requests.remove(task_id);
+        self.pending_queue.reload_edited_task_on_start(task_id);
         log_info!(
             "[manager] change_task_url {}: '{}' -> '{}'",
             task_id,
@@ -17712,6 +17876,7 @@ mod tests {
                 resolver_item: String::new(),
                 source_url: String::new(),
                 resolver_patch: None,
+                browser_request_origin: None,
             }
         }
 
@@ -19386,6 +19551,7 @@ mod tests {
             resolver_item: String::new(),
             source_url: String::new(),
             resolver_patch: None,
+            browser_request_origin: None,
         };
         let status_of = |db: &Db, id: &str| {
             let db = db.clone();
@@ -20646,6 +20812,45 @@ mod tests {
             .await
             .expect("connect fault injector");
         (dir, db, injector)
+    }
+
+    #[cfg(feature = "plugins")]
+    #[tokio::test]
+    async fn browser_redirect_metadata_read_error_blocks_resolver_start_and_resume() {
+        let (dir, db, injector) = sqlite_fault_fixture("browser_redirect_read_failure").await;
+        for (id, status) in [("start", 0), ("resume", 2)] {
+            insert_task_at_status(&db, id, &dir.to_string_lossy(), "capture.bin", status).await;
+        }
+        sqlx::query("ALTER TABLE tasks RENAME COLUMN browser_original_url TO unavailable")
+            .execute(&injector)
+            .await
+            .expect("make redirect metadata unavailable");
+
+        let mut manager = sched_manager(&db, 1);
+        let start = db.load_task_by_id("start").await.unwrap().unwrap();
+        let mut queued = QueuedTask::for_resume(start);
+        queued.resolver_plugin_id = "test@redirect".to_owned();
+        manager.begin_resolve_start(queued).await;
+        manager
+            .begin_resolve_resume("resume", "test@redirect".to_owned())
+            .await;
+
+        let no_active_resolves =
+            manager.active_tasks.is_empty() && manager.pending_resolve.is_empty();
+        let start = db.load_task_by_id("start").await.unwrap().unwrap();
+        let resume = db.load_task_by_id("resume").await.unwrap().unwrap();
+        drop(manager);
+        injector.close().await;
+        db.pool().close().await;
+        std::fs::remove_dir_all(dir).expect("remove metadata read fault fixture");
+        assert!(no_active_resolves);
+        for task in [start, resume] {
+            assert_eq!(task.status, 4);
+            assert!(
+                task.error_message
+                    .contains("load browser redirect metadata")
+            );
+        }
     }
 
     #[tokio::test]
@@ -21989,6 +22194,7 @@ mod tests {
             resolver_item: String::new(),
             source_url: String::new(),
             resolver_patch: None,
+            browser_request_origin: None,
         })
         .await;
 
