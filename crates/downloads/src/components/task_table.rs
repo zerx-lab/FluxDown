@@ -23,7 +23,7 @@ use gpui::{
 };
 use gpui::{Bounds, ScrollStrategy};
 use gpui_component::{
-    ElementExt as _, Icon, IconName, Sizable as _, Size, h_flex,
+    ElementExt as _, FocusableExt as _, Icon, IconName, Sizable as _, Size, h_flex,
     menu::{PopupMenu, PopupMenuItem},
     scroll::Scrollbar,
     spinner::Spinner,
@@ -4849,10 +4849,13 @@ pub(crate) fn render_download_table(
         })
         .child(
             div().absolute().inset_0().child(
+                // 表格整块获焦时 gpui-component 会在键盘输入后描一圈 ring 色边线
+                // （Cmd+A / Esc 后闪现，鼠标一动又消失）；行选中高亮已表达焦点位置。
                 DataTable::new(table_state)
                     .with_size(Size::Size(table_header_height(cx)))
                     .stripe(false)
                     .bordered(false)
+                    .focus_ring(false)
                     .scrollbar_visible(true, true),
             ),
         )
