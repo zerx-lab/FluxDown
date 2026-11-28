@@ -31,8 +31,13 @@ pub const JSONRPC_VERSION: &str = "2.0";
 /// （纯增量，旧客户端忽略未知字段与方法），v28 增加 eD2K 实况与网络检测：
 /// `daemon.task.ed2kStatus`、`daemon.ed2k.idCheck`、`daemon.ed2k.kadBootstrap`、
 /// `daemon.ed2k.nodesSubscription.refresh` 与只读配置键 `ed2k_nodes_dat_count` /
-/// `ed2k_nodes_dat_updated_at`（纯增量）。
-pub const PROTOCOL_VERSION: u32 = 28;
+/// `ed2k_nodes_dat_updated_at`（纯增量），v29 增加 `PowerAction::Quit`（旧版不能解码），
+/// v30 增加 AI 助手（`agent.assistant.*`、`AgentEvent::AssistantChanged` / `AgentSnapshot.assistant`）
+/// 与网络诊断（`daemon.net.interfaces` / `daemon.net.measureRoutes`），v31 扩展 AI 助手：
+/// `agent.assistant.{renameSession,exportSession,attachment}`、会话搜索、重新生成 / 编辑重发、
+/// 确认预览、执行失败原因、单会话提问上限（`sessionLimit` / `questionsUsed`）与
+/// `ErrorReason::{AssistantQuotaExceeded,AssistantConfirmExpired,AssistantSessionLimit}`（纯增量）。
+pub const PROTOCOL_VERSION: u32 = 31;
 /// 旧客户端不能解析 v19 起的协议语义，必须在握手时拒绝混用。
 pub const MIN_PROTOCOL_VERSION: u32 = 19;
 /// 服务收到 `system.shutdown` 而退出时的 WebSocket 关闭原因：客户端据此停止重连与重拉。
@@ -202,6 +207,14 @@ impl RpcRequest {
     }
 }
 
+/// [`crate::method::SYSTEM_CANCEL`] 的参数：要中止的在途请求 ID。
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct CancelRequestParams {
+    pub id: RequestId,
+}
+
 /// 校验连接首个 RPC 调用并解析 `system.hello`。
 ///
 /// 服务端必须在读取任何其他方法前调用此函数；成功后才可进入正常分发。
@@ -341,6 +354,7 @@ fn invalid_rpc_field(field: &str) -> RpcErrorData {
         field: Some(field.to_owned()),
         revision: None,
         reason: None,
+        plugin_detail: None,
     }
 }
 

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { applyHints, emptyHints, emptyTracking, joinContinuations, parseCommand, planFieldFill } from './aria2c'
 import type { FillTracking, HeaderRowLike } from './aria2c'
-import { appendEntries, parseEntries, parseInput } from './model'
+import { appendLiteralEntries, parseEntries, parseInput } from './model'
 
 const urls = (command: string): string[] => {
   const parsed = parseCommand(command)
@@ -229,7 +229,9 @@ describe('applyHints', () => {
 describe('TXT 导入追加', () => {
   test('原样保留已有 aria2c 命令及其头部信息，按 URL 去重追加', () => {
     const existing = "aria2c -x16 \\\n  --header 'Cookie: sid=abc' \\\n  -o a.zip 'https://a.example/a?t=1&u=2'"
-    const text = appendEntries(existing, [entry('https://b.example/b.zip'), entry('https://a.example/a?t=1&u=2')])
+    const { text } = appendLiteralEntries({ text: existing, literalUrls: new Set() }, [
+      entry('https://b.example/b.zip'), entry('https://a.example/a?t=1&u=2'),
+    ])
     expect(text).toBe(`${existing}\nhttps://b.example/b.zip`)
     const parsed = parseInput(text, false)
     expect(parsed.hints.cookie).toBe('sid=abc')

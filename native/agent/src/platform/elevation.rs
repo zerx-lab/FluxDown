@@ -64,13 +64,7 @@ pub enum Startup {
 /// 关闭 UAC 或内置 Administrator 账户是 `TokenElevationTypeDefault`：资源管理器本身也持有同一种
 /// 令牌，进程之间没有完整性差异，不需要降权。
 pub fn running_elevated() -> Result<bool, String> {
-    // SAFETY: GetCurrentProcess 无前置条件，返回无需关闭的当前进程伪句柄。
-    let process = unsafe { GetCurrentProcess() };
-    let mut raw = HANDLE::default();
-    // SAFETY: process 是当前进程伪句柄；raw 是有效的输出槽，成功后句柄立即交给 Token 守卫。
-    unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut raw) }
-        .map_err(|error| format!("OpenProcessToken failed: {error}"))?;
-    let token = Token(raw);
+    let token = open_process_token()?;
     let mut kind = TOKEN_ELEVATION_TYPE::default();
     let size = u32::try_from(std::mem::size_of::<TOKEN_ELEVATION_TYPE>())
         .map_err(|_| "TOKEN_ELEVATION_TYPE size does not fit u32".to_owned())?;
@@ -91,8 +85,26 @@ pub fn running_elevated() -> Result<bool, String> {
     Ok(kind == TokenElevationTypeFull)
 }
 
-/// 独占持有 `OpenProcessToken` 返回的令牌句柄。
-struct Token(HANDLE);
+/// 以 `TOKEN_QUERY` 打开本进程令牌；句柄由返回的 [`Token`] 独占并在 drop 时关闭。
+pub(super) fn open_process_token() -> Result<Token, String> {
+    // SAFETY: GetCurrentProcess 无前置条件，返回无需关闭的当前进程伪句柄。
+    let process = unsafe { GetCurrentProcess() };
+    let mut raw = HANDLE::default();
+    // SAFETY: process 是当前进程伪句柄；raw 是有效的输出槽，成功后句柄立即交给 Token 守卫。
+    unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut raw) }
+        .map_err(|error| format!("OpenProcessToken failed: {error}"))?;
+    Ok(Token(raw))
+}
+
+/// 独占持有 `OpenProcessToken` 返回的令牌句柄（带 `TOKEN_QUERY` 权限）；只借出、不转移所有权。
+pub(super) struct Token(HANDLE);
+
+impl Token {
+    /// 借出的令牌句柄只在本守卫存活期间有效。
+    pub(super) fn handle(&self) -> HANDLE {
+        self.0
+    }
+}
 
 impl Drop for Token {
     fn drop(&mut self) {

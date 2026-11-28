@@ -27,7 +27,7 @@
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
-use fluxdown_protocol::app_icon::AppIconChoice;
+use fluxdown_protocol::app_icon::{AppIconChoice, BuiltinAppIcon};
 use objc2::AnyThread as _;
 use objc2::rc::autoreleasepool;
 use objc2_app_kit::{NSImage, NSWorkspace, NSWorkspaceIconCreationOptions};
@@ -37,9 +37,24 @@ use super::binary_record::{BinaryRecord, BundleAction, bundle_action};
 use crate::app_icon::IconStore;
 use crate::app_icon::image::{self as pipeline, ImageError};
 
-/// 闪电的 macOS 版（已按 Apple HIG 内缩，512²）。
-const BOLT_BUNDLE_PNG: &[u8] =
-    include_bytes!("../../../../../assets/logo/macos/app_icon_bolt_512.png");
+/// 内置图标的 macOS 版（已按 Apple HIG 内缩，512²）。
+const fn builtin_bundle_png(icon: BuiltinAppIcon) -> &'static [u8] {
+    match icon {
+        BuiltinAppIcon::Bolt => {
+            include_bytes!("../../../../../assets/logo/macos/app_icon_bolt_512.png")
+        }
+        BuiltinAppIcon::Classic => {
+            include_bytes!("../../../../../assets/logo/macos/app_icon_classic_512.png")
+        }
+        BuiltinAppIcon::Frost => {
+            include_bytes!("../../../../../assets/logo/macos/app_icon_frost_512.png")
+        }
+        BuiltinAppIcon::Sunset => {
+            include_bytes!("../../../../../assets/logo/macos/app_icon_sunset_512.png")
+        }
+    }
+}
+
 /// Finder 在 bundle 根目录存放自定义图标的文件名（以回车符结尾）。
 const CUSTOM_ICON_FILE: &str = "Icon\r";
 /// 自定义图标的画布边长（Finder 会按需缩放）。
@@ -134,7 +149,7 @@ fn bundle_icon_png<'a>(
 ) -> Result<Cow<'a, [u8]>, String> {
     match choice {
         AppIconChoice::Default => Err("the default icon needs no bundle image".to_owned()),
-        AppIconChoice::Bolt => Ok(Cow::Borrowed(BOLT_BUNDLE_PNG)),
+        AppIconChoice::Builtin(icon) => Ok(Cow::Borrowed(builtin_bundle_png(*icon))),
         AppIconChoice::Custom { .. } => {
             if cache.is_none() {
                 let (_, master) = store.master().map_err(|error| error.to_string())?;

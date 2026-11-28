@@ -180,6 +180,23 @@ jobs:
       - name: release desktop build combination (check)
         run: cargo check --locked -p fluxdown_ui_app -p fluxdown_agent -p fluxdown_daemon -p fluxdown_nmh --features fluxdown_agent/desktop --bins
 
+  windows-tls:
+    name: Windows download TLS (${{ matrix.runner }})
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-latest, windows-11-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-windows-tls
+      - run: cargo test --locked -p fluxdown_engine --test engine tls_client_hello
+
   rust-test:
     name: Test (${{ matrix.name }})
     needs: changes
@@ -227,6 +244,14 @@ jobs:
       # 引擎的协议测试在 verify-engine 中已含 librqbit MSE 校验；此处只跑 crate 单测。
       - name: cargo nextest
         run: cargo nextest run --locked --no-tests=pass ${{ matrix.packages }}
+
+      - name: Local agent and daemon end-to-end tests
+        if: matrix.name == 'agent'
+        run: |
+          cargo build --locked -p fluxdown_daemon --bin fluxdownd
+          FLUXDOWN_TEST_DAEMON_BIN="$PWD/target/debug/fluxdownd" \
+            cargo nextest run --locked -p fluxdown_agent --test local_stack_recovery --run-ignored=only \
+            -E 'test(=scheduled_quit_stops_daemon_then_agent_and_tells_clients_not_to_reconnect) | test(=rss_image_proxy_denial_survives_daemon_and_agent_transports)'
 
   web:
     name: Web SPA (lint + test + build)
@@ -337,11 +362,13 @@ jobs:
         with:
           tool: cargo-ndk
       # NDK：runner 预装于 $ANDROID_HOME/ndk/<版本>，:bridge 自动取最高版本。
+      # GitHub runners have returned not-found for existing Central artifacts. Use Google's Central mirror
+      # for both plugin classpath and project dependencies; keep Google Maven and Plugin Portal unchanged.
       - name: Gradle test + assemble + lint
         run: >-
-          ./gradlew --no-daemon -Pfluxdown.abis=arm64-v8a
+          ./gradlew --no-daemon -Pfluxdown.abis=arm64-v8a -Pfluxdown.ciMavenCentralMirror=true
           :core:testDebugUnitTest :fluxui:testDebugUnitTest :bridge:testDebugUnitTest
-          :app:assembleDebug :app:lintDebug
+          :app:testDebugUnitTest :app:assembleDebug :app:lintDebug
 
   # 发布对齐：iOS 核心（fluxdown_mobile）只在 ios-sideload / ios-testflight 打包时交叉编译，
   # Linux 门禁覆盖不到 Apple 移动目标的 cfg（librqbit 等依赖在 iOS 上的条件编译）。两种 flavor 与 build-core.sh 同参数，

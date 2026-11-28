@@ -1,7 +1,7 @@
 import { defineMessages } from "../define";
 
 /** /pricing/why/: the paid-plans explainer. */
-export const pricingWhy = defineMessages({
+export const pricingWhy = defineMessages("pricingWhy", {
   en: {
     meta: {
       title: "Why FluxDown Is Introducing Paid Plans — FluxDown",

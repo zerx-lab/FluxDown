@@ -1,8 +1,9 @@
 // 各方法的 params / 非 DTO 结果类型（按 wire 名归类）。
 // daemon 端的 id 参数在服务端带别名（`id` / `taskId` / `queueId` / `groupId` 等价），这里统一用语义名。
 
-import type { PowerAction, RemoteTaskDto } from './agent';
+import type { PowerAction, PowerLowSpeedCondition, RemoteTaskDto } from './agent';
 import type { JsonValue } from './common';
+import type { RpcErrorData } from './error';
 import type { ComponentKind, ComponentStatusDto } from './plugin';
 import type { ServiceHello } from './rpc';
 import type { CreateTaskRequest, DownloadRequest } from './task';
@@ -123,6 +124,12 @@ export interface SetTaskSuperSeedingParams {
   enabled: boolean;
 }
 
+/** `daemon.task.addWebSeed` (BEP 19). */
+export interface AddTaskWebSeedParams {
+  taskId: string;
+  url: string;
+}
+
 export interface TaskDeleteParams {
   taskId: string;
   /** 同时删除磁盘文件，缺省 false。 */
@@ -232,6 +239,11 @@ export interface FsListParams {
   path?: string;
 }
 
+/** `daemon.fs.defaultFileExists`: checks one filename in the daemon's default download directory. */
+export interface FsDefaultFileExistsParams {
+  fileName: string;
+}
+
 // ── daemon.rss ──
 
 export interface RssSourceIdParams {
@@ -266,6 +278,8 @@ export interface PluginSetEnabledParams {
 export interface PluginSetSiteDefaultParams {
   site: string;
   identity: string | null;
+  /** 尚无记录时一并写入的候选插件（与已有记录合并）；插件页按 URL 模式冲突预先选定时发送。 */
+  candidates?: string[];
 }
 
 export interface PluginUpdateSettingsParams {
@@ -457,10 +471,12 @@ export interface PreferencesPatchResult {
 }
 
 export interface PowerArmParams {
-  /** 倒计时秒数：没有任务时立即开始，否则全部任务完成后开始（0 = 完成后立即，仅有任务时接受）。 */
+  /** 完成模式在 daemon 在线且没有待完成任务时开始倒计时；0 仅在线且有任务时接受。 */
   delaySecs: number;
   /** 缺省 = shutdown。 */
   action?: PowerAction;
+  /** Replaces completion mode with a fixed 30-second cancellable warning; `quit` is not supported. */
+  lowSpeed?: PowerLowSpeedCondition | null;
 }
 
 export interface PowerArmResult {
@@ -489,6 +505,27 @@ export interface RemoteCommandParams {
   commandId?: string;
   /** 仅 `delete`：目标设备同时删除已下载文件。 */
   deleteFiles?: boolean;
+}
+
+/** `agent.remote.commandMany` 单次请求的任务数上限（镜像 `REMOTE_COMMAND_MANY_MAX`），客户端按此分块。 */
+export const REMOTE_COMMAND_MANY_MAX = 1000;
+
+export interface RemoteCommandManyParams {
+  taskIds: string[];
+  action: 'pause' | 'resume' | 'delete' | 'cancel';
+  /** 仅 `delete`：目标设备同时删除已下载文件。 */
+  deleteFiles?: boolean;
+}
+
+export interface RemoteCommandFailure {
+  taskId: string;
+  error: RpcErrorData;
+}
+
+/** `succeeded` 与 `failed` 互斥，合起来覆盖去重后的全部 id。 */
+export interface RemoteCommandManyResult {
+  succeeded: string[];
+  failed: RemoteCommandFailure[];
 }
 
 export interface SyncLocalOnlyParams {

@@ -18,6 +18,7 @@ use crate::{
         TogglePauseSelected,
     },
     components::{
+        selection_bar::TaskCleanup,
         task_table::{
             DownloadTableDelegate, SelectModifiers, SelectionSummary, TableFilter, ToolbarCommand,
             piece_picking_order_targets, piece_picking_toggle_target, spawn_midnight_refresh,
@@ -47,6 +48,7 @@ use crate::{
         run_submission,
     },
 };
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{ControlExt as _, FluxIcon, SidebarChange, SidebarState};
 use fluxdown_ui_i18n::Translator;
 use gpui::{
@@ -229,7 +231,7 @@ pub struct DownloadView {
     prefs_loaded: bool,
     /// 最近一次应用 / 写出的视图偏好持久化值：未变化的偏好回流不重载。
     applied_view_prefs: Option<serde_json::Value>,
-    /// 顶栏「下载任务」主按钮插槽（宿主取走后由它持有）。
+    /// 顶栏「新建任务」主按钮插槽（宿主取走后由它持有）。
     pub(crate) title_bar: Option<WeakEntity<DownloadTitleBar>>,
     /// 最近一次应用 / 写出的主按钮外观偏好持久化值：未变化的偏好回流不覆盖本地切换。
     pub(crate) applied_new_task_button: Option<serde_json::Value>,
@@ -405,6 +407,24 @@ impl DownloadView {
         self.sidebar.clone()
     }
 
+    /// Observe the local failed task IDs in the last displayed table viewport.
+    ///
+    /// Starts tracking on demand. The entity starts empty and notifies observers
+    /// only when a painted viewport changes its list of failed task IDs.
+    ///
+    /// ```
+    /// # use fluxdown_ui_downloads::DownloadView;
+    /// # use gpui::{App, Entity};
+    /// fn track(view: &DownloadView, cx: &mut App) -> Entity<Vec<String>> {
+    ///     view.watch_visible_failed_tasks(cx)
+    /// }
+    /// ```
+    pub fn watch_visible_failed_tasks(&self, cx: &mut App) -> Entity<Vec<String>> {
+        self.table_state.update(cx, |table, cx| {
+            table.delegate_mut().watch_visible_failed_tasks(cx)
+        })
+    }
+
     /// 注入宿主入口（新建下载 / 任务窗口 / 队列管理…）。
     pub fn set_host_actions(&mut self, host: DownloadHostActions) {
         self.host = host;
@@ -528,14 +548,14 @@ impl DownloadView {
         ))
     }
 
-    /// 创建挂到 shell 统一顶栏的下载页插槽（「下载任务」主按钮）。
+    /// 创建挂到 shell 统一顶栏的下载页插槽（「新建任务」主按钮）。
     pub fn new_title_bar(&mut self, cx: &mut Context<Self>) -> Entity<DownloadTitleBar> {
-        let view = cx.weak_entity();
+        let view = cx.entity();
         let translator = self.translator.clone();
         let stored = self.controller.preference(NEW_TASK_BUTTON_PREF);
         self.applied_new_task_button = stored.cloned();
         let style = NewTaskButtonStyle::from_value(stored);
-        let title_bar = cx.new(|_| DownloadTitleBar::new(view, translator, style));
+        let title_bar = cx.new(|cx| DownloadTitleBar::new(&view, translator, style, cx));
         self.title_bar = Some(title_bar.downgrade());
         title_bar
     }
@@ -750,10 +770,7 @@ impl DownloadView {
             cx.notify();
             return;
         }
-        let DeletionRequest {
-            task_ids,
-            delete_files,
-        } = request;
+        let DeletionRequest { task_ids, mode } = request;
         // 已在另一批删除中的任务不重复提交。
         let task_ids = self.table_state.update(cx, |table, cx| {
             let fresh = table.delegate_mut().begin_delete(task_ids);
@@ -786,7 +803,7 @@ impl DownloadView {
             let mut progress_cx = cx.clone();
             let report = run_deletion(
                 &task_ids,
-                delete_files,
+                mode,
                 &move |command| port.execute(command),
                 &move |delay| timer.timer(delay),
                 &cancel,
@@ -865,9 +882,9 @@ impl DownloadView {
         // 单任务删除沿用既有的静默路径；多任务才弹成功 / 取消提示。
         (task_ids.len() > 1).then(|| {
             if report.cancelled() {
-                Notification::info(notice.message)
+                toast::info(notice.message)
             } else {
-                Notification::success(notice.message)
+                toast::success(notice.message)
             }
         })
     }
@@ -1866,23 +1883,14 @@ impl DownloadView {
             return;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(url));
-        window.push_notification(Notification::success(self.strings.url_copied.clone()), cx);
+        window.push_notification(toast::success(self.strings.url_copied.clone()), cx);
     }
 
-    pub(crate) fn group_delete(&mut self, group_id: String, cx: &mut Context<Self>) {
-        self.execute_commands(
-            vec![DownloadsCommand::GroupDelete {
-                group_id,
-                delete_files: false,
-            }],
-            cx,
-        );
-    }
-
-    /// 「删除组及文件」二次确认。
-    pub(crate) fn confirm_group_delete_with_files(
+    /// 删除组记录或同时清理文件，均需确认。
+    pub(crate) fn confirm_group_delete(
         &mut self,
         group_id: String,
+        delete_files: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1892,8 +1900,12 @@ impl DownloadView {
             .iter()
             .find(|group| group.id == group_id)
             .map_or_else(|| group_id.clone(), |group| group.meta.name.clone());
-        let title = self.strings.group_delete_with_files.clone();
-        let description = self.strings.group_delete_with_files_description(&name);
+        let title = if delete_files {
+            self.strings.group_delete_with_files.clone()
+        } else {
+            self.strings.group_delete.clone()
+        };
+        let description = self.strings.delete_group_description(&name, delete_files);
         let ok_label = self.strings.delete.clone();
         let cancel_label = self.strings.cancel.clone();
         let this = cx.weak_entity();
@@ -1916,7 +1928,7 @@ impl DownloadView {
                         this.execute_commands(
                             vec![DownloadsCommand::GroupDelete {
                                 group_id,
-                                delete_files: true,
+                                delete_files,
                             }],
                             cx,
                         );
@@ -1970,7 +1982,7 @@ impl DownloadView {
             self.open_new_download_with(urls, window, cx);
         }
         if unsupported {
-            window.push_notification(self.strings.unsupported_drop_hint.clone(), cx);
+            window.push_notification(toast::info(self.strings.unsupported_drop_hint.clone()), cx);
         }
     }
 
@@ -2042,8 +2054,88 @@ impl DownloadView {
         self.execute_toolbar(action, cx);
     }
 
-    fn on_delete_selected(&mut self, _: &DeleteSelected, _: &mut Window, cx: &mut Context<Self>) {
-        self.execute_toolbar(ToolbarCommand::Delete, cx);
+    fn on_delete_selected(
+        &mut self,
+        _: &DeleteSelected,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.confirm_delete_selected(false, window, cx);
+    }
+
+    fn on_clear_selected_task_file(
+        &mut self,
+        _: &crate::actions::ClearSelectedTaskFile,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let selected = self.table_state.read(cx).delegate().selected_keys();
+        let [key] = selected.as_slice() else {
+            return;
+        };
+        if !task_menu_facts_for(self.controller.store(), key)
+            .is_some_and(|facts| facts.can_clear_task_file())
+        {
+            return;
+        }
+        let task_id = key.task_id().to_owned();
+        let title = self.strings.clear_task_file.clone();
+        let name = self
+            .controller
+            .store()
+            .get(key)
+            .map(|row| row.name.clone())
+            .unwrap_or_default();
+        let description = SharedString::from(
+            self.strings
+                .clear_task_file_confirmation
+                .replace("{fileName}", &name),
+        );
+        let ok_label = self.strings.delete.clone();
+        let cancel_label = self.strings.cancel.clone();
+        let this = cx.weak_entity();
+        window.open_alert_dialog(cx, move |dialog, _, cx| {
+            let this = this.clone();
+            let task_id = task_id.clone();
+            dialog
+                .title(fluxdown_ui_components::dialog_title(title.clone(), cx))
+                .description(description.clone())
+                .footer(fluxdown_ui_components::dialog_footer(
+                    Some(cancel_label.clone()),
+                    ok_label.clone(),
+                    fluxdown_ui_components::DialogIntent::Destructive,
+                    cx,
+                ))
+                .on_ok(move |_, _, cx| {
+                    this.update(cx, |this, cx| {
+                        this.execute_commands(
+                            vec![DownloadsCommand::ClearTaskFile {
+                                task_id: task_id.clone(),
+                            }],
+                            cx,
+                        );
+                    })
+                    .is_ok()
+                })
+        });
+    }
+
+    fn on_clean_stale_selected(
+        &mut self,
+        _: &crate::actions::CleanStaleSelected,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.confirm_task_cleanup(TaskCleanup::InvalidSelection, window, cx);
+    }
+
+    fn on_clean_unfinished_selected(
+        &mut self,
+        _: &crate::actions::CleanUnfinishedSelected,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.confirm_task_cleanup(TaskCleanup::UnfinishedSelection, window, cx);
     }
 
     fn on_delete_selected_with_files(
@@ -2052,39 +2144,42 @@ impl DownloadView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.delete_selected_with_files(window, cx);
+        self.confirm_delete_selected(true, window, cx);
     }
 
-    /// 对当前选中集合发起「删除任务和文件」（带二次确认）；空选择为 no-op。
-    pub(crate) fn delete_selected_with_files(
+    /// 按打开对话框时的选择删除；确认时不重新读取选区。
+    pub(crate) fn confirm_delete_selected(
         &mut self,
+        delete_files: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let selected = self.table_state.read(cx).delegate().selected_keys();
+        let mut selected = self.table_state.read(cx).delegate().selected_keys();
+        if !delete_files {
+            let store = self.controller.store();
+            selected.retain(|key| {
+                task_menu_facts_for(store, key).is_some_and(|facts| facts.controllable)
+            });
+        }
         if selected.is_empty() {
             return;
         }
-        self.confirm_delete_with_files(selected, window, cx);
-    }
-
-    /// 「删除任务及文件」二次确认。
-    pub(crate) fn confirm_delete_with_files(
-        &mut self,
-        keys: Vec<RowKey>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let title = self.strings.delete_task_and_file.clone();
-        let description = self
-            .strings
-            .delete_with_files_description(&keys, self.controller.store());
+        let title = if delete_files {
+            self.strings.delete_task_and_file.clone()
+        } else {
+            self.strings.delete_task.clone()
+        };
+        let description = self.strings.delete_selection_description(
+            &selected,
+            self.controller.store(),
+            delete_files,
+        );
         let ok_label = self.strings.delete.clone();
         let cancel_label = self.strings.cancel.clone();
         let this = cx.weak_entity();
         window.open_alert_dialog(cx, move |dialog, _, cx| {
             let this = this.clone();
-            let keys = keys.clone();
+            let keys = selected.clone();
             dialog
                 .title(fluxdown_ui_components::dialog_title(title.clone(), cx))
                 .description(description.clone())
@@ -2097,7 +2192,7 @@ impl DownloadView {
                 .on_ok(move |_, _, cx| {
                     // 页面释放后没有提交命令，不能让确认框报告成功。
                     this.update(cx, |this, cx| {
-                        let commands = this.delete_commands(&keys, true);
+                        let commands = this.delete_commands(&keys, delete_files);
                         this.execute_commands(commands, cx);
                     })
                     .is_ok()
@@ -2139,7 +2234,7 @@ impl DownloadView {
             .filter(RowKey::is_local)
             .collect();
         if selected.len() > MAX_TASK_WINDOWS_PER_ACTION {
-            window.push_notification(self.strings.too_many_windows_hint.clone(), cx);
+            window.push_notification(toast::info(self.strings.too_many_windows_hint.clone()), cx);
         }
         for key in selected.into_iter().take(MAX_TASK_WINDOWS_PER_ACTION) {
             opener(key.task_id().to_owned(), window, cx);
@@ -2156,11 +2251,15 @@ impl DownloadView {
         let store = self.controller.store();
         let urls: Vec<String> = selected
             .iter()
-            .filter_map(|key| store.get(key).map(|row| row.share_url().to_owned()))
+            .filter_map(|key| {
+                store
+                    .get(key)
+                    .and_then(|row| row.copyable_share_url().map(str::to_owned))
+            })
             .collect();
         if !urls.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(urls.join("\n")));
-            window.push_notification(Notification::success(self.strings.url_copied.clone()), cx);
+            window.push_notification(toast::success(self.strings.url_copied.clone()), cx);
         }
     }
 
@@ -2187,6 +2286,11 @@ impl DownloadView {
                     || row.url.starts_with("torrent-file://")
                 {
                     return None;
+                }
+                if row.is_file_missing() && !crate::components::task_table::is_bt_url(&row.url) {
+                    return Some(DownloadsCommand::RestartMissingFile {
+                        task_id: task_id.to_owned(),
+                    });
                 }
                 let dto = self.controller.task_dto(task_id)?;
                 let request = fluxdown_protocol::CreateTaskRequest {
@@ -2240,7 +2344,7 @@ impl DownloadView {
             _ => None,
         };
         if let Some(notice) = ended_notice {
-            window.push_notification(Notification::warning(notice), cx);
+            window.push_notification(toast::warning(notice), cx);
             return;
         }
         self.execute_commands(
@@ -2427,22 +2531,7 @@ impl DownloadView {
             PageCommand::PauseAll => self.execute_toolbar(ToolbarCommand::PauseAll, cx),
             PageCommand::ResumeAll => self.execute_toolbar(ToolbarCommand::ResumeAll, cx),
             PageCommand::ClearFinished => {
-                // 任务表分页载入期间「已完成」范围不完整，不能据占位表清理。
-                if self.controller.tables_loading() {
-                    return;
-                }
-                let commands: Vec<DownloadsCommand> = self
-                    .controller
-                    .store()
-                    .local()
-                    .iter()
-                    .filter(|row| row.state == TaskState::Completed)
-                    .map(|row| DownloadsCommand::Delete {
-                        task_id: row.key.task_id().to_owned(),
-                        delete_files: false,
-                    })
-                    .collect();
-                self.execute_commands(commands, cx);
+                self.confirm_task_cleanup(TaskCleanup::Finished, window, cx);
             }
             PageCommand::SelectAll => self.table_state.update(cx, |table, cx| {
                 table.delegate_mut().select_all_tasks();
@@ -2737,6 +2826,9 @@ impl Render for DownloadView {
             .on_action(cx.listener(Self::on_copy_magnet_selected))
             .on_action(cx.listener(Self::on_export_torrent_selected))
             .on_action(cx.listener(Self::on_redownload_selected))
+            .on_action(cx.listener(Self::on_clear_selected_task_file))
+            .on_action(cx.listener(Self::on_clean_stale_selected))
+            .on_action(cx.listener(Self::on_clean_unfinished_selected))
             .on_action(cx.listener(Self::on_toggle_boost_selected))
             .on_action(cx.listener(Self::on_cycle_density))
             .on_action(cx.listener(Self::on_cycle_group_by))
@@ -2758,6 +2850,7 @@ impl Render for DownloadView {
             .on_action(cx.listener(Self::on_force_recheck_selected))
             .on_action(cx.listener(Self::on_move_storage_selected))
             .on_action(cx.listener(Self::on_task_limits_selected))
+            .on_action(cx.listener(Self::on_add_web_seed_selected))
             .on_action(cx.listener(Self::on_toggle_super_seeding_selected))
             .on_action(cx.listener(Self::on_toggle_detail_panel))
             .on_drop(cx.listener(Self::on_paths_dropped))

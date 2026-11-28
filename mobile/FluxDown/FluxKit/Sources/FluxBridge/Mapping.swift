@@ -22,11 +22,20 @@ extension ErrorCodeDto {
     }
 }
 
+extension PluginDiagnosticDto {
+    var domain: PluginDiagnostic {
+        PluginDiagnostic(kind: kind, path: path, line: line, column: column)
+    }
+}
+
 extension FluxError {
     var domain: HostError {
         switch self {
-        case let .Rpc(code, reason, retryable, detail):
-            HostError(code.domain, reason: reason, retryable: retryable, message: detail)
+        case let .Rpc(code, reason, retryable, detail, pluginDiagnostic):
+            HostError(
+                code.domain, reason: reason, retryable: retryable, message: detail,
+                pluginDiagnostic: pluginDiagnostic?.domain
+            )
         case let .Transport(detail):
             HostError(.unavailable, retryable: true, message: detail)
         case .Closed:
@@ -43,7 +52,12 @@ func hostError(_ error: any Error) -> HostError {
 }
 
 extension HostErrorDto {
-    var domain: HostError { HostError(code.domain, reason: reason, retryable: retryable, message: message) }
+    var domain: HostError {
+        HostError(
+            code.domain, reason: reason, retryable: retryable, message: message,
+            pluginDiagnostic: pluginDiagnostic?.domain
+        )
+    }
 }
 
 extension TaskDto {
@@ -95,7 +109,8 @@ extension TaskRuntimeDto {
                     downloadedBytes: $0.downloadedBytes,
                     active: $0.active
                 )
-            }
+            },
+            hlsFragments: hlsFragments.map { HlsFragmentProgress(written: $0.written, total: $0.total) }
         )
     }
 }

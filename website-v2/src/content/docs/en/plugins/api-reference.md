@@ -56,6 +56,8 @@ How scripts are run:
 
 Called before protocol dispatch, on **every** start and resume of a task that matches a resolver (resolution is lazy — see the [overview](/docs/en/plugins/overview/)). The task URL is matched first. Only if no resolver matches it can a resolver with [`match.browserOriginalUrl: true`](/docs/en/plugins/manifest/#resolvers0) match against the browser's first URL instead. A resolver whose manifest has `multi: true` is additionally called once by the new-download window to pre-resolve a link (see [Manifests](#manifest-results)).
 
+When the resolved URL selects a different downloader protocol than the original URL, FluxDown may call `resolve` a second time using that protocol's proxy route. The second result replaces the first; it must still identify the same selected variant. If that format is no longer available, resolution fails rather than downloading a different format. A failed second call is reported as a resolver error.
+
 If a required setting has neither a stored value nor a `default`, the call fails with `缺少必填设置项` **before** your script runs.
 
 `ctx` fields:
@@ -142,7 +144,7 @@ A manifest describes several files in one result (a share link, a cloud-drive fo
 | Field | Rule |
 |---|---|
 | `items` | 1 to 1000 entries (`manifest items 数量非法`). |
-| `name` | Group / folder name. Empty = the host falls back to the parent task's file name. |
+| `name` | Group display name (does not create a folder; put folders in `items[].path`). When every selected item shares a common folder, the host names the group after that folder and uses it as the group root. Empty = the host falls back to the parent task's file name. A single selected item is downloaded as a plain task, not a group. |
 | `items[].id` | Plugin-owned selection token. Non-empty, ≤ 200 characters. Passed back as `ctx.resolverItem`. |
 | `items[].name` | File name, non-empty, same rule as `fileName`. |
 | `items[].path` | Relative sub-directory (`""` = group root). Must be a safe relative path (no absolute path, no `..`), at most **8** levels, and `path + "/" + name` at most **180** characters. |
@@ -346,6 +348,8 @@ The host applies FluxDown's outbound proxy/TUN routing and SSRF protections (inc
 | `headers` | none | Optional string headers. |
 | `authRef` | none | Optional saved credential reference; requires `auth` permission. |
 | `maxWidth`, `maxHeight` | `512` each | Integers from 1 to 2048. The host preserves aspect ratio and does not upscale. |
+| `circle` | `false` | Center-crop to a square and mask to a circle with transparent edges. Still bounded by both dimensions and never upscaled. |
+| `cornerRadius` | `0` | Corner radius in output pixels (integer), capped at half the shorter side. Ignored when `circle` is true. |
 | `cache` | `true` | `false` skips source/options memoization; images are never written to disk. HTTP responses remain `no-store`. Identical output still shares one reference, valid until explicit release or session close. |
 
 Input is accepted only when sniffed as PNG, JPEG or WebP; declared content type alone is not trusted. Input dimensions are capped at 8192 per side and 16 megapixels, decoding at 64 MiB, network body at 8 MiB, and fetch time at 10 seconds. The host emits a sanitized static PNG thumbnail of at most 4 MiB and serves it as `image/png`. Per-session quotas are 128 resources / 16 MiB; the global image-resource byte quota is 64 MiB. Quota exhaustion is an explicit error; references are never implicitly evicted. Cached source/options results live for five minutes, but their returned resource remains valid until explicit release or session close. Closing the view session or unloading the plugin frees its image resources. These limits are host-enforced.
@@ -607,7 +611,7 @@ globalThis.resolve = async (ctx) => {
 };
 ```
 
-In `resolve` the script's whole time budget (10 s by default, at most 30 s) also bounds the call, so a `timeoutMs` larger than that has no effect there.
+In `resolve` the script's whole time budget (10 s by default, at most 120 s) also bounds the call, so a `timeoutMs` larger than that has no effect there.
 
 ### Main-only facades
 
@@ -649,7 +653,7 @@ Budgets are per call. "CPU budget" is the time your JavaScript may execute; time
 
 | Entry | Wall clock | CPU budget | Memory |
 |---|---|---|---|
-| `resolve` | 10 s default; `resolvers[0].timeoutMs` replaces it, **30 s hard ceiling** | same value, ≤ 30 s | 64 MB default; `resolvers[0].memoryLimitMb` replaces it, 512 MB ceiling |
+| `resolve` | 10 s default; `resolvers[0].timeoutMs` replaces it, **120 s hard ceiling** (0.6.8 and earlier: 30 s) | same value, ≤ 120 s | 64 MB default; `resolvers[0].memoryLimitMb` replaces it, 512 MB ceiling |
 | `subscribe` | 10 s default; `subscriptions[0].timeoutMs` replaces it, 30 s ceiling | same | 64 MB |
 | `authenticate` | 30 s default; `auth.timeoutMs` replaces it, 30 s ceiling | same | 64 MB |
 | Hooks | 5 s | 5 s | 32 MB |

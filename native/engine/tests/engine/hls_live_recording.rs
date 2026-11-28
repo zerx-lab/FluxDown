@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use fluxdown_engine::db::Db;
+use fluxdown_engine::download_manager::{DownloadManager, DownloadManagerConfig, NewTaskSpec};
 use fluxdown_engine::downloader::{DownloadParams, ProgressUpdate, RequestSpec, build_client};
 use fluxdown_engine::events::{EngineEvent, EventSink};
 use fluxdown_engine::proxy_config::ProxyConfig;
@@ -212,19 +213,22 @@ async fn hls_live_recording_runs_until_endlist() {
     let seen = Arc::clone(&statuses);
     let collector = tokio::spawn(async move {
         while let Some(update) = rx.recv().await {
+            if let Some(runtime) = update.runtime {
+                assert_eq!(
+                    runtime.hls_fragments, None,
+                    "live recordings have no fixed segment total"
+                );
+            }
             seen.lock()
                 .unwrap()
                 .push((update.status, update.total_bytes));
         }
     });
 
-    let fallback = fluxdown_engine::hls_downloader::run_hls_download(make_params(
-        &url,
-        &work_dir,
-        &db,
-        tx,
-        CancellationToken::new(),
-    ))
+    let fallback = fluxdown_engine::hls_downloader::run_hls_download(
+        make_params(&url, &work_dir, &db, tx, CancellationToken::new()),
+        &CancellationToken::new(),
+    )
     .await;
     collector.await.unwrap();
 
@@ -270,9 +274,10 @@ async fn hls_live_user_stop_finalizes_recorded_content() {
         }
     });
 
-    let fallback = fluxdown_engine::hls_downloader::run_hls_download(make_params(
-        &url, &work_dir, &db, tx, cancel,
-    ))
+    let fallback = fluxdown_engine::hls_downloader::run_hls_download(
+        make_params(&url, &work_dir, &db, tx, cancel),
+        &CancellationToken::new(),
+    )
     .await;
     collector.await.unwrap();
 
@@ -286,58 +291,135 @@ async fn hls_live_user_stop_finalizes_recorded_content() {
 
 #[tokio::test]
 async fn hls_live_delete_discards_recording_without_output() {
-    // 与"停止"相同的令牌取消,但 manager 先声明了删除:不得定稿,temp 与检查点清掉。
-    const TASK: &str = "tdel";
+    assert_live_delete(false, false).await;
+    assert_live_delete(true, false).await;
+}
+
+#[tokio::test]
+async fn hls_live_batch_delete_plan_failure_preserves_recording() {
+    assert_live_delete(true, true).await;
+}
+
+async fn assert_live_delete(delete_files: bool, fail_plan: bool) {
     let url = start_live_server(vec![playlist(0, 2, false)]).await;
-    let (work_dir, db) = setup("delete", &url).await;
-    db.insert_task(
-        TASK,
-        &url,
-        "live.ts",
-        &work_dir.to_string_lossy(),
-        0,
-        0,
-        "",
-        "",
-        "",
-        0,
+    let work_dir =
+        std::env::temp_dir().join(format!("fluxdown-hls-delete-{}", uuid::Uuid::new_v4()));
+    tokio::fs::create_dir_all(&work_dir)
+        .await
+        .expect("work directory");
+    let db_url = format!(
+        "sqlite:{}?mode=rwc",
+        work_dir
+            .join("tasks.db")
+            .to_string_lossy()
+            .replace('\\', "/")
+    );
+    let db = Db::connect(&db_url).await.expect("database");
+    let config = DownloadManagerConfig {
+        max_concurrent: 1,
+        speed_limit_bps: 0,
+        upload_limit_bps: 0,
+        default_save_dir: work_dir.to_string_lossy().into_owned(),
+        app_data_dir: work_dir.to_string_lossy().into_owned(),
+        data_dir: work_dir.clone(),
+        bt_config: Default::default(),
+        proxy_config: ProxyConfig::default(),
+        user_agent: String::new(),
+    };
+    let mut manager = DownloadManager::new(
+        db.clone(),
+        config,
+        Arc::new(NoopTestSink),
+        Arc::new(fluxdown_engine::NoopSelection),
     )
-    .await
-    .expect("insert_task");
-    let (tx, mut rx) = mpsc::channel::<ProgressUpdate>(1024);
-    let cancel = CancellationToken::new();
-    let watcher_cancel = cancel.clone();
-    let recorded = concat_segments(&[0, 1]).len() as i64;
-    let collector = tokio::spawn(async move {
-        while let Some(update) = rx.recv().await {
-            if update.status == 1 && update.downloaded_bytes >= recorded {
-                fluxdown_engine::hls_downloader::request_discard(TASK);
-                watcher_cancel.cancel();
+    .expect("download manager");
+    let mut progress = manager.take_progress_rx().expect("progress receiver");
+    let id = manager
+        .create_task(NewTaskSpec {
+            url,
+            file_name: "live.ts".into(),
+            save_dir: work_dir.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
+        .await
+        .expect("start recording");
+    let recorded = concat_segments(&[0, 1]);
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while let Some(update) = progress.recv().await {
+            if update.status == 1 && update.downloaded_bytes == recorded.len() as i64 {
+                return;
             }
         }
-    });
-    let mut params = make_params(&url, &work_dir, &db, tx, cancel);
-    params.task_id = TASK.to_string();
+        panic!("progress channel closed before recording any content");
+    })
+    .await
+    .expect("recorded both segments");
 
-    let fallback = fluxdown_engine::hls_downloader::run_hls_download(params).await;
-    collector.await.unwrap();
-    fluxdown_engine::hls_downloader::clear_discard(TASK);
+    if fail_plan {
+        let raw = sqlx::any::AnyPoolOptions::new()
+            .max_connections(1)
+            .connect(&db_url)
+            .await
+            .expect("fault injection connection");
+        sqlx::query("ALTER TABLE task_artifacts RENAME TO unavailable_artifacts")
+            .execute(&raw)
+            .await
+            .expect("make deletion plan fail");
+        assert!(
+            manager
+                .delete_tasks_batch(std::slice::from_ref(&id), true)
+                .await
+                .is_err()
+        );
+        sqlx::query("ALTER TABLE unavailable_artifacts RENAME TO task_artifacts")
+            .execute(&raw)
+            .await
+            .expect("restore artifacts table");
+        raw.close().await;
+        let task = db
+            .load_task_by_id(&id)
+            .await
+            .expect("read task")
+            .expect("kept task");
+        assert_eq!(task.status, 2, "the stopped recording must remain paused");
+    } else {
+        let outcome = manager
+            .delete_tasks_batch(std::slice::from_ref(&id), delete_files)
+            .await
+            .expect("delete recording");
+        assert_eq!(outcome.deleted, 1);
+        assert!(db.load_task_by_id(&id).await.expect("read task").is_none());
+    }
 
-    assert!(fallback.is_none());
-    let task = db.load_task_by_id(TASK).await.unwrap().unwrap();
-    assert_ne!(task.status, 3, "a deleted recording must not complete");
-    for name in ["live.ts", "live.mp4", "live.ts.fdownloading"] {
+    for name in ["live.ts", "live.mp4"] {
         assert!(
             !work_dir.join(name).exists(),
-            "{name} must not survive a delete"
+            "{name} must not be finalized"
         );
     }
-    assert!(
-        db.get_config(&format!("hls_resume_{TASK}"))
+    let partial = work_dir.join("live.ts.fdownloading");
+    if fail_plan {
+        assert_eq!(
+            tokio::fs::read(partial).await.expect("retained recording"),
+            recorded
+        );
+    } else {
+        assert!(
+            !partial.exists(),
+            "successful deletion must clean the owned recording"
+        );
+    }
+    assert_eq!(
+        db.get_config(&format!("hls_resume_{id}"))
             .await
-            .unwrap()
-            .is_none(),
-        "checkpoint must be cleared"
+            .expect("read checkpoint")
+            .is_some(),
+        fail_plan,
     );
-    tokio::fs::remove_dir_all(&work_dir).await.unwrap();
+    manager.shutdown().await;
+    drop(manager);
+    drop(db);
+    tokio::fs::remove_dir_all(&work_dir)
+        .await
+        .expect("remove fixture");
 }

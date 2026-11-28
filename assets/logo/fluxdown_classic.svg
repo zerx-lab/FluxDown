@@ -1,0 +1,26 @@
+<svg width="512" height="512" viewBox="56 56 400 400" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title>FluxDown · Classic</title>
+  <desc>Built-in alternate icon: brand-blue gradient squircle with a soft top sheen and the white download arrow</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="56" x2="0" y2="456" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4C95FF"/>
+      <stop offset="1" stop-color="#2459EE"/>
+    </linearGradient>
+    <radialGradient id="sheen" cx="256" cy="20" r="330" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity=".30"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="mark" x1="0" y1="119" x2="0" y2="390" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E4ECFF"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="8" stdDeviation="9" flood-color="#0B2E9E" flood-opacity=".35"/>
+    </filter>
+    <path id="arrow" d="M 226 131 Q 226 119 238 119 L 274 119 Q 286 119 286 131 L 286 296 L 331 251 Q 340 242 349 251 L 363 265 Q 372 274 363 283 L 265 381 Q 256 390 247 381 L 149 283 Q 140 274 149 265 L 163 251 Q 172 242 181 251 L 226 296 Z"/>
+  </defs>
+
+  <rect x="56" y="56" width="400" height="400" rx="88" fill="url(#bg)"/>
+  <rect x="56" y="56" width="400" height="400" rx="88" fill="url(#sheen)"/>
+  <use href="#arrow" fill="url(#mark)" filter="url(#shadow)"/>
+</svg>

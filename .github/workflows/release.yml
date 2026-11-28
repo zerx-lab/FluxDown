@@ -309,7 +309,7 @@ jobs:
                 native/engine/*)     APP=true; SERVER=true; MOBILE=true; IOS=true; CLI=true; ENGINE=true ;;
                 # 引擎与 agent 共用的诊断日志文件：消费者同引擎
                 native/logfile/*)    APP=true; SERVER=true; MOBILE=true; IOS=true; CLI=true; ENGINE=true ;;
-                Cargo.toml|Cargo.lock|.cargo/*) APP=true; SERVER=true; MOBILE=true; IOS=true; CLI=true; ENGINE=true ;;
+                Cargo.toml|Cargo.lock|.cargo/*|third_party/*) APP=true; SERVER=true; MOBILE=true; IOS=true; CLI=true; ENGINE=true ;;
                 .dockerignore)       SERVER=true ;;
                 docker/*)            SERVER=true ;;
                 packaging/*|installer/*) APP=true; SERVER=true ;;
@@ -502,16 +502,18 @@ jobs:
 
       # 必须 release：debug 下 GPUI Windows 着色器按构建机绝对路径运行期读取，换机即失效。
       # FLUXCLOUD_BASE_URL 为空时不导出（option_env! 会把空串当成有效地址）。
+      # 必须 pwsh：openssl-src（fluxdown-legacy-tls）源码构建要 Strawberry Perl；
+      # bash 下 PATH 先命中 Git 自带 MSYS perl，缺 Locale::Maketext::Simple，Configure 失败。
       - name: Build desktop, agent, daemon and browser relay
-        shell: bash
+        shell: pwsh
         env:
           FLUXDOWN_APP_VERSION: ${{ steps.version.outputs.VERSION }}
           FLUXCLOUD_BASE_URL_SECRET: ${{ secrets.FLUXCLOUD_BASE_URL }}
           FLUXDOWN_ANALYTICS_APP_KEY: ${{ secrets.ANALYTICS_APP_KEY }}
         run: |
-          if [ -n "$FLUXCLOUD_BASE_URL_SECRET" ]; then export FLUXCLOUD_BASE_URL="$FLUXCLOUD_BASE_URL_SECRET"; fi
-          cargo build --locked --release --target ${{ matrix.target }} \
-            -p fluxdown_ui_app -p fluxdown_agent -p fluxdown_daemon -p fluxdown_nmh \
+          if ($env:FLUXCLOUD_BASE_URL_SECRET) { $env:FLUXCLOUD_BASE_URL = $env:FLUXCLOUD_BASE_URL_SECRET }
+          cargo build --locked --release --target ${{ matrix.target }} `
+            -p fluxdown_ui_app -p fluxdown_agent -p fluxdown_daemon -p fluxdown_nmh `
             --features fluxdown_agent/desktop --bins
 
       # MSVC CRT 随应用目录分发：干净系统（无 VCRedist）上否则 STATUS_DLL_NOT_FOUND。

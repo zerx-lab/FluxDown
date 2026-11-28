@@ -5,9 +5,11 @@ import { Button } from "@/ui/components/Button";
 import { TextInput } from "@/ui/components/TextInput";
 import { showToast } from "@/ui/components/Toast";
 import { useT } from "@/ui/i18n";
+import { REMOTE_MANAGEMENT_UNAVAILABLE } from "@/utils/remote-server";
 import { verifyRemoteSettings, type RemoteMode } from "@/utils/settings";
 import { refreshSettings, settings, updateSettings } from "../lib/store";
 import { PanelShell, SettingRow } from "../parts";
+import { ManualServers } from "./ManualServers";
 
 export function RemotePanel(): JSX.Element | null {
   const t = useT();
@@ -51,6 +53,10 @@ export function RemotePanel(): JSX.Element | null {
       await updateSettings({ remoteUrl, remoteToken: token });
       const result = await verifyRemoteSettings({ remoteUrl, remoteToken: token });
       const ok = result.success;
+      if (result.message === REMOTE_MANAGEMENT_UNAVAILABLE) {
+        setTestResult(`${t("remote.testManagementUnavailable")} ${t("remote.managementUnavailableHint")}`);
+        return;
+      }
       const text = ok
         ? t("remote.testSuccess", { app: result.app || "FluxDown", version: result.version || "" })
         : testErrorMessage(result.message);
@@ -123,6 +129,7 @@ export function RemotePanel(): JSX.Element | null {
           </option>
         </select>
       </SettingRow>
+      <ManualServers />
     </PanelShell>
   );
 }

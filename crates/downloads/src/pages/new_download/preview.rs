@@ -5,11 +5,12 @@ use fluxdown_protocol::{
     RpcErrorData,
 };
 use fluxdown_ui_components::ControlExt as _;
+use fluxdown_ui_components::toast;
 use fluxdown_ui_theme::active_theme;
 use gpui::{
     App, AppContext as _, ClickEvent, Context, IntoElement, ParentElement as _, Styled as _, Window,
 };
-use gpui_component::{WindowExt as _, button::Button, notification::Notification, v_flex};
+use gpui_component::{WindowExt as _, button::Button, v_flex};
 
 use super::NewDownloadView;
 use crate::{
@@ -89,7 +90,7 @@ impl NewDownloadView {
             Ok(DownloadsResult::Preview(manifest)) if manifest.error.is_empty() => None,
             Ok(_) => {
                 window.push_notification(
-                    Notification::warning(error_text(
+                    toast::warning(error_text(
                         self.translator.read(cx),
                         &RpcErrorData::new(ApplicationErrorCode::Internal, false),
                     )),
@@ -99,7 +100,7 @@ impl NewDownloadView {
             }
             Err(error) => {
                 window.push_notification(
-                    Notification::warning(error_text(self.translator.read(cx), &error)),
+                    toast::warning(error_text(self.translator.read(cx), &error)),
                     cx,
                 );
                 None
@@ -193,7 +194,7 @@ impl NewDownloadView {
                         manifest.update(cx, |view, cx| view.set_submitting(false, cx));
                     }
                     window.push_notification(
-                        Notification::error(report.notice(this.translator.read(cx)).message),
+                        toast::error(report.notice(this.translator.read(cx)).message),
                         cx,
                     );
                 } else {

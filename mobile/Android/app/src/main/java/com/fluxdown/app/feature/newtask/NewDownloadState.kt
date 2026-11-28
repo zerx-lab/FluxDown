@@ -96,15 +96,26 @@ internal class NewDownloadState(
     prefill: String,
     defaultSaveDir: String,
     /** 表单首次给出的、未经分类预填的保存目录；仅自动路由时随请求提交。 */
-    private val offeredSaveDir: String,
+    offeredSaveDir: String,
     defaultQueueId: String,
     defaultSegments: Int,
     /** 打开时预选的「下载到」目标（[DispatchTarget.id]）；null = 当前主机。 */
     private val initialTargetId: String? = null,
     categories: List<CustomCategoryDto> = emptyList(),
     rememberedMode: String = "auto",
+    private val externalSaveDir: String? = null,
 ) {
-    var urlText by mutableStateOf(prefill)
+    private var text by mutableStateOf(prefill)
+    private var literalUrls by mutableStateOf(emptySet<String>())
+    var urlText: String
+        get() = text
+        set(value) {
+            if (literalUrls.isNotEmpty()) {
+                val previous = literalUrls
+                literalUrls = parseEntries(value).mapNotNullTo(HashSet()) { it.url.takeIf(previous::contains) }
+            }
+            text = value
+        }
     var saveDir by mutableStateOf(defaultSaveDir)
         private set
     var rename by mutableStateOf("")
@@ -137,16 +148,22 @@ internal class NewDownloadState(
     val advanced = AdvancedState()
 
     private val initialSaveDir = defaultSaveDir
+    private var offeredSaveDir = offeredSaveDir
     /** 表单最近一次由程序写入目录框的值（自动跟随 / 切换模式）；null = 尚未写过。 */
     private var lastWritten: String? = null
     private var manuallySelectedSaveDir = false
+    val hasExternalSaveDir: Boolean get() = externalSaveDir != null
 
     /** 分类选择模式；默认自动。 */
     var mode by mutableStateOf<SaveDirMode>(SaveDirMode.Auto)
         private set
     private val initialQueueId = defaultQueueId
 
-    val entries: List<UrlEntry> by derivedStateOf { parseEntries(urlText).dedupe() }
+    private val parsed by derivedStateOf { parseManualEntries(text, literalUrls) }
+    val entries: List<UrlEntry> get() = parsed.entries
+    val hasUrlRanges: Boolean get() = parsed.generatedCount > 0
+    val rangePreview: List<UrlEntry> get() = parsed.rangePreview
+    val rangeLimitExceeded: Boolean get() = parsed.rangeLimitExceeded
     val single: Boolean by derivedStateOf { entries.size == 1 }
     val singleHttp: Boolean by derivedStateOf {
         entries.singleOrNull()?.let { protocolOf(it.url).let { p -> p == TaskProtocol.Http || p == TaskProtocol.Hls } } == true
@@ -195,14 +212,34 @@ internal class NewDownloadState(
 
     /** 只保留这些链接（下发部分失败时留下失败项以便重试，成功的不会被重复下发）。 */
     fun retain(kept: List<UrlEntry>) {
-        urlText = kept.joinToString("\n") { it.toText() }
+        if (hasUrlRanges && !single) {
+            // These overrides were not used by the batch. Do not attach them to a lone retry.
+            rename = ""
+            advanced.checksumHex = ""
+        }
+        // Command continuations are rendered as plain URLs on retry; keep those filenames literal.
+        literalUrls = kept.mapNotNullTo(HashSet()) { it.url.takeIf { url -> '[' in url } }
+        text = kept.joinToString("\n") { it.toText() }
     }
 
-    /** 追加文本（粘贴 / 导入）；已有内容逐字保留。 */
-    fun appendText(text: String) {
-        val t = text.trim()
-        if (t.isEmpty()) return
-        urlText = if (urlText.isBlank()) t else urlText.trimEnd() + "\n" + t
+    /** 追加手工粘贴的内容。 */
+    fun appendText(value: String) {
+        val trimmed = value.trim()
+        if (trimmed.isEmpty()) return
+        text = if (text.isBlank()) trimmed else text.trimEnd() + "\n" + trimmed
+    }
+
+    /** Deduplication must not turn an existing manual template into a literal import. */
+    fun addImported(entries: List<UrlEntry>): Int {
+        val (merged, added) = appendEntries(text, entries)
+        if (added.any { '[' in it.url }) {
+            literalUrls = buildSet {
+                addAll(literalUrls)
+                for (entry in added) if ('[' in entry.url) add(entry.url)
+            }
+        }
+        text = merged
+        return added.size
     }
 
     /**
@@ -221,12 +258,13 @@ internal class NewDownloadState(
 
     // 必须位于 categoryOptions 之后：Kotlin 按声明顺序初始化，提前读会拿到 null。
     init {
-        mode = restoreMode(rememberedMode, categoryOptions)
+        mode = if (hasExternalSaveDir) SaveDirMode.None else restoreMode(rememberedMode, categoryOptions)
         when (val restored = mode) {
             SaveDirMode.Auto -> Unit
             SaveDirMode.None -> {
-                saveDir = offeredSaveDir
-                lastWritten = offeredSaveDir.trim()
+                saveDir = externalSaveDir ?: offeredSaveDir
+                lastWritten = saveDir.trim()
+                manuallySelectedSaveDir = hasExternalSaveDir
             }
             is SaveDirMode.Category -> {
                 val dir = categoryOptions.first { it.id == restored.id }.saveDir
@@ -249,10 +287,13 @@ internal class NewDownloadState(
         val dir = predictedDir() ?: return null
         return categoryOptions.firstOrNull { it.saveDir == dir }
     }
-    fun rememberedMode(): String = when (val selected = mode) {
-        SaveDirMode.Auto -> "auto"
-        SaveDirMode.None -> "none"
-        is SaveDirMode.Category -> "category:${selected.id}"
+    fun rememberedMode(): String? {
+        if (hasExternalSaveDir && mode == SaveDirMode.None) return null
+        return when (val selected = mode) {
+            SaveDirMode.Auto -> "auto"
+            SaveDirMode.None -> "none"
+            is SaveDirMode.Category -> "category:${selected.id}"
+        }
     }
 
     /** 目录框未被手改：为空 / 等于最近一次程序写入值；尚未写过则等于 offered。 */
@@ -275,6 +316,17 @@ internal class NewDownloadState(
         lastWritten = target
     }
 
+    /** 更新全局默认目录；不覆盖本任务手选目录或分类目录。 */
+    fun adoptDefaultSaveDir(dir: String) {
+        val useDefault = !manuallySelectedSaveDir && mode !is SaveDirMode.Category && untouched()
+        offeredSaveDir = dir
+        if (useDefault) {
+            val target = if (mode == SaveDirMode.Auto) predictedDir() ?: dir else dir
+            saveDir = target
+            lastWritten = target
+        }
+    }
+
     /** 保存目录由用户键入或浏览选择；其值不再被自动预测覆盖，也不触发自动分类路由。 */
     fun setSaveDirManually(dir: String) {
         saveDir = dir
@@ -283,6 +335,7 @@ internal class NewDownloadState(
 
 
     fun selectMode(next: SaveDirMode) {
+        if (hasExternalSaveDir && mode == SaveDirMode.None && next == SaveDirMode.None) return
         when (next) {
             SaveDirMode.Auto -> {
                 manuallySelectedSaveDir = false
@@ -291,8 +344,9 @@ internal class NewDownloadState(
             }
             SaveDirMode.None -> {
                 mode = next
-                saveDir = offeredSaveDir
-                lastWritten = offeredSaveDir.trim()
+                saveDir = externalSaveDir ?: offeredSaveDir
+                lastWritten = saveDir.trim()
+                if (hasExternalSaveDir) manuallySelectedSaveDir = true
             }
             is SaveDirMode.Category -> {
                 val dir = categoryOptions.firstOrNull { it.id == next.id }?.saveDir ?: return
@@ -307,6 +361,7 @@ internal class NewDownloadState(
     fun addExternal(request: ExternalDownload) {
         if (request.url.isEmpty() || external.containsKey(request.url)) return
         external[request.url] = request
+        if ('[' in request.url) literalUrls = literalUrls + request.url
         if (primaryUrl == null) {
             primaryUrl = request.url
             val adv = advanced
@@ -325,12 +380,17 @@ internal class NewDownloadState(
                 }
             }
         }
-        urlText = appendEntries(urlText, listOf(UrlEntry(request.url))).first
+        text = appendEntries(text, listOf(UrlEntry(request.url))).first
         syncAuto()
     }
 
     /** 为每条链接构造请求。单条：重命名优先于 `out=`、面板校验值优先于 `checksum=`、附带 HTTP 认证。 */
-    fun buildRequests(startPaused: Boolean, queue: String, manualProxy: String): List<CreateTaskRequest> {
+    fun buildRequests(
+        startPaused: Boolean,
+        queue: String,
+        manualProxy: String,
+        resolvedSaveDir: String = saveDir.trim(),
+    ): List<CreateTaskRequest> {
         val list = entries
         val single = list.size == 1
         val adv = advanced
@@ -349,7 +409,7 @@ internal class NewDownloadState(
                     e.fileName.isNotEmpty() -> e.fileName
                     else -> external[e.url]?.fileName.orEmpty()
                 },
-                saveDir = saveDir.trim(),
+                saveDir = resolvedSaveDir,
                 segments = if (threadsApplicable) segments else 0,
                 queueId = queue,
                 startPaused = startPaused,
@@ -389,6 +449,7 @@ internal class NewDownloadState(
         /**
          * [external] 非空 = 外部唤起：链接与请求上下文按 [addExternal] 规则预填；保存目录由「自动」分类模式按文件名
          * 跟随（外部捕获命中的分类目录即其首次自动写入值）；自动模式提交时以不含分类的默认目录作 offeredSaveDir，交给 Rust 路由。
+         * 显式外部目录仅用于本次表单，不覆盖记忆的分类模式。
          */
         fun create(
             prefill: String,
@@ -408,6 +469,7 @@ internal class NewDownloadState(
                 initialTargetId = targetId,
                 categories = CustomCategoryDto.fromPreference(state.preferences[CustomCategoryDto.PREFERENCE_KEY]),
                 rememberedMode = rememberedMode,
+                externalSaveDir = external?.saveDir,
             ).also { form ->
                 external?.let(form::addExternal)
                 form.syncAuto()

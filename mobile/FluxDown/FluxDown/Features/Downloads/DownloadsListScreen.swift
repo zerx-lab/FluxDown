@@ -2,6 +2,7 @@ import FluxDomain
 import FluxUI
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 /// D1 下载列表（02-downloads §3）+ D2 多选（§4）：大标题 + 主机切换 `toolbarTitleMenu`，吸顶筛选区，
 /// `List(.insetGrouped)` 行（滑动 / 上下文菜单 / 圆环），系统工具栏的选择 / 视图菜单与底部批量工具栏。
@@ -29,7 +30,8 @@ struct DownloadsListScreen: View {
     @State private var confirmingClear = false
     @State private var pendingGroupDelete: GroupDeleteRequest?
     /// 多选底栏「删除」待确认的任务（确认 alert 由该按钮挂载）。
-    @State private var pendingSelectionDelete: TaskDeleteRequest?
+    @State private var pendingSelectionDelete: SelectionDeleteRequest?
+    @State private var taskInfoExport: TaskInfoDocument?
     #if FULL_FLAVOR
     /// 待确认「忽略插件重试」的任务（`daemon.plugin.ignoreRetry`）。
     @State private var ignoreRetryTaskId: String?
@@ -53,6 +55,7 @@ struct DownloadsListScreen: View {
                 prompt: L("searchTasksPlaceholder")
             )
             .toolbar { toolbarContent }
+            .taskInfoExporter($taskInfoExport)
             .toolbarVisibility(model.isSelecting ? .hidden : .automatic, for: .tabBar)
             .suppressesBottomAccessory("downloads.selecting", when: model.isSelecting)
             .safeAreaBar(edge: .top, spacing: 0) {
@@ -114,7 +117,7 @@ struct DownloadsListScreen: View {
                             case let .task(item):
                                 self.row(item, style: style, editing: editing)
                             case let .remote(remote):
-                                DownloadsRemoteRow(task: remote.task, readOnly: model.chrome.isReadOnly)
+                                DownloadsRemoteRow(task: remote.task, readOnly: model.chrome.isReadOnly, selecting: editing)
                             }
                         }
                     } header: {
@@ -330,7 +333,7 @@ struct DownloadsListScreen: View {
                         tone: .warning,
                         systemImage: FluxSymbol.offline,
                         slim: true,
-                        action: chrome.link == .failed ? BannerAction(title: L("mobileRetry")) { switchHost(container.host, force: true) } : nil
+                        action: chrome.link == .failed ? BannerAction(title: L("mobileRetry"), handler: retryCurrentHost) : nil
                     )
                     .bannerRow()
                 }
@@ -423,9 +426,9 @@ struct DownloadsListScreen: View {
             }
             ToolbarItemGroup(placement: .bottomBar) {
                 let caps = model.selectionCaps
-                Button(L("resume"), systemImage: FluxSymbol.resume) { actions.resume(caps.resumeIds) }
+                Button(L("resume"), systemImage: FluxSymbol.resume) { resumeSelected(caps) }
                     .disabled(!caps.canResume)
-                Button(L("pause"), systemImage: FluxSymbol.pause) { actions.pause(caps.pauseIds) }
+                Button(L("pause"), systemImage: FluxSymbol.pause) { pauseSelected(caps) }
                     .disabled(!caps.canPause)
                 Button(L("moveToQueueAction"), systemImage: FluxSymbol.queue) { actions.moveToQueue(caps.moveIds) }
                     .disabled(!caps.canMove)
@@ -440,16 +443,21 @@ struct DownloadsListScreen: View {
                     }
                 }
                 #endif
-                Button(L("copyUrl"), systemImage: FluxSymbol.copy) { copyLinks(model.selectedTasks()) }
+                Button(L("copyUrl"), systemImage: FluxSymbol.copy) { copySelectedLinks() }
                     .disabled(model.selection.isEmpty)
+                Button(L("exportTaskInfoTxt"), systemImage: "doc.text") {
+                    let rows = TaskInfoRow.selected(
+                        local: model.selectedTasks(), remote: model.selectedRemoteTasks(), visibleIds: model.list.visibleIds
+                    )
+                    if !rows.isEmpty { taskInfoExport = TaskInfoDocument(rows, labels: .localized) }
+                }
+                .disabled(!caps.canExport)
             }
             ToolbarSpacer(.flexible, placement: .bottomBar)
             ToolbarItem(placement: .bottomBar) {
-                Button(L("delete"), systemImage: FluxSymbol.delete, role: .destructive) {
-                    pendingSelectionDelete = actions.deleteRequest(model.selectedTasks()) { model.isSelecting = false }
-                }
-                .disabled(model.selection.isEmpty)
-                .taskDeleteDialog($pendingSelectionDelete)
+                Button(L("delete"), systemImage: FluxSymbol.delete, role: .destructive) { requestSelectionDelete() }
+                    .disabled(!model.selectionCaps.canDelete)
+                    .selectionDeleteDialog($pendingSelectionDelete, onConfirm: confirmSelectionDelete)
             }
         }
     }
@@ -460,13 +468,14 @@ struct DownloadsListScreen: View {
         HostTitleMenuItems(status: linkStatus)
     }
 
-    /// 切换主机（toast：切换中 / 已切换 / 失败原因）；`force` = 重连当前主机。
-    private func switchHost(_ ref: HostRef, force: Bool = false) {
-        guard !container.isSwitching, force || ref.id != container.host.id else { return }
+    /// 重试当前主机，不改变下次启动要恢复的手动选择。
+    private func retryCurrentHost() {
+        guard !container.isSwitching else { return }
+        let ref = container.host
         let name = ref.localizedName
         toasts.show(text: L("mobileHostSwitching", ["name": name]), tone: .info, systemImage: FluxSymbol.remoteHost)
         Task {
-            switch await container.switchHost(ref) {
+            switch await container.switchHost(ref, remember: false, forceReconnect: true) {
             case .success:
                 toasts.show(text: L("mobileHostSwitched", ["name": name]), tone: .success, systemImage: FluxSymbol.done)
             case let .failure(error):
@@ -501,10 +510,63 @@ struct DownloadsListScreen: View {
         }
     }
 
-    private func copyLinks(_ tasks: [DownloadTask]) {
-        guard !tasks.isEmpty else { return }
-        UIPasteboard.general.string = tasks.map(\.shareUrl).joined(separator: "\n")
+    /// 复制选中项的链接：本机任务 + 远程任务（空 url 跳过）。
+    private func copySelectedLinks() {
+        let links = model.selectedTasks().map(\.shareUrl) + model.selectedRemoteTasks().map(\.url).filter { !$0.isEmpty }
+        guard !links.isEmpty else { return }
+        UIPasteboard.general.string = links.joined(separator: "\n")
         toasts.show(text: L("urlCopied"), tone: .success, systemImage: FluxSymbol.copy)
+    }
+
+    // MARK: 多选批量（本机 → daemon；远程 → agent.remote.commandMany / 逐条回退）
+
+    private func resumeSelected(_ caps: SelectionCaps) {
+        guard actions.guardWritable() else { return }
+        if !caps.resumeIds.isEmpty { actions.resume(caps.resumeIds) }
+        runRemote(.resume, ids: caps.remoteResumeIds, quietOnSuccess: !caps.resumeIds.isEmpty)
+    }
+
+    private func pauseSelected(_ caps: SelectionCaps) {
+        guard actions.guardWritable() else { return }
+        if !caps.pauseIds.isEmpty { actions.pause(caps.pauseIds) }
+        runRemote(.pause, ids: caps.remotePauseIds, quietOnSuccess: !caps.pauseIds.isEmpty)
+    }
+
+    private func runRemote(_ action: RemoteCommandAction, ids: [String], quietOnSuccess: Bool) {
+        guard !ids.isEmpty else { return }
+        let wanted = Set(ids)
+        let tasks = model.selectedRemoteTasks().filter { wanted.contains($0.id) }
+        let devices = container.devices
+        Task {
+            let outcome = await devices.issueMany(action, tasks: tasks)
+            devices.report(outcome, quietOnSuccess: quietOnSuccess)
+        }
+    }
+
+    private func requestSelectionDelete() {
+        guard actions.guardWritable() else { return }
+        let deletable = Set(model.selectionCaps.remoteDeleteIds)
+        let request = SelectionDeleteRequest(
+            localTasks: model.selectedTasks(),
+            remoteTasks: model.selectedRemoteTasks().filter { deletable.contains($0.id) }
+        )
+        if request.count > 0 { pendingSelectionDelete = request }
+    }
+
+    private func confirmSelectionDelete(_ request: SelectionDeleteRequest, withFiles: Bool) {
+        guard actions.guardWritable() else { return }
+        let localIds = request.localTasks.map(\.taskId)
+        if !localIds.isEmpty {
+            actions.delete(localIds, withFiles: withFiles) { model.isSelecting = false }
+        }
+        guard !request.remoteTasks.isEmpty else { return }
+        let remote = request.remoteTasks
+        let devices = container.devices
+        Task {
+            let outcome = await devices.issueMany(.delete, tasks: remote, deleteFiles: withFiles)
+            devices.report(outcome, quietOnSuccess: !localIds.isEmpty)
+            if localIds.isEmpty { model.isSelecting = false }
+        }
     }
 
     /// 清除已完成任务：确认 → `deleteMany(deleteFiles: false)`（只移除记录，保留文件）。
@@ -533,6 +595,98 @@ struct DownloadsListScreen: View {
     }
 }
 
+nonisolated struct TaskInfoRow {
+    let name: String
+    let url: String
+    var size: Int64? = nil
+
+    static func selected(local: [DownloadTask], remote: [RemoteTaskDto], visibleIds: [String]) -> [Self] {
+        var rows: [String: Self] = [:]
+        var ids: [String] = []
+        for task in local where rows[task.taskId] == nil {
+            rows[task.taskId] = Self(name: task.fileName, url: task.shareUrl, size: task.totalBytes > 0 ? task.totalBytes : nil)
+            ids.append(task.taskId)
+        }
+        for task in remote {
+            let id = DownloadsRow.remoteIdPrefix + task.id
+            guard rows[id] == nil else { continue }
+            rows[id] = Self(name: task.fileName, url: task.url, size: task.totalBytes.flatMap { $0 > 0 ? $0 : nil })
+            ids.append(id)
+        }
+        let visible = visibleIds.compactMap { rows.removeValue(forKey: $0) }
+        return visible + ids.compactMap { rows[$0] }
+    }
+}
+
+nonisolated struct TaskInfoLabels {
+    let name: String
+    let url: String
+    let size: String
+
+    @MainActor static var localized: Self {
+        Self(name: L("taskInfoColumnName"), url: L("taskInfoColumnUrl"), size: L("taskInfoColumnSize"))
+    }
+}
+
+nonisolated struct TaskInfoDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.plainText] }
+    let data: Data
+
+    init(_ rows: [TaskInfoRow], labels: TaskInfoLabels) {
+        func cell(_ value: String) -> String {
+            value.replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\t", with: "\\t")
+                .replacingOccurrences(of: "\r", with: "\\r")
+                .replacingOccurrences(of: "\n", with: "\\n")
+        }
+        var text = "\(cell(labels.name))\t\(cell(labels.url))\t\(cell(labels.size))"
+        for row in rows {
+            let url = row.url.lowercased().hasPrefix("torrent-file://") ? "" : row.url
+            let size = row.size.map { String($0) } ?? ""
+            text += "\n\(cell(row.name))\t\(cell(url))\t\(size)"
+        }
+        data = Data(text.utf8)
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        guard let data = configuration.file.regularFileContents else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        self.data = data
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
+}
+
+private struct TaskInfoExporter: ViewModifier {
+    @Binding var document: TaskInfoDocument?
+    @Environment(ToastCenter.self) private var toasts
+
+    func body(content: Content) -> some View {
+        content.fileExporter(
+            isPresented: Binding(
+                get: { document != nil },
+                set: { if !$0 { document = nil } }
+            ),
+            document: document,
+            contentType: .plainText,
+            defaultFilename: "fluxdown-tasks.txt"
+        ) { result in
+            if case .failure = result {
+                toasts.show(text: L("taskInfoExportFailed"), tone: .error, systemImage: "exclamationmark.circle")
+            }
+        }
+    }
+}
+
+extension View {
+    func taskInfoExporter(_ document: Binding<TaskInfoDocument?>) -> some View {
+        modifier(TaskInfoExporter(document: document))
+    }
+}
+
 private extension View {
     /// 横幅行：透明底、无分隔线、零内边距（横幅自带圆角卡片底）。
     func bannerRow() -> some View {
@@ -543,11 +697,12 @@ private extension View {
 }
 
 /// 其他设备上执行的远程任务行（同 PC 下载页的远程行）：状态 / 进度由云端经 agent 实时推送，
-/// 控制（暂停 / 继续 / 取消 / 删除）走 `agent.remote.command`，与设备页共用 `DevicesModel` 的在途状态。
+/// 控制（暂停 / 继续 / 取消 / 删除）走 `agent.remote.command`，与设备页共用 `DevicesModel` 的在途状态；多选模式下行可被选中，批量动作见 `DevicesModel.issueMany`。
 /// 单独成视图：只有它读主机状态（目标设备名 / 在线），列表页 body 不随 10 Hz 状态重算。
 private struct DownloadsRemoteRow: View {
     let task: RemoteTaskDto
     let readOnly: Bool
+    let selecting: Bool
 
     @Environment(AppContainer.self) private var container
 
@@ -560,11 +715,10 @@ private struct DownloadsRemoteRow: View {
             targetName: target?.name ?? task.toDevice,
             targetOnline: devices.presenceKnown(state) ? target?.online : nil,
             busy: devices.isBusy(task),
-            readOnly: readOnly
+            readOnly: readOnly,
+            selecting: selecting
         ) { action, deleteFiles in
             devices.issue(action, to: task, deleteFiles: deleteFiles)
         }
-        // 远程行不参与多选（全选范围 / visibleIds 不含远程）。
-        .selectionDisabled()
     }
 }

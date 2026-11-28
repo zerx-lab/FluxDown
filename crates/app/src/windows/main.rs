@@ -1,14 +1,16 @@
-//! 主窗口：shell + 下载页 + RSS 页；关闭策略与边界持久化。
+//! 主窗口:shell + 下载页 + RSS 页 + 推送通知页 + 右侧 AI 助手面板;关闭策略与边界持久化。
 
 use std::{rc::Rc, sync::Arc};
 
 use fluxdown_ui_account::AccountRailButton;
+use fluxdown_ui_assistant::{AssistantHost, AssistantView};
 use fluxdown_ui_components::FluxIcon;
 use fluxdown_ui_downloads::{DownloadHostActions, DownloadView};
 use fluxdown_ui_rss::RssView;
-use fluxdown_ui_settings::{PushHost, PushView, UpdateButton};
+use fluxdown_ui_settings::{PushHost, PushView, VersionButton, VersionHost};
 use fluxdown_ui_shell::{
-    ChromeEditingChanged, ShellAction, ShellChrome, ShellRoute, ShellView, main_window_options,
+    ChromeEditingChanged, ShellAction, ShellChrome, ShellRoute, ShellSidePanel, ShellView,
+    main_window_options,
 };
 use gpui::{App, AppContext as _, Window, WindowHandle, px, size};
 use gpui_component::{Icon, Root};
@@ -16,13 +18,13 @@ use gpui_component::{Icon, Root};
 use crate::{
     activity::{self, ActivityEntry},
     app::Desktop,
-    capability_ports::AgentRssPort,
+    capability_ports::{AgentAssistantPort, AgentRssPort},
     downloads_port::AgentDownloadsPort,
     session::attach,
     windows::{RememberedWindow, WindowKey, WindowRegistry, confirm_active_tasks},
 };
 
-const MAIN_WINDOW_SIZE: gpui::Size<gpui::Pixels> = size(px(1120.), px(760.));
+pub(super) const MAIN_WINDOW_SIZE: gpui::Size<gpui::Pixels> = size(px(1120.), px(760.));
 
 /// 显示 / 恢复 / 聚焦主窗口；窗口已关闭时重建。
 pub fn reveal(cx: &mut App) {
@@ -57,6 +59,19 @@ fn open_with(cx: &mut App, focus: bool) -> Option<WindowHandle<Root>> {
         watch_import_suspension(&client, &downloads, cx);
         let rss_port = Arc::new(AgentRssPort::new(client.clone()));
         let rss = cx.new(|cx| RssView::new(translator.clone(), rss_port, window, cx));
+        let assistant_port = Arc::new(AgentAssistantPort::new(client.clone()));
+        let assistant = cx.new(|cx| {
+            AssistantView::new(
+                translator.clone(),
+                assistant_port,
+                AssistantHost {
+                    open_account: Rc::new(|_, cx| activity::open_account(cx)),
+                    open_plan_purchase: Rc::new(crate::account_host::open_plan_purchase_dialog),
+                },
+                window,
+                cx,
+            )
+        });
         let push = cx.new(|cx| {
             PushView::new(
                 translator.clone(),
@@ -71,6 +86,7 @@ fn open_with(cx: &mut App, focus: bool) -> Option<WindowHandle<Root>> {
 
         let downloads_sidebar = downloads.read(cx).sidebar_state();
         let rss_sidebar = rss.read(cx).sidebar_state();
+        let assistant_header = assistant.update(cx, |assistant, cx| assistant.new_panel_header(cx));
         // 推送通知页没有侧边菜单，不登记侧栏；RSS 的切换按钮由 shell 提供。
         let mut routes = Vec::new();
         let mut actions = Vec::new();
@@ -102,6 +118,24 @@ fn open_with(cx: &mut App, focus: bool) -> Option<WindowHandle<Root>> {
                     )
                     .with_sidebar(rss_sidebar.clone())
                     .optional(optional),
+                ),
+                ActivityEntry::Assistant => actions.push(
+                    ShellAction::side_panel_toggle(
+                        button_id,
+                        "activity-assistant-tooltip",
+                        entry.label_key(),
+                        Icon::new(FluxIcon::Sparkles),
+                    )
+                    .layout_id(entry.layout_id())
+                    .optional(optional)
+                    .indicator({
+                        let assistant = assistant.downgrade();
+                        move |cx| {
+                            assistant
+                                .upgrade()
+                                .is_some_and(|assistant| assistant.read(cx).badge_pending())
+                        }
+                    }),
                 ),
                 ActivityEntry::Webhooks => routes.push(
                     ShellRoute::new(
@@ -143,14 +177,50 @@ fn open_with(cx: &mut App, focus: bool) -> Option<WindowHandle<Root>> {
                 ),
             }
         }
+        let version_button = cx.new(|cx| {
+            VersionButton::new(
+                translator.clone(),
+                settings_store.clone(),
+                VersionHost {
+                    open_update_prompt: Rc::new(crate::windows::update_prompt::open),
+                    check_update: Rc::new(crate::update_notices::check_now),
+                    open_logs_folder: Rc::new(crate::menus::open_logs_folder),
+                    open_about: Rc::new(crate::menus::open_about),
+                },
+                cx,
+            )
+        });
         let chrome = ShellChrome {
-            widgets: crate::chrome_layout::widgets(&downloads, cx),
+            widgets: crate::chrome_layout::widgets(&downloads, &version_button, cx),
             catalog: crate::chrome_layout::catalog(),
             on_layout_change: Rc::new(|value, cx| {
                 Desktop::set_pref(cx, crate::chrome_layout::CHROME_LAYOUT_PREF, value);
             }),
         };
-        let shell = cx.new(|cx| ShellView::new(translator.clone(), routes, actions, chrome, cx));
+        let assistant_for_focus = assistant.downgrade();
+        let assistant_for_close = assistant.downgrade();
+        let side_panel =
+            ShellSidePanel::new(assistant_header, assistant.clone(), "assistantPanelClose")
+                .on_open(move |window, cx| {
+                    let Ok(()) = assistant_for_focus
+                        .update(cx, |assistant, cx| assistant.on_panel_open(window, cx))
+                    else {
+                        // 助手视图已随窗口释放，无需聚焦。
+                        return;
+                    };
+                })
+                .on_close(move |window, cx| {
+                    let Ok(()) = assistant_for_close
+                        .update(cx, |assistant, cx| assistant.on_panel_close(window, cx))
+                    else {
+                        // 助手视图已随窗口释放，无需归还焦点。
+                        return;
+                    };
+                });
+        let shell = cx.new(|cx| {
+            ShellView::new(translator.clone(), routes, actions, chrome, cx)
+                .with_side_panel(side_panel)
+        });
         // 页面插槽不进 chrome 布局：编辑模式下由插槽自己提供外观切换。
         let title_bar_for_editing = downloads_title_bar.downgrade();
         cx.subscribe(&shell, move |_, event: &ChromeEditingChanged, cx| {
@@ -163,17 +233,20 @@ fn open_with(cx: &mut App, focus: bool) -> Option<WindowHandle<Root>> {
             };
         })
         .detach();
-        let update_button = cx.new(|cx| {
-            UpdateButton::new(
-                translator.clone(),
-                settings_store.clone(),
-                Rc::new(crate::windows::update_prompt::open),
-                cx,
-            )
-        });
         shell.update(cx, |shell, cx| {
             shell.observe_widget_source(&downloads, cx);
-            shell.set_status_accessory(Some(update_button.into()), cx);
+            // 版本条目被隐藏时，更新状态变化决定是否临时显示它。
+            shell.observe_widget_source(&version_button, cx);
+            // 面板收起或停在历史视图时有待确认的工具调用，助手按钮显示圆点（对话视图里确认卡片就在
+            // 眼前，不重复提醒）；流式回答的逐帧更新不触发 shell 重绘。
+            let had_pending = std::cell::Cell::new(false);
+            cx.observe(&assistant, move |_, assistant, cx| {
+                let pending = assistant.read(cx).badge_pending();
+                if had_pending.replace(pending) != pending {
+                    cx.notify();
+                }
+            })
+            .detach();
             let preferences = Desktop::preferences(cx).clone();
             activity::apply_visibility(shell, &preferences, cx);
             crate::chrome_layout::apply(shell, &preferences, cx);
@@ -225,14 +298,20 @@ fn open_with(cx: &mut App, focus: bool) -> Option<WindowHandle<Root>> {
 
         attach(&session, &downloads, cx);
         attach(&session, &rss, cx);
+        attach(&session, &assistant, cx);
         {
             let desktop = Desktop::global_mut(cx);
             desktop.main_downloads = Some(downloads.downgrade());
             desktop.main_shell = Some(shell.downgrade());
+            desktop.main_assistant = Some(assistant.downgrade());
         }
         crate::plugin_contributions::attach_main_window(cx);
 
-        let root = cx.new(|cx| Root::new(shell, window, cx));
+        let root = cx.new(|cx| Root::new(shell.clone(), window, cx));
+        if cfg!(windows) {
+            let failures = downloads.update(cx, |view, cx| view.watch_visible_failed_tasks(cx));
+            watch_tray_downloads(&root, &shell, &session, &failures, window, cx);
+        }
         WindowRegistry::persist_bounds(RememberedWindow::Main, client, &root, window, cx);
         install_close_policy(window, cx);
         root
@@ -245,6 +324,203 @@ fn open_with(cx: &mut App, focus: bool) -> Option<WindowHandle<Root>> {
         cx.defer(crate::service_notices::replay_pending);
     }
     handle
+}
+
+fn watch_tray_downloads(
+    root: &gpui::Entity<Root>,
+    shell: &gpui::Entity<ShellView>,
+    session: &gpui::Entity<crate::session::AgentSession>,
+    failures: &gpui::Entity<Vec<String>>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let pending = Rc::new(std::cell::Cell::new(false));
+    let last_attempt = Rc::new(std::cell::RefCell::new(None));
+    let presentation = Rc::new(std::cell::Cell::new(0u64));
+    let check = {
+        let shell = shell.clone();
+        let session = session.clone();
+        let failures = failures.clone();
+        let presentation = presentation.clone();
+        move |window: &Window, cx: &App| {
+            if !tray_downloads_visible(window, &shell, &session, cx)
+                || pending.get()
+                || uncovered_tray_cursor(
+                    session.read(cx),
+                    &last_attempt.borrow(),
+                    presentation.get(),
+                )
+                .is_none()
+            {
+                return;
+            }
+            pending.set(true);
+            let pending = pending.clone();
+            let last_attempt = last_attempt.clone();
+            let shell = shell.clone();
+            let session = session.clone();
+            let failures = failures.clone();
+            let presentation = presentation.clone();
+            let handle = window.window_handle();
+            let client = Desktop::global(cx).client.clone();
+            cx.spawn(async move |cx| {
+                loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(1))
+                        .await;
+                    let cursor = cx.update(|cx| {
+                        match handle.update(cx, |_, window, cx| {
+                            if !tray_downloads_visible(window, &shell, &session, cx) {
+                                return None;
+                            }
+                            let revision = presentation.get();
+                            let (snapshot, relevant) = uncovered_tray_cursor(
+                                session.read(cx),
+                                &last_attempt.borrow(),
+                                revision,
+                            )?;
+                            let params = serde_json::json!({
+                                "epoch": snapshot.epoch,
+                                "sequence": snapshot.sequence,
+                                "seenFailures": failures.read(cx),
+                            });
+                            Some(((snapshot.epoch.clone(), relevant, revision), params))
+                        }) {
+                            Ok(cursor) => cursor,
+                            Err(error) => {
+                                log::debug!("tray acknowledgement window released: {error:#}");
+                                None
+                            }
+                        }
+                    });
+                    let Some((cursor, params)) = cursor else {
+                        break;
+                    };
+                    use fluxdown_protocol::method::AGENT_PLATFORM_ACK_TRAY_DOWNLOADS;
+                    let result = client
+                        .call::<_, serde_json::Value>(
+                            AGENT_PLATFORM_ACK_TRAY_DOWNLOADS,
+                            Some(params),
+                        )
+                        .await;
+                    if !complete_tray_ack(&mut last_attempt.borrow_mut(), cursor, result) {
+                        continue;
+                    }
+                    // Events received while the request was in flight did not schedule a timer.
+                    // Exit immediately if there are no newer relevant events.
+                    let covered = cx.update(|cx| {
+                        uncovered_tray_cursor(
+                            session.read(cx),
+                            &last_attempt.borrow(),
+                            presentation.get(),
+                        )
+                        .is_none()
+                    });
+                    if covered {
+                        break;
+                    }
+                }
+                pending.set(false);
+            })
+            .detach();
+        }
+    };
+    let check = Rc::new(check);
+    root.update(cx, |_, cx| {
+        let activation = check.clone();
+        cx.observe_window_activation(window, move |_, window, cx| activation(window, cx))
+            .detach();
+        let route = check.clone();
+        cx.observe_in(shell, window, move |_, _, window, cx| route(window, cx))
+            .detach();
+        let viewport = check.clone();
+        cx.observe_in(failures, window, move |_, _, window, cx| {
+            presentation.set(presentation.get().wrapping_add(1));
+            viewport(window, cx);
+        })
+        .detach();
+        let readiness = check.clone();
+        cx.subscribe_in(session, window, move |_, _, _, window, cx| {
+            readiness(window, cx)
+        })
+        .detach();
+        check(window, cx);
+    });
+}
+
+fn tray_downloads_visible(
+    window: &Window,
+    shell: &gpui::Entity<ShellView>,
+    session: &gpui::Entity<crate::session::AgentSession>,
+    cx: &App,
+) -> bool {
+    window.is_window_active()
+        && shell.read(cx).active_route() == Some(&crate::activity::DOWNLOADS_ROUTE)
+        && session.read(cx).tray_downloads_ready()
+}
+
+// Epoch, last relevant task event, and revision of the displayed failures.
+type TrayAckCursor = (String, u64, u64);
+
+fn uncovered_tray_cursor<'a>(
+    view: &'a crate::session::AgentSession,
+    last: &Option<TrayAckCursor>,
+    revision: u64,
+) -> Option<(&'a fluxdown_protocol::Snapshot, u64)> {
+    let snapshot = view.latest()?;
+    let relevant = view.tray_downloads_sequence();
+    (!tray_cursor_covered(last, &snapshot.epoch, relevant, revision))
+        .then_some((snapshot, relevant))
+}
+
+fn tray_cursor_covered(
+    last: &Option<TrayAckCursor>,
+    epoch: &str,
+    relevant: u64,
+    revision: u64,
+) -> bool {
+    last.as_ref().is_some_and(|(sent_epoch, sent, shown)| {
+        sent_epoch == epoch && *sent >= relevant && *shown == revision
+    })
+}
+
+fn complete_tray_ack(
+    last: &mut Option<TrayAckCursor>,
+    cursor: TrayAckCursor,
+    result: Result<serde_json::Value, fluxdown_protocol::RpcErrorData>,
+) -> bool {
+    if let Err(error) = result {
+        log::debug!("failed to acknowledge tray downloads: {:?}", error.code);
+        if error.retryable {
+            return false;
+        }
+    }
+    *last = Some(cursor);
+    true
+}
+
+#[cfg(test)]
+#[test]
+fn tray_ack_retries_without_waiting_for_a_new_cursor() {
+    use fluxdown_protocol::{ApplicationErrorCode, RpcErrorData};
+
+    let cursor = ("epoch".into(), 7, 1);
+    let mut last = None;
+    assert!(!complete_tray_ack(
+        &mut last,
+        cursor.clone(),
+        Err(RpcErrorData::new(ApplicationErrorCode::Internal, true)),
+    ));
+    assert!(!tray_cursor_covered(&last, "epoch", 7, 1));
+    assert!(complete_tray_ack(
+        &mut last,
+        cursor,
+        Ok(serde_json::json!({"ok": true})),
+    ));
+    assert!(tray_cursor_covered(&last, "epoch", 7, 1));
+    assert!(!tray_cursor_covered(&last, "epoch", 8, 1));
+    // Scrolling a failure into view must send a receipt even without a new daemon event.
+    assert!(!tray_cursor_covered(&last, "epoch", 7, 2));
 }
 
 /// 导入闸门挂起状态同步到下载页：挂起期间「全部开始」必须可点（它是唯一解除入口）。

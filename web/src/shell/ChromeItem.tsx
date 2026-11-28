@@ -7,7 +7,8 @@ import { SpeedLimitControl } from '../pages/downloads/statusbar/SpeedLimitContro
 import { DiskFreeCell, PauseAllButton, ResumeAllButton, RetryFailedButton, SpeedCell } from '../pages/downloads/statusbar/StatusWidgets'
 import type { WidgetProps } from '../pages/downloads/statusbar/widget'
 import { ACTIVITY_ENTRIES } from './activity'
-import { AccountItem, PluginItem, RouteItem } from './ActivityItem'
+import { AccountItem, AssistantPanelItem, PluginItem, RouteItem } from './ActivityItem'
+import { VersionControl } from './VersionControl'
 
 export function ChromeItem({ id, preview = false, ...position }: WidgetProps & { id: string; preview?: boolean }) {
   const pluginEntries = usePluginActivityEntries()
@@ -30,12 +31,16 @@ export function ChromeItem({ id, preview = false, ...position }: WidgetProps & {
       return <ProxyControl {...position} />
     case 'diskFree':
       return <DiskFreeCell preview={preview} {...position} />
+    case 'appVersion':
+      return <VersionControl {...position} />
     default: {
       const pluginEntry = pluginEntries.find((item) => item.id === id)
       if (pluginEntry) return <PluginItem entry={pluginEntry} {...position} />
       const entry = ACTIVITY_ENTRIES.find((item) => item.id === id)
       if (!entry) return null
-      return entry.id === 'account' ? <AccountItem entry={entry} {...position} /> : <RouteItem entry={entry} {...position} />
+      if (entry.id === 'account') return <AccountItem entry={entry} {...position} />
+      if (entry.id === 'assistantPanel') return <AssistantPanelItem entry={entry} {...position} />
+      return <RouteItem entry={entry} {...position} />
     }
   }
 }

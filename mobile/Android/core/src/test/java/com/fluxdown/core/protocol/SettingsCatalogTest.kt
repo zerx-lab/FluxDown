@@ -13,9 +13,9 @@ class SettingsCatalogTest {
 
     @Test
     fun syncCatalogMatchesRustSpecCount() {
-        // SYNC_SETTING_SPECS（native/protocol/src/settings.rs）：52 个 daemon 键（含 20 个 bt.guard.*）+ 29 个偏好键 + 1 个集合范围键 = 82
+        // SYNC_SETTING_SPECS（native/protocol/src/settings.rs）：52 个 daemon 键（含 20 个 bt.guard.*）+ 30 个偏好键 + 1 个集合范围键 = 83
         assertEquals(52, SettingsCatalog.daemonSyncNames.size)
-        assertEquals(29, SettingsCatalog.syncedPreferenceKeys.size)
+        assertEquals(30, SettingsCatalog.syncedPreferenceKeys.size)
         assertEquals(SettingsCatalog.daemonSyncNames.size, SettingsCatalog.syncNameToDaemonKey.size)
     }
 
@@ -81,6 +81,9 @@ class SettingsCatalogTest {
         assertTrue(rejected("default_segments", "1.0"))
         assertTrue(rejected("default_segments", " "))
         assertEquals("-1", ok("max_auto_retries", "-1"))
+        assertEquals("-1", ok("completed_record_retention_days", "-1"))
+        assertEquals("0", ok("completed_record_retention_days", "0"))
+        assertTrue(rejected("completed_record_retention_days", "-2"))
         assertEquals("1.5", ok("bt_seed_ratio_limit", "1.50"))
         assertEquals("2", ok("bt_seed_ratio_limit", "2.0"))
         assertTrue(rejected("bt_seed_ratio_limit", "-0.1"))
@@ -135,6 +138,18 @@ class SettingsCatalogTest {
         // 免打扰主开关与子开关并存：子开关的可见性与默认值都依赖它在目录里。
         assertEquals("false", SettingsCatalog.defaultWire("download.silent_download"))
         assertEquals("true", SettingsCatalog.defaultWire("download.silent_auto_category"))
+    }
+
+    @Test
+    fun logLevelWritesOnlyLocalPreferences() {
+        val key = "diagnostics.log_level"
+        for (level in listOf("auto", "debug", "info", "warn", "error")) {
+            val plan = (SettingsWritePlan.make(mapOf(key to level)) as SettingsWritePlan.Result.Ok).plan
+            assertEquals(mapOf(key to JsonValue.Str(level)), plan.localPreferences)
+            assertTrue(plan.daemon.isEmpty())
+            assertTrue(plan.syncedPreferences.isEmpty())
+        }
+        assertTrue(rejected(key, "trace"))
     }
 
     @Test

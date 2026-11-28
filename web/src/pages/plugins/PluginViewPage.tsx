@@ -51,7 +51,7 @@ export function PluginViewPage() {
           <CommandButton key={command.id} identity={plugin.identity} command={command} />
         ))}
       </header>
-      <div className="min-h-0 flex-1 overflow-auto p-4">
+      <div className="view-viewport min-h-0 flex-1 overflow-auto p-4">
         <PluginViewHost key={`${plugin.identity}/${view.id}`} identity={plugin.identity} view={view.id} />
       </div>
     </div>

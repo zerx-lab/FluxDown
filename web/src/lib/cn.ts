@@ -10,7 +10,7 @@ const twMerge = extendTailwindMerge({
     classGroups: {
       'font-size': [{ text: ['caption', 'title', 'md'] }],
       h: [
-        { h: ['control', 'nav-row', 'title-bar', 'status-bar', 'status-control', 'section-header', 'task-row', 'task-row-compact'] },
+        { h: ['control', 'nav-row', 'title-bar', 'status-bar', 'status-control', 'section-header', 'task-row', 'task-row-compact', 'toolbar-button'] },
       ],
       'min-h': [{ 'min-h': ['control', 'nav-row', 'section-header', 'touch'] }],
       w: [{ w: ['control', 'rail'] }],

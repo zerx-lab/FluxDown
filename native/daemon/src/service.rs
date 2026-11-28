@@ -12,12 +12,12 @@ use fluxdown_engine::log_info;
 use fluxdown_protocol::method;
 use fluxdown_protocol::{
     ApplicationErrorCode, CREATE_TASKS_BATCH_ID_MAX_LEN, CREATE_TASKS_MAX_ITEMS,
-    CdnConfigApplyParams, CdnReportAckParams, CreateGroupRequest, CreateQueueRequest,
-    DaemonConfigPatch, DaemonCreateTaskParams, DaemonCreateTasksParams, DaemonCreateTasksResult,
-    DaemonDeleteTasksParams, DaemonTaskIdsParams, MigrationAckParams, RpcErrorData, RpcErrorObject,
-    RpcRequest, RpcResponse, SelectionResolutionDto, ServiceHello, SiteAuthCredentialDto,
-    SiteAuthDeleteParams, SiteAuthMatchParams, SnapshotBody, TaskActivityQuery,
-    TaskSpeedHistoryQuery,
+    CdnConfigApplyParams, CdnReportAckParams, CreateGroupRequest, CreateGroupResponse,
+    CreateQueueRequest, DaemonConfigPatch, DaemonCreateTaskParams, DaemonCreateTasksParams,
+    DaemonCreateTasksResult, DaemonDeleteTasksParams, DaemonTaskIdsParams, MigrationAckParams,
+    RpcErrorData, RpcErrorObject, RpcRequest, RpcResponse, SelectionResolutionDto, ServiceHello,
+    SiteAuthCredentialDto, SiteAuthDeleteParams, SiteAuthMatchParams, SnapshotBody,
+    TaskActivityQuery, TaskSpeedHistoryQuery,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -337,6 +337,14 @@ impl DaemonService {
                 })
                 .await
             }
+            method::DAEMON_TASK_ADD_WEB_SEED => {
+                let params = parse_params::<fluxdown_protocol::AddTaskWebSeedParams>(params)?;
+                self.execute_unit(ActorOperation::AddTaskWebSeed {
+                    task_id: params.task_id,
+                    url: params.url,
+                })
+                .await
+            }
             method::DAEMON_TASK_BT_FILES => {
                 let params = parse_params::<fluxdown_protocol::DaemonBtStatusParams>(params)?;
                 match self
@@ -427,6 +435,21 @@ impl DaemonService {
                 }
             }
             method::DAEMON_TASK_CREATE_MANY => self.create_tasks(params).await,
+            method::DAEMON_TASK_SAVE_HTML => {
+                let params = parse_params::<IdParams>(params)?;
+                self.demo_forbid("saving HTML responses")?;
+                match self
+                    .actor
+                    .execute(ActorOperation::SaveHtmlResponse { task_id: params.id })
+                    .await
+                {
+                    Ok(ActorResult::Created(task_id)) => {
+                        to_value(fluxdown_protocol::CreatedTask { task_id })
+                    }
+                    Ok(_) => Err(internal_error("unexpected actor result".to_owned())),
+                    Err(error) => Err(actor_error(error)),
+                }
+            }
             method::DAEMON_TASK_PAUSE => {
                 let params = parse_params::<IdParams>(params)?;
                 self.execute_unit(ActorOperation::PauseTask { task_id: params.id })
@@ -503,6 +526,27 @@ impl DaemonService {
                     delete_files: params.delete_files,
                 })
                 .await
+            }
+            method::DAEMON_TASK_CLEAR_FILE => {
+                let params = parse_params::<IdParams>(params)?;
+                self.execute_unit(ActorOperation::ClearTaskFile { task_id: params.id })
+                    .await
+            }
+            method::DAEMON_TASK_RESTART_FILE => {
+                let params = parse_params::<RestartFileParams>(params)?;
+                let operation = ActorOperation::RestartMissingFile {
+                    task_id: params.id,
+                    recreate_if_present: params.recreate_if_present,
+                };
+                if params.recreate_if_present {
+                    match self.actor.execute(operation).await {
+                        Ok(ActorResult::Boolean(recreate)) => Ok(json!(recreate)),
+                        Ok(_) => Err(internal_error("unexpected actor result".to_owned())),
+                        Err(error) => Err(actor_error(error)),
+                    }
+                } else {
+                    self.execute_unit(operation).await
+                }
             }
             method::DAEMON_TASK_PAUSE_ALL => self.execute_unit(ActorOperation::PauseAll).await,
             method::DAEMON_TASK_RESUME_ALL => self.execute_unit(ActorOperation::ResumeAll).await,
@@ -608,6 +652,20 @@ impl DaemonService {
                     delete_files: params.delete_files,
                 })
                 .await
+            }
+            method::DAEMON_TASK_CLEAN_UNFINISHED => {
+                let params = parse_params::<DaemonTaskIdsParams>(params)?;
+                match self
+                    .actor
+                    .execute(ActorOperation::CleanUnfinishedTasks {
+                        task_ids: params.task_ids,
+                    })
+                    .await
+                {
+                    Ok(ActorResult::CleanedUnfinished(deleted)) => to_value(deleted),
+                    Ok(_) => Err(internal_error("unexpected actor result".to_owned())),
+                    Err(error) => Err(actor_error(error)),
+                }
             }
             method::DAEMON_QUEUE_LIST => {
                 to_value(self.events.inspect(|snapshot| snapshot.queues.clone()))
@@ -736,7 +794,10 @@ impl DaemonService {
                     })
                     .await
                 {
-                    Ok(ActorResult::Created(group_id)) => to_value(json!({ "groupId": group_id })),
+                    Ok(ActorResult::GroupCreated(created)) => to_value(CreateGroupResponse {
+                        group_id: created.group_id().unwrap_or_default().to_owned(),
+                        task_id: created.task_id().unwrap_or_default().to_owned(),
+                    }),
                     Ok(_) => Err(internal_error("unexpected actor result".to_owned())),
                     Err(error) => Err(actor_error(error)),
                 }
@@ -755,6 +816,42 @@ impl DaemonService {
             }
             method::DAEMON_CONFIG_GET => {
                 to_value(self.events.inspect(|snapshot| snapshot.config.clone()))
+            }
+            method::DAEMON_CONFIG_ARIA2_OPTIONS => {
+                use fluxdown_protocol::aria2_options::{
+                    Aria2OptionsRequest, Aria2OptionsResponse, export, parse,
+                };
+                let request = parse_params::<Aria2OptionsRequest>(params)?;
+                let snapshot = self.events.inspect(|snapshot| snapshot.config.clone());
+                let parsed = match request.text.as_deref() {
+                    Some(text) => parse(text),
+                    None => export(&snapshot.values).and_then(|text| parse(&text)),
+                };
+                let preview = parsed.and_then(|values| {
+                    // The eventual write repeats domain validation and checks the revision.
+                    crate::config::validate_config_patch(&values)
+                        .map_err(|error| error.to_string())?;
+                    let mut effective = snapshot.values.clone();
+                    effective.extend(values.clone());
+                    export(&effective).map(|text| (text, values))
+                });
+                let (text, values, error) = match preview {
+                    Ok((text, values)) => (text, values, None),
+                    Err(error) => (
+                        request.text.unwrap_or_default(),
+                        Default::default(),
+                        Some(error),
+                    ),
+                };
+                let defaults = export(&Default::default())
+                    .map_err(|error| internal_error(error.to_string()))?;
+                to_value(Aria2OptionsResponse {
+                    text,
+                    defaults,
+                    values,
+                    revision: snapshot.revision,
+                    error,
+                })
             }
             method::DAEMON_CONFIG_PATCH => {
                 let patch = parse_params::<DaemonConfigPatch>(params)?;
@@ -951,6 +1048,40 @@ impl DaemonService {
                     Err(error) => Err(actor_error(error)),
                 }
             }
+            method::DAEMON_RSS_GET_IMAGE => {
+                use base64::Engine as _;
+                let params = parse_params::<RssImageParams>(params)?;
+                let url = self
+                    .db
+                    .rss_item(&params.source_id, &params.guid)
+                    .await
+                    .map_err(|error| internal_error(format!("{error:#}")))?
+                    .and_then(|item| item.image_urls)
+                    .and_then(|urls| urls.into_iter().nth(usize::from(params.index)))
+                    .ok_or_else(|| internal_error("RSS image unavailable".to_owned()))?;
+                let png = fluxdown_engine::rss::preview::load(&self.egress, &url)
+                    .await
+                    .map_err(|error| {
+                        let message = "RSS image could not be loaded";
+                        if error.is::<fluxdown_engine::rss::preview::ProxyDestinationUnverifiable>()
+                        {
+                            RpcErrorObject::application(
+                                message,
+                                RpcErrorData::new(ApplicationErrorCode::Unavailable, false)
+                                    .with_reason(
+                                        fluxdown_protocol::ErrorReason::RssImageProxyUnverifiable,
+                                    ),
+                            )
+                        } else {
+                            // Clients only show a generic failure; keep the cause diagnosable.
+                            fluxdown_engine::log_warn!("[rss] image preview failed: {error:#}");
+                            internal_error(message.to_owned())
+                        }
+                    })?;
+                Ok(serde_json::json!({
+                    "pngBase64": base64::engine::general_purpose::STANDARD.encode(png)
+                }))
+            }
             method::DAEMON_RSS_GET_ITEMS => {
                 let params = parse_params::<RssSourceIdParams>(params)?;
                 let items = self
@@ -1076,6 +1207,34 @@ impl DaemonService {
             method::DAEMON_FS_LIST => {
                 let params = parse_optional_params::<FsListParams>(params)?;
                 self.list_directories(params.path).await.and_then(to_value)
+            }
+            method::DAEMON_FS_DEFAULT_FILE_EXISTS => {
+                let params = parse_params::<DefaultFileExistsParams>(params)?;
+                let name = params.file_name.as_str();
+                if name.contains(['/', '\\', ':', '\0'])
+                    || !matches!(
+                        std::path::Path::new(name).components().next(),
+                        Some(std::path::Component::Normal(_))
+                    )
+                {
+                    return to_value(false);
+                }
+                let dir = self.events.inspect(|snapshot| {
+                    crate::disk_free::stats_save_dir(
+                        snapshot
+                            .config
+                            .values
+                            .get("default_save_dir")
+                            .map(String::as_str),
+                    )
+                });
+                match tokio::fs::symlink_metadata(std::path::Path::new(&dir).join(name)).await {
+                    Ok(metadata) => to_value(metadata.is_file()),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => to_value(false),
+                    Err(error) => Err(internal_error(format!(
+                        "check default download file: {error:#}"
+                    ))),
+                }
             }
             #[cfg(feature = "plugins")]
             method::DAEMON_PLUGIN_LIST => to_value(self.list_plugins().await?),
@@ -1279,7 +1438,7 @@ impl DaemonService {
                     .plugin_manager()?
                     .install_from_zip(bytes)
                     .await
-                    .map_err(|error| plugin_package_error("blobId", &error))?;
+                    .map_err(|error| plugin_package_error(Some("blobId"), &error))?;
                 self.blobs
                     .consume(&params.blob_id, BlobKind::Plugin)
                     .await
@@ -1297,7 +1456,7 @@ impl DaemonService {
                     .plugin_manager()?
                     .install_dev(std::path::Path::new(&request.dir_path))
                     .await
-                    .map_err(|error| plugin_package_error("dirPath", &error))?;
+                    .map_err(|error| plugin_package_error(Some("dirPath"), &error))?;
                 let missing_components = self.plugin_missing_components(&identity).await;
                 to_value(fluxdown_protocol::InstalledPlugin {
                     identity,
@@ -1308,7 +1467,7 @@ impl DaemonService {
             method::DAEMON_PLUGIN_RELOAD_DEV => {
                 let params = parse_params::<PluginIdentityParams>(params)?;
                 let result = self.plugin_manager()?.reload_dev(&params.identity).await;
-                result.map_err(|error| plugin_package_error("identity", &error))?;
+                result.map_err(|error| plugin_package_error(Some("identity"), &error))?;
                 let missing_components = self.plugin_missing_components(&params.identity).await;
                 to_value(fluxdown_protocol::InstalledPlugin {
                     identity: params.identity,
@@ -1459,7 +1618,7 @@ impl DaemonService {
             method::DAEMON_PLUGIN_SET_SITE_DEFAULT => {
                 let params = parse_params::<fluxdown_protocol::PluginSetSiteDefaultParams>(params)?;
                 self.plugin_manager()?
-                    .set_site_default(&params.site, params.identity.as_deref())
+                    .set_site_default(&params.site, params.identity.as_deref(), &params.candidates)
                     .await
                     .map_err(|error| match error {
                         fluxdown_engine::plugin::PluginError::InvalidSetting { key, message } => {
@@ -1644,6 +1803,24 @@ impl DaemonService {
                     .await
                     .map_err(|error| internal_error(format!("{error:#}")))?;
                 to_value(fluxdown_engine_protocol::egress_plan_to_dto(plan))
+            }
+            method::DAEMON_NET_INTERFACES => {
+                to_value(fluxdown_engine_protocol::net_interfaces_to_dto(
+                    fluxdown_engine::net_iface::collect().await,
+                ))
+            }
+            method::DAEMON_NET_MEASURE_ROUTES => {
+                let params = parse_params::<fluxdown_protocol::NetMeasureParams>(params)?;
+                let request = fluxdown_engine_protocol::net_measure_request(params);
+                match self
+                    .actor
+                    .execute(ActorOperation::MeasureRoutes { request })
+                    .await
+                {
+                    Ok(ActorResult::NetMeasure(result)) => to_value(result),
+                    Ok(_) => Err(internal_error("unexpected actor result".to_owned())),
+                    Err(error) => Err(actor_error(error)),
+                }
             }
             #[cfg(feature = "bt")]
             method::DAEMON_BT_GUARD_STATE
@@ -2249,13 +2426,9 @@ impl DaemonService {
     }
 
     async fn list_plugins(&self) -> Result<Vec<fluxdown_protocol::PluginDto>, RpcErrorObject> {
-        Ok(self
-            .plugin_manager()?
-            .list()
-            .await
-            .into_iter()
-            .map(fluxdown_engine_protocol::plugin_info_to_dto)
-            .collect())
+        Ok(fluxdown_engine_protocol::plugin_list_to_dtos(
+            self.plugin_manager()?.list().await,
+        ))
     }
 
     async fn publish_plugins(&self) -> Result<(), RpcErrorObject> {
@@ -2496,6 +2669,7 @@ impl DaemonService {
             pending_tasks: u32::try_from(pending_tasks).unwrap_or(u32::MAX),
             total_download_bps: stats.total_download_bps,
             retry_pending_tasks: stats.retry_pending_tasks,
+            local_work_count: stats.local_work_count,
             total_upload_bps: stats.total_upload_bps,
             disk_free_bytes: fluxdown_engine::disk_space::available_space_checked(
                 std::path::PathBuf::from(&save_dir),
@@ -2595,10 +2769,24 @@ struct FsListParams {
     #[serde(default)]
     path: String,
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DefaultFileExistsParams {
+    file_name: String,
+}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RssSourceIdParams {
     source_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RssImageParams {
+    source_id: String,
+    guid: String,
+    index: u8,
 }
 
 #[derive(Deserialize)]
@@ -2648,6 +2836,15 @@ struct TaskIdParams {
 struct IdParams {
     #[serde(alias = "taskId", alias = "queueId", alias = "groupId")]
     id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RestartFileParams {
+    #[serde(alias = "taskId", alias = "queueId", alias = "groupId")]
+    id: String,
+    #[serde(default)]
+    recreate_if_present: bool,
 }
 
 #[derive(Deserialize)]
@@ -2880,6 +3077,7 @@ fn actor_error(error: ActorCallError) -> RpcErrorObject {
                     retryable: false,
                     field: None,
                     revision: Some(current),
+                    plugin_detail: None,
                     reason: None,
                 },
             )
@@ -2889,6 +3087,27 @@ fn actor_error(error: ActorCallError) -> RpcErrorObject {
             message,
             RpcErrorData::new(ApplicationErrorCode::Conflict, false),
         ),
+        ActorCallError::Operation(error @ ActorError::TaskFileClearPending) => {
+            RpcErrorObject::application(
+                error.to_string(),
+                RpcErrorData::new(ApplicationErrorCode::Conflict, false)
+                    .with_reason(fluxdown_protocol::ErrorReason::TaskFileClearPending),
+            )
+        }
+        ActorCallError::Operation(ActorError::BrowserRequestRequired) => {
+            RpcErrorObject::application(
+                fluxdown_engine::downloader::POST_ONLY_RESUME_MESSAGE,
+                RpcErrorData::new(ApplicationErrorCode::Conflict, false)
+                    .with_reason(fluxdown_protocol::ErrorReason::BrowserRequestRequired),
+            )
+        }
+        ActorCallError::Operation(error @ ActorError::TaskRestartTimeout) => {
+            RpcErrorObject::application(
+                error.to_string(),
+                RpcErrorData::new(ApplicationErrorCode::Conflict, false)
+                    .with_reason(fluxdown_protocol::ErrorReason::TaskRestartTimeout),
+            )
+        }
         ActorCallError::Operation(ActorError::TaskStateConflict(message)) => {
             RpcErrorObject::application(
                 message,
@@ -2929,6 +3148,7 @@ fn invalid_argument(field: &str, message: &str) -> RpcErrorObject {
             retryable: false,
             field: Some(field.to_owned()),
             revision: None,
+            plugin_detail: None,
             reason: None,
         },
     )
@@ -2958,15 +3178,16 @@ fn validate_queue_schedule(params: &QueueScheduleParams) -> Result<(), RpcErrorO
 /// 插件包 / 插件目录校验失败：记录完整原因，客户端按细分原因展示。
 #[cfg(feature = "plugins")]
 fn plugin_package_error(
-    field: &str,
+    field: Option<&str>,
     error: &fluxdown_engine::plugin::PluginError,
 ) -> RpcErrorObject {
-    let message = error.to_string();
-    fluxdown_engine::log_warn!("[plugin] 安装失败: {message}");
+    fluxdown_engine::log_warn!("[plugin] {error}");
     let mut data = RpcErrorData::new(ApplicationErrorCode::InvalidArgument, false)
         .with_reason(fluxdown_protocol::ErrorReason::PluginPackageInvalid);
-    data.field = Some(field.to_owned());
-    RpcErrorObject::application(message, data)
+    data.field = field.map(str::to_owned);
+    data.plugin_detail = fluxdown_engine::plugin::PluginFailureDiagnostic::from_error(error)
+        .map(fluxdown_engine_protocol::plugin_failure_detail_to_dto);
+    RpcErrorObject::application("invalid plugin package", data)
 }
 
 /// 市场索引 / 插件下载失败：按失败性质给出错误码与细分原因，并记录完整原因。
@@ -3015,11 +3236,7 @@ fn market_error(error: &fluxdown_engine::plugin::MarketError) -> RpcErrorObject 
             false,
             ErrorReason::PluginPackageTooLarge,
         ),
-        MarketError::Plugin(_) => (
-            ApplicationErrorCode::InvalidArgument,
-            false,
-            ErrorReason::PluginPackageInvalid,
-        ),
+        MarketError::Plugin(error) => return plugin_package_error(None, error),
         // 无细分原因：UI 正常路径不会走到（私有来源的插件不显示公开更新），退回「冲突」通用文案。
         MarketError::PrivateSource(_) => {
             let message = error.to_string();
@@ -3087,6 +3304,122 @@ mod tests {
         DaemonService, QueueScheduleParams, match_site_auth, validate_create_tasks,
         validate_queue_schedule, validate_queue_stop,
     };
+
+    #[cfg(feature = "plugins")]
+    #[test]
+    fn plugin_failure_details_keep_diagnosis_without_paths_or_credentials() {
+        use fluxdown_engine::plugin::PluginError;
+        use fluxdown_protocol::{PluginFailureDetail as Detail, RpcErrorObject};
+
+        let missing = PluginError::LoadFailed("包内缺少文件 'dist/入口.js'".to_owned());
+        let response = super::plugin_package_error(Some("blobId"), &missing);
+        assert_eq!(
+            response.data.and_then(|data| data.plugin_detail),
+            Some(Detail::MissingFile {
+                path: "dist/入口.js".to_owned(),
+            })
+        );
+
+        let thrown = PluginError::CompileFailed(
+            "unlabeled-secret\n    at eval_script:1:23\n/private/user folder/test.js".to_owned(),
+        );
+        let response = super::plugin_package_error(Some("identity"), &thrown);
+        let wire = serde_json::to_value(&response).expect("serialize plugin error");
+        assert_eq!(
+            wire,
+            json!({
+                "code": fluxdown_protocol::APPLICATION_ERROR_CODE,
+                "message": "invalid plugin package",
+                "data": {
+                    "code": "invalidArgument",
+                    "retryable": false,
+                    "field": "identity",
+                    "reason": "pluginPackageInvalid",
+                    "pluginDetail": { "kind": "scriptCompileFailedAt", "line": 1, "column": 23 }
+                }
+            })
+        );
+        let decoded: RpcErrorObject =
+            serde_json::from_value(wire).expect("deserialize plugin error");
+        assert_eq!(decoded, response);
+
+        for path in [
+            "/private/user folder/test.js",
+            r"C:\Users\test.js",
+            r"\\nas\share\test.js",
+        ] {
+            let failed = PluginError::LoadFailed(format!("包内缺少文件 '{path}'"));
+            let response = super::plugin_package_error(Some("identity"), &failed);
+            assert_eq!(
+                response.data.and_then(|data| data.plugin_detail),
+                Some(Detail::LoadFailed)
+            );
+        }
+    }
+
+    #[cfg(feature = "plugins")]
+    #[test]
+    fn manifest_validation_reports_categories_without_echoing_input() {
+        use fluxdown_engine::plugin::{MarketError, PluginError, PluginManifest};
+        use fluxdown_protocol::PluginFailureDetail as Detail;
+
+        let cases = [
+            ("{", Detail::ManifestJsonInvalid),
+            (r#"{"private-field": 1}"#, Detail::ManifestUnknownField),
+            (
+                r#"{"identity":"private-value","name":"Test","version":"1.0.0"}"#,
+                Detail::ManifestIdentityInvalid,
+            ),
+            (
+                r#"{"identity":"test@example","name":"Test","version":"private-value"}"#,
+                Detail::ManifestVersionInvalid,
+            ),
+            (
+                r#"{"identity":"test@example","name":"Test","version":"1.0.0","permissions":["private-value"]}"#,
+                Detail::ManifestUnknownPermission,
+            ),
+            (
+                r#"{"identity":"test@example","name":"Test","version":"1.0.0","auth":{"entry":"auth.js"}}"#,
+                Detail::ManifestAuthPermissionMissing,
+            ),
+        ];
+        for (input, expected) in cases {
+            let error = PluginManifest::parse(input.as_bytes())
+                .and_then(|manifest| manifest.validate())
+                .expect_err("invalid manifest");
+            let response = super::market_error(&MarketError::Plugin(error));
+            assert_eq!(response.message, "invalid plugin package");
+            let data = response.data.expect("application error data");
+            assert_eq!(data.field, None);
+            assert_eq!(data.plugin_detail, Some(expected));
+        }
+
+        let error = PluginError::ManifestInvalid("zip 打开失败: /private/package.zip".to_owned());
+        let response = super::plugin_package_error(Some("blobId"), &error);
+        assert_eq!(response.message, "invalid plugin package");
+        assert_eq!(response.data.and_then(|data| data.plugin_detail), None);
+
+        for (error, expected) in [
+            (
+                PluginError::ManifestInvalid(
+                    "读取 manifest 失败: /private/manifest.json".to_owned(),
+                ),
+                Some(Detail::ManifestUnreadable),
+            ),
+            (
+                PluginError::NotDevPlugin("private-identity".to_owned()),
+                Some(Detail::NotDevPlugin),
+            ),
+            (
+                PluginError::Runtime("private-runtime-error".to_owned()),
+                None,
+            ),
+        ] {
+            let response = super::plugin_package_error(Some("identity"), &error);
+            assert_eq!(response.message, "invalid plugin package");
+            assert_eq!(response.data.and_then(|data| data.plugin_detail), expected);
+        }
+    }
 
     fn schedule(queue_id: &str, enabled: bool, start: &str, stop: &str) -> QueueScheduleParams {
         QueueScheduleParams {
@@ -3261,6 +3594,102 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn aria2_options_preview_is_read_only_and_preserves_omitted_settings() {
+        use fluxdown_protocol::{DaemonConfigSnapshot, DaemonSnapshot, method};
+
+        let dir = std::env::temp_dir().join(format!("fluxdown_aria2_{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .expect("create directory");
+        let db = fluxdown_engine::db::Db::open(&dir)
+            .await
+            .expect("open database");
+        db.init_default_config("/tmp").await.expect("seed config");
+        let config = DaemonConfigSnapshot {
+            revision: 7,
+            values: std::collections::BTreeMap::from([
+                ("default_segments".into(), "12".into()),
+                ("global_user_agent".into(), "custom-agent".into()),
+            ]),
+        };
+        let events = crate::event_hub::DaemonEventHub::new(
+            DaemonSnapshot {
+                config: config.clone(),
+                ..Default::default()
+            },
+            32,
+        );
+        let selections = crate::selection::DaemonSelection::new(events.clone());
+        let blobs = std::sync::Arc::new(
+            crate::blob_store::BlobStore::open(dir.join("blobs"))
+                .await
+                .expect("open blobs"),
+        );
+        let service = DaemonService::new(
+            crate::service_hello("aria2-test", Vec::new()),
+            events.clone(),
+            selections,
+            blobs,
+            crate::actor::DaemonActorHandle::disconnected(),
+            db,
+            dir.clone(),
+            #[cfg(feature = "plugins")]
+            None,
+        );
+        let exported = service
+            .call_inner(
+                "aria2-test",
+                true,
+                method::DAEMON_CONFIG_ARIA2_OPTIONS,
+                Some(json!({})),
+            )
+            .await
+            .expect("export");
+        assert!(exported["text"].as_str().unwrap().contains("split=12"));
+        assert_eq!(exported["revision"], 7);
+        let preview = service
+            .call_inner(
+                "aria2-test",
+                true,
+                method::DAEMON_CONFIG_ARIA2_OPTIONS,
+                Some(json!({"text": "max-overall-download-limit=2M"})),
+            )
+            .await
+            .expect("preview");
+        assert_eq!(preview["values"], json!({"speed_limit_bytes": "2097152"}));
+        assert!(
+            preview["text"]
+                .as_str()
+                .unwrap()
+                .contains("user-agent=custom-agent")
+        );
+        assert_eq!(events.inspect(|snapshot| snapshot.config.clone()), config);
+        let error = service
+            .call_inner(
+                "aria2-test",
+                true,
+                method::DAEMON_CONFIG_ARIA2_OPTIONS,
+                Some(json!({"text": "split=8\nrpc-secret=secret"})),
+            )
+            .await
+            .expect("validation diagnostics cross the gateway as result data");
+        assert!(
+            error["error"].as_str().unwrap().contains("line 2:"),
+            "{error}"
+        );
+        assert_eq!(
+            error["values"],
+            json!({}),
+            "invalid draft must not yield a partial patch"
+        );
+        assert_eq!(events.inspect(|snapshot| snapshot.config.clone()), config);
+        drop(service);
+        tokio::fs::remove_dir_all(dir)
+            .await
+            .expect("remove directory");
+    }
+
+    #[tokio::test]
     async fn proxy_route_explains_draft_rules() {
         let dir = std::env::temp_dir().join(format!(
             "fluxdown_daemon_proxy_route_{}_{}",
@@ -3397,6 +3826,23 @@ mod tests {
             None,
         );
 
+        tokio::fs::write(dir.join("retained.zip"), b"")
+            .await
+            .expect("create retained file without a task record");
+        let mut existence_results = Vec::new();
+        for name in ["retained.zip", "missing.zip", "blobs", "./retained.zip"] {
+            existence_results.push(
+                service
+                    .call_inner(
+                        "dispatch-test",
+                        true,
+                        fluxdown_protocol::method::DAEMON_FS_DEFAULT_FILE_EXISTS,
+                        Some(json!({ "fileName": name })),
+                    )
+                    .await,
+            );
+        }
+
         for method_name in fluxdown_protocol::method::ALL_METHODS
             .iter()
             .copied()
@@ -3427,6 +3873,14 @@ mod tests {
         if let Err(error) = tokio::fs::remove_dir_all(dir).await {
             eprintln!("daemon dispatch test directory removal failed: {error}");
         }
+        let existence_results = existence_results
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("default file existence checks");
+        assert_eq!(
+            existence_results,
+            [json!(true), json!(false), json!(false), json!(false)]
+        );
     }
 
     fn optional_feature_method(method_name: &str) -> bool {
@@ -3443,7 +3897,6 @@ mod plugin_consent_audit_tests {
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
-    use fluxdown_engine::events::{EngineEvent, EventSink};
     use fluxdown_engine::plugin::PluginManager;
     use fluxdown_engine::plugin::quickjs::QuickJsScriptRuntime;
     use fluxdown_engine::plugin::runtime::{
@@ -3453,6 +3906,7 @@ mod plugin_consent_audit_tests {
     use serde_json::{Value, json};
 
     use super::DaemonService;
+    use crate::event_hub::{DaemonEngineEventSink, DaemonEventHub};
 
     const ID: &str = "acme@demo";
 
@@ -3480,12 +3934,6 @@ mod plugin_consent_audit_tests {
         }
         fn log(&self, _plugin_id: &str, _level: PluginLogLevel, _message: &str) {}
         fn request_retry(&self, _plugin_id: &str, _task_id: &str, _delay_ms: u64) {}
-    }
-
-    struct NullSink;
-
-    impl EventSink for NullSink {
-        fn emit(&self, _event: EngineEvent) {}
     }
 
     struct Fixture {
@@ -3525,15 +3973,15 @@ mod plugin_consent_audit_tests {
         let db = fluxdown_engine::db::Db::connect("sqlite::memory:")
             .await
             .unwrap();
+        let events = DaemonEventHub::new(Default::default(), 32);
         let manager = Arc::new(PluginManager::new(
             Arc::new(QuickJsScriptRuntime::new(1).unwrap()),
             Arc::new(NullBridge),
             db.clone(),
             root.clone(),
             "1.0.0".to_owned(),
-            Arc::new(NullSink),
+            Arc::new(DaemonEngineEventSink(events.clone())),
         ));
-        let events = crate::event_hub::DaemonEventHub::new(Default::default(), 32);
         let selections = crate::selection::DaemonSelection::new(events.clone());
         let blobs = Arc::new(
             crate::blob_store::BlobStore::open(base.join("blobs"))
@@ -3567,6 +4015,358 @@ mod plugin_consent_audit_tests {
         f.service
             .call_inner("plugin-test", true, method, Some(params))
             .await
+    }
+
+    fn assert_plugin_diagnostic(error: fluxdown_protocol::RpcErrorObject, detail: Value) {
+        let wire = serde_json::to_value(error).unwrap();
+        assert_eq!(wire["message"], "invalid plugin package");
+        assert_eq!(wire["data"]["reason"], "pluginPackageInvalid");
+        assert_eq!(wire["data"]["pluginDetail"], detail);
+        assert!(!wire.to_string().contains("private-fixture-value"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plugin_dev_rpc_reports_underlying_load_failure() {
+        use fluxdown_protocol::method;
+
+        let f = fixture().await;
+        let src = f.base.join("src");
+        let path = src.join("manifest.json");
+        write_plugin(&src, &[]);
+        let manifest: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let mut missing = manifest.clone();
+        missing["main"] = json!({"entry": "dist/main.js"});
+        std::fs::write(&path, missing.to_string()).unwrap();
+        let missing_detail = json!({"kind": "missingFile", "path": "dist/main.js"});
+        let params = json!({"dirPath": src});
+        let error = call(&f, method::DAEMON_PLUGIN_INSTALL_DEV, params.clone())
+            .await
+            .unwrap_err();
+        assert_plugin_diagnostic(error, missing_detail.clone());
+
+        std::fs::write(&path, manifest.to_string()).unwrap();
+        call(&f, method::DAEMON_PLUGIN_INSTALL_DEV, params)
+            .await
+            .unwrap();
+
+        let mut invalid_identity = manifest.clone();
+        invalid_identity["identity"] = json!("private-fixture-value");
+        let mut invalid_version = manifest.clone();
+        invalid_version["version"] = json!("private-fixture-value");
+        let mut unknown_permission = manifest;
+        unknown_permission["permissions"] = json!(["private-fixture-value"]);
+        let reload = || {
+            call(
+                &f,
+                method::DAEMON_PLUGIN_RELOAD_DEV,
+                json!({"identity": ID}),
+            )
+        };
+        for (contents, detail) in [
+            (invalid_identity, json!({"kind": "manifestIdentityInvalid"})),
+            (invalid_version, json!({"kind": "manifestVersionInvalid"})),
+            (
+                unknown_permission,
+                json!({"kind": "manifestUnknownPermission"}),
+            ),
+            (missing, missing_detail),
+        ] {
+            std::fs::write(&path, contents.to_string()).unwrap();
+            let error = reload().await.unwrap_err();
+            assert_plugin_diagnostic(error, detail);
+            assert_eq!(plugin(&f).await["loadStatus"], "Failed");
+        }
+        std::fs::remove_file(path).unwrap();
+        let error = reload().await.unwrap_err();
+        assert_plugin_diagnostic(error, json!({"kind": "manifestUnreadable"}));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dev_reload_and_list_redact_the_same_manifest_error() {
+        use fluxdown_protocol::method;
+
+        let f = fixture().await;
+        let src = f.base.join("dev");
+        write_plugin(&src, &[]);
+        call(
+            &f,
+            method::DAEMON_PLUGIN_INSTALL_DEV,
+            json!({"dirPath": src}),
+        )
+        .await
+        .unwrap();
+
+        let path = src.join("manifest.json");
+        let mut manifest: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        manifest["private-fixture-value"] = json!(true);
+        std::fs::write(path, manifest.to_string()).unwrap();
+
+        let error = call(
+            &f,
+            method::DAEMON_PLUGIN_RELOAD_DEV,
+            json!({"identity": ID}),
+        )
+        .await
+        .unwrap_err();
+        let detail = json!({"kind": "manifestUnknownField"});
+        assert_plugin_diagnostic(error, detail.clone());
+
+        let list = call(&f, method::DAEMON_PLUGIN_LIST, json!({}))
+            .await
+            .unwrap();
+        let failed = list
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["identity"] == ID)
+            .unwrap();
+        assert_eq!(failed["loadStatus"], "Failed");
+        assert_eq!(failed["loadDetail"], detail);
+        assert!(
+            failed["loadError"]
+                .as_str()
+                .is_some_and(|text| !text.is_empty())
+        );
+        assert!(!list.to_string().contains("private-fixture-value"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plugin_zip_rpc_reports_underlying_load_failure_and_rolls_back() {
+        use std::io::{Cursor, Write};
+
+        use fluxdown_protocol::method;
+        use zip::write::SimpleFileOptions;
+
+        use crate::blob_store::BlobKind;
+
+        let f = fixture().await;
+        let cases = [
+            (
+                json!({
+                    "identity": ID, "name": "Demo", "version": "1.0.0",
+                    "resolvers": [{"entry": "resolve.js", "match": {"urls": ["https://example.invalid/*"]}}],
+                }),
+                None,
+                json!({"kind": "missingFile", "path": "resolve.js"}),
+            ),
+            (
+                json!({
+                    "identity": ID, "name": "Demo", "version": "1.0.0",
+                    "permissions": ["archive"], "contributes": {"archive": "archive.js"},
+                }),
+                Some(("archive.js", "const private-fixture-value = ;")),
+                json!({"kind": "scriptCompileFailedAt", "line": 1}),
+            ),
+            (
+                json!({
+                    "identity": ID, "name": "Demo", "version": "1.0.0",
+                    "resolvers": [{"entry": "resolve.js", "match": {"urls": ["https://example.invalid/*"]}}],
+                }),
+                Some(("resolve.js", "const private-fixture-value = ;")),
+                json!({"kind": "scriptCompileFailedAt", "line": 1}),
+            ),
+        ];
+        for dev in [false, true] {
+            if dev {
+                write_plugin(&f.root.join(ID), &[]);
+                std::fs::write(f.root.join(ID).join("previous.txt"), b"old package").unwrap();
+                let src = f.base.join("dev");
+                write_plugin(&src, &[]);
+                call(
+                    &f,
+                    method::DAEMON_PLUGIN_INSTALL_DEV,
+                    json!({"dirPath": src}),
+                )
+                .await
+                .unwrap();
+            }
+            for (manifest, script, detail) in &cases {
+                let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+                zip.start_file("manifest.json", SimpleFileOptions::default())
+                    .unwrap();
+                zip.write_all(manifest.to_string().as_bytes()).unwrap();
+                if let Some((entry, source)) = script {
+                    zip.start_file(*entry, SimpleFileOptions::default())
+                        .unwrap();
+                    zip.write_all(source.as_bytes()).unwrap();
+                }
+                let bytes = zip.finish().unwrap().into_inner();
+                let id = f.service.blobs.put(BlobKind::Plugin, &bytes).await.unwrap();
+                let error = call(&f, method::DAEMON_PLUGIN_INSTALL, json!({"blobId": id}))
+                    .await
+                    .unwrap_err();
+                let mut detail = detail.clone();
+                if script.is_some() {
+                    let wire = serde_json::to_value(&error).unwrap();
+                    let column = wire["data"]["pluginDetail"]["column"].as_u64().unwrap();
+                    assert!(column > 0);
+                    detail["column"] = json!(column);
+                }
+                assert_plugin_diagnostic(error, detail);
+                if dev {
+                    assert_eq!(
+                        std::fs::read(f.root.join(ID).join("previous.txt")).unwrap(),
+                        b"old package"
+                    );
+                    let remaining = plugin(&f).await;
+                    assert_eq!(remaining["devMode"], true);
+                    assert_eq!(remaining["loadStatus"], "Loaded");
+                } else {
+                    assert!(!f.root.join(ID).exists());
+                    let remaining = call(&f, method::DAEMON_PLUGIN_LIST, json!({}))
+                        .await
+                        .unwrap();
+                    assert_eq!(remaining, json!([]));
+                }
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plugin_conflicts_follow_install_and_enable_state_in_events_and_list() {
+        use fluxdown_protocol::{DaemonEvent, ServiceEvent, method};
+
+        const BROAD: &str = "broad@test";
+        const SCOPED: &str = "scoped@test";
+        // Host stars stay in the host: the broad pattern must also span the path.
+        const BROAD_PATTERN: &str = "https://*/*/download";
+        const SCOPED_PATTERN: &str = "https://x.test/*/download";
+        const UPDATED_PATTERN: &str = "https://x.test/new/*/download";
+
+        let f = fixture().await;
+        f.manager.load_all().await;
+        let install = |identity: &str, version: &str, pattern: &str, permissions: &[&str]| {
+            let src = f.base.join(identity).join(version);
+            std::fs::create_dir_all(&src).unwrap();
+            std::fs::write(
+                src.join("manifest.json"),
+                json!({
+                    "identity": identity, "name": identity, "version": version,
+                    "permissions": permissions,
+                    "resolvers": [{
+                        "entry": "resolve.js",
+                        "match": { "urls": [pattern] }
+                    }]
+                })
+                .to_string(),
+            )
+            .unwrap();
+            std::fs::write(
+                src.join("resolve.js"),
+                "globalThis.resolve = async () => ({ url: 'https://x.test/file' });",
+            )
+            .unwrap();
+            json!({ "dirPath": src })
+        };
+        call(
+            &f,
+            method::DAEMON_PLUGIN_INSTALL_DEV,
+            install(BROAD, "1.0.0", BROAD_PATTERN, &[]),
+        )
+        .await
+        .unwrap();
+
+        for (action, params, version, reason, pending, warning_pattern) in [
+            (
+                method::DAEMON_PLUGIN_INSTALL_DEV,
+                install(SCOPED, "1.0.0", SCOPED_PATTERN, &["tasks"]),
+                "1.0.0",
+                "ConsentRequired",
+                json!(["tasks"]),
+                Some(SCOPED_PATTERN),
+            ),
+            (
+                method::DAEMON_PLUGIN_CONSENT,
+                json!({ "identity": SCOPED, "permissions": ["tasks"], "networkHosts": [] }),
+                "1.0.0",
+                "None",
+                json!([]),
+                Some(SCOPED_PATTERN),
+            ),
+            (
+                method::DAEMON_PLUGIN_SET_ENABLED,
+                json!({ "identity": SCOPED, "enabled": false }),
+                "1.0.0",
+                "Manual",
+                json!([]),
+                None,
+            ),
+            (
+                method::DAEMON_PLUGIN_INSTALL_DEV,
+                install(SCOPED, "2.0.0", UPDATED_PATTERN, &["tasks", "ytdlp"]),
+                "2.0.0",
+                "Manual",
+                json!(["ytdlp"]),
+                None,
+            ),
+            (
+                method::DAEMON_PLUGIN_SET_ENABLED,
+                json!({ "identity": SCOPED, "enabled": false }),
+                "2.0.0",
+                "Manual",
+                json!(["ytdlp"]),
+                None,
+            ),
+            (
+                method::DAEMON_PLUGIN_CONSENT,
+                json!({ "identity": SCOPED, "permissions": ["tasks", "ytdlp"], "networkHosts": [] }),
+                "2.0.0",
+                "Manual",
+                json!([]),
+                None,
+            ),
+            (
+                method::DAEMON_PLUGIN_SET_ENABLED,
+                json!({ "identity": SCOPED, "enabled": true }),
+                "2.0.0",
+                "None",
+                json!([]),
+                Some(UPDATED_PATTERN),
+            ),
+        ] {
+            let mut events = f.service.events.subscribe();
+            call(&f, action, params).await.unwrap();
+            let event_plugins = loop {
+                let frame = events
+                    .try_recv()
+                    .expect("plugin change event after mutation");
+                if let ServiceEvent::Daemon(DaemonEvent::PluginsChanged(plugins)) = &frame.event {
+                    break serde_json::to_value(plugins).unwrap();
+                }
+            };
+            let list = call(&f, method::DAEMON_PLUGIN_LIST, json!({}))
+                .await
+                .unwrap();
+            assert_eq!(event_plugins, list);
+            assert_eq!(list[0]["identity"], BROAD);
+            assert_eq!(list[0]["enabled"], true);
+            assert_eq!(list[1]["identity"], SCOPED);
+            assert_eq!(list[1]["version"], version);
+            assert_eq!(list[1]["disabledReason"], reason);
+            assert_eq!(list[1]["enabled"], reason == "None");
+            assert_eq!(list[1]["consentPending"], pending);
+            let route = f
+                .manager
+                .route_resolver("https://x.test/new/item/download")
+                .await
+                .expect("broad plugin always matches");
+            assert_eq!(route.identity, BROAD);
+            assert_eq!(route.choice_pending, reason == "None");
+            if let Some(pattern) = warning_pattern {
+                assert_eq!(
+                    list[0]["resolverUrlConflicts"],
+                    json!([{
+                        "pattern": BROAD_PATTERN,
+                        "otherIdentity": SCOPED,
+                        "otherPattern": pattern,
+                        "site": "x.test",
+                    }])
+                );
+            } else {
+                assert!(list[0].get("resolverUrlConflicts").is_none());
+            }
+            assert!(list[1].get("resolverUrlConflicts").is_none());
+        }
     }
 
     async fn plugin(f: &Fixture) -> Value {

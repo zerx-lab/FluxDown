@@ -20,6 +20,10 @@ export interface ImageLoadOptions {
   maxWidth?: number;
   /** Maximum output height, 1–2048; defaults to 512. */
   maxHeight?: number;
+  /** Center-crop to a square and mask to a circle. Defaults to false. */
+  circle?: boolean;
+  /** Rounded corner radius in output pixels; ignored when circle is true. Defaults to zero. */
+  cornerRadius?: number;
   /** Cache by source/options for five minutes; defaults to true. */
   cache?: boolean;
 }
@@ -515,7 +519,12 @@ export interface ResolveResult {
   defaultVariantIndex?: number;
   /** Request overlay applied to this task's every run (same shape as the `prepare` result). */
   request?: RequestPatch;
-  /** Multi-file listing; mutually exclusive with `url` / `variants` / `audioUrl`. */
+  /**
+   * Multi-file listing; mutually exclusive with `url` / `variants` / `audioUrl`.
+   * `name` is the task group's display name only; it never creates a folder. Put any folders
+   * in `items[].path`. When all selected items share a common folder, the host names the group
+   * after that folder; a single selected item is downloaded as a plain task, not a group.
+   */
   manifest?: { name?: string; items: ManifestItem[]; archiveMetadata?: ArchiveMetadata };
   /** Root metadata shared by this resolver result and its manifest items. */
   archiveMetadata?: ArchiveMetadata;

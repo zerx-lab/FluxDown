@@ -1,0 +1,23 @@
+<svg width="512" height="512" viewBox="56 56 400 400" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title>FluxDown · Sunset</title>
+  <desc>Warm orange-to-pink-to-violet squircle with the white download arrow</desc>
+  <defs>
+    <linearGradient id="bg" x1="96" y1="56" x2="416" y2="456" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFB547"/>
+      <stop offset=".45" stop-color="#FF5A7A"/>
+      <stop offset="1" stop-color="#9B3CF0"/>
+    </linearGradient>
+    <radialGradient id="sheen" cx="160" cy="40" r="340" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity=".28"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="8" stdDeviation="9" flood-color="#7A1450" flood-opacity=".35"/>
+    </filter>
+    <path id="arrow" d="M 226 131 Q 226 119 238 119 L 274 119 Q 286 119 286 131 L 286 296 L 331 251 Q 340 242 349 251 L 363 265 Q 372 274 363 283 L 265 381 Q 256 390 247 381 L 149 283 Q 140 274 149 265 L 163 251 Q 172 242 181 251 L 226 296 Z"/>
+  </defs>
+
+  <rect x="56" y="56" width="400" height="400" rx="88" fill="url(#bg)"/>
+  <rect x="56" y="56" width="400" height="400" rx="88" fill="url(#sheen)"/>
+  <use href="#arrow" fill="#FFFFFF" filter="url(#shadow)"/>
+</svg>

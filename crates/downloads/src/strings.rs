@@ -40,11 +40,15 @@ pub(crate) struct DownloadStrings {
     pub(crate) delete: SharedString,
     pub(crate) delete_task: SharedString,
     pub(crate) delete_task_and_file: SharedString,
+    pub(crate) clear_task_file: SharedString,
     pub(crate) clean_stale_tasks: SharedString,
-    pub(crate) clean_stale_tasks_description: SharedString,
+    pub(crate) clean_unfinished_selection: SharedString,
+    pub(crate) clear_task_file_confirmation: SharedString,
     delete_confirm_with_file: SharedString,
     delete_confirm_keep_file: SharedString,
+    group_delete_confirm_keep_file: SharedString,
     batch_delete_confirm_with_file: SharedString,
+    batch_delete_confirm_keep_file: SharedString,
     pub(crate) too_many_windows_hint: SharedString,
     pub(crate) confirm: SharedString,
     pub(crate) cancel: SharedString,
@@ -67,6 +71,9 @@ pub(crate) struct DownloadStrings {
     pub(crate) pause_all: SharedString,
     pub(crate) resume: SharedString,
     pub(crate) resume_all: SharedString,
+    /// 右键菜单：可继续 / 可停止的全是做种任务时，「继续」「暂停」改用做种措辞。
+    pub(crate) resume_seeding: SharedString,
+    pub(crate) stop_seeding: SharedString,
     /// 状态栏批量按钮禁用时的 tooltip：说明为什么当前不可点。
     pub(crate) pause_all_unavailable: SharedString,
     pub(crate) resume_all_unavailable: SharedString,
@@ -87,6 +94,8 @@ pub(crate) struct DownloadStrings {
     pub(crate) status_error: SharedString,
     pub(crate) task_error_post_only_endpoint: SharedString,
     pub(crate) task_error_post_only_resume: SharedString,
+    task_error_unexpected_html: SharedString,
+    task_error_html_changed: SharedString,
     pub(crate) status_incomplete: SharedString,
     pub(crate) status_paused: SharedString,
     pub(crate) status_seeding: SharedString,
@@ -154,6 +163,7 @@ pub(crate) struct DownloadStrings {
     pub(crate) bt_force_recheck: SharedString,
     pub(crate) bt_move_storage: SharedString,
     pub(crate) bt_task_limits: SharedString,
+    pub(crate) bt_add_web_seed: SharedString,
     pub(crate) bt_super_seeding: SharedString,
     pub(crate) redownload_task: SharedString,
     pub(crate) copy_url: SharedString,
@@ -179,7 +189,6 @@ pub(crate) struct DownloadStrings {
     pub(crate) group_copy_source_link: SharedString,
     pub(crate) group_delete: SharedString,
     pub(crate) group_delete_with_files: SharedString,
-    group_delete_confirm_with_file: SharedString,
     pub(crate) open_group_in_window: SharedString,
     group_items_count: SharedString,
     group_done_count: SharedString,
@@ -272,12 +281,22 @@ impl DownloadStrings {
             delete: shared(translator.text(keys::DELETE)),
             delete_task: shared(translator.text("deleteTask")),
             delete_task_and_file: shared(translator.text("deleteTaskAndFile")),
+            clear_task_file: shared(translator.text("clearTaskFile")),
             clean_stale_tasks: shared(translator.text("cleanStaleTasks")),
-            clean_stale_tasks_description: shared(translator.text("cleanStaleTasksDesc")),
+            clean_unfinished_selection: shared(translator.text("cleanUnfinishedSelection")),
+            clear_task_file_confirmation: shared(
+                translator.text("clearTaskFileConfirmWithBrowserNotice"),
+            ),
             delete_confirm_with_file: shared(translator.text("deleteConfirmDescWithFile")),
             delete_confirm_keep_file: shared(translator.text("deleteConfirmDescKeepFile")),
+            group_delete_confirm_keep_file: shared(
+                translator.text("groupDeleteConfirmDescKeepFile"),
+            ),
             batch_delete_confirm_with_file: shared(
                 translator.text("batchDeleteConfirmDescWithFile"),
+            ),
+            batch_delete_confirm_keep_file: shared(
+                translator.text("batchDeleteConfirmDescKeepFile"),
             ),
             too_many_windows_hint: shared(translator.text("tooManyWindowsHint")),
             main_queue: shared(translator.text(keys::MAIN_QUEUE)),
@@ -285,6 +304,8 @@ impl DownloadStrings {
             pause_all: shared(translator.text("pauseAll")),
             resume: shared(translator.text(keys::RESUME)),
             resume_all: shared(translator.text("resumeAll")),
+            resume_seeding: shared(translator.text("seedingResume")),
+            stop_seeding: shared(translator.text("btSeedStopSeeding")),
             pause_all_unavailable: shared(translator.text("pauseAllUnavailable")),
             resume_all_unavailable: shared(translator.text("resumeAllUnavailable")),
             resume_all_queue_stopped: shared(translator.text("resumeAllQueueStopped")),
@@ -302,6 +323,8 @@ impl DownloadStrings {
             status_error: shared(translator.text(keys::STATUS_ERROR)),
             task_error_post_only_endpoint: shared(translator.text("taskErrorPostOnlyEndpoint")),
             task_error_post_only_resume: shared(translator.text("taskErrorPostOnlyResume")),
+            task_error_unexpected_html: shared(translator.text("taskErrorUnexpectedHtml")),
+            task_error_html_changed: shared(translator.text("taskErrorHtmlChanged")),
             status_incomplete: shared(translator.text("tabDownloading")),
             status_paused: shared(translator.text(keys::STATUS_PAUSED)),
             status_seeding: shared(translator.text("statusSeeding")),
@@ -359,6 +382,7 @@ impl DownloadStrings {
             bt_force_recheck: shared(translator.text("btForceRecheck")),
             bt_move_storage: shared(translator.text("btMoveStorage")),
             bt_task_limits: shared(translator.text("btTaskLimits")),
+            bt_add_web_seed: shared(translator.text("btAddWebSeed")),
             bt_super_seeding: shared(translator.text("btSuperSeeding")),
             redownload_task: shared(translator.text("redownloadTask")),
             copy_url: shared(translator.text("copyUrl")),
@@ -378,7 +402,6 @@ impl DownloadStrings {
             group_copy_source_link: shared(translator.text("groupCopySourceLink")),
             group_delete: shared(translator.text("groupDelete")),
             group_delete_with_files: shared(translator.text("groupDeleteWithFiles")),
-            group_delete_confirm_with_file: shared(translator.text("deleteConfirmDescWithFile")),
             open_group_in_window: shared(translator.text("openGroupInWindowAction")),
             group_items_count: shared(translator.text("groupItemsCount")),
             group_done_count: shared(translator.text("groupDoneCount")),
@@ -432,23 +455,24 @@ impl DownloadStrings {
         SharedString::from(template.replace("{n}", &value))
     }
 
-    /// 「删除任务及文件」确认文案：单个带文件名，多个带数量。
-    pub(crate) fn delete_with_files_description(
+    /// 删除确认文案：单个带文件名，多个带数量。
+    pub(crate) fn delete_selection_description(
         &self,
         keys: &[crate::model::RowKey],
         store: &crate::model::TaskStore,
+        delete_files: bool,
     ) -> SharedString {
         if let [key] = keys {
-            let name = store
-                .get(key)
-                .map(|row| row.name.clone())
-                .unwrap_or_default();
-            SharedString::from(self.delete_confirm_with_file.replace("{fileName}", &name))
+            let row = store.get(key);
+            let name = row.as_ref().map_or("", |row| row.name.as_str());
+            self.delete_task_description(name, delete_files)
         } else {
-            SharedString::from(
-                self.batch_delete_confirm_with_file
-                    .replace("{count}", &keys.len().to_string()),
-            )
+            let template = if delete_files {
+                &self.batch_delete_confirm_with_file
+            } else {
+                &self.batch_delete_confirm_keep_file
+            };
+            SharedString::from(template.replace("{count}", &keys.len().to_string()))
         }
     }
 
@@ -462,11 +486,13 @@ impl DownloadStrings {
         SharedString::from(template.replace("{fileName}", name))
     }
 
-    /// 「删除任务组及文件」确认文案：复用单任务模板，代入组名。
-    pub(crate) fn group_delete_with_files_description(&self, group_name: &str) -> SharedString {
+    pub(crate) fn delete_group_description(&self, name: &str, delete_files: bool) -> SharedString {
+        if delete_files {
+            return self.delete_task_description(name, true);
+        }
         SharedString::from(
-            self.group_delete_confirm_with_file
-                .replace("{fileName}", group_name),
+            self.group_delete_confirm_keep_file
+                .replace("{fileName}", name),
         )
     }
 
@@ -735,10 +761,14 @@ pub(crate) struct NewDownloadStrings {
     pub(crate) url_label: SharedString,
     pub(crate) url_placeholder: SharedString,
     url_count: SharedString,
+    pub(crate) url_range_hint: SharedString,
+    pub(crate) url_range_limit: SharedString,
     pub(crate) probe_checking: SharedString,
     probe_found: SharedString,
     probe_size_unknown: SharedString,
     pub(crate) probe_unavailable: SharedString,
+    duplicate_link: SharedString,
+    default_file_exists: SharedString,
     pub(crate) no_valid_url: SharedString,
     pub(crate) open_torrent: SharedString,
     pub(crate) select_torrent: SharedString,
@@ -761,6 +791,7 @@ pub(crate) struct NewDownloadStrings {
     pub(crate) threads_custom_hint: SharedString,
     pub(crate) rename: SharedString,
     pub(crate) rename_placeholder: SharedString,
+    pub(crate) name_auto: SharedString,
     pub(crate) advanced: SharedString,
     pub(crate) http_auth: SharedString,
     pub(crate) http_auth_desc: SharedString,
@@ -840,10 +871,14 @@ impl NewDownloadStrings {
             url_label: shared(translator.text("downloadUrl")),
             url_placeholder: shared(translator.text("newDownloadUrlPlaceholder")),
             url_count: shared(translator.text("urlCount")),
+            url_range_hint: shared(translator.text("urlRangeHint")),
+            url_range_limit: shared(translator.text("urlRangeLimit")),
             probe_checking: shared(translator.text("newDownloadProbeChecking")),
             probe_found: shared(translator.text("newDownloadProbeFound")),
             probe_size_unknown: shared(translator.text("newDownloadProbeSizeUnknown")),
             probe_unavailable: shared(translator.text("newDownloadProbeUnavailable")),
+            duplicate_link: shared(translator.text("newDownloadDuplicateLink")),
+            default_file_exists: shared(translator.text("newDownloadDefaultFileExists")),
             no_valid_url: shared(translator.text("newDownloadNoValidUrl")),
             open_torrent: shared(translator.text("openTorrentFile")),
             select_torrent: shared(translator.text("selectTorrentFile")),
@@ -882,6 +917,7 @@ impl NewDownloadStrings {
             )),
             rename: shared(translator.text("renameOptional")),
             rename_placeholder: shared(translator.text("autoDetectFilename")),
+            name_auto: shared(translator.text("auto")),
             advanced: shared(translator.text("taskProxyAdvanced")),
             http_auth: shared(translator.text("taskHttpAuth")),
             http_auth_desc: shared(translator.text("taskHttpAuthDesc")),
@@ -998,6 +1034,15 @@ impl NewDownloadStrings {
         SharedString::from(self.probe_found.replace("{info}", &info))
     }
 
+    pub(crate) fn format_duplicate_hint(&self, name: &str, task_exists: bool) -> SharedString {
+        let template = if task_exists {
+            &self.duplicate_link
+        } else {
+            &self.default_file_exists
+        };
+        SharedString::from(template.replace("{name}", name))
+    }
+
     /// `已导入 {count} 个链接`。
     pub(crate) fn format_import_found(&self, count: usize) -> SharedString {
         SharedString::from(self.import_txt_found.replace("{count}", &count.to_string()))
@@ -1110,11 +1155,15 @@ pub(crate) fn error_text(
     use fluxdown_protocol::{ApplicationErrorCode, ErrorReason};
     let reason_key = error.reason.and_then(|reason| match reason {
         ErrorReason::TargetDeviceOffline => Some("errReasonTargetDeviceOffline"),
+        ErrorReason::RemoteTaskGone => Some("errReasonRemoteTaskGone"),
         ErrorReason::TaskStateConflict => Some("errReasonTaskStateConflict"),
         ErrorReason::TaskDeviceMismatch => Some("errReasonTaskDeviceMismatch"),
         ErrorReason::SaveDirUnavailable => Some("errReasonSaveDirUnavailable"),
         ErrorReason::TaskFilesInUse => Some("errReasonTaskFilesInUse"),
         ErrorReason::TaskFilesNotDeleted => Some("errReasonTaskFilesNotDeleted"),
+        ErrorReason::TaskFileClearPending => Some("errReasonTaskFileClearPending"),
+        ErrorReason::BrowserRequestRequired => Some("taskErrorPostOnlyResume"),
+        ErrorReason::TaskRestartTimeout => Some("errReasonTaskRestartTimeout"),
         ErrorReason::CloudUnreachable => Some("accountErrorNetwork"),
         ErrorReason::SessionExpired => Some("errReasonSessionExpired"),
         ErrorReason::DeviceUntrusted => Some("accountSessionRevokedUntrusted"),
@@ -1182,12 +1231,15 @@ fn group_digits(value: usize) -> String {
 }
 
 impl DownloadStrings {
-    /// 任务错误消息的显示文本：引擎两条稳定错误整串匹配（trim 后）时返回本地化文案，
-    /// 其余原样返回。仅用于显示 / 复制，逻辑判断仍用原始 `error_message`。
+    /// 本地化展示文本；详情复制可保留原始 HTML 诊断，逻辑判断仍用原始 `error_message`。
     pub(crate) fn task_error_text<'a>(&'a self, raw: &'a str) -> &'a str {
+        if is_unexpected_html(raw) {
+            return &self.task_error_unexpected_html;
+        }
         match raw.trim() {
             POST_ONLY_ENDPOINT_MESSAGE => &self.task_error_post_only_endpoint,
             POST_ONLY_RESUME_MESSAGE => &self.task_error_post_only_resume,
+            HTML_RESPONSE_CHANGED_MESSAGE => &self.task_error_html_changed,
             _ => raw,
         }
     }
@@ -1199,6 +1251,26 @@ const POST_ONLY_ENDPOINT_MESSAGE: &str =
 /// 镜像引擎 `native/engine/src/downloader.rs` 的 `POST_ONLY_RESUME_MESSAGE`；改动须同步。
 const POST_ONLY_RESUME_MESSAGE: &str = "This task was started by a browser POST request and cannot be resumed; start it again from the browser";
 
+// Stable messages persisted by the engine; the first prefix also matches existing failed tasks.
+const UNEXPECTED_HTML_PREFIX: &str = "server returned HTML page (Content-Type: ";
+const HTML_RESPONSE_CHANGED_MESSAGE: &str =
+    "the server did not return a complete HTML page; nothing was saved";
+
+pub(crate) fn is_unexpected_html(error: &str) -> bool {
+    error.starts_with(UNEXPECTED_HTML_PREFIX)
+}
+
+// Mirrors downloader::can_save_html_failure; login-page diagnostics are display only.
+pub(crate) fn can_save_html_failure(error: &str) -> bool {
+    error
+        .strip_prefix(UNEXPECTED_HTML_PREFIX)
+        .and_then(|details| details.split_once(") "))
+        .is_some_and(|(_, reason)| {
+            reason.starts_with("instead of the expected file")
+                || reason.starts_with("for a non-HTML download")
+        })
+}
+
 fn shared(value: &str) -> SharedString {
     SharedString::from(value.to_owned())
 }
@@ -1208,6 +1280,44 @@ mod tests {
     use chrono::{Local, TimeZone};
 
     use super::DownloadStrings;
+
+    #[test]
+    fn group_record_delete_names_the_group_and_its_member_records() {
+        let catalog =
+            fluxdown_ui_i18n::I18nCatalog::load_embedded().expect("embedded translations");
+        for (locale, expected_prefix) in [
+            ("en", "Remove the task records in \"Example\"?"),
+            ("zh", "确定要删除「Example」组内的任务记录吗？"),
+        ] {
+            let strings = DownloadStrings::from_translator(&catalog.translator(locale));
+            assert!(
+                strings
+                    .delete_group_description("Example", false)
+                    .starts_with(expected_prefix)
+            );
+        }
+    }
+
+    #[test]
+    fn only_successful_html_failure_is_eligible_for_saving() {
+        for (message, expected) in [
+            (
+                "server returned HTML page (Content-Type: text/html) instead of the expected file — hint",
+                true,
+            ),
+            (
+                "server returned HTML page (Content-Type: non-HTML or missing) for a non-HTML download (HTML response filename) — hint",
+                true,
+            ),
+            (
+                "server returned HTML page (Content-Type: text/html) — HTTP 403 Forbidden",
+                false,
+            ),
+            ("request failed: HTTP 403 Forbidden", false),
+        ] {
+            assert_eq!(super::can_save_html_failure(message), expected, "{message}");
+        }
+    }
 
     #[test]
     fn datetime_keeps_seconds_across_midnight_and_rejects_out_of_range() {
@@ -1257,6 +1367,15 @@ mod tests {
         );
         assert_eq!(
             strings.task_error_text(&format!("{}\n", super::POST_ONLY_RESUME_MESSAGE)),
+            translator.text("taskErrorPostOnlyResume")
+        );
+        let error = fluxdown_protocol::RpcErrorData::new(
+            fluxdown_protocol::ApplicationErrorCode::Conflict,
+            false,
+        )
+        .with_reason(fluxdown_protocol::ErrorReason::BrowserRequestRequired);
+        assert_eq!(
+            super::error_text(&translator, &error),
             translator.text("taskErrorPostOnlyResume")
         );
         assert_eq!(strings.task_error_text("disk full"), "disk full");

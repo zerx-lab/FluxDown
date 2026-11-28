@@ -2106,8 +2106,8 @@ pub(crate) async fn api_list_groups(State(state): State<AppState>, headers: Head
 
 /// 创建任务组
 ///
-/// 根据文件清单创建任务组及其子任务，成功后返回任务组 ID。
-/// `items` 不能为空，否则返回 HTTP 400。
+/// 根据文件清单创建任务组及其子任务，成功后返回任务组 ID；只有一个条目时不建组，
+/// 直接建普通任务并返回 `taskId`（`groupId` 为空）。`items` 不能为空，否则返回 HTTP 400。
 #[utoipa::path(post, path = "/api/v1/groups", tag = "groups",
     request_body = CreateGroupRequest,
     responses(
@@ -2140,7 +2140,7 @@ pub(crate) async fn api_create_group(
         return result_response(StatusCode::BAD_REQUEST, false, "items is required");
     }
     match state.host.create_task_group(req).await {
-        Ok(group_id) => Json(CreateGroupResponse { group_id }).into_response(),
+        Ok(created) => Json(created).into_response(),
         Err(e) => e.into_response(),
     }
 }

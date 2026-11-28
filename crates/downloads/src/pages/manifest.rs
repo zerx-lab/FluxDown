@@ -6,6 +6,7 @@ mod rows;
 use std::rc::Rc;
 
 use fluxdown_protocol::{CreateGroupRequest, CreateTaskRequest, ResolvePreviewResponse};
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     ControlExt as _, FluxIcon, field_hint, field_label, form, form_field, input_with_action,
 };
@@ -19,7 +20,6 @@ use gpui_component::{
     Disableable as _, WindowExt as _,
     button::Button,
     input::{Input, InputEvent, InputState},
-    notification::Notification,
     scroll::ScrollableElement as _,
     v_flex,
 };
@@ -46,7 +46,8 @@ pub(crate) struct ManifestView {
     offered_save_dir: String,
     base: CreateTaskRequest,
     queues: Vec<NewDownloadQueue>,
-    group_name: Entity<InputState>,
+    /// Display-only group name derived from the manifest; it never creates a directory.
+    group_name: String,
     save_dir: Entity<InputState>,
     search: Entity<InputState>,
     picking: bool,
@@ -76,21 +77,12 @@ impl ManifestView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let name = default_group_name(&manifest.name, &base.url);
-        let name_hint = translator
-            .read(cx)
-            .text("manifestGroupNamePlaceholder")
-            .to_owned();
+        let group_name = default_group_name(&manifest.name, &base.url);
         let dir_hint = translator.read(cx).text("selectSaveDir").to_owned();
         let search_hint = translator
             .read(cx)
             .text("manifestSearchPlaceholder")
             .to_owned();
-        let group_name = cx.new(|cx| {
-            InputState::new(window, cx)
-                .default_value(name)
-                .placeholder(name_hint)
-        });
         let save_dir = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(base.save_dir.clone())
@@ -105,14 +97,12 @@ impl ManifestView {
             }
         })
         .detach();
-        for input in [&group_name, &save_dir] {
-            cx.subscribe_in(input, window, |_, _, event: &InputEvent, _, cx| {
-                if matches!(event, InputEvent::Change) {
-                    cx.notify();
-                }
-            })
-            .detach();
-        }
+        cx.subscribe_in(&save_dir, window, |_, _, event: &InputEvent, _, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        })
+        .detach();
         search.update(cx, |input, cx| input.focus(window, cx));
         Self {
             translator,
@@ -197,7 +187,7 @@ impl ManifestView {
         );
         let Some(mut request) = self.selection.build_request(
             &self.base,
-            self.group_name.read(cx).value().as_str(),
+            &self.group_name,
             &save_dir,
             queue,
             &self.plugin_id,
@@ -239,10 +229,7 @@ impl ManifestView {
                         .update(cx, |input, cx| input.set_value(path, window, cx));
                 }
                 if failed {
-                    window.push_notification(
-                        Notification::error(this.t("filePickerErrorNative", cx)),
-                        cx,
-                    );
+                    window.push_notification(toast::error(this.t("filePickerErrorNative", cx)), cx);
                 }
                 cx.notify();
             }) else {
@@ -253,37 +240,27 @@ impl ManifestView {
         .detach();
     }
     fn render_fields(&self, cx: &mut Context<Self>) -> Div {
-        form(cx)
-            .child(form_field(
-                self.t("manifestGroupNameTooltip", cx),
-                Input::new(&self.group_name)
+        form(cx).child(form_field(
+            self.t("saveDir", cx),
+            input_with_action(
+                Input::new(&self.save_dir)
                     .control(cx)
                     .w_full()
                     .disabled(self.submitting),
-                None,
+                Button::new("manifest-browse")
+                    .outline()
+                    .icon(FluxIcon::FolderOpen)
+                    .label(self.t("browse", cx))
+                    .control(cx)
+                    .disabled(self.picking || self.submitting)
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.pick_save_dir(window, cx)
+                    })),
                 cx,
-            ))
-            .child(form_field(
-                self.t("saveDir", cx),
-                input_with_action(
-                    Input::new(&self.save_dir)
-                        .control(cx)
-                        .w_full()
-                        .disabled(self.submitting),
-                    Button::new("manifest-browse")
-                        .outline()
-                        .icon(FluxIcon::FolderOpen)
-                        .label(self.t("browse", cx))
-                        .control(cx)
-                        .disabled(self.picking || self.submitting)
-                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                            this.pick_save_dir(window, cx)
-                        })),
-                    cx,
-                ),
-                None,
-                cx,
-            ))
+            ),
+            None,
+            cx,
+        ))
     }
 }
 

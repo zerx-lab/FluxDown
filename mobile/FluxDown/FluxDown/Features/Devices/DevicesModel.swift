@@ -66,6 +66,7 @@ final class DevicesModel {
     // MARK: 状态
 
     private(set) var cloudRecords: [CloudDeviceRecord] = []
+    private(set) var cloudRecordsHostID: String?
     private(set) var cloudPhase: Phase = .idle
     private(set) var linkInfos: [LinkDeviceInfo] = []
     private(set) var linkPhase: Phase = .idle
@@ -178,6 +179,7 @@ final class DevicesModel {
             }
         } else if cloudPhase != .loading, cloudPhase != .idle || !cloudRecords.isEmpty {
             cloudRecords = []
+            cloudRecordsHostID = nil
             cloudPhase = .idle
         }
 
@@ -209,6 +211,7 @@ final class DevicesModel {
 
     private func resetAll() {
         cloudRecords = []
+        cloudRecordsHostID = nil
         cloudPhase = .idle
         linkInfos = []
         linkPhase = .idle
@@ -244,6 +247,7 @@ final class DevicesModel {
             let list = try await container.agent.deviceList()
             guard container.host.id == hostId else { return nil }
             cloudRecords = list
+            cloudRecordsHostID = hostId
             cloudPhase = .loaded
             return nil
         } catch {
@@ -398,8 +402,96 @@ final class DevicesModel {
                 expireSettling(taskId)
             } catch {
                 commandsInFlight.remove(taskId)
-                container.toasts.show(text: AccountText.error(error), tone: .error)
+                if Self.isLegacyGone(error) {
+                    // 旧 host：云端已没有该任务时只回不带 reason 的 notFound，行可能还留在列表里 → 提示并重新拉取。
+                    container.toasts.show(text: L("errReasonRemoteTaskGone"), tone: .error)
+                    resyncRemoteTasks()
+                } else {
+                    container.toasts.show(text: AccountText.error(error), tone: .error)
+                }
             }
+        }
+    }
+
+    /// 旧 host（无 `agent.remoteBatch`）对「云端已无该记录」只回 `notFound` 且不带 reason。
+    nonisolated static func isLegacyGone(_ error: HostError) -> Bool {
+        error.code == .notFound && error.reason == nil
+    }
+
+    /// fire-and-forget `agent.remote.list`：让 agent 重新对齐远程任务投影；结果与失败都不需要处理。
+    private func resyncRemoteTasks() {
+        let agent = container.agent
+        Task {
+            do throws(HostError) {
+                _ = try await agent.remoteList()
+            } catch {
+                // 重新拉取只是尽力而为：失败时投影保持原样，下一次 SSE 事件会对齐。
+            }
+        }
+    }
+
+    /// 在线状态：presence 未知 = nil（不据此禁用）。
+    func targetOnline(of task: RemoteTaskDto, state: HostState) -> Bool? {
+        presenceKnown(state) ? target(for: task.toDevice, state: state)?.online : nil
+    }
+
+    /// 多选批量下发同一动作（适用性已由调用方经 `RemoteBatch.eligibleIds` 过滤）。
+    /// 主机带 `agent.remoteBatch` 时走 `agent.remote.commandMany`（分块），否则逐条下发（并发 ≤ 4）。
+    /// 成功的行沿用单条命令的「等待回写」转圈；不做乐观改写（agent 成功后立即更新 `agent.remoteTasks`）。
+    @discardableResult
+    func issueMany(
+        _ action: RemoteCommandAction,
+        tasks: [RemoteTaskDto],
+        deleteFiles: Bool = false
+    ) async -> RemoteBatch.Outcome {
+        var befores: [String: Settling] = [:]
+        var ids: [String] = []
+        for task in tasks where !commandsInFlight.contains(task.id) && befores[task.id] == nil {
+            befores[task.id] = Settling(status: task.status, updatedAt: task.updatedAt)
+            ids.append(task.id)
+        }
+        guard !ids.isEmpty else { return RemoteBatch.Outcome() }
+        for id in ids {
+            commandsInFlight.insert(id)
+            settling[id] = nil
+        }
+        let host = container.host.id
+        let agent = container.agent
+        let batched = container.store.state.has(HostCapability.agentRemoteBatch)
+        let outcome = await RemoteBatch.run(
+            ids: ids,
+            batched: batched,
+            many: { chunk throws(HostError) in
+                try await agent.remoteCommandMany(
+                    RemoteCommandManyParams(taskIds: chunk, action: action, deleteFiles: deleteFiles)
+                )
+            },
+            single: { id throws(HostError) in
+                try await agent.remoteCommand(RemoteCommandParams(taskId: id, action: action, deleteFiles: deleteFiles))
+            }
+        )
+        // 主机切换后 `commandsInFlight` / `settling` 已被重置，旧主机的结果不再回写。
+        guard container.host.id == host else { return outcome }
+        for id in ids { commandsInFlight.remove(id) }
+        for id in outcome.succeeded {
+            settling[id] = befores[id]
+            expireSettling(id)
+        }
+        if outcome.failed.contains(where: { Self.isLegacyGone($0.error) }) { resyncRemoteTasks() }
+        return outcome
+    }
+
+    /// 批量结果 Toast：全部成功 → `remoteBatchDone`；有失败 → `remoteBatchPartial`（原因取第一个失败）。
+    /// `quietOnSuccess`：与本机任务同批操作时，成功由本机路径的 Toast 表达，这里只报失败。
+    func report(_ outcome: RemoteBatch.Outcome, quietOnSuccess: Bool = false) {
+        if let first = outcome.firstError {
+            let reason = Self.isLegacyGone(first) ? L("errReasonRemoteTaskGone") : AccountText.error(first)
+            container.toasts.show(
+                text: L("remoteBatchPartial", ["done": outcome.succeeded.count, "failed": outcome.failed.count, "reason": reason]),
+                tone: outcome.succeeded.isEmpty ? .error : .warning
+            )
+        } else if !quietOnSuccess, !outcome.succeeded.isEmpty {
+            container.toasts.show(text: L("remoteBatchDone", ["n": outcome.succeeded.count]), tone: .success)
         }
     }
 

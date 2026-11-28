@@ -3,12 +3,12 @@ title: 调试与排错
 description: 插件日志在哪、怎么搜；每种改动之后该做什么；以及你会遇到的报错信息、原因与解决办法对照表。
 section: plugins
 order: 9
-sourceHash: "b1d7b186aa7d"
+sourceHash: "82ec05b141de"
 ---
 
 这一页写给「出问题了」的时刻：去哪里看、插件的各种状态是什么意思、某个改动需要什么操作，以及最有用的——**报错信息**与它们的原因。
 
-> **关于信息的语言。** FluxDown 插件引擎抛出的错误大多是中文，你在应用和日志里看到的正是这些原文。本页**逐字**引用它们，方便你直接搜索。SDK 命令行的信息是英文。
+> **关于信息的语言。** FluxDown 插件引擎日志中的报错大多是中文。本页**逐字**引用它们，方便你直接搜索。SDK 命令行的信息是英文。
 
 ## 快速检查清单
 
@@ -111,15 +111,20 @@ resolver、拦截器、订阅 provider 或 `main` 调用中，**连续** 3 次�
 
 ## 安装与校验报错
 
-这些错误出现在安装、重新加载或运行 `npm run validate` 的时候。安装对话框会显示 `安装失败：…` / `插件安装失败：…`，后面跟着信息；同样的文字也会写进日志。
+在桌面和 Web 的插件页，安装或更新失败详情显示在安装区域，重载失败详情显示在对应插件行。插件列表中的失败项也会显示本地化、经脱敏的诊断，刷新后仍可查看。「复制错误」复制界面上本地化的操作失败提示。诊断可能包含 Manifest 校验类别、包内相对文件名或脚本行列号，不包含异常原文或绝对路径。完整原因（包括未知字段名）见 daemon 诊断日志；也可运行 `npm run validate` 在本地校验。
 
-### 引擎报错（与 `npm run validate`）
+安装成功后会清除上一次安装错误；重新安装或卸载插件会清除该插件上一次的重载错误。
 
-引擎报告这些错误时会带前缀 `manifest 非法: `。`npm run validate` 和 SDK 校验器使用同一套规则、几乎相同的措辞，但没有这个前缀，并且会一次列出全部问题，而不是遇到第一个就停。措辞不同的地方，下表给出的是引擎的原文。
+在 Android 和 iOS 上，安装、更新或重载失败时会打开诊断对话框。「复制错误」复制对话框中显示的本地化文字。
+在 iOS 上，取消文件选择不会报错。如果所选文件已不存在、无权访问或无法读取，对话框会给出相应提示，不包含本地路径。
+
+### daemon 诊断日志中的引擎原文
+
+下表列出引擎原文，不是桌面或 Web 界面文案。日志中的 Manifest 错误带前缀 `manifest 非法: `。`npm run validate` 和 SDK 校验器检查相同的 Manifest 规则，使用各自的措辞，并一次列出全部问题，而不是遇到第一个就停。
 
 | 信息 | 原因 | 解决 |
 |---|---|---|
-| `JSON 解析失败: …` | `manifest.json` 不是合法 JSON、某个值的类型不对，或含有引擎不认识的字段（此时详情里是 `unknown field …`）。 | 修正语法；删掉未知字段——拼写和嵌套层级都会被检查，见 [Manifest 参考](/docs/zh/plugins/manifest/)。用 SDK 校验时得到的是 `manifest: 未知字段 <key>`。 |
+| `JSON 解析失败: …` | `manifest.json` 不是合法 JSON、某个值的类型不对，或含有引擎不认识的字段（此时日志里是 `unknown field …`）。 | 修正语法；删掉未知字段——拼写和嵌套层级都会被检查，见 [Manifest 参考](/docs/zh/plugins/manifest/)。用 SDK 校验时得到的是 `manifest: 未知字段 <key>`。 |
 | `identity '…' 非法：须匹配 ^[a-z0-9_-]+@[a-z0-9_-]+$` | identity 不是由小写字母、数字、`_`、`-` 组成的 `作者@名称`。 | 改名，例如 `me@my-plugin`。不能有点，不能有大写。 |
 | `name 不可为空` | `name` 为空。 | 填上。 |
 | `version '…' 非法：须为 MAJOR.MINOR.PATCH` | 不是用点分隔的三个数字。 | 用 `1.0.0`。SDK 和插件索引更严格：不能有 `v` 前缀和后缀。 |
@@ -133,7 +138,7 @@ resolver、拦截器、订阅 provider 或 `main` 调用中，**连续** 3 次�
 | `interceptors match.urls 不可为空` | 规则列表为空。 | 至少添加一条规则；`interceptors.match` 必填。 |
 | `interceptors timeoutMs 不可为 0` | `timeoutMs` 为 `0`。 | 用正整数，实际生效最多 30000。 |
 | `声明 interceptors 时 permissions 必须包含 intercept` | 声明了 `interceptors` 却没有 `intercept` 权限。 | 把 `"intercept"` 加进 `permissions`。 |
-| `resolver timeoutMs 不可为 0` | `timeoutMs` 为 `0`（`auth` 与 `subscription` 同样会检查）。 | 用正整数，实际生效最多 30000。 |
+| `resolver timeoutMs 不可为 0` | `timeoutMs` 为 `0`（`auth` 与 `subscription` 同样会检查）。 | 用正整数；resolver 实际生效最多 120000，其余最多 30000。 |
 | `hooks.events 不可为空` | `hooks` 没有事件。 | 至少列出一个事件。 |
 | `未知事件 '…'，合法：[…]` | 不是 `onStart`、`onError`、`onDone`、`onMetaProbed`、`onCancel` 之一。 | 改正名称（`main.events` 同样适用，其信息为 `main.events 未知事件 '…'，合法：[…]`）。 |
 | `未知权限 '…'，合法：[…]` | 权限名不存在。 | 使用 `ffmpeg`、`ytdlp`、`auth`、`tasks`、`browserRules`、`desktop`、`background`、`intercept`、`pageScripts`、`archive` 之一。 |
@@ -198,7 +203,7 @@ resolver 失败时，任务会进入**下载失败**，信息以 `[插件] <iden
 | `插件运行时错误: <你的错误信息>` | 你的脚本抛了异常（或者某个被拒绝的 `await` 没有捕获）。`<你的错误信息>` 就是 `error.message`。 | 看它前面的日志行；想自己处理失败，就给 `flux.fetch` 包上 `try/catch`。 |
 | `插件运行时错误: 入口 resolve 未定义` | 脚本跑了，但没有在 `globalThis.resolve` 上放函数——漏了 `defineResolver(...)`、函数名写错，或者用了 ES 的 `export` 而不是全局函数。 | 定义 `resolve`。hook 的名字是 `onStart`/`onError`/`onDone`/`onMetaProbed`/`onCancel`；auth 是 `authenticate`；订阅是 `subscribe`。 |
 | `脚本编译失败: …` | 脚本有语法错误。 | 修正。 |
-| `脚本执行超时` | 调用没有在预算内完成（默认 10 秒，最多 30 秒）。计入熔断。 | 提速或减少请求数；确实有慢站点时把 `timeoutMs` 调到最多 30000。 |
+| `脚本执行超时` | 调用没有在预算内完成（默认 10 秒；resolver 最多 120 秒，其他类别最多 30 秒），或脚本用尽了 CPU 预算（以前显示为 `插件运行时错误: Error: interrupted …`）。计入熔断。 | 提速或减少请求数；确实有慢站点时调大 `timeoutMs`（resolver 最多 120000，其他最多 30000）。 |
 | `脚本超出内存上限` | 使用超过内存预算（默认 64 MB）。计入熔断。 | 不要持有大响应；谨慎对待被 `truncated` 截断的响应体。确实需要更多内存的 resolver 可声明 `memoryLimitMb`（最多 512）。 |
 | `插件运行时过载（并发已满）` | 同时的解析太多；等待空闲名额超过 3 秒。 | 重试任务。 |
 | `插件输出非法: resolve 返回值非法: …` | 返回的对象字段类型不对，比如 `totalBytes` 不是数字。 | 按 [API 参考](/docs/zh/plugins/api-reference/)返回正确的结构。 |

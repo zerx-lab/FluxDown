@@ -235,6 +235,7 @@ impl Projection {
             | AgentEvent::ShellChanged(_)
             | AgentEvent::PowerChanged(_)
             | AgentEvent::CloudNotifyChanged(_)
+            | AgentEvent::AssistantChanged(_)
             | AgentEvent::UpdateChanged(_)
             | AgentEvent::CaptureTasksStarted(_)
             | AgentEvent::CaptureTasksResumed(_)

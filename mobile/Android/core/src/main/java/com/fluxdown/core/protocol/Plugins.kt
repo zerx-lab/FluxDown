@@ -1,5 +1,6 @@
 package com.fluxdown.core.protocol
 
+import com.fluxdown.core.host.PluginDiagnostic
 import java.net.URI
 import java.net.URISyntaxException
 import java.util.Base64
@@ -66,6 +67,8 @@ data class PluginSettingField(
     }
 }
 
+data class PluginResolverUrlConflict(val pattern: String, val otherIdentity: String, val otherPattern: String)
+
 /** 已安装插件视图（`PluginDto`）。 */
 data class PluginDto(
     val identity: String,
@@ -75,6 +78,8 @@ data class PluginDto(
     val homepage: String = "",
     val enabled: Boolean = true,
     val devMode: Boolean = false,
+    /** Empty for public or local packages; "private" for the private store. */
+    val source: String = "",
     /** `None` / `Manual` / `CircuitBreaker`。 */
     val disabledReason: String = "None",
     val settings: List<PluginSettingField> = emptyList(),
@@ -87,8 +92,10 @@ data class PluginDto(
     val subscriptionProviderIds: List<String> = emptyList(),
     /** `Loaded` / `Failed`；与 [enabled] 独立。 */
     val loadStatus: String = "Loaded",
-    /** 加载失败原因；成功为空。 */
+    /** Legacy wire fallback; clients render localized [loadDetail] instead. */
     val loadError: String = "",
+    val loadDetail: PluginDiagnostic? = null,
+    val resolverUrlConflicts: List<PluginResolverUrlConflict> = emptyList(),
 ) {
     val loadFailed: Boolean get() = loadStatus == "Failed"
 
@@ -103,6 +110,7 @@ data class PluginDto(
                 homepage = v.str("homepage"),
                 enabled = v.bool("enabled"),
                 devMode = v.bool("devMode"),
+                source = v.str("source"),
                 disabledReason = v.str("disabledReason", "None"),
                 settings = v.list("settings").mapNotNull { PluginSettingField.fromJson(it) },
                 settingsValues = v.stringMap("settingsValues"),
@@ -111,6 +119,23 @@ data class PluginDto(
                 subscriptionProviderIds = v.strings("subscriptionProviderIds"),
                 loadStatus = v.str("loadStatus", "Loaded"),
                 loadError = v.str("loadError"),
+                loadDetail = v["loadDetail"].let { detail ->
+                    detail.strOrNull("kind")?.let { kind ->
+                        PluginDiagnostic(
+                            kind = kind,
+                            path = detail.strOrNull("path"),
+                            line = detail.longOrNull("line")?.takeIf { it in 0L..UInt.MAX_VALUE.toLong() }?.toUInt(),
+                            column = detail.longOrNull("column")?.takeIf { it in 0L..UInt.MAX_VALUE.toLong() }?.toUInt(),
+                        )
+                    }
+                },
+                resolverUrlConflicts = v.list("resolverUrlConflicts").mapNotNull { conflict ->
+                    PluginResolverUrlConflict(
+                        conflict.strOrNull("pattern") ?: return@mapNotNull null,
+                        conflict.strOrNull("otherIdentity") ?: return@mapNotNull null,
+                        conflict.strOrNull("otherPattern") ?: return@mapNotNull null,
+                    )
+                },
             )
         }
 

@@ -5,6 +5,7 @@
 //! - 右键菜单：打开来源页（仅 http(s)）/ 复制来源页（toast 反馈）。
 //! - 高级页另有常驻复制按钮（勾选态反馈，同错误信息复制）：GPUI 文本不可选中，复制必须有显式入口。
 
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{FluxIcon, IconControlExt as _, tooltip_view};
 use fluxdown_ui_theme::active_theme;
 use gpui::{
@@ -17,7 +18,6 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::{ContextMenuExt as _, PopupMenuItem},
-    notification::Notification,
 };
 
 use super::{TaskDetailView, detail_row};
@@ -172,7 +172,7 @@ fn source_page_link(
                     .icon(FluxIcon::Copy)
                     .on_click(move |_, window, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(url.to_string()));
-                        window.push_notification(Notification::success(copied.clone()), cx);
+                        window.push_notification(toast::success(copied.clone()), cx);
                     }),
             )
         })

@@ -3,7 +3,7 @@ title: 插件 API 参考
 description: 全部入口函数、flux.* 接口、JavaScript 运行环境、运行时限制，以及插件会遇到的错误信息。
 section: plugins
 order: 11
-sourceHash: "e868448f5533"
+sourceHash: "531db1d063e1"
 ---
 
 本页列出插件脚本能看到的一切：FluxDown 会调用的入口函数、注入的 `flux` 对象、JavaScript 运行环境、运行时限制，以及开发中会遇到的错误信息。这是一份参考手册；分步教程请看[你的第一个插件](/docs/zh/plugins/your-first-plugin/)、[TypeScript 项目](/docs/zh/plugins/typescript-project/)、[事件钩子指南](/docs/zh/plugins/hooks-guide/)、[账号登录指南](/docs/zh/plugins/auth-guide/)、[订阅源指南](/docs/zh/plugins/subscription-guide/)、[可移植界面指南](/docs/zh/plugins/ui-guide/)和[桌面原生界面指南](/docs/zh/plugins/desktop-ui-guide/)。
@@ -56,6 +56,8 @@ sourceHash: "e868448f5533"
 ### `resolve(ctx)`
 
 在协议分派之前调用，匹配到 resolver 的任务在每次**开始和恢复**时都会调用（解析是惰性的，见[概览](/docs/zh/plugins/overview/)）。先匹配任务 URL；没有 resolver 命中时，才对声明了 [`match.browserOriginalUrl: true`](/docs/zh/plugins/manifest/#resolvers0) 的 resolver 尝试匹配浏览器的首跳 URL。清单声明了 `multi: true` 的 resolver，还会被新建下载窗口调用一次做预解析（见[清单结果](#清单结果manifest)）。
+
+当解析得到的 URL 选择了与原始 URL 不同的下载协议时，FluxDown 可能会使用该协议的代理出口再次调用 `resolve`。第二次返回值会替换第一次的结果，并且仍须对应同一个已选变体。如果该格式已不可用，解析会失败，而不会下载另一种格式。第二次调用失败时会作为 resolver 错误报告。
 
 如果某个必填设置既没有用户值也没有 `default`，调用会在你的脚本运行**之前**以 `缺少必填设置项` 失败。
 
@@ -143,7 +145,7 @@ sourceHash: "e868448f5533"
 | 字段 | 规则 |
 |---|---|
 | `items` | 1 到 1000 项（`manifest items 数量非法`）。 |
-| `name` | 组 / 文件夹名。为空时由宿主用母任务文件名兜底。 |
+| `name` | 任务组显示名（不创建文件夹；需要目录请写进 `items[].path`）。所选条目共享同一个公共目录时，宿主改用该目录名作组名并以它为组根。为空时由宿主用母任务文件名兜底。只选一个条目时按普通任务下载，不建组。 |
 | `items[].id` | 插件自定义的选择标识，非空，不超过 200 个字符，会以 `ctx.resolverItem` 回传。 |
 | `items[].name` | 文件名，非空，规则同 `fileName`。 |
 | `items[].path` | 相对子目录（`""` 表示组根目录）。必须是安全的相对路径（不能是绝对路径、不能含 `..`），最多 **8** 级，且 `path + "/" + name` 不超过 **180** 个字符。 |
@@ -345,6 +347,8 @@ flux.ui.view("profile", {
 | `headers` | 无 | 可选的字符串请求头。 |
 | `authRef` | 无 | 可选的已保存凭据引用；需要 `auth` 权限。 |
 | `maxWidth`、`maxHeight` | 各 `512` | 1–2048 的整数。宿主保持宽高比且不会放大图片。 |
+| `circle` | `false` | 居中裁成正方形后以透明边缘遮罩为圆形。适合头像，仍遵守两个尺寸上限且不放大。 |
+| `cornerRadius` | `0` | 输出图片的圆角半径（整数像素），最多为短边的一半。`circle: true` 时忽略。 |
 | `cache` | `true` | `false` 跳过来源/选项结果复用；图片永不落盘，HTTP 响应始终为 `no-store`。相同输出仍共享引用，直到显式释放或会话关闭。 |
 
 输入格式根据内容识别，只接受 PNG、JPEG、WebP，不信任声明的 Content-Type。输入每边最多 8192 像素、总计最多 1600 万像素，解码内存最多 64 MiB；网络响应体最多 8 MiB，请求最多 10 秒。宿主输出净化后的静态 PNG 缩略图，最多 4 MiB，并以 `image/png` 提供。每个会话最多 128 个资源 / 16 MiB；全局图片资源最多 64 MiB。超过配额会明确报错，不会隐式驱逐引用。缓存的来源/选项结果保留五分钟，但返回引用直到显式释放或会话关闭前有效。视图会话关闭或插件卸载时，其图片资源会释放。以上限制由宿主强制执行。
@@ -606,7 +610,7 @@ globalThis.resolve = async (ctx) => {
 };
 ```
 
-在 `resolve` 里，脚本整体的时间预算（默认 10 秒，至多 30 秒）同样约束这次调用，所以超过它的 `timeoutMs` 在那里没有意义。
+在 `resolve` 里，脚本整体的时间预算（默认 10 秒，至多 120 秒）同样约束这次调用，所以超过它的 `timeoutMs` 在那里没有意义。
 
 ### 仅 main 可用的接口
 
@@ -648,7 +652,7 @@ globalThis.resolve = async (ctx) => {
 
 | 入口 | 墙钟 | CPU 预算 | 内存 |
 |---|---|---|---|
-| `resolve` | 默认 10 秒；`resolvers[0].timeoutMs` 会替换它，**硬上限 30 秒** | 同一数值，≤ 30 秒 | 默认 64 MB；`resolvers[0].memoryLimitMb` 会替换它，上限 512 MB |
+| `resolve` | 默认 10 秒；`resolvers[0].timeoutMs` 会替换它，**硬上限 120 秒**（0.6.8 及更早：30 秒） | 同一数值，≤ 120 秒 | 默认 64 MB；`resolvers[0].memoryLimitMb` 会替换它，上限 512 MB |
 | `subscribe` | 默认 10 秒；`subscriptions[0].timeoutMs` 会替换它，上限 30 秒 | 相同 | 64 MB |
 | `authenticate` | 默认 30 秒；`auth.timeoutMs` 会替换它，上限 30 秒 | 相同 | 64 MB |
 | 钩子 | 5 秒 | 5 秒 | 32 MB |

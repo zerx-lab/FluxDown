@@ -3,6 +3,7 @@ import Layout from "@/layouts/Layout.astro";
 import PageHeader from "@/components/site/PageHeader.astro";
 import { langStaticPaths, resolveLang, href } from "@/i18n/routing";
 import { faq } from "@/i18n/messages/faq";
+import { HTML_LANG } from "@/i18n/config";
 
 export const getStaticPaths = langStaticPaths;
 const lang = resolveLang(Astro.params.lang);
@@ -11,7 +12,7 @@ const t = faq[lang];
 // FAQPage 结构化数据与页面可见问答同源(同一语言、同一字符串)。
 const faqNode = {
   "@type": "FAQPage",
-  inLanguage: lang === "zh" ? "zh-CN" : "en",
+  inLanguage: HTML_LANG[lang],
   mainEntity: t.groups.flatMap((g) =>
     g.items.map((item) => ({
       "@type": "Question",

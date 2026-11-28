@@ -11,6 +11,7 @@ import { useAccountAvatar } from './accountAvatarState'
 import { AccountMenu } from './AccountMenu'
 import { isActivityActive } from './activity'
 import type { ActivityEntry } from './activity'
+import { openAssistantPanel } from './assistantPanelStore'
 import { useVisibleActivityEntries } from './useVisibleActivityEntries'
 
 /** 标签栏内容高度（不含安全区）。与 index.css 的 `--fx-bottom-bar` 保持一致。 */
@@ -51,6 +52,14 @@ export function BottomTabBar() {
             )}
           />
         </div>
+      )
+    }
+    if (entry.id === 'assistantPanel') {
+      // 动作条目：打开全屏 AI 助手浮层（浮层盖住标签栏，关闭按钮返回）。
+      return (
+        <button key={entry.id} type="button" className={TAB} onClick={openAssistantPanel}>
+          {content(<Icon icon={entry.icon} size="xl" />, t(entry.labelKey), false)}
+        </button>
       )
     }
     return (

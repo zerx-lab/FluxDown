@@ -1,7 +1,7 @@
 import { defineMessages } from "../define";
 
 /** /sponsor/: pay-what-you-want WeChat Pay, crypto donations, sponsor wall. */
-export const sponsor = defineMessages({
+export const sponsor = defineMessages("sponsor", {
   en: {
     meta: {
       title: "Sponsor FluxDown — Support Open Source Development",

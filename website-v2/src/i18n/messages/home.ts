@@ -4,7 +4,7 @@ import { defineMessages } from "../define";
  * 首页文案。`app.*` 是 GPUI 客户端复刻界面的字符串,逐字取自客户端 `assets/i18n/{en,zh}.json`
  * (searchTasksPlaceholder / newDownload / colFileName …),保持与真实界面一致。
  */
-export const home = defineMessages({
+export const home = defineMessages("home", {
   en: {
     meta: {
       title: "FluxDown — The Download Manager, Rebuilt in Rust",
@@ -171,9 +171,10 @@ export const home = defineMessages({
         { k: "app_installed", note: "once", sent: true, v: "anonymous" },
         { k: "app_active", note: "daily", sent: true, v: "anonymous · can be disabled" },
         { k: "download history", note: "", sent: false, v: "never" },
-        { k: "file names & URLs", note: "", sent: false, v: "only with cloud features you enable" },
+        { k: "file names & URLs", note: "", sent: false, v: "only with cloud features you enable and questions you ask the AI assistant" },
         { k: "BT leech evidence", note: "opt-in", sent: false, v: "off by default · no file names" },
         { k: "account / identity", note: "", sent: false, v: "not required to download" },
+        { k: "AI assistant", note: "only when you ask", sent: true, v: "your question and the task info it reads · nothing if you don't ask" },
       ],
     },
     cta: {
@@ -185,6 +186,7 @@ export const home = defineMessages({
     app: {
       search: "Search tasks...",
       view: "View",
+      newTask: "New Task",
       newDownload: "New Download",
       status: "STATUS",
       queues: "QUEUES",
@@ -386,9 +388,10 @@ export const home = defineMessages({
         { k: "app_installed", note: "一次", sent: true, v: "匿名" },
         { k: "app_active", note: "每日", sent: true, v: "匿名 · 可关闭" },
         { k: "下载历史", note: "", sent: false, v: "从不" },
-        { k: "文件名与链接", note: "", sent: false, v: "仅限你开启的云功能" },
+        { k: "文件名与链接", note: "", sent: false, v: "仅限你开启的云功能与你主动提出的助手提问" },
         { k: "BT 防吸血证据", note: "需同意", sent: false, v: "默认关闭 · 不含文件名" },
         { k: "账号 / 身份", note: "", sent: false, v: "下载无需" },
+        { k: "AI 助手", note: "仅在提问时", sent: true, v: "你的问题与助手读取的任务信息 · 不提问不发送" },
       ],
     },
     cta: {
@@ -400,6 +403,7 @@ export const home = defineMessages({
     app: {
       search: "搜索任务...",
       view: "视图",
+      newTask: "新建任务",
       newDownload: "新建下载",
       status: "状态",
       queues: "队列",

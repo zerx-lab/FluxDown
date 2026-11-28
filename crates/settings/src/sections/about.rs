@@ -1,6 +1,7 @@
-//! 关于：版本、软件更新、日志导出、浏览器扩展与捐赠链接。
+//! 关于：版本、软件更新、日志导出、浏览器扩展一键安装与捐赠链接。
 
-use fluxdown_protocol::{ReleaseNoteDto, UpdatePhase, method};
+use fluxdown_protocol::browser_extension::{BrowserExtensionEntryDto, BrowserKind};
+use fluxdown_protocol::{ReleaseNoteDto, UpdateInstallKind, UpdatePhase, method};
 use fluxdown_ui_components::{ButtonVariant, FluxIcon, button, loading_button};
 use fluxdown_ui_theme::active_theme;
 use gpui::{
@@ -12,21 +13,19 @@ use gpui_component::{h_flex, v_flex};
 use serde_json::json;
 
 use super::SectionContext;
+use crate::store::{BROWSER_EXTENSION_INSTALL, BROWSER_EXTENSION_LOAD};
 use crate::ui::{Control, SettingsPage, SettingsRow, SettingsSection, body_text, meta_text};
 use crate::update_view;
 
 pub(crate) const APP_VERSION: &str = fluxdown_protocol::APP_VERSION;
 const WEBSITE: &str = "https://fluxdown.com";
-const CHROME_STORE: &str = "https://chromewebstore.google.com/search/FluxDown";
-const FIREFOX_STORE: &str = "https://addons.mozilla.org/firefox/addon/fluxdown/";
-const EDGE_STORE: &str = "https://microsoftedge.microsoft.com/addons/search/FluxDown";
 const DONATE: &str = "https://fluxdown.com/sponsor";
 const DB_IP: &str = "https://db-ip.com";
 const FLAG_ICONS: &str = "https://github.com/lipis/flag-icons";
 /// 更新说明正文的行高（字号倍数）：多行列表项与中文长句比控件文字需要更宽松的行距。
 const RELEASE_NOTES_LINE_HEIGHT: f32 = 1.6;
 
-pub(crate) fn page(ctx: &SectionContext, _cx: &mut App) -> SettingsPage {
+pub(crate) fn page(ctx: &SectionContext, cx: &mut App) -> SettingsPage {
     SettingsPage::new(
         "about",
         ctx.t("settingsCatAbout"),
@@ -35,8 +34,9 @@ pub(crate) fn page(ctx: &SectionContext, _cx: &mut App) -> SettingsPage {
     )
     .sections([
         version_section(ctx),
-        update_section(ctx),
-        logs_section(ctx),
+        update_section(ctx, cx),
+        logs_section(ctx, cx),
+        browser_extension_section(ctx, cx),
         links_section(ctx),
         open_source_section(ctx),
     ])
@@ -45,12 +45,38 @@ pub(crate) fn page(ctx: &SectionContext, _cx: &mut App) -> SettingsPage {
 fn version_section(ctx: &SectionContext) -> SettingsSection {
     let version = SharedString::from(format!("v{APP_VERSION}"));
     let protocol = SharedString::from(fluxdown_protocol::PROTOCOL_VERSION.to_string());
+    let store = ctx.store();
+    let translator = ctx.translator.clone();
+    let copy = ctx.t("copyDiagnosticInfo");
     SettingsSection::new()
         .title(SharedString::from("FluxDown"))
         .row(ctx.item(
             "currentVersion",
             None,
-            Control::custom(move |_, _, _, cx: &mut App| body_text(cx).child(version.clone())),
+            Control::custom(move |_, _, _, cx: &mut App| {
+                let store = store.clone();
+                let translator = translator.clone();
+                h_flex()
+                    .gap(active_theme(cx).tokens().spacing.sm)
+                    .items_center()
+                    .child(body_text(cx).child(version.clone()))
+                    .child(
+                        button(
+                            "about-copy-diagnostics",
+                            copy.clone(),
+                            ButtonVariant::Secondary,
+                            cx,
+                        )
+                        .on_click(move |_, window, cx| {
+                            crate::version_button::copy_diagnostics(
+                                &store,
+                                &translator,
+                                window,
+                                cx,
+                            );
+                        }),
+                    )
+            }),
         ))
         .row(ctx.item(
             "protocolVersionLabel",
@@ -59,7 +85,7 @@ fn version_section(ctx: &SectionContext) -> SettingsSection {
         ))
 }
 
-fn update_section(ctx: &SectionContext) -> SettingsSection {
+fn update_section(ctx: &SectionContext, cx: &App) -> SettingsSection {
     let channels = vec![
         (SharedString::from("stable"), ctx.t("updateChannelStable")),
         (
@@ -67,7 +93,17 @@ fn update_section(ctx: &SectionContext) -> SettingsSection {
             ctx.t("updateChannelFrontier"),
         ),
     ];
-    SettingsSection::new()
+    let store = ctx.store.read(cx);
+    let silent_supported = matches!(
+        store.update_status().install_kind,
+        UpdateInstallKind::WindowsSetup
+            | UpdateInstallKind::WindowsPortable
+            | UpdateInstallKind::MacosApp
+            | UpdateInstallKind::LinuxAppImage
+            | UpdateInstallKind::LinuxPortable
+    );
+    let auto_check = store.pref_bool("general.auto_check_update", true);
+    let mut section = SettingsSection::new()
         .title(ctx.t("softwareUpdate"))
         .row(ctx.item(
             "updateChannel",
@@ -78,18 +114,28 @@ fn update_section(ctx: &SectionContext) -> SettingsSection {
             "autoCheckUpdate",
             Some("autoCheckUpdateBackgroundDesc"),
             ctx.pref_switch("general.auto_check_update", true),
-        ))
-        .row(ctx.item(
-            "checkUpdate",
-            Some("checkUpdateDesc"),
-            check_update_control(ctx),
-        ))
-        .row(release_notes_item(ctx))
+        ));
+    if silent_supported {
+        section = section.row(
+            ctx.item(
+                "silentAutoUpdate",
+                Some("silentAutoUpdateDesc"),
+                ctx.pref_switch("general.silent_auto_update", false),
+            )
+            .disabled(!auto_check),
+        );
+    }
+    section.row(ctx.item(
+        "checkUpdate",
+        Some("checkUpdateDesc"),
+        check_update_control(ctx),
+    ))
 }
 
 fn check_update_control(ctx: &SectionContext) -> Control {
     let store = ctx.store();
     let translator = ctx.translator.clone();
+    let open_update_prompt = ctx.open_update_prompt.clone();
     Control::custom(move |disabled, _key, _window, cx: &mut App| {
         let tokens = active_theme(cx).tokens();
         let (status, busy_checking, installing, cancelling) = {
@@ -113,6 +159,21 @@ fn check_update_control(ctx: &SectionContext) -> Control {
         .collect();
         let manual_url = update_view::manual_url(&status).map(str::to_owned);
         let mut buttons = h_flex().gap(tokens.spacing.sm).items_center();
+        // 更新日志在独立的更新窗口里滚动阅读，关于页只放入口，不在这里展开长列表。
+        if let Some(open) = open_update_prompt
+            .clone()
+            .filter(|_| !status.notes.is_empty())
+        {
+            buttons = buttons.child(
+                button(
+                    "about-release-notes",
+                    SharedString::from(translator.text("viewReleaseNotes").to_owned()),
+                    ButtonVariant::Ghost,
+                    cx,
+                )
+                .on_click(move |_, _, cx| open(cx)),
+            );
+        }
         if update_view::can_cancel(&status) {
             let cancel_store = store.clone();
             buttons = buttons.child(
@@ -181,20 +242,7 @@ fn check_update_control(ctx: &SectionContext) -> Control {
     })
 }
 
-fn release_notes_item(ctx: &SectionContext) -> SettingsRow {
-    let store = ctx.store();
-    // 跟随应用界面语言（设置里可手动切换），而不是系统 locale。
-    let locale = ctx.translator.locale().to_owned();
-    SettingsRow::custom(move |_, _, _, cx: &mut App| {
-        let notes = store.read(cx).update_status().notes.clone();
-        if notes.is_empty() {
-            return div().into_any_element();
-        }
-        release_notes(notes, &locale, cx).into_any_element()
-    })
-}
-
-/// 更新说明列表（最多 10 个版本，按界面语言取对应段落）；关于页与新版本提醒窗口共用。
+/// 更新说明列表（最多 10 个版本，按界面语言取对应段落）；由独立的更新窗口展示。
 /// 每个版本的标题统一为「v版本 + 发布日期」，正文开头与之重复的版本标题会被去掉。
 pub(crate) fn release_notes(notes: Vec<ReleaseNoteDto>, locale: &str, cx: &App) -> gpui::Div {
     let theme = active_theme(cx);
@@ -328,15 +376,33 @@ fn localized_release_body<'a>(body: &'a str, locale: &str) -> &'a str {
         .unwrap_or(body)
 }
 
-fn logs_section(ctx: &SectionContext) -> SettingsSection {
-    SettingsSection::new()
+fn logs_section(ctx: &SectionContext, cx: &App) -> SettingsSection {
+    const LOG_LEVEL_PREF: &str = "diagnostics.log_level";
+    let size = ctx
+        .daemon_number("log_max_size_mb")
+        .unit(fluxdown_ui_components::size_units::labels()[2]);
+    let mut section = SettingsSection::new()
         .title(ctx.t("logExport"))
-        .subtitle(ctx.t("logExportDesc"))
-        .row(ctx.item(
-            "logMaxSize",
-            Some("logMaxSizeDesc"),
-            ctx.daemon_number("log_max_size_mb").unit("MB"),
-        ))
+        .subtitle(ctx.t("logExportDesc"));
+    if ctx.store.read(cx).pref(LOG_LEVEL_PREF).is_some() {
+        let options = [
+            ("auto", "diagnosticsLogLevelAuto"),
+            ("debug", "diagnosticsLogLevelDebug"),
+            ("info", "diagnosticsLogLevelInfo"),
+            ("warn", "diagnosticsLogLevelWarn"),
+            ("error", "diagnosticsLogLevelError"),
+        ]
+        .into_iter()
+        .map(|(value, label)| (SharedString::from(value), ctx.t(label)))
+        .collect();
+        section = section.row(ctx.item(
+            "diagnosticsLogLevel",
+            Some("diagnosticsLogLevelDesc"),
+            ctx.pref_dropdown(LOG_LEVEL_PREF, "auto", options),
+        ));
+    }
+    section
+        .row(ctx.item("logMaxSize", Some("logMaxSizeDesc"), size))
         .row(ctx.item("logExportButton", None, export_control(ctx)))
 }
 
@@ -426,23 +492,179 @@ fn export_control(ctx: &SectionContext) -> Control {
 }
 
 fn links_section(ctx: &SectionContext) -> SettingsSection {
-    SettingsSection::new()
-        .title(ctx.t("extensionCardTitle"))
-        .subtitle(ctx.t("extensionCardDesc"))
-        .row(link_item(
-            ctx,
-            "extensionCardTitle",
-            &[
-                ("Chrome", CHROME_STORE),
-                ("Firefox", FIREFOX_STORE),
-                ("Edge", EDGE_STORE),
-            ],
-        ))
-        .row(link_item(
-            ctx,
-            "donateTitle",
-            &[("donateButton", DONATE), ("officialWebsite", WEBSITE)],
-        ))
+    SettingsSection::new().row(link_item(
+        ctx,
+        "donateTitle",
+        &[("donateButton", DONATE), ("officialWebsite", WEBSITE)],
+    ))
+}
+
+/// 浏览器扩展：每个浏览器一行（安装状态 + 一键安装 + 前往商店）。进入时按需检测；每次打开设置
+/// 窗口重新放行一次（扩展可能已在浏览器里启用 / 移除），旧结果保留到新结果到达。断线只读时
+/// 不发，失败后本轮不再重发。
+fn browser_extension_section(ctx: &SectionContext, cx: &mut App) -> SettingsSection {
+    let store = ctx.store.read(cx);
+    if !store.is_read_only()
+        && !store.in_flight(BROWSER_EXTENSION_LOAD)
+        && !store.load_attempted(BROWSER_EXTENSION_LOAD)
+        && ctx
+            .store
+            .update(cx, |store, _| store.begin_load(BROWSER_EXTENSION_LOAD))
+    {
+        ctx.store
+            .update(cx, |store, cx| store.load_browser_extensions(cx));
+    }
+    let status = ctx.store.read(cx).browser_extensions().cloned();
+    let section = BrowserKind::ALL.into_iter().fold(
+        SettingsSection::new()
+            .title(ctx.t("extensionCardTitle"))
+            .subtitle(ctx.t("browserExtensionInstallDesc")),
+        |section, kind| {
+            let entry = status
+                .as_ref()
+                .and_then(|status| status.browsers.iter().find(|entry| entry.browser == kind));
+            section.row(browser_extension_row(ctx, kind, entry))
+        },
+    );
+    section.row(ctx.item(
+        "browserExtensionRefresh",
+        Some("browserExtensionRefreshDesc"),
+        browser_extension_refresh_control(ctx),
+    ))
+}
+
+/// 在浏览器里启用 / 移除扩展后无需重开设置：手动重新检测。
+fn browser_extension_refresh_control(ctx: &SectionContext) -> Control {
+    let store = ctx.store();
+    let label = ctx.t("browserExtensionRefreshButton");
+    Control::custom(move |disabled, _key, _window, cx: &mut App| {
+        let (checking, read_only) = {
+            let store = store.read(cx);
+            (store.is_busy(BROWSER_EXTENSION_LOAD), store.is_read_only())
+        };
+        let refresh_store = store.clone();
+        loading_button(
+            "about-ext-refresh",
+            label.clone(),
+            ButtonVariant::Secondary,
+            checking,
+            cx,
+        )
+        .disabled(disabled || checking || read_only)
+        .on_click(move |_, _, cx| {
+            refresh_store.update(cx, |store, cx| store.load_browser_extensions(cx));
+        })
+    })
+}
+
+/// 状态说明的 i18n 键与版本参数；状态未加载时为 `None`。
+fn browser_extension_state(
+    entry: Option<&BrowserExtensionEntryDto>,
+) -> Option<(&'static str, Option<&str>)> {
+    let entry = entry?;
+    Some(if !entry.browser_installed {
+        ("browserExtensionBrowserMissing", None)
+    } else if let Some(version) = entry.extension_version.as_deref() {
+        ("browserExtensionInstalledVersion", Some(version))
+    } else if entry.external_registered {
+        ("browserExtensionPendingEnable", None)
+    } else if entry.external_supported {
+        ("browserExtensionNotInstalled", None)
+    } else {
+        ("browserExtensionNotInstalledStoreOnly", None)
+    })
+}
+
+/// 安装按钮的形态：未安装「安装」；已登记但未检测到扩展（提示被忽略、浏览器未重启）可「重新安装」；
+/// 已安装只显示状态（扩展由商店自动更新；在浏览器里移除后回到前两种）。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExtensionAction {
+    Install,
+    Pending,
+    Installed,
+}
+
+fn browser_extension_action(entry: Option<&BrowserExtensionEntryDto>) -> ExtensionAction {
+    match entry {
+        Some(entry) if entry.extension_version.is_some() => ExtensionAction::Installed,
+        Some(entry) if entry.external_registered => ExtensionAction::Pending,
+        _ => ExtensionAction::Install,
+    }
+}
+
+fn browser_extension_row(
+    ctx: &SectionContext,
+    kind: BrowserKind,
+    entry: Option<&BrowserExtensionEntryDto>,
+) -> SettingsRow {
+    let store = ctx.store();
+    let browser_installed = entry.is_some_and(|entry| entry.browser_installed);
+    let action = browser_extension_action(entry);
+    let install_label = ctx.t(match action {
+        ExtensionAction::Install => "browserExtensionInstall",
+        ExtensionAction::Pending => "browserExtensionReinstall",
+        ExtensionAction::Installed => "browserExtensionInstalledButton",
+    });
+    let store_label = ctx.t("browserExtensionOpenStore");
+    let mut row = SettingsRow::new(
+        SharedString::from(kind.label()),
+        Control::custom(move |disabled, _key, _window, cx: &mut App| {
+            let tokens = active_theme(cx).tokens();
+            let (installing, busy) = {
+                let store = store.read(cx);
+                (
+                    store.is_busy_tagged(BROWSER_EXTENSION_INSTALL, kind.as_str()),
+                    store.in_flight(BROWSER_EXTENSION_INSTALL),
+                )
+            };
+            let install_store = store.clone();
+            let store_url = kind.store_url();
+            h_flex()
+                .gap(tokens.spacing.sm)
+                .child(
+                    button(
+                        SharedString::from(format!("about-ext-store-{}", kind.as_str())),
+                        store_label.clone(),
+                        ButtonVariant::Secondary,
+                        cx,
+                    )
+                    .on_click(move |_, _, cx| cx.open_url(store_url)),
+                )
+                .child(
+                    loading_button(
+                        SharedString::from(format!("about-ext-install-{}", kind.as_str())),
+                        install_label.clone(),
+                        if action == ExtensionAction::Install {
+                            ButtonVariant::Primary
+                        } else {
+                            ButtonVariant::Secondary
+                        },
+                        installing,
+                        cx,
+                    )
+                    // 已安装时不重复安装（由商店自动更新；在浏览器里移除后会回到可安装）。
+                    .disabled(
+                        disabled
+                            || busy
+                            || !browser_installed
+                            || action == ExtensionAction::Installed,
+                    )
+                    .on_click(move |_, _, cx| {
+                        install_store
+                            .update(cx, |store, cx| store.install_browser_extension(kind, cx));
+                    }),
+                )
+        }),
+    )
+    .keywords(["extensionCardTitle".to_owned(), kind.label().to_owned()]);
+    if let Some((key, version)) = browser_extension_state(entry) {
+        let text = match version {
+            Some(version) => ctx.translator.text_with(key, &[("version", version)]),
+            None => ctx.translator.text(key).to_owned(),
+        };
+        row = row.description(text);
+    }
+    row
 }
 
 /// 第三方数据 / 素材署名：对端国家来自 DB-IP lite（CC BY 4.0，要求署名并链接），旗帜为 flag-icons（MIT）。
@@ -504,7 +726,82 @@ fn link_item(
 
 #[cfg(test)]
 mod tests {
-    use super::{localized_release_body, release_date, strip_version_heading};
+    use fluxdown_protocol::browser_extension::{BrowserExtensionEntryDto, BrowserKind};
+
+    use super::{
+        ExtensionAction, browser_extension_action, browser_extension_state, localized_release_body,
+        release_date, strip_version_heading,
+    };
+
+    #[test]
+    fn browser_extension_install_button_only_offers_install_when_nothing_is_added() {
+        let entry = |version: Option<&str>, registered: bool| BrowserExtensionEntryDto {
+            browser: BrowserKind::Edge,
+            browser_installed: true,
+            extension_version: version.map(str::to_owned),
+            external_registered: registered,
+            external_supported: true,
+        };
+        assert_eq!(browser_extension_action(None), ExtensionAction::Install);
+        assert_eq!(
+            browser_extension_action(Some(&entry(None, false))),
+            ExtensionAction::Install
+        );
+        assert_eq!(
+            browser_extension_action(Some(&entry(None, true))),
+            ExtensionAction::Pending
+        );
+        assert_eq!(
+            browser_extension_action(Some(&entry(Some("0.6.8"), true))),
+            ExtensionAction::Installed
+        );
+    }
+
+    #[test]
+    fn browser_extension_state_prefers_missing_then_installed_then_pending() {
+        let entry = |installed: bool, version: Option<&str>, registered: bool, supported: bool| {
+            BrowserExtensionEntryDto {
+                browser: BrowserKind::Chrome,
+                browser_installed: installed,
+                extension_version: version.map(str::to_owned),
+                external_registered: registered,
+                external_supported: supported,
+            }
+        };
+        assert_eq!(browser_extension_state(None), None);
+        let cases = [
+            (
+                entry(false, Some("0.6.8"), true, true),
+                "browserExtensionBrowserMissing",
+            ),
+            (
+                entry(true, Some("0.6.8"), true, true),
+                "browserExtensionInstalledVersion",
+            ),
+            (
+                entry(true, None, true, true),
+                "browserExtensionPendingEnable",
+            ),
+            (
+                entry(true, None, false, true),
+                "browserExtensionNotInstalled",
+            ),
+            (
+                entry(true, None, false, false),
+                "browserExtensionNotInstalledStoreOnly",
+            ),
+        ];
+        for (entry, key) in cases {
+            assert_eq!(
+                browser_extension_state(Some(&entry)).map(|(k, _)| k),
+                Some(key)
+            );
+        }
+        assert_eq!(
+            browser_extension_state(Some(&entry(true, Some("0.6.8"), false, true))),
+            Some(("browserExtensionInstalledVersion", Some("0.6.8")))
+        );
+    }
 
     #[test]
     fn release_notes_follow_ui_language() {

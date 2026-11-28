@@ -220,6 +220,17 @@ public struct Segment: Sendable, Hashable {
     }
 }
 
+/// HLS 点播媒体分片计数，独立于下载字节数。
+public struct HlsFragmentProgress: Sendable, Hashable {
+    public var written: UInt64
+    public var total: UInt64
+
+    public init(written: UInt64, total: UInt64) {
+        self.written = written
+        self.total = total
+    }
+}
+
 /// `TaskRuntimeDto`。
 public struct TaskRuntime: Sendable, Hashable {
     public var taskId: String
@@ -228,6 +239,7 @@ public struct TaskRuntime: Sendable, Hashable {
     public var connectedPeers: UInt32?
     public var totalBytes: Int64
     public var segments: [Segment]
+    public var hlsFragments: HlsFragmentProgress?
 
     public init(
         taskId: String,
@@ -235,7 +247,8 @@ public struct TaskRuntime: Sendable, Hashable {
         activeTransfers: UInt32?,
         connectedPeers: UInt32?,
         totalBytes: Int64,
-        segments: [Segment]
+        segments: [Segment],
+        hlsFragments: HlsFragmentProgress? = nil
     ) {
         self.taskId = taskId
         self.sampleSequence = sampleSequence
@@ -243,6 +256,7 @@ public struct TaskRuntime: Sendable, Hashable {
         self.connectedPeers = connectedPeers
         self.totalBytes = totalBytes
         self.segments = segments
+        self.hlsFragments = hlsFragments
     }
 }
 

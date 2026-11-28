@@ -22,13 +22,23 @@ pub(super) async fn connected_pair() -> (Socket, Peer) {
         .await
         .expect("bind peer");
     let url = format!("ws://{}/", listener.local_addr().expect("peer address"));
-    let (client, peer) = tokio::join!(tokio_tungstenite::connect_async(url), async {
-        let (stream, _) = listener.accept().await.expect("accept client");
-        tokio_tungstenite::accept_async(stream)
-            .await
-            .expect("accept websocket")
-    });
-    (client.expect("connect websocket").0, peer)
+    let (client, peer) = tokio::join!(
+        async {
+            let stream = TcpStream::connect(listener.local_addr().expect("peer address"))
+                .await
+                .expect("connect peer");
+            tokio_tungstenite::client_async(url, crate::agent_ipc::AgentStream::Tcp(stream))
+                .await
+                .expect("connect websocket")
+        },
+        async {
+            let (stream, _) = listener.accept().await.expect("accept client");
+            tokio_tungstenite::accept_async(stream)
+                .await
+                .expect("accept websocket")
+        }
+    );
+    (client.0, peer)
 }
 
 async fn request(peer: &mut Peer, method_name: &str) -> Value {
@@ -521,6 +531,7 @@ fn create_many_resends_same_batch_after_disconnect_without_pausing_the_gate() {
                     category_route: None,
                     last_category_mode: "auto".to_owned(),
                     offered_save_dir: String::new(),
+                    subfolder_base: None,
                 },
                 move |command| submit_port.execute(command),
                 SubmissionHooks::new(|_| tokio::time::sleep(Duration::from_millis(1))),

@@ -13,26 +13,30 @@ struct NewDownloadSheet: View {
 
     @Environment(AppContainer.self) private var container
     @Environment(\.dismiss) private var dismiss
-    @State private var form: NewDownloadForm?
+    @State private var draft: (hostID: String, form: NewDownloadForm)?
 
     var body: some View {
         Group {
-            if let form {
-                NewDownloadContent(form: form, close: { dismiss() })
+            if let draft {
+                NewDownloadContent(form: draft.form, hostID: draft.hostID, close: { dismiss() })
             } else {
                 Color.clear
             }
         }
         .task {
-            if form == nil { form = NewDownloadForm(prefill: prefill, state: container.store.state) }
+            if draft == nil {
+                container.supersedeHostRestore()
+                draft = (container.host.id, NewDownloadForm(prefill: prefill, state: container.store.state))
+            }
         }
         // 关闭 Sheet 即取消进行中的清单预解析（在途 RPC 的晚到结果被忽略）。
-        .onDisappear { form?.cancelProbe() }
+        .onDisappear { draft?.form.cancelProbe() }
     }
 }
 
 private struct NewDownloadContent: View {
     @Bindable var form: NewDownloadForm
+    let hostID: String
     let close: () -> Void
 
     @Environment(AppContainer.self) private var container
@@ -40,6 +44,7 @@ private struct NewDownloadContent: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showDiscard = false
     @State private var showImporter = false
+    @State private var taskInfoExport: TaskInfoDocument?
     @State private var importerKind: ImporterKind = .text
     #if FULL_FLAVOR
     @State private var importingTorrent = false
@@ -59,6 +64,7 @@ private struct NewDownloadContent: View {
     private static let hostTargetTag = "host"
 
     private var state: HostState { container.store.state }
+    private var isDraftHostLive: Bool { container.host.id == hostID && state.connection == .live }
 
     /// 「下载到」候选：云账号其他设备 + 局域网已配对设备（快照实时投影）。
     private var dispatchTargets: [DispatchTarget] {
@@ -103,6 +109,9 @@ private struct NewDownloadContent: View {
                     }
                 }
             }
+            .background {
+                Color.clear.taskInfoExporter($taskInfoExport)
+            }
             .navigationTitle(L("newDownload"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -128,7 +137,7 @@ private struct NewDownloadContent: View {
                     AdvancedOptionsView(form: form)
                 #if FULL_FLAVOR
                 case let .manifest(source, base):
-                    ManifestSelectView(source: source, base: base, close: close)
+                    ManifestSelectView(source: source, base: base, hostID: hostID, close: close)
                 #endif
                 }
             }
@@ -146,12 +155,14 @@ private struct NewDownloadContent: View {
             }
         }
         .fluxAnimation(.snappy, value: dropTargeted)
-        // 预测输入（第一条链接的文件名 / 链接 / 重命名）变化，及打开表单时：重算分类目录并按「自动」规则跟随。
-        .onChange(of: form.categoryPredictionKey, initial: true) {
+        // Reconcile only against the draft host's live snapshot, including after returning to it.
+        .onChange(of: isDraftHostLive ? form.categoryPredictionKey : nil, initial: true) {
+            guard isDraftHostLive else { return }
             form.followCategory(session: container.session)
         }
-        .onChange(of: categoryOptions) {
-            form.reconcileCategory(options: categoryOptions, session: container.session)
+        .onChange(of: liveCategoryOptions) {
+            guard let options = liveCategoryOptions else { return }
+            form.reconcileCategory(options: options, session: container.session)
         }
         .interactiveDismissDisabled(form.isDirty || form.submitting)
         .fileImporter(
@@ -321,6 +332,14 @@ private struct NewDownloadContent: View {
                     .font(.footnote.monospaced())
                     .foregroundStyle(.secondary)
             }
+            if entries.count > 1 {
+                Button(L("exportTaskInfoTxt"), systemImage: "doc.text") {
+                    taskInfoExport = TaskInfoDocument(entries.map {
+                        TaskInfoRow(name: batchExportName($0), url: $0.url, size: batchExportSize($0.url))
+                    }, labels: .localized)
+                }
+                .disabled(form.submitting)
+            }
             if let duplicate {
                 Banner(text: L("mobileNewDownloadDuplicateUrl", ["name": duplicate]), tone: .warning, slim: true)
                     .listRowInsets(EdgeInsets())
@@ -400,10 +419,9 @@ private struct NewDownloadContent: View {
     // MARK: 目录 / 文件名
 
     private func destinationSection(_ entries: [UrlEntry]) -> some View {
-        let options = categoryOptions
-        return Section {
-            categoryPicker(options)
-            if container.isLocalHost {
+        Section {
+            if let options = liveCategoryOptions { categoryPicker(options) }
+            if hostID == HostRef.localId {
                 LabeledContent(L("saveDir")) {
                     Text(form.saveDir.isEmpty ? LocalPaths.documents.path : form.saveDir)
                         .font(.footnote.monospaced())
@@ -433,8 +451,9 @@ private struct NewDownloadContent: View {
     // MARK: 分类
 
     /// 能产生分类路由的分类（可见、非「全部」、目录非空）；空列表仍提供自动 / 不分类。
-    private var categoryOptions: [CustomCategoryDto] {
-        SaveDirCategoryState.options(CustomCategoryDto.fromPreference(state.preferences[CustomCategoryDto.preferenceKey]))
+    private var liveCategoryOptions: [CustomCategoryDto]? {
+        guard isDraftHostLive else { return nil }
+        return SaveDirCategoryState.options(CustomCategoryDto.fromPreference(state.preferences[CustomCategoryDto.preferenceKey]))
     }
 
     /// 「自动」「不分类」，分隔后是各分类（分类图标同设置页）。「自动」命中时标题带上命中分类名。
@@ -465,7 +484,10 @@ private struct NewDownloadContent: View {
                 }
                 return form.categoryState.mode
             },
-            set: { form.selectCategory($0, options: options, session: container.session) }
+            set: {
+                guard isDraftHostLive else { return }
+                form.selectCategory($0, options: options, session: container.session)
+            }
         )
     }
     private var saveDirBinding: Binding<String> {
@@ -738,6 +760,11 @@ private struct NewDownloadContent: View {
 
     private func submit(startPaused: Bool, queueId: String) {
         guard !form.submitting, form.probe == nil else { return }
+        guard container.host.id == hostID else {
+            reject()
+            container.toasts.show(text: L("mobileDownloadDraftHostChanged"), tone: .warning)
+            return
+        }
         let state = container.store.state
         if state.isReadOnly {
             reject()
@@ -793,8 +820,9 @@ private struct NewDownloadContent: View {
     ) {
         let url = request.url
         let base = form.manifestBase(queue: queueId, manualProxy: manualProxy)
+        let session = container.session
         let probe = ManifestProbe(
-            session: container.session,
+            session: session,
             method: HostMethod.daemonGroupResolvePreview,
             params: base.previewRequest(url: url),
             host: URL(string: url)?.host ?? ""
@@ -806,6 +834,11 @@ private struct NewDownloadContent: View {
             let outcome = await probe.outcome()
             guard form.probe?.id == probe.id else { return }
             form.probe = nil
+            guard container.session === session else {
+                reject()
+                container.toasts.show(text: L("mobileDownloadDraftHostChanged"), tone: .warning)
+                return
+            }
             if case let .manifest(preview) = outcome {
                 FluxHaptic.soft.play()
                 path.append(.manifest(.daemon(preview: preview, sourceUrl: url), base))
@@ -853,6 +886,11 @@ private struct NewDownloadContent: View {
     /// 全部成功关闭表单；有失败时只把失败的链接留在文本框里，成功的不会被重复下发。
     private func submitRemote(_ target: DispatchTarget) {
         guard !form.submitting, form.probe == nil else { return }
+        guard container.host.id == hostID else {
+            reject()
+            container.toasts.show(text: L("mobileDownloadDraftHostChanged"), tone: .warning)
+            return
+        }
         if state.isReadOnly {
             reject()
             container.toasts.show(text: L("localServiceDisconnected"), tone: .error, systemImage: FluxSymbol.offline)
@@ -944,6 +982,11 @@ private struct NewDownloadContent: View {
     /// N3：以表单当前保存目录与所选队列立即提交；表单里仍有链接时 N1 保留，否则关闭。
     private func importTorrents(_ urls: [URL]) async {
         guard !urls.isEmpty, !importingTorrent, !form.submitting else { return }
+        guard container.host.id == hostID else {
+            reject()
+            container.toasts.show(text: L("mobileDownloadDraftHostChanged"), tone: .warning)
+            return
+        }
         if !container.isLocalHost, !form.saveDirValid {
             reject()
             return

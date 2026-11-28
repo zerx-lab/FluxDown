@@ -284,6 +284,9 @@ impl Fixture {
             })
             .await
             .expect("create group")
+            .group_id()
+            .expect("two items form a group")
+            .to_owned()
     }
 
     async fn cleanup(self) {
@@ -356,9 +359,7 @@ async fn group_with_unavailable_explicit_plugin_is_bound_failed_and_recovers_on_
     fx.pump_until_done(&member).await;
     assert_eq!(fx.status_and_error(&member).await.0, 3);
     assert_eq!(
-        tokio::fs::read(fx.work.join("disabled").join("a.bin"))
-            .await
-            .unwrap(),
+        tokio::fs::read(fx.work.join("a.bin")).await.unwrap(),
         FILE_BODY
     );
     fx.cleanup().await;
@@ -418,9 +419,7 @@ async fn legacy_second_stage_row_rebinds_when_a_plugin_matches_again() {
         "zzz@multi"
     );
     assert_eq!(
-        tokio::fs::read(fx.work.join("legacy-rebind").join("a.bin"))
-            .await
-            .unwrap(),
+        tokio::fs::read(fx.work.join("a.bin")).await.unwrap(),
         FILE_BODY
     );
     fx.cleanup().await;

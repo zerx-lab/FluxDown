@@ -9,8 +9,11 @@ import { defineMessages } from "../define";
 const GH = "https://github.com/zerx-lab/FluxDown";
 const ext = (url: string, label: string) =>
   `<a href="${url}" rel="noopener noreferrer" target="_blank">${label}</a>`;
+/** 账单 / 退款联系邮箱:服务条款「退款」与「联系我们」两处共用。 */
+const BILLING_EMAIL = "1603852@qq.com";
+const BILLING_MAIL = `<a href="mailto:${BILLING_EMAIL}">${BILLING_EMAIL}</a>`;
 
-export const legal = defineMessages({
+export const legal = defineMessages("legal", {
   en: {
     index: "On this page",
     updated: "Last updated",
@@ -67,11 +70,24 @@ export const legal = defineMessages({
           ],
         },
         {
+          id: "ai-assistant",
+          title: "AI Assistant",
+          body: "The AI assistant (in the desktop app, the web management interface and on this website) <strong>only sends data when you ask it a question</strong>; if you do not ask, nothing is sent. A conversation you start yourself is content you hand to the assistant to get an answer, not anonymous telemetry. When you ask, we process:",
+          items: [
+            "<strong>Your question and images:</strong> the text you type, the images you attach (only possible when the current model supports images), the interface language and, from the apps, the app version and platform. They are sent to FluxDown's servers (FluxCloud). Where intent classification is enabled, FluxCloud first sends the question text (not the images) to a classifier we operate and host on Alibaba Cloud Function Compute, which decides whether the question needs the model; the question and images are then forwarded to the third-party AI model provider we have configured to generate the answer.",
+            "<strong>Information the assistant reads on your device (desktop app and web management interface only):</strong> to answer questions about your own FluxDown, the assistant can have the app read information locally. The results can include task names, save paths (your home folder is replaced by <code>~</code>), download addresses (credentials removed; for torrents only the tracker's site is kept), settings (sensitive items such as passwords, tokens and keys are masked) and redacted logs, plus version, runtime and network status, installed plugins and components, and diagnostics. This only happens while it is answering a question you asked, and the results are sent to FluxCloud and on to the model provider. The assistant on this website cannot access anything on your device.",
+            "<strong>Actions that need your confirmation:</strong> tools that change something (create or manage tasks, change settings) or that connect to an address you specify or to a third party (such as a download route speed test) run only after you approve a confirmation card in the app.",
+            "<strong>Conversation history:</strong> your questions, the answers, tool calls and their results, and your thumbs-up/down ratings with optional comments are stored with your account on FluxCloud so you can continue and review them across devices and so we can diagnose problems and improve the assistant. Deleting a conversation (or clearing all of them) hides it from you immediately; the data stays on our servers and is deleted automatically once the retention period (90 days by default) ends. The question text passed to the intent classifier is logged separately, without your account, device or IP address, and is deleted after a retention period (90 days by default) as well.",
+            "<strong>Issue reports:</strong> the assistant can draft a bug report or feature request for you. Nothing is submitted until you confirm it (we may review it first); a submitted report is published as a GitHub Issue in our repository and is kept even if you delete the conversation.",
+            "<strong>Third parties:</strong> the AI model providers (and, where enabled, external tool services connected by our administrators) that process the content above are chosen and configured by FluxDown and may change; their handling is governed by their own privacy policies. We do not use your questions for advertising and do not sell them.",
+          ],
+        },
+        {
           id: "not-collect",
           title: "Information We Do NOT Collect",
           body: "FluxDown is designed with a local-first architecture. The FluxDown apps:",
           items: [
-            "Do NOT collect or store your download history on any remote server. Download tasks, file paths and progress are stored locally in a SQLite database on your device. Download links only leave your device when you explicitly send them to another of your devices or enable the notification options described above.",
+            "Do NOT collect or store your download history on any remote server. Download tasks, file paths and progress are stored locally in a SQLite database on your device. Download links only leave your device when you explicitly send them to another of your devices, enable the notification options described above, or ask the AI assistant a question (see the AI Assistant section above).",
             "Do NOT include advertising, third-party trackers, or crash reporting.",
             "Do NOT require an account, login, or registration to download files.",
             "Do NOT sell or share your personal data with third parties for advertising or tracking.",
@@ -117,6 +133,7 @@ export const legal = defineMessages({
           items: [
             "Sign out at any time, or remove individual devices from your account, in the app's account settings.",
             "Turn settings sync, cloud notifications and the anonymous usage counters on or off in settings.",
+            "Delete a single AI assistant conversation, or clear all of them, at any time, and choose not to ask the assistant anything; see the AI Assistant section above for how long data is kept.",
             'Delete your FluxDown account at any time in the app: Settings → Account → Delete Account (confirmed with your password or an email code). This permanently removes your account, signed-in devices, synced settings, sent links, notification settings and private extension grants, and deletes your private extension download records. Administrators\' operation logs of granting and revoking access are kept for security auditing but are no longer linked to your account. Order records are kept only where we are legally required to. Files you downloaded stay on your device. If you cannot access the app, contact us through the <a href="{feedback}">Feedback page</a> from your account email.',
           ],
         },
@@ -127,6 +144,8 @@ export const legal = defineMessages({
           items: [
             "<strong>GitHub API:</strong> Used server-side to fetch release information and process feedback submissions. Your IP address is not forwarded to GitHub.",
             "<strong>Fonts:</strong> All web fonts are self-hosted on this website. No font requests are made to Google Fonts or any other third-party font service.",
+            "<strong>AI model providers:</strong> Only when you ask the AI assistant a question, its content is forwarded through FluxDown's servers to the third-party AI model providers we have configured, to generate the answer. See the AI Assistant section above.",
+            "<strong>Alibaba Cloud (Function Compute):</strong> Where intent classification is enabled, the intent classifier we operate runs as a function on Alibaba Cloud Function Compute. Only when you ask the AI assistant a question, the text of your question (without images, account, device or IP information) is sent to that function to be classified, and the result is returned to FluxDown's servers. See the AI Assistant section above.",
           ],
         },
         {
@@ -153,13 +172,13 @@ export const legal = defineMessages({
       meta: {
         title: "Terms of Service - FluxDown",
         description:
-          "FluxDown terms of service: license, acceptable use, warranties and liability for the FluxDown desktop app, browser extension and website.",
+          "FluxDown terms of service: license, acceptable use, paid cloud plans, pricing, refunds, warranties and liability for the FluxDown apps, browser extension, FluxCloud and website.",
       },
       eyebrow: "Legal · Terms",
       title: "Terms of <em>Service</em>",
-      updated: "October 2026",
+      updated: "November 2026",
       intro:
-        'Please read these Terms of Service ("Terms") carefully before using FluxDown software, browser extension, and website (collectively, the "Service"). By using the Service, you agree to be bound by these Terms.',
+        'Please read these Terms of Service ("Terms") carefully before using FluxDown software, browser extension, FluxCloud cloud services, and website (collectively, the "Service"). By using the Service, you agree to be bound by these Terms.',
       sections: [
         {
           id: "acceptance",
@@ -220,24 +239,44 @@ export const legal = defineMessages({
         },
         {
           id: "plans",
-          title: "Plans & Membership Cards",
-          body: "These rules apply to the plans that come with FluxCloud.",
+          title: "Paid Plans, Pricing & Billing",
+          body: 'The FluxDown apps, browser extension and every local download feature are free. Only FluxCloud cloud services are sold, in the two forms below. Current plans, prices and term lengths are listed on the <a href="{pricing}">Pricing page</a>; the amount shown at checkout before you pay is the final amount charged.',
           items: [
-            "Membership cards are bought for a period and renewed manually; they never auto-renew and are never charged automatically. Renewing the same card extends it from its current end date. When a card expires you automatically return to your permanent plan's entitlements. Time that has already taken effect is non-refundable.",
+            "<strong>Permanent plans (one-time purchase).</strong> Paid once, in a single payment. There is no recurring fee, no billing period and nothing to renew; the plan's entitlements stay on your account for as long as the FluxCloud service operates.",
+            "<strong>Membership cards (fixed term).</strong> Paid once per term; each card's term length in days is shown on the Pricing page. Cards are renewed manually: they never auto-renew and are never charged automatically. Renewing the same card extends it from its current end date. When a card expires you automatically return to your permanent plan's entitlements, or to the free plan if you have none.",
+            "<strong>No automatic charges.</strong> We do not sell subscriptions and have no auto-renewal. You are only ever charged for a purchase you start yourself.",
+            "<strong>Payment methods and currency.</strong> WeChat Pay is settled in CNY. International cards, Apple Pay and Google Pay are processed by our payment provider Waffo and charged in USD. USDT is paid on the networks listed at checkout. Card details are handled by the payment provider and are never stored by FluxDown.",
+            "<strong>Upgrades and promotions.</strong> When upgrading, the amount already paid for your current plan may be credited, as shown at checkout. Promotional prices and referral discounts apply only where checkout shows them.",
+            "<strong>Price changes.</strong> We may change prices for future purchases. Completed orders are never repriced or charged again.",
             "For plans marked as entitlement-locked, published entitlements can only be increased, never reduced; the plan page states whether a plan is locked.",
             "Plans are for your own use. Reselling, sharing accounts or abuse (including bulk automated downloading) may result in restricted or revoked entitlements.",
           ],
         },
         {
+          id: "refunds",
+          title: "Refunds & Cancellation",
+          body: "Plans and cards are digital services activated as soon as payment is confirmed. The following rules apply equally to permanent plans and membership cards (including renewals):",
+          items: [
+            "<strong>7-day refund.</strong> You may request a full refund of any order within 7 days of payment, for any reason. The refund is the amount actually paid for that order, and the plan or card granted by that order is revoked once the refund is issued.",
+            "<strong>After 7 days.</strong> Orders are non-refundable after 7 days from payment, including membership card time that has not been used yet.",
+            "<strong>Always refunded.</strong> Duplicate charges, and payments whose plan we cannot activate, are refunded in full at any time.",
+            "<strong>Statutory rights.</strong> Nothing in these Terms limits any refund or withdrawal right you have under applicable law.",
+            "<strong>Not eligible.</strong> Orders on accounts restricted for violating these Terms are not eligible for the 7-day refund.",
+            "<strong>Cancellation.</strong> Nothing renews automatically, so there is no subscription to cancel: a membership card simply ends on its expiry date, and you are never charged again unless you buy again. To cancel an order within 7 days, request a refund as described below.",
+            `<strong>How to request.</strong> Email ${BILLING_MAIL} from your account email with your order number and the reason. We usually reply within 3 business days. Approved refunds go back to the original payment method (for USDT, to an address on the same network that you provide) and typically arrive within 5–10 business days, depending on the payment channel.`,
+            "<strong>Billing disputes.</strong> If you think a charge is wrong, please contact us before disputing it with your bank or card issuer. A refunded or charged-back order has its plan revoked.",
+          ],
+        },
+        {
           id: "changes",
           title: "Changes to These Terms",
-          body: "We reserve the right to modify these Terms at any time. Updated Terms will be posted on this page with a revised date. Your continued use of the Service after any changes indicates your acceptance of the new Terms.",
+          body: "We reserve the right to modify these Terms at any time. Updated Terms will be posted on this page with a revised date. Your continued use of the Service after any changes indicates your acceptance of the new Terms. Changes never apply retroactively to orders already completed.",
           items: [],
         },
         {
           id: "contact",
           title: "Contact Us",
-          body: 'If you have any questions about these Terms of Service, please reach out to us through the <a href="{feedback}">Feedback page</a> on our website.',
+          body: `For billing and refunds, email ${BILLING_MAIL}. For any other questions about these Terms of Service, reach out to us through the <a href="{feedback}">Feedback page</a> on our website.`,
           items: [],
         },
       ],
@@ -365,11 +404,24 @@ export const legal = defineMessages({
           ],
         },
         {
+          id: "ai-assistant",
+          title: "AI 助手",
+          body: "AI 助手（桌面应用、网页管理界面与本网站内的对话）<strong>只在您主动提问时才会发送数据</strong>；不提问就不会发送任何内容。您主动发起的助手对话是您交给助手用来获得回答的内容，不属于匿名遥测。提问时，我们会处理：",
+          items: [
+            "<strong>您的问题与图片：</strong>您输入的文字、附带的图片（仅当当前模型支持图片时可附）、界面语言，以及应用端的应用版本与平台。这些内容发送到 FluxDown 服务器（FluxCloud）。启用意图分类时，FluxCloud 会先把问题文字（不含图片）发送到我们运营、部署在阿里云函数计算上的分类器，由它判断问题是否需要交给大模型；随后问题与图片转交给我们配置的第三方 AI 模型服务商生成回答。",
+            "<strong>助手在您设备上读取的信息（仅桌面应用与网页管理界面）：</strong>为回答关于您自己 FluxDown 的问题，助手可以让应用在本机读取信息。结果可能包含任务名、保存路径（主目录以 <code>~</code> 代替）、下载地址（已去除凭据；BT 的 tracker 只保留站点）、设置（密码、令牌、密钥等敏感项已遮蔽）与经过脱敏的日志，以及版本、运行状态、网络状态、已安装的插件 / 组件与诊断结果。这些读取只发生在回答您提出的问题期间，结果会发送到 FluxCloud 并转交给模型服务商。本网站上的助手无法访问您设备上的任何内容。",
+            "<strong>需要您确认的操作：</strong>会修改内容的工具（新建或管理任务、修改设置）以及会连接您指定的地址或第三方的工具（例如下载线路测速），只有在您于应用内批准确认卡片后才会执行。",
+            "<strong>对话记录：</strong>您的提问、回答、工具调用及其结果，以及您的点赞 / 点踩与可选的说明，会随账户保存在 FluxCloud，方便您跨设备继续和回看，也用于排查问题与改进助手。删除对话（或清空全部）后，对话会立即对您隐藏；数据仍保留在我们的服务器上，保留期（默认 90 天）届满后自动清理。传给意图分类器的问题原文会单独记录（不含账户、设备与 IP 地址），同样在保留期（默认 90 天）届满后清理。",
+            "<strong>问题单：</strong>助手可以替您起草缺陷报告或功能建议。您确认之前不会提交（提交前我们可能先审核）；已提交的问题单会作为 GitHub Issue 发布在我们的仓库中，即使您删除了对话也会保留。",
+            "<strong>第三方：</strong>处理上述内容的 AI 模型服务商（以及管理员接入的外部工具服务，如已启用）由 FluxDown 选择与配置，可能调整，其处理方式受各自隐私政策约束。我们不会把您的提问用于广告，也不会出售。",
+          ],
+        },
+        {
           id: "not-collect",
           title: "我们不收集的信息",
           body: "FluxDown 采用本地优先架构设计。FluxDown 各应用：",
           items: [
-            "不会在任何远程服务器上收集或保存您的下载历史。下载任务、文件路径与进度均存储在您设备上的本地 SQLite 数据库中。只有当您主动把链接发送到自己的其他设备，或开启上文所述的推送选项时，下载链接才会离开您的设备。",
+            "不会在任何远程服务器上收集或保存您的下载历史。下载任务、文件路径与进度均存储在您设备上的本地 SQLite 数据库中。只有当您主动把链接发送到自己的其他设备、开启上文所述的推送选项，或主动向 AI 助手提问（见上文「AI 助手」一节）时，相关内容才会离开您的设备。",
             "不包含广告、第三方追踪器或崩溃报告。",
             "下载文件不需要任何形式的账户、登录或注册。",
             "不会出于广告或追踪目的向第三方出售或共享您的个人数据。",
@@ -415,6 +467,7 @@ export const legal = defineMessages({
           items: [
             "随时在应用的账户设置中退出登录，或从账户中移除单台设备。",
             "在设置中开启或关闭设置同步、云端推送与匿名使用计数。",
+            "随时在 AI 助手中删除单个或清空全部对话，并可以选择不向助手提问；保留与清理规则见上文「AI 助手」一节。",
             '您可以随时在应用中删除 FluxDown 账户：设置 → 账户 → 删除账户（需验证密码或邮箱验证码）。删除后，账户、已登录设备、同步的设置、发送的链接、推送设置与私有扩展授权将被永久移除，您的私有扩展下载记录也会一并删除；管理员对授权与撤销的操作日志会保留用于安全审计，但不再与您的账户关联；仅在法律要求时保留订单记录。已下载的文件仍保留在您的设备上。如果无法使用应用，请用账户邮箱通过<a href="{feedback}">反馈页面</a>联系我们。',
           ],
         },
@@ -425,6 +478,8 @@ export const legal = defineMessages({
           items: [
             "<strong>GitHub API：</strong>在服务端用于获取发布信息和处理反馈提交。您的 IP 地址不会转发至 GitHub。",
             "<strong>字体：</strong>本网站所有网页字体均为自托管，不会向 Google Fonts 或任何第三方字体服务发起请求。",
+            "<strong>AI 模型服务商：</strong>仅当您主动向 AI 助手提问时，问题内容会经 FluxDown 服务器转交给我们配置的第三方 AI 模型服务商，用于生成回答，详见上文「AI 助手」一节。",
+            "<strong>阿里云（函数计算）：</strong>启用意图分类时，我们运营的意图分类器作为函数运行在阿里云函数计算上。仅当您主动向 AI 助手提问时，您的问题文字（不含图片、账户、设备与 IP 信息）会发送到该函数做一次分类，结果返回 FluxDown 服务器，详见上文「AI 助手」一节。",
           ],
         },
         {
@@ -450,13 +505,14 @@ export const legal = defineMessages({
     terms: {
       meta: {
         title: "服务条款 - FluxDown",
-        description: "FluxDown 服务条款：FluxDown 桌面应用、浏览器扩展与网站的许可、合理使用、担保与责任限制。",
+        description:
+          "FluxDown 服务条款：FluxDown 应用、浏览器扩展、FluxCloud 与网站的许可、合理使用、付费套餐、收费方式、退款、担保与责任限制。",
       },
       eyebrow: "法律 · 条款",
       title: "服务<em>条款</em>",
-      updated: "2026 年 10 月",
+      updated: "2026 年 11 月",
       intro:
-        "请在使用 FluxDown 软件、浏览器扩展和网站（统称「服务」）前仔细阅读本服务条款（以下简称「条款」）。使用本服务即表示您同意受本条款约束。",
+        "请在使用 FluxDown 软件、浏览器扩展、FluxCloud 云端服务和网站（统称「服务」）前仔细阅读本服务条款（以下简称「条款」）。使用本服务即表示您同意受本条款约束。",
       sections: [
         {
           id: "acceptance",
@@ -517,24 +573,44 @@ export const legal = defineMessages({
         },
         {
           id: "plans",
-          title: "套餐与会员卡",
-          body: "以下规则适用于 FluxCloud 的套餐。",
+          title: "付费套餐、价格与计费",
+          body: 'FluxDown 应用、浏览器扩展及全部本地下载功能免费。收费的只有 FluxCloud 云端服务，分为以下两种形式。当前在售套餐、价格与期限见<a href="{pricing}">定价页</a>；以付款前结账页显示的金额为最终扣款金额。',
           items: [
-            "会员卡按周期购买、手动续费，不会自动续费或自动扣款；续费同一张卡时从当前到期时间顺延。到期后自动回到永久套餐的权益。已生效的时长不退款。",
+            "<strong>永久套餐（一次性买断）。</strong>一次付清，单笔扣款。无周期费用、无计费周期、无需续费；在 FluxCloud 服务运营期间，套餐权益持续保留在您的账户上。",
+            "<strong>会员卡（期限卡）。</strong>按期一次性购买，每张卡的期限天数在定价页标注。会员卡手动续费，不会自动续费或自动扣款；续费同一张卡时从当前到期时间顺延。到期后自动回到永久套餐的权益；没有永久套餐则回到免费版。",
+            "<strong>无自动扣费。</strong>我们不提供订阅制，也没有自动续费；只有您自己发起的购买才会扣款。",
+            "<strong>支付方式与币种。</strong>微信支付以人民币结算；国际银行卡、Apple Pay、Google Pay 由支付服务商 Waffo 处理，以美元扣款；USDT 按结账页列出的网络支付。银行卡信息由支付服务商处理，FluxDown 不存储。",
+            "<strong>升级与优惠。</strong>升级时，当前套餐已付金额可按结账页所示抵扣。活动价与推荐码优惠仅在结账页显示时适用。",
+            "<strong>价格调整。</strong>我们可能调整今后购买的价格；已完成的订单不会被重新定价或再次扣款。",
             "开启「权益锁定」的套餐，已公示权益只增不减；是否锁定以套餐页标注为准。",
             "套餐限本人使用，转售、共享账号或滥用（含批量自动化下载）可限制或回收权益。",
           ],
         },
         {
+          id: "refunds",
+          title: "退款与取消",
+          body: "套餐与会员卡属于付款确认后即时开通的数字服务。以下规则同样适用于永久套餐与会员卡（含续费订单）：",
+          items: [
+            "<strong>7 天退款。</strong>任一订单在付款后 7 天内，可无理由申请全额退款。退款金额为该订单实际支付金额；退款完成后，撤销该订单开通的套餐或会员卡。",
+            "<strong>超过 7 天。</strong>付款满 7 天后订单不予退款，包括会员卡尚未使用的时长。",
+            "<strong>始终全额退款。</strong>重复扣款，以及付款后我们无法为您开通套餐的订单，任何时候都全额退款。",
+            "<strong>法定权利。</strong>本条款不限制您依适用法律享有的任何退款或撤销权利。",
+            "<strong>不适用情形。</strong>因违反本条款被限制的账户，其订单不适用 7 天退款。",
+            "<strong>取消。</strong>没有任何自动续费，因此无需取消订阅：会员卡到期即自然结束，除非您再次购买，否则不会再扣款。如需在 7 天内取消订单，请按下文申请退款。",
+            `<strong>申请方式。</strong>请使用账户邮箱发送邮件至 ${BILLING_MAIL}，注明订单号与退款原因。我们通常在 3 个工作日内回复。退款原路退回（USDT 订单退回您提供的同网络地址），视支付渠道一般 5–10 个工作日到账。`,
+            "<strong>账单争议。</strong>如认为扣款有误，请先联系我们，再向银行或发卡机构提出争议。已退款或被拒付的订单将撤销对应套餐。",
+          ],
+        },
+        {
           id: "changes",
           title: "条款变更",
-          body: "我们保留随时修改本条款的权利。更新后的条款将发布在本页面，并注明修订日期。在任何更改之后继续使用本服务即表示您接受新条款。",
+          body: "我们保留随时修改本条款的权利。更新后的条款将发布在本页面，并注明修订日期。在任何更改之后继续使用本服务即表示您接受新条款。条款变更不追溯适用于已完成的订单。",
           items: [],
         },
         {
           id: "contact",
           title: "联系我们",
-          body: '如果您对本服务条款有任何疑问，请通过我们网站的<a href="{feedback}">反馈页面</a>与我们联系。',
+          body: `账单与退款请发送邮件至 ${BILLING_MAIL}。对本服务条款的其他疑问，请通过我们网站的<a href="{feedback}">反馈页面</a>与我们联系。`,
           items: [],
         },
       ],

@@ -24,6 +24,7 @@ import type { RssSourceDto } from './rss';
 import type { SelectionRequestDto } from './selection';
 import type { TaskActivityDto, TaskDto, TaskRuntimeDto } from './task';
 import type { CloudNotifyStateDto, TaskNoticeDto } from './cloudNotify';
+import type { AssistantStateDto } from './assistant';
 import type { PluginViewFrameDto } from './pluginView';
 import type { WebhookDeliveryDto } from './webhook';
 import type { WsServerMsg } from './ws';
@@ -78,6 +79,8 @@ export interface AgentSnapshot {
   power: PowerStatusDto;
   /** 旧快照缺失时视为默认（上报关、无概览）。 */
   cloudNotify?: CloudNotifyStateDto;
+  /** AI 助手配置与进行中 / 最近结束的执行；旧快照缺失时视为空状态（`EMPTY_ASSISTANT_STATE`）。 */
+  assistant?: AssistantStateDto;
 }
 
 /** `system.snapshot` 主体（`role` 相邻标记，`snapshot` 为内容）。 */
@@ -163,7 +166,9 @@ export type AgentEvent =
   /** 外部来源恢复的已有任务 ID（插件页面脚本恢复；一次性通知，不进快照）。 */
   | { type: 'captureTasksResumed'; data: string[] }
   /** 云端推送状态整体替换。 */
-  | { type: 'cloudNotifyChanged'; data: CloudNotifyStateDto };
+  | { type: 'cloudNotifyChanged'; data: CloudNotifyStateDto }
+  /** AI 助手状态整体替换。 */
+  | { type: 'assistantChanged'; data: AssistantStateDto };
 
 /** `service.event` 事件主体（`service` + `event` 相邻标记）。 */
 export type ServiceEvent =

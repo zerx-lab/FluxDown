@@ -39,13 +39,33 @@ export function requestUrlOf(input: unknown, baseUrl: string): string {
 }
 
 /**
+ * 包装时取得的原生 `Function.prototype.bind`；页面已替换时为 null。
+ *
+ * 页面可能改写 `bind`：qBittorrent WebUI 加载的 MooTools 1.6 compat 先 `delete Function.prototype.bind`，
+ * 再装上旧签名 `bind(that, args)`（第二个参数转成数组、其余丢弃），`fetch.bind(this, url, init)` 就成了
+ * `fetch(url)`，POST 变成无 body 的 GET（#1148）。document_start 注入时页面脚本尚未运行，拿到的是原生实现；
+ * 扩展更新后补注入可能晚于页面脚本，此时识别为非原生并放弃。
+ */
+function nativeBindOf(): typeof Function.prototype.bind | null {
+  try {
+    const bind = Function.prototype.bind;
+    if (typeof bind !== "function") return null;
+    return /\{\s*\[native code\]\s*\}\s*$/.test(Function.prototype.toString.call(bind)) ? bind : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 包装 `originalFetch`：原样透传全部参数，只在旁路读取 URL / 响应。
  *
  * 原生 fetch 以绑定函数作为微任务回调发起，调用栈上没有本脚本的帧：页面自己被 CSP 拦下的请求
  * （connect-src 违规等）在控制台的来源不再是 page-hooks.js，Chrome 不会把它记进扩展错误列表。
  * 直接 `originalFetch.apply` 时栈顶是本包装函数，这些页面错误全都算到扩展头上。
+ * 绑定只用包装时取得的原生 `bind`；拿不到时退回闭包调用——参数正确优先于错误归属。
  */
 export function wrapFetch(originalFetch: typeof fetch, deps: FetchHookDeps): typeof fetch {
+  const nativeBind = nativeBindOf();
   return function (this: unknown, ...args: Parameters<typeof fetch>) {
     const sniff = safe(deps.sniffOn);
     const observe = sniff || safe(deps.mediaEventsOn);
@@ -59,7 +79,9 @@ export function wrapFetch(originalFetch: typeof fetch, deps: FetchHookDeps): typ
       }
     }
 
-    const start = originalFetch.bind(this, ...args) as () => Promise<Response>;
+    const start = (nativeBind
+      ? Reflect.apply(nativeBind, originalFetch, [this, ...args])
+      : () => Reflect.apply(originalFetch, this, args)) as () => Promise<Response>;
     const pending = Promise.resolve().then(start);
     if (!observe) return pending;
     return pending.then((response) => {

@@ -54,6 +54,8 @@ object HostMethod {
     const val daemonTaskSetBtLimits = "daemon.task.setBtLimits"
     /** 超级做种开关（`{taskId, enabled}`）：完成（做种）后才实际生效，可提前设置。 */
     const val daemonTaskSetSuperSeeding = "daemon.task.setSuperSeeding"
+    /** 添加 BT HTTP 源（移动端无入口，仅保持方法表一一对应）。 */
+    const val daemonTaskAddWebSeed = "daemon.task.addWebSeed"
     /** 立即向 tracker 重新汇报（`{taskId}`）；任务不在运行返回 `taskStateConflict`。移动端暂不消费。 */
     const val daemonTaskReannounce = "daemon.task.reannounce"
     /** 批量暂停 / 恢复（`{taskIds}`）：整批只推一次任务快照；未知 id 忽略，空列表为空操作。 */
@@ -97,8 +99,12 @@ object HostMethod {
     const val daemonSiteAuthMatch = "daemon.siteAuth.match"
     const val daemonRuntimeStats = "daemon.runtime.stats"
     const val daemonFsList = "daemon.fs.list"
+    const val daemonFsDefaultFileExists = "daemon.fs.defaultFileExists"
+    const val daemonNetInterfaces = "daemon.net.interfaces"
+    const val daemonNetMeasureRoutes = "daemon.net.measureRoutes"
     const val daemonRssListSources = "daemon.rss.listSources"
     const val daemonRssGetItems = "daemon.rss.getItems"
+    const val daemonRssGetImage = "daemon.rss.getImage"
     const val daemonRssCreateSource = "daemon.rss.createSource"
     const val daemonRssUpdateSource = "daemon.rss.updateSource"
     const val daemonRssDeleteSource = "daemon.rss.deleteSource"
@@ -226,6 +232,8 @@ object HostMethod {
     const val agentRemoteList = "agent.remote.list"
     const val agentRemoteDispatch = "agent.remote.dispatch"
     const val agentRemoteCommand = "agent.remote.command"
+    /** `RemoteCommandManyParams` → `RemoteCommandManyResult`：对多个远程任务执行同一动作（需 `agent.remoteBatch` 能力）。 */
+    const val agentRemoteCommandMany = "agent.remote.commandMany"
     /** 局域网直连（L1）：展示本机配对码并开始广播 → `LinkPairingCodeDto`。 */
     const val agentLinkPairingCode = "agent.link.pairingCode"
     /** 停止展示配对码 / 停止配对广播。 */
@@ -277,6 +285,12 @@ object HostMethod {
     const val agentPlatformAppIconImage = "agent.platform.appIconImage"
     /** 为桌面界面进程现有窗口补设应用图标；仅桌面，移动端不使用。 */
     const val agentPlatformSyncWindowIcons = "agent.platform.syncWindowIcons"
+    /** 确认 Windows 托盘下载提示；移动端不使用。 */
+    const val agentPlatformAckTrayDownloads = "agent.platform.ackTrayDownloads"
+    /** 本机浏览器扩展安装状态；仅桌面，移动端不使用。 */
+    const val agentPlatformBrowserExtensionStatus = "agent.platform.browserExtensionStatus"
+    /** 为本机浏览器安装 FluxDown 扩展；仅桌面，移动端不使用。 */
+    const val agentPlatformInstallBrowserExtension = "agent.platform.installBrowserExtension"
     /** 由 agent 在本机播放一次提示音偏好值；仅桌面，移动端不使用。 */
     const val agentSoundPreview = "agent.sound.preview"
     const val agentCaptureSubmit = "agent.capture.submit"
@@ -314,6 +328,21 @@ object HostMethod {
     const val agentCloudNotifyDeliveries = "agent.cloudNotify.deliveries"
     const val agentCloudNotifySendEmailCode = "agent.cloudNotify.sendEmailCode"
     const val agentCloudNotifyVerifyEmail = "agent.cloudNotify.verifyEmail"
+    const val agentAssistantGet = "agent.assistant.get"
+    const val agentAssistantRefresh = "agent.assistant.refresh"
+    const val agentAssistantSessions = "agent.assistant.sessions"
+    const val agentAssistantSession = "agent.assistant.session"
+    const val agentAssistantDeleteSession = "agent.assistant.deleteSession"
+    const val agentAssistantClearSessions = "agent.assistant.clearSessions"
+    const val agentAssistantAsk = "agent.assistant.ask"
+    const val agentAssistantCancel = "agent.assistant.cancel"
+    const val agentAssistantConfirm = "agent.assistant.confirm"
+    const val agentAssistantRate = "agent.assistant.rate"
+    const val agentAssistantConfirmIssue = "agent.assistant.confirmIssue"
+    const val agentAssistantDiscardIssue = "agent.assistant.discardIssue"
+    const val agentAssistantRenameSession = "agent.assistant.renameSession"
+    const val agentAssistantExportSession = "agent.assistant.exportSession"
+    const val agentAssistantAttachment = "agent.assistant.attachment"
     const val serviceEvent = "service.event"
 }
 
@@ -333,6 +362,8 @@ object HostCapability {
     const val agentAuth = "agent.auth"
     const val agentSync = "agent.sync"
     const val agentRemoteTasks = "agent.remoteTasks"
+    /** 主机支持 `agent.remote.commandMany` 与 `remoteTaskGone` 错误原因。 */
+    const val agentRemoteBatch = "agent.remoteBatch"
     const val agentBilling = "agent.billing"
     const val agentReferrals = "agent.referrals"
     const val agentDeviceLink = "agent.deviceLink"

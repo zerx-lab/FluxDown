@@ -4,7 +4,7 @@
 //! （[`DAEMON_ENDPOINT_FILE`]，默认端口被占用 / 落在系统保留区间时为系统分配端口），每次连接前
 //! 重读。显式 `FLUXDOWN_DAEMON_URL` 与嵌入式宿主报告的地址是固定端点，不读该文件。
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,10 +18,10 @@ use fluxdown_protocol::handshake::{
 use fluxdown_protocol::local_service::{DAEMON_ENDPOINT_FILE, LocalEndpoint};
 use fluxdown_protocol::method;
 use fluxdown_protocol::{
-    ApplicationErrorCode, DaemonEvent, DaemonSnapshot, EventFrame, FrameVerdict,
-    METHOD_NOT_FOUND_CODE, RequestId, RpcErrorData, RpcErrorObject, RpcNotification, RpcRequest,
-    RpcResponse, ServiceEvent, ServiceHello, ServiceRole, Snapshot, SnapshotBody, TablePage,
-    TableSync, WsServerMsg, judge_frame,
+    ApplicationErrorCode, CancelRequestParams, DaemonEvent, DaemonSnapshot, EventFrame,
+    FrameVerdict, METHOD_NOT_FOUND_CODE, RequestId, RpcErrorData, RpcErrorObject, RpcNotification,
+    RpcRequest, RpcResponse, ServiceEvent, ServiceHello, ServiceRole, Snapshot, SnapshotBody,
+    TablePage, TableSync, WsServerMsg, judge_frame,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
@@ -1208,6 +1208,9 @@ struct Link {
     /// 待处理的事件帧（握手窗口内缓冲的、表重载期间到达的）；先于套接字里的新帧处理。
     backlog: VecDeque<EventFrame>,
     pending: HashMap<i64, oneshot::Sender<Result<Value, RpcErrorObject>>>,
+    /// 在途的可中止慢调用（`CANCELLABLE_DAEMON_METHODS`）：调用方放弃等待（丢弃接收端）时向
+    /// daemon 发 `system.cancel` 中止它，而不是让测速等只读探测跑完。
+    slow: HashSet<i64>,
     next_id: i64,
 }
 
@@ -1225,6 +1228,7 @@ async fn run_connected(
             .collect(),
         cursor: snapshot_cursor,
         pending: HashMap::new(),
+        slow: HashSet::new(),
         next_id: 10,
     };
     let outcome = drive_link(&mut socket, commands, events, &mut link).await;
@@ -1247,6 +1251,8 @@ async fn drive_link(
     events: &mpsc::Sender<DaemonClientEvent>,
     link: &mut Link,
 ) -> Result<(), ()> {
+    let mut sweep = tokio::time::interval(SLOW_CALL_SWEEP);
+    sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         while let Some(frame) = link.backlog.pop_front() {
             handle_frame(socket, link, events, frame).await?;
@@ -1256,6 +1262,9 @@ async fn drive_link(
                 let Some(command) = command else { return Ok(()); };
                 let id = link.next_id;
                 link.next_id = link.next_id.saturating_add(1);
+                if method::is_cancellable_daemon_method(&command.method) {
+                    link.slow.insert(id);
+                }
                 let request = RpcRequest::new(RequestId::Integer(id), command.method, command.params);
                 let text = serde_json::to_string(&request).map_err(|_| ())?;
                 link.pending.insert(id, command.ack);
@@ -1270,8 +1279,44 @@ async fn drive_link(
                     Incoming::Response(response) => route_response(&mut link.pending, response),
                 }
             }
+            _ = sweep.tick(), if !link.slow.is_empty() => cancel_abandoned_slow_calls(socket, link).await?,
         }
     }
+}
+
+/// 放弃检查的间隔：只在有可中止慢调用在途时计时，空闲时不唤醒。
+const SLOW_CALL_SWEEP: Duration = Duration::from_millis(500);
+
+/// 调用方已丢弃接收端的在途可中止调用：从待应答表移除并请 daemon 中止（`system.cancel`）。
+/// 旧 daemon 不认识该方法时回错，取消请求不登记待应答，回包按未知 ID 忽略。
+async fn cancel_abandoned_slow_calls(socket: &mut Socket, link: &mut Link) -> Result<(), ()> {
+    let abandoned: Vec<i64> = link
+        .slow
+        .iter()
+        .copied()
+        .filter(|id| link.pending.get(id).is_none_or(oneshot::Sender::is_closed))
+        .collect();
+    for target in abandoned {
+        link.slow.remove(&target);
+        // 已应答的调用只需从慢调用集合里清掉。
+        if link.pending.remove(&target).is_none() {
+            continue;
+        }
+        let id = link.next_id;
+        link.next_id = link.next_id.saturating_add(1);
+        let params = serde_json::to_value(CancelRequestParams {
+            id: RequestId::Integer(target),
+        })
+        .map_err(|_| ())?;
+        let request = RpcRequest::new(RequestId::Integer(id), method::SYSTEM_CANCEL, Some(params));
+        let text = serde_json::to_string(&request).map_err(|_| ())?;
+        if let Err(error) = socket.send(Message::Text(text.into())).await {
+            tracing::warn!(%error, "daemon link dropped: cancel send failed");
+            return Err(());
+        }
+        tracing::debug!(target, "abandoned slow daemon call cancelled");
+    }
+    Ok(())
 }
 
 /// 套接字上一条已解码的入站消息。
@@ -2424,6 +2469,88 @@ mod tests {
         .expect("daemon error forwarding");
     }
 
+    /// 调用方放弃等待可中止的慢调用（AI 测速被停止）时，agent 必须请 daemon 中止它，
+    /// 否则测速会在后台继续消耗流量。
+    #[tokio::test]
+    async fn abandoned_cancellable_call_is_cancelled_on_the_daemon() {
+        use fluxdown_protocol::{
+            CancelRequestParams, ServiceHello, ServiceRole, Snapshot, SnapshotBody,
+        };
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let (listener, url) = loopback_listener().await;
+            let server = tokio::spawn(async move {
+                let (tcp, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                daemon_handshake(&mut ws, TOKEN).await;
+                let hello = read_request(&mut ws).await;
+                let reply =
+                    ServiceHello::new(ServiceRole::Daemon, "daemon", "test", "instance", vec![]);
+                send_response(
+                    &mut ws,
+                    RpcResponse::success(hello.id, serde_json::to_value(reply).unwrap()),
+                )
+                .await;
+                let snapshot_request = read_request(&mut ws).await;
+                let snapshot = Snapshot {
+                    epoch: "e".into(),
+                    sequence: 1,
+                    body: SnapshotBody::Daemon(Box::default()),
+                };
+                send_response(
+                    &mut ws,
+                    RpcResponse::success(
+                        snapshot_request.id,
+                        serde_json::to_value(snapshot).unwrap(),
+                    ),
+                )
+                .await;
+                let measure = read_request(&mut ws).await;
+                assert_eq!(measure.method, method::DAEMON_NET_MEASURE_ROUTES);
+                let cancel = read_request(&mut ws).await;
+                assert_eq!(cancel.method, method::SYSTEM_CANCEL);
+                let params: CancelRequestParams =
+                    serde_json::from_value(cancel.params.expect("cancel params")).unwrap();
+                assert_eq!(params.id, measure.id);
+            });
+            let config = super::DaemonClientConfig::new(url.clone(), TOKEN);
+            let (socket, snapshot, buffered) = super::connect(&config, &fixed(&url), true)
+                .await
+                .unwrap_or_else(|_| panic!("connect"));
+            let (tx, _rx) = tokio::sync::mpsc::channel(16);
+            let (command_tx, mut commands) = tokio::sync::mpsc::channel(1);
+            let runner = tokio::spawn(async move {
+                super::run_connected(
+                    socket,
+                    &mut commands,
+                    &tx,
+                    (snapshot.epoch, snapshot.sequence),
+                    buffered,
+                )
+                .await
+            });
+            let (ack, response) = tokio::sync::oneshot::channel();
+            command_tx
+                .send(super::ClientCommand {
+                    method: method::DAEMON_NET_MEASURE_ROUTES.to_owned(),
+                    params: Some(json!({})),
+                    ack,
+                })
+                .await
+                .unwrap();
+            drop(response);
+            server.await.unwrap();
+            // 命令通道保持打开：链路只能因 daemon 断开而结束（关闭通道会让循环走正常收尾分支）。
+            runner
+                .await
+                .expect("join daemon connection")
+                .expect_err("daemon closed the link after the cancel");
+            drop(command_tx);
+        })
+        .await
+        .expect("abandoned call cancellation");
+    }
+
     /// 快照随任务数增长且单帧发出；超过 tungstenite 默认 16 MiB 帧上限时连接仍须建立
     /// （现网 38 MB 快照即因此在旧客户端永远重连失败）。
     #[tokio::test]
@@ -2872,6 +2999,7 @@ mod tests {
             dir.join(fluxdown_protocol::local_service::DAEMON_ENDPOINT_FILE),
             serde_json::to_vec(&fluxdown_protocol::local_service::LocalEndpoint {
                 rpc_url: rpc_url.to_owned(),
+                pipe: None,
             })
             .expect("endpoint json"),
         )

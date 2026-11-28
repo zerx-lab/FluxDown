@@ -3,8 +3,14 @@ description: GPUI 下载页纯模型（新建/菜单/排序/任务组/来源构�
 condition: '[\s\S]'
 scope: "tool:edit, tool:write"
 globs:
-  - '**/crates/downloads/src/model/{new_download,aria2c,save_dir_history,speed_limit_recent,dispatch,mod,view_prefs,row_order,group_tree,directory_tree,source_composition,devices,file_rescan,bt_trackers,file_hash}.rs'
-  - '**/crates/downloads/src/components/{task_table,task_table_groups,task_table_directories}.rs'
+  - '**/crates/downloads/src/model/{new_download,url_range,aria2c,save_dir_history,speed_limit_recent,dispatch,mod,view_prefs,row_order,group_tree,directory_tree,series_title,source_composition,devices,file_rescan,bt_trackers,file_hash}.rs'
+  - '**/crates/downloads/src/components/{task_table,task_table_groups,task_table_directories,selection_bar}.rs'
+  - '**/crates/downloads/src/model/manifest.rs'
+  - '**/mobile/Android/app/src/main/java/com/fluxdown/app/ui/TaskInfoExport.kt'
+  - '**/mobile/Android/app/src/main/java/com/fluxdown/app/feature/newtask/LinkParser.kt'
+  - '**/mobile/FluxDown/FluxDown/Features/Downloads/DownloadsListScreen.swift'
+  - '**/mobile/FluxDown/FluxDown/Features/NewTask/LinkParser.swift'
+  - '**/mobile/FluxDown/FluxKit/Sources/FluxDomain/Protocol/Groups.swift'
   - '**/crates/downloads/src/pages/{task_edit,task_verify,task_detail,task_detail_ed2k}.rs'
   - '**/crates/downloads/tests/fixtures/**'
   - '**/web/src/pages/downloads/**'
@@ -43,7 +49,11 @@ interruptMode: never
 
 ## `crates/downloads/src/model/new_download.rs::parse_entries` / `parse_input` + `model/aria2c.rs`（aria2c 命令切词 / 续行合并 / 镜像 URI 只取首个、`-Z` 拆分 / 带值选项表 / 头部回填 `plan_field_fill`）
 
-→ `web/src/pages/downloads/dialogs/model.ts::parseEntries` + `aria2c.ts`（`parseCommand` / `joinContinuations` / `planFieldFill`）逐条对齐，`aria2c.test.ts` 覆盖同组行为；TXT 导入两端都用「原文保留、按 URL 去重追加」（`append_entries` ↔ `appendEntries`）
+→ `web/src/pages/downloads/dialogs/model.ts::parseEntries` + `aria2c.ts`（`parseCommand` / `joinContinuations` / `planFieldFill`）逐条对齐，`aria2c.test.ts` 覆盖同组行为；TXT 导入两端都用「原文保留、按 URL 去重追加」（`append_entries` ↔ `appendLiteralEntries`）
+
+## `crates/downloads/src/model/new_download.rs::parse_manual_input` + `model/url_range.rs`（手写文件名范围）
+
+→ Web `dialogs/model.ts::parseManualInput`、Android `feature/newtask/LinkParser.kt::parseManualEntries`：只展开手工 HTTP(S) 链接文件名中的单个 `[起-止]`，保留起点位宽和原查询串；多行合计最多生成 1000 条，超限整批不提交。捕获、TXT 和命令不展开；多项不复制单文件名或校验和。预览取实际生成的首尾项，不取混排中的普通链接。
 
 ## `crates/downloads/src/components/task_table.rs::TaskMenuFacts::{can_rename, can_change_url, can_change_segments, can_verify_integrity}`（`task_menu_facts_for` 为右键 / 应用菜单与详情常规页按钮共用事实源；应用菜单项不置灰，`on_rename_selected` 等入口按同一事实源再判）+ `pages/task_edit.rs`（`open_change_url_dialog` / `open_change_segments_dialog`，下载页与 `task_detail.rs` 常规页共用；失败任务换链 / 改线程数成功后串行 Resume）+ `pages/task_verify.rs`（BT 完整性校验结果通知：损坏文件列前 3 个、其余折叠计数，`conflict` = 已在校验）
 
@@ -52,6 +62,10 @@ interruptMode: never
 ## `crates/downloads/src/components/task_table.rs` 的 BT 选片菜单纯模型（`piece_picking_*`）（「选片方式」`btPiecePicking` 分组，用户 2026-11-06 决定：下载顺序二选一 = 单选「最稀有优先」`btRarestFirst`（`btSequential=false`，默认）/「按顺序下载」，全部所选一致才点亮对应项、混选两项都不点亮，点选逐任务只对状态不同的任务发 `sequential`；「先下载首尾文件块」是可叠加的独立复选框，全部已开才打勾，点击设为 `!全部已开` 只发 `firstLastPiecesFirst`。所选全部为本机未完成 BT 任务才显示；位于单任务编辑项之后、「重新下载」之前；能嵌套的端用子菜单，GPUI 表格菜单 / Android `FluxMenu` 用不可点击标题 + 子行；单选画空圆 / 圆点、复选画空框 / 勾选框，两态都画）
 
 → Web `web/src/pages/downloads/model/taskEdit.ts::{canSetPiecePicking, pieceOrder, pieceOrderTargets, pieceSequentialParams, pieceOptionAllOn, pieceEndsParams}` + `table/menus.ts` + `model/actions.ts::{setPieceOrder, setFirstLastPieces}`；Android `actions/TaskActions.kt::piecePickingMenu`（单任务菜单 + 多选长按菜单）；iOS `FluxDomain/Protocol/Tasks.swift::PiecePickingMenu` + `Actions/TaskMenu.swift` / `Features/Downloads/DownloadsListScreen.swift`（只在 `FULL_FLAVOR` 编入）。GPUI `is_local` 排除的是云端远程任务行；移动端没有该行类型，**不用** `isLocalHost`（那只表示文件在这台手机上，会错藏正在控制的远端 PC）。移动端按 URL 小写判断 `magnet:` / `torrent-file://`，未完成才显示；批量切换逐任务捕获错误、全部尝试后再 toast 一次。各端测试覆盖同一组显示 / 顺序 / 勾选用例
+
+## `crates/downloads/src/components/task_table.rs::{ShareLink, TaskMenuFacts::can_copy_url, copy_url_visible}` + `model/mod.rs::DownloadTaskView::copyable_share_url`（「复制下载地址」：`torrent-file://` 哨兵无链接不显示、复制时跳过；单选本机 BT 的磁力原文交给「复制磁力链接」不重复显示；多选有一项可复制即显示；详情常规页按钮只藏哨兵）
+
+→ Web `web/src/pages/downloads/model/task.ts::copyableShareUrl` + `model/actions.ts::{canCopyUrls, copyUrls}` + `table/menus.ts` / `detail/GeneralTab.tsx`（`torrentShare.test.ts` 覆盖同组用例）；移动端没有「复制磁力链接」，不镜像
 
 ## `crates/downloads/src/model/dispatch.rs::remote_action_applies`（远程命令适用状态）
 
@@ -72,6 +86,10 @@ interruptMode: never
 ## `crates/downloads/src/model/directory_tree.rs`（相对默认下载根的嵌套目录分组、单分支压缩、后代计数与稳定折叠键）
 
 → Web `web/src/pages/downloads/model/directoryTree.ts`，共用 `crates/downloads/tests/fixtures/directory_tree_cases.json`。先筛选再建树，非根目录无直属任务且只有一个子目录才压缩，已折叠节点不跨过；任务组按组根整体纳入，云端按设备隔离，根外 / 未知目录分别展示。GPUI `task_table_directories.rs` / Web `groupRows.ts` 组合目录与任务组缩进；保存目录字段变化须使 `model/store.rs::same_view_fields` / Web `rowEngine.ts` 的视图失效，默认目录配置与 runtime fallback 变化同样重算。移动端尚无该分组入口，不镜像。
+
+## `crates/downloads/src/model/series_title.rs`（剧集名称提取，桌面端分组与建议下载子目录共用）
+
+→ Web `web/src/pages/downloads/model/groupRows.ts::contentBucket` 保持同一规则；两端共用 `crates/downloads/tests/fixtures/series_title_cases.json`。分组按设备隔离，不展开已有任务组来重新归类；移动端无该分组入口。
 
 ## `crates/downloads/src/components/task_table.rs` 宽松密度列表视图（`relaxed_meta` 副标题；宽松不合并列、状态列同舒适，行高 = max(64, 舒适)）
 
@@ -100,6 +118,10 @@ interruptMode: never
 ## `crates/downloads/src/pages/task_detail_ed2k.rs`（详情「来源 / 网络」页签的纯函数：源状态 → 文案、冷却 / 下次找源是否在未来、「同时连接来源数」选项与当前值归一、LowID 源地址展示）
 
 → `web/src/pages/downloads/detail/ed2kStatus.ts` 逐条对齐（两端单测覆盖同一组边界：segments 为 0 / 9 / 负数、`retryAt` 已过期、`queueRank` 缺省、LowID 源无 `addr`）；HighID / LowID 与 UPnP 文案映射在 Web 另由设置页共用（`web/src/lib/ed2kNetwork.ts`）。两端都不重排 `peers`（服务端已按活跃度排序），渲染封顶 200 行；UPnP / Kad 开关写同步键 `ed2k.enable_upnp` / `ed2k.enable_kad`，「同时连接来源数」写 `daemon.task.setSegments`（当前值取 `Ed2kStatusDto.segments`，不是任务行）
+
+## 任务信息导出 TXT / TSV（`crates/downloads/src/components/selection_bar.rs::{export_task_info_text, task_info_text, batch_link_info_text}` + `model/manifest.rs::selected_export_rows`）
+
+→ Web `web/src/pages/downloads/model/actions.ts::taskInfoText`、`dialogs/model.ts::batchExportRow`、`dialogs/manifest.ts::manifestExportRows`；Android `ui/TaskInfoExport.kt::taskInfoText`、`feature/newtask/LinkParser.kt::{batchExportName, batchExportSize}`；iOS `Features/Downloads/DownloadsListScreen.swift::TaskInfoDocument`、`Features/NewTask/LinkParser.swift::{batchExportName, batchExportSize}`、`FluxDomain/Protocol/Groups.swift::selectedExportRows`。四端输出逐字一致：表头跟随界面语言，取共享键 `taskInfoColumnName` / `taskInfoColumnUrl` / `taskInfoColumnSize`，三格同样转义（不加公式前缀）后以制表符连接（GPUI `task_info_header`；纯文本函数由调用方传入表头，测试传英文 `Name\tURL\tSize (bytes)`）；单元格先转义 `\` 再转义制表符 / `\r` / `\n`；行间 `\n`、末尾无换行；本机任务链接取 `origin_url`、空则回退 `url`，`torrent-file://` 哨兵输出空字段；大小 ≤0 留空，但新建批次里有效的零字节 eD2k 链接写 `0`；新建批次名称先取 `out=`、再取链接自带名（HTTP/FTP 末段、magnet `dn`、eD2k 文件名）；解析清单只导勾选项，名称为 `path/name`，大小取所选规格。导出动作图标统一为文本文件（GPUI / Android `FileText`、Web lucide `FileText`、iOS `doc.text`），不用下载箭头。四端测试同改同跑：GPUI `selection_bar.rs` 单测 / `model/manifest_tests.rs`，Web `torrentShare.test.ts` / `dialogs/manifest.test.ts`，Android `TaskInfoExportTest.kt`，iOS `DownloadsTests.swift` / `GroupsProtocolTests.swift`
 
 ## 扩展 → Android App 的外部唤起载荷（`fluxDown/utils/android-intent.ts`：包名 `ANDROID_PACKAGE`、extra 键 `ANDROID_EXTRA`、Intent URI 编码；`fluxdown://download?url=&filename=&cookies=&referrer=&headers=` 协议参数同理）
 

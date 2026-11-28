@@ -10,6 +10,7 @@ use fluxdown_protocol::{
     CloudOrder, CloudPlan, CloudProfile, CloudReferralValidateResult, CloudSubscription,
     RpcErrorData, method,
 };
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     ButtonVariant, ControlExt as _, FluxIcon, QrPalette, button, caption_number, card,
     dialog_scroll_body, dialog_title, icon_button, loading_button, qr_image, tabular_numbers,
@@ -25,7 +26,6 @@ use gpui::{
 use gpui_component::{
     Icon, Sizable as _, WindowExt as _, h_flex,
     input::{Input, InputEvent, InputState},
-    notification::Notification,
     skeleton::Skeleton,
     spinner::Spinner,
     v_flex,
@@ -124,7 +124,7 @@ struct PlanPurchaseDialog {
     _input_subscription: Subscription,
 }
 
-pub(crate) fn open(host: &Entity<AccountHost>, window: &mut Window, cx: &mut App) {
+pub fn open(host: &Entity<AccountHost>, window: &mut Window, cx: &mut App) {
     if host.read(cx).controller.session().is_none() {
         return;
     }
@@ -331,7 +331,7 @@ impl PlanPurchaseDialog {
                         .is_some_and(CardState::selectable)
                 });
                 if !still_available {
-                    this.selected = None;
+                    this.selected = this.first_selectable(cx);
                 }
                 cx.notify();
             }) else {
@@ -345,6 +345,19 @@ impl PlanPurchaseDialog {
     fn card_state_of(&self, code: &str, cx: &App) -> Option<CardState> {
         let plan = self.plans.iter().find(|plan| plan.code == code)?;
         Some(self.state_of_plan(plan, cx))
+    }
+
+    /// 按展示顺序（买断在前、期卡在后）第一个可选套餐：打开对话框即默认选中它。
+    fn first_selectable(&self, cx: &App) -> Option<String> {
+        let visible = purchasable_plans(&self.plans);
+        let (periodic, lifetime): (Vec<&CloudPlan>, Vec<&CloudPlan>) = visible
+            .into_iter()
+            .partition(|plan| is_subscription_plan(plan));
+        lifetime
+            .into_iter()
+            .chain(periodic)
+            .find(|plan| self.state_of_plan(plan, cx).selectable())
+            .map(|plan| plan.code.clone())
     }
 
     fn select(&mut self, code: &str, cx: &mut Context<Self>) {
@@ -597,7 +610,7 @@ impl PlanPurchaseDialog {
             return;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(paying.order.order_no.clone()));
-        window.push_notification(Notification::success(self.text("apiServiceCopied", cx)), cx);
+        window.push_notification(toast::success(self.text("apiServiceCopied", cx)), cx);
     }
 }
 

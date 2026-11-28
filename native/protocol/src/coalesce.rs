@@ -21,6 +21,8 @@ enum Key {
     Segments(String),
     RuntimeStats,
     Queue,
+    /// agent 的 AI 助手状态：`AssistantChanged` 每帧都是完整投影，后帧完整取代前帧。
+    Assistant,
 }
 
 /// 一帧对合并的影响。
@@ -154,7 +156,7 @@ impl FrameQueue {
 fn key_task(key: &Key) -> Option<&str> {
     match key {
         Key::Progress(task) | Key::Runtime(task) | Key::Segments(task) => Some(task),
-        Key::RuntimeStats | Key::Queue => None,
+        Key::RuntimeStats | Key::Queue | Key::Assistant => None,
     }
 }
 
@@ -200,6 +202,7 @@ fn touch(frame: &EventFrame) -> Touch<'_> {
             | AgentEvent::CaptureTasksStarted(_)
             | AgentEvent::CaptureTasksResumed(_)
             | AgentEvent::SessionRevoked(_) => Touch::None,
+            AgentEvent::AssistantChanged(_) => Touch::Keyed(Key::Assistant),
         },
     }
 }
@@ -305,6 +308,13 @@ fn engine_touch(message: &WsServerMsg) -> Touch<'_> {
 /// 把同一实体的前帧 `earlier` 并入后帧 `later`（原地改写后帧）；返回 `true` 表示后帧已
 /// 完整代表二者，前帧可丢弃——结果与先后应用二者等价。返回 `false` 时后帧未被改动。
 fn merge(earlier: &EventFrame, later: &mut EventFrame) -> bool {
+    if let (
+        ServiceEvent::Agent(AgentEvent::AssistantChanged(_)),
+        ServiceEvent::Agent(AgentEvent::AssistantChanged(_)),
+    ) = (&earlier.event, &later.event)
+    {
+        return true;
+    }
     let (Some(previous), Some(next)) = (daemon_event(earlier), daemon_event_mut(later)) else {
         return false;
     };
@@ -655,5 +665,34 @@ mod tests {
         assert_eq!(judge_frame("e", 5, &at(9, Some(2))), FrameVerdict::Accept);
         assert_eq!(judge_frame("e", 5, &at(9, Some(6))), FrameVerdict::Resync);
         assert_eq!(judge_frame("f", 5, &at(6, None)), FrameVerdict::Resync);
+    }
+
+    #[test]
+    fn assistant_state_frames_collapse_to_the_latest() {
+        let assistant = |sequence, now| EventFrame {
+            epoch: "e".to_owned(),
+            sequence,
+            previous: None,
+            event: ServiceEvent::Agent(AgentEvent::AssistantChanged(crate::AssistantStateDto {
+                visible: true,
+                now_unix_ms: now,
+                ..Default::default()
+            })),
+        };
+        let mut queue = FrameQueue::new();
+        queue.push(assistant(1, 1));
+        queue.push(frame(2, DaemonEvent::WebhooksCleared));
+        queue.push(assistant(3, 2));
+        queue.push(assistant(4, 3));
+        let sent = drain(&mut queue);
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0].sequence, 2);
+        assert_eq!(sent[1].sequence, 4);
+        assert_eq!(sent[1].previous, Some(2));
+        let ServiceEvent::Agent(AgentEvent::AssistantChanged(state)) = &sent[1].event else {
+            panic!("assistant frame expected");
+        };
+        assert_eq!(state.now_unix_ms, 3);
+        assert_eq!(judge_frame("e", 0, &sent[0]), FrameVerdict::Accept);
     }
 }

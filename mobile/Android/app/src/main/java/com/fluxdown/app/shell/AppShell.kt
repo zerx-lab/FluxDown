@@ -53,6 +53,7 @@ import androidx.compose.ui.res.stringResource
 import com.fluxdown.app.R
 import com.fluxdown.app.actions.LocalTaskActions
 import com.fluxdown.app.actions.TaskActions
+import com.fluxdown.app.diag.AppDiagnostics
 import com.fluxdown.app.feature.devices.DevicesScreen
 import com.fluxdown.app.feature.devices.AddHostSheet
 import com.fluxdown.app.feature.devices.AddDeviceSheet
@@ -117,6 +118,7 @@ import com.fluxdown.fluxui.material.fluxBackdropSource
 import com.fluxdown.fluxui.overlay.FluxOverlayHost
 import com.fluxdown.fluxui.overlay.FluxPortalHost
 import com.fluxdown.fluxui.overlay.FluxPortalState
+import com.fluxdown.fluxui.overlay.FluxToastKind
 import com.fluxdown.fluxui.overlay.LocalFluxPortal
 import com.fluxdown.fluxui.overlay.LocalFluxOverlays
 import com.fluxdown.fluxui.overlay.LocalSwipeRevealCoordinator
@@ -141,6 +143,15 @@ fun AppShell() {
     val context = LocalContext.current
     val backdrop = remember { FluxBackdrop() }
     val overlays = rememberFluxOverlayState()
+    LaunchedEffect(container, overlays) {
+        container.hostSelection.restoreLastHost()?.let { name ->
+            val boundaries = android.icu.text.BreakIterator.getCharacterInstance()
+            boundaries.setText(name)
+            val end = boundaries.next(20)
+            val label = if (end in 0 until name.length) name.substring(0, end) + "…" else name
+            overlays.toast(context.str(R.string.hostRestoreFailed, "name" to label), FluxToastKind.Warn)
+        }
+    }
     val swipe = rememberSwipeRevealCoordinator()
     val scope = rememberCoroutineScope()
     val haptics = FluxTheme.haptics
@@ -171,6 +182,8 @@ fun AppShell() {
         // 仍在等待的 fileExists 询问：回到前台重新弹出（含点通知进入）
         nav.reopenFileConflicts()
     }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { AppDiagnostics.refreshSharedLogStatus() }
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) { AppDiagnostics.publishSharedLogs() }
     // 本机有活跃 / 排队任务 → 前台服务（dataSync）；首次下载时请求通知权限
     DownloadServiceEffect()
     val portal = remember { FluxPortalState() }

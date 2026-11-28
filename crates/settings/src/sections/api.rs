@@ -1,6 +1,7 @@
 //! API 服务：本机网关的功能开关、端口、访问令牌与 LAN 暴露。
 
 use fluxdown_protocol::GatewayPatchParams;
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     ButtonVariant, ControlExt as _, FluxIcon, button, icon_button, loading_icon_button,
     tooltip_view,
@@ -13,7 +14,6 @@ use gpui::{
 use gpui_component::{
     Icon, WindowExt as _, h_flex,
     input::{Input, InputEvent, InputState},
-    notification::Notification,
 };
 
 use super::SectionContext;
@@ -173,14 +173,14 @@ fn port_field(ctx: &SectionContext) -> Control {
                             }
                             let text = input.read(cx).value();
                             let Ok(port) = text.trim().parse::<u16>() else {
-                                window.push_notification(Notification::error(invalid.clone()), cx);
+                                window.push_notification(toast::error(invalid.clone()), cx);
                                 input.update(cx, |input, cx| {
                                     input.set_value(slot.last_synced.clone(), window, cx);
                                 });
                                 return;
                             };
                             if port < 1024 {
-                                window.push_notification(Notification::error(invalid.clone()), cx);
+                                window.push_notification(toast::error(invalid.clone()), cx);
                                 input.update(cx, |input, cx| {
                                     input.set_value(slot.last_synced.clone(), window, cx);
                                 });
@@ -252,10 +252,10 @@ fn userscript_field(ctx: &SectionContext) -> Control {
             move |_, window, cx| match userscript::generate(port, &token) {
                 Ok(script) => {
                     cx.write_to_clipboard(ClipboardItem::new_string(script));
-                    window.push_notification(Notification::success(copied.clone()), cx);
+                    window.push_notification(toast::success(copied.clone()), cx);
                 }
                 Err(error) => {
-                    window.push_notification(Notification::error(error.to_string()), cx);
+                    window.push_notification(toast::error(error.to_string()), cx);
                 }
             },
         )

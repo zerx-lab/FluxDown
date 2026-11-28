@@ -103,6 +103,9 @@
 @utility min-w-control {
   min-width: var(--fx-density-control);
 }
+@utility h-toolbar-button {
+  height: var(--fx-density-toolbar-button);
+}
 @utility min-h-nav-row {
   min-height: var(--fx-density-nav-row);
 }
@@ -170,6 +173,33 @@
 }
 @utility pr-safe {
   padding-right: env(safe-area-inset-right, 0px);
+}
+
+/* 只有纵向 grow 根 stack 才标记 data-fill-view；普通插件视图保留宿主原来的滚动方式。 */
+@layer utilities {
+  .view-viewport:has([data-fill-view]) {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .plugin-view-host:has(> [data-fill-view]) {
+    flex: 1;
+    overflow: auto;
+  }
+  /* 桌面弹窗原本只有 max-height；给弹性视图确定高度，仍由弹窗自己的上限裁定。 */
+  .view-dialog:has([data-fill-view]) {
+    height: 100dvh;
+  }
+  .view-scroll-fill {
+    flex: 1 1 0%;
+  }
+  /* 内容按自然高度排布；否则带 overflow 的列表项可以被压扁而不产生滚动。 */
+  [data-fill-view] > .view-scroll-fill {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-auto-rows: max-content;
+    align-content: start;
+  }
 }
 
 /* MiSans（复用桌面端字体资源，assets/fonts → web/public/fonts）；缺失时回退系统字体。 */
@@ -360,6 +390,29 @@
 }
 @utility animate-fx-icon-pop {
   animation: fx-icon-pop 480ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+/* AI 助手停止按钮运行光环：两道向外扩散的圆环 + 一圈旋转弧线（与 GPUI 一致）。减弱动效下圆环保持隐藏，弧线静止。 */
+@keyframes fx-halo-ring {
+  from {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  to {
+    transform: scale(1.7);
+    opacity: 0;
+  }
+}
+@utility animate-fx-halo-ring {
+  opacity: 0;
+  animation: fx-halo-ring 1.8s ease-out infinite;
+}
+@keyframes fx-halo-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@utility animate-fx-halo-spin {
+  animation: fx-halo-spin 0.9s linear infinite;
 }
 /*
  * 减弱动效：按类名子串统一关掉，含 `data-[state=closed]:` 这类变体生成的类名

@@ -15,6 +15,11 @@ actions!(
         TogglePauseSelected,
         DeleteSelected,
         DeleteSelectedWithFiles,
+        ClearSelectedTaskFile,
+        /// 清理选中的无效任务（失败或文件已丢失；右键「清理无效任务」）。
+        CleanStaleSelected,
+        /// 清理选中的暂停 / 失败本机任务及其残片（右键「清理所选的暂停或失败任务」）。
+        CleanUnfinishedSelected,
         SelectAllTasks,
         /// 以当前选区进入显式多选模式（右键「选择」）。
         EnterMultiSelect,
@@ -54,6 +59,7 @@ actions!(
         MoveStorageSelected,
         /// 打开选中 BT 任务的任务级限速对话框（右键「任务限速…」）。
         TaskLimitsSelected,
+        AddWebSeedSelected,
         /// 切换选中 BT 任务的超级做种（右键勾选）。
         ToggleSuperSeedingSelected,
         RedownloadSelected,

@@ -4,6 +4,9 @@
 
 pub mod agent;
 pub mod app_icon;
+pub mod aria2_options;
+pub mod assistant;
+pub mod browser_extension;
 pub mod capture_link;
 pub mod cloud_notify;
 pub mod coalesce;
@@ -15,6 +18,7 @@ pub mod event;
 pub mod handshake;
 pub mod local_service;
 pub mod method;
+pub mod net_diag;
 pub mod plugin_i18n;
 pub mod plugin_view;
 pub mod proxy_rules;
@@ -29,6 +33,22 @@ pub mod task_edit;
 pub use task_edit::{EditTaskParams, TaskEditCapabilities, TaskEditSnapshot, TaskPropertiesDto};
 pub mod update_prompt;
 pub mod user_agent_presets;
+pub use assistant::{
+    ASSISTANT_CLIENT_TOOL_PROTOCOL, ASSISTANT_MAX_RUNS, ASSISTANT_MAX_TITLE_CHARS,
+    ASSISTANT_PREVIEW_MAX_ITEMS, AssistantAskParams, AssistantAskResult, AssistantAttachmentParams,
+    AssistantAttachmentResult, AssistantChannel, AssistantClearedSessions, AssistantConfigDto,
+    AssistantConfirmParams, AssistantConfirmationState, AssistantExportFormat,
+    AssistantExportParams, AssistantExportResult, AssistantIssueDto, AssistantIssueParams,
+    AssistantMessageDto, AssistantRateParams, AssistantRenameParams, AssistantRunDto,
+    AssistantRunItemDto, AssistantRunStatus, AssistantSessionDetail, AssistantSessionDto,
+    AssistantSessionIdParams, AssistantSessionKind, AssistantSessionPage, AssistantSessionsParams,
+    AssistantSettingChangeDto, AssistantStateDto, AssistantToolCallDto, AssistantToolEffect,
+    AssistantToolPreviewDto, AssistantToolStatus,
+};
+pub use net_diag::{
+    NetAddressScope, NetDnsServerDto, NetInterfaceDto, NetInterfaceKind, NetInterfacesDto,
+    NetMeasureParams, NetMeasureResultDto, NetMeasureSourceDto, NetRouteMeasureDto,
+};
 pub use task_activity::{
     TaskActivityDto, TaskActivityPage, TaskActivityQuery, TaskRuntimeDto, TaskSegmentDto,
     TaskSourceBytesDto, TaskSpeedHistoryDto, TaskSpeedHistoryQuery,
@@ -49,11 +69,13 @@ pub use agent::{
     LinkDiscoveryParams, LinkDispatchParams, LinkDispatchResult, LinkPairBeginParams,
     LinkPairFinishParams, LinkPairingCodeDto, LinkPairingRequestDto, LinkRenameParams,
     LinkStopPairingParams, LogExportParams, LogExportResult, LogPathsDto, OriginIdCheckResult,
-    PLATFORM_COPY_TASK_FILES_MAX, PathStyle, PendingCaptureDto, PlatformCopyTaskFilesParams,
-    PlatformFileIconDto, PlatformFileIconParams, PlatformIntegrationDto, PlatformOpenPathParams,
-    PlatformToggleParams, PlatformUrlProtocolParams, PluginFavoriteResultDto,
-    PluginFavoriteSetRequest, PluginFavoritesDto, PowerAction, PowerArmParams, PowerStatusDto,
-    PrivatePluginInstallRequest, PrivatePluginListDto, ReleaseNoteDto, RemoteCommandAction,
+    PLATFORM_COPY_TASK_FILES_MAX, POWER_LOW_SPEED_WARNING_SECS, PathStyle, PendingCaptureDto,
+    PlatformCopyTaskFilesParams, PlatformFileIconDto, PlatformFileIconParams,
+    PlatformIntegrationDto, PlatformOpenPathParams, PlatformToggleParams,
+    PlatformUrlProtocolParams, PluginFavoriteResultDto, PluginFavoriteSetRequest,
+    PluginFavoritesDto, PowerAction, PowerArmParams, PowerLowSpeedCondition, PowerStatusDto,
+    PrivatePluginInstallRequest, PrivatePluginListDto, REMOTE_COMMAND_MANY_MAX, ReleaseNoteDto,
+    RemoteCommandAction, RemoteCommandFailure, RemoteCommandManyParams, RemoteCommandManyResult,
     RemoteCommandParams, RemoteDispatchParams, RemoteDispatchResult, RemoteTaskDto,
     RemoteTaskStatus, ShellStatusDto, SyncLocalOnlyParams, SyncStatusDto, TrayUnavailableReason,
     UpdateCheckParams, UpdateFailure, UpdateInstallKind, UpdateManualReason, UpdatePhase,
@@ -69,6 +91,12 @@ pub use cloud_notify::{
     CloudNotifyTelegramBindDto, CloudNotifyTelegramBindStatusDto,
     CloudNotifyTelegramBindStatusParams, CloudNotifyTestResult, CloudNotifyUsageDto, TaskNoticeDto,
     TaskNoticeTaskDto,
+};
+pub use daemon::{
+    AddTaskWebSeedParams, BT_FILE_PRIORITY_HIGH, BT_FILE_PRIORITY_MAXIMUM, BT_FILE_PRIORITY_NORMAL,
+    BT_FILE_PRIORITY_SKIP, BtFilePriorityDto, BtFilesDto, BtPortMappingDto, BtPortStatusDto,
+    BtTaskFileDto, BtWebSeedDto, MoveTaskStorageParams, RenameBtFileParams, SetTaskBtLimitsParams,
+    SetTaskFilePrioritiesParams, SetTaskSuperSeedingParams,
 };
 pub use daemon::{
     ApiInfo, BT_GUARD_ENTRY_ACTIONS, BT_GUARD_LAYERS, BT_GUARD_LIST_DEFAULT_LIMIT,
@@ -129,12 +157,6 @@ pub use daemon::{
     UpdateQueueRequest, WebhookDeliveriesResponse, WebhookDeliveryDto, WebhookPresetDto,
     WebhookSimulateResponse, WebhookTestRequest, WebhookTestResponse, WsClientMsg, WsServerMsg,
 };
-pub use daemon::{
-    BT_FILE_PRIORITY_HIGH, BT_FILE_PRIORITY_MAXIMUM, BT_FILE_PRIORITY_NORMAL,
-    BT_FILE_PRIORITY_SKIP, BtFilePriorityDto, BtFilesDto, BtPortMappingDto, BtPortStatusDto,
-    BtTaskFileDto, BtWebSeedDto, MoveTaskStorageParams, RenameBtFileParams, SetTaskBtLimitsParams,
-    SetTaskFilePrioritiesParams, SetTaskSuperSeedingParams,
-};
 pub use daemon_config::{
     BT_GUARD_DOWNLOADING_ACTIONS, BT_GUARD_MODES, BT_MSE_MODES, BT_PIECE_ORDERS,
     BT_SEED_LIMIT_OPERATORS, BT_SEED_THEN_ACTIONS, BT_SEED_TIME_UNITS, DAEMON_CONFIG_FIELDS,
@@ -147,7 +169,7 @@ pub use daemon_config::{
 pub use error::{
     APPLICATION_ERROR_CODE, ApplicationErrorCode, ErrorReason, INTERNAL_ERROR_CODE,
     INVALID_PARAMS_CODE, INVALID_REQUEST_CODE, METHOD_NOT_FOUND_CODE, PARSE_ERROR_CODE,
-    RpcErrorData, RpcErrorObject,
+    PluginFailureDetail, RpcErrorData, RpcErrorObject,
 };
 pub use event::{
     AgentEvent, AgentSnapshot, DaemonEvent, DaemonSnapshot, EventFrame, FrameVerdict, ServiceEvent,
@@ -166,11 +188,11 @@ pub use plugin_view::{
     normalize_view, plugin_route_id, view_schema,
 };
 pub use rpc::{
-    APP_VERSION, CLOSE_REASON_SERVICE_QUIT, CLOSE_REASON_SERVICE_RESTART, ClientHello,
-    JSONRPC_VERSION, MAX_INBOUND_RPC_MESSAGE_BYTES, MIN_PROTOCOL_VERSION, PROTOCOL_VERSION,
-    RequestId, RpcFailureResponse, RpcIncoming, RpcNotification, RpcRequest, RpcResponse,
-    RpcSuccessResponse, ServiceHello, ServiceRole, is_older_app_version, negotiate_protocol,
-    validate_first_request,
+    APP_VERSION, CLOSE_REASON_SERVICE_QUIT, CLOSE_REASON_SERVICE_RESTART, CancelRequestParams,
+    ClientHello, JSONRPC_VERSION, MAX_INBOUND_RPC_MESSAGE_BYTES, MIN_PROTOCOL_VERSION,
+    PROTOCOL_VERSION, RequestId, RpcFailureResponse, RpcIncoming, RpcNotification, RpcRequest,
+    RpcResponse, RpcSuccessResponse, ServiceHello, ServiceRole, is_older_app_version,
+    negotiate_protocol, validate_first_request,
 };
 pub use settings::{
     CUSTOM_THEMES_KEY, FILE_ICON_PACK_KEY, MAX_CUSTOM_THEME_ID_LEN, MAX_SYNC_VALUE_BYTES,

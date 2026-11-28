@@ -34,6 +34,9 @@ final class AppContainer {
     @ObservationIgnored private let hostRepo = HostRepo()
     @ObservationIgnored private let localRef: HostRef
     @ObservationIgnored private var switchQueue: Task<Void, Never>?
+    @ObservationIgnored private var localSaveDirRepair: Task<Void, Never>?
+    @ObservationIgnored private var restoreStarted = false
+    @ObservationIgnored private var restoreSuperseded = false
     @ObservationIgnored private var lastRescan: ContinuousClock.Instant?
     @ObservationIgnored private let log = Logger(subsystem: "com.fluxdown.app", category: "host")
 
@@ -56,22 +59,73 @@ final class AppContainer {
         }
     }
 
+    /// Publish the formatting preference before invalidating views that read it.
+    func setFileSizeUnits(_ units: FileSizeUnits) {
+        guard units != appearance.fileSizeUnits else { return }
+        Format.setFileSizeUnits(units)
+        appearance.fileSizeUnits = units
+    }
+
     /// 是否本机主机（打开文件 / 在「文件」中显示 只对本机任务有意义）。
     var isLocalHost: Bool { host.isLocal }
 
     // MARK: 主机切换
 
+    func supersedeHostRestore() {
+        restoreSuperseded = true
+    }
+
+    func confirmCurrentHost(_ ref: HostRef) -> Bool {
+        guard ref.id == host.id, !(session is UnavailableSession) else { return false }
+        supersedeHostRestore()
+        if !ref.isLocal { hostRepo.rememberRemote(ref.id) }
+        return true
+    }
+
+    /// 首次显示时启动容器级恢复；视图消失不取消远端连接。
+    func startHostRestore() {
+        guard !restoreStarted, !restoreSuperseded else { return }
+        restoreStarted = true
+        guard let ref = hostRepo.lastRemote else { return }
+        Task { await self.restoreHost(ref) }
+    }
+
+    private func restoreHost(_ ref: HostRef) async {
+        guard !restoreSuperseded else { return }
+        let opened = await open(ref)
+        await switchQueue?.value
+        // Let the startup local session finish migrating its own configuration before closing it.
+        if !restoreSuperseded, case .success = opened { await localSaveDirRepair?.value }
+        guard !restoreSuperseded else {
+            if case let .success(session) = opened { session.close() }
+            return
+        }
+        switch opened {
+        case let .success(session):
+            adopt(ref, session)
+        case .failure:
+            let name = ref.localizedName
+            let prefix = name.prefix(20)
+            let label = prefix.endIndex == name.endIndex ? name : String(prefix) + "…"
+            toasts.show(text: L("hostRestoreFailed", ["name": label]), tone: .warning)
+        }
+    }
+
     /// 切换主机。打开失败时保持原主机不变并返回失败。
-    func switchHost(_ ref: HostRef) async -> Result<Void, HostError> {
-        await withCheckedContinuation { continuation in
+    func switchHost(_ ref: HostRef, remember: Bool = true, forceReconnect: Bool = false) async -> Result<Void, HostError> {
+        supersedeHostRestore()
+        return await withCheckedContinuation { continuation in
             serialized { container in
-                if ref.id == container.host.id, !(container.session is UnavailableSession) {
+                let changedHost = ref.id != container.host.id
+                if !forceReconnect, !changedHost, !(container.session is UnavailableSession) {
+                    if remember, !ref.isLocal { container.hostRepo.rememberRemote(ref.id) }
                     continuation.resume(returning: .success(()))
                     return
                 }
                 switch await container.open(ref) {
                 case let .success(session):
                     container.adopt(ref, session)
+                    if remember, changedHost || !ref.isLocal { container.hostRepo.rememberRemote(ref.isLocal ? nil : ref.id) }
                     continuation.resume(returning: .success(()))
                 case let .failure(error):
                     continuation.resume(returning: .failure(error))
@@ -98,7 +152,7 @@ final class AppContainer {
         do throws(HostError) {
             let probe = try await FluxBridge.openRemote(endpoint: url, accessKey: key)
             defer { probe.close() }
-            try await Self.awaitFirstSnapshot(probe)
+            _ = try await Self.awaitFirstSnapshot(probe)
             let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
             let display = trimmedName.isEmpty ? Self.displayHost(url) : trimmedName
             let ref: HostRef
@@ -154,6 +208,7 @@ final class AppContainer {
     /// 让主机侧撤销这台手机的控制授权；失败只记日志（主机离线时手机侧仍然删除，主机侧可手动解除）。
     func removeHost(id: String) async -> Result<Void, HostError> {
         guard id != HostRef.localId else { return .success(()) }
+        supersedeHostRestore()
         return await withCheckedContinuation { continuation in
             serialized { container in
                 if container.host.id == id {
@@ -185,6 +240,23 @@ final class AppContainer {
     /// 调用方用完必须 `close()`。
     func openLocalSession() async -> Result<any HostSession, HostError> {
         await open(localRef)
+    }
+
+    /// 后台通知使用独立会话，不切换前台主机或改写启动记录。
+    func resolveDefaultSelection(_ requestID: String, hostID: String) async throws(HostError) {
+        guard let ref = hosts.first(where: { $0.id == hostID }) else {
+            log.warning("Default notification action skipped: source host not found")
+            return
+        }
+        let connection = await open(ref)
+        let session = try connection.get()
+        defer { session.close() }
+        let snapshot = try await Self.awaitFirstSnapshot(session)
+        guard let request = snapshot.pendingSelections.first(where: { $0.requestId == requestID }) else {
+            log.warning("Default notification action skipped: selection no longer pending")
+            return
+        }
+        try await session.resolveSelection(requestID, outcome: request.defaultChoice)
     }
 
     private func revokeLinkPairing(fingerprint: String) async {
@@ -268,38 +340,44 @@ final class AppContainer {
         host = ref
         old.close()
         store.attach(next)
-        if ref.isLocal, !(next is UnavailableSession) { repairLocalSaveDir() }
-    }
-
-    /// App 更新后沙盒容器路径可能变化：库里的 `default_save_dir` 若指向旧容器的 Documents，改写到当前容器。
-    private func repairLocalSaveDir() {
-        Task { [weak self] in
-            guard let self else { return }
-            // 新会话的首个快照通常在 attach 后立即到达；最多等 5s。
-            var attempts = 0
-            while self.store.state.connection != .live, attempts < 50 {
-                attempts += 1
-                try? await Task.sleep(for: .milliseconds(100))
-            }
-            let state = self.store.state
-            guard state.connection == .live, let saved = state.config["default_save_dir"], !saved.isEmpty else { return }
-            let current = LocalPaths.rebased(saved)
-            guard current != saved else { return }
-            do throws(HostError) {
-                try await self.session.patchConfig(expectedRevision: state.configRevision, values: ["default_save_dir": current])
-            } catch {
-                self.log.warning("repair default_save_dir failed: \(error.description, privacy: .public)")
-            }
+        localSaveDirRepair?.cancel()
+        localSaveDirRepair = nil
+        if ref.isLocal, !(next is UnavailableSession) {
+            localSaveDirRepair = Task { [weak self] in await self?.repairLocalSaveDir(session: next) }
         }
     }
 
-    private static func awaitFirstSnapshot(_ probe: any HostSession) async throws(HostError) {
+    /// App 更新后沙盒容器路径可能变化：库里的 `default_save_dir` 若指向旧容器的 Documents，改写到当前容器。
+    private func repairLocalSaveDir(session: any HostSession) async {
+        // 新会话的首个快照通常在 attach 后立即到达；最多等 5s。
+        var attempts = 0
+        while store.state.connection != .live, attempts < 50 {
+            attempts += 1
+            do {
+                try await Task.sleep(for: .milliseconds(100))
+            } catch {
+                return
+            }
+        }
+        let state = store.state
+        guard !Task.isCancelled, self.session === session, state.connection == .live,
+              let saved = state.config["default_save_dir"], !saved.isEmpty else { return }
+        let current = LocalPaths.rebased(saved)
+        guard current != saved else { return }
+        do throws(HostError) {
+            try await session.patchConfig(expectedRevision: state.configRevision, values: ["default_save_dir": current])
+        } catch {
+            log.warning("repair default_save_dir failed: \(error.description, privacy: .public)")
+        }
+    }
+
+    private static func awaitFirstSnapshot(_ probe: any HostSession) async throws(HostError) -> HostSnapshot {
         let signals = probe.signals
-        let outcome: Result<Void, HostError> = await withTaskGroup(of: Result<Void, HostError>?.self) { group in
+        let outcome: Result<HostSnapshot, HostError> = await withTaskGroup(of: Result<HostSnapshot, HostError>?.self) { group in
             group.addTask {
                 for await signal in signals {
                     switch signal {
-                    case .snapshot: return .success(())
+                    case let .snapshot(snapshot): return .success(snapshot)
                     case let .fatal(error): return .failure(error)
                     case .event, .stale: continue
                     }
@@ -314,7 +392,7 @@ final class AppContainer {
             group.cancelAll()
             return first ?? .failure(HostError(.cancelled))
         }
-        try outcome.get()
+        return try outcome.get()
     }
 
     private static func displayHost(_ endpoint: String) -> String {

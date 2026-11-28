@@ -645,6 +645,54 @@ describe("播放列表与分片的归属", () => {
     expect(dash?.variants[0].videoUrl).toBe(mpd);
     expect(dash?.rawResourceIds).toEqual(expect.arrayContaining(["mpd", "s1", "s2"]));
   });
+
+  describe("扩展名伪装成图片 / 静态资源的 HLS 分片", () => {
+    const base = "https://cdn.example.net/cbba684f";
+    const disguised = () => [
+      resource({ id: "master", url: `${base}/playlist.m3u8`, mimeType: "audio/x-mpegurl", size: 691 }),
+      resource({ id: "media", url: `${base}/1080p/video.m3u8`, mimeType: "audio/x-mpegurl", size: 60972 }),
+      resource({ id: "s0", url: `${base}/1080p/video0.jpeg`, type: "video", mimeType: "video/mp2t", size: 2129288 }),
+      resource({ id: "s1", url: `${base}/1080p/video1.jpeg`, type: "video", mimeType: "video/mp2t", size: 2730324 }),
+      resource({ id: "s2", url: `${base}/1080p/seg2.png`, type: "video", mimeType: "video/mp4", size: 2048000 }),
+    ];
+
+    test("未拿到播放列表正文时分片不冒充独立视频", () => {
+      const candidates = buildMediaCandidates(disguised(), { fallbackTitle: "Video" });
+      expect(candidates.filter((c) => c.source === "direct")).toHaveLength(0);
+      expect(candidates.filter((c) => c.source === "hls").map((c) => c.variants[0].videoUrl)).toEqual(
+        expect.arrayContaining([`${base}/playlist.m3u8`, `${base}/1080p/video.m3u8`]),
+      );
+      const fragments = candidates.find((c) => c.source === "fragments");
+      expect(fragments?.downloadable).toBe(false);
+      expect(fragments?.rawResourceIds).toEqual(expect.arrayContaining(["s0", "s1", "s2"]));
+    });
+
+    test("拿到播放列表正文时分片归入主列表候选", () => {
+      const candidates = buildMediaCandidates(disguised(), {
+        fallbackTitle: "Video",
+        hlsPlaylists: [
+          { url: `${base}/playlist.m3u8`, playlist: { children: [`${base}/1080p/video.m3u8`], segmentDirs: [] } },
+          { url: `${base}/1080p/video.m3u8`, playlist: { children: [], segmentDirs: [`${base}/1080p/`] } },
+        ],
+      });
+      expect(candidates).toHaveLength(1);
+      expect(candidates[0].variants[0].videoUrl).toBe(`${base}/playlist.m3u8`);
+      expect(candidates[0].fragmentCount).toBe(3);
+    });
+
+    test("动态接口与真实视频扩展名返回的视频仍是独立视频", () => {
+      const candidates = buildMediaCandidates(
+        [
+          resource({ id: "php", url: "https://v.example.org/stream.php?id=9", type: "video", mimeType: "video/mp4", size: 52428800 }),
+          resource({ id: "mp4", url: "https://v.example.org/movie.mp4", type: "video", mimeType: "video/mp4", size: 52428800 }),
+        ],
+        { fallbackTitle: "Video" },
+      );
+      expect(candidates.filter((c) => c.source === "direct").flatMap((c) => c.rawResourceIds)).toEqual(
+        expect.arrayContaining(["php", "mp4"]),
+      );
+    });
+  });
 });
 
 describe("HLS 档位、DRM 与泛用文件名", () => {

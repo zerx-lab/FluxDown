@@ -38,6 +38,19 @@ struct DomainRulesTests {
         #expect(index.categoryOf("a.zip")?.id == "zip")
     }
 
+    @Test func fileNameOnlyClassificationIgnoresURLRulesAndDuplicateIDs() {
+        let video = TaskCategory(id: "video", name: "Video", icon: "file", extensions: [".mkv"], position: 3)
+        let episodes = TaskCategory(id: "episodes", name: "Episodes", icon: "file", extensions: [], regexPattern: "^S\\d+E\\d+", position: 1)
+        let duplicate = TaskCategory(id: "episodes", name: "Episodes", icon: "file", extensions: [], regexPattern: "^trailer", position: 2)
+        let site = TaskCategory(id: "site", name: "Site", icon: "file", extensions: [], urlPattern: "*", position: 0)
+        let index = CategoryIndex([video, duplicate, site, episodes] + TaskCategory.builtin.filter(\.isOther))
+
+        #expect(index.categoryOfFileName("s01e02.MKV")?.id == "episodes")
+        #expect(index.categoryOfFileName("trailer.MKV")?.id == "video")
+        #expect(index.categoryOfFileName(".mkv")?.isOther == true)
+        #expect(index.categoryOfFileName("notes.txt")?.isOther == true)
+    }
+
     @Test func wildcardIsAnchoredCaseInsensitiveAndLiteralOutsideStarAndQuestion() {
         let site = TaskCategory(id: "site", name: "site", icon: "file", extensions: [], urlPattern: "HTTPS://Example.com/file?.zip", position: 1)
         let dotted = TaskCategory(id: "dot", name: "dot", icon: "file", extensions: [], urlPattern: "https://a.test/v1.0/*", position: 2)
@@ -150,6 +163,8 @@ struct DomainRulesTests {
         #expect(L10n.resolve(preferred: ["zh-Hant", "en-GB"], available: ["en"]) == "en")
         #expect(L10n.resolve(preferred: [], available: available) == "en")
         #expect(L10n.resolve(preferred: ["xx-YY"], available: available) == "en")
+        #expect(L10n.resolve(preferred: ["sv-SE", "ja-JP", "en"], available: ["en", "ja", "pt-BR"]) == "ja")
+        #expect(L10n.resolve(preferred: ["pt-PT"], available: ["en", "ja", "pt-BR"]) == "pt-BR")
         #expect(L10n(locale: "xx-YY")("cancel") == "Cancel")
     }
 

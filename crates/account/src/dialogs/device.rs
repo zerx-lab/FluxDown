@@ -3,6 +3,7 @@
 //! 全部以 `Entity<AccountHost>` 为入口，可从设置窗口的账户页或任何窗口打开。
 
 use fluxdown_protocol::{CloudDevice, LinkDeviceInfo, LinkDeviceParams, LinkRenameParams};
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     BusyExt as _, ControlExt as _, DialogIntent, dialog_footer, dialog_scroll_body, dialog_title,
     field_error, field_hint, form, form_field,
@@ -17,7 +18,6 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
-    notification::Notification,
     v_flex,
 };
 
@@ -293,7 +293,7 @@ pub(crate) fn confirm_delete(
                                     &error,
                                     ErrorContext::General,
                                 );
-                                window.push_notification(Notification::error(message), cx);
+                                window.push_notification(toast::error(message), cx);
                             }
                         }) else {
                             // 账户视图或窗口已释放，结束回调，不再更新状态。
@@ -331,7 +331,7 @@ pub(crate) fn disconnect_device(
                         &error,
                         ErrorContext::General,
                     );
-                    window.push_notification(Notification::error(message), cx);
+                    window.push_notification(toast::error(message), cx);
                 }
             }) else {
                 return;
@@ -389,7 +389,7 @@ pub(crate) fn confirm_unpair(
                                     &error,
                                     ErrorContext::General,
                                 );
-                                window.push_notification(Notification::error(message), cx);
+                                window.push_notification(toast::error(message), cx);
                             }) else {
                                 // 账户视图或窗口已释放，结束回调，不再更新状态。
                                 return;

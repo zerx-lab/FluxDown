@@ -1,5 +1,6 @@
 //! 分类匹配索引：由偏好 `custom_categories` 构建，按扩展名 / 正则 / 网址通配符把任务归类。
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 
 use fluxdown_protocol::CustomCategoryDto;
@@ -50,6 +51,16 @@ enum Matcher {
 pub(crate) struct CategoryRule {
     pub(crate) dto: CustomCategoryDto,
     matcher: Matcher,
+}
+
+impl Matcher {
+    fn matches_name(&self, name: &str, extension: Option<&str>) -> bool {
+        match self {
+            Self::Extensions(extensions) => extension.is_some_and(|ext| extensions.contains(ext)),
+            Self::Regex(regex) => regex.as_ref().is_some_and(|regex| regex.is_match(name)),
+            _ => false,
+        }
+    }
 }
 
 /// 按 `position` 排序的分类规则集合。
@@ -110,6 +121,10 @@ impl CategoryIndex {
         &self.rules
     }
 
+    pub(crate) fn into_dtos(self) -> Vec<CustomCategoryDto> {
+        self.rules.into_iter().map(|rule| rule.dto).collect()
+    }
+
     /// 可见规则（`visible=false` 的隐藏）。
     pub(crate) fn visible(&self) -> impl Iterator<Item = &CategoryRule> {
         self.rules.iter().filter(|rule| rule.dto.visible)
@@ -119,15 +134,10 @@ impl CategoryIndex {
         match &rule.matcher {
             Matcher::All => true,
             Matcher::Other => false,
-            Matcher::Extensions(extensions) => task
-                .extension()
-                .is_some_and(|extension| extensions.contains(extension)),
-            Matcher::Regex(regex) => regex
-                .as_ref()
-                .is_some_and(|regex| regex.is_match(&task.name)),
             Matcher::Url(regex) => regex
                 .as_ref()
                 .is_some_and(|regex| regex.is_match(task.share_url())),
+            _ => rule.matcher.matches_name(&task.name, task.extension()),
         }
     }
 
@@ -169,6 +179,29 @@ impl CategoryIndex {
                 })
             });
         hit.map_or("builtin_other", |rule| rule.dto.id.as_str())
+    }
+
+    /// 按文件名匹配种子成员，不参与网址匹配。返回规则下标，未命中由调用方归入「其他」。
+    pub(crate) fn rule_index_for_file_name(&self, name: &str) -> Option<usize> {
+        if name.is_empty() {
+            return None;
+        }
+        let extension = name
+            .rsplit_once('.')
+            .filter(|(stem, ext)| !stem.is_empty() && !ext.is_empty())
+            .map(|(_, ext)| {
+                if ext.bytes().any(|byte| byte.is_ascii_uppercase()) {
+                    Cow::Owned(ext.to_ascii_lowercase())
+                } else {
+                    Cow::Borrowed(ext)
+                }
+            });
+        self.rules
+            .iter()
+            .zip(&self.first_with_id)
+            .position(|(rule, first)| {
+                *first && rule.matcher.matches_name(name, extension.as_deref())
+            })
     }
 
     /// 对任务命中的每个分类 id 调用一次 `emit`：与对每个不同 id 逐个调用 [`Self::matches`]

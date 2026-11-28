@@ -41,7 +41,7 @@ struct HostTitleMenuItems: View {
         Picker(L("mobileHostSwitchTitle"), selection: Binding(
             get: { container.host.id },
             set: { id in
-                guard id != container.host.id, let ref = container.hosts.first(where: { $0.id == id }) else { return }
+                guard let ref = container.hosts.first(where: { $0.id == id }) else { return }
                 Task { await HostFlow.switchTo(ref, container: container) }
             }
         )) {

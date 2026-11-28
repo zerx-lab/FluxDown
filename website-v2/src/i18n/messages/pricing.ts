@@ -1,7 +1,7 @@
 import { defineMessages } from "../define";
 
 /** /pricing/: plan columns, free-vs-premium comparison, pricing-model notes, web purchase dialog. */
-export const pricing = defineMessages({
+export const pricing = defineMessages("pricing", {
   en: {
     meta: {
       title: "Pricing — FluxDown",
@@ -93,13 +93,15 @@ export const pricing = defineMessages({
         },
         {
           title: "Permanent plans",
-          desc: "A permanent plan is bought once and covers account, sync, task dispatch and similar core cloud. Purchased benefits stay on the account.",
+          desc: "A permanent plan is bought once in a single payment — no recurring fee, no renewal — and covers account, sync, task dispatch and similar core cloud. Purchased benefits stay on the account.",
         },
         {
           title: "Add-ons sold separately",
           desc: "Storage and other features whose cost scales with usage may be billed separately and will be announced beforehand.",
         },
       ],
+      refund: "Every order (permanent plan or membership card) can be fully refunded within 7 days of payment; nothing ever auto-renews.",
+      refundLink: "Billing & refund terms",
     },
     voteCta: {
       eyebrow: "Community",
@@ -124,6 +126,10 @@ export const pricing = defineMessages({
       fieldOrigin: "Origin ID",
       fieldPlan: "Current plan",
       notMe: "Not my account",
+      cancel: "Cancel",
+      switchAccount: "Use another account",
+      hasAccount: "Already have an account?",
+      signInToBuy: "Sign in to buy",
       confirmPay: "Confirm & pay",
       wechatBadge: "WeChat Pay",
       scanTitle: "Scan with WeChat to pay",
@@ -165,7 +171,6 @@ export const pricing = defineMessages({
       copied: "Copied",
       payWaffoTitle: "Card / Apple Pay / Google Pay",
       payWaffo: "International cards and wallets, settled in USD",
-      waffoNoCampaign: "International payment is not available while a promotional price is active",
       waffoNoUpgrade: "International payment is not available for upgrades with prior-purchase credit",
       waffoNoReferral: "International payment is not available with a referral code — clear it to use this option",
       waffoPayable: "Payable (USD, charged in US dollars)",
@@ -198,7 +203,7 @@ export const pricing = defineMessages({
         usdtDisabled: "USDT payments are currently unavailable",
         usdtUnavailable: "This plan does not support USDT payment",
         waffoDisabled: "International payment is currently unavailable",
-        waffoUnavailable: "International payment is not available for this order (no promotional price, upgrade credit or referral code allowed)",
+        waffoUnavailable: "International payment is not available for this order (no upgrade credit or referral code allowed)",
       },
     },
   },
@@ -287,13 +292,15 @@ export const pricing = defineMessages({
         },
         {
           title: "永久套餐",
-          desc: "永久套餐一次付费，覆盖账号、同步、任务下发等基础云端；已购权益留在账户上。",
+          desc: "永久套餐一次付清、单笔扣款，无周期费用、无需续费，覆盖账号、同步、任务下发等基础云端；已购权益留在账户上。",
         },
         {
           title: "附加另购",
           desc: "像网盘扩容这类跟着用量涨成本的功能，可能会单独收费，并会提前说明。",
         },
       ],
+      refund: "所有订单（永久套餐与会员卡）付款后 7 天内可申请全额退款；任何套餐都不会自动续费。",
+      refundLink: "计费与退款条款",
     },
     voteCta: {
       eyebrow: "社区",
@@ -318,6 +325,10 @@ export const pricing = defineMessages({
       fieldOrigin: "Origin ID",
       fieldPlan: "当前套餐",
       notMe: "不是我的账号",
+      cancel: "取消",
+      switchAccount: "换一个账号购买",
+      hasAccount: "已有账户？",
+      signInToBuy: "登录后购买",
       confirmPay: "确认并付款",
       wechatBadge: "微信支付",
       scanTitle: "使用微信扫码支付",
@@ -359,7 +370,6 @@ export const pricing = defineMessages({
       copied: "已复制",
       payWaffoTitle: "银行卡 / Apple Pay / Google Pay",
       payWaffo: "国际信用卡与钱包，美元结算",
-      waffoNoCampaign: "活动价暂不支持国际支付",
       waffoNoUpgrade: "升级差价抵扣暂不支持国际支付",
       waffoNoReferral: "使用推荐码时暂不支持国际支付，清空推荐码后可选",
       waffoPayable: "应付（美元结算）",
@@ -390,7 +400,7 @@ export const pricing = defineMessages({
         usdtDisabled: "USDT 支付暂未开放",
         usdtUnavailable: "该套餐暂不支持 USDT 支付",
         waffoDisabled: "国际支付暂未开放",
-        waffoUnavailable: "该订单暂不支持国际支付（活动价、升级差价抵扣或推荐码均不支持）",
+        waffoUnavailable: "该订单暂不支持国际支付（升级差价抵扣或推荐码均不支持）",
       },
     },
   },

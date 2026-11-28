@@ -40,9 +40,35 @@ pub(crate) type CloudSocket = tokio_tungstenite::WebSocketStream<reqwest::Upgrad
 /// 云端连接的 TCP keepalive 探测间隔。
 const TCP_KEEPALIVE: Duration = Duration::from_secs(30);
 
+/// 提问 SSE 等响应头的基础时限。
+const STREAM_HEADERS_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// 按请求体体积折算上传耗时的下限速率(字节 / 秒,约 1 Mbps):带满 4 张大图的提问体可达数十 MB,
+/// 慢上行下不能被当成「云端不回响应头」。
+const STREAM_UPLOAD_FLOOR_BYTES_PER_SEC: u64 = 125_000;
+
+/// 流式请求的响应头时限:基础 15 s + 请求体按下限速率上传所需的时间。
+fn stream_headers_timeout(body_len: usize) -> Duration {
+    let body_len = u64::try_from(body_len).unwrap_or(u64::MAX);
+    STREAM_HEADERS_TIMEOUT.saturating_add(Duration::from_secs(
+        body_len / STREAM_UPLOAD_FLOOR_BYTES_PER_SEC,
+    ))
+}
+
 /// access token 剩余有效期不足该值时，发请求 / 建长连接前先单飞刷新，
 /// 避免重连时先吃一次 401 再刷新重放（服务端 access token 有效期 15 分钟）。
 const ACCESS_TOKEN_REFRESH_LEEWAY_SECS: i64 = 60;
+
+/// `POST /auth/refresh` 传输层失败或网关 5xx 后，用同一枚刷新令牌重放前的等待（只重放一次）。
+/// 请求可能已到达云端并完成轮换、只是响应丢在半路；FluxCloud 对后继从未被使用的上一代令牌放行重放。
+const REFRESH_TRANSPORT_RETRY_DELAY: Duration = Duration::from_secs(1);
+
+/// 轮换出的新令牌落盘失败后的重试间隔；全部失败后新令牌只留在内存，直到下一次成功落盘。
+const ROTATION_PERSIST_RETRY_DELAYS: [Duration; 3] = [
+    Duration::from_millis(200),
+    Duration::from_secs(1),
+    Duration::from_secs(3),
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct RequestEpoch(u64);
@@ -315,18 +341,29 @@ impl CloudClient {
 
     /// 401 后取可重放的 access token：单飞刷新，其他调用方已轮换过则直接复用新令牌。
     /// 普通请求与 SSE 必须共用这一入口，否则并发刷新会用同一枚 refresh token 撞上服务端的一次性轮换。
+    ///
+    /// 刷新在独立任务里执行：请求一旦发出，调用方被取消（外层超时、`select!` 重连 / 会话切换、
+    /// UI 请求断开）也不会丢掉云端已轮换出的新令牌——任务照常等到响应并落盘，调用方只是不再等待。
     async fn refreshed_access_token(
         &self,
         attempted: &str,
         epoch: RequestEpoch,
     ) -> Result<String, CloudError> {
-        let _guard = self.refresh.lock().await;
         drop(self.lock_epoch(epoch).await?);
-        let current = self.access_token().await?;
-        if current != attempted {
-            return Ok(current);
-        }
-        self.refresh_session(true).await
+        let client = self.clone();
+        let attempted = attempted.to_owned();
+        let refresh = tokio::spawn(async move {
+            let _guard = client.refresh.lock().await;
+            drop(client.lock_epoch(epoch).await?);
+            let current = client.access_token().await?;
+            if current != attempted {
+                return Ok(current);
+            }
+            client.refresh_session(true).await
+        });
+        refresh.await.map_err(|error| {
+            CloudError::local(format!("FluxCloud token refresh task failed: {error}"))
+        })?
     }
 
     /// 显式登录/注册成功后，先原子持久化令牌轮换再返回无令牌会话；
@@ -345,6 +382,7 @@ impl CloudClient {
                 refresh_token: auth.refresh_token,
                 expires_at_unix: now_unix().saturating_add(auth.expires_in),
                 session: Some(session.clone()),
+                issuer: self.current_base_url(),
             });
             state
                 .bind_account(Some(&session.user.id))
@@ -365,6 +403,9 @@ impl CloudClient {
 
     /// 刷新成功后落盘轮换出的令牌；只在凭证仍是被刷新的那一份时写入，
     /// 登出 / 撤销期间完成的刷新结果不得让会话复活。
+    ///
+    /// 新令牌写进内存即可使用，旧令牌在云端已被轮换：落盘失败不让本次请求失败，而是重试并记录错误
+    /// （见 [`Self::persist_rotation`]）。磁盘仍是旧令牌时，下次启动靠云端对上一代令牌的重放自愈。
     async fn persist_refreshed(
         &self,
         auth: AuthResponse,
@@ -387,13 +428,28 @@ impl CloudClient {
                 refresh_token: auth.refresh_token,
                 expires_at_unix: now_unix().saturating_add(auth.expires_in),
                 session: Some(session),
+                issuer: self.current_base_url(),
             });
         }
-        self.store
-            .persist(&self.state)
-            .await
-            .map_err(CloudError::from_state)?;
+        self.persist_rotation().await;
         Ok(access_token)
+    }
+
+    /// 轮换后的凭据落盘：失败按 [`ROTATION_PERSIST_RETRY_DELAYS`] 重试，仍失败则记录错误——此后任意一次
+    /// 成功的状态落盘都会带上内存里的新凭据。
+    async fn persist_rotation(&self) {
+        let mut delays = ROTATION_PERSIST_RETRY_DELAYS.iter();
+        loop {
+            let Err(error) = self.store.persist(&self.state).await else {
+                return;
+            };
+            let Some(delay) = delays.next() else {
+                tracing::error!(error = %error, "rotated FluxCloud tokens could not be persisted; they stay in memory until the next successful save");
+                return;
+            };
+            tracing::warn!(error = %error, "persisting rotated FluxCloud tokens failed; retrying");
+            tokio::time::sleep(*delay).await;
+        }
     }
 
     /// 资料修改成功后更新无令牌会话并原子持久化。
@@ -437,19 +493,25 @@ impl CloudClient {
             .map(|session| session.user.id.clone())
     }
 
-    /// 清除完整会话（显式退出 / 用户删除本设备）并投影账号维度的清空事件；不发 `SessionRevoked`。
+    /// 清除完整会话（显式退出）并投影账号维度的清空事件；不发 `SessionRevoked`。
     /// 与进行中的令牌刷新互斥：刷新结果不会在清除之后复活会话。
     pub async fn clear_session(&self) -> Result<(), CloudError> {
         let _guard = self.refresh.lock().await;
-        self.clear_session_locked(None).await
+        self.clear_session_locked(SessionEnd::UserLogout, None, None)
+            .await
     }
 
-    /// 非用户主动结束会话（云端撤销 / 设备被移除 / 令牌被拒）：先发一次性 `SessionRevoked(reason)`，
+    /// 非用户主动结束会话（云端撤销 / 设备被移除）：先发一次性 `SessionRevoked(reason)`，
     /// 再走与 [`Self::clear_session`] 相同的清理。已经登出时不重复通知。
     pub async fn revoke_session(&self, reason: ErrorReason) -> Result<(), CloudError> {
         let _guard = self.refresh.lock().await;
         let announce = self.state.lock().await.credentials.is_some();
-        self.clear_session_locked(announce.then_some(reason)).await
+        self.clear_session_locked(
+            SessionEnd::ServerRevoked(reason),
+            announce.then_some(reason),
+            None,
+        )
+        .await
     }
 
     pub(crate) async fn revoke_session_epoch(
@@ -459,24 +521,27 @@ impl CloudClient {
     ) -> Result<(), CloudError> {
         let _guard = self.refresh.lock().await;
         let announce = self.lock_epoch(epoch).await?.credentials.is_some();
-        self.clear_session_epoch_locked(announce.then_some(reason), Some(epoch))
+        self.clear_session_locked(
+            SessionEnd::ServerRevoked(reason),
+            announce.then_some(reason),
+            Some(epoch),
+        )
+        .await
+    }
+
+    /// 用户在本机删除当前设备或注销账号后清会话；不发 `SessionRevoked`。
+    pub(crate) async fn clear_session_epoch(&self, epoch: RequestEpoch) -> Result<(), CloudError> {
+        let _guard = self.refresh.lock().await;
+        self.clear_session_locked(SessionEnd::UserRemoved, None, Some(epoch))
             .await
     }
 
-    /// 调用方必须持有 `self.refresh` 锁。清空凭证、账号维度状态（同步水位 / 脏键按账号暂存、
-    /// 远程任务与接单绑定丢弃），先投影事件再报告落盘错误，保证 UI 与内存状态一致。
-    /// `revoked` 为 `Some` 时先于 `SessionChanged(None)` 发布 `SessionRevoked`。
-    async fn clear_session_locked(&self, revoked: Option<ErrorReason>) -> Result<(), CloudError> {
-        self.clear_session_epoch_locked(revoked, None).await
-    }
-
-    pub(crate) async fn clear_session_epoch(&self, epoch: RequestEpoch) -> Result<(), CloudError> {
-        let _guard = self.refresh.lock().await;
-        self.clear_session_epoch_locked(None, Some(epoch)).await
-    }
-
-    async fn clear_session_epoch_locked(
+    /// 调用方必须持有 `self.refresh` 锁。清空凭证、账号维度状态（同步水位 / 脏键与接单绑定按账号暂存、
+    /// 远程任务投影丢弃），先投影事件再报告落盘错误，保证 UI 与内存状态一致。
+    /// `revoked` 为 `Some` 时先于 `SessionChanged(None)` 发布 `SessionRevoked`；`cause` 只进日志。
+    async fn clear_session_locked(
         &self,
+        cause: SessionEnd<'_>,
         revoked: Option<ErrorReason>,
         epoch: Option<RequestEpoch>,
     ) -> Result<(), CloudError> {
@@ -485,6 +550,7 @@ impl CloudClient {
                 Some(epoch) => self.lock_epoch(epoch).await?,
                 None => self.state.lock().await,
             };
+            cause.log(state.credentials.is_some());
             self.session_generation
                 .send_modify(|generation| *generation = generation.wrapping_add(1));
             state.credentials = None;
@@ -524,7 +590,8 @@ impl CloudClient {
         let remote = self.revoke_on_server(&access_token, &refresh_token).await;
         // 吊销途中刷新令牌被拒时会话已被清除，不重复清理 / 通知。
         let cleanup = if self.state.lock().await.credentials.is_some() {
-            self.clear_session_locked(None).await
+            self.clear_session_locked(SessionEnd::UserLogout, None, None)
+                .await
         } else {
             Ok(())
         };
@@ -576,6 +643,10 @@ impl CloudClient {
 
     /// 调用方必须持有 `self.refresh` 锁。
     /// `announce`：刷新令牌被拒导致清会话时是否发布 `SessionRevoked`（登出流程里为 `false`）。
+    ///
+    /// 传输层失败或网关 5xx 时，请求可能已到达云端并完成轮换、只是响应丢在半路：稍等后用同一枚令牌
+    /// 重放一次（[`REFRESH_TRANSPORT_RETRY_DELAY`]）。仍失败就把错误交给调用方，凭据原样保留，
+    /// 之后任何时候的下一次刷新照样能靠云端的上一代令牌重放换回会话。
     async fn refresh_session(&self, announce: bool) -> Result<String, CloudError> {
         let refresh_token = {
             let state = self.state.lock().await;
@@ -586,35 +657,40 @@ impl CloudClient {
                 .refresh_token
                 .clone()
         };
-        let response = self
-            .send_once(
-                Method::POST,
-                "/api/v1/auth/refresh",
-                Some(
-                    serde_json::to_value(RefreshRequest {
-                        refresh_token: &refresh_token,
-                    })
-                    .map_err(|error| CloudError::invalid(error.to_string()))?,
-                ),
-                None,
-            )
-            .await?;
-        if matches!(
-            response.status(),
-            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
-        ) {
-            // 403 携带具体原因（账号停用 / 设备被移除）：清除会话后原样上报，不折叠成「登录过期」。
-            let rejection = if response.status() == StatusCode::FORBIDDEN {
-                Some(response_error(response).await)
-            } else {
-                None
-            };
-            return self
-                .reject_refresh_token(&refresh_token, rejection, announce)
-                .await;
+        let reply = match self.request_refresh(&refresh_token).await {
+            Err(error) if error.unreachable || error.status.is_some_and(|status| status >= 500) => {
+                tracing::warn!(error = %error, "FluxCloud token refresh failed in transit; replaying the same token");
+                tokio::time::sleep(REFRESH_TRANSPORT_RETRY_DELAY).await;
+                self.request_refresh(&refresh_token).await?
+            }
+            reply => reply?,
+        };
+        match reply {
+            RefreshReply::Issued(auth) => self.persist_refreshed(*auth, &refresh_token).await,
+            RefreshReply::Rejected(rejection) => {
+                self.reject_refresh_token(&refresh_token, rejection, announce)
+                    .await
+            }
         }
-        let auth = decode::<AuthResponse>(response).await?;
-        self.persist_refreshed(auth, &refresh_token).await
+    }
+
+    /// 发一次 `POST /auth/refresh`。401 / 403 = 令牌被拒；其余非 2xx 与传输失败为 `Err`。
+    async fn request_refresh(&self, refresh_token: &str) -> Result<RefreshReply, CloudError> {
+        let body = serde_json::to_value(RefreshRequest { refresh_token })
+            .map_err(|error| CloudError::invalid(error.to_string()))?;
+        let response = self
+            .send_once(Method::POST, "/api/v1/auth/refresh", Some(body), None)
+            .await?;
+        match response.status() {
+            StatusCode::UNAUTHORIZED => Ok(RefreshReply::Rejected(None)),
+            // 403 携带具体原因（账号停用 / 设备被移除）：清除会话后原样上报，不折叠成「登录过期」。
+            StatusCode::FORBIDDEN => {
+                Ok(RefreshReply::Rejected(Some(response_error(response).await)))
+            }
+            _ => Ok(RefreshReply::Issued(Box::new(
+                decode::<AuthResponse>(response).await?,
+            ))),
+        }
     }
 
     /// 服务端拒绝了 `rejected`：仅当它仍是当前凭证时才登出；期间凭证已被替换
@@ -632,18 +708,35 @@ impl CloudClient {
                 (
                     credentials.refresh_token.clone(),
                     credentials.access_token.clone(),
+                    credentials.issuer.clone(),
                 )
             })
         };
+        let error = rejection.unwrap_or_else(CloudError::unauthorized);
         match current {
-            Some((refresh, access)) if refresh != rejected && !access.is_empty() => Ok(access),
+            Some((refresh, access, _)) if refresh != rejected && !access.is_empty() => Ok(access),
+            Some((_, _, issuer)) if self.issued_elsewhere(&issuer) => {
+                tracing::warn!(
+                    issuer = %issuer,
+                    endpoint = %self.current_base_url(),
+                    error = %error,
+                    "FluxCloud endpoint rejected credentials issued by another endpoint; keeping them (debug build)"
+                );
+                Err(error)
+            }
             other => {
-                let error = rejection.unwrap_or_else(CloudError::unauthorized);
                 let revoked = (announce && other.is_some()).then(|| revocation_reason(&error));
-                self.clear_session_locked(revoked).await?;
+                self.clear_session_locked(SessionEnd::RefreshRejected(&error), revoked, None)
+                    .await?;
                 Err(error)
             }
         }
+    }
+
+    /// 调试构建可切换 FluxCloud 地址（默认还指向本地开发服务）：凭据由另一个地址签发时，当前地址的
+    /// 拒绝不代表会话失效，不能因此清掉与正式版共用的登录态。正式构建地址固定，不做这层判断。
+    fn issued_elsewhere(&self, issuer: &str) -> bool {
+        ENDPOINT_EDITABLE && !issuer.is_empty() && issuer != self.current_base_url()
     }
 
     /// 取本次请求要用的 access token：持久化的过期时刻已进入刷新提前量时先单飞刷新。
@@ -698,8 +791,23 @@ impl CloudClient {
         path: &str,
         epoch: RequestEpoch,
     ) -> Result<reqwest::Response, CloudError> {
+        self.authenticated_stream_request_epoch(Method::GET, path, None::<&Value>, epoch)
+            .await
+    }
+
+    /// 与 [`Self::authenticated_stream_epoch`] 同构，但可指定方法与 JSON 请求体（「POST 即返回 SSE」的
+    /// 端点，如 AI 助手提问）。401 单飞刷新后带同一请求体重放一次。
+    pub(crate) async fn authenticated_stream_request_epoch<P: Serialize + ?Sized>(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&P>,
+        epoch: RequestEpoch,
+    ) -> Result<reqwest::Response, CloudError> {
         let access_token = self.fresh_access_token(epoch).await?;
-        let response = self.send_stream_once(path, &access_token, epoch).await?;
+        let response = self
+            .send_stream_once(method.clone(), path, body, &access_token, epoch)
+            .await?;
         if response.status() != StatusCode::UNAUTHORIZED {
             let result = ensure_success(response).await;
             drop(self.lock_epoch(epoch).await?);
@@ -707,7 +815,11 @@ impl CloudClient {
         }
         let replay_token = self.refreshed_access_token(&access_token, epoch).await?;
         drop(self.lock_epoch(epoch).await?);
-        let result = ensure_success(self.send_stream_once(path, &replay_token, epoch).await?).await;
+        let result = ensure_success(
+            self.send_stream_once(method, path, body, &replay_token, epoch)
+                .await?,
+        )
+        .await;
         drop(self.lock_epoch(epoch).await?);
         result
     }
@@ -838,9 +950,11 @@ impl CloudClient {
         self.session_generation.subscribe()
     }
 
-    async fn send_stream_once(
+    async fn send_stream_once<P: Serialize + ?Sized>(
         &self,
+        method: Method,
         path: &str,
+        body: Option<&P>,
         bearer: &str,
         epoch: RequestEpoch,
     ) -> Result<reqwest::Response, CloudError> {
@@ -851,18 +965,32 @@ impl CloudClient {
             .await
             .map_err(|error| CloudError::local(format!("cloud stream client: {error:#}")))?;
         drop(self.lock_epoch(epoch).await?);
-        let request = client
-            .get(format!("{}{}", self.current_base_url(), path))
+        let mut request = client
+            .request(method, format!("{}{}", self.current_base_url(), path))
             .bearer_auth(bearer)
             .header("Accept", "text/event-stream")
             .header("X-FluxDown-Device-Id", device_id)
             .header("X-FluxDown-Device-Name", device_name)
             .header("X-FluxDown-Platform", platform)
-            .header("X-FluxDown-Version", fluxdown_protocol::APP_VERSION)
-            .send();
+            .header("X-FluxDown-Version", fluxdown_protocol::APP_VERSION);
+        // 请求体自己序列化：上传耗时要按体积折算进响应头时限，且 401 重放时按同一份字节重发。
+        let payload = match body {
+            Some(body) => Some(serde_json::to_vec(body).map_err(|error| {
+                CloudError::local(format!("cannot encode the stream request body: {error}"))
+            })?),
+            None => None,
+        };
+        let headers_timeout = stream_headers_timeout(payload.as_ref().map_or(0, Vec::len));
+        if let Some(payload) = payload {
+            request = request
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(payload);
+        }
+        let request = request.send();
         let sent_at = unix_ms();
-        // 仅限制响应头，不给无限 SSE body 加总寿命；包括成功 TCP 后不回头的反代。
-        let response = tokio::time::timeout(Duration::from_secs(15), request)
+        // 仅限制「请求体发完后等响应头」，不给无限 SSE body 加总寿命；包括成功 TCP 后不回头的反代。
+        // 请求体的上传时间另按 [`STREAM_UPLOAD_FLOOR_BYTES_PER_SEC`] 折算进时限（带图提问可达数十 MB）。
+        let response = tokio::time::timeout(headers_timeout, request)
             .await
             .map_err(|_| CloudError::network("cloud SSE response headers timeout".to_owned()))?
             .map_err(|error| CloudError::network(error_chain(&error)))?;
@@ -968,6 +1096,55 @@ fn revocation_reason(error: &CloudError) -> ErrorReason {
     match error.reason() {
         Some(reason @ (ErrorReason::AccountDisabled | ErrorReason::DeviceUntrusted)) => reason,
         _ => ErrorReason::SessionExpired,
+    }
+}
+
+/// 一次 `POST /auth/refresh` 的结果（传输失败与其余错误走 `Err`）。
+enum RefreshReply {
+    /// 云端签发了新令牌对。
+    Issued(Box<AuthResponse>),
+    /// 401 / 403：令牌被拒；403 附带具体原因。
+    Rejected(Option<CloudError>),
+}
+
+/// 本地会话为何结束：写进日志，事后区分「用户在本机退出」与「被动登出」。
+enum SessionEnd<'a> {
+    /// 用户在本机退出登录。
+    UserLogout,
+    /// 用户在本机删除了当前设备或注销了账号。
+    UserRemoved,
+    /// 云端拒绝了刷新令牌（401 / 403）。
+    RefreshRejected(&'a CloudError),
+    /// 云端推送 `session.revoked`（设备被移除 / 改密码 / 管理员吊销 / 账号注销）。
+    ServerRevoked(ErrorReason),
+}
+
+impl SessionEnd<'_> {
+    fn log(&self, had_session: bool) {
+        match self {
+            Self::UserLogout => {
+                tracing::info!(
+                    had_session,
+                    "FluxCloud session cleared: signed out on this device"
+                );
+            }
+            Self::UserRemoved => tracing::info!(
+                had_session,
+                "FluxCloud session cleared: this device or account was removed here"
+            ),
+            Self::RefreshRejected(error) => tracing::warn!(
+                had_session,
+                status = ?error.status,
+                code = ?error.code,
+                error = %error,
+                "FluxCloud session cleared: refresh token rejected"
+            ),
+            Self::ServerRevoked(reason) => tracing::warn!(
+                had_session,
+                reason = ?reason,
+                "FluxCloud session cleared: revoked by FluxCloud"
+            ),
+        }
     }
 }
 
@@ -1412,6 +1589,7 @@ mod tests {
                 refresh_token: "refresh".to_owned(),
                 expires_at_unix: 0,
                 session: None,
+                issuer: String::new(),
             }),
             ..AgentState::default()
         }));
@@ -1496,6 +1674,7 @@ mod tests {
                 refresh_token: "refresh".to_owned(),
                 expires_at_unix: super::now_unix() + super::ACCESS_TOKEN_REFRESH_LEEWAY_SECS / 2,
                 session: None,
+                issuer: String::new(),
             }),
             ..AgentState::default()
         }));
@@ -1562,6 +1741,7 @@ mod tests {
                 refresh_token: "revoked-refresh".to_owned(),
                 expires_at_unix: 0,
                 session: None,
+                issuer: String::new(),
             }),
             ..AgentState::default()
         }));
@@ -1779,6 +1959,7 @@ mod tests {
                 refresh_token: "refresh-0".to_owned(),
                 expires_at_unix: 0,
                 session: Some(session),
+                issuer: String::new(),
             }),
             ..AgentState::default()
         }));
@@ -2097,6 +2278,7 @@ mod tests {
             refresh_token: refresh.to_owned(),
             expires_at_unix: 0,
             session: Some(session_of(user_id)),
+            issuer: String::new(),
         }
     }
 
@@ -2183,6 +2365,234 @@ mod tests {
         }
     }
 
+    async fn serve_mock(app: Router) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock cloud");
+        let address = listener.local_addr().expect("address");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve mock cloud");
+        });
+        format!("http://{address}")
+    }
+
+    async fn wait_for_refresh_token(
+        label: &str,
+        expected: &str,
+        mut current: impl AsyncFnMut() -> Option<String>,
+    ) {
+        let reached = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while current().await.as_deref() != Some(expected) {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(
+            reached.is_ok(),
+            "{label} never reached refresh token {expected}"
+        );
+    }
+
+    /// 调用方在刷新途中被丢弃（外层超时 / `select!` 重连）：云端已轮换出的新令牌照样写进内存并落盘，
+    /// 下次启动不会拿着已被轮换的旧令牌。
+    #[tokio::test]
+    async fn a_dropped_caller_still_persists_the_rotated_tokens() {
+        let refresh_started = Arc::new(tokio::sync::Notify::new());
+        let base_url = serve_mock(Router::new().route("/api/v1/test", get(protected)).route(
+            "/api/v1/auth/refresh",
+            post({
+                let refresh_started = refresh_started.clone();
+                move || {
+                    let refresh_started = refresh_started.clone();
+                    async move {
+                        refresh_started.notify_one();
+                        slow_refresh().await
+                    }
+                }
+            }),
+        ))
+        .await;
+        let (client, state, store, dir) = temp_client(
+            "dropped_caller",
+            base_url,
+            Some(credentials_of("u1", "refresh")),
+        )
+        .await;
+        let finished_early = tokio::select! {
+            result = client.authenticated::<Value, Value>(reqwest::Method::GET, "/api/v1/test", None) => {
+                Some(result)
+            }
+            () = refresh_started.notified() => None,
+        };
+        assert!(
+            finished_early.is_none(),
+            "request finished before the caller was dropped: {finished_early:?}"
+        );
+
+        wait_for_refresh_token("memory", "new-refresh", async || {
+            state
+                .lock()
+                .await
+                .credentials
+                .as_ref()
+                .map(|credentials| credentials.refresh_token.clone())
+        })
+        .await;
+        wait_for_refresh_token("disk", "new-refresh", async || {
+            store
+                .load()
+                .await
+                .expect("reload state")
+                .credentials
+                .map(|credentials| credentials.refresh_token)
+        })
+        .await;
+        drop(client);
+        drop(state);
+        drop(store);
+        if let Err(error) = tokio::fs::remove_dir_all(&dir).await {
+            tracing::warn!(path = %dir.display(), error = %error, "remove dropped caller test directory");
+        }
+    }
+
+    /// 刷新响应丢在半路（网关 5xx / 传输失败）：用同一枚令牌重放一次即拿回新令牌，原请求照常成功。
+    #[tokio::test]
+    async fn a_refresh_lost_in_transit_is_replayed_with_the_same_token() {
+        let presented = Arc::new(Mutex::new(Vec::<String>::new()));
+        let base_url = serve_mock(Router::new().route("/api/v1/test", get(protected)).route(
+            "/api/v1/auth/refresh",
+            post({
+                let presented = presented.clone();
+                move |axum::Json(body): axum::Json<Value>| {
+                    let presented = presented.clone();
+                    async move {
+                        let first = {
+                            let mut presented = presented.lock().await;
+                            presented
+                                .push(body["refreshToken"].as_str().unwrap_or_default().to_owned());
+                            presented.len() == 1
+                        };
+                        if first {
+                            StatusCode::BAD_GATEWAY.into_response()
+                        } else {
+                            slow_refresh().await
+                        }
+                    }
+                }
+            }),
+        ))
+        .await;
+        let (client, state, store, dir) = temp_client(
+            "lost_in_transit",
+            base_url,
+            Some(credentials_of("u1", "refresh")),
+        )
+        .await;
+        let replayed = client
+            .authenticated::<Value, Value>(reqwest::Method::GET, "/api/v1/test", None)
+            .await
+            .expect("request succeeds after the replayed refresh");
+        assert_eq!(replayed["ok"], true);
+        assert_eq!(*presented.lock().await, ["refresh", "refresh"]);
+        assert_eq!(
+            state
+                .lock()
+                .await
+                .credentials
+                .as_ref()
+                .map(|credentials| credentials.refresh_token.as_str()),
+            Some("new-refresh")
+        );
+        drop(client);
+        drop(state);
+        drop(store);
+        if let Err(error) = tokio::fs::remove_dir_all(&dir).await {
+            tracing::warn!(path = %dir.display(), error = %error, "remove lost refresh test directory");
+        }
+    }
+
+    /// 新令牌落盘失败不让请求失败：内存里的新令牌照常使用（重试耗尽后只记录错误）。
+    #[tokio::test]
+    async fn failing_to_persist_rotated_tokens_does_not_fail_the_request() {
+        let base_url = serve_mock(
+            Router::new()
+                .route("/api/v1/test", get(protected))
+                .route("/api/v1/auth/refresh", post(slow_refresh)),
+        )
+        .await;
+        let (client, state, store, dir) = temp_client(
+            "persist_failure",
+            base_url,
+            Some(credentials_of("u1", "refresh")),
+        )
+        .await;
+        tokio::fs::create_dir(dir.join("agent-state.json"))
+            .await
+            .expect("block state persistence");
+        let response = client
+            .authenticated::<Value, Value>(reqwest::Method::GET, "/api/v1/test", None)
+            .await
+            .expect("request with rotated in-memory tokens");
+        assert_eq!(response["ok"], true);
+        assert_eq!(
+            state
+                .lock()
+                .await
+                .credentials
+                .as_ref()
+                .map(|credentials| credentials.refresh_token.as_str()),
+            Some("new-refresh")
+        );
+        drop(client);
+        drop(state);
+        drop(store);
+        if let Err(error) = tokio::fs::remove_dir_all(&dir).await {
+            tracing::warn!(path = %dir.display(), error = %error, "remove persist failure test directory");
+        }
+    }
+
+    /// 调试构建：另一个地址签发的凭据被当前地址拒绝时保留（不清掉与正式版共用的登录态）；
+    /// 由当前地址签发的凭据被拒照常登出。
+    #[tokio::test]
+    async fn a_foreign_endpoint_rejection_keeps_credentials_in_debug_builds() {
+        let base_url = serve_mock(
+            Router::new()
+                .route("/api/v1/test", get(protected))
+                .route("/api/v1/auth/refresh", post(reject_refresh)),
+        )
+        .await;
+        let mut foreign = credentials_of("u1", "refresh");
+        foreign.issuer = "https://cloud.example.invalid".to_owned();
+        let (client, state, store, dir) =
+            temp_client("foreign_issuer", base_url.clone(), Some(foreign)).await;
+        assert!(
+            client.endpoint().editable,
+            "tests run under debug_assertions"
+        );
+
+        let error = client
+            .authenticated::<Value, Value>(reqwest::Method::GET, "/api/v1/test", None)
+            .await
+            .expect_err("foreign endpoint rejects the token");
+        assert_eq!(error.status, Some(StatusCode::UNAUTHORIZED.as_u16()));
+        assert!(state.lock().await.credentials.is_some(), "kept");
+
+        if let Some(credentials) = state.lock().await.credentials.as_mut() {
+            credentials.issuer = base_url;
+        }
+        client
+            .authenticated::<Value, Value>(reqwest::Method::GET, "/api/v1/test", None)
+            .await
+            .expect_err("issuing endpoint rejects the token");
+        assert!(state.lock().await.credentials.is_none(), "signed out");
+        drop(client);
+        drop(state);
+        drop(store);
+        if let Err(error) = tokio::fs::remove_dir_all(&dir).await {
+            tracing::warn!(path = %dir.display(), error = %error, "remove foreign issuer test directory");
+        }
+    }
+
     /// 登出 / 撤销清理账号维度状态：同步数据按账号暂存、远程任务与绑定丢弃，并推送清空事件。
     #[tokio::test]
     async fn clearing_the_session_isolates_account_state_and_projects_empty_lists() {
@@ -2236,6 +2646,8 @@ mod tests {
             assert!(state.sync.dirty_keys.is_empty());
             assert!(state.remote_bindings.is_empty());
             assert_eq!(state.sync_stash["u1"].revision, 33);
+            // 接单绑定随账号暂存：重新登录同一账号后本机仍认得自己执行的任务。
+            assert_eq!(state.sync_stash["u1"].remote_bindings["r1"], "t1");
         }
         let fluxdown_protocol::SnapshotBody::Agent(snapshot) = events.snapshot().body else {
             panic!("agent snapshot expected");
@@ -2697,6 +3109,7 @@ mod tests {
                 refresh_token: "refresh".to_owned(),
                 expires_at_unix: i64::MAX,
                 session: None,
+                issuer: String::new(),
             }),
             ..AgentState::default()
         }));

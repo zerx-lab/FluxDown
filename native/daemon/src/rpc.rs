@@ -9,10 +9,10 @@ use fluxdown_protocol::handshake::{
     server_proof, verify_client_proof,
 };
 use fluxdown_protocol::{
-    ApplicationErrorCode, RequestId, RpcErrorData, RpcErrorObject, RpcRequest, RpcResponse,
-    ServiceRole, method, validate_first_request,
+    ApplicationErrorCode, CancelRequestParams, RequestId, RpcErrorData, RpcErrorObject, RpcRequest,
+    RpcResponse, ServiceRole, method, validate_first_request,
 };
-use tokio::task::{Id as TaskId, JoinSet};
+use tokio::task::{AbortHandle, Id as TaskId, JoinSet};
 use uuid::Uuid;
 
 use crate::service::DaemonService;
@@ -325,6 +325,12 @@ impl PreparedCall {
         method::is_slow_daemon_method(&self.request.method)
     }
 
+    /// 是否可经 `system.cancel` 中止（[`method::CANCELLABLE_DAEMON_METHODS`]）。
+    #[must_use]
+    pub fn is_cancellable(&self) -> bool {
+        method::is_cancellable_daemon_method(&self.request.method)
+    }
+
     pub async fn run(self) -> RpcResponse {
         self.service
             .call(&self.connection_id, self.is_local_agent, self.request)
@@ -338,6 +344,8 @@ pub enum Step {
     Reply(SessionReply),
     /// 普通调用；传输层按 [`PreparedCall::is_slow`] 选择 FIFO 在途槽或 [`SlowCalls`]。
     Call(PreparedCall),
+    /// `system.cancel`：传输层用 [`SlowCalls::cancel`] 中止 `target`，再以 `id` 回应。
+    Cancel { id: RequestId, target: RequestId },
 }
 
 /// 单条 WebSocket 连接的握手状态。
@@ -422,6 +430,24 @@ impl RpcSession {
                 ),
             )));
         }
+        if request.method == method::SYSTEM_CANCEL {
+            let parsed = request
+                .params
+                .map(serde_json::from_value::<CancelRequestParams>);
+            return match parsed {
+                Some(Ok(params)) => Step::Cancel {
+                    id,
+                    target: params.id,
+                },
+                Some(Err(_)) | None => Step::Reply(SessionReply::reply(RpcResponse::failure(
+                    id,
+                    RpcErrorObject::application(
+                        "invalid system.cancel params",
+                        RpcErrorData::new(ApplicationErrorCode::InvalidArgument, false),
+                    ),
+                ))),
+            };
+        }
         Step::Call(PreparedCall {
             service: self.service.clone(),
             connection_id: self.connection_id.clone(),
@@ -466,10 +492,12 @@ impl RpcSession {
 }
 
 /// 一条连接上在途的慢调用：有界并发，完成的响应经 [`SlowCalls::next`] 取出，由 socket
-/// 循环统一回写（写端只有循环一个，无需额外互斥）。丢弃即中止全部在途调用。
+/// 循环统一回写（写端只有循环一个，无需额外互斥）。丢弃即中止全部在途调用；单条调用可经
+/// [`SlowCalls::cancel`]（`system.cancel`）中止。
 pub struct SlowCalls {
     tasks: JoinSet<RpcResponse>,
     ids: HashMap<TaskId, RequestId>,
+    handles: HashMap<RequestId, AbortHandle>,
     limit: usize,
 }
 
@@ -479,6 +507,7 @@ impl SlowCalls {
         Self {
             tasks: JoinSet::new(),
             ids: HashMap::new(),
+            handles: HashMap::new(),
             limit,
         }
     }
@@ -488,8 +517,14 @@ impl SlowCalls {
         self.tasks.is_empty()
     }
 
-    /// 后台执行 `call`；在途数已达上限时返回应立即回给客户端的拒绝响应。
-    pub fn spawn<F>(&mut self, id: RequestId, call: F) -> Result<(), Box<RpcResponse>>
+    /// 后台执行 `call`；在途数已达上限时返回应立即回给客户端的拒绝响应。`cancellable` 的调用
+    /// 可经 [`Self::cancel`] 单独中止，其余只随连接断开中止。
+    pub fn spawn<F>(
+        &mut self,
+        id: RequestId,
+        cancellable: bool,
+        call: F,
+    ) -> Result<(), Box<RpcResponse>>
     where
         F: Future<Output = RpcResponse> + Send + 'static,
     {
@@ -503,8 +538,23 @@ impl SlowCalls {
             )));
         }
         let handle = self.tasks.spawn(call);
-        self.ids.insert(handle.id(), id);
+        self.ids.insert(handle.id(), id.clone());
+        if cancellable {
+            self.handles.insert(id, handle);
+        }
         Ok(())
+    }
+
+    /// 中止一条可中止的在途调用（丢弃其 future，下游据此停止工作）；返回是否找到仍在途的
+    /// 可中止目标。被中止的调用随后经 [`Self::next`] 以 `cancelled` 错误回应。
+    pub fn cancel(&mut self, id: &RequestId) -> bool {
+        match self.handles.remove(id) {
+            Some(handle) => {
+                handle.abort();
+                true
+            }
+            None => false,
+        }
     }
 
     /// 等下一条完成的响应；没有在途调用时返回 `None`。取消安全。
@@ -512,20 +562,34 @@ impl SlowCalls {
         loop {
             match self.tasks.join_next_with_id().await? {
                 Ok((task_id, response)) => {
-                    self.ids.remove(&task_id);
+                    if let Some(id) = self.ids.remove(&task_id) {
+                        self.handles.remove(&id);
+                    }
                     return Some(response);
                 }
                 Err(error) => {
-                    // 调用 panic：客户端仍在等这个请求，给它一个内部错误而不是悬空。
-                    if let Some(id) = self.ids.remove(&error.id()) {
+                    let Some(id) = self.ids.remove(&error.id()) else {
+                        continue;
+                    };
+                    self.handles.remove(&id);
+                    // 被 `system.cancel` 中止：调用方已放弃，仍按 JSON-RPC 给出结束响应。
+                    if error.is_cancelled() {
                         return Some(RpcResponse::failure(
                             id,
                             RpcErrorObject::application(
-                                "long-running call failed unexpectedly",
-                                RpcErrorData::new(ApplicationErrorCode::Internal, false),
+                                "call cancelled by the client",
+                                RpcErrorData::new(ApplicationErrorCode::Cancelled, false),
                             ),
                         ));
                     }
+                    // 调用 panic：客户端仍在等这个请求，给它一个内部错误而不是悬空。
+                    return Some(RpcResponse::failure(
+                        id,
+                        RpcErrorObject::application(
+                            "long-running call failed unexpectedly",
+                            RpcErrorData::new(ApplicationErrorCode::Internal, false),
+                        ),
+                    ));
                 }
             }
         }
@@ -854,7 +918,7 @@ mod tests {
         let (release, released) = tokio::sync::oneshot::channel::<()>();
         let mut slow = SlowCalls::new(MAX_SLOW_CALLS);
         assert!(slow.is_empty());
-        slow.spawn(RequestId::Integer(7), async move {
+        slow.spawn(RequestId::Integer(7), false, async move {
             released.await.expect("release pending slow call");
             success(7)
         })
@@ -886,14 +950,14 @@ mod tests {
         for id in 1..=2 {
             let (release, released) = tokio::sync::oneshot::channel::<()>();
             releases.push(release);
-            slow.spawn(RequestId::Integer(id), async move {
+            slow.spawn(RequestId::Integer(id), false, async move {
                 released.await.expect("release bounded slow call");
                 success(id)
             })
             .expect("within limit");
         }
         let rejected = slow
-            .spawn(RequestId::Integer(3), async { success(3) })
+            .spawn(RequestId::Integer(3), false, async { success(3) })
             .expect_err("limit reached");
         let RpcResponse::Failure(failure) = *rejected else {
             panic!("rejection must be a failure");
@@ -914,14 +978,14 @@ mod tests {
             .expect("response");
         assert!(response_id(&first).is_some());
         // 有一个名额释放后可以再接受新的慢调用。
-        slow.spawn(RequestId::Integer(4), async { success(4) })
+        slow.spawn(RequestId::Integer(4), false, async { success(4) })
             .expect("capacity freed");
     }
 
     #[tokio::test]
     async fn panicking_slow_call_answers_its_request_with_an_internal_error() {
         let mut slow = SlowCalls::new(MAX_SLOW_CALLS);
-        slow.spawn(RequestId::Integer(9), async {
+        slow.spawn(RequestId::Integer(9), false, async {
             panic!("slow call exploded")
         })
         .expect("spawn");
@@ -950,7 +1014,7 @@ mod tests {
         let aborted = Arc::new(AtomicBool::new(false));
         let mut slow = SlowCalls::new(MAX_SLOW_CALLS);
         let flag = DropFlag(aborted.clone());
-        slow.spawn(RequestId::Integer(1), async move {
+        slow.spawn(RequestId::Integer(1), false, async move {
             let _flag = flag;
             std::future::pending::<()>().await;
             success(1)
@@ -965,5 +1029,65 @@ mod tests {
         })
         .await
         .expect("in-flight call is aborted with the connection");
+    }
+
+    #[tokio::test]
+    async fn cancelling_one_slow_call_aborts_only_that_call() {
+        struct DropFlag(Arc<AtomicBool>);
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let aborted = Arc::new(AtomicBool::new(false));
+        let mut slow = SlowCalls::new(MAX_SLOW_CALLS);
+        let flag = DropFlag(aborted.clone());
+        slow.spawn(RequestId::Integer(1), true, async move {
+            let _flag = flag;
+            std::future::pending::<()>().await;
+            success(1)
+        })
+        .expect("spawn cancelled call");
+        let (release, released) = tokio::sync::oneshot::channel::<()>();
+        slow.spawn(RequestId::Integer(2), false, async move {
+            released.await.expect("release");
+            success(2)
+        })
+        .expect("spawn surviving call");
+        tokio::task::yield_now().await;
+
+        assert!(slow.cancel(&RequestId::Integer(1)));
+        assert!(
+            !slow.cancel(&RequestId::Integer(7)),
+            "unknown id is not in flight"
+        );
+        assert!(
+            !slow.cancel(&RequestId::Integer(2)),
+            "write-class slow calls are never cancelled individually"
+        );
+        let cancelled = tokio::time::timeout(Duration::from_secs(2), slow.next())
+            .await
+            .expect("cancelled call answers")
+            .expect("response");
+        let RpcResponse::Failure(failure) = cancelled else {
+            panic!("cancelled call must answer with a failure");
+        };
+        assert_eq!(failure.id, Some(RequestId::Integer(1)));
+        assert_eq!(
+            failure.error.data.map(|data| data.code),
+            Some(ApplicationErrorCode::Cancelled)
+        );
+        assert!(
+            aborted.load(Ordering::SeqCst),
+            "future is dropped on cancel"
+        );
+        assert!(!slow.cancel(&RequestId::Integer(1)), "already finished");
+
+        release.send(()).expect("surviving call still waits");
+        let survivor = tokio::time::timeout(Duration::from_secs(2), slow.next())
+            .await
+            .expect("surviving call answers")
+            .expect("response");
+        assert_eq!(response_id(&survivor), Some(RequestId::Integer(2)));
     }
 }

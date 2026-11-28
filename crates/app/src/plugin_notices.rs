@@ -5,8 +5,9 @@
 use std::collections::HashMap;
 
 use fluxdown_protocol::{AgentEvent, DaemonEvent, PluginDto, ServiceEvent, WsServerMsg};
+use fluxdown_ui_components::toast;
 use gpui::{App, Global};
-use gpui_component::{WindowExt as _, notification::Notification};
+use gpui_component::WindowExt as _;
 
 use crate::{
     app::Desktop,
@@ -114,7 +115,7 @@ fn show(message: String, cx: &mut App) {
     let notice = message.clone();
     let shown = handle
         .update(cx, |_, window, cx| {
-            window.push_notification(Notification::warning(notice), cx);
+            window.push_notification(toast::warning(notice), cx);
         })
         .is_ok();
     if !shown {

@@ -57,11 +57,16 @@ export type ErrorReason =
   | 'passwordChanged'
   | 'cloudUnreachable'
   | 'targetDeviceOffline'
+  | 'remoteTaskGone'
   | 'taskStateConflict'
   | 'taskDeviceMismatch'
   | 'saveDirUnavailable'
   | 'taskFilesInUse'
   | 'taskFilesNotDeleted'
+  | 'taskFileClearPending'
+  | 'browserRequestRequired'
+  | 'taskRestartTimeout'
+  | 'rssImageProxyUnverifiable'
   | 'pairingCodeInvalid'
   | 'pairingSessionExpired'
   | 'pairingTimeout'
@@ -99,8 +104,29 @@ export type ErrorReason =
   | 'referralAlreadyUsed'
   | 'referralPlanExcluded'
   | 'referralCodeTaken'
+  | 'assistantQuotaExceeded'
+  | 'assistantConfirmExpired'
+  | 'assistantSessionLimit'
   | 'subscriptionConflict'
   | 'unknown';
+
+/** Safe plugin diagnostics mirrored from `fluxdown_protocol::PluginFailureDetail`. */
+export type PluginFailureDetail =
+  | { kind: 'manifestUnreadable' }
+  | { kind: 'manifestUnknownField' }
+  | { kind: 'manifestJsonInvalid' }
+  | { kind: 'manifestIdentityInvalid' }
+  | { kind: 'manifestNameMissing' }
+  | { kind: 'manifestVersionInvalid' }
+  | { kind: 'manifestMinAppVersionInvalid' }
+  | { kind: 'manifestUnknownPermission' }
+  | { kind: 'manifestAuthPermissionMissing' }
+  | { kind: 'scriptCompileFailed' }
+  | { kind: 'scriptCompileFailedAt'; line: number; column: number }
+  | { kind: 'missingFile'; path: string }
+  | { kind: 'loadFailed' }
+  | { kind: 'notDevPlugin' }
+  | { kind: 'unknown' }
 
 /** `error.data`：应用错误的机器可读详情。 */
 export interface RpcErrorData {
@@ -111,6 +137,7 @@ export interface RpcErrorData {
   /** 乐观并发冲突时服务端当前版本（如 daemon.config.patch）。 */
   revision?: number;
   reason?: ErrorReason;
+  pluginDetail?: PluginFailureDetail;
 }
 
 /** JSON-RPC 2.0 错误对象。`data` 仅应用错误（code = -32000）携带。 */

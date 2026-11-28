@@ -101,7 +101,7 @@ public enum SettingsCatalog {
         daemon("dedup_same_url", .bool, "false"),
         daemon("file_exists_behavior", .choice(fileExistsBehaviors), "rename"),
         daemon("file_missing_action", .choice(fileMissingActions), "keep"),
-        daemon("completed_record_retention_days", .integer(min: 0, max: 3650), "0"),
+        daemon("completed_record_retention_days", .integer(min: -1, max: 3650), "0"),
         daemon("idle_file_scan", .bool, "false"),
         daemon("hash_after_download", .bool, "false"),
         daemon("hash_algorithm", .choice(hashAlgorithms), "sha256"),
@@ -192,6 +192,12 @@ public enum SettingsCatalog {
         daemon("proxy_port", .text, ""),
         daemon("proxy_username", .text, ""),
         daemon("proxy_password", .text, ""),
+        daemon("proxy_protocol_http", .text, ""),
+        daemon("proxy_protocol_ftp", .text, ""),
+        daemon("proxy_protocol_hls", .text, ""),
+        daemon("proxy_protocol_dash", .text, ""),
+        daemon("proxy_protocol_bt", .text, ""),
+        daemon("proxy_protocol_ed2k", .text, ""),
         daemon("proxy_no_list", .text, ""),
         daemon("proxy_rules", .text, ""),
         // Webhook / 组件 / 日志
@@ -228,6 +234,8 @@ public enum SettingsCatalog {
         pref("download.silent_auto_category", .bool, "true"),
         pref("download.silent_skip_selection", .bool, "false"),
         pref("download.keep_awake", .bool, "false"),
+        // 主机诊断（本机，不同步）
+        pref("diagnostics.log_level", .choice(["auto", "debug", "info", "warn", "error"]), "auto"),
     ]
 
     private static let index: [String: SettingField] = {

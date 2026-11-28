@@ -130,12 +130,40 @@ impl PaletteItem {
     }
 }
 
+/// 兜底条目的执行回调：参数为去掉首尾空白的查询词。
+type QueryRunner = Rc<dyn Fn(String, &mut Window, &mut App)>;
+
+/// 以查询词本身为参数的兜底条目（如「问 AI 助手：…」）：查询非空时排在全部结果之后，
+/// 没有任何命中时它就是唯一一行、默认选中，回车即执行。不计入使用记录。
+pub struct PaletteQueryAction {
+    icon: Icon,
+    title: Rc<dyn Fn(&str) -> SharedString>,
+    run: QueryRunner,
+}
+
+impl PaletteQueryAction {
+    /// `title` 由去掉首尾空白的查询词生成行标题；`run` 在面板关闭后于面板所在窗口执行。
+    pub fn new(
+        icon: impl Into<Icon>,
+        title: impl Fn(&str) -> SharedString + 'static,
+        run: impl Fn(String, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        Self {
+            icon: icon.into(),
+            title: Rc::new(title),
+            run: Rc::new(run),
+        }
+    }
+}
+
 /// 打开面板所需的全部输入。
 pub struct PaletteConfig {
     pub items: Vec<PaletteItem>,
     pub usage: UsageStats,
     /// 执行条目后回传最新使用记录，由宿主持久化。
     pub on_usage: UsageSink,
+    /// 查询词兜底条目；`None` = 不提供。
+    pub query_action: Option<PaletteQueryAction>,
 }
 
 /// 已打开面板的窗口（快捷键再按一次即关闭；同一窗口不叠开）。
@@ -187,7 +215,7 @@ pub fn open(window: &mut Window, cx: &mut App, translator: &Translator, config: 
     let delegate = PaletteDelegate::new(config, strings);
     let list = cx.new(|cx| ListState::new(delegate, window, cx).searchable(true));
     list.update(cx, |list, cx| {
-        let first = (!list.delegate().matches.is_empty()).then(IndexPath::default);
+        let first = (list.delegate().row_count() > 0).then(IndexPath::default);
         list.set_selected_index(first, window, cx);
     });
 
@@ -236,6 +264,9 @@ struct PaletteDelegate {
     selected: Option<usize>,
     usage: UsageStats,
     on_usage: UsageSink,
+    query_action: Option<PaletteQueryAction>,
+    /// 当前查询词（已去首尾空白），供查询词兜底条目使用。
+    query: String,
     scorer: Scorer,
     strings: PaletteStrings,
 }
@@ -269,6 +300,8 @@ impl PaletteDelegate {
             selected: None,
             usage: config.usage,
             on_usage: config.on_usage,
+            query_action: config.query_action,
+            query: String::new(),
             scorer: Scorer::default(),
             strings,
         };
@@ -278,6 +311,7 @@ impl PaletteDelegate {
 
     fn update_matches(&mut self, raw: &str) {
         let now = UsageStats::now();
+        raw.trim().clone_into(&mut self.query);
         let query = Query::new(raw);
         let mut ranked: Vec<(usize, i32)> = if query.is_empty() {
             self.entries
@@ -313,13 +347,22 @@ impl PaletteDelegate {
             ranked.truncate(MAX_RESULTS);
         }
         self.matches = ranked.into_iter().map(|(index, _)| index).collect();
-        self.selected = (!self.matches.is_empty()).then_some(0);
+        self.selected = (self.row_count() > 0).then_some(0);
     }
 
     fn entry_at(&self, row: usize) -> Option<&Entry> {
         self.matches
             .get(row)
             .and_then(|index| self.entries.get(*index))
+    }
+
+    /// 查询词兜底条目所在行（排在全部命中之后）；查询为空或未提供时没有这一行。
+    fn query_row(&self) -> Option<usize> {
+        (self.query_action.is_some() && !self.query.is_empty()).then_some(self.matches.len())
+    }
+
+    fn row_count(&self) -> usize {
+        self.matches.len() + usize::from(self.query_row().is_some())
     }
 }
 
@@ -337,7 +380,7 @@ impl ListDelegate for PaletteDelegate {
         // List 只在上一帧已有行时才选中首行；结果从空变为非空时这里补选，保证 Enter 可用。
         cx.spawn_in(window, async move |list, cx| {
             let Ok(()) = list.update_in(cx, |list, window, cx| {
-                let first = (!list.delegate().matches.is_empty()).then(IndexPath::default);
+                let first = (list.delegate().row_count() > 0).then(IndexPath::default);
                 list.set_selected_index(first, window, cx);
             }) else {
                 // 调色板或窗口已释放，结束这次异步选择更新。
@@ -347,7 +390,7 @@ impl ListDelegate for PaletteDelegate {
     }
 
     fn items_count(&self, _: usize, _: &App) -> usize {
-        self.matches.len()
+        self.row_count()
     }
 
     fn render_item(
@@ -356,14 +399,29 @@ impl ListDelegate for PaletteDelegate {
         _: &mut Window,
         cx: &mut Context<ListState<Self>>,
     ) -> Option<Self::Item> {
-        let entry = self.entry_at(ix.row)?;
+        let (icon, title, detail, shortcut) = if self.query_row() == Some(ix.row) {
+            let action = self.query_action.as_ref()?;
+            (
+                Some(action.icon.clone()),
+                (action.title)(&self.query),
+                None,
+                None,
+            )
+        } else {
+            let item = &self.entry_at(ix.row)?.item;
+            (
+                item.icon.clone(),
+                item.title.clone(),
+                item.detail.clone(),
+                item.shortcut.clone(),
+            )
+        };
         let theme = active_theme(cx);
         let tokens = theme.tokens();
         let extended = theme.extended();
         let icon_size = extended.icon.md;
-        let item = &entry.item;
 
-        let icon = match item.icon.clone() {
+        let icon = match icon {
             Some(icon) => icon
                 .size(icon_size)
                 .text_color(tokens.colors.muted_foreground)
@@ -384,9 +442,9 @@ impl ListDelegate for PaletteDelegate {
                     .text_size(tokens.typography.sm.size)
                     .line_height(tokens.typography.sm.line_height)
                     .text_color(tokens.colors.foreground)
-                    .child(item.title.clone()),
+                    .child(title),
             )
-            .children(item.detail.clone().map(|detail| {
+            .children(detail.map(|detail| {
                 div()
                     .flex_none()
                     .max_w(theme.text_extent(PALETTE_WIDTH * 0.45))
@@ -396,7 +454,7 @@ impl ListDelegate for PaletteDelegate {
                     .text_color(extended.colors.text_tertiary)
                     .child(detail)
             }))
-            .children(item.shortcut.clone().map(|shortcut| {
+            .children(shortcut.map(|shortcut| {
                 div()
                     .flex_none()
                     .text_size(tokens.typography.xs.size)
@@ -439,6 +497,16 @@ impl ListDelegate for PaletteDelegate {
     }
 
     fn confirm(&mut self, _: bool, window: &mut Window, cx: &mut Context<ListState<Self>>) {
+        if let Some(row) = self.selected
+            && self.query_row() == Some(row)
+            && let Some(action) = &self.query_action
+        {
+            let run = Rc::clone(&action.run);
+            let query = self.query.clone();
+            close(window, cx);
+            window.defer(cx, move |window, cx| run(query, window, cx));
+            return;
+        }
         let Some((id, run)) = self
             .selected
             .and_then(|row| self.entry_at(row))
@@ -459,7 +527,7 @@ mod tests {
 
     use gpui::SharedString;
 
-    use super::{PaletteConfig, PaletteDelegate, PaletteItem, PaletteItemKind};
+    use super::{PaletteConfig, PaletteDelegate, PaletteItem, PaletteItemKind, PaletteQueryAction};
     use crate::{strings::PaletteStrings, usage::UsageStats};
 
     fn delegate(items: Vec<PaletteItem>, usage: UsageStats) -> PaletteDelegate {
@@ -468,6 +536,7 @@ mod tests {
                 items,
                 usage,
                 on_usage: Rc::new(|_, _| {}),
+                query_action: None,
             },
             PaletteStrings {
                 placeholder: SharedString::default(),
@@ -486,6 +555,42 @@ mod tests {
             .iter()
             .map(|index| delegate.entries[*index].item.id.as_ref())
             .collect()
+    }
+
+    #[test]
+    fn query_action_follows_matches_and_is_selected_when_nothing_matches() {
+        let mut delegate = PaletteDelegate::new(
+            PaletteConfig {
+                items: vec![item(PaletteItemKind::Command, "cmd.pause_all", "全部暂停")],
+                usage: UsageStats::default(),
+                on_usage: Rc::new(|_, _| {}),
+                query_action: Some(PaletteQueryAction::new(
+                    gpui_component::IconName::Search,
+                    |query| SharedString::from(format!("ask {query}")),
+                    |_, _, _| {},
+                )),
+            },
+            PaletteStrings {
+                placeholder: SharedString::default(),
+                no_results: SharedString::default(),
+            },
+        );
+        assert_eq!(delegate.query_row(), None);
+
+        delegate.update_matches("qb");
+        assert_eq!(shown(&delegate), ["cmd.pause_all"]);
+        assert_eq!(delegate.query_row(), Some(1));
+        assert_eq!(delegate.selected, Some(0));
+
+        delegate.update_matches("  why is BT slow  ");
+        assert!(shown(&delegate).is_empty());
+        assert_eq!(delegate.query, "why is BT slow");
+        assert_eq!(delegate.query_row(), Some(0));
+        assert_eq!(delegate.selected, Some(0));
+
+        delegate.update_matches("   ");
+        assert_eq!(delegate.row_count(), 1);
+        assert_eq!(delegate.query_row(), None);
     }
 
     #[test]

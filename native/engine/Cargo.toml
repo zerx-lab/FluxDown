@@ -34,13 +34,14 @@ md4 = { version = "0.10", optional = true }
 rand = "0.9"
 # 与 feed-rs 同版本：feed 扩展命名空间（Mikan `<torrent><pubDate>`）的二次扫描。
 quick-xml = { version = "0.41", features = ["encoding"] }
+html5ever = "0.29.1"
 regex = "1"
 # 全平台 rustls（Windows 同样不用 native-tls / schannel：其 ClientHello 缺 status_request 与 ALPN，
 # 部分 Cloudflare WAF 直接 403，#1072）。代码侧另经 `downloader::client_builder` 显式选 rustls，
 # 防 Windows 桌面构建里 agent 打开的 reqwest 默认 native-tls 经 feature 合并抢回默认后端。
 # native roots 保留系统 CA（Windows 证书库 / Linux / macOS）；bundled WebPKI roots 为 Android/iOS
 # 提供公共 CA 兜底，避免系统证书探测返回空库时所有 HTTPS 请求 UnknownIssuer。
-reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls-native-roots", "rustls-tls-webpki-roots", "cookies", "json", "socks", "charset", "http2", "system-proxy", "macos-system-configuration"] }
+reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls-native-roots", "rustls-tls-webpki-roots", "fluxdown-legacy-tls", "cookies", "json", "socks", "charset", "http2", "system-proxy", "macos-system-configuration"] }
 # 与 gpui-shell 同一 Longbridge `quickjs-jit` 分叉（rquickjs API；以 `rquickjs` 名引用）。禁止叠加
 # `rust-alloc` / `allocator`（`set_memory_limit` 会静默失效）；`parallel` 必带（Async* 的 Send/Sync）。
 rquickjs = { package = "quickjs-jit", version = "0.14.1", features = ["full-async", "parallel"], optional = true }
@@ -63,7 +64,7 @@ fs2 = "0.4.3"
 fluxdown_logfile = { version = "0.1.0", path = "../logfile" }
 psl = "2.1.245"
 ed25519-dalek = { version = "3", default-features = false, features = ["fast"], optional = true }
-image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"], optional = true }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
 file-format = { version = "0.29", default-features = false, features = ["reader-zip", "reader-mp4", "reader-ebml", "reader-cfb", "reader-exe", "reader-txt"], optional = true }
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
 rustls-native-certs = "0.8"
@@ -85,11 +86,10 @@ if-addrs = "0.15"
 
 [dev-dependencies]
 http = "1.4.0"
-ts2mp4 = "0.3"
 
 [features]
 # 默认关闭；desktop/server 构建显式开启，mobile（Android/iOS）保持关闭以免背 JS 引擎债。
-plugins = ["dep:rquickjs", "dep:zip", "dep:ed25519-dalek", "dep:image", "dep:file-format"]
+plugins = ["dep:rquickjs", "dep:zip", "dep:ed25519-dalek", "dep:file-format"]
 # 组件托管安装（ffmpeg 下载/解压）；desktop/server 开启，mobile/CLI 关闭。
 components = ["dep:zip"]
 # P2P 能力（BitTorrent / eD2K）。默认开启；App Store 的 iOS 商店构建通过

@@ -91,7 +91,11 @@ fn pages_for(
     referral_visible: bool,
     cx: &mut App,
 ) -> Vec<SettingsPage> {
-    let ctx = SectionContext { store, translator };
+    let ctx = SectionContext {
+        store,
+        translator,
+        open_update_prompt: None,
+    };
     let referral = if referral_visible {
         ReferralPage::Shown(None)
     } else {

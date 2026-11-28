@@ -2,8 +2,9 @@
 # 容器由 tini 作 PID 1 启动，沿用旧版同一个 fluxdown-data 卷即可原地升级。
 #
 # 启动：docker compose up -d
-# 首次访问 http://<宿主机>:17800/ 会进入初始化向导，自行设置访问密钥
-# （至少 8 位，必须同时包含字母和数字）。无人值守部署可用 FLUXDOWN_TOKEN 预置。
+# 首次访问 http://<宿主机>:17800/ 会进入初始化向导：先输入一次性初始化口令（`docker logs fluxdown-server`
+# 或数据卷内 agent/setup-bootstrap 可读取），再自行设置访问密钥（至少 8 位，必须同时包含字母和数字）。
+# 无人值守部署可用 FLUXDOWN_TOKEN 预置（此时不生成口令）。
 # 首次设置完成前 /download、/download/batch 与 /jsonrpc（POST / WS）返回 403，
 # 不允许匿名接管或 aria2 RPC；Web 初始化页面与 setup 引导接口仍可访问。
 services:

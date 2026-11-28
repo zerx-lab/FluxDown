@@ -166,7 +166,13 @@ extension RssFormat {
             case .preparing: return RssItemChip(titleKey: "statusPreparing", systemImage: "hourglass", tone: .accent)
             case .unknown: return RssItemChip(titleKey: "rssTaskCreated", systemImage: "tray.and.arrow.down", tone: .neutral)
             }
-        case .ignored: return RssItemChip(titleKey: "rssStatusIgnored", systemImage: "eye.slash", tone: .neutral)
+        case .ignored:
+            let title = switch item.reason {
+            case "duplicate_torrent": "rssStatusDuplicateTorrent"
+            case "task_removed": "rssStatusTaskRemoved"
+            default: "rssStatusIgnored"
+            }
+            return RssItemChip(titleKey: title, systemImage: "eye.slash", tone: .neutral)
         case .filtered: return RssItemChip(titleKey: "rssStatusFiltered", systemImage: "line.3.horizontal.decrease", tone: .neutral)
         case .duplicateEpisode: return RssItemChip(titleKey: "rssStatusDuplicate", systemImage: "square.on.square", tone: .neutral)
         case .seeded: return RssItemChip(titleKey: "rssStatusHistory", systemImage: "clock.arrow.trianglehead.counterclockwise.rotate.90", tone: .neutral)

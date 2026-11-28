@@ -1,4 +1,4 @@
-//! 下载：保存位置、自定义分类、行为、连接与性能、自动重试、高级。
+//! 下载：常规（保存位置、行为）、连接（连接与性能、自动重试）、文件（文件处理、任务记录）、高级、自定义分类。
 
 use fluxdown_protocol::{HASH_ALGORITHMS, HIGH_SEGMENTS_WARN_ABOVE, SEVERE_SEGMENTS_WARN_ABOVE};
 use fluxdown_ui_components::{
@@ -6,11 +6,15 @@ use fluxdown_ui_components::{
 };
 use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_theme::active_theme;
-use gpui::{App, ParentElement, SharedString, Styled, Window};
-use gpui_component::h_flex;
+use gpui::{App, ParentElement, SharedString, Styled, Window, prelude::FluentBuilder as _};
+use gpui_component::{Disableable as _, h_flex, switch::Switch};
 
-use super::{SectionContext, auto_quantity, categories, rate_limit, retention, user_agent};
-use crate::ui::{Control, Explain, SettingsPage, SettingsSection, body_text, meta_text};
+use super::{
+    SectionContext, aria2_options, auto_quantity, categories, rate_limit, retention, user_agent,
+};
+use crate::ui::{
+    Control, Explain, SettingsPage, SettingsSection, SettingsTab, body_text, meta_text,
+};
 
 pub(crate) fn page(ctx: &SectionContext, cx: &mut App) -> SettingsPage {
     let store = ctx.store.read(cx);
@@ -29,14 +33,22 @@ pub(crate) fn page(ctx: &SectionContext, cx: &mut App) -> SettingsPage {
         ctx.t("settingsCatDownloadDesc"),
         FluxIcon::Download,
     )
-    .sections([
-        save_location_section(ctx),
-        behavior_section(ctx, cx),
-        connection_section(ctx, cx),
-        retry_section(ctx),
-        advanced_section(ctx),
-        categories::group(ctx, cx),
-    ])
+    .tab(
+        SettingsTab::new("general", ctx.t("settingsTabGeneral"))
+            .sections([save_location_section(ctx), behavior_section(ctx, cx)]),
+    )
+    .tab(
+        SettingsTab::new("connection", ctx.t("settingsTabConnection"))
+            .sections([connection_section(ctx, cx), retry_section(ctx)]),
+    )
+    .tab(SettingsTab::new("files", ctx.t("settingsTabFiles")).sections(files_sections(ctx)))
+    .tab(
+        SettingsTab::new("advanced", ctx.t("settingsGroupAdvanced")).section(advanced_section(ctx)),
+    )
+    .tab(
+        SettingsTab::new("categories", ctx.t("customCategories"))
+            .section(categories::group(ctx, cx)),
+    )
 }
 
 fn save_location_section(ctx: &SectionContext) -> SettingsSection {
@@ -57,16 +69,18 @@ fn save_location_section(ctx: &SectionContext) -> SettingsSection {
             Some("rememberLastDownloadTargetDesc"),
             ctx.pref_switch(REMEMBER_LAST_TARGET_PREF, false),
         ))
-        .row(ctx.item(
-            "saveDirHistory",
-            Some("saveDirHistoryDesc"),
-            ctx.pref_switch(SAVE_DIR_HISTORY_ENABLED_PREF, true),
-        ))
-        .row(ctx.item(
-            "clearSaveDirHistory",
-            Some("clearSaveDirHistoryDesc"),
-            clear_save_dir_history_control(ctx),
-        ))
+        .row(
+            ctx.item(
+                "saveDirHistory",
+                Some("saveDirHistoryDesc"),
+                save_dir_history_control(ctx),
+            )
+            .keywords([
+                ctx.t("clearSaveDirHistory"),
+                ctx.t("clearSaveDirHistoryDesc"),
+                ctx.t("clearSaveDirHistoryAction"),
+            ]),
+        )
 }
 
 /// 新建下载保存目录历史与分类目录记忆（设备本地偏好，与 `fluxdown_ui_downloads` 的
@@ -79,36 +93,62 @@ const SAVE_DIR_HISTORY_ENABLED_PREF: &str = "download.save_dir_history_enabled";
 /// `REMEMBER_LAST_TARGET_PREF` 同键；缺省关闭 = 默认本机）。
 const REMEMBER_LAST_TARGET_PREF: &str = "download.remember_last_target";
 
-/// 清空保存目录历史（含分类目录记忆）：两个键各写墓碑移除偏好；都没有记录时按钮置灰。
-fn clear_save_dir_history_control(ctx: &SectionContext) -> Control {
+/// 「记住历史保存路径」：开关 + 有记录时才出现的「清空历史记录」（含分类目录记忆，
+/// 两个键各写墓碑移除偏好）。清空与开关无关：关掉开关后旧记录仍可清空。
+fn save_dir_history_control(ctx: &SectionContext) -> Control {
     let store = ctx.store();
     let label = ctx.t("clearSaveDirHistoryAction");
     Control::custom(move |disabled, _key, _window, cx: &mut App| {
-        let empty = {
+        let tokens = active_theme(cx).tokens();
+        let (enabled, empty) = {
             let store = store.read(cx);
-            store
+            let empty = store
                 .pref(SAVE_DIR_HISTORY_PREF)
                 .and_then(serde_json::Value::as_array)
                 .is_none_or(Vec::is_empty)
                 && store
                     .pref(CATEGORY_SAVE_DIR_HISTORY_PREF)
                     .and_then(serde_json::Value::as_object)
-                    .is_none_or(serde_json::Map::is_empty)
+                    .is_none_or(serde_json::Map::is_empty);
+            (store.pref_bool(SAVE_DIR_HISTORY_ENABLED_PREF, true), empty)
         };
         let clear_store = store.clone();
-        button(
-            "download-clear-save-dir-history",
-            label.clone(),
-            ButtonVariant::Secondary,
-            cx,
-        )
-        .on_click(move |_, _, cx| {
-            clear_store.update(cx, |store, cx| {
-                store.set_pref(SAVE_DIR_HISTORY_PREF, serde_json::Value::Null, cx);
-                store.set_pref(CATEGORY_SAVE_DIR_HISTORY_PREF, serde_json::Value::Null, cx);
-            });
-        })
-        .disabled(disabled || empty)
+        let toggle_store = store.clone();
+        h_flex()
+            .gap(tokens.spacing.md)
+            .items_center()
+            .when(!empty, |this| {
+                this.child(
+                    button(
+                        "download-clear-save-dir-history",
+                        label.clone(),
+                        ButtonVariant::Ghost,
+                        cx,
+                    )
+                    .on_click(move |_, _, cx| {
+                        clear_store.update(cx, |store, cx| {
+                            store.set_pref(SAVE_DIR_HISTORY_PREF, serde_json::Value::Null, cx);
+                            store.set_pref(
+                                CATEGORY_SAVE_DIR_HISTORY_PREF,
+                                serde_json::Value::Null,
+                                cx,
+                            );
+                        });
+                    })
+                    .disabled(disabled),
+                )
+            })
+            .child(
+                Switch::new("download-save-dir-history-switch")
+                    .checked(enabled)
+                    .disabled(disabled)
+                    .on_click(move |checked: &bool, _, cx| {
+                        let checked = *checked;
+                        toggle_store.update(cx, |store, cx| {
+                            store.set_pref_bool(SAVE_DIR_HISTORY_ENABLED_PREF, checked, cx);
+                        });
+                    }),
+            )
     })
 }
 
@@ -191,47 +231,56 @@ fn behavior_section(ctx: &SectionContext, cx: &mut App) -> SettingsSection {
                 ctx.pref_switch("download.silent_skip_selection", false),
             ));
     }
-    section
-        .row(ctx.item(
-            "useServerTime",
-            Some("useServerTimeDesc"),
-            ctx.daemon_switch("use_server_time"),
-        ))
-        .row(ctx.item(
-            "fileExistsBehavior",
-            Some("fileExistsBehaviorDesc"),
-            ctx.daemon_enum_dropdown("file_exists_behavior", "fileExists"),
-        ))
-        .row(ctx.item(
-            "fileMissingAction",
-            Some("fileMissingActionDesc"),
-            ctx.daemon_enum_dropdown("file_missing_action", "fileMissing"),
-        ))
-        .row(ctx.item(
-            "completedRecordRetention",
-            Some("completedRecordRetentionDesc"),
-            retention::control(ctx),
-        ))
-        .row(ctx.item(
-            "idleFileScan",
-            Some("idleFileScanDesc"),
-            ctx.daemon_switch("idle_file_scan"),
-        ))
-        .row(ctx.item(
-            "hashAfterDownload",
-            Some("hashAfterDownloadDesc"),
-            ctx.daemon_switch("hash_after_download"),
-        ))
-        .row(ctx.item(
-            "hashAlgorithm",
-            Some("hashAlgorithmDesc"),
-            ctx.daemon_dropdown("hash_algorithm", hash_algorithm_options()),
-        ))
-        .row(ctx.item(
-            "defaultQueueSetting",
-            Some("defaultQueueSettingDesc"),
-            default_queue_control(ctx, cx),
-        ))
+    section.row(ctx.item(
+        "defaultQueueSetting",
+        Some("defaultQueueSettingDesc"),
+        default_queue_control(ctx, cx),
+    ))
+}
+
+/// 「文件」Tab：落盘冲突、文件时间与校验 + 已完成任务记录的保留与清理。
+fn files_sections(ctx: &SectionContext) -> [SettingsSection; 2] {
+    [
+        SettingsSection::new()
+            .title(ctx.t("settingsGroupFileHandling"))
+            .row(ctx.item(
+                "fileExistsBehavior",
+                Some("fileExistsBehaviorDesc"),
+                ctx.daemon_enum_dropdown("file_exists_behavior", "fileExists"),
+            ))
+            .row(ctx.item(
+                "useServerTime",
+                Some("useServerTimeDesc"),
+                ctx.daemon_switch("use_server_time"),
+            ))
+            .row(ctx.item(
+                "hashAfterDownload",
+                Some("hashAfterDownloadDesc"),
+                ctx.daemon_switch("hash_after_download"),
+            ))
+            .row(ctx.item(
+                "hashAlgorithm",
+                Some("hashAlgorithmDesc"),
+                ctx.daemon_dropdown("hash_algorithm", hash_algorithm_options()),
+            )),
+        SettingsSection::new()
+            .title(ctx.t("settingsGroupTaskRecords"))
+            .row(ctx.item(
+                "fileMissingAction",
+                Some("fileMissingActionDesc"),
+                ctx.daemon_enum_dropdown("file_missing_action", "fileMissing"),
+            ))
+            .row(ctx.item(
+                "completedRecordRetention",
+                Some("completedRecordRetentionDesc"),
+                retention::control(ctx),
+            ))
+            .row(ctx.item(
+                "idleFileScan",
+                Some("idleFileScanDesc"),
+                ctx.daemon_switch("idle_file_scan"),
+            )),
+    ]
 }
 
 /// 与 `fluxdown_ui_downloads` 的 `hash_algorithm_label` 同映射。设置 crate 不依赖下载
@@ -455,4 +504,5 @@ fn advanced_section(ctx: &SectionContext) -> SettingsSection {
             )
             .help(ctx.t("revealFileCmdDesc")),
         )
+        .row(aria2_options::row(ctx))
 }

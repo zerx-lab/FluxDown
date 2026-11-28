@@ -28,12 +28,16 @@ export interface RemoteServerConfig {
   remoteUrl: string;
   /** 鉴权 token（server 端强制校验，恒非空） */
   remoteToken: string;
+  /** Explicit destinations must not forward credentials or request bodies on redirects. */
+  rejectRedirects?: boolean;
 }
 
 // 下载投递超时：服务端只需入队建任务、无需等待下载完成，但预留网络抖动余量。
 const DOWNLOAD_TIMEOUT_MS = 15000;
 // ping 探活超时：短超时，用于快速判定远程是否在线（fallback 路由决策 / popup 测试连接）。
 const PING_TIMEOUT_MS = 4000;
+
+export const REMOTE_MANAGEMENT_UNAVAILABLE = "remote_management_unavailable";
 
 /** ping 成功时的附加信息（服务端 /ping 返回 {app, version, message: "pong"}） */
 export interface RemotePingResult extends ApiResponse {
@@ -76,6 +80,7 @@ async function postJson(
       method: "POST",
       headers: buildHeaders(cfg),
       body: JSON.stringify(body),
+      redirect: cfg.rejectRedirects ? "error" : "follow",
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (err) {
@@ -144,6 +149,43 @@ export async function remoteSendBatchDownloadRequest(
   );
 }
 
+type RemoteTask = Omit<import("./native-messaging").TaskBrief, "speed">;
+
+async function taskRequest(cfg: RemoteServerConfig, method: "GET" | "DELETE", suffix = "") {
+  const response = await fetch(`${cfg.remoteUrl}/api/v1/tasks${suffix}`, {
+    method,
+    headers: buildHeaders(cfg),
+    redirect: "error",
+    credentials: "omit",
+    signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
+  });
+  if (method === "GET" && response.status === 404) {
+    throw new Error(REMOTE_MANAGEMENT_UNAVAILABLE);
+  }
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  try {
+    return await response.json();
+  } catch {
+    // 反代回退到 SPA 页面（200 HTML）：管理 API 实际不可达。
+    if (method === "GET") throw new Error(REMOTE_MANAGEMENT_UNAVAILABLE);
+    throw new Error("Invalid response");
+  }
+}
+
+export async function remoteListTasks(cfg: RemoteServerConfig): Promise<RemoteTask[]> {
+  const data: unknown = await taskRequest(cfg, "GET");
+  if (!Array.isArray(data)) throw new Error("Invalid task list");
+  return data.map(({ taskId, fileName, status, downloadedBytes, totalBytes, errorMessage, createdAt, fileMissing }: RemoteTask) => ({
+    taskId, fileName, status, downloadedBytes, totalBytes, errorMessage, createdAt, fileMissing,
+  }));
+}
+
+export async function remoteRemoveTask(cfg: RemoteServerConfig, taskId: string): Promise<boolean> {
+  if (!taskId || taskId === "." || taskId === "..") return false;
+  const data = await taskRequest(cfg, "DELETE", `/${encodeURIComponent(taskId)}?deleteFiles=false`);
+  return data?.success === true;
+}
+
 /**
  * 探活：GET {remoteUrl}/ping（无鉴权，200 即在线）。
  * 用于 fallback 模式的可用性判定与 popup「测试连接」按钮。
@@ -187,9 +229,8 @@ export async function remotePing(
  * 连接验证：/ping 探活 + 带 token 请求 `GET {remoteUrl}/api/v1/info` 校验鉴权。
  *
  * /ping 无鉴权，token 填错也会 200——只用它做「测试连接」会误报成功。
- * fluxdown_server 的管理 API 恒开且强制 token，/api/v1/info 是最轻量的
- * 鉴权校验端点：401/403 → token 错误。404（指向管理 API 关闭的桌面端等
- * 无法校验 token 的宿主）不视为失败，退化为 ping 结果。
+ * /api/v1/info 的 401/403 表示鉴权失败。404 时只能确认宿主在线：
+ * 保留独立的下载接管路径，同时告知调用方无法验证管理 API 和访问密钥。
  * 用于 popup/options 的「测试连接」与远程模式解锁（settings.remoteVerified）。
  */
 export async function remoteVerify(
@@ -205,6 +246,7 @@ export async function remoteVerify(
     resp = await fetch(`${cfg.remoteUrl}/api/v1/info`, {
       method: "GET",
       headers: buildHeaders(cfg),
+      redirect: cfg.rejectRedirects ? "error" : "follow",
       signal,
     });
   } catch (err) {
@@ -213,6 +255,16 @@ export async function remoteVerify(
 
   if (resp.status === 401 || resp.status === 403) {
     return { success: false, message: "remote_auth_failed" };
+  }
+  // 管理 API 的 404 / 5xx / 429 / 反代错误只说明无法验证，不得封掉独立的下载接管。
+  if (!resp.ok) {
+    return { ...ping, message: REMOTE_MANAGEMENT_UNAVAILABLE };
+  }
+  // 反代把 /api/v1/ 回退到 SPA 页面时是 200 HTML，同样视为管理 API 不可用。
+  try {
+    await resp.json();
+  } catch {
+    return { ...ping, message: REMOTE_MANAGEMENT_UNAVAILABLE };
   }
   return ping;
 }

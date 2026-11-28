@@ -26,7 +26,9 @@ export const AVAILABLE_LOCALES: readonly string[] = Object.keys(TABLES).sort(
 export function resolveLocale(locale: string): string {
   const normalized = normalizeLocale(locale)
   if (normalized in TABLES) return normalized
-  const [prefix = normalized, scriptOrRegion] = normalized.split('-')
+  const [rawPrefix = normalized, scriptOrRegion] = normalized.split('-')
+  // ISO 639 废弃码：旧版 Java / Android WebView 仍上报 `in`（= `id` 印尼语）。
+  const prefix = rawPrefix === 'in' ? 'id' : rawPrefix
   if (prefix === 'zh') {
     return scriptOrRegion === 'hant' || scriptOrRegion === 'tw' || scriptOrRegion === 'hk' || scriptOrRegion === 'mo'
       ? 'zh-tw'

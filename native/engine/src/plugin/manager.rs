@@ -22,11 +22,12 @@ use crate::subscription::{
 };
 
 use super::call_egress::{CallEgress, EgressOutcome, EgressPlan, PlanTask, plan_call, route_name};
+use super::diagnostic::PluginFailureDiagnostic;
 use super::manifest::{
     PERMISSION_AUTH, PERMISSION_FFMPEG, PERMISSION_YTDLP, PluginManifest, SettingField,
     SettingType, is_safe_relative_path, is_valid_identity,
 };
-use super::quickjs::HARD_TIMEOUT_CEILING;
+use super::quickjs::{HARD_TIMEOUT_CEILING, RESOLVE_TIMEOUT_CEILING};
 use super::runtime::{
     AuthRequest, AuthResult, ExecutionBudget, HostContext, ManifestItem, PluginBridge,
     PluginEntryKind, PluginError, PluginEvent, PluginScript, ResolveManifest, ResolveRequest,
@@ -298,8 +299,8 @@ pub struct PluginInfo {
     /// 加载状态：`Loaded` 表示已通过启动时的 manifest/源码加载，`Failed` 表示
     /// 目录仍存在但加载失败。与 `enabled` 分离：手动禁用的插件仍可能已加载。
     pub load_status: String,
-    /// 加载失败的可读原因；加载成功时为空。
-    pub load_error: String,
+    /// Safe loading diagnostic for a failed plugin; loaded plugins have none.
+    pub load_detail: Option<PluginFailureDiagnostic>,
     /// manifest 声明的贡献点（视图 / 命令 / 嗅探规则）；加载失败的插件为空。
     pub contributions: super::manifest::ContributesDecl,
     /// 视图图标 SVG 文本（view id → 内容）；加载失败的插件为空。
@@ -328,12 +329,13 @@ pub struct PluginInfo {
 /// 但管理页仍需要看到它，才能展示原因并允许用户卸载或修复。
 #[derive(Debug, Clone)]
 struct FailedPlugin {
+    /// A failed dev copy keeps its registration identity, even if the manifest changed it.
     identity: String,
     /// 实际扫描到的插件目录。identity 可能来自非法 manifest，不能反向拼接路径。
     dir: Box<Path>,
     manifest: Option<Box<PluginManifest>>,
     dev_mode: bool,
-    error: String,
+    error: PluginError,
 }
 
 /// 插件管理器。
@@ -553,10 +555,18 @@ impl PluginManager {
 
     /// 扫描根目录 + `plugin.dev.*` 键，解析并加载全部插件。
     pub async fn load_all(&self) {
+        // Individual plugin failures are recorded in the snapshot; log scan-level failures.
+        if let Err(error) = self.load_plugins(None).await {
+            crate::logger::report_error("plugin", "load_all", &error);
+        }
+    }
+
+    async fn load_plugins(&self, install_dir: Option<&Path>) -> Result<(), PluginError> {
         let _serial = self.load_lock.lock().await;
         self.migrate_consent().await;
         let mut loaded: Vec<LoadedPlugin> = Vec::new();
         let mut failed: Vec<FailedPlugin> = Vec::new();
+        let mut validated_install = false;
 
         // 1. 安装目录下的子目录。
         if let Ok(mut rd) = tokio::fs::read_dir(&self.root).await {
@@ -566,12 +576,24 @@ impl PluginManager {
                     .file_name()
                     .is_some_and(|name| name.to_string_lossy().starts_with('.'));
                 if path.is_dir() && !is_internal_dir {
+                    let is_install = install_dir == Some(path.as_path());
+                    // Validate the package itself before a same-identity dev copy can replace it.
                     match self.load_one(&path, false, None).await {
-                        Ok(p) => loaded.push(p),
+                        Ok(p) => {
+                            if is_install {
+                                self.validate_plugin(&p).await?;
+                                validated_install = true;
+                            }
+                            loaded.push(p);
+                        }
+                        Err(p) if is_install => return Err(p.error),
                         Err(p) => failed.push(p),
                     }
                 }
             }
+        }
+        if install_dir.is_some() && !validated_install {
+            return Err(PluginError::LoadFailed("未找到刚安装的插件目录".to_owned()));
         }
 
         // 2. dev 插件（plugin.dev.<identity> = abs path）。
@@ -619,6 +641,7 @@ impl PluginManager {
         self.reconcile_hosts().await;
         self.initialize_archive_rule_packs().await;
         self.archive_rule_updates_notify.notify_one();
+        Ok(())
     }
 
     /// 加载单个插件目录。失败记 warn 并保留诊断信息（不阻塞其他插件）。
@@ -637,7 +660,9 @@ impl PluginManager {
                     dir: dir.to_path_buf().into_boxed_path(),
                     manifest: None,
                     dev_mode: dev,
-                    error: format!("读取 manifest.json 失败: {error}"),
+                    error: PluginError::ManifestInvalid(format!(
+                        "读取 manifest.json 失败: {error}"
+                    )),
                 };
                 log_info!("[plugin] 跳过 {dir:?}: {}", failure.error);
                 return Err(failure);
@@ -648,11 +673,11 @@ impl PluginManager {
                 if let Err(error) = manifest.validate() {
                     log_info!("[plugin] 跳过 {dir:?}: manifest 非法: {error}");
                     return Err(FailedPlugin {
-                        identity: manifest.identity.clone(),
+                        identity: identity_hint.unwrap_or(&manifest.identity).to_owned(),
                         dir: dir.to_path_buf().into_boxed_path(),
                         manifest: Some(Box::new(manifest)),
                         dev_mode: dev,
-                        error: error.to_string(),
+                        error,
                     });
                 }
                 manifest
@@ -664,7 +689,7 @@ impl PluginManager {
                     dir: dir.to_path_buf().into_boxed_path(),
                     manifest: None,
                     dev_mode: dev,
-                    error: error.to_string(),
+                    error,
                 });
             }
         };
@@ -682,11 +707,14 @@ impl PluginManager {
                 self.app_version
             );
             return Err(FailedPlugin {
-                identity: manifest.identity.clone(),
+                identity: identity_hint.unwrap_or(&manifest.identity).to_owned(),
                 dir: dir.to_path_buf().into_boxed_path(),
                 manifest: Some(Box::new(manifest)),
                 dev_mode: dev,
-                error: format!("需要 App ≥ {}，当前 {}", required_version, self.app_version),
+                error: PluginError::LoadFailed(format!(
+                    "需要 App ≥ {}，当前 {}",
+                    required_version, self.app_version
+                )),
             });
         }
 
@@ -789,14 +817,14 @@ impl PluginManager {
                 }
             }
         }
-        if let Err(e) = file_check {
-            log_info!("[plugin] 跳过 {}: {e}", manifest.identity);
+        if let Err(error) = file_check {
+            log_info!("[plugin] 跳过 {}: {error}", manifest.identity);
             return Err(FailedPlugin {
-                identity: manifest.identity.clone(),
+                identity: identity_hint.unwrap_or(&manifest.identity).to_owned(),
                 dir: dir.to_path_buf().into_boxed_path(),
-                manifest: Some(Box::new(manifest.clone())),
+                manifest: Some(Box::new(manifest)),
                 dev_mode: dev,
-                error: e.to_string(),
+                error,
             });
         }
 
@@ -814,10 +842,10 @@ impl PluginManager {
 
         // 入口脚本：dev 与非 dev 都在加载期读一遍——缺失或不可读直接判定加载失败并点名
         // 文件，而不是等到调用时才报「未提供 resolver」。非 dev 另存缓存；dev 每次调用重读。
-        let fail = |error: String| {
+        let fail = |error: PluginError| {
             log_info!("[plugin] 跳过 {}: {error}", manifest.identity);
             FailedPlugin {
-                identity: manifest.identity.clone(),
+                identity: identity_hint.unwrap_or(&manifest.identity).to_owned(),
                 dir: dir.to_path_buf().into_boxed_path(),
                 manifest: Some(Box::new(manifest.clone())),
                 dev_mode: dev,
@@ -860,7 +888,7 @@ impl PluginManager {
         if let Some(source) = archive_source.as_deref()
             && let Err(error) = self.runtime.check_compile(source)
         {
-            return Err(fail(format!("archive 脚本编译失败: {error}")));
+            return Err(fail(error));
         }
         let (
             resolver_cache,
@@ -882,32 +910,17 @@ impl PluginManager {
             )
         };
 
-        let identity = manifest.identity.clone();
-        let enabled_str = self
-            .db
-            .get_config(&format!("plugin.{identity}.enabled"))
-            .await
-            .ok()
-            .flatten();
-        let reason_str = self
-            .db
-            .get_config(&format!("plugin.{identity}.disabled_reason"))
-            .await
-            .ok()
-            .flatten();
-        let disabled_reason = reason_str
-            .as_deref()
-            .map(DisabledReason::parse)
-            .unwrap_or(DisabledReason::None);
-        // 无 enabled 键 = 新装默认启用。
-        let mut enabled = enabled_str.as_deref().map(|v| v == "true").unwrap_or(true);
-        let mut disabled_reason = disabled_reason;
-        // 授权判定：任一待授权项非空 → 视为禁用（不写 enabled 键，授权后直接生效）。
-        let consent = self.read_consent(&identity).await;
-        let (pending_perms, pending_hosts) = super::consent::pending(&manifest, consent.as_ref());
-        if !pending_perms.is_empty() || !pending_hosts.is_empty() {
-            enabled = false;
-            disabled_reason = DisabledReason::ConsentRequired;
+        let (mut enabled, mut disabled_reason) = self.plugin_state(&manifest.identity).await;
+        // Consent blocks a plugin that would otherwise be enabled. Keep an
+        // existing disable reason; the pending grants are listed separately.
+        if enabled {
+            let consent = self.read_consent(&manifest.identity).await;
+            let (pending_perms, pending_hosts) =
+                super::consent::pending(&manifest, consent.as_ref());
+            if !pending_perms.is_empty() || !pending_hosts.is_empty() {
+                enabled = false;
+                disabled_reason = DisabledReason::ConsentRequired;
+            }
         }
 
         let main_entry = manifest.main.as_ref().map(|m| dir.join(&m.entry));
@@ -1148,12 +1161,15 @@ impl PluginManager {
             Some(PluginError::Timeout)
                 if egress.is_some_and(|egress| egress.observer().network_caused_timeout()) =>
             {
-                log_info!("[plugin:{identity}] 超时由网络造成（断网 / 仍在等待网络），不计入熔断");
+                tracing::debug!(
+                    identity,
+                    "network timeout does not count toward plugin circuit breaker"
+                );
             }
-            Some(PluginError::Timeout | PluginError::MemoryLimitExceeded) => {
+            Some(error @ (PluginError::Timeout | PluginError::MemoryLimitExceeded)) => {
                 let n = streak.fetch_add(1, Ordering::SeqCst) + 1;
                 if n >= CIRCUIT_BREAKER_THRESHOLD {
-                    self.trip_circuit_breaker(identity).await;
+                    self.trip_circuit_breaker(identity, error).await;
                 }
             }
             _ => streak.store(0, Ordering::SeqCst),
@@ -1525,6 +1541,23 @@ impl PluginManager {
     /// 通知平面：遍历声明该事件且 match 命中的启用插件，逐个在插件 runtime 上 spawn
     /// invoke_hook。**全部 fire-and-forget，本函数立即返回**。
     pub async fn notify(self: &Arc<Self>, event: PluginEvent) {
+        self.dispatch_notification(event, None).await;
+    }
+
+    pub(crate) async fn track_failure_notification(
+        self: &Arc<Self>,
+        event: PluginEvent,
+    ) -> Vec<tokio::task::JoinHandle<()>> {
+        let mut pending = Vec::new();
+        self.dispatch_notification(event, Some(&mut pending)).await;
+        pending
+    }
+
+    async fn dispatch_notification(
+        self: &Arc<Self>,
+        event: PluginEvent,
+        mut pending: Option<&mut Vec<tokio::task::JoinHandle<()>>>,
+    ) {
         let snapshot = self.plugins.read().await.clone();
         let ev_name = event.declared_name();
         let url = event.url().to_string();
@@ -1539,7 +1572,10 @@ impl PluginManager {
                 .as_ref()
                 .is_some_and(|m| m.events.iter().any(|e| e == ev_name))
             {
-                self.deliver_host_event(&p.manifest.identity, event.clone());
+                let work = self.deliver_host_event(&p.manifest.identity, event.clone());
+                if let Some(pending) = &mut pending {
+                    pending.push(work);
+                }
             }
             let Some(hooks) = &p.manifest.hooks else {
                 continue;
@@ -1605,8 +1641,12 @@ impl PluginManager {
             let dev = p.dev;
             let hooks_entry = p.hooks_entry.clone();
             let hooks_cache = p.hooks_cache.clone();
+            let local_work = activity_task_id
+                .as_ref()
+                .map(|_| crate::transfer_activity::LocalWorkGuard::new(sink.clone()));
 
-            handle.spawn(async move {
+            let work = handle.spawn(async move {
+                let _local_work = local_work;
                 if let Some(tid) = &activity_task_id {
                     sink.emit(EngineEvent::PluginHookActivity {
                         task_id: tid.clone(),
@@ -1641,18 +1681,21 @@ impl PluginManager {
                     });
                 }
             });
+            if let Some(pending) = &mut pending {
+                pending.push(work);
+            }
         }
     }
 
-    /// resolve 预算：manifest `timeoutMs` 可下调，30s 硬顶；`memoryLimitMb` 替换默认
-    /// 堆上限，[`RESOLVE_MEMORY_CEILING`] 硬顶。
+    /// resolve 预算：manifest `timeoutMs` 可上下调，[`RESOLVE_TIMEOUT_CEILING`] 硬顶；
+    /// `memoryLimitMb` 替换默认堆上限，[`RESOLVE_MEMORY_CEILING`] 硬顶。
     fn resolve_budget_for(&self, manifest: &PluginManifest) -> ExecutionBudget {
         let resolver = manifest.resolvers.first();
         let timeout = resolver
             .and_then(|r| r.timeout_ms)
             .map(Duration::from_millis)
             .unwrap_or(self.resolve_budget.timeout)
-            .min(HARD_TIMEOUT_CEILING);
+            .min(RESOLVE_TIMEOUT_CEILING);
         let memory_limit_bytes = resolver
             .and_then(|r| r.memory_limit_mb)
             .map(|mb| usize::try_from(mb).map_or(usize::MAX, |mb| mb.saturating_mul(1024 * 1024)))
@@ -1808,7 +1851,7 @@ impl PluginManager {
             .await
         {
             Ok(()) => match self.db.set_config(&dev_key, &abs.to_string_lossy()).await {
-                Ok(()) => self.activate_dev_install(&identity).await,
+                Ok(()) => self.load_and_validate_dev(&identity).await,
                 Err(e) => Err(PluginError::Runtime(e.to_string())),
             },
             Err(error) => Err(error),
@@ -1830,14 +1873,20 @@ impl PluginManager {
         Ok(identity)
     }
 
-    /// dev 安装的加载 + 校验：dev 副本必须真正加载成功（否则同 identity 的已安装
-    /// 副本会被顶替/保留，而 dev 版未生效却报成功）。
-    async fn activate_dev_install(&self, identity: &str) -> Result<(), PluginError> {
+    /// 安装或重载 dev 副本时，不能由同 identity 的已安装副本代替校验。
+    async fn load_and_validate_dev(&self, identity: &str) -> Result<(), PluginError> {
         self.load_all().await;
         if let Some(error) = self.dev_load_failure(identity).await {
             return Err(error);
         }
-        self.validate_loaded(identity).await
+        let snapshot = self.plugins.read().await.clone();
+        let Some(plugin) = snapshot
+            .iter()
+            .find(|p| p.dev && p.manifest.identity == identity)
+        else {
+            return Err(PluginError::LoadFailed("未找到已加载的开发插件".to_owned()));
+        };
+        self.validate_plugin(plugin).await
     }
 
     /// 本 identity 的 dev 登记对应的加载失败（忽略被 dev 顶替的已安装副本那条
@@ -1848,7 +1897,7 @@ impl PluginManager {
             .await
             .iter()
             .find(|p| p.identity == identity && p.dev_mode)
-            .map(|p| PluginError::LoadFailed(p.error.clone()))
+            .map(|p| p.error.clone())
     }
 
     /// 重新加载一个 dev 插件：重读 manifest 与全部入口源码并做与安装相同的
@@ -1875,11 +1924,7 @@ impl PluginManager {
         if !registered {
             return Err(PluginError::NotDevPlugin(identity.to_string()));
         }
-        self.load_all().await;
-        if let Some(error) = self.dev_load_failure(identity).await {
-            return Err(error);
-        }
-        self.validate_loaded(identity).await?;
+        self.load_and_validate_dev(identity).await?;
         // 仅成功的重载替换了生效代码，失败不递增修订号。
         self.mark_code_replaced(identity).await;
         Ok(())
@@ -2019,9 +2064,7 @@ impl PluginManager {
     ) -> Result<(), PluginError> {
         self.apply_install_enable_rule(identity, new_version, prior)
             .await?;
-        // 整表重载后做 compile / pattern 校验；失败由调用方回滚。
-        self.load_all().await;
-        self.validate_loaded(identity).await
+        self.load_plugins(Some(&self.root.join(identity))).await
     }
 
     /// 安装（含 dev 安装）的启停写入规则，必须在加载新代码之前调用：
@@ -2052,14 +2095,8 @@ impl PluginManager {
         Ok(())
     }
 
-    /// 对当前快照中的插件做 compile / pattern 校验（不改任何状态）。
-    async fn validate_loaded(&self, identity: &str) -> Result<(), PluginError> {
-        let snapshot = self.plugins.read().await.clone();
-        let Some(p) = snapshot.iter().find(|p| p.manifest.identity == identity) else {
-            return Err(PluginError::ManifestInvalid(
-                "安装后未能加载插件（校验失败或版本门槛不满足）".to_string(),
-            ));
-        };
+    /// 对扫描得到的具体插件副本做 compile / pattern 校验。
+    async fn validate_plugin(&self, p: &LoadedPlugin) -> Result<(), PluginError> {
         for src in [
             p.resolver_source().await,
             p.hooks_source().await,
@@ -2509,7 +2546,7 @@ impl PluginManager {
     }
 
     /// 熔断：自动禁用 + emit 事件。
-    async fn trip_circuit_breaker(&self, identity: &str) {
+    async fn trip_circuit_breaker(&self, identity: &str, trigger: &PluginError) {
         if let Err(error) = self
             .write_enabled(identity, false, DisabledReason::CircuitBreaker)
             .await
@@ -2523,8 +2560,8 @@ impl PluginManager {
             identity: identity.to_string(),
             reason: DisabledReason::CircuitBreaker.as_str().to_string(),
         });
-        log_info!("[plugin] {identity} 连续超时，已自动熔断禁用");
-        self.audit_event(identity, "breaker", "", "consecutive timeouts");
+        tracing::warn!(identity, %trigger, "plugin disabled by circuit breaker");
+        self.audit_event(identity, "breaker", "", "consecutive execution limits");
     }
 
     /// 批量设置，all-or-nothing。
@@ -2653,7 +2690,7 @@ impl PluginManager {
                     .map(|r| r.match_decl.urls.clone())
                     .unwrap_or_default(),
                 load_status: PluginLoadStatus::Loaded.as_str().to_string(),
-                load_error: String::new(),
+                load_detail: None,
                 contributions: p.manifest.contributes.clone().unwrap_or_default(),
                 view_icons: p.view_icons.clone(),
                 has_main: p.manifest.main.is_some(),
@@ -2734,7 +2771,10 @@ impl PluginManager {
                     .map(|r| r.match_decl.urls.clone())
                     .unwrap_or_default(),
                 load_status: PluginLoadStatus::Failed.as_str().to_string(),
-                load_error: truncate_load_error(&p.error),
+                load_detail: Some(
+                    PluginFailureDiagnostic::from_error(&p.error)
+                        .unwrap_or(PluginFailureDiagnostic::LoadFailed),
+                ),
                 contributions: super::manifest::ContributesDecl::default(),
                 view_icons: Vec::new(),
                 has_main: false,
@@ -2864,8 +2904,10 @@ fn dedup_plugins_by_identity(
                     dir: displaced.dir.clone().into_boxed_path(),
                     manifest: Some(Box::new(displaced.manifest.clone())),
                     dev_mode: displaced.dev,
-                    error: "identity 重复：与另一已加载插件冲突，可在此卸载清理残留目录/配置"
-                        .to_string(),
+                    error: PluginError::LoadFailed(
+                        "identity 重复：与另一已加载插件冲突，可在此卸载清理残留目录/配置"
+                            .to_owned(),
+                    ),
                 });
             }
             None => {
@@ -2883,16 +2925,18 @@ fn identity_from_dev_key(key: &str) -> &str {
 
 /// 读取 manifest 声明的入口脚本（相对插件目录）。未声明返回 `None`；缺失与不可读都
 /// 以点名该文件的消息报告，供加载期判定失败。
-async fn read_entry(dir: &Path, rel: Option<&str>) -> Result<Option<String>, String> {
+async fn read_entry(dir: &Path, rel: Option<&str>) -> Result<Option<String>, PluginError> {
     let Some(rel) = rel else {
         return Ok(None);
     };
     match tokio::fs::read_to_string(dir.join(rel)).await {
         Ok(source) => Ok(Some(source)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            Err(format!("包内缺少文件 '{rel}'"))
+            Err(PluginError::LoadFailed(format!("包内缺少文件 '{rel}'")))
         }
-        Err(error) => Err(format!("读取入口文件 '{rel}' 失败: {error}")),
+        Err(error) => Err(PluginError::LoadFailed(format!(
+            "读取入口文件 '{rel}' 失败: {error}"
+        ))),
     }
 }
 
@@ -2904,27 +2948,6 @@ fn failure_identity(dir: &Path, identity_hint: Option<&str>) -> String {
                 .map(|name| name.to_string_lossy().into_owned())
         })
         .unwrap_or_else(|| "unknown".to_string())
-}
-
-/// `FailedPlugin.error` 的可读渲染上限（671#9）：来源之一是
-/// `manifest.validate()` 的错误文本，会原样插值插件可控的 manifest 字符串
-/// （identity/version/icon 路径等，见 `manifest.rs` 的 `ManifestInvalid`
-/// 消息），未经任何长度上限就会随每次插件列表刷新原样进入 `PluginInfo` /
-/// REST `PluginDto` 并被客户端逐字渲染。截断只在这一处生效——
-/// `list()` 是 `FailedPlugin.error` 唯一的对外读出口。
-const MAX_LOAD_ERROR_LEN: usize = 1024;
-
-fn truncate_load_error(error: &str) -> String {
-    if error.len() <= MAX_LOAD_ERROR_LEN {
-        return error.to_string();
-    }
-    let mut end = MAX_LOAD_ERROR_LEN;
-    while end > 0 && !error.is_char_boundary(end) {
-        end -= 1;
-    }
-    let mut truncated = error[..end].to_string();
-    truncated.push('…');
-    truncated
 }
 
 /// 取字段生效值：config 存值 → manifest default → None。
@@ -3071,6 +3094,7 @@ fn validate_subscription_item(item: SubscriptionOutputItem) -> Result<ParsedItem
         resolver_item: item.resolver_item,
         enclosure_length: item.enclosure_length,
         pub_date: item.pub_date,
+        image_urls: Vec::new(),
     })
 }
 
@@ -4621,7 +4645,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn circuit_breaker_trip_publishes_disabled_state_before_notice() {
         let (manager, sink, _root) = revoke_fixture().await;
-        manager.trip_circuit_breaker(REVOKE_ID).await;
+        manager
+            .trip_circuit_breaker(REVOKE_ID, &PluginError::Timeout)
+            .await;
 
         let events = sink.0.lock().unwrap();
         let changed_at = events
@@ -4742,7 +4768,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn failed_upgrade_restores_breaker_state() {
         let (manager, _sink, root) = revoke_fixture().await;
-        manager.trip_circuit_breaker(REVOKE_ID).await;
+        manager
+            .trip_circuit_breaker(REVOKE_ID, &PluginError::Timeout)
+            .await;
 
         // 新版本声明了不存在的 resolver 入口 → 加载失败 → 安装回滚。
         let src = root.join(".bad-src");

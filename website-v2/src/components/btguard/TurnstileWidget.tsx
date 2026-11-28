@@ -3,6 +3,29 @@
  * 父组件经 `ref.reset()` 在每次请求后换新 token（token 一次性）；脚本加载失败或小部件报错走 `onError`。
  */
 import { useEffect, useImperativeHandle, useRef, type Ref } from "react";
+import type { Lang } from "@/i18n/config";
+
+/** Turnstile 界面语言码(简体 / 繁体中文用带地区的码,其余与站点语言码一致)。 */
+const TURNSTILE_LANG: Record<Lang, string> = {
+  en: "en",
+  zh: "zh-cn",
+  "zh-tw": "zh-tw",
+  ja: "ja",
+  ko: "ko",
+  es: "es",
+  "pt-br": "pt-br",
+  fr: "fr",
+  de: "de",
+  it: "it",
+  nl: "nl",
+  pl: "pl",
+  ru: "ru",
+  uk: "uk",
+  tr: "tr",
+  vi: "vi",
+  id: "id",
+  th: "th",
+};
 
 interface TurnstileApi {
   render(
@@ -61,7 +84,7 @@ export default function TurnstileWidget({
   ref,
 }: {
   siteKey: string;
-  lang: "en" | "zh";
+  lang: Lang;
   /** token 就绪时给值，过期 / 出错 / 重置后给 null。 */
   onToken: (token: string | null) => void;
   onError: () => void;
@@ -89,7 +112,7 @@ export default function TurnstileWidget({
         widgetId.current = api.render(container, {
           sitekey: siteKey,
           theme: "auto",
-          language: lang === "zh" ? "zh-cn" : "en",
+          language: TURNSTILE_LANG[lang],
           callback: (value) => callbacks.current.onToken(value),
           "expired-callback": () => callbacks.current.onToken(null),
           "error-callback": () => {

@@ -1005,12 +1005,7 @@ mod tests {
         let (session, recorder, _link) = ready().await;
         recorder.reply(
             "daemon.rss.createSource",
-            Err(FluxError::Rpc {
-                code: ErrorCodeDto::InvalidArgument,
-                reason: None,
-                retryable: false,
-                detail: "bad url".to_owned(),
-            }),
+            Err(FluxError::rpc(ErrorCodeDto::InvalidArgument, "bad url")),
         );
         let error = session
             .call(
@@ -1038,12 +1033,7 @@ mod tests {
         let (session, recorder, _link) = ready().await;
         recorder.reply(
             "daemon.task.pause",
-            Err(FluxError::Rpc {
-                code: ErrorCodeDto::NotFound,
-                reason: None,
-                retryable: false,
-                detail: "no such task".to_owned(),
-            }),
+            Err(FluxError::rpc(ErrorCodeDto::NotFound, "no such task")),
         );
         let error = session.pause("x".to_owned()).await.expect_err("fails");
         assert!(matches!(

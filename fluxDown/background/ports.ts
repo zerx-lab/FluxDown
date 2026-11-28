@@ -17,6 +17,7 @@ import { TAB_VIEW_PORT } from "./protocol";
 import type { TabViewPush, TabViewSubscribe } from "./protocol";
 import { badgeCount } from "./view-model";
 import { logWarn } from "@/utils/error-log";
+import { MANUAL_SERVERS_KEY } from "@/utils/manual-servers";
 
 const COALESCE_MS = 150;
 
@@ -78,6 +79,9 @@ export function installPorts(): void {
   });
   onEngineChanged(scheduleAllKnown);
   onSettingsChanged(scheduleAllKnown);
+  browser.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && MANUAL_SERVERS_KEY in changes) scheduleAllKnown();
+  });
   // 视图只限时等待 handoff 探测（tab-view.ts）；探测结果变化后补推，handoff 卡片随之更新。
   let lastCapabilities = "";
   onCapabilities((caps) => {

@@ -2,12 +2,12 @@
 //! 不遮挡任何任务行，紧挨刚点过的复选框，鼠标移动距离最短。
 
 use fluxdown_ui_components::{
-    FluxIcon, IconControlExt as _, tabular_numbers, toolbar_action_button, tooltip_view,
+    FluxIcon, IconControlExt as _, tabular_numbers, toast, toolbar_action_button, tooltip_view,
 };
 use fluxdown_ui_theme::active_theme;
 use gpui::{
-    Anchor, AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement as _, Styled, Window, div, px,
+    Anchor, AnyElement, ClipboardItem, Context, InteractiveElement as _, IntoElement,
+    ParentElement, SharedString, StatefulInteractiveElement as _, Styled, Window, div, px,
 };
 use gpui_component::{
     Icon, WindowExt as _,
@@ -18,39 +18,343 @@ use gpui_component::{
 
 use crate::{
     components::task_table::{ToolbarCommand, table_header_height},
-    model::{RowKey, TaskState, TaskStore},
+    deletion::{DeletionMode, DeletionRequest},
+    model::{DownloadTaskView, RowKey, TaskState, TaskStore},
     pages::downloads::DownloadView,
 };
 
-fn retain_stale_tasks(store: &TaskStore, keys: &mut Vec<RowKey>) {
-    keys.retain(|key| {
-        store.get(key).is_some_and(|row| {
-            if key.is_local() {
+fn push_task_info_cell(text: &mut String, value: &str, clipboard: bool) {
+    // Keep spreadsheet pastes from interpreting untrusted text as formulas or quoted cells.
+    if clipboard && value.trim_start().starts_with(['=', '+', '-', '@', '"']) {
+        text.push('\'');
+    }
+    for ch in value.chars() {
+        match ch {
+            '\\' => text.push_str("\\\\"),
+            '\t' => text.push_str("\\t"),
+            '\n' => text.push_str("\\n"),
+            '\r' => text.push_str("\\r"),
+            _ => text.push(ch),
+        }
+    }
+}
+
+/// Header row in the current UI language, escaped like any other cell.
+pub(crate) fn task_info_header(translator: &fluxdown_ui_i18n::Translator) -> String {
+    let mut text = String::new();
+    for (index, key) in [
+        "taskInfoColumnName",
+        "taskInfoColumnUrl",
+        "taskInfoColumnSize",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if index > 0 {
+            text.push('\t');
+        }
+        push_task_info_cell(&mut text, translator.text(key), false);
+    }
+    text
+}
+
+fn push_task_info_row(
+    text: &mut String,
+    name: &str,
+    url: &str,
+    size: Option<u64>,
+    clipboard: bool,
+) {
+    text.push('\n');
+    push_task_info_cell(text, name, clipboard);
+    text.push('\t');
+    push_task_info_cell(text, url, clipboard);
+    text.push('\t');
+    if let Some(size) = size {
+        use std::fmt::Write as _;
+        if let Err(error) = write!(text, "{size}") {
+            eprintln!("could not format task size: {error}");
+        }
+    }
+}
+
+pub(crate) fn batch_link_info_text<'a>(
+    header: String,
+    entries: impl IntoIterator<Item = &'a crate::model::new_download::UrlEntry>,
+) -> String {
+    let mut text = header;
+    for entry in entries {
+        let name = batch_entry_name(entry);
+        let size = batch_entry_size(&entry.url);
+        push_task_info_row(&mut text, &name, &entry.url, size, false);
+    }
+    text
+}
+
+fn batch_entry_size(url: &str) -> Option<u64> {
+    // Match the engine's eD2k wire fields, size ceiling, and MD4("") root for empty files.
+    let mut fields = url.split('|');
+    let (Some(scheme), Some(kind), Some(name), Some(size), Some(hash)) = (
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+    ) else {
+        return None;
+    };
+    if !scheme.eq_ignore_ascii_case("ed2k://")
+        || !kind.eq_ignore_ascii_case("file")
+        || name.is_empty()
+        || hash.len() != 32
+        || !hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    size.parse::<u64>().ok().filter(|&bytes| {
+        bytes <= 0x40_0000_0000
+            && (bytes != 0 || hash.eq_ignore_ascii_case("31d6cfe0d16ae931b73c59d7e0c089c0"))
+    })
+}
+
+fn batch_entry_name(entry: &crate::model::new_download::UrlEntry) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+
+    use crate::model::new_download::{percent_decode_utf8, url_file_segment};
+
+    if !entry.file_name.is_empty() {
+        return Cow::Borrowed(&entry.file_name);
+    }
+    let (scheme, rest) = entry.url.split_once(':').unwrap_or_default();
+    let (raw_name, p2p) = if scheme.eq_ignore_ascii_case("magnet") {
+        let query = rest.strip_prefix('?').unwrap_or_default();
+        let query = query.split('#').next().unwrap_or_default();
+        (
+            query.split('&').find_map(|part| part.strip_prefix("dn=")),
+            true,
+        )
+    } else if scheme.eq_ignore_ascii_case("ed2k") {
+        let mut fields = rest.split('|');
+        let name = match (fields.next(), fields.next()) {
+            (Some("//"), Some(kind)) if kind.eq_ignore_ascii_case("file") => fields.next(),
+            _ => None,
+        };
+        (name, true)
+    } else if rest.starts_with("//")
+        && ["http", "https", "ftp"]
+            .into_iter()
+            .any(|protocol| scheme.eq_ignore_ascii_case(protocol))
+    {
+        (url_file_segment(&entry.url), false)
+    } else {
+        (None, false)
+    };
+    let raw_name = raw_name.unwrap_or_default();
+    let name = if raw_name.contains('%') {
+        percent_decode_utf8(raw_name).map_or(Cow::Borrowed(raw_name), Cow::Owned)
+    } else {
+        Cow::Borrowed(raw_name)
+    };
+    if p2p && name.trim().is_empty() {
+        Cow::Borrowed("")
+    } else {
+        name
+    }
+}
+
+pub(crate) fn export_task_info_text(
+    header: String,
+    rows: impl IntoIterator<Item = (impl AsRef<str>, u64)>,
+) -> String {
+    let mut text = header;
+    for (name, size) in rows {
+        let size = (size > 0).then_some(size);
+        push_task_info_row(&mut text, name.as_ref(), "", size, false);
+    }
+    text
+}
+
+fn task_info_text<'a>(
+    header: String,
+    rows: impl IntoIterator<Item = std::cell::Ref<'a, DownloadTaskView>>,
+    clipboard: bool,
+) -> Option<String> {
+    let mut rows = rows.into_iter().peekable();
+    rows.peek()?;
+    let mut text = header;
+    for row in rows {
+        push_task_info_row(
+            &mut text,
+            &row.name,
+            row.copyable_share_url().unwrap_or_default(),
+            (row.size_bytes > 0).then_some(row.size_bytes),
+            clipboard,
+        );
+    }
+    Some(text)
+}
+
+pub(crate) fn save_task_info<T: 'static>(
+    text: String,
+    failed: String,
+    window: &mut Window,
+    cx: &mut Context<T>,
+) {
+    let directory = std::env::home_dir().unwrap_or_else(std::env::temp_dir);
+    let receiver = cx.prompt_for_new_path(&directory, Some("fluxdown-tasks.txt"));
+    cx.spawn_in(window, async move |this, cx| {
+        let error = match receiver.await {
+            Ok(Ok(Some(path))) => cx
+                .background_executor()
+                .spawn(async move { std::fs::write(path, text) })
+                .await
+                .err()
+                .map(|error| error.to_string()),
+            Ok(Ok(None)) => return,
+            Ok(Err(error)) => Some(format!("{error:#}")),
+            Err(error) => Some(error.to_string()),
+        };
+        if let Some(error) = error
+            && let Err(error) = this.update_in(cx, |_, window, cx| {
+                window.push_notification(toast::error(format!("{failed}: {error}")), cx);
+            })
+        {
+            eprintln!("window closed before reporting task export failure: {error:#}");
+        }
+    })
+    .detach();
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum TaskCleanup {
+    Finished,
+    InvalidSelection,
+    UnfinishedSelection,
+}
+
+impl TaskCleanup {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Finished => "menuClearFinished",
+            Self::InvalidSelection => "cleanStaleTasks",
+            Self::UnfinishedSelection => "cleanUnfinishedSelection",
+        }
+    }
+
+    const fn description(self) -> &'static str {
+        match self {
+            Self::Finished => "cleanFinishedLocalDesc",
+            Self::InvalidSelection => "cleanStaleTasksDesc",
+            Self::UnfinishedSelection => "cleanUnfinishedSelectionDesc",
+        }
+    }
+
+    fn matches(self, row: &DownloadTaskView) -> bool {
+        match self {
+            Self::Finished => {
+                row.key.is_local() && row.state == TaskState::Completed && !row.is_seeding()
+            }
+            Self::InvalidSelection if row.key.is_local() => {
                 row.state == TaskState::Failed || row.is_file_missing()
-            } else {
+            }
+            Self::InvalidSelection => {
                 row.remote_status == Some(fluxdown_protocol::RemoteTaskStatus::Failed)
             }
-        })
-    });
+            Self::UnfinishedSelection => {
+                row.key.is_local() && matches!(row.state, TaskState::Paused | TaskState::Failed)
+            }
+        }
+    }
+
+    fn retain(self, store: &TaskStore, keys: &mut Vec<RowKey>) {
+        keys.retain(|key| store.get(key).is_some_and(|row| self.matches(&row)));
+    }
 }
 
 impl DownloadView {
-    fn selected_stale_keys(&self, cx: &gpui::App) -> Vec<RowKey> {
-        let mut keys = self.table_state.read(cx).delegate().selected_keys();
-        retain_stale_tasks(self.controller.store(), &mut keys);
-        keys
+    fn copy_selected_task_info(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rows = self
+            .table_state
+            .read(cx)
+            .delegate()
+            .selected_rows_in_order();
+        let header = task_info_header(self.translator.read(cx));
+        if let Some(text) = task_info_text(header, rows, true) {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            let label = self.translator.read(cx).text("taskInfoCopied").to_owned();
+            window.push_notification(toast::success(label), cx);
+        }
     }
 
-    fn confirm_clean_stale_tasks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let keys = self.selected_stale_keys(cx);
-        if keys.is_empty() || self.controller.is_stale() {
+    fn export_selected_task_info(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rows = self
+            .table_state
+            .read(cx)
+            .delegate()
+            .selected_rows_in_order();
+        let header = task_info_header(self.translator.read(cx));
+        if let Some(text) = task_info_text(header, rows, false) {
+            let failed = self
+                .translator
+                .read(cx)
+                .text("taskInfoExportFailed")
+                .to_owned();
+            save_task_info(text, failed, window, cx);
+        }
+    }
+
+    fn can_clean_tasks(&self) -> bool {
+        !self.controller.is_stale() && !self.controller.tables_loading()
+    }
+
+    pub(crate) fn has_cleanup_targets(&self, scope: TaskCleanup, cx: &gpui::App) -> bool {
+        if !self.can_clean_tasks() {
+            return false;
+        }
+        let delegate = self.table_state.read(cx).delegate();
+        let store = self.controller.store();
+        match scope {
+            TaskCleanup::Finished => store
+                .local()
+                .iter()
+                .any(|row| scope.matches(row) && !delegate.is_pending_delete(&row.key)),
+            _ => delegate
+                .selected_key_refs()
+                .any(|key| store.get(key).is_some_and(|row| scope.matches(&row))),
+        }
+    }
+
+    pub(crate) fn confirm_task_cleanup(
+        &mut self,
+        scope: TaskCleanup,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.can_clean_tasks() {
             return;
         }
-        let title = self.strings.clean_stale_tasks.clone();
-        let description = self
-            .strings
-            .clean_stale_tasks_description
-            .replace("{count}", &keys.len().to_string());
+        let store = self.controller.store();
+        let delegate = self.table_state.read(cx).delegate();
+        let keys = match scope {
+            TaskCleanup::Finished => store
+                .local()
+                .iter()
+                .filter(|row| scope.matches(row) && !delegate.is_pending_delete(&row.key))
+                .map(|row| row.key.clone())
+                .collect(),
+            _ => {
+                let mut keys = delegate.selected_keys();
+                scope.retain(store, &mut keys);
+                keys
+            }
+        };
+        if keys.is_empty() {
+            return;
+        }
+        let translator = self.translator.read(cx);
+        let title = SharedString::from(translator.text(scope.label()).to_owned());
+        let description =
+            translator.text_with(scope.description(), &[("count", &keys.len().to_string())]);
         let ok_label = self.strings.confirm.clone();
         let cancel_label = self.strings.cancel.clone();
         let view = cx.weak_entity();
@@ -68,14 +372,32 @@ impl DownloadView {
                 ))
                 .on_ok(move |_, _, cx| {
                     view.update(cx, |this, cx| {
-                        if this.controller.is_stale() {
+                        if !this.can_clean_tasks() {
                             return false;
                         }
-                        // 固定确认时的候选集合，跳过期间已恢复下载或文件已找回的任务。
+                        // Recheck the previewed candidates; never add tasks to an open dialog.
                         let mut keys = keys.clone();
-                        retain_stale_tasks(this.controller.store(), &mut keys);
-                        let commands = this.delete_commands(&keys, false);
-                        this.execute_commands(commands, cx);
+                        scope.retain(this.controller.store(), &mut keys);
+                        let delegate = this.table_state.read(cx).delegate();
+                        keys.retain(|key| !delegate.is_pending_delete(key));
+                        if keys.is_empty() {
+                            return true;
+                        }
+                        if matches!(scope, TaskCleanup::UnfinishedSelection) {
+                            this.start_deletion(
+                                DeletionRequest {
+                                    task_ids: keys
+                                        .into_iter()
+                                        .map(|key| key.task_id().to_owned())
+                                        .collect(),
+                                    mode: DeletionMode::Unfinished,
+                                },
+                                cx,
+                            );
+                        } else {
+                            let commands = this.delete_commands(&keys, false);
+                            this.execute_commands(commands, cx);
+                        }
                         true
                     })
                     .unwrap_or(false)
@@ -120,7 +442,7 @@ impl DownloadView {
             .into_any_element()
     }
 
-    /// 删除入口：普通删除、删除文件，以及只清理选区内的无效任务。
+    /// 删除入口：普通删除、删除文件，以及只清理选区内的无效 / 暂停或失败任务。
     fn selection_delete_menu(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = active_theme(cx);
         let tokens = theme.tokens();
@@ -129,7 +451,17 @@ impl DownloadView {
         let icon_size = theme.extended().icon.md;
         let delete_task = self.strings.delete_task.clone();
         let delete_with_files = self.strings.delete_task_and_file.clone();
-        let clean_stale_tasks = self.strings.clean_stale_tasks.clone();
+        let translator = self.translator.read(cx);
+        let cleanups = [
+            TaskCleanup::InvalidSelection,
+            TaskCleanup::UnfinishedSelection,
+        ]
+        .map(|scope| {
+            (
+                scope,
+                SharedString::from(translator.text(scope.label()).to_owned()),
+            )
+        });
         let view = cx.weak_entity();
         div()
             .flex_none()
@@ -145,63 +477,64 @@ impl DownloadView {
                             .text_color(destructive),
                     )
                     .dropdown_menu_with_anchor(Anchor::TopLeft, move |menu, _, cx| {
-                        let cleanup_disabled = view.upgrade().is_none_or(|view| {
-                            let this = view.read(cx);
-                            this.controller.is_stale() || this.selected_stale_keys(cx).is_empty()
-                        });
-                        menu.item(
-                            PopupMenuItem::element({
-                                let label = delete_task.clone();
-                                move |_, _| div().text_color(destructive).child(label.clone())
-                            })
-                            .icon(Icon::new(FluxIcon::Trash2).text_color(destructive))
-                            .on_click({
-                                let view = view.clone();
-                                move |_, _, cx| {
-                                    let Ok(()) = view.update(cx, |this, cx| {
-                                        this.execute_toolbar(ToolbarCommand::Delete, cx);
-                                    }) else {
-                                        // 视图已释放，结束这次回调而不再更新状态。
-                                        return;
-                                    };
-                                }
-                            }),
-                        )
-                        .item(
-                            PopupMenuItem::element({
-                                let label = delete_with_files.clone();
-                                move |_, _| div().text_color(destructive).child(label.clone())
-                            })
-                            .icon(Icon::new(FluxIcon::Trash2).text_color(destructive))
-                            .on_click({
-                                let view = view.clone();
-                                move |_, window, cx| {
-                                    let Ok(()) = view.update(cx, |this, cx| {
-                                        this.delete_selected_with_files(window, cx);
-                                    }) else {
-                                        // 视图已释放，结束这次回调而不再更新状态。
-                                        return;
-                                    };
-                                }
-                            }),
-                        )
-                        .separator()
-                        .item(
-                            PopupMenuItem::new(clean_stale_tasks.clone())
-                                .icon(FluxIcon::Trash2)
-                                .disabled(cleanup_disabled)
+                        let menu = menu
+                            .item(
+                                PopupMenuItem::element({
+                                    let label = delete_task.clone();
+                                    move |_, _| div().text_color(destructive).child(label.clone())
+                                })
+                                .icon(Icon::new(FluxIcon::Trash2).text_color(destructive))
                                 .on_click({
                                     let view = view.clone();
                                     move |_, window, cx| {
                                         let Ok(()) = view.update(cx, |this, cx| {
-                                            this.confirm_clean_stale_tasks(window, cx);
+                                            this.confirm_delete_selected(false, window, cx);
                                         }) else {
-                                            // 视图已释放，不再发起清理。
+                                            // 视图已释放，结束这次回调而不再更新状态。
                                             return;
                                         };
                                     }
                                 }),
-                        )
+                            )
+                            .item(
+                                PopupMenuItem::element({
+                                    let label = delete_with_files.clone();
+                                    move |_, _| div().text_color(destructive).child(label.clone())
+                                })
+                                .icon(Icon::new(FluxIcon::Trash2).text_color(destructive))
+                                .on_click({
+                                    let view = view.clone();
+                                    move |_, window, cx| {
+                                        let Ok(()) = view.update(cx, |this, cx| {
+                                            this.confirm_delete_selected(true, window, cx);
+                                        }) else {
+                                            // 视图已释放，结束这次回调而不再更新状态。
+                                            return;
+                                        };
+                                    }
+                                }),
+                            )
+                            .separator();
+                        cleanups.iter().fold(menu, |menu, (scope, label)| {
+                            let scope = *scope;
+                            let disabled = view
+                                .upgrade()
+                                .is_none_or(|view| !view.read(cx).has_cleanup_targets(scope, cx));
+                            let view = view.clone();
+                            menu.item(
+                                PopupMenuItem::new(label.clone())
+                                    .icon(FluxIcon::Trash2)
+                                    .disabled(disabled)
+                                    .on_click(move |_, window, cx| {
+                                        let Ok(()) = view.update(cx, |this, cx| {
+                                            this.confirm_task_cleanup(scope, window, cx);
+                                        }) else {
+                                            // 视图已释放，不再发起清理。
+                                            return;
+                                        };
+                                    }),
+                            )
+                        })
                     }),
             )
             .into_any_element()
@@ -287,6 +620,30 @@ impl DownloadView {
                 cx,
             ));
         }
+        let copy_label =
+            SharedString::from(self.translator.read(cx).text("copyTaskInfo").to_owned());
+        actions.push(self.icon_action(
+            "download-selection-copy-info",
+            copy_label,
+            Icon::new(FluxIcon::ClipboardList).size(icon_size),
+            false,
+            Self::copy_selected_task_info,
+            cx,
+        ));
+        let export_label = SharedString::from(
+            self.translator
+                .read(cx)
+                .text("exportTaskInfoTxt")
+                .to_owned(),
+        );
+        actions.push(self.icon_action(
+            "download-selection-export-info",
+            export_label,
+            Icon::new(FluxIcon::FileDown).size(icon_size),
+            false,
+            Self::export_selected_task_info,
+            cx,
+        ));
         actions.push(self.selection_delete_menu(cx));
         let clear = self.icon_action(
             "download-selection-clear",
@@ -332,7 +689,7 @@ impl DownloadView {
 
 #[cfg(test)]
 mod tests {
-    use super::retain_stale_tasks;
+    use super::{TaskCleanup, batch_link_info_text, task_info_header, task_info_text};
     use crate::model::{DownloadTaskView, RowKey, TaskStore};
 
     fn local(id: &str, status: i32, missing: bool) -> DownloadTaskView {
@@ -346,8 +703,173 @@ mod tests {
         DownloadTaskView::local(&dto, None, false)
     }
 
+    #[test]
+    fn pr1241_remaining_cleanup_dialog_rechecks_task_status_at_confirmation() {
+        use std::sync::{Arc, Mutex};
+
+        use fluxdown_protocol::{AgentSnapshot, DaemonSnapshot, TaskDto};
+        use fluxdown_ui_i18n::I18nCatalog;
+        use gpui::{AppContext as _, TestApp};
+        use gpui_component::{Root, WindowExt as _};
+
+        use crate::{
+            controller::{DownloadsCommand, DownloadsPort, DownloadsResult, PortFuture},
+            pages::downloads::DownloadView,
+        };
+
+        #[derive(Default)]
+        struct CleanupPort(Mutex<Vec<Vec<String>>>);
+
+        impl DownloadsPort for CleanupPort {
+            fn execute(&self, command: DownloadsCommand) -> PortFuture<DownloadsResult> {
+                if let DownloadsCommand::CleanUnfinished { task_ids } = command {
+                    let deleted = task_ids.len();
+                    self.0.lock().unwrap().push(task_ids);
+                    return Box::pin(
+                        async move { Ok(DownloadsResult::CleanedUnfinished(deleted)) },
+                    );
+                }
+                Box::pin(async { Ok(DownloadsResult::Unit) })
+            }
+        }
+
+        let port = Arc::new(CleanupPort::default());
+        let mut app = TestApp::new();
+        let translator = app.update(|cx| {
+            gpui_component::init(cx);
+            fluxdown_ui_theme::init(cx);
+            let catalog = I18nCatalog::load_embedded().unwrap();
+            cx.new(|_| catalog.translator("en"))
+        });
+        let mut downloads = None;
+        let mut win = app.open_window(|window, cx| {
+            let view = cx.new(|cx| DownloadView::new(translator, port.clone(), window, cx));
+            downloads = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let downloads = downloads.unwrap();
+        let task = |id, status| {
+            serde_json::from_value::<TaskDto>(serde_json::json!({
+                "taskId": id, "url": "https://example.com/file", "fileName": "file.bin",
+                "saveDir": "/tmp", "status": status, "downloadedBytes": 0, "totalBytes": 1,
+                "errorMessage": "", "createdAt": "1", "proxyUrl": "", "queueId": "main",
+                "checksum": ""
+            }))
+            .unwrap()
+        };
+        let mut snapshot = AgentSnapshot {
+            daemon_connected: true,
+            daemon: DaemonSnapshot {
+                tasks: vec![task("still-paused", 2), task("now-complete", 4)],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        app.update(|cx| {
+            cx.update_window(win.handle().into(), |_, window, cx| {
+                downloads.update(cx, |view, cx| {
+                    view.controller.replace_snapshot(&snapshot);
+                    view.refresh_tasks(cx);
+                    view.table_state.update(cx, |table, _| {
+                        table.delegate_mut().select_all_tasks();
+                    });
+                    view.confirm_task_cleanup(TaskCleanup::UnfinishedSelection, window, cx);
+                });
+                assert!(window.has_active_dialog(cx));
+            })
+            .unwrap();
+        });
+        assert!(port.0.lock().unwrap().is_empty());
+        snapshot.daemon.tasks[1].status = 3;
+        app.update(|cx| {
+            downloads.update(cx, |view, _| view.controller.replace_snapshot(&snapshot));
+        });
+        win.draw();
+        win.simulate_keystroke("enter");
+        assert_eq!(*port.0.lock().unwrap(), [vec!["still-paused".to_owned()]]);
+    }
+
     fn keys(ids: &[&str]) -> Vec<RowKey> {
         ids.iter().map(|id| RowKey::Local((*id).into())).collect()
+    }
+
+    const EN_HEADER: &str = "Name\tURL\tSize (bytes)";
+
+    #[test]
+    fn task_info_header_follows_ui_language() {
+        let catalog = fluxdown_ui_i18n::I18nCatalog::load_embedded().unwrap();
+        assert_eq!(task_info_header(&catalog.translator("en")), EN_HEADER);
+        assert_eq!(
+            task_info_header(&catalog.translator("zh")),
+            "名称\t链接\t大小（字节）"
+        );
+    }
+
+    #[test]
+    fn task_info_preserves_selected_rows_and_escapes_cell_boundaries() {
+        let store = TaskStore::default();
+        let mut known = local("known", 3, false);
+        known.name = "=报告\tpart\n2".to_owned();
+        known.origin_url = "https://example.com/original".to_owned();
+        let mut unknown = local("unknown", 0, false);
+        unknown.url = "torrent-file://local".to_owned();
+        unknown.size_bytes = 0;
+        store.replace_local(vec![known, unknown, local("unselected", 3, false)]);
+        let selected = keys(&["known", "removed", "unknown"]);
+        assert_eq!(
+            task_info_text(
+                EN_HEADER.to_owned(),
+                selected.iter().filter_map(|key| store.get(key)),
+                true
+            )
+            .as_deref(),
+            Some(
+                "Name\tURL\tSize (bytes)\n'=报告\\tpart\\n2\thttps://example.com/original\t1\nfile.bin\t\t"
+            )
+        );
+        assert_eq!(
+            task_info_text(
+                EN_HEADER.to_owned(),
+                selected.iter().filter_map(|key| store.get(key)),
+                false
+            )
+            .as_deref(),
+            Some(
+                "Name\tURL\tSize (bytes)\n=报告\\tpart\\n2\thttps://example.com/original\t1\nfile.bin\t\t"
+            )
+        );
+    }
+
+    #[test]
+    fn parsed_batch_exports_known_metadata_without_guessing_sizes() {
+        let magnet = "MAGNET:?xt=urn:btih:a&dn=My+Show%21";
+        let ed2k = "ED2K://|FILE|f%20x.iso|5044211712|1555B7DCA052B5958EE68DB58A42408D|/";
+        let unnamed_magnet = "magnet:?xt=urn:btih:b";
+        let unnamed_ed2k = "ed2k://|file||100|h|/";
+        let renamed = "ed2k://|file|ignored|100|1555B7DCA052B5958EE68DB58A42408D|/";
+        let empty = "ed2k://|file|empty.txt|0|31D6CFE0D16AE931B73C59D7E0C089C0|/";
+        let wrong_hash = "ed2k://|file|invalid.txt|0|1555B7DCA052B5958EE68DB58A42408D|/";
+        let p2p = crate::model::new_download::parse_entries(
+            &format!(
+                "{magnet}\n{ed2k}\n{unnamed_magnet}\n{unnamed_ed2k}\n{renamed}\n  out=keep%20name\n{empty}\n{wrong_hash}"
+            ),
+            false,
+        );
+        assert_eq!(
+            batch_link_info_text(EN_HEADER.to_owned(), &p2p),
+            format!(
+                "Name\tURL\tSize (bytes)\nMy+Show!\t{magnet}\t\nf x.iso\t{ed2k}\t5044211712\n\t{unnamed_magnet}\t\n\t{unnamed_ed2k}\t\nkeep%20name\t{renamed}\t100\nempty.txt\t{empty}\t0\ninvalid.txt\t{wrong_hash}\t"
+            )
+        );
+
+        let entries = crate::model::new_download::parse_entries(
+            "https://example.com/a%20b.zip?key=v\nftp://example.com/f\n  out=报告.zip\nhttps://example.com/",
+            false,
+        );
+        assert_eq!(
+            batch_link_info_text(EN_HEADER.to_owned(), &entries),
+            "Name\tURL\tSize (bytes)\na b.zip\thttps://example.com/a%20b.zip?key=v\t\n报告.zip\tftp://example.com/f\t\n\thttps://example.com/\t"
+        );
     }
 
     #[test]
@@ -373,10 +895,10 @@ mod tests {
             "preparing",
             "removed",
         ]);
-        retain_stale_tasks(&store, &mut selected);
+        TaskCleanup::InvalidSelection.retain(&store, &mut selected);
         assert_eq!(selected, keys(&["failed", "missing"]));
         let mut empty = Vec::new();
-        retain_stale_tasks(&store, &mut empty);
+        TaskCleanup::InvalidSelection.retain(&store, &mut empty);
         assert!(empty.is_empty());
     }
 
@@ -397,14 +919,14 @@ mod tests {
             "later-failed",
             "removed",
         ]);
-        retain_stale_tasks(&store, &mut candidates);
+        TaskCleanup::InvalidSelection.retain(&store, &mut candidates);
         store.replace_local(vec![
             local("resumed", 1, false),
             local("restored", 3, false),
             local("still-failed", 4, false),
             local("later-failed", 4, false),
         ]);
-        retain_stale_tasks(&store, &mut candidates);
+        TaskCleanup::InvalidSelection.retain(&store, &mut candidates);
         assert_eq!(candidates, keys(&["still-failed"]));
     }
 
@@ -432,7 +954,31 @@ mod tests {
         .collect();
         let mut selected = rows.iter().map(|row| row.key.clone()).collect();
         store.replace_remote(rows);
-        retain_stale_tasks(&store, &mut selected);
+        TaskCleanup::InvalidSelection.retain(&store, &mut selected);
         assert_eq!(selected, [RowKey::Remote("failed".into())]);
+    }
+
+    #[test]
+    fn cleanup_keeps_seeding_and_active_tasks() {
+        let store = TaskStore::default();
+        let mut seeding = local("seeding", 3, false);
+        seeding.seeding_status = 1;
+        store.replace_local(vec![
+            local("finished", 3, false),
+            seeding,
+            local("paused", 2, false),
+            local("failed", 4, false),
+            local("waiting", 0, false),
+            local("active", 1, false),
+        ]);
+        let all = keys(&[
+            "finished", "seeding", "paused", "failed", "waiting", "active",
+        ]);
+        let mut finished = all.clone();
+        TaskCleanup::Finished.retain(&store, &mut finished);
+        assert_eq!(finished, keys(&["finished"]));
+        let mut unfinished = all;
+        TaskCleanup::UnfinishedSelection.retain(&store, &mut unfinished);
+        assert_eq!(unfinished, keys(&["paused", "failed"]));
     }
 }

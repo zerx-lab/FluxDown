@@ -77,6 +77,7 @@ pub const SYNC_SETTING_SPECS: &[SettingSpec] = &[
     spec!("ui.show_sidebar_rss", Preferences),
     spec!("ui.show_activity_rss", Preferences),
     spec!("ui.show_activity_webhooks", Preferences),
+    spec!("ui.show_activity_assistant", Preferences),
     spec!("ui.show_activity_theme", Preferences),
     spec!("ui.show_activity_account", Preferences),
     spec!("ui.show_titlebar_pause_all", Preferences),
@@ -431,6 +432,7 @@ fn boolean_key(key: &str) -> bool {
             | "ui.show_sidebar_rss"
             | "ui.show_activity_rss"
             | "ui.show_activity_webhooks"
+            | "ui.show_activity_assistant"
             | "ui.show_activity_theme"
             | "ui.show_activity_account"
             | "ui.show_titlebar_pause_all"
@@ -523,14 +525,14 @@ mod tests {
 
     #[test]
     fn catalog_has_exact_unique_flutter_count_and_namespaced_daemon_mapping() {
-        assert_eq!(SYNC_SETTING_SPECS.len(), 82);
+        assert_eq!(SYNC_SETTING_SPECS.len(), 83);
         assert_eq!(
             SYNC_SETTING_SPECS
                 .iter()
                 .map(|spec| spec.key)
                 .collect::<HashSet<_>>()
                 .len(),
-            82
+            83
         );
         let spec = setting_spec("download.max_concurrent_tasks").expect("download spec");
         assert_eq!(spec.owner, SettingOwner::Daemon);

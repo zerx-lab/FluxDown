@@ -13,7 +13,7 @@
  *   - Vercel/官网作为可达代理，缓解直连 api.github.com 的网络问题。
  *
  * 返回：GitHub Release API 原样 JSON（客户端解析逻辑不变）。
- *   ffmpeg → BtbN/FFmpeg-Builds 的 releases/latest（单对象）
+ *   ffmpeg → FFmpeg-Builds/FFmpeg-Builds（原 BtbN/FFmpeg-Builds）的 releases/latest（单对象）
  *   ytdlp  → yt-dlp/yt-dlp 的 releases?per_page=30（数组）
  *
  * 客户端在本端点失败时回退直连 GitHub，故此路由不可用不影响功能、只退化体验。
@@ -33,7 +33,7 @@ const CACHE_TTL_MS = (GITHUB_TOKEN ? 12 : 24) * 60 * 60 * 1000;
 // 组件名 → 上游 GitHub Release API 端点（与客户端
 // native/engine/src/components/{ffmpeg,ytdlp}.rs 的 RELEASE_API 一致）。
 const UPSTREAM: Record<string, string> = {
-  ffmpeg: "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest",
+  ffmpeg: "https://api.github.com/repos/FFmpeg-Builds/FFmpeg-Builds/releases/latest",
   ytdlp: "https://api.github.com/repos/yt-dlp/yt-dlp/releases?per_page=30",
 };
 

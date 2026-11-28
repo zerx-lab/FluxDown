@@ -344,9 +344,14 @@ This is the official douyin rule:
 }
 ```
 
-### `player` — hide the floating button (stage `page`)
+### `player` — how the floating button behaves (stage `page`)
 
-Media elements that match `selector`, or sit inside a matching element, don't get the floating download button — handy for background, ad or preview videos. `float` must be `"hide"`.
+Applies to media elements that match `selector`, or sit inside a matching element. `float` takes one of two values:
+
+| `float` | Effect |
+| --- | --- |
+| `"hide"` | No floating download button — handy for background, ad or preview videos. |
+| `"inset"` | A top-placed floating button stays at least `top` pixels below the top of the media element (`top` is an integer from 1 to 200), clear of the player's own top control strip (for example a mini-player's expand / close buttons). If the rest of the element is too short for the button, the button is hidden. Bottom placements are unaffected. Older extension versions don't know `inset` and skip the rule. |
 
 ```json
 {
@@ -356,6 +361,17 @@ Media elements that match `selector`, or sit inside a matching element, don't ge
   "stage": "page",
   "match": { "pageHost": ["example.com"] },
   "action": { "kind": "player", "selector": ".hero-bg video, .ad-slot video", "float": "hide" }
+}
+```
+
+```json
+{
+  "id": "community.example.mini-player",
+  "version": 1,
+  "tier": "community",
+  "stage": "page",
+  "match": { "pageHost": ["example.com"] },
+  "action": { "kind": "player", "selector": ".mini-player", "float": "inset", "top": 52 }
 }
 ```
 

@@ -64,10 +64,11 @@ object NotificationIntents {
     const val EXTRA_TASK = "fluxdown.task"
     const val EXTRA_HOST = "fluxdown.host"
 
-    /** 打开 [hostId] 的下载页；[taskId] 非空时再推入该任务详情。[code] 区分同时存在的多条通知。 */
-    fun pending(context: Context, hostId: String, taskId: String, code: Int): PendingIntent {
+    /** 打开 [hostId] 的下载页；[taskId] 非空时再推入该任务详情。[identity] 区分共用 [code] 的通知。 */
+    fun pending(context: Context, hostId: String, taskId: String, code: Int, identity: Uri? = null): PendingIntent {
         val intent = Intent(context, HomeActivity::class.java)
             .setAction(ACTION_OPEN)
+            .setData(identity)
             .putExtra(EXTRA_HOST, hostId)
             .putExtra(EXTRA_TASK, taskId)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
@@ -78,6 +79,7 @@ object NotificationIntents {
     fun handle(container: AppContainer, nav: AppNavigator, intent: Intent?): Boolean {
         if (intent?.action != ACTION_OPEN) return false
         val hostId = intent.getStringExtra(EXTRA_HOST).orEmpty()
+        container.hostSelection.prioritizeNotification(hostId)
         val taskId = intent.getStringExtra(EXTRA_TASK).orEmpty()
         container.appScope.launch {
             if (!ensureHost(container, hostId)) return@launch
@@ -96,7 +98,7 @@ object NotificationIntents {
         val ref = withTimeoutOrNull(HOSTS_WAIT_MS) {
             container.hosts.first { list -> list.any { it.id == hostId } }.first { it.id == hostId }
         } ?: return false
-        if (container.switchHost(ref).isFailure) return false
+        if (container.hostSelection.switchHost(ref, remember = false).isFailure) return false
         withTimeoutOrNull(LIVE_WAIT_MS) { container.store.state.first { it.connection == Connection.Live } }
         return true
     }

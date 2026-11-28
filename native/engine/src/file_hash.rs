@@ -107,6 +107,14 @@ pub(crate) fn hash_file(
     algorithm: HashAlgorithm,
     is_cancelled: impl Fn() -> bool,
 ) -> Result<String, FileHashError> {
+    hash_open_file(path, algorithm, is_cancelled).map(|(digest, _)| digest)
+}
+
+pub(crate) fn hash_open_file(
+    path: &Path,
+    algorithm: HashAlgorithm,
+    is_cancelled: impl Fn() -> bool,
+) -> Result<(String, std::fs::File), FileHashError> {
     let file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -127,11 +135,49 @@ pub(crate) fn hash_file(
     if !meta.is_file() {
         return Err(FileHashError::NotEligible);
     }
-    match algorithm {
-        HashAlgorithm::Md5 => digest_reader::<md5::Md5>(file, &is_cancelled),
-        HashAlgorithm::Sha1 => digest_reader::<sha1::Sha1>(file, &is_cancelled),
-        HashAlgorithm::Sha256 => digest_reader::<sha2::Sha256>(file, &is_cancelled),
-        HashAlgorithm::Sha512 => digest_reader::<sha2::Sha512>(file, &is_cancelled),
+    let digest = match algorithm {
+        HashAlgorithm::Md5 => digest_reader::<md5::Md5>(&file, &is_cancelled),
+        HashAlgorithm::Sha1 => digest_reader::<sha1::Sha1>(&file, &is_cancelled),
+        HashAlgorithm::Sha256 => digest_reader::<sha2::Sha256>(&file, &is_cancelled),
+        HashAlgorithm::Sha512 => digest_reader::<sha2::Sha512>(&file, &is_cancelled),
+    }?;
+    Ok((digest, file))
+}
+
+pub(crate) fn same_file(a: &std::fs::File, b: &std::fs::File) -> std::io::Result<bool> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let (a, b) = (a.metadata()?, b.metadata()?);
+        Ok((a.dev(), a.ino()) == (b.dev(), b.ino()))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+        };
+        let identity = |file: &std::fs::File| {
+            let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+            // SAFETY: the borrowed handle is live and the output is read only on success.
+            if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, info.as_mut_ptr()) }
+                == 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            let info = unsafe { info.assume_init() };
+            Ok((
+                info.dwVolumeSerialNumber,
+                info.nFileIndexHigh,
+                info.nFileIndexLow,
+            ))
+        };
+        Ok(identity(a)? == identity(b)?)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (a, b);
+        Ok(false)
     }
 }
 

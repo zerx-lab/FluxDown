@@ -7,6 +7,7 @@ pub mod analytics;
 pub mod api_host;
 #[cfg(feature = "desktop")]
 mod app_icon;
+mod assistant;
 pub mod background_effects;
 pub mod bt_guard;
 mod bundle_watch;

@@ -3,8 +3,9 @@ package com.fluxdown.app.feature.newtask
 import android.net.Uri
 import android.provider.DocumentsContract
 import com.fluxdown.core.model.TaskProtocol
+import java.math.BigInteger
 import java.net.URI
-import java.net.URLDecoder
+import java.nio.charset.CharacterCodingException
 
 /**
  * 「新建下载」的纯模型：链接解析与预设。规则与桌面端 `crates/downloads/src/model/new_download.rs`
@@ -21,13 +22,42 @@ internal data class UrlEntry(val url: String, val fileName: String = "", val che
  * - 含 `magnet:?` / `ed2k://` 时从该位置截取到行尾；
  * - 其余行：[loose] = true（TXT 导入）取行内首个 `http(s)/ftp` 链接并去尾部标点，否则要求链接位于行首。
  */
-internal fun parseEntries(text: String, loose: Boolean = false): List<UrlEntry> {
-    val entries = ArrayList<UrlEntry>()
+internal fun parseEntries(text: String, loose: Boolean = false): List<UrlEntry> = buildList {
+    forEachEntry(text, loose) { entry, _ -> add(entry) }
+}
+
+private inline fun forEachEntry(text: String, loose: Boolean, emit: (UrlEntry, fromCommand: Boolean) -> Unit) {
     var current: UrlEntry? = null
-    for (line in text.split('\n')) {
-        if (line.startsWith(' ') || line.startsWith('\t')) {
+    var currentFromCommand = false
+    var continuation = false
+    val lines = text.split('\n')
+    var index = 0
+    while (index < lines.size) {
+        val line = lines[index++]
+        var raw = line.trim()
+        val fromCommand = continuation
+        val inCommand = !loose && (fromCommand ||
+            hasCommandContinuation(raw) && !line.first().isWhitespace() &&
+            startsAria2Command(raw.dropLast(1).trimEnd()))
+        // A continuation without surrounding whitespace can split one argument across lines.
+        if (inCommand && hasCommandContinuation(raw) && raw.getOrNull(raw.lastIndex - 1)?.isWhitespace() == false &&
+            lines.getOrNull(index)?.firstOrNull()?.isWhitespace() == false
+        ) {
+            val joined = StringBuilder()
+            do {
+                joined.append(raw, 0, raw.lastIndex)
+                raw = lines[index++].trimEnd()
+            } while (hasCommandContinuation(raw) && raw.getOrNull(raw.lastIndex - 1)?.isWhitespace() == false &&
+                lines.getOrNull(index)?.firstOrNull()?.isWhitespace() == false)
+            raw = joined.append(raw).toString()
+        }
+        continuation = inCommand && hasCommandContinuation(raw)
+        val trimmed = if (continuation) raw.dropLast(1).trimEnd() else raw
+        val leadingUrl = if (loose) null else leadingHttpUrl(trimmed)
+        if ((line.startsWith(' ') || line.startsWith('\t')) &&
+            (loose || leadingUrl == null && !trimmed.startsWith("magnet:?", true) && !trimmed.startsWith("ed2k://", true))
+        ) {
             val entry = current ?: continue
-            val trimmed = line.trim()
             current = when {
                 trimmed.startsWith("out=") -> entry.copy(fileName = trimmed.removePrefix("out="))
                 trimmed.startsWith("checksum=") -> entry.copy(checksum = trimmed.removePrefix("checksum="))
@@ -35,20 +65,118 @@ internal fun parseEntries(text: String, loose: Boolean = false): List<UrlEntry> 
             }
             continue
         }
-        val trimmed = line.trim()
         if (trimmed.isEmpty() || trimmed.startsWith('#')) continue
-        current?.let { entries += it }
+        current?.let { emit(it, currentFromCommand) }
+        currentFromCommand = fromCommand
         val magnet = trimmed.indexOf("magnet:?", ignoreCase = true)
         val ed2k = trimmed.indexOf("ed2k://", ignoreCase = true)
         current = when {
             magnet >= 0 -> UrlEntry(trimmed.substring(magnet))
             ed2k >= 0 -> UrlEntry(trimmed.substring(ed2k))
-            loose -> findHttpUrl(trimmed)?.trimEnd { it in ".,;:!?()[]{}" }?.takeIf { it.isNotEmpty() }?.let { UrlEntry(it) }
-            else -> leadingHttpUrl(trimmed)?.let { UrlEntry(it) }
+            loose -> findHttpUrl(trimmed)?.let { UrlEntry(trimImportedUrl(it)) }
+            else -> leadingUrl?.let { UrlEntry(it) }
         }
     }
-    current?.let { entries += it }
-    return entries
+    current?.let { emit(it, currentFromCommand) }
+}
+
+private const val MaxUrlRangeEntries = 1000
+private val FilenameRange = Regex("\\[([0-9]+)-([0-9]+)]")
+private val TerminalRangeBounds = Regex("\\[[0-9]+-[0-9]+$")
+
+/** Same shell continuation markers and executable spellings as the desktop aria2c parser. */
+private fun hasCommandContinuation(line: String): Boolean {
+    val marker = line.lastOrNull() ?: return false
+    if (marker != '\\' && marker != '^') return false
+    var i = line.lastIndex
+    while (i >= 0 && line[i] == marker) i--
+    return (line.lastIndex - i) % 2 != 0
+}
+
+private fun startsAria2Command(line: String): Boolean {
+    val first = line.firstOrNull() ?: return false
+    val start = if (first == '"' || first == '\'') 1 else 0
+    val end = if (start == 1) {
+        val close = line.indexOf(first, start)
+        if (close < 0 || (close < line.lastIndex && !line[close + 1].isWhitespace())) return false
+        close
+    } else {
+        line.indexOfFirst(Char::isWhitespace).let { if (it < 0) line.length else it }
+    }
+    if (line.indexOf("://", start) in start until end) return false
+    val nameStart = maxOf(start - 1, line.lastIndexOf('/', end - 1), line.lastIndexOf('\\', end - 1)) + 1
+    val name = line.substring(nameStart, end)
+    return name.equals("aria2c", ignoreCase = true) || name.equals("aria2c.exe", ignoreCase = true)
+}
+
+internal data class ManualEntries(
+    val entries: List<UrlEntry>,
+    val generatedCount: Int = 0,
+    val rangeLimitExceeded: Boolean = false,
+    val rangePreview: List<UrlEntry> = emptyList(),
+)
+
+/** Expand one numeric range per manually entered HTTP(S) filename, counting before deduplication. */
+internal fun parseManualEntries(text: String, literalUrls: Set<String> = emptySet()): ManualEntries {
+    val entries = LinkedHashMap<String, UrlEntry>()
+    var firstGenerated: UrlEntry? = null
+    var lastGenerated: UrlEntry? = null
+    var generated = 0
+    forEachEntry(text, loose = false) { entry, fromCommand ->
+        val range = if (fromCommand || entry.url in literalUrls) null else filenameRange(entry.url)
+        if (range == null) {
+            entries.putIfAbsent(entry.url, entry)
+            return@forEachEntry
+        }
+        val startDigits = range.groupValues[1]
+        val start = BigInteger(startDigits)
+        val end = BigInteger(range.groupValues[2])
+        if (end < start) {
+            entries.putIfAbsent(entry.url, entry)
+            return@forEachEntry
+        }
+        val count = end - start + BigInteger.ONE
+        if (count > BigInteger.valueOf((MaxUrlRangeEntries - generated).toLong())) {
+            return ManualEntries(emptyList(), rangeLimitExceeded = true)
+        }
+        val size = count.toInt()
+        var number = start
+        repeat(size) { offset ->
+            val url = entry.url.replaceRange(range.range, number.toString().padStart(startDigits.length, '0'))
+            // A singleton keeps its per-entry options; a batch must not clone them.
+            val item = if (size == 1) entry.copy(url = url) else UrlEntry(url)
+            val submitted = entries.putIfAbsent(url, item) ?: item
+            if (firstGenerated == null) firstGenerated = submitted
+            lastGenerated = submitted
+            if (offset + 1 < size) number += BigInteger.ONE
+        }
+        generated += size
+    }
+    val first = firstGenerated
+    val last = lastGenerated
+    val preview = when {
+        first == null || last == null -> emptyList()
+        first.url == last.url -> listOf(first)
+        else -> listOf(first, last)
+    }
+    return ManualEntries(entries.values.toList(), generated, rangePreview = preview)
+}
+
+private fun filenameRange(url: String): MatchResult? {
+    val schemeLength = when {
+        url.startsWith("https://", ignoreCase = true) -> 8
+        url.startsWith("http://", ignoreCase = true) -> 7
+        else -> return null
+    }
+    val pathEnd = url.indexOfFirst { it == '?' || it == '#' }.let { if (it < 0) url.length else it }
+    val pathStart = url.indexOf('/', schemeLength)
+    if (pathStart <= schemeLength || pathStart >= pathEnd) return null
+    val filenameStart = url.lastIndexOf('/', pathEnd - 1) + 1
+    val open = url.indexOf('[', filenameStart)
+    if (open < 0 || open >= pathEnd || url.indexOf('[', open + 1) in 0 until pathEnd) return null
+    val close = url.indexOf(']', filenameStart)
+    if (close < open || close >= pathEnd || url.indexOf(']', close + 1) in 0 until pathEnd) return null
+    return FilenameRange.matchAt(url, open)?.takeIf { it.range.last == close }
 }
 
 private val Schemes = arrayOf("https://", "http://", "ftp://")
@@ -72,6 +200,16 @@ private fun findHttpUrl(line: String): String? {
     return null
 }
 
+/** Strip prose punctuation, retaining only a decimal range's closing bracket. */
+private fun trimImportedUrl(url: String): String {
+    val trimmed = url.trimEnd { it in ".,;:!?()[]{}" }
+    return if (url.getOrNull(trimmed.length) == ']' && TerminalRangeBounds.containsMatchIn(trimmed)) {
+        "$trimmed]"
+    } else {
+        trimmed
+    }
+}
+
 /** 按 URL 去重（保留首条）。 */
 internal fun List<UrlEntry>.dedupe(): List<UrlEntry> {
     val seen = HashSet<String>()
@@ -85,16 +223,17 @@ internal fun UrlEntry.toText(): String = buildString {
     if (checksum.isNotEmpty()) append("\n  checksum=").append(checksum)
 }
 
-/** 把条目追加到现有文本末尾（按 URL 去重，已有文本逐字保留）。返回新文本与实际追加数。 */
-internal fun appendEntries(existing: String, entries: List<UrlEntry>): Pair<String, Int> {
+/** Append distinct URLs and return exactly the entries added (the original text is retained). */
+internal fun appendEntries(existing: String, entries: List<UrlEntry>): Pair<String, List<UrlEntry>> {
     val seen = parseEntries(existing).mapTo(HashSet()) { it.url }
-    var text = existing.trimEnd()
-    var added = 0
-    for (e in entries) {
-        if (!seen.add(e.url)) continue
-        if (text.isNotEmpty()) text += "\n"
-        text += e.toText()
-        added++
+    val added = entries.filter { seen.add(it.url) }
+    if (added.isEmpty()) return existing to added
+    val text = buildString {
+        append(existing)
+        for (entry in added) {
+            if (isNotEmpty() && last() != '\n') append('\n')
+            append(entry.toText())
+        }
     }
     return text to added
 }
@@ -107,7 +246,62 @@ internal fun protocolOf(url: String): TaskProtocol = when {
     else -> TaskProtocol.Http
 }
 
-private fun decode(s: String): String = runCatching { URLDecoder.decode(s.replace("+", "%2B"), "UTF-8") }.getOrDefault(s)
+private fun decode(s: String): String {
+    if ('%' !in s) return s
+    val bytes = try {
+        s.encodeToByteArray(throwOnInvalidSequence = true)
+    } catch (_: CharacterCodingException) {
+        return s // Do not rewrite unpaired UTF-16 surrogates before decoding escapes.
+    }
+    var read = 0
+    var written = 0
+    while (read < bytes.size) {
+        val byte = bytes[read++]
+        bytes[written++] = if (byte == '%'.code.toByte()) {
+            if (bytes.size - read < 2) return s
+            val high = bytes[read++].toInt().toChar().digitToIntOrNull(16) ?: return s
+            val low = bytes[read++].toInt().toChar().digitToIntOrNull(16) ?: return s
+            (high * 16 + low).toByte()
+        } else {
+            byte
+        }
+    }
+    return try {
+        bytes.decodeToString(endIndex = written, throwOnInvalidSequence = true)
+    } catch (_: CharacterCodingException) {
+        // Preserve the link's spelling rather than exporting replacement characters.
+        s
+    }
+}
+
+internal fun UrlEntry.batchExportSize(): Long? {
+    if (!url.startsWith("ed2k://|file|", ignoreCase = true)) return null
+    val fields = url.split('|', limit = 6)
+    if (fields.size < 5 || fields[2].isEmpty()) return null
+    val hash = fields[4]
+    if (hash.length != 32 || hash.any { it !in '0'..'9' && it !in 'a'..'f' && it !in 'A'..'F' }) return null
+    val size = fields[3].removePrefix("+")
+    if (size.any { it !in '0'..'9' }) return null
+    return size.toLongOrNull()?.takeIf {
+        it <= 0x40_0000_0000L && (it != 0L || hash.equals("31d6cfe0d16ae931b73c59d7e0c089c0", ignoreCase = true))
+    }
+}
+
+internal fun UrlEntry.batchExportName(): String {
+    if (fileName.isNotEmpty()) return fileName
+    if (url.startsWith("magnet:?", ignoreCase = true)) return magnetName(url).orEmpty()
+    if (url.startsWith("ed2k://", ignoreCase = true)) return ed2kName(url).orEmpty()
+    if (!url.startsWith("http://", ignoreCase = true) &&
+        !url.startsWith("https://", ignoreCase = true) &&
+        !url.startsWith("ftp://", ignoreCase = true)
+    ) return ""
+    val schemeEnd = url.indexOf("://")
+    // 字符串切分而非 java.net.URI：URL 含空格 / `|` / `{}` 时 URI 会抛异常，与 GPUI / Web / iOS 不一致。
+    val rest = url.substring(schemeEnd + 3).substringBefore('#').substringBefore('?')
+    val slash = rest.indexOf('/')
+    if (slash < 0) return ""
+    return decode(rest.substring(slash).substringAfterLast('/'))
+}
 
 /** 预览用的推断文件名：`out=` 优先；磁力取 `dn=`，eD2K 取 `|file|名称|`，其余取路径末段（取不到用主机名）。 */
 internal fun inferName(entry: UrlEntry): String {
@@ -115,7 +309,7 @@ internal fun inferName(entry: UrlEntry): String {
     val url = entry.url
     return when (protocolOf(url)) {
         TaskProtocol.Bt -> magnetName(url) ?: btihOf(url)?.let { "magnet:$it" } ?: url.take(40)
-        TaskProtocol.Ed2k -> url.split('|').getOrNull(2)?.takeIf { it.isNotBlank() }?.let(::decode) ?: url.take(40)
+        TaskProtocol.Ed2k -> ed2kName(url) ?: url.take(40)
         else -> {
             val uri = runCatching { URI(url.substringBefore('#')) }.getOrNull()
             val seg = uri?.rawPath?.trimEnd('/')?.substringAfterLast('/')?.takeIf { it.isNotEmpty() }
@@ -125,7 +319,12 @@ internal fun inferName(entry: UrlEntry): String {
 }
 
 private fun magnetName(url: String): String? =
-    url.substringAfter('?', "").split('&').firstOrNull { it.startsWith("dn=") }?.removePrefix("dn=")?.let(::decode)?.takeIf { it.isNotBlank() }
+    url.substringAfter('?', "").substringBefore('#').splitToSequence('&')
+        .firstOrNull { it.startsWith("dn=") }?.removePrefix("dn=")?.let(::decode)?.takeIf { it.isNotBlank() }
+
+private fun ed2kName(url: String): String? =
+    url.takeIf { it.startsWith("ed2k://|file|", ignoreCase = true) }
+        ?.split('|', limit = 4)?.getOrNull(2)?.let(::decode)?.takeIf { it.isNotBlank() }
 
 private fun btihOf(url: String): String? =
     Regex("btih:([A-Za-z0-9]+)", RegexOption.IGNORE_CASE).find(url)?.groupValues?.get(1)?.take(12)

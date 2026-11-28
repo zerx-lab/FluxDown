@@ -10,7 +10,7 @@ import { hostOf } from "@/rules/url";
 import { normalizeDashManifest } from "@/utils/dash-manifest";
 import { isPageChange, pageUrlKey, type PageUrlChangeKind } from "@/utils/page-nav";
 import type { DashManifest } from "@/utils/dash-manifest";
-import { isManifestUrl, type DashManifestEntry } from "@/utils/media-candidates";
+import { isManifestUrl, isMediaFragment, type DashManifestEntry } from "@/utils/media-candidates";
 import type { HlsPlaylistEntry, HlsPlaylistInfo } from "@/utils/hls-playlist";
 import { extractFilenameFromUrl } from "@/utils/resource-types";
 import type {
@@ -216,6 +216,14 @@ export function isCurrentPage(tabId: number, pageUrl: string): boolean {
   return state.pageKeys.has(pageUrlKey(pageUrl));
 }
 
+/**
+ * 帧上报所属页面是否属于当前嗅探投影：只校验顶层帧。子帧（嵌入播放器）的 `location.href`
+ * 本就不是 tab 页面 URL，按顶层投影判定会把 iframe 里的上报一律当作旧页面丢弃。
+ */
+export function isCurrentFramePage(tabId: number, frameId: number, pageUrl: string): boolean {
+  return frameId !== 0 || isCurrentPage(tabId, pageUrl);
+}
+
 /** 关闭 tab：丢弃内存状态、取消待写的持久化并清掉会话快照。不通知变更订阅者（tab 已不存在，无视图可刷新）。 */
 export function removeTab(tabId: number): void {
   tabs.delete(tabId);
@@ -393,11 +401,15 @@ function completeFilename(url: string, pageUrl: string, filename: string | undef
 
 const SEGMENT_EXT_RE = /\.(?:m4s|ts|m4v|m4a|cmfv|cmfa|aac)(?:[?#]|$)/i;
 
-/** 分片类资源：媒体分片扩展名，或小于阈值（low）的音视频 / 流。 */
+/** 分片类资源：媒体分片扩展名或分片 MIME / 伪装扩展名（见 isMediaFragment），或小于阈值（low）的音视频 / 流。 */
 function isSegmentLike(resource: DetectedResource): boolean {
   if (resource.type !== "video" && resource.type !== "audio" && resource.type !== "stream") return false;
   if (isManifestUrl(resource.url, resource.mimeType)) return false;
-  return SEGMENT_EXT_RE.test(resource.url) || resource.confidence === "low";
+  return (
+    SEGMENT_EXT_RE.test(resource.url) ||
+    isMediaFragment(resource.url, resource.mimeType) ||
+    resource.confidence === "low"
+  );
 }
 
 /** 分片类资源超过 `keep` 条时按检测时间淘汰最旧的。 */
@@ -546,6 +558,7 @@ export function ingestResources(
     if (
       type === "video" &&
       !SEGMENT_EXT_RE.test(url) &&
+      !isMediaFragment(url, payload.mimeType) &&
       !isManifestUrl(url, payload.mimeType) &&
       engine.trackKind({ url, filename: payload.filename, mime: payload.mimeType, pageUrl: effectivePageUrl }) === "audio"
     ) {

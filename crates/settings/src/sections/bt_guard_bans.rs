@@ -11,6 +11,7 @@ use fluxdown_protocol::{
     BT_GUARD_LAYERS, BtGuardEntriesAddParams, BtGuardEntriesListDto, BtGuardEntriesRemoveDto,
     BtGuardEntryDto, BtGuardExportDto, RpcErrorData, method,
 };
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     ButtonVariant, CheckState, ControlExt as _, FluxIcon, card, check_mark, loading_button,
     tabular_numbers, tooltip_view,
@@ -368,7 +369,7 @@ impl BansPanel {
                             .map_or(0, |dto| dto.removed);
                         this.selected.clear();
                         this.notify(
-                            Notification::success(
+                            toast::success(
                                 translator
                                     .text_with("btGuardReleased", &[("n", &removed.to_string())]),
                             ),
@@ -380,7 +381,7 @@ impl BansPanel {
                     }
                     Err(error) => {
                         this.notify(
-                            Notification::error(format!(
+                            toast::error(format!(
                                 "{}: {}",
                                 translator.text("btGuardReleaseFailed"),
                                 rpc_error_text(&translator, &error)
@@ -414,7 +415,7 @@ impl BansPanel {
             Err(_) => {
                 let translator = self.translator.clone();
                 self.notify(
-                    Notification::error(translator.text("btGuardAddFailed").to_owned()),
+                    toast::error(translator.text("btGuardAddFailed").to_owned()),
                     window,
                     cx,
                 );
@@ -435,7 +436,7 @@ impl BansPanel {
                 match result {
                     Ok(_) => {
                         this.notify(
-                            Notification::success(
+                            toast::success(
                                 translator.text_with("btGuardAllowed", &[("cidr", &cidr)]),
                             ),
                             window,
@@ -446,7 +447,7 @@ impl BansPanel {
                     }
                     Err(error) => {
                         this.notify(
-                            Notification::error(format!(
+                            toast::error(format!(
                                 "{}: {}",
                                 translator.text("btGuardAddFailed"),
                                 rpc_error_text(&translator, &error)
@@ -505,10 +506,10 @@ impl BansPanel {
                 this.exporting = false;
                 let translator = this.translator.clone();
                 let notification = match written {
-                    Some(lines) => Notification::success(
+                    Some(lines) => toast::success(
                         translator.text_with("btGuardExportDone", &[("n", &lines.to_string())]),
                     ),
-                    None => Notification::error(translator.text("btGuardExportFailed").to_owned()),
+                    None => toast::error(translator.text("btGuardExportFailed").to_owned()),
                 };
                 this.notify(notification, window, cx);
                 cx.notify();
@@ -769,6 +770,10 @@ impl BansPanel {
             .py(tokens.spacing.xs)
             .border_b_1()
             .border_color(extended.colors.hairline)
+            .when(index + 1 == self.items.len(), |row| {
+                let radius = theme.components().card_radius - extended.stroke.thin;
+                row.rounded_b(radius.max(gpui::Pixels::ZERO))
+            })
             .hover(|style| style.bg(extended.colors.row_hover))
             .text_size(tokens.typography.sm.size)
             .line_height(tokens.typography.sm.line_height)
@@ -925,12 +930,12 @@ impl BansPanel {
             return empty_state(FluxIcon::Shield, self.t(key), SharedString::default(), cx)
                 .into_any_element();
         }
+        let theme = active_theme(cx);
         let mut table = card(cx)
             .flex()
             .flex_col()
             .w_full()
-            .min_w(active_theme(cx).text_extent(MIN_TABLE_WIDTH))
-            .overflow_hidden();
+            .min_w(theme.text_extent(MIN_TABLE_WIDTH));
         table = table.child(self.header(cx));
         for (index, item) in self.items.iter().enumerate() {
             table = table.child(self.entry_row(index, item, cx));

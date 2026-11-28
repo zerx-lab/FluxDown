@@ -53,6 +53,53 @@ enum ExtensionErrorText {
         }
     }
 
+    static func pluginFailure(_ error: HostError) -> String {
+        pluginDiagnostic(error.pluginDiagnostic) ?? describe(error)
+    }
+
+    static func pluginLoadFailure(_ plugin: PluginDto) -> String {
+        pluginDiagnostic(plugin.loadDetail) ?? L("pluginDiagnosticLoadFailed")
+    }
+
+    private static func pluginDiagnostic(_ detail: PluginDiagnostic?) -> String? {
+        guard let detail else { return nil }
+        switch detail.kind {
+        case "manifestUnreadable": return L("pluginDiagnosticManifestUnreadable")
+        case "manifestUnknownField": return L("pluginDiagnosticManifestUnknownField")
+        case "manifestJsonInvalid": return L("pluginDiagnosticManifestJsonInvalid")
+        case "manifestIdentityInvalid": return L("pluginDiagnosticManifestIdentityInvalid")
+        case "manifestNameMissing": return L("pluginDiagnosticManifestNameMissing")
+        case "manifestVersionInvalid": return L("pluginDiagnosticManifestVersionInvalid")
+        case "manifestMinAppVersionInvalid": return L("pluginDiagnosticManifestMinAppVersionInvalid")
+        case "manifestUnknownPermission": return L("pluginDiagnosticManifestUnknownPermission")
+        case "manifestAuthPermissionMissing": return L("pluginDiagnosticManifestAuthPermissionMissing")
+        case "scriptCompileFailed": return L("pluginDiagnosticScriptCompileFailed")
+        case "scriptCompileFailedAt":
+            guard let line = detail.line, let column = detail.column else {
+                return L("pluginDiagnosticScriptCompileFailed")
+            }
+            return L("pluginDiagnosticScriptCompileFailedAt", ["line": line, "column": column])
+        case "missingFile":
+            guard let path = detail.path, !path.isEmpty else { return nil }
+            return L("pluginDiagnosticMissingFile", ["path": path])
+        case "loadFailed": return L("pluginDiagnosticLoadFailed")
+        case "notDevPlugin": return L("pluginDiagnosticNotDevPlugin")
+        default: return nil
+        }
+    }
+
+    /// File picker and read errors can contain local paths and provider details.
+    static func packageImportFailure(_ error: any Error) -> String? {
+        let key: String
+        switch (error as? CocoaError)?.code {
+        case .userCancelled: return nil
+        case .fileNoSuchFile, .fileReadNoSuchFile: key = "mobileFileNotFound"
+        case .fileReadNoPermission: key = "pluginImportFileNoPermission"
+        default: key = "pluginImportFileUnreadable"
+        }
+        return L("pluginOpInstallFailed", ["message": L(key)])
+    }
+
     private static let reasonKeys: [String: String] = [
         "marketUnreachable": "pluginErrorMarketUnreachable",
         "marketIndexInvalid": "pluginErrorMarketIndexInvalid",

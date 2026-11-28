@@ -15,14 +15,16 @@ struct MarketPage: View {
 
     var body: some View {
         let state = store.state
+        let list = plugins.value(state.sections[HostSection.daemonPlugins])
         let installed = Dictionary(
-            plugins.value(state.sections[HostSection.daemonPlugins]).map { ($0.identity, $0) },
+            list.map { ($0.identity, $0) },
             uniquingKeysWith: { first, _ in first }
         )
         let latest = model.marketLatest
         let filtered = PluginMarket.filter(latest, query: query)
         let readOnly = state.isReadOnly
         List {
+            ResolverUrlConflictSection(plugins: list, identities: Set(latest.map(\.pluginId)))
             ForEach(filtered.prefix(limit)) { entry in
                 let current = installed[entry.pluginId]
                 let action = PluginMarket.action(for: entry, installed: current)
@@ -169,10 +171,12 @@ struct MarketDetailPage: View {
 
     var body: some View {
         let state = store.state
-        let installed = plugins.value(state.sections[HostSection.daemonPlugins]).first { $0.identity == entry.pluginId }
+        let list = plugins.value(state.sections[HostSection.daemonPlugins])
+        let installed = list.first { $0.identity == entry.pluginId }
         let action = PluginMarket.action(for: entry, installed: installed)
         let pending = model.marketPending.contains(entry.pluginId)
         Form {
+            ResolverUrlConflictSection(plugins: list, identities: [entry.pluginId])
             PluginInfoSections(detail: PluginDetail(market: entry))
         }
         .navigationTitle(entry.displayName)

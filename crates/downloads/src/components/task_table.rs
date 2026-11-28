@@ -1,24 +1,29 @@
+use std::collections::BTreeMap;
 use std::{
     cell::{Cell, Ref, RefCell},
     cmp::Ordering,
     collections::{HashMap, HashSet, VecDeque},
+    ops::Range,
     rc::Rc,
     time::{Duration, Instant},
 };
 
 use fluxdown_protocol::{RemoteCommandAction, RemoteCommandParams, RemoteTaskStatus};
-use fluxdown_ui_components::{CheckState, FluxIcon, check_mark, tabular_numbers, tooltip_view};
+use fluxdown_ui_components::{
+    CheckState, FluxIcon, check_mark, tabular_numbers, tooltip_view, truncated_text,
+};
 use fluxdown_ui_icon_pack::FileKind;
 use fluxdown_ui_theme::active_theme;
 use gpui::{
-    AnyElement, App, ClickEvent, Context, Div, Edges, Entity, FocusHandle, FontWeight, Hsla,
-    InteractiveElement as _, IntoElement, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ParentElement, Pixels, Point, Render, ScrollEvent, SharedString, Stateful,
-    StatefulInteractiveElement as _, Styled, Task, WeakEntity, Window, div, linear_color_stop,
-    linear_gradient, prelude::FluentBuilder as _, px,
+    AnyElement, App, AppContext as _, ClickEvent, Context, Div, Edges, Entity, FocusHandle,
+    FontWeight, Hsla, InteractiveElement as _, IntoElement, Modifiers, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render, ScrollEvent, SharedString,
+    Stateful, StatefulInteractiveElement as _, Styled, Task, WeakEntity, Window, div,
+    linear_color_stop, linear_gradient, prelude::FluentBuilder as _, px,
 };
+use gpui::{Bounds, ScrollStrategy};
 use gpui_component::{
-    ElementExt as _, Icon, IconName, Sizable as _, Size, h_flex,
+    ElementExt as _, FocusableExt as _, Icon, IconName, Sizable as _, Size, h_flex,
     menu::{PopupMenu, PopupMenuItem},
     scroll::Scrollbar,
     spinner::Spinner,
@@ -42,6 +47,7 @@ use crate::{
         format_bytes,
         group_tree::GroupMeta,
         row_order::{InteractionHold, RowOrder},
+        series_title::series_title,
         view_prefs::{
             DateBucket, HeaderAlign, SortDir, ViewDensity, ViewGroupBy, ViewPrefs, ViewSortKey,
             state_group_key,
@@ -340,6 +346,21 @@ struct GroupBucket {
     order: i64,
 }
 
+fn content_group_bucket(task: &DownloadTaskView) -> Option<GroupBucket> {
+    let title = series_title(&task.name)?;
+    let folded = title.to_lowercase();
+    let key = if task.source == TaskSource::Remote {
+        format!("content:remote:{}\0{folded}", task.to_device)
+    } else {
+        format!("content:local:{folded}")
+    };
+    Some(GroupBucket {
+        key,
+        label: SharedString::from(title.to_owned()),
+        order: 0,
+    })
+}
+
 /// 自上次重算以来，影响可见行的变化范围。
 enum ViewChange {
     /// 没有影响排序 / 筛选 / 分组的变化：可见行与选中集都无需重算。
@@ -455,6 +476,29 @@ pub(crate) struct TaskMenuFacts {
     pub(crate) is_seeding: bool,
     /// 已完成且做种已停止 / 达标（seeding_status 2..=7）、产物仍在：可继续（恢复做种）。
     pub(crate) can_resume_seeding: bool,
+    /// 「复制下载地址」能复制的链接种类（`DownloadTaskView::copyable_share_url`）。
+    pub(crate) share_link: ShareLink,
+}
+
+/// 任务「下载地址」的种类：决定「复制下载地址」是否有意义、是否与「复制磁力链接」重复。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ShareLink {
+    /// 可复制的普通链接（http(s) / ftp / ed2k / RSS 的 `.torrent` 直链等）。
+    Url,
+    /// 用户添加时的 `magnet:` 原文。
+    Magnet,
+    /// 无可复制链接：本地导入的 `.torrent` 只有 `torrent-file://` 哨兵。
+    None,
+}
+
+impl ShareLink {
+    fn of(url: Option<&str>) -> Self {
+        match url {
+            None => Self::None,
+            Some(url) if url_has_prefix(url, &["magnet:"]) => Self::Magnet,
+            Some(_) => Self::Url,
+        }
+    }
 }
 
 /// 可「忽略插件重试」的插件失败错误消息前缀（引擎 `handle_resolve_ready`；二段解析任务
@@ -470,7 +514,7 @@ pub(crate) fn url_has_prefix(url: &str, prefixes: &[&str]) -> bool {
 }
 
 /// BT 任务源：`magnet:` 链接或 `torrent-file://` 本地种子哨兵。
-fn is_bt_url(url: &str) -> bool {
+pub(crate) fn is_bt_url(url: &str) -> bool {
     url_has_prefix(url, &["magnet:", "torrent-file://"])
 }
 
@@ -517,6 +561,31 @@ impl TaskMenuFacts {
     pub(crate) fn has_product_on_disk(&self) -> bool {
         self.is_local && self.state == TaskState::Completed && !self.file_missing
     }
+
+    pub(crate) fn can_clear_task_file(&self) -> bool {
+        self.has_product_on_disk() && !self.is_bt && !self.is_torrent_sentinel
+    }
+
+    /// 「复制下载地址」对单个任务有意义：有真实链接，且不与「复制磁力链接」重复
+    /// （本机 BT 任务的磁力原文由「复制磁力链接」给出，后者还带会话追加的 tracker）。
+    pub(crate) fn can_copy_url(&self) -> bool {
+        match self.share_link {
+            ShareLink::Url => true,
+            ShareLink::Magnet => !self.can_share_torrent(),
+            ShareLink::None => false,
+        }
+    }
+}
+
+/// 「复制下载地址」可见：单选按 [`TaskMenuFacts::can_copy_url`]；多选时「复制磁力链接」
+/// 不出现，磁力原文仍是批量复制的唯一途径，只要有一项能给出链接即显示（哨兵行复制时跳过）。
+fn copy_url_visible(selection: &[TaskMenuFacts]) -> bool {
+    match selection {
+        [only] => only.can_copy_url(),
+        _ => selection
+            .iter()
+            .any(|task| task.share_link != ShareLink::None),
+    }
 }
 
 /// 由任务行计算菜单事实：右键菜单、应用菜单与详情面板按钮共用同一事实源。
@@ -540,6 +609,7 @@ pub(crate) fn task_menu_facts_for(store: &TaskStore, key: &RowKey) -> Option<Tas
         bt_sequential: row.bt_sequential,
         bt_first_last_pieces_first: row.bt_first_last_pieces_first,
         bt_super_seeding: row.bt_super_seeding,
+        share_link: ShareLink::of(row.copyable_share_url()),
     })
 }
 
@@ -575,6 +645,8 @@ pub(crate) enum MenuEntry {
     MoveStorage,
     /// 任务级 BT 限速对话框（单选；条件见 [`task_limits_visible`]）。
     TaskSpeedLimits,
+    /// Add a BEP 19 source (single local BitTorrent task).
+    AddWebSeed,
     /// 超级做种勾选（可多选；条件见 [`super_seeding_visible`]）。
     SuperSeeding,
     /// 复制磁力链接（单选；条件见 [`TaskMenuFacts::can_share_torrent`]）。
@@ -590,6 +662,11 @@ pub(crate) enum MenuEntry {
     Separator,
     Delete,
     DeleteWithFiles,
+    /// 清理无效任务（所选中有失败 / 文件已丢失的任务即显示）。
+    CleanStale,
+    /// 清理暂停或失败任务（所选中有本机暂停 / 失败任务即显示）。
+    CleanUnfinished,
+    ClearTaskFile,
     /// 在主窗口停靠详情面板中查看（独立窗口经面板头部「在独立窗口打开」）。
     ShowDetail,
     /// 插件贡献的命令（下标对应 [`DownloadView`] 上的插件命令列表）。
@@ -606,20 +683,10 @@ pub(crate) fn context_menu_items(selection: &[TaskMenuFacts]) -> Vec<MenuEntry> 
         return Vec::new();
     }
     let mut items = Vec::new();
-    if selection.iter().any(|task| {
-        task.controllable
-            && (task.can_resume_seeding
-                || !matches!(task.state, TaskState::Completed | TaskState::Downloading))
-    }) {
+    if selection.iter().any(resume_applies) {
         items.push(MenuEntry::Resume);
     }
-    // 失败的本机任务也可暂停：撤销已排程的自动重试，任务落为已暂停（#947）。
-    if selection.iter().any(|task| {
-        task.controllable
-            && (task.is_seeding
-                || matches!(task.state, TaskState::Downloading | TaskState::Pending)
-                || (task.is_local && task.state == TaskState::Failed))
-    }) {
+    if selection.iter().any(pause_applies) {
         items.push(MenuEntry::Pause);
     }
     if let [only] = selection {
@@ -676,6 +743,9 @@ pub(crate) fn context_menu_items(selection: &[TaskMenuFacts]) -> Vec<MenuEntry> 
     if task_limits_visible(selection) {
         items.push(MenuEntry::TaskSpeedLimits);
     }
+    if single_local_bt(selection) {
+        items.push(MenuEntry::AddWebSeed);
+    }
     if super_seeding_visible(selection) {
         items.push(MenuEntry::SuperSeeding);
     }
@@ -686,7 +756,9 @@ pub(crate) fn context_menu_items(selection: &[TaskMenuFacts]) -> Vec<MenuEntry> 
     }) {
         items.push(MenuEntry::Redownload);
     }
-    items.push(MenuEntry::CopyUrl);
+    if copy_url_visible(selection) {
+        items.push(MenuEntry::CopyUrl);
+    }
     if let [only] = selection
         && only.can_share_torrent()
     {
@@ -701,10 +773,62 @@ pub(crate) fn context_menu_items(selection: &[TaskMenuFacts]) -> Vec<MenuEntry> 
         items.push(MenuEntry::Delete);
         items.push(MenuEntry::DeleteWithFiles);
     }
+    // 与 `TaskCleanup::matches` 同判定；确认时按完整行再复核。
+    if selection
+        .iter()
+        .any(|task| task.state == TaskState::Failed || (task.is_local && task.file_missing))
+    {
+        items.push(MenuEntry::CleanStale);
+    }
+    if selection
+        .iter()
+        .any(|task| task.is_local && matches!(task.state, TaskState::Paused | TaskState::Failed))
+    {
+        items.push(MenuEntry::CleanUnfinished);
+    }
+    if let [only] = selection
+        && only.can_clear_task_file()
+    {
+        items.push(MenuEntry::ClearTaskFile);
+    }
     if selection.iter().any(|task| task.is_local) {
         items.push(MenuEntry::ShowDetail);
     }
     items
+}
+
+/// 「继续」会作用到该任务：可控，且可恢复做种或处于完成 / 下载中以外的状态。
+fn resume_applies(task: &TaskMenuFacts) -> bool {
+    task.controllable
+        && (task.can_resume_seeding
+            || !matches!(task.state, TaskState::Completed | TaskState::Downloading))
+}
+
+/// 「暂停」会作用到该任务。失败的本机任务也可暂停：撤销已排程的自动重试，
+/// 任务落为已暂停（#947）。
+fn pause_applies(task: &TaskMenuFacts) -> bool {
+    task.controllable
+        && (task.is_seeding
+            || matches!(task.state, TaskState::Downloading | TaskState::Pending)
+            || (task.is_local && task.state == TaskState::Failed))
+}
+
+/// 「继续」作用的任务全是可恢复做种的已完成任务：菜单项改称「继续做种」。
+pub(crate) fn resume_targets_only_seeds(selection: &[TaskMenuFacts]) -> bool {
+    let mut targets = selection
+        .iter()
+        .filter(|task| resume_applies(task))
+        .peekable();
+    targets.peek().is_some() && targets.all(|task| task.can_resume_seeding)
+}
+
+/// 「暂停」作用的任务全是做种中 / 排队做种的任务：菜单项改称「停止做种」。
+pub(crate) fn pause_targets_only_seeds(selection: &[TaskMenuFacts]) -> bool {
+    let mut targets = selection
+        .iter()
+        .filter(|task| pause_applies(task))
+        .peekable();
+    targets.peek().is_some() && targets.all(|task| task.is_seeding)
 }
 
 /// 右键菜单完整条目：未处于显式多选模式时，在删除组前插入「选择 / 全选」作为
@@ -815,13 +939,14 @@ pub(crate) fn force_recheck_visible(selection: &[TaskMenuFacts]) -> bool {
 }
 
 /// 单选本机 BT 任务（任意状态）。
-fn single_local_bt(selection: &[TaskMenuFacts]) -> bool {
+pub(crate) fn single_local_bt(selection: &[TaskMenuFacts]) -> bool {
     matches!(selection, [only] if only.is_local && only.is_bt)
 }
 
-/// 「移动到…」：恰好一个本机 BT 任务（任意状态，含已完成 / 做种）。
+/// 「移动到…」：恰好一个本机任务（任意协议、任意状态，含已完成 / 做种）。BT 走 BT 会话搬移，
+/// 其余协议由 daemon 转统一编辑的搬移（`daemon.task.moveStorage`）。
 pub(crate) fn move_storage_visible(selection: &[TaskMenuFacts]) -> bool {
-    single_local_bt(selection)
+    matches!(selection, [only] if only.is_local)
 }
 
 /// 「任务限速…」：恰好一个本机 BT 任务。
@@ -917,6 +1042,7 @@ pub(crate) struct DownloadTableDelegate {
     store: Rc<TaskStore>,
     categories: Rc<CategoryIndex>,
     visible: Vec<VisibleRow>,
+    visible_failed_tasks: Option<Entity<Vec<String>>>,
     seen_generation: u64,
     /// 上次重算时存储的结构计数；未变说明只有行内容变化，可沿用上次的行顺序。
     seen_structure: u64,
@@ -950,6 +1076,9 @@ pub(crate) struct DownloadTableDelegate {
     multi_select: bool,
     /// 左键按住拖过任务行时的划选；`None` 表示没有进行中的手势。
     row_sweep: Option<RowSweep>,
+    sweep_bounds: Rc<Cell<Bounds<Pixels>>>,
+    sweep_scroll: Option<Task<()>>,
+    sweep_scroll_generation: u64,
     /// 这次左键是否按在文件拖出把手上。行在捕获阶段清掉，把手在捕获阶段置位，
     /// 行冒泡阶段的 [`Self::begin_row_sweep`] 读完即清。父捕获早于子捕获，所以不会
     /// 把同一次按下的置位清掉；没被读走的残留由下一次按下的行捕获清掉。
@@ -1017,6 +1146,7 @@ impl DownloadTableDelegate {
             store,
             categories: Rc::new(CategoryIndex::default()),
             visible: Vec::new(),
+            visible_failed_tasks: None,
             seen_generation: u64::MAX,
             seen_structure: u64::MAX,
             sorted_rows: Vec::new(),
@@ -1038,6 +1168,9 @@ impl DownloadTableDelegate {
             selection_anchor: None,
             multi_select: false,
             row_sweep: None,
+            sweep_bounds: Rc::new(Cell::new(Bounds::default())),
+            sweep_scroll: None,
+            sweep_scroll_generation: 0,
             press_on_file_handle: false,
             suppress_sweep_click: false,
             pending_delete: HashSet::new(),
@@ -1065,6 +1198,30 @@ impl DownloadTableDelegate {
             plugin_commands: Vec::new(),
             action_context: None,
         }
+    }
+
+    pub(crate) fn watch_visible_failed_tasks(&mut self, cx: &mut App) -> Entity<Vec<String>> {
+        self.visible_failed_tasks
+            .get_or_insert_with(|| cx.new(|_| Vec::new()))
+            .clone()
+    }
+
+    fn failed_local_rows(
+        &self,
+        range: Range<usize>,
+    ) -> impl Iterator<Item = Ref<'_, DownloadTaskView>> {
+        let end = range.end.min(self.visible.len());
+        self.visible[range.start.min(end)..end]
+            .iter()
+            .filter_map(move |row| match row {
+                VisibleRow::Task(id @ RowId::Local(_))
+                | VisibleRow::Member {
+                    id: id @ RowId::Local(_),
+                    ..
+                } => self.store.row(*id),
+                _ => None,
+            })
+            .filter(|task| task.state == TaskState::Failed)
     }
 
     pub(crate) fn set_strings(&mut self, strings: DownloadStrings) {
@@ -1364,6 +1521,22 @@ impl DownloadTableDelegate {
         let force_full = self.force_full_sort;
         #[cfg(not(test))]
         let force_full = false;
+        // 追加以及不触及可见下标的移除，不会使划选会话记录的 RowId 失效。
+        let mut changed_slots = HashSet::new();
+        let can_compare_rows = self.row_sweep.is_some()
+            && (content_only
+                || (!dirty
+                    && store
+                        .changes_since(self.sorted_log_pos)
+                        .is_some_and(|changes| {
+                            for change in changes.iter() {
+                                if let RowChange::Removed { ix, last } = *change {
+                                    changed_slots.insert(RowId::Local(ix));
+                                    changed_slots.insert(RowId::Local(last));
+                                }
+                            }
+                            true
+                        })));
         let change = self.sync_sorted(&store, dirty, force_full);
         let group_date =
             (self.prefs.group_by == ViewGroupBy::Date).then(|| chrono::Local::now().date_naive());
@@ -1386,9 +1559,75 @@ impl DownloadTableDelegate {
             self.refresh_group_rows();
             return true;
         }
+        // 即使全表结构变化，只要屏幕上的划选目标未变，就保留会话和滚动计时器。
+        let previous = can_compare_rows.then(|| {
+            (
+                std::mem::take(&mut self.visible),
+                std::mem::take(&mut self.group_rows),
+            )
+        });
         self.visible = self.compute_visible(content_only, now);
+        if let Some((rows, groups)) = previous
+            && self.same_sweep_layout(&rows, &groups, &changed_slots)
+        {
+            if let Some(sweep) = &mut self.row_sweep {
+                sweep.tally = None;
+            }
+        } else {
+            self.finish_row_sweep();
+        }
         self.revalidate_selection(&change);
         true
+    }
+
+    fn same_sweep_layout(
+        &self,
+        rows: &[VisibleRow],
+        groups: &[GroupRow],
+        changed_slots: &HashSet<RowId>,
+    ) -> bool {
+        rows.len() == self.visible.len()
+            && rows
+                .iter()
+                .zip(&self.visible)
+                .all(|(old, new)| match (old, new) {
+                    (VisibleRow::Task(a), VisibleRow::Task(b)) => {
+                        a == b && !changed_slots.contains(a)
+                    }
+                    (VisibleRow::Member { id, .. }, VisibleRow::Member { .. }) => {
+                        old == new && !changed_slots.contains(id)
+                    }
+                    (VisibleRow::Group(a), VisibleRow::Group(b)) => groups
+                        .get(*a)
+                        .zip(self.group_rows.get(*b))
+                        .is_some_and(|(old, new)| {
+                            old.id == new.id
+                                && old.members == new.members
+                                && !old.members.iter().any(|id| changed_slots.contains(id))
+                        }),
+                    (
+                        VisibleRow::GroupDir {
+                            path: a,
+                            group: a_group,
+                            collapsed: a_closed,
+                            ..
+                        },
+                        VisibleRow::GroupDir {
+                            path: b,
+                            group: b_group,
+                            collapsed: b_closed,
+                            ..
+                        },
+                    ) => {
+                        a == b
+                            && a_closed == b_closed
+                            && groups
+                                .get(*a_group)
+                                .zip(self.group_rows.get(*b_group))
+                                .is_some_and(|(old, new)| old.id == new.id)
+                    }
+                    _ => old == new,
+                })
     }
 
     /// 选中集只保留当前筛选 + 搜索下仍在视图内的任务（已删除、被侧栏切换 / 搜索 /
@@ -1727,10 +1966,15 @@ impl DownloadTableDelegate {
             self.push_directories(&mut visible, &entities, &local, &remote);
             return visible;
         }
+        let mut ungrouped = Vec::new();
         let mut buckets = group_by_key(
             entities.into_iter().filter_map(|entity| {
-                self.entity_bucket(entity, &local, &remote)
-                    .map(|bucket| (bucket, entity))
+                if let Some(bucket) = self.entity_bucket(entity, &local, &remote) {
+                    Some((bucket, entity))
+                } else {
+                    ungrouped.push(entity);
+                    None
+                }
             }),
             |bucket: &GroupBucket| bucket.key.as_str(),
         );
@@ -1757,13 +2001,16 @@ impl DownloadTableDelegate {
                 }
             }
         }
+        for entity in ungrouped {
+            self.push_entity(&mut visible, entity);
+        }
         visible
     }
 
     fn group_bucket(&self, task: &DownloadTaskView) -> GroupBucket {
         let strings = &self.strings;
         match self.prefs.group_by {
-            ViewGroupBy::None | ViewGroupBy::Directory => GroupBucket {
+            ViewGroupBy::None | ViewGroupBy::Directory | ViewGroupBy::Content => GroupBucket {
                 key: String::new(),
                 label: SharedString::default(),
                 order: 0,
@@ -1866,8 +2113,32 @@ impl DownloadTableDelegate {
             .collect()
     }
 
+    pub(crate) fn selected_rows_in_order(&self) -> Vec<std::cell::Ref<'_, DownloadTaskView>> {
+        let mut rows: Vec<_> = self
+            .visible_task_ids()
+            .filter_map(|id| {
+                let row = self.store.row(id)?;
+                self.selected_tasks.contains(&row.key).then_some(row)
+            })
+            .collect();
+        if rows.len() < self.selected_tasks.len() {
+            // A collapsed bucket or directory can still contain selected tasks.
+            let shown: HashSet<_> = rows.iter().map(|row| row.key.clone()).collect();
+            rows.extend(self.sorted_rows.iter().filter_map(|&id| {
+                let row = self.store.row(id)?;
+                (self.selected_tasks.contains(&row.key) && !shown.contains(&row.key)).then_some(row)
+            }));
+        }
+        rows
+    }
+
     /// 可见任务行里（选中数, 总数）；不分配。
     fn visible_selection_counts(&self) -> (usize, usize) {
+        if let Some(sweep) = &self.row_sweep
+            && let Some(tally) = sweep.tally
+        {
+            return (tally.count, sweep.visible_total);
+        }
         let mut selected = 0;
         let mut total = 0;
         for id in self.visible_task_ids() {
@@ -1982,6 +2253,7 @@ impl DownloadTableDelegate {
     }
 
     pub(crate) fn select_all_tasks(&mut self) {
+        self.finish_row_sweep();
         // 任务表载入期间「全部」不是完整范围：不做全选。
         if self.store.loading().is_some() {
             return;
@@ -1999,6 +2271,7 @@ impl DownloadTableDelegate {
     }
 
     pub(crate) fn clear_selection(&mut self) {
+        self.finish_row_sweep();
         self.selected_tasks.clear();
         self.selection_anchor = None;
         self.multi_select = false;
@@ -2018,6 +2291,7 @@ impl DownloadTableDelegate {
     /// 行首复选框点击：未处于多选模式时以该行开启多选（不并入普通单击选中的行），
     /// 已在多选模式时切换该行。
     pub(crate) fn toggle_multi_select(&mut self, key: RowKey) {
+        self.finish_row_sweep();
         if self.is_pending_delete(&key) {
             return;
         }
@@ -2033,6 +2307,7 @@ impl DownloadTableDelegate {
     }
 
     pub(crate) fn select_task(&mut self, key: RowKey, modifiers: SelectModifiers) {
+        self.finish_row_sweep();
         // 正在删除的任务不参与选择。
         if self.is_pending_delete(&key) {
             return;
@@ -2050,13 +2325,16 @@ impl DownloadTableDelegate {
                 } else {
                     (task_index, anchor_index)
                 };
-                self.selected_tasks.clear();
                 let range: Vec<RowKey> = keys[start..=end]
                     .iter()
                     .filter(|item| !self.is_pending_delete(item))
                     .cloned()
                     .collect();
+                if !modifiers.toggle {
+                    self.selected_tasks.clear();
+                }
                 self.selected_tasks.extend(range);
+                self.multi_select = self.selected_tasks.len() > 1 || modifiers.toggle;
                 self.selection_anchor = Some(key);
                 return;
             }
@@ -2075,61 +2353,61 @@ impl DownloadTableDelegate {
         self.selection_anchor = Some(key);
     }
 
-    /// 划选落在 `[from, to]`（可见行下标，含端点）上的任务。`additive` 时并入 `base`。
-    /// 组行展开为其全部成员；目录行与分组标题不贡献任务。
-    pub(crate) fn apply_row_sweep(
-        &mut self,
-        from: usize,
-        to: usize,
-        additive: bool,
-        base: &HashSet<RowKey>,
-    ) {
-        let (start, end) = if from <= to { (from, to) } else { (to, from) };
-        let mut selected = if additive {
-            base.clone()
-        } else {
-            HashSet::new()
-        };
-        let mut anchor = None;
-        if start < self.visible.len() {
-            for ix in start..=end.min(self.visible.len().saturating_sub(1)) {
-                self.push_sweep_keys(ix, &mut selected, &mut anchor);
-            }
-        }
-        let multiple = selected.len() > 1 || (additive && !selected.is_empty());
-        self.selected_tasks = selected;
-        self.multi_select = multiple;
-        self.focused_group = None;
-        if let Some(anchor) = anchor {
-            self.selection_anchor = Some(anchor);
-        }
-    }
-
-    fn push_sweep_keys(
-        &self,
-        ix: usize,
-        selected: &mut HashSet<RowKey>,
-        anchor: &mut Option<RowKey>,
-    ) {
-        let ids: Vec<RowId> = match self.visible.get(ix) {
-            Some(VisibleRow::Task(id) | VisibleRow::Member { id, .. }) => vec![*id],
+    fn sweep_row_ids(&self, ix: usize) -> &[RowId] {
+        match self.visible.get(ix) {
+            Some(VisibleRow::Task(id) | VisibleRow::Member { id, .. }) => std::slice::from_ref(id),
             Some(VisibleRow::Group(group)) => self
                 .group_rows
                 .get(*group)
-                .map(|group| group.members.clone())
-                .unwrap_or_default(),
-            Some(VisibleRow::GroupDir { .. } | VisibleRow::GroupHeader { .. }) | None => return,
-        };
-        for id in ids {
-            let Some(row) = self.store.row(id) else {
+                .map_or(&[][..], |group| group.members.as_slice()),
+            _ => &[],
+        }
+    }
+
+    /// Update only rows that entered or left the range. An expanded group can
+    /// contribute the same task through its header and its own member row.
+    fn update_sweep_row(
+        &self,
+        ix: usize,
+        sweep: &mut RowSweep,
+        selected: &mut HashSet<RowKey>,
+        adding: bool,
+    ) {
+        let store = &self.store;
+        let ids = self.sweep_row_ids(ix);
+        let overlapping = !matches!(self.visible.get(ix), Some(VisibleRow::Task(_)));
+        let mut anchor = None;
+        for &id in ids {
+            let Some(row) = store.row(id) else {
                 continue;
             };
             if self.is_pending_delete(&row.key) {
                 continue;
             }
-            let key = row.key.clone();
-            *anchor = Some(key.clone());
-            selected.insert(key);
+            let crosses_boundary = if overlapping {
+                sweep.update_membership(id, adding)
+            } else {
+                true
+            };
+            if adding {
+                anchor = Some(id);
+            }
+            if !crosses_boundary || sweep.base.contains(&row.key) {
+                continue;
+            }
+            if let Some(tally) = &mut sweep.tally {
+                tally.update(&row, adding);
+            }
+            if adding {
+                selected.insert(row.key.clone());
+            } else {
+                selected.remove(&row.key);
+            }
+        }
+        if let Some(anchor) = anchor {
+            sweep.anchors.insert(ix, anchor);
+        } else if !adding {
+            sweep.anchors.remove(&ix);
         }
     }
 
@@ -2183,13 +2461,16 @@ impl DownloadTableDelegate {
             origin_ix,
             origin_pos: event.position,
             additive: modifiers.toggle,
-            base: if modifiers.toggle {
-                self.selected_tasks.clone()
-            } else {
-                HashSet::new()
-            },
-            active: false,
+            ..RowSweep::default()
         });
+    }
+
+    fn sweep_tracks_row(&self, row_ix: usize, event: &MouseMoveEvent) -> bool {
+        self.row_sweep.as_ref().is_some_and(|sweep| {
+            event.pressed_button != Some(MouseButton::Left)
+                || sweep.last_ix != Some(row_ix)
+                    && (sweep.active || sweep_past_slop(event.position - sweep.origin_pos))
+        })
     }
 
     /// 指针移到 `row_ix`。返回选区是否变化。文件拖放进行时没有划选会话，本方法直接返回。
@@ -2199,7 +2480,7 @@ impl DownloadTableDelegate {
             return false;
         };
         if event.pressed_button != Some(MouseButton::Left) {
-            self.row_sweep = None;
+            self.finish_row_sweep();
             return false;
         }
         if !sweep.active {
@@ -2210,22 +2491,69 @@ impl DownloadTableDelegate {
             sweep.active = true;
             self.suppress_sweep_click = true;
         }
-        let Some(sweep) = self.row_sweep.as_ref() else {
+        self.sweep_to(row_ix)
+    }
+
+    fn sweep_to(&mut self, row_ix: usize) -> bool {
+        let Some(mut sweep) = self.row_sweep.take() else {
             return false;
         };
-        if !sweep.active {
+        if sweep.last_ix == Some(row_ix) {
+            self.row_sweep = Some(sweep);
             return false;
         }
+        if sweep.last_ix.is_none() {
+            if sweep.additive {
+                sweep.base = self.selected_tasks.clone();
+            } else {
+                self.selected_tasks.clear();
+            }
+            sweep.visible_total = self.visible_task_ids().count();
+        }
+        let mut selected = std::mem::take(&mut self.selected_tasks);
+        if sweep.tally.is_none() {
+            sweep.tally = Some(SelectionTally::from_selection(&self.store, &selected));
+        }
         let origin = sweep.origin_ix;
-        let additive = sweep.additive;
-        let base = sweep.base.clone();
-        let before = self.selected_tasks.clone();
-        self.apply_row_sweep(origin, row_ix, additive, &base);
-        self.selected_tasks != before
+        let start = origin.min(row_ix);
+        let end = origin.max(row_ix).saturating_add(1);
+        if let Some(last) = sweep.last_ix {
+            for ix in origin.min(last)..start {
+                self.update_sweep_row(ix, &mut sweep, &mut selected, false);
+            }
+            for ix in end..origin.max(last).saturating_add(1) {
+                self.update_sweep_row(ix, &mut sweep, &mut selected, false);
+            }
+            for ix in start..origin.min(last) {
+                self.update_sweep_row(ix, &mut sweep, &mut selected, true);
+            }
+            let previous_end = origin.max(last).saturating_add(1);
+            for ix in previous_end..end.min(self.visible.len()) {
+                self.update_sweep_row(ix, &mut sweep, &mut selected, true);
+            }
+        } else {
+            for ix in start..end.min(self.visible.len()) {
+                self.update_sweep_row(ix, &mut sweep, &mut selected, true);
+            }
+        }
+        sweep.last_ix = Some(row_ix);
+        self.selected_tasks = selected;
+        self.multi_select =
+            self.selected_tasks.len() > 1 || (sweep.additive && !self.selected_tasks.is_empty());
+        self.focused_group = None;
+        if let Some((_, id)) = sweep.anchors.last_key_value()
+            && let Some(row) = self.store.row(*id)
+            && self.selection_anchor.as_ref() != Some(&row.key)
+        {
+            self.selection_anchor = Some(row.key.clone());
+        }
+        self.row_sweep = Some(sweep);
+        true
     }
 
     pub(super) fn finish_row_sweep(&mut self) {
         self.row_sweep = None;
+        self.sweep_scroll = None;
     }
 
     pub(super) fn note_file_drag_started(&mut self) {
@@ -2258,6 +2586,7 @@ impl DownloadTableDelegate {
     }
 
     pub(crate) fn select_task_for_context_menu(&mut self, key: RowKey) {
+        self.finish_row_sweep();
         if self.is_pending_delete(&key) {
             // 正在删除的行没有可用操作：清空选区，菜单为空而不会作用于旧选区。
             self.clear_selection();
@@ -2299,6 +2628,10 @@ impl DownloadTableDelegate {
         keys
     }
 
+    pub(super) fn selected_key_refs(&self) -> impl Iterator<Item = &RowKey> {
+        self.selected_tasks.iter()
+    }
+
     /// 恰好选中一个任务时返回它（停靠详情面板跟随选中用；O(1)，表格高频通知下可放心调用）。
     pub(crate) fn single_selected_key(&self) -> Option<&RowKey> {
         if self.selected_tasks.len() == 1 {
@@ -2317,31 +2650,13 @@ impl DownloadTableDelegate {
             .or_else(|| self.selected_keys().into_iter().find(RowKey::is_local))
     }
 
-    /// 选中集合投影（选择条 / 工具栏）：只统计仍存在于 store 的选中任务
-    /// （已删除任务不算），完整遍历以得到数量与各类可用性。
+    /// 选中集合投影；划选期间随进入 / 退出选区的任务增量维护。
     pub(crate) fn selection_summary(&self) -> SelectionSummary {
-        let mut summary = SelectionSummary::default();
-        let mut any_unopenable = false;
-        for key in &self.selected_tasks {
-            let Some(row) = self.store.get(key) else {
-                continue;
-            };
-            summary.count += 1;
-            summary.any = true;
-            summary.any_local |= key.is_local();
-            any_unopenable |= !row.has_local_file();
-            match row.state {
-                TaskState::Downloading | TaskState::Pending => summary.any_active = true,
-                TaskState::Paused | TaskState::Failed => summary.any_resumable = true,
-                TaskState::Completed => {}
-            }
-            // 失败的本机任务可暂停（撤销等待中的自动重试，#947）。
-            summary.any_active |=
-                row.is_seeding() || (key.is_local() && row.state == TaskState::Failed);
-            summary.any_resumable |= row.can_resume_seeding();
-        }
-        summary.all_openable = summary.any && !any_unopenable;
-        summary
+        self.row_sweep
+            .as_ref()
+            .and_then(|sweep| sweep.tally)
+            .unwrap_or_else(|| SelectionTally::from_selection(&self.store, &self.selected_tasks))
+            .summary()
     }
 
     /// 选中任务里仍存在且可打开文件的 key（本地 + 已完成 + 文件仍在下载目录）。
@@ -2470,7 +2785,7 @@ impl DownloadTableDelegate {
         let mut parts: Vec<String> = Vec::with_capacity(4);
         if task.state == TaskState::Completed {
             if task.size_bytes > 0 {
-                parts.push(task.size.clone());
+                parts.push(format_bytes(task.size_bytes));
             }
             parts.push(self.kind_label(task.kind).to_string());
         } else {
@@ -2721,7 +3036,10 @@ impl DownloadTableDelegate {
                     .line_height(tokens.typography.sm.line_height)
                     .font_weight(tokens.typography.sm.weight)
                     .text_color(name_color)
-                    .child(name),
+                    .child(truncated_text(
+                        SharedString::from(format!("download-name-{}", task.key.task_id())),
+                        name,
+                    )),
             )
             .when_some(meta, |this, meta| {
                 this.child(
@@ -2867,7 +3185,7 @@ impl DownloadTableDelegate {
             DownloadColumnKind::FileName => self.render_file_cell(task, cx),
             DownloadColumnKind::Progress => self.render_progress_cell(task, cx),
             DownloadColumnKind::Size if task.size_bytes > 0 => {
-                meta_cell(task.size.clone(), muted, true, cx)
+                meta_cell(format_bytes(task.size_bytes), muted, true, cx)
             }
             DownloadColumnKind::Status => self.render_status_cell(task, cx),
             DownloadColumnKind::Speed => match task
@@ -3006,8 +3324,9 @@ impl DownloadTableDelegate {
         Some(wrap_row_action_strip(selected, buttons, cx))
     }
 
-    /// 分组头：xs 中等字重正文色标签 + 三级色计数，28 高内容贴底，行槽位多出的
-    /// 高度作上方留白；不加底色块。
+    /// 分组头：xs 中等字重正文色标签 + 三级色计数，在行槽位内垂直居中（表格行等高，
+    /// 首行不再留出空白条）；自带底色层盖住 DataTable 的满宽悬浮色，悬浮时与任务行
+    /// 同样内缩圆角高亮。
     fn render_group_header(
         &self,
         row_ix: usize,
@@ -3043,13 +3362,26 @@ impl DownloadTableDelegate {
         let tertiary = extended.colors.text_tertiary;
         let row = div()
             .id(("download-group-header", row_ix))
+            .group(ROW_GROUP)
+            .relative()
             .size_full()
             .flex()
             .flex_col()
-            .justify_end()
+            .justify_center()
             .cursor_pointer()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(on_click)
+            .child(div().absolute().inset_0().bg(tokens.colors.surface))
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(px(SELECTED_INSET_X))
+                    .right(px(SELECTED_INSET_X))
+                    .rounded(theme.components().task_row_radius)
+                    .group_hover(ROW_GROUP, |style| style.bg(extended.colors.row_hover)),
+            )
             .child(
                 h_flex()
                     .h(theme.density().control)
@@ -3119,7 +3451,7 @@ impl DownloadTableDelegate {
         task_menu_entries(&facts, self.in_multi_select(), self.plugin_commands.len())
             .into_iter()
             .fold(menu, |menu, entry| {
-                self.apply_menu_entry(menu, entry, &selected, destructive)
+                self.apply_menu_entry(menu, entry, &selected, &facts, destructive)
             })
     }
 
@@ -3128,16 +3460,25 @@ impl DownloadTableDelegate {
         menu: PopupMenu,
         entry: MenuEntry,
         selected: &[RowKey],
+        facts: &[TaskMenuFacts],
         destructive: Hsla,
     ) -> PopupMenu {
         match entry {
             MenuEntry::Resume => menu.menu_with_icon(
-                self.strings.resume.clone(),
+                if resume_targets_only_seeds(facts) {
+                    self.strings.resume_seeding.clone()
+                } else {
+                    self.strings.resume.clone()
+                },
                 FluxIcon::Play,
                 Box::new(crate::actions::ResumeSelected),
             ),
             MenuEntry::Pause => menu.menu_with_icon(
-                self.strings.pause.clone(),
+                if pause_targets_only_seeds(facts) {
+                    self.strings.stop_seeding.clone()
+                } else {
+                    self.strings.pause.clone()
+                },
                 FluxIcon::Pause,
                 Box::new(crate::actions::PauseSelected),
             ),
@@ -3230,6 +3571,11 @@ impl DownloadTableDelegate {
                 FluxIcon::Gauge,
                 Box::new(crate::actions::TaskLimitsSelected),
             ),
+            MenuEntry::AddWebSeed => menu.menu_with_icon(
+                self.strings.bt_add_web_seed.clone(),
+                FluxIcon::Globe,
+                Box::new(crate::actions::AddWebSeedSelected),
+            ),
             MenuEntry::SuperSeeding => {
                 let facts: Vec<_> = selected
                     .iter()
@@ -3278,6 +3624,22 @@ impl DownloadTableDelegate {
                 destructive,
                 self.strings.delete_task_and_file.clone(),
                 Box::new(crate::actions::DeleteSelectedWithFiles),
+            ),
+            MenuEntry::CleanStale => menu.menu_with_icon(
+                self.strings.clean_stale_tasks.clone(),
+                FluxIcon::Trash2,
+                Box::new(crate::actions::CleanStaleSelected),
+            ),
+            MenuEntry::CleanUnfinished => menu.menu_with_icon(
+                self.strings.clean_unfinished_selection.clone(),
+                FluxIcon::Trash2,
+                Box::new(crate::actions::CleanUnfinishedSelected),
+            ),
+            MenuEntry::ClearTaskFile => destructive_menu_item(
+                menu,
+                destructive,
+                self.strings.clear_task_file.clone(),
+                Box::new(crate::actions::ClearSelectedTaskFile),
             ),
             MenuEntry::ShowDetail => menu.menu_with_icon(
                 self.strings.detail.clone(),
@@ -3499,13 +3861,13 @@ impl DownloadTableDelegate {
             ));
         }
         menu = menu.separator();
-        menu = menu.item(group_menu_item(
+        menu = menu.item(group_menu_item_windowed(
             self.strings.group_delete.clone(),
             FluxIcon::Trash2,
             Some(destructive),
             host,
             group_id,
-            DownloadView::group_delete,
+            |view, id, window, cx| view.confirm_group_delete(id, false, window, cx),
         ));
         menu = menu.item(group_menu_item_windowed(
             self.strings.group_delete_with_files.clone(),
@@ -3513,7 +3875,7 @@ impl DownloadTableDelegate {
             Some(destructive),
             host,
             group_id,
-            DownloadView::confirm_group_delete_with_files,
+            |view, id, window, cx| view.confirm_group_delete(id, true, window, cx),
         ));
         menu.item(group_menu_item_windowed(
             self.strings.open_group_in_window.clone(),
@@ -3547,17 +3909,17 @@ impl DownloadTableDelegate {
         } else {
             row
         };
-        row.on_mouse_move(cx.listener(move |table, event: &MouseMoveEvent, _, cx| {
-            if table.delegate_mut().drag_sweep_to(row_ix, event) {
-                cx.notify();
+        let table = cx.entity().clone();
+        row.on_mouse_move(move |event: &MouseMoveEvent, _, cx| {
+            if !table.read(cx).delegate().sweep_tracks_row(row_ix, event) {
+                return;
             }
-        }))
-        .on_mouse_up(
-            MouseButton::Left,
-            cx.listener(|table, _: &MouseUpEvent, _, _| {
-                table.delegate_mut().finish_row_sweep();
-            }),
-        )
+            table.update(cx, |table, cx| {
+                if table.delegate_mut().drag_sweep_to(row_ix, event) {
+                    cx.notify();
+                }
+            });
+        })
     }
 
     /// 文件拖出把手：捕获阶段记下按下，[`Self::begin_row_sweep`] 据此不开划选会话。
@@ -4031,12 +4393,40 @@ impl TableDelegate for DownloadTableDelegate {
 }
 
 /// 左键划选会话。文件名列的按下不进这里。
+#[derive(Default)]
 struct RowSweep {
     origin_ix: usize,
     origin_pos: Point<Pixels>,
     additive: bool,
     base: HashSet<RowKey>,
     active: bool,
+    last_ix: Option<usize>,
+    members: HashMap<RowId, usize>,
+    anchors: BTreeMap<usize, RowId>,
+    visible_total: usize,
+    tally: Option<SelectionTally>,
+}
+
+impl RowSweep {
+    fn update_membership(&mut self, id: RowId, adding: bool) -> bool {
+        if adding {
+            let count = self.members.entry(id).or_default();
+            *count += 1;
+            *count == 1
+        } else if let std::collections::hash_map::Entry::Occupied(mut entry) =
+            self.members.entry(id)
+        {
+            if *entry.get() == 1 {
+                entry.remove();
+                true
+            } else {
+                *entry.get_mut() -= 1;
+                false
+            }
+        } else {
+            false
+        }
+    }
 }
 
 /// 一次行内左键按下归谁。文件名列是拖出，其他列是划选；都不需要修饰键。
@@ -4106,6 +4496,64 @@ pub(crate) struct SelectionSummary {
     pub(crate) all_openable: bool,
     pub(crate) any_active: bool,
     pub(crate) any_resumable: bool,
+}
+
+#[derive(Clone, Copy, Default)]
+struct SelectionTally {
+    count: usize,
+    local: usize,
+    openable: usize,
+    active: usize,
+    resumable: usize,
+}
+
+impl SelectionTally {
+    fn from_selection(store: &TaskStore, selected: &HashSet<RowKey>) -> Self {
+        let mut tally = Self::default();
+        for key in selected {
+            if let Some(row) = store.get(key) {
+                tally.update(&row, true);
+            }
+        }
+        tally
+    }
+
+    fn update(&mut self, row: &DownloadTaskView, adding: bool) {
+        let adjust = |count: &mut usize, include: bool| {
+            if include {
+                if adding {
+                    *count += 1;
+                } else {
+                    *count -= 1;
+                }
+            }
+        };
+        let local = row.key.is_local();
+        adjust(&mut self.count, true);
+        adjust(&mut self.local, local);
+        adjust(&mut self.openable, row.has_local_file());
+        adjust(
+            &mut self.active,
+            matches!(row.state, TaskState::Downloading | TaskState::Pending)
+                || row.is_seeding()
+                || (local && row.state == TaskState::Failed),
+        );
+        adjust(
+            &mut self.resumable,
+            matches!(row.state, TaskState::Paused | TaskState::Failed) || row.can_resume_seeding(),
+        );
+    }
+
+    fn summary(self) -> SelectionSummary {
+        SelectionSummary {
+            count: self.count,
+            any: self.count != 0,
+            any_local: self.local != 0,
+            all_openable: self.count != 0 && self.openable == self.count,
+            any_active: self.active != 0,
+            any_resumable: self.resumable != 0,
+        }
+    }
 }
 
 /// 行悬停操作；除「详情」外执行时映射为 [`ToolbarCommand`]，与工具栏 / 右键菜单同一命令路径。
@@ -4294,7 +4742,11 @@ fn seeding_upload_speed(task: &DownloadTaskView) -> Option<u64> {
 /// 已下 / 总量；总量未知时只给已下。
 fn bytes_progress(task: &DownloadTaskView) -> String {
     if task.size_bytes > 0 {
-        format!("{} / {}", format_bytes(task.downloaded_bytes), task.size)
+        format!(
+            "{} / {}",
+            format_bytes(task.downloaded_bytes),
+            format_bytes(task.size_bytes)
+        )
     } else {
         format_bytes(task.downloaded_bytes)
     }
@@ -4388,6 +4840,11 @@ pub(crate) fn render_download_table(
     cx: &App,
 ) -> Stateful<Div> {
     let observed = table_state.clone();
+    let sweep_bounds = table_state.read(cx).delegate().sweep_bounds.clone();
+    let sweep_press = table_state.clone();
+    let sweep_move = table_state.clone();
+    let sweep_release = table_state.clone();
+    let sweep_release_outside = table_state.clone();
     div()
         .id(id)
         .relative()
@@ -4400,24 +4857,56 @@ pub(crate) fn render_download_table(
         .on_scroll(note_pointer::<ScrollEvent>(table_state, cx))
         .capture_any_mouse_down(note_pointer::<MouseDownEvent>(table_state, cx))
         .capture_any_mouse_down(clear_context_row_on_left_press(table_state))
+        .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+            let table = sweep_press.read(cx);
+            let delegate = table.delegate();
+            if delegate.row_sweep.is_none() && sweep_blank(delegate, event.position, cx) {
+                let end = delegate.visible.len();
+                sweep_press.update(cx, |table, cx| {
+                    table.delegate_mut().begin_row_sweep(end, event, cx);
+                });
+            }
+        })
+        .on_mouse_move(move |event, window, cx| {
+            track_table_sweep(&sweep_move, event, window, cx);
+        })
+        .capture_any_mouse_up(move |event, _, cx| release_table_sweep(&sweep_release, event, cx))
+        .on_mouse_up_out(MouseButton::Left, move |event, _, cx| {
+            release_table_sweep(&sweep_release_outside, event, cx);
+        })
         .child(
             div().absolute().inset_0().child(
+                // 表格整块获焦时 gpui-component 会在键盘输入后描一圈 ring 色边线
+                // （Cmd+A / Esc 后闪现，鼠标一动又消失）；行选中高亮已表达焦点位置。
                 DataTable::new(table_state)
                     .with_size(Size::Size(table_header_height(cx)))
                     .stripe(false)
                     .bordered(false)
+                    .focus_ring(false)
                     .scrollbar_visible(true, true),
             ),
         )
         .on_prepaint(move |bounds, window, cx| {
+            sweep_bounds.set(bounds);
             let width = f32::from(bounds.size.width);
             let text_scale = f32::from(active_theme(cx).text_extent(1.));
             let icon_base = f32::from(active_theme(cx).extended().icon.lg);
-            let delegate = observed.read(cx).delegate();
+            let table = observed.read(cx);
+            let delegate = table.delegate();
             let sync_width = delegate.viewport_needs_sync(width);
             let rescale =
                 delegate.text_scale_stale(text_scale) || delegate.icon_base_stale(icon_base);
             let arm_timer = delegate.needs_reorder_timer();
+            if let Some((watched, ids)) = visible_failed_tasks_change(table, window, cx) {
+                window.defer(cx, move |_, cx| {
+                    watched.update(cx, |current, cx| {
+                        if *current != ids {
+                            *current = ids;
+                            cx.notify();
+                        }
+                    });
+                });
+            }
             if !sync_width && !rescale && !arm_timer {
                 return;
             }
@@ -4436,6 +4925,53 @@ pub(crate) fn render_download_table(
         })
 }
 
+fn visible_failed_tasks_change(
+    table: &TableState<DownloadTableDelegate>,
+    window: &Window,
+    cx: &App,
+) -> Option<(Entity<Vec<String>>, Vec<String>)> {
+    let delegate = table.delegate();
+    let watched = delegate.visible_failed_tasks.as_ref()?;
+    // Row slots can move in the store before the coalesced table refresh catches up.
+    if delegate.seen_generation != delegate.store.generation() {
+        return None;
+    }
+    // Retained scrolling can render only the missing rows. The delegate's visible-range
+    // callback receives that render range, so read the laid-out list's scroll geometry.
+    let rows = delegate.visible.len();
+    let range = if rows == 0 {
+        0..0
+    } else {
+        let scroll = table.vertical_scroll_handle.0.borrow();
+        let size = scroll.last_item_size?;
+        // All row kinds set the same explicit height in the delegate.
+        let row_height = delegate
+            .prefs
+            .density
+            .row_height(active_theme(cx).density())
+            .to_f64();
+        let height = size.item.height.to_f64();
+        if row_height <= 0. || height <= 0. {
+            0..0
+        } else {
+            let top = -window.pixel_snap(scroll.base_handle.offset().y).to_f64();
+            (top / row_height).floor() as usize..((top + height) / row_height).ceil() as usize
+        }
+    };
+    let mut current = watched.read(cx).iter();
+    let changed = delegate
+        .failed_local_rows(range.clone())
+        .any(|task| current.next().map(String::as_str) != Some(task.key.task_id()))
+        || current.next().is_some();
+    changed.then(|| {
+        let ids = delegate
+            .failed_local_rows(range)
+            .map(|task| task.key.task_id().to_owned())
+            .collect();
+        (watched.clone(), ids)
+    })
+}
+
 /// 表格指针事件监听：只记录活动时刻，不写表格 entity、不触发重绘。
 fn note_pointer<E: 'static>(
     table_state: &Entity<TableState<DownloadTableDelegate>>,
@@ -4443,6 +4979,148 @@ fn note_pointer<E: 'static>(
 ) -> impl Fn(&E, &mut Window, &mut App) + 'static {
     let hold = table_state.read(cx).delegate().interaction_hold();
     move |_, _, _| hold.note(Instant::now())
+}
+
+/// The empty body below the final row is a sweep anchor just after that row.
+fn sweep_blank(delegate: &DownloadTableDelegate, position: Point<Pixels>, cx: &App) -> bool {
+    let bounds = delegate.sweep_bounds.get();
+    let height = delegate
+        .prefs
+        .density
+        .row_height(active_theme(cx).density());
+    !delegate.visible.is_empty()
+        && position.y
+            > bounds.origin.y + table_header_height(cx) + height * delegate.visible.len() as f32
+        && position.y < bounds.bottom() - Scrollbar::width()
+}
+
+fn release_table_sweep(
+    table: &Entity<TableState<DownloadTableDelegate>>,
+    event: &MouseUpEvent,
+    cx: &mut App,
+) {
+    if event.button == MouseButton::Left && table.read(cx).delegate().row_sweep.is_some() {
+        table.update(cx, |table, _| table.delegate_mut().finish_row_sweep());
+    }
+}
+
+fn track_table_sweep(
+    table: &Entity<TableState<DownloadTableDelegate>>,
+    event: &MouseMoveEvent,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let delegate = table.read(cx).delegate();
+    if delegate.row_sweep.is_none() {
+        return;
+    }
+    let blank = sweep_blank(delegate, event.position, cx);
+    if delegate.sweep_tracks_row(delegate.visible.len(), event)
+        && (event.pressed_button != Some(MouseButton::Left) || blank)
+    {
+        table.update(cx, |table, cx| {
+            let delegate = table.delegate_mut();
+            if delegate.drag_sweep_to(delegate.visible.len(), event) {
+                cx.notify();
+            }
+        });
+    }
+    if sweep_scroll_step(table.read(cx), event.position, cx).is_some()
+        && table.read(cx).delegate().sweep_scroll.is_none()
+    {
+        table.update(cx, |table, cx| start_sweep_scroll(table, window, cx));
+    }
+}
+
+fn start_sweep_scroll(
+    table: &mut TableState<DownloadTableDelegate>,
+    window: &mut Window,
+    cx: &mut Context<TableState<DownloadTableDelegate>>,
+) {
+    let delegate = table.delegate_mut();
+    delegate.sweep_scroll_generation = delegate.sweep_scroll_generation.wrapping_add(1);
+    let generation = delegate.sweep_scroll_generation;
+    delegate.sweep_scroll = Some(cx.spawn_in(window, async move |this, cx| {
+        loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(55))
+                .await;
+            match this.update_in(cx, |table, window, cx| {
+                if let Some((top, end)) = sweep_scroll_step(table, window.mouse_position(), cx) {
+                    table.delegate_mut().sweep_to(end);
+                    table.delegate().interaction_hold().note(Instant::now());
+                    // The new top row is usually already visible.
+                    table
+                        .vertical_scroll_handle
+                        .scroll_to_item_strict(top, ScrollStrategy::Top);
+                    cx.notify();
+                    true
+                } else {
+                    defer_sweep_scroll_reset(generation, window, cx);
+                    false
+                }
+            }) {
+                Ok(true) => {}
+                Ok(false) | Err(_) => break,
+            }
+        }
+    }));
+}
+
+fn defer_sweep_scroll_reset(
+    generation: u64,
+    window: &Window,
+    cx: &mut Context<TableState<DownloadTableDelegate>>,
+) {
+    let table = cx.entity();
+    window.defer(cx, move |_, cx| {
+        table.update(cx, |table, _| {
+            let delegate = table.delegate_mut();
+            // A new drag may already have started before this callback runs.
+            if delegate.sweep_scroll_generation == generation {
+                delegate.sweep_scroll = None;
+            }
+        });
+    });
+}
+
+fn sweep_scroll_step(
+    table: &TableState<DownloadTableDelegate>,
+    position: Point<Pixels>,
+    cx: &App,
+) -> Option<(usize, usize)> {
+    let delegate = table.delegate();
+    if !delegate
+        .row_sweep
+        .as_ref()
+        .is_some_and(|sweep| sweep.active)
+    {
+        return None;
+    }
+    let bounds = delegate.sweep_bounds.get();
+    let top = bounds.origin.y + table_header_height(cx);
+    let bottom = bounds.bottom() - Scrollbar::width();
+    let edge = active_theme(cx).density().control.min((bottom - top) / 3.);
+    if position.x < bounds.origin.x
+        || position.x >= bounds.right()
+        || position.y < top
+        || position.y >= bottom
+        || edge <= px(0.)
+    {
+        return None;
+    }
+    let rows = table.visible_range().rows();
+    if position.y < top + edge && rows.start > 0 {
+        let step = 1 + (3. * ((top + edge - position.y) / edge)) as usize;
+        let next = rows.start.saturating_sub(step);
+        Some((next, next))
+    } else if position.y >= bottom - edge && !rows.is_empty() && rows.end < delegate.visible.len() {
+        let step = 1 + (3. * ((position.y - (bottom - edge)) / edge)) as usize;
+        let last = delegate.visible.len() - 1;
+        Some((rows.start + step, (rows.end + step - 1).min(last)))
+    } else {
+        None
+    }
 }
 
 /// 表格内左键按下即清除右键高亮行。
@@ -4552,7 +5230,8 @@ fn arm_reorder_timer(
 }
 
 impl DownloadView {
-    /// 选中集合 → 命令列表（远程任务走 `agent.remote.command`）。
+    /// 选中集合 → 命令列表（远程任务生成逐条 `agent.remote.command`，派发前由 `coalesce_commands`
+    /// 把同动作的多条合并为 `agent.remote.commandMany`）。
     pub(crate) fn commands_for_selection(
         &self,
         action: ToolbarCommand,
@@ -4591,13 +5270,16 @@ impl DownloadView {
         let store = self.controller.store();
         keys.iter()
             .filter_map(|key| {
+                let row = store.get(key)?;
+                if !delete_files {
+                    return task_command(&row, ToolbarCommand::Delete);
+                }
                 if key.is_local() {
                     return Some(DownloadsCommand::Delete {
                         task_id: key.task_id().to_owned(),
                         delete_files,
                     });
                 }
-                let row = store.get(key)?;
                 row.remote_can(RemoteCommandAction::Delete).then(|| {
                     DownloadsCommand::RemoteCommand(RemoteCommandParams {
                         task_id: key.task_id().to_owned(),
@@ -4639,8 +5321,8 @@ impl DownloadView {
     }
 
     /// 执行一批命令。本地多任务删除先拆出走分块删除（见 [`crate::deletion`]）；同类多任务
-    /// 的暂停 / 继续 / 远程删除先合并成批量 RPC
-    /// （见 [`coalesce_commands`]），其余命令按 [`MAX_IN_FLIGHT`] 限制并发；幂等命令被
+    /// 的暂停 / 继续 / 删除（本地与远程）先合并成批量 RPC
+    /// （见 [`coalesce_commands`]；远程为 `agent.remote.commandMany`），其余命令按 [`MAX_IN_FLIGHT`] 限制并发；幂等命令被
     /// agent 以可重试的 `Unavailable` 拒绝时退避重试。任一失败在页面横幅提示（按错误
     /// `reason` 给出原因，同一批里先失败的错误一直保留，后完成的成功不会冲掉它）。
     /// 单任务「继续」/「重新下载」在命令前登记旧状态、成功后确认开始；
@@ -4657,6 +5339,7 @@ impl DownloadView {
         }
         let interactive_start = match commands.as_slice() {
             [DownloadsCommand::Resume { task_id }] => Some((task_id.clone(), false)),
+            [DownloadsCommand::RestartMissingFile { task_id }] => Some((task_id.clone(), false)),
             [DownloadsCommand::Redownload(request, task_id)] if !request.start_paused => {
                 Some((task_id.clone(), true))
             }
@@ -5177,6 +5860,54 @@ mod tests {
     }
 
     #[test]
+    fn content_grouping_in_video_category_uses_titles_not_save_paths() -> Result<(), I18nError> {
+        let mut delegate = delegate(&[2, 2, 2, 2, 2])?;
+        let mut rows = delegate.store.local().to_vec();
+        for (row, (name, extension, dir)) in rows.iter_mut().zip([
+            ("节目.S01E01.mp4", "mp4", "/dl"),
+            ("节目 S02E03.mp4", "mp4", "/dl/another"),
+            ("节目.S03E01.txt", "txt", "/dl"),
+            ("Movie.mp4", "mp4", "/dl"),
+            ("Other.S01E02.mp4", "mp4", "/dl"),
+        ]) {
+            row.name = name.into();
+            row.file_extension = extension.into();
+            row.save_dir = dir.into();
+        }
+        delegate.store.replace_local(rows);
+        delegate.set_categories(Rc::new(CategoryIndex::from_dtos(
+            fluxdown_protocol::CustomCategoryDto::builtin_defaults(),
+        )));
+        delegate.set_directory_context("/dl".into(), HashMap::new());
+        delegate.set_filter(TableFilter::Download(DownloadFilter::with_category(
+            DownloadStatusFilter::All,
+            "builtin_video",
+        )));
+        delegate.prefs_mut().group_by = ViewGroupBy::Content;
+        delegate.refresh_view();
+
+        let folders = delegate
+            .visible
+            .iter()
+            .filter_map(|row| match row {
+                VisibleRow::GroupHeader { label, count, .. } => Some((label.as_ref(), *count)),
+                _ => None,
+            })
+            .collect::<Vec<(&str, usize)>>();
+        assert_eq!(folders, [("Other", 1), ("节目", 2)]);
+        delegate.toggle_group_collapsed("content:local:节目");
+        delegate.refresh_view();
+        assert_eq!(delegate.visible_task_ids().count(), 2);
+        assert!(
+            delegate
+                .visible
+                .iter()
+                .any(|row| matches!(row, VisibleRow::Task(super::RowId::Local(3))))
+        );
+        Ok(())
+    }
+
+    #[test]
     fn directory_grouping_tracks_task_moves_and_default_root_changes() -> Result<(), I18nError> {
         let mut delegate = delegate(&[3, 2, 2])?;
         let mut rows = delegate.store.local().to_vec();
@@ -5288,6 +6019,150 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn failed_rows_follow_filter_search_and_group_expansion() -> Result<(), I18nError> {
+        let mut delegate = grouped_delegate()?;
+        let mut failed = delegate.store.local()[2].clone();
+        failed.state = TaskState::Failed;
+        delegate.store.set_local(2, failed);
+        delegate.refresh_view();
+
+        let ids = |delegate: &DownloadTableDelegate| -> Vec<String> {
+            delegate
+                .failed_local_rows(0..usize::MAX)
+                .map(|task| task.key.task_id().to_owned())
+                .collect()
+        };
+        assert!(ids(&delegate).is_empty());
+        delegate.toggle_group_expanded("g");
+        delegate.refresh_view();
+        assert_eq!(ids(&delegate), ["t2"]);
+
+        delegate.set_filter(TableFilter::Download(DownloadFilter::status(
+            DownloadStatusFilter::Completed,
+        )));
+        delegate.refresh_view();
+        assert!(ids(&delegate).is_empty());
+
+        delegate.set_filter(TableFilter::Download(DownloadFilter::status(
+            DownloadStatusFilter::Failed,
+        )));
+        delegate.set_query("f0.bin");
+        delegate.refresh_view();
+        assert!(ids(&delegate).is_empty());
+        delegate.set_query("f2.bin");
+        delegate.refresh_view();
+        assert_eq!(ids(&delegate), ["t2"]);
+
+        let remote =
+            serde_json::from_value::<fluxdown_protocol::RemoteTaskDto>(serde_json::json!({
+                "id": "remote-failed",
+                "toDevice": "dev-b",
+                "url": "https://example.com/f2.bin",
+                "status": "failed"
+            }))
+            .expect("failed remote task");
+        delegate
+            .store
+            .replace_remote(vec![DownloadTaskView::remote(&remote)]);
+        delegate.set_query("");
+        delegate.refresh_view();
+        assert!(
+            delegate
+                .visible
+                .iter()
+                .any(|row| matches!(row, VisibleRow::Task(crate::model::RowId::Remote(_))))
+        );
+        assert_eq!(ids(&delegate), ["t2"]);
+        Ok(())
+    }
+
+    #[test]
+    fn watched_failed_rows_follow_scroll_and_stationary_status_changes() -> Result<(), I18nError> {
+        use gpui::{
+            AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, ScrollDelta,
+            ScrollEvent, Styled as _, TestApp, Window, div, point, px,
+        };
+        use gpui_component::table::TableState;
+
+        struct Host {
+            table: Entity<TableState<DownloadTableDelegate>>,
+            failed: Entity<Vec<String>>,
+        }
+
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().flex().child(render_download_table(
+                    "failed-viewport-test-table",
+                    &self.table,
+                    cx,
+                ))
+            }
+        }
+
+        let mut statuses = [3; 80];
+        statuses[0] = 4;
+        statuses[79] = 4;
+        let mut delegate = delegate(&statuses)?;
+        delegate.set_prefs(ViewPrefs {
+            sort_key: ViewSortKey::Created,
+            sort_dir: SortDir::Desc,
+            ..ViewPrefs::default()
+        });
+        delegate.refresh_view();
+        let mut app = TestApp::new();
+        app.update(|cx| {
+            gpui_component::init(cx);
+            fluxdown_ui_theme::init(cx);
+        });
+        let mut win = app.open_window(move |window, cx| {
+            let failed = delegate.watch_visible_failed_tasks(cx);
+            let table = cx.new(|cx| {
+                TableState::new(delegate, window, cx)
+                    .row_selectable(false)
+                    .col_selectable(false)
+            });
+            Host { table, failed }
+        });
+        for _ in 0..3 {
+            win.draw();
+            app.run_until_parked();
+        }
+        win.read(|host, cx| assert_eq!(host.failed.read(cx), &["t0"]));
+
+        win.update(|host, _, cx| {
+            host.table
+                .update(cx, |table, cx| table.scroll_to_row(79, cx));
+        });
+        win.draw();
+        app.run_until_parked();
+        win.read(|host, cx| assert_eq!(host.failed.read(cx), &["t79"]));
+
+        win.update(|host, _, cx| {
+            host.table.update(cx, |table, cx| {
+                let delegate = table.delegate_mut();
+                let mut task = delegate.store.local()[79].clone();
+                task.state = TaskState::Completed;
+                delegate.store.set_local(79, task);
+                delegate.refresh_view();
+                cx.notify();
+            });
+        });
+        win.draw();
+        app.run_until_parked();
+        win.read(|host, cx| assert!(host.failed.read(cx).is_empty()));
+
+        win.simulate_event(ScrollEvent {
+            position: point(px(100.), px(100.)),
+            delta: ScrollDelta::Pixels(point(px(0.), px(10_000.))),
+            ..ScrollEvent::default()
+        });
+        win.draw();
+        app.run_until_parked();
+        win.read(|host, cx| assert_eq!(host.failed.read(cx), &["t0"]));
+        Ok(())
+    }
+
     /// t0 完成 / t1 下载中 / t2 暂停（子目录 extras）同属组 `g`，t3 排队且不在组里。
     fn grouped_delegate() -> Result<DownloadTableDelegate, I18nError> {
         let mut delegate = delegate(&[3, 1, 2, 0])?;
@@ -5373,6 +6248,14 @@ mod tests {
         // 折叠的组也在「全选」范围内。
         delegate.select_all_tasks();
         assert_eq!(delegate.selection_summary().count, 4);
+        assert_eq!(
+            delegate
+                .selected_rows_in_order()
+                .iter()
+                .map(|row| row.key.clone())
+                .collect::<Vec<_>>(),
+            delegate.visible_task_keys()
+        );
 
         // Cmd/Ctrl 单击整组移出 / 并入选区。
         delegate.select_group(
@@ -5433,12 +6316,83 @@ mod tests {
     #[test]
     fn drag_sweep_selects_the_closed_row_span_and_can_add() -> Result<(), I18nError> {
         let mut delegate = delegate(&[1, 1, 1, 1])?;
-        delegate.apply_row_sweep(0, 2, false, &HashSet::new());
-        assert_eq!(delegate.selected_tasks.len(), 3);
+        let keys = delegate.visible_task_keys();
+        delegate.row_sweep = Some(super::RowSweep::default());
+        assert!(delegate.sweep_to(2));
+        let mut expected = keys[..3].to_vec();
+        expected.sort();
+        assert_eq!(delegate.selected_keys(), expected);
         assert!(delegate.in_multi_select());
-        let kept = delegate.selected_tasks.clone();
-        delegate.apply_row_sweep(3, 3, true, &kept);
-        assert_eq!(delegate.selected_tasks.len(), 4);
+        delegate.finish_row_sweep();
+        delegate.row_sweep = Some(super::RowSweep {
+            origin_ix: 3,
+            additive: true,
+            ..super::RowSweep::default()
+        });
+        assert!(delegate.sweep_to(0));
+        assert!(delegate.sweep_to(3));
+        assert_eq!(
+            delegate.selected_keys(),
+            [local("t0"), local("t1"), local("t2"), local("t3")]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn drag_sweep_shrinks_and_reverses_across_expanded_group() -> Result<(), I18nError> {
+        let mut delegate = grouped_delegate()?;
+        delegate.toggle_group_expanded("g");
+        delegate.refresh_view();
+        // The range starts on t1, then grows up across the group header and t0.
+        delegate.row_sweep = Some(super::RowSweep {
+            origin_ix: 2,
+            ..super::RowSweep::default()
+        });
+        assert!(delegate.sweep_to(0));
+        assert_eq!(
+            delegate.selected_keys(),
+            [local("t0"), local("t1"), local("t2")]
+        );
+        assert!(delegate.selection_summary().any_resumable);
+        // Leaving the group header must keep its members still in the range.
+        assert!(delegate.sweep_to(1));
+        assert_eq!(delegate.selected_keys(), [local("t0"), local("t1")]);
+        assert!(!delegate.selection_summary().any_resumable);
+        assert_eq!(delegate.visible_selection_counts(), (2, 4));
+        // Reversing direction removes t0 and adds t2, skipping the directory row.
+        assert!(delegate.sweep_to(4));
+        assert_eq!(delegate.selected_keys(), [local("t1"), local("t2")]);
+        assert!(delegate.selection_summary().any_resumable);
+        assert_eq!(delegate.detail_candidate(), Some(local("t2")));
+        Ok(())
+    }
+
+    #[test]
+    fn drag_sweep_continues_when_a_new_task_is_filtered_out() -> Result<(), I18nError> {
+        let mut delegate = delegate(&[3, 3, 3, 3])?;
+        delegate.set_filter(TableFilter::Download(DownloadFilter::status(
+            DownloadStatusFilter::Completed,
+        )));
+        delegate.refresh_view();
+        let mut expected = delegate.visible_task_keys();
+        expected.sort();
+        delegate.row_sweep = Some(super::RowSweep::default());
+        assert!(delegate.sweep_to(1));
+
+        let mut incoming = delegate.store.local()[0].clone();
+        incoming.key = local("incoming");
+        incoming.state = TaskState::Downloading;
+        let ix = delegate.store.push_local(incoming);
+        delegate.refresh_view();
+        assert!(delegate.sweep_to(3));
+        assert_eq!(delegate.selected_keys(), expected);
+
+        let mut incoming = delegate.store.local()[ix].clone();
+        incoming.state = TaskState::Completed;
+        delegate.store.set_local(ix, incoming);
+        delegate.refresh_view();
+        assert!(!delegate.sweep_to(4));
+        assert_eq!(delegate.selected_keys(), expected);
         Ok(())
     }
 
@@ -5550,6 +6504,81 @@ mod tests {
         assert!(!app.read(|cx| cx.has_active_drag()));
         win.simulate_mouse_up(at(other_x, 2), MouseButton::Left);
         assert_eq!(selected(&win).len(), 3);
+
+        // 起点在最后一行下方的空白处：向上拖过任务仍能建立选区。
+        let blank = at(other_x, 4);
+        win.simulate_mouse_move(blank);
+        win.simulate_mouse_down(blank, MouseButton::Left);
+        drag_to(&mut win, at(other_x, 2));
+        win.simulate_mouse_up(at(other_x, 2), MouseButton::Left);
+        let mut expected = keys[2..].to_vec();
+        expected.sort();
+        assert_eq!(selected(&win), expected);
+
+        let mut long_delegate = self::delegate(&[3; 100])?;
+        long_delegate.set_filter(TableFilter::Download(DownloadFilter::status(
+            DownloadStatusFilter::Completed,
+        )));
+        long_delegate.refresh_view();
+        let mut long = app.open_window(move |window, cx| Host {
+            table: cx.new(|cx| {
+                TableState::new(long_delegate, window, cx)
+                    .row_selectable(false)
+                    .col_selectable(false)
+            }),
+        });
+        for _ in 0..3 {
+            long.draw();
+            app.run_until_parked();
+        }
+        let (edge, viewport_end) = long.read(|host, cx| {
+            let table = host.table.read(cx);
+            let bounds = table.delegate().sweep_bounds.get();
+            let bottom = bounds.bottom() - gpui_component::scroll::Scrollbar::width();
+            (
+                point(px(other_x), bottom - px(2.)),
+                table.visible_range().rows().end,
+            )
+        });
+        long.simulate_mouse_move(at(other_x, 0));
+        long.simulate_mouse_down(at(other_x, 0), MouseButton::Left);
+        drag_to(&mut long, edge);
+        app.run_until_parked();
+        let table = long.read(|host, _| host.table.clone());
+        app.update(|cx| {
+            table.update(cx, |table, cx| {
+                let delegate = table.delegate_mut();
+                let mut incoming = delegate.store.local()[0].clone();
+                incoming.key = local("background-download");
+                incoming.state = TaskState::Downloading;
+                delegate.store.push_local(incoming);
+                delegate.refresh_view();
+                cx.notify();
+            });
+        });
+        for _ in 0..4 {
+            app.advance_clock(Duration::from_millis(60));
+            long.draw();
+            app.run_until_parked();
+        }
+        long.simulate_mouse_up(edge, MouseButton::Left);
+        assert!(selected(&long).len() > viewport_end);
+
+        // Force the restart into the same effect cycle as the old timer's deferred
+        // cleanup instead of depending on input/timer dispatch order.
+        long.update(|host, window, cx| {
+            host.table.update(cx, |table, cx| {
+                super::start_sweep_scroll(table, window, cx);
+                let old_generation = table.delegate().sweep_scroll_generation;
+                super::defer_sweep_scroll_reset(old_generation, window, cx);
+                table.delegate_mut().finish_row_sweep();
+                super::start_sweep_scroll(table, window, cx);
+            });
+        });
+        long.read(|host, cx| assert!(host.table.read(cx).delegate().sweep_scroll.is_some()));
+        app.advance_clock(Duration::from_millis(60));
+        app.run_until_parked();
+        long.read(|host, cx| assert!(host.table.read(cx).delegate().sweep_scroll.is_none()));
         Ok(())
     }
 
@@ -5647,9 +6676,7 @@ mod tests {
         let stale = || super::RowSweep {
             origin_ix: 0,
             origin_pos: point(px(0.), px(0.)),
-            additive: false,
-            base: HashSet::new(),
-            active: false,
+            ..super::RowSweep::default()
         };
         let moved = |pressed_button| MouseMoveEvent {
             position: point(px(100.), px(100.)),
@@ -6319,6 +7346,23 @@ mod tests {
         let t0 = RowKey::Local("t0".into());
         let t1 = RowKey::Local("t1".into());
         assert_eq!(delegate.visible_task_keys(), [t1.clone(), t0.clone()]);
+        // Select in the reverse of the displayed order, using the real row action.
+        delegate.select_task(t0.clone(), SelectModifiers::default());
+        delegate.select_task(
+            t1.clone(),
+            SelectModifiers {
+                toggle: true,
+                ..SelectModifiers::default()
+            },
+        );
+        assert_eq!(
+            delegate
+                .selected_rows_in_order()
+                .iter()
+                .map(|row| row.key.clone())
+                .collect::<Vec<_>>(),
+            [t1.clone(), t0.clone()]
+        );
 
         let now = Instant::now();
         delegate.row_order.note_interaction(now);
@@ -6334,6 +7378,14 @@ mod tests {
         delegate.view_dirty = true;
         assert!(delegate.refresh_view_at(deadline));
         assert_eq!(delegate.visible_task_keys(), [t0, t1]);
+        assert_eq!(
+            delegate
+                .selected_rows_in_order()
+                .iter()
+                .map(|row| row.key.clone())
+                .collect::<Vec<_>>(),
+            delegate.visible_task_keys()
+        );
         assert_eq!(delegate.reorder_deadline(), None);
         Ok(())
     }
@@ -6574,11 +7626,12 @@ mod tests {
 #[cfg(test)]
 mod context_menu_tests {
     use super::{
-        MenuEntry, PLUGIN_ERROR_PREFIX, PiecePickingOrder, TaskMenuFacts, context_menu_items,
-        force_recheck_visible, is_bt_url, is_replaceable_url, move_storage_visible,
-        piece_picking_checked, piece_picking_order, piece_picking_order_targets,
-        piece_picking_toggle_target, super_seeding_checked, super_seeding_targets,
-        super_seeding_toggle_target, super_seeding_visible, task_limits_visible, task_menu_entries,
+        MenuEntry, PLUGIN_ERROR_PREFIX, PiecePickingOrder, ShareLink, TaskMenuFacts,
+        context_menu_items, force_recheck_visible, is_bt_url, is_replaceable_url,
+        move_storage_visible, pause_targets_only_seeds, piece_picking_checked, piece_picking_order,
+        piece_picking_order_targets, piece_picking_toggle_target, resume_targets_only_seeds,
+        super_seeding_checked, super_seeding_targets, super_seeding_toggle_target,
+        super_seeding_visible, task_limits_visible, task_menu_entries,
     };
     use crate::model::TaskState;
 
@@ -6599,6 +7652,7 @@ mod context_menu_tests {
             file_missing: false,
             is_seeding: false,
             can_resume_seeding: false,
+            share_link: ShareLink::Url,
         }
     }
 
@@ -6625,6 +7679,35 @@ mod context_menu_tests {
         let items = context_menu_items(&[task(true, TaskState::Completed)]);
         assert!(!items.contains(&MenuEntry::Pause));
         assert!(!items.contains(&MenuEntry::Resume));
+    }
+
+    #[test]
+    fn seed_only_selections_use_seeding_labels() {
+        let mut seeding = task(true, TaskState::Completed);
+        seeding.is_seeding = true;
+        let mut stopped = task(true, TaskState::Completed);
+        stopped.can_resume_seeding = true;
+        let paused = task(true, TaskState::Paused);
+        let downloading = task(true, TaskState::Downloading);
+        let plain_done = task(true, TaskState::Completed);
+
+        assert!(resume_targets_only_seeds(&[stopped]));
+        // 普通已完成任务不受「继续」作用，不影响措辞。
+        assert!(resume_targets_only_seeds(&[stopped, plain_done, seeding]));
+        assert!(!resume_targets_only_seeds(&[stopped, paused]));
+        assert!(!resume_targets_only_seeds(&[paused]));
+        assert!(!resume_targets_only_seeds(&[plain_done]));
+
+        assert!(pause_targets_only_seeds(&[seeding]));
+        assert!(pause_targets_only_seeds(&[seeding, stopped, plain_done]));
+        assert!(!pause_targets_only_seeds(&[seeding, downloading]));
+        assert!(!pause_targets_only_seeds(&[downloading]));
+
+        // 不可控制的行不计入。
+        let mut remote_stopped = task(false, TaskState::Completed);
+        remote_stopped.controllable = false;
+        remote_stopped.can_resume_seeding = true;
+        assert!(!resume_targets_only_seeds(&[remote_stopped]));
     }
 
     #[test]
@@ -6770,6 +7853,26 @@ mod context_menu_tests {
     }
 
     #[test]
+    fn clear_task_file_requires_one_local_completed_non_bt_product() {
+        assert!(
+            context_menu_items(&[task(true, TaskState::Completed)])
+                .contains(&MenuEntry::ClearTaskFile)
+        );
+        let mut bt = task(true, TaskState::Completed);
+        bt.is_bt = true;
+        let mut missing = task(true, TaskState::Completed);
+        missing.file_missing = true;
+        for ineligible in [
+            bt,
+            missing,
+            task(false, TaskState::Completed),
+            task(true, TaskState::Paused),
+        ] {
+            assert!(!context_menu_items(&[ineligible]).contains(&MenuEntry::ClearTaskFile));
+        }
+    }
+
+    #[test]
     fn missing_file_hides_open_and_copy_file_but_keeps_folder_and_redownload() {
         let mut missing = task(true, TaskState::Completed);
         missing.file_missing = true;
@@ -6860,11 +7963,12 @@ mod context_menu_tests {
             .position(|entry| *entry == MenuEntry::VerifyIntegrity)
             .expect("completed BT task offers verification");
         assert_eq!(
-            items.get(at + 1..at + 5),
+            items.get(at + 1..at + 6),
             Some(
                 &[
                     MenuEntry::MoveStorage,
                     MenuEntry::TaskSpeedLimits,
+                    MenuEntry::AddWebSeed,
                     MenuEntry::SuperSeeding,
                     MenuEntry::Redownload,
                 ][..]
@@ -6927,12 +8031,13 @@ mod context_menu_tests {
                 MenuEntry::CopyUrl
             };
             assert_eq!(
-                items.get(at + 3..at + 8),
+                items.get(at + 3..at + 9),
                 Some(
                     &[
                         MenuEntry::ForceRecheck,
                         MenuEntry::MoveStorage,
                         MenuEntry::TaskSpeedLimits,
+                        MenuEntry::AddWebSeed,
                         MenuEntry::SuperSeeding,
                         next,
                     ][..]
@@ -7060,17 +8165,18 @@ mod context_menu_tests {
             );
         }
 
-        // 移动到… / 任务限速…：恰好一个本机 BT（含已完成 / 做种）。
+        // 移动到…：恰好一个本机任务（任意协议、任意状态）；任务限速…：恰好一个本机 BT。
+        let completed_http = task(true, TaskState::Completed);
+        for single in [unfinished, completed, http, completed_http] {
+            assert!(move_storage_visible(&[single]), "{single:?}");
+            assert!(context_menu_items(&[single]).contains(&MenuEntry::MoveStorage));
+        }
         for single in [unfinished, completed] {
-            assert!(move_storage_visible(&[single]));
             assert!(task_limits_visible(&[single]));
         }
-        for selection in [
-            &[remote][..],
-            &[http][..],
-            &[unfinished, completed][..],
-            &[][..],
-        ] {
+        assert!(!task_limits_visible(&[http]));
+        assert!(!context_menu_items(&[http]).contains(&MenuEntry::AddWebSeed));
+        for selection in [&[remote][..], &[unfinished, completed][..], &[][..]] {
             assert!(!move_storage_visible(selection), "{selection:?}");
             assert!(!task_limits_visible(selection), "{selection:?}");
             let items = context_menu_items(selection);
@@ -7079,6 +8185,7 @@ mod context_menu_tests {
                 !items.contains(&MenuEntry::TaskSpeedLimits),
                 "{selection:?}"
             );
+            assert!(!items.contains(&MenuEntry::AddWebSeed), "{selection:?}");
         }
 
         // 超级做种：全体本机 BT，可多选、任意状态。
@@ -7112,6 +8219,7 @@ mod context_menu_tests {
     fn torrent_share_entries_need_single_local_bt_task_in_any_state() {
         let mut bt = task(true, TaskState::Completed);
         bt.is_bt = true;
+        bt.share_link = ShareLink::Magnet;
         for state in [
             TaskState::Downloading,
             TaskState::Paused,
@@ -7123,11 +8231,10 @@ mod context_menu_tests {
             let items = context_menu_items(&[facts]);
             let at = items
                 .iter()
-                .position(|entry| *entry == MenuEntry::CopyUrl)
-                .expect("copy URL is always offered");
-            assert_eq!(items.get(at + 1), Some(&MenuEntry::CopyMagnet), "{state:?}");
+                .position(|entry| *entry == MenuEntry::CopyMagnet)
+                .expect("local BT offers copy magnet");
             assert_eq!(
-                items.get(at + 2),
+                items.get(at + 1),
                 Some(&MenuEntry::ExportTorrent),
                 "{state:?}"
             );
@@ -7143,6 +8250,36 @@ mod context_menu_tests {
         let items = context_menu_items(&[bt, bt]);
         assert!(!items.contains(&MenuEntry::CopyMagnet));
         assert!(!items.contains(&MenuEntry::ExportTorrent));
+    }
+
+    #[test]
+    fn copy_url_hides_where_it_duplicates_copy_magnet_or_has_no_link() {
+        let mut magnet = task(true, TaskState::Paused);
+        magnet.is_bt = true;
+        magnet.share_link = ShareLink::Magnet;
+        let mut imported = magnet;
+        imported.share_link = ShareLink::None;
+        let mut rss_torrent = magnet;
+        rss_torrent.share_link = ShareLink::Url;
+        let mut remote_magnet = magnet;
+        remote_magnet.is_local = false;
+
+        // 单选本机磁力任务：「复制磁力链接」已覆盖；导入的种子文件只有哨兵。
+        for facts in [magnet, imported] {
+            let items = context_menu_items(&[facts]);
+            assert!(!items.contains(&MenuEntry::CopyUrl), "{facts:?}");
+            assert!(items.contains(&MenuEntry::CopyMagnet), "{facts:?}");
+        }
+        // RSS / 网页来源的 .torrent 直链与磁力不同；远程任务没有「复制磁力链接」。
+        for facts in [rss_torrent, remote_magnet] {
+            assert!(
+                context_menu_items(&[facts]).contains(&MenuEntry::CopyUrl),
+                "{facts:?}"
+            );
+        }
+        // 多选没有「复制磁力链接」：磁力原文经「复制下载地址」批量复制，全是哨兵才隐藏。
+        assert!(context_menu_items(&[magnet, imported]).contains(&MenuEntry::CopyUrl));
+        assert!(!context_menu_items(&[imported, imported]).contains(&MenuEntry::CopyUrl));
     }
 
     #[test]

@@ -3,7 +3,7 @@ title: 贡献嗅探规则
 description: 把你的嗅探规则分享给所有 FluxDown 用户——维护自己的规则仓库（登记一次，发 Release 自动收录），或一次性提交；以及规则测试的写法。
 section: contributing
 order: 3
-sourceHash: "f08de23fc0e4"
+sourceHash: "0df4ef738d9b"
 ---
 
 嗅探规则的官方规则与社区规则索引存放在公开仓库 [zerx-lab/fluxdown-sniff-rules](https://github.com/zerx-lab/fluxdown-sniff-rules)（下文简称「规则仓」）。对你有效的规则多半对所有人都有效，而且不必等扩展发版：规则被收录后会自动签名，并经桌面端下发。每个规则字段的含义见[嗅探规则参考](/docs/zh/browser-extension/sniff-rules/)。
@@ -214,8 +214,6 @@ node fluxdown-sniff-rules/scripts/check-source.mjs --file sniff-rules.json --rep
 - **统一签名**：作者不持有任何密钥；规则仓统一签名发布，桌面端验签后才下发。
 - **吊销与下架**：有问题的规则可通过 `revocations.json` 吊销（任何层级）；从 `registry.json` 删除条目会下架整个命名空间。
 
-对已收录的规则，维护者可以随时通过吊销或下架处理。
-
 ## 编写规则测试
 
 每条测试调用规则引擎的一个函数，并把结果与 `expect` 比较。引擎由**内置规则 + 官方规则 + 所有社区规则（所有登记仓库的规则与 `misc` 规则）+ 吊销列表**编译而成。**你的测试会与规则仓全部规则一起运行**：收录前整体通过才会发布，所以也请避免写出会被别人规则影响的测试，并确保你的规则不会让别人的测试失败。
@@ -230,21 +228,21 @@ node fluxdown-sniff-rules/scripts/check-source.mjs --file sniff-rules.json --rep
 
 **比较规则。** `expect` 里的对象只比较你写出来的键（结果里多出的键没关系）；数组必须**长度相同**并逐项比较；其它值（字符串、数字、`null`、布尔）必须完全相等。由于引擎里同时包含内置和官方规则，返回列表的调用（`domRules`、`bodyWatchers`、`extractFromBody`、`mirrorGroups` 等）的结果里可能有其它规则的条目——请选择只会被你的规则处理的地址，并把列表写完整。
 
-| `call` | `args` | 返回值 |
+| `call` | `args` | 结果 |
 | --- | --- | --- |
-| `classifyResponse` | `[{ url, pageUrl, size, attachment, mime?, status?, resourceType?, headers? }]`（`size` 与 `attachment` 必填；`size` 为 `-1` 或 `0` 表示未知；`headers` 是对象） | `{ decision: "resource", type, confidence?, rule: { id, version, tier } }`、`{ decision: "ignore", rule }` 或 `{ decision: "none" }` |
-| `classify` | `[url, mime?]` | 资源类型，如 `"video"` |
-| `isIgnored` | `[url, pageUrl, attachment, mime?]`（传 `mime` 时按 MIME 的 `exclude` 与 `classifyResponse` 一致生效） | 命中的规则引用 `{ id, version, tier }`，或 `null` |
-| `dedupeKey` | `[url, pageUrl]` | 用于判重的归一化地址字符串 |
-| `fileExtension` | `[url, pageUrl]` | 扩展名（`"zip"`），或 `""` |
+| `classifyResponse` | `[{ url, pageUrl, size, attachment, mime?, status?, resourceType?, headers? }]`（`size` 和 `attachment` 为必填项；`size`、`-1` 或 `0` = 未知；`headers` 为对象） | `{ decision: "resource", type, confidence?, rule: { id, version, tier } }`、`{ decision: "ignore", rule }` 或 `{ decision: "none" }` |
+| `classify` | `[url, mime?]` | 一种资源类型，例如 `"video"` |
+| `isIgnored` | `[url, pageUrl, attachment, mime?]`（传递 `mime` 以按与 `classifyResponse` 相同的方式应用基于 MIME 的 `exclude`） | 匹配规则引用 `{ id, version, tier }`，或 `null` |
+| `dedupeKey` | `[url, pageUrl]` | 用于检测重复项的规范化 URL 字符串 |
+| `fileExtension` | `[url, pageUrl]` | 扩展 (`"zip"`)，或 `""` |
 | `trackKind` | `[{ url, pageUrl, filename?, mime? }]` | `"video"`、`"audio"` 或 `null` |
-| `bodyWatchers` | `[pageUrl]` | `{ rule, url?, host?, pathRegex? }` 列表 |
-| `extractFromBody` | `[apiUrl, pageUrl, json]` | `{ rule, emits: [{ mode, url, filename?, type?, quality? }] }` 列表 |
-| `manifestsFromBody` | `[apiUrl, pageUrl, json]` | 被当作 DASH 清单的 JSON 子树列表 |
-| `domRules` | `[pageUrl]` | `{ rule, selector, attr, emit }` 列表 |
+| `bodyWatchers` | `[pageUrl]` | 一个 `{ rule, url?, host?, pathRegex? }` 的列表 |
+| `extractFromBody` | `[apiUrl, pageUrl, json]` | 一个 `{ rule, emits: [{ mode, url, filename?, type?, quality? }] }` 的列表 |
+| `manifestsFromBody` | `[apiUrl, pageUrl, json]` | 被视为 DASH 清单的 JSON 子树列表 |
+| `domRules` | `[pageUrl]` | 一个 `{ rule, selector, attr, emit }` 的列表 |
 | `pageHints` | `[pageUrl]` | `{ titles: [{ selector, attr? }], players: [{ selector }] }` |
-| `requestHeaders` | `[url, pageUrl]` | 「请求头名（小写）→ 值」的对象 |
-| `mirrorGroups` | `[]` | 域名列表的列表 |
+| `requestHeaders` | `[url, pageUrl]` | 一个由小写头部名称 → 值组成的对象 |
+| `mirrorGroups` | `[]` | 主机列表的列表 |
 
 示例 1——一条 `response` 规则和一条反向测试（第二条用来确保规则不会波及其它网站）：
 

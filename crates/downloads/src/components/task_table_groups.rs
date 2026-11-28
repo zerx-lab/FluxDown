@@ -4,7 +4,9 @@
 
 use std::{cmp::Ordering, collections::HashMap, rc::Rc};
 
-use fluxdown_ui_components::{CheckState, FluxIcon, check_mark, tabular_numbers, tooltip_view};
+use fluxdown_ui_components::{
+    CheckState, FluxIcon, check_mark, tabular_numbers, tooltip_view, truncated_text,
+};
 use fluxdown_ui_theme::active_theme;
 use gpui::{
     AnyElement, App, ClickEvent, Context, Div, FontWeight, InteractiveElement as _, IntoElement,
@@ -218,6 +220,12 @@ impl DownloadTableDelegate {
         local: &[DownloadTaskView],
         remote: &[DownloadTaskView],
     ) -> Option<GroupBucket> {
+        if self.prefs.group_by == ViewGroupBy::Content {
+            return match entity {
+                Entity::Task(id) => row_at(local, remote, id).and_then(super::content_group_bucket),
+                Entity::Group(_) => None,
+            };
+        }
         match entity {
             Entity::Task(id) => row_at(local, remote, id).map(|task| self.group_bucket(task)),
             Entity::Group(ix) => {
@@ -358,6 +366,7 @@ impl DownloadTableDelegate {
     /// 单击组行：普通单击选中整组并聚焦（停靠面板显示组概览）；Cmd/Ctrl 单击把整组并入 /
     /// 移出选区；Shift 单击从锚点选到该组最后一个成员。
     pub(crate) fn select_group(&mut self, group_id: &str, modifiers: SelectModifiers) {
+        self.finish_row_sweep();
         let Some(ix) = self.group_ix(group_id) else {
             return;
         };
@@ -390,6 +399,7 @@ impl DownloadTableDelegate {
 
     /// 组行复选框：未处于多选模式时以整组开启多选，已在多选模式时整组切换。
     pub(super) fn toggle_group_multi_select(&mut self, group_id: &str) {
+        self.finish_row_sweep();
         let Some(ix) = self.group_ix(group_id) else {
             return;
         };
@@ -751,7 +761,10 @@ impl DownloadTableDelegate {
             .line_height(tokens.typography.sm.line_height)
             .font_weight(FontWeight::MEDIUM)
             .text_color(tokens.colors.foreground)
-            .child(SharedString::from(group.view.name.clone()));
+            .child(truncated_text(
+                ("download-group-name", row_ix),
+                group.view.name.clone(),
+            ));
         let counts = group_counts_line(
             self.strings
                 .group_count_segments(&group.aggregate.counts, group.aggregate.eta_seconds),

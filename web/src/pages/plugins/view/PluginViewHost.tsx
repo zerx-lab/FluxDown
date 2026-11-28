@@ -83,5 +83,5 @@ export function PluginViewHost({ identity, view, taskId, className, onClose }: P
     session?.setLocale(locale)
   }, [locale, session])
 
-  return <div className={cn('flex min-h-0 min-w-0 flex-col', className)}>{session ? <SessionBody session={session} /> : null}</div>
+  return <div className={cn('plugin-view-host flex min-h-0 min-w-0 flex-col', className)}>{session ? <SessionBody session={session} /> : null}</div>
 }

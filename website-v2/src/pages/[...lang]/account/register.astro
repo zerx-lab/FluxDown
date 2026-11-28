@@ -1,0 +1,21 @@
+---
+/**
+ * 账户注册(en → /account/register,zh → /zh/account/register):昵称(选填)+ 邮箱 + 密码,
+ * 邮箱验证码确认后直接登录。
+ */
+import Layout from "@/layouts/Layout.astro";
+import AuthShell from "@/components/account/auth/AuthShell.astro";
+import RegisterForm from "@/components/account/auth/RegisterForm";
+import { accountAuth } from "@/i18n/messages/accountAuth";
+import { langStaticPaths, resolveLang } from "@/i18n/routing";
+
+export const getStaticPaths = langStaticPaths;
+const lang = resolveLang(Astro.params.lang);
+const t = accountAuth[lang].register;
+---
+
+<Layout lang={lang} title={t.meta.title} description={t.meta.description} noindex>
+  <AuthShell lang={lang} eyebrow={t.head.eyebrow} title={t.head.title} lede={t.head.lede}>
+    <RegisterForm client:load lang={lang} />
+  </AuthShell>
+</Layout>

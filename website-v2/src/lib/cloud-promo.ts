@@ -1,99 +1,127 @@
 /**
- * 官网云端专业版限时促销（展示层）。
+ * 首页 Hero 促销胶囊（展示层）。
  *
- * 可见价一律跟 FluxCloud 公开目录里的专业版（`planCode`）走：
- *   list = plan.priceMinor
- *   sale = campaign?.effectivePriceMinor ?? list
- * 本文件只管：绑哪个套餐、促销条展示窗口、文案模板。
- * 改价只改后台套餐 / 销售活动，不必再改这里的数字。
+ * 是否展示、活动名、当前档位价、本档余量、截止时间全部在运行期取自 `GET /api/cloud/plans`：
+ * FluxCloud 只在活动 active（启用 + 时间窗口内 + 有可售档位）时下发 `campaign`，
+ * 后台开 / 停 / 改活动后官网无需重新构建。本文件只做挑选与文案。
+ *
+ * 克制原则：只占 Hero 角标一个位置；无活动时保持新功能角标；
+ * 截止时间只在最后几天提示，余量用中性措辞，不做倒计时与闪烁。
  */
-import type { Lang } from "@/i18n/config";
+import type { CloudPlan } from "@/components/pricing/types";
+import { formatMinor } from "@/components/pay/money";
+import { INTL_LOCALE, toBaselineLang, type Lang } from "@/i18n/config";
 
-export const CLOUD_PROMO = {
-  /** 与 FluxCloud catalog `code` 对齐。 */
-  planCode: "pro",
-  /**
-   * 促销条 / Hero / CTA 展示窗口截止（含当天上海 23:59:59）。
-   * 与成交价无关；成交价以 catalog 活动为准。
-   */
-  endAt: "2026-11-10T15:59:59.000Z",
-  /** 公告 / 埋点 id，与 announcements 条目共用。 */
-  announcementId: "pro-promo-129-99",
-  planPath: "/pricing",
-} as const;
-
-export type CloudPromo = typeof CLOUD_PROMO;
-
-export type PromoPrices = {
-  listMinor: number;
+export interface HeroPromo {
+  campaignName: string;
+  planName: string;
   saleMinor: number;
+  listMinor: number;
   currency: string;
-  hasDiscount: boolean;
-};
-
-/** 目录条目 → 促销展示价；非目标套餐或无效价返回 null。 */
-export function promoPricesFromPlan(plan: {
-  code: string;
-  priceMinor: number;
-  currency?: string | null;
-  campaign?: { effectivePriceMinor: number } | null;
-}): PromoPrices | null {
-  if (plan.code !== CLOUD_PROMO.planCode) return null;
-  if (!Number.isFinite(plan.priceMinor) || plan.priceMinor < 0) return null;
-  const listMinor = plan.priceMinor;
-  const rawSale = plan.campaign?.effectivePriceMinor;
-  const saleMinor =
-    rawSale != null && Number.isFinite(rawSale) && rawSale >= 0 ? rawSale : listMinor;
-  return {
-    listMinor,
-    saleMinor,
-    currency: (plan.currency && plan.currency.trim()) || "CNY",
-    hasDiscount: saleMinor < listMinor,
-  };
+  /** 当前限量档剩余份数；null = 不限量档。 */
+  stageLeft: number | null;
+  /** 活动截止（ISO）；null = 无截止。 */
+  endAt: string | null;
 }
 
-export function isCloudPromoActive(nowMs: number = Date.now()): boolean {
-  const end = Date.parse(CLOUD_PROMO.endAt);
-  return Number.isFinite(end) && nowMs <= end;
+/** 截止提示窗口：仅最后 7 天提一句，平时不制造紧迫感。 */
+export const PROMO_DEADLINE_HINT_MS = 7 * 24 * 60 * 60 * 1000;
+
+const isAmount = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
+
+/**
+ * 目录 → Hero 促销：按目录顺序取第一个「可购买、确有折扣、未过截止、本档未售罄」的活动套餐。
+ * 目录形状不符或无活动返回 null（保持默认角标）。
+ */
+export function pickHeroPromo(plans: unknown, nowMs: number = Date.now()): HeroPromo | null {
+  if (!Array.isArray(plans)) return null;
+  for (const item of plans) {
+    if (!item || typeof item !== "object") continue;
+    const plan = item as Partial<CloudPlan>;
+    const c = plan.campaign;
+    if (!c || typeof c !== "object" || plan.purchasable === false) continue;
+    const listMinor = plan.priceMinor;
+    const saleMinor = c.effectivePriceMinor;
+    if (!isAmount(listMinor) || !isAmount(saleMinor) || saleMinor >= listMinor) continue;
+
+    let endAt: string | null = null;
+    if (c.endAt) {
+      const end = Date.parse(c.endAt);
+      // 目录有 60 秒缓存，这里再按本机时间兜一次截止
+      if (!Number.isFinite(end) || end <= nowMs) continue;
+      endAt = c.endAt;
+    }
+
+    const idx = c.currentStageIndex;
+    const quota = Array.isArray(c.stages) ? c.stages[idx]?.quota : undefined;
+    const sold = Array.isArray(c.stageSold) ? (c.stageSold[idx] ?? 0) : 0;
+    const stageLeft = isAmount(quota) ? Math.max(0, quota - sold) : null;
+    // 本档已满：缓存里的价马上会换档，不展示可能过期的价
+    if (stageLeft === 0) continue;
+
+    return {
+      campaignName: typeof c.name === "string" ? c.name.trim() : "",
+      planName: typeof plan.name === "string" ? plan.name.trim() : "",
+      saleMinor,
+      listMinor,
+      currency: (typeof plan.currency === "string" && plan.currency.trim()) || "CNY",
+      stageLeft,
+      endAt,
+    };
+  }
+  return null;
 }
 
-/** 分 → 展示价（与定价卡同口径：整元无小数）。 */
-export function formatPromoYuan(minor: number, currency: string, lang: Lang): string {
-  const cur = (currency || "CNY").toUpperCase();
-  const yuan = minor / 100;
-  const whole = Number.isInteger(yuan) ? String(yuan) : yuan.toFixed(2);
-  if (cur === "CNY") return lang === "zh" ? `¥${whole}` : `CN¥${whole}`;
-  return lang === "zh" ? `${whole} ${cur}` : `${cur} ${whole}`;
-}
-
-export const cloudPromoCopy = {
+export const heroPromoCopy = {
   en: {
-    badge: "Limited",
-    product: "Cloud Pro · permanent",
-    line: (sale: string, list: string | null) =>
-      list ? `Cloud Pro permanent ${sale} (list ${list})` : `Cloud Pro permanent ${sale}`,
-    cta: "Details",
-    ctaBuy: "Buy",
-    heroBadge: (sale: string, list: string | null) =>
-      list ? `Pro permanent · ${sale} · list ${list}` : `Pro permanent · ${sale}`,
-    /** 公告列表不写死价，避免与目录脱节。 */
-    annText: "Cloud Pro permanent is on a limited offer — see Pricing.",
-    finalCta: (sale: string) => `Pro · ${sale}`,
+    tag: "Sale",
+    /** 目录名称只有中文，英文站用固定标题。 */
+    title: "FluxCloud limited offer",
+    left: (n: number) => `${n} left at this price`,
+    endsOn: (date: string) => `ends ${date}`,
+    aria: (title: string, sale: string, list: string) => `${title}: ${sale}, regularly ${list}. View pricing`,
   },
   zh: {
-    badge: "限时",
-    product: "云端专业版 · 永久",
-    line: (sale: string, list: string | null) =>
-      list ? `云端专业版永久 ${sale}（定价 ${list}）` : `云端专业版永久 ${sale}`,
-    cta: "详情",
-    ctaBuy: "购买",
-    heroBadge: (sale: string, list: string | null) =>
-      list ? `专业版永久 · ${sale} · 定价 ${list}` : `专业版永久 · ${sale}`,
-    annText: "云端专业版永久限时优惠，详见定价页。",
-    finalCta: (sale: string) => `专业版 · ${sale}`,
+    tag: "限时",
+    title: "云端限时优惠",
+    left: (n: number) => `本价位余 ${n} 份`,
+    endsOn: (date: string) => `${date}截止`,
+    aria: (title: string, sale: string, list: string) => `${title}：${sale}，原价 ${list}，查看定价`,
   },
 } as const;
 
-export function promoAriaLine(lang: Lang, sale: string, list: string | null): string {
-  return cloudPromoCopy[lang].line(sale, list);
+export interface HeroPromoView {
+  title: string;
+  sale: string;
+  list: string;
+  /** 余量或临近截止的一句补充；无则 null。 */
+  meta: string | null;
+  aria: string;
+}
+
+/**
+ * 促销 → 胶囊各段文案。中文站用后台活动名 + 套餐名,其余语言用固定标题;
+ * 文案只有 en / zh 手写基线,机器翻译语言沿用 en(日期随文案语言格式化,金额按当前语言本地化)。
+ */
+export function heroPromoView(p: HeroPromo, lang: Lang, nowMs: number = Date.now()): HeroPromoView {
+  const copyLang = toBaselineLang(lang);
+  const t = heroPromoCopy[copyLang];
+  const title =
+    lang === "zh" && p.campaignName ? [p.campaignName, p.planName].filter(Boolean).join(" · ") : t.title;
+  const sale = formatMinor(p.saleMinor, p.currency, lang);
+  const list = formatMinor(p.listMinor, p.currency, lang);
+
+  let meta: string | null = null;
+  if (p.stageLeft != null) {
+    meta = t.left(p.stageLeft);
+  } else if (p.endAt && Date.parse(p.endAt) - nowMs <= PROMO_DEADLINE_HINT_MS) {
+    const date = new Intl.DateTimeFormat(INTL_LOCALE[copyLang], {
+      month: copyLang === "zh" ? "long" : "short",
+      day: "numeric",
+      timeZone: "Asia/Shanghai",
+    }).format(new Date(p.endAt));
+    meta = t.endsOn(date);
+  }
+
+  return { title, sale, list, meta, aria: t.aria(title, sale, list) };
 }

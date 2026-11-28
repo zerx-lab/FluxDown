@@ -60,6 +60,7 @@ pub(super) struct RenderEnv<'a> {
     pub revision: u64,
     pub pending: &'a HashMap<String, PendingInput>,
     pub images: &'a HashMap<String, Arc<Image>>,
+    pub fill_available: bool,
 }
 
 /// 当前主题里渲染要用的值（一次渲染取一次）。
@@ -276,8 +277,10 @@ fn render_node(
                 .w_full()
                 .min_w_0()
                 .overflow_y_scroll()
-                .when_some(num_prop(node, "maxHeight"), |this, height| {
-                    this.max_h(px(height as f32))
+                .map(|this| match num_prop(node, "maxHeight") {
+                    Some(height) => this.max_h(px(height as f32)),
+                    None if env.fill_available => this.flex_1().min_h_0(),
+                    None => this,
                 })
                 .child(div().flex().flex_col().gap(look.gap_sm).children(children))
                 .into_any_element()
@@ -470,7 +473,9 @@ fn stack(
         })
         .when(bool_prop(node, "wrap"), |this| this.flex_wrap())
         .when(bool_prop(node, "grow"), |this| {
-            this.flex_grow(1.0).flex_basis(px(0.0))
+            this.flex_grow(1.0)
+                .flex_basis(px(0.0))
+                .when(env.fill_available, |this| this.min_h_0())
         })
         .children(children)
         .into_any_element()
@@ -1509,18 +1514,24 @@ fn trim_decimal(value: f64, digits: usize) -> String {
 
 /// 1024 进制的字节数（`0 B`、`1.5 KB`、`2 GB`）。
 pub fn format_bytes(bytes: f64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     if !bytes.is_finite() || bytes < 0.0 {
         return String::new();
     }
     let mut value = bytes;
-    let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
+    let mut label = "B";
+    for next in fluxdown_ui_components::size_units::labels()
+        .iter()
+        .skip(1)
+        .take(4)
+    {
+        if value < 1024.0 {
+            break;
+        }
         value /= 1024.0;
-        unit += 1;
+        label = next;
     }
-    let digits = if unit == 0 { 0 } else { 1 };
-    format!("{} {}", trim_decimal(value, digits), UNITS[unit])
+    let digits = usize::from(label != "B");
+    format!("{} {label}", trim_decimal(value, digits))
 }
 
 pub fn format_speed(bytes_per_second: f64) -> String {

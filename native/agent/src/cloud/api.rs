@@ -116,6 +116,12 @@ impl CloudApi {
         .await
     }
 
+    /// `POST /tasks/commands`：同一动作批量作用于至多 200 条记录（旧版云端 404 / 405）。
+    pub async fn command_remote_many<P: Serialize>(&self, body: &P) -> Result<Value, CloudError> {
+        self.authed(Method::POST, "/api/v1/tasks/commands", Some(body))
+            .await
+    }
+
     pub async fn report_remote_status<P: Serialize>(
         &self,
         id: &str,
@@ -322,6 +328,57 @@ impl CloudApi {
             None,
         )
         .await
+    }
+
+    /// AI 助手端点（`/api/v1/ai{suffix}`，账号鉴权）的 JSON 调用；204 / 空正文解码为 JSON null。
+    pub(crate) async fn ai_call<P: Serialize, R: serde::de::DeserializeOwned>(
+        &self,
+        method: Method,
+        suffix: &str,
+        body: Option<&P>,
+    ) -> Result<R, CloudError> {
+        self.authed_as(method, &format!("/api/v1/ai{suffix}"), body)
+            .await
+    }
+
+    /// `GET /api/v1/ai/status`（免鉴权）：未登录时的 AI 助手入口可见性。
+    pub(crate) async fn ai_status<R: serde::de::DeserializeOwned>(&self) -> Result<R, CloudError> {
+        self.client
+            .public(Method::GET, "/api/v1/ai/status", None::<&Value>)
+            .await
+    }
+
+    /// `POST /api/v1/ai{suffix}`：提问这类「POST 即返回 SSE」的端点；调用方负责读取响应流。
+    pub(crate) async fn ai_stream<P: Serialize + ?Sized>(
+        &self,
+        suffix: &str,
+        body: &P,
+    ) -> Result<reqwest::Response, CloudError> {
+        self.client
+            .authenticated_stream_request_epoch(
+                Method::POST,
+                &format!("/api/v1/ai{suffix}"),
+                Some(body),
+                self.request_epoch(),
+            )
+            .await
+    }
+
+    /// `GET /api/v1/ai{suffix}`：提问执行的事件续读（SSE）与提问附图（二进制）这类 GET 流式响应；
+    /// 调用方负责读取响应体。
+    pub(crate) async fn ai_get_stream(
+        &self,
+        suffix: &str,
+    ) -> Result<reqwest::Response, CloudError> {
+        self.client
+            .authenticated_stream_epoch(&format!("/api/v1/ai{suffix}"), self.request_epoch())
+            .await
+    }
+
+    /// 本机 `(device_id, platform)`（建 AI 会话时随客户端信息上报）。
+    pub(crate) async fn ai_device(&self) -> (String, String) {
+        let (device_id, _name, platform) = self.client.device_identity().await;
+        (device_id, platform)
     }
 
     pub async fn is_authenticated(&self) -> bool {
@@ -706,7 +763,7 @@ pub struct NotifyReportResult {
     pub outcome: String,
 }
 
-fn encode(value: &str) -> String {
+pub(crate) fn encode(value: &str) -> String {
     let mut encoded = String::with_capacity(value.len());
     for byte in value.bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {

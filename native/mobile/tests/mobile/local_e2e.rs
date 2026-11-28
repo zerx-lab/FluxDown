@@ -191,6 +191,7 @@ impl Dirs {
     fn config(&self) -> LocalHostConfig {
         LocalHostConfig {
             data_dir: self.data().display().to_string(),
+            external_log_dir: None,
             save_dir: self.save().display().to_string(),
             platform: "test".to_owned(),
             device_name: None,
@@ -637,6 +638,7 @@ async fn open_local_rejects_an_empty_data_dir() {
     let result = core
         .open_local(LocalHostConfig {
             data_dir: "   ".to_owned(),
+            external_log_dir: None,
             save_dir: String::new(),
             platform: "test".to_owned(),
             device_name: None,

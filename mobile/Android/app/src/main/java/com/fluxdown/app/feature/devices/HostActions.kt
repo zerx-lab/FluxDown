@@ -67,14 +67,21 @@ internal class HostActions(
     var switchingId: String? by mutableStateOf(null)
         private set
 
-    /** 切换到 [ref]；已是当前主机则直接成功。[onDone] 带结果在主线程回调。 */
+    /** 切换到 [ref]；已选主机可用时不弹切换提示。[onDone] 在主线程回调。 */
     fun switchTo(ref: HostRef, onDone: (Boolean) -> Unit = {}) {
-        if (ref.id == container.host.value.id) {
-            onDone(true)
-            return
-        }
         if (switchingId != null) {
             onDone(false)
+            return
+        }
+        if (container.hostSelection.keepCurrentHost(ref)) {
+            if (ref is HostRef.Remote) {
+                scope.launch {
+                    container.hostSelection.rememberConfirmedRemote(ref)
+                    onDone(true)
+                }
+            } else {
+                onDone(true)
+            }
             return
         }
         switchingId = ref.id
@@ -82,7 +89,7 @@ internal class HostActions(
         overlays.toast(context.str(R.string.mobileHostSwitching, "name" to name), FluxToastKind.Info, FluxIcons.Server)
         scope.launch {
             val result = try {
-                container.switchHost(ref)
+                container.hostSelection.switchHost(ref)
             } finally {
                 switchingId = null
             }

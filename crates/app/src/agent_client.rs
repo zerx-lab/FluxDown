@@ -7,6 +7,7 @@ use std::pin::Pin;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
+use fluxdown_protocol::error::RSS_IMAGE_PROXY_UNVERIFIABLE_HEADER;
 use fluxdown_protocol::method;
 use fluxdown_protocol::{
     AgentEvent, ApplicationErrorCode, CLOSE_REASON_SERVICE_QUIT, DaemonEvent, EventFrame,
@@ -18,13 +19,14 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
+use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::handshake::client::Request;
 use tokio_tungstenite::tungstenite::http::{HeaderValue, header};
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+
+use crate::agent_ipc::{AgentStream, IPC_RPC_URL};
 
 use crate::preference_writes::PreferenceWrites;
 use crate::service_bootstrap::{
@@ -43,7 +45,7 @@ const HANDSHAKE_EVENT_BUFFER_LIMIT: usize = 65_536;
 /// 整体重连重新载入。
 const TABLE_PAGE_TIMEOUT: Duration = Duration::from_secs(30);
 
-type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+type Socket = WebSocketStream<AgentStream>;
 
 pub enum AgentClientEvent {
     /// 连接 / 重连后的全量快照（带 `epoch`/`sequence` 游标）。
@@ -155,6 +157,39 @@ pub struct AgentClient {
     pub(crate) submissions: Arc<crate::downloads_port::SubmissionGate>,
 }
 
+async fn request_plugin_feedback(
+    identity: &str,
+    report: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcErrorData> {
+    const URL: &str = "https://fluxdown.com/api/feedback";
+    static CLIENT: LazyLock<Result<reqwest::Client, reqwest::Error>> = LazyLock::new(|| {
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(30))
+            .build()
+    });
+    let client = CLIENT.as_ref().map_err(|_| unavailable_error())?;
+    let request = match report {
+        Some(body) => client
+            .post(URL)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(serde_json::to_vec(&body).map_err(|_| internal_error())?),
+        None => client.get(URL).query(&[("pluginIdentity", identity)]),
+    };
+    let mut response = request.send().await.map_err(|_| unavailable_error())?;
+    if !response.status().is_success() {
+        return Ok(serde_json::json!({ "status": response.status().as_u16() }));
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| unavailable_error())? {
+        if chunk.len() > 4096 - body.len() {
+            return Err(protocol_error());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&body).map_err(|_| protocol_error())
+}
+
 impl AgentClient {
     pub fn start(
         config: AgentClientConfig,
@@ -231,6 +266,22 @@ impl AgentClient {
     {
         self.runtime.spawn(future);
     }
+
+    pub(crate) fn plugin_feedback(
+        &self,
+        identity: String,
+        report: Option<serde_json::Value>,
+    ) -> AgentFuture<serde_json::Value> {
+        let (send, receive) = oneshot::channel();
+        self.runtime.spawn(async move {
+            let result = request_plugin_feedback(&identity, report).await;
+            if send.send(result).is_err() {
+                log::trace!("plugin feedback result receiver was dropped");
+            }
+        });
+        Box::pin(async move { receive.await.map_err(|_| unavailable_error())? })
+    }
+
     pub fn plugin_image(&self, session: String, id: String) -> AgentFuture<Vec<u8>> {
         let config = self.config.clone();
         let (send, receive) = oneshot::channel();
@@ -242,6 +293,40 @@ impl AgentClient {
         });
         Box::pin(async move { receive.await.map_err(|_| unavailable_error())? })
     }
+
+    pub(crate) fn rss_image(
+        &self,
+        source_id: String,
+        guid: String,
+        index: usize,
+    ) -> AgentFuture<Vec<u8>> {
+        let config = self.config.clone();
+        let (mut send, receive) = oneshot::channel();
+        self.runtime.spawn(async move {
+            let fetch = fetch_rss_image(&config, &source_id, &guid, index);
+            tokio::select! {
+                biased;
+                () = send.closed() => {}
+                result = fetch => {
+                    if send.send(result).is_err() {
+                        log::trace!("RSS image result receiver was dropped");
+                    }
+                }
+            }
+        });
+        Box::pin(async move { receive.await.map_err(|_| unavailable_error())? })
+    }
+}
+
+async fn fetch_rss_image(
+    config: &AgentClientConfig,
+    source_id: &str,
+    guid: &str,
+    index: usize,
+) -> Result<Vec<u8>, RpcErrorData> {
+    let index = index.to_string();
+    let query = [("sourceId", source_id), ("guid", guid), ("index", &index)];
+    fetch_agent_png(config, "/api/web/rss-images", &query, 512 * 1024).await
 }
 
 async fn fetch_plugin_image(
@@ -257,6 +342,21 @@ async fn fetch_plugin_image(
     {
         return Err(internal_error());
     }
+    fetch_agent_png(
+        config,
+        &format!("/api/web/plugin-images/{session}/{id}"),
+        &[],
+        4 * 1024 * 1024,
+    )
+    .await
+}
+
+async fn fetch_agent_png(
+    config: &AgentClientConfig,
+    path: &str,
+    query: &[(&str, &str)],
+    max_bytes: usize,
+) -> Result<Vec<u8>, RpcErrorData> {
     let rpc_url =
         crate::agent_endpoint::discover_rpc_url(config.rpc_url.as_deref(), &config.bearer_path)
             .await
@@ -270,7 +370,7 @@ async fn fetch_plugin_image(
         _ => return Err(unavailable_error()),
     };
     let authority = uri.authority().ok_or_else(unavailable_error)?;
-    let image_url = format!("{scheme}://{authority}/api/web/plugin-images/{session}/{id}");
+    let image_url = format!("{scheme}://{authority}{path}");
     let token = tokio::fs::read_to_string(&config.bearer_path)
         .await
         .map_err(|_| unavailable_error())?;
@@ -290,12 +390,22 @@ async fn fetch_plugin_image(
     let client = CLIENT.as_ref().map_err(|_| unavailable_error())?;
     let response = client
         .get(image_url)
+        .query(query)
         .bearer_auth(token)
         .header(reqwest::header::ACCEPT, "image/png")
         .header(reqwest::header::CACHE_CONTROL, "no-store")
         .send()
         .await
         .map_err(|_| unavailable_error())?;
+    if response.status() == reqwest::StatusCode::FORBIDDEN
+        && response
+            .headers()
+            .get(RSS_IMAGE_PROXY_UNVERIFIABLE_HEADER)
+            .is_some_and(|value| value == "1")
+    {
+        return Err(RpcErrorData::new(ApplicationErrorCode::Unavailable, false)
+            .with_reason(fluxdown_protocol::ErrorReason::RssImageProxyUnverifiable));
+    }
     let content_type = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
@@ -311,7 +421,7 @@ async fn fetch_plugin_image(
             .eq_ignore_ascii_case("image/png")
         || response
             .content_length()
-            .is_some_and(|length| length > 4 * 1024 * 1024)
+            .is_some_and(|length| length > max_bytes as u64)
     {
         return Err(protocol_error());
     }
@@ -319,7 +429,7 @@ async fn fetch_plugin_image(
     let mut chunks = response.bytes_stream();
     while let Some(chunk) = chunks.next().await {
         let chunk = chunk.map_err(|_| unavailable_error())?;
-        if body.len().saturating_add(chunk.len()) > 4 * 1024 * 1024 {
+        if body.len().saturating_add(chunk.len()) > max_bytes {
             return Err(protocol_error());
         }
         body.extend_from_slice(&chunk);
@@ -721,11 +831,21 @@ impl NoBearerGrace {
     }
 }
 
-/// 握手前 `system.shutdown`：只有支持该首帧的 agent（协议 v4 起）会受理。
+/// 握手前 `system.shutdown`：只有支持该首帧的 agent（协议 v4 起）会受理。IPC 端点可用时先经
+/// 它发送，失败再走回环 TCP。
 async fn request_shutdown(config: &AgentClientConfig, rpc_url: &str) -> bool {
+    if let Some((request, stream)) = dial_ipc(config).await
+        && shutdown_over(request, stream).await
+    {
+        return true;
+    }
     let Ok((request, stream)) = dial(config, rpc_url, CONNECT_TIMEOUT_MAX).await else {
         return false;
     };
+    shutdown_over(request, stream).await
+}
+
+async fn shutdown_over(request: Request, stream: AgentStream) -> bool {
     let call = async {
         let mut socket = upgrade(request, stream).await?;
         let mut buffered = Vec::new();
@@ -744,13 +864,11 @@ async fn request_shutdown(config: &AgentClientConfig, rpc_url: &str) -> bool {
     }
 }
 
-/// 读 bearer 并完成 TCP 连接（超时 `connect_timeout`）。先自行建连：回环端口无人监听时按超时
-/// 判定，不等 Windows 约 2s 的拒绝。
-async fn dial(
+/// 读 bearer 并生成带鉴权头的升级请求。
+async fn authorized_request(
     config: &AgentClientConfig,
-    rpc_url: &str,
-    connect_timeout: Duration,
-) -> Result<(Request, TcpStream), ConnectError> {
+    url: &str,
+) -> Result<Request, ConnectError> {
     let bearer = tokio::fs::read_to_string(&config.bearer_path)
         .await
         .map_err(|_| ConnectError::NoBearer)?;
@@ -758,7 +876,7 @@ async fn dial(
     if bearer.is_empty() {
         return Err(ConnectError::NoBearer);
     }
-    let mut request = rpc_url
+    let mut request = url
         .into_client_request()
         .map_err(|_| ConnectError::Fatal(protocol_error()))?;
     let authorization = HeaderValue::from_str(&format!("Bearer {bearer}"))
@@ -766,29 +884,47 @@ async fn dial(
     request
         .headers_mut()
         .insert(header::AUTHORIZATION, authorization);
+    Ok(request)
+}
+
+/// 首选通道：bearer 同目录的 agent IPC 端点。显式指定了 RPC 地址、尚无 bearer、端点不存在或
+/// 打不开时返回 `None`，调用方照常走回环 TCP 流程。
+async fn dial_ipc(config: &AgentClientConfig) -> Option<(Request, AgentStream)> {
+    if config.rpc_url.is_some() {
+        return None;
+    }
+    let request = authorized_request(config, IPC_RPC_URL).await.ok()?;
+    let stream = crate::agent_ipc::dial(&config.bearer_path, PROBE_TIMEOUT).await?;
+    Some((request, stream))
+}
+
+/// 读 bearer 并完成 TCP 连接（超时 `connect_timeout`）。先自行建连：回环端口无人监听时按超时
+/// 判定，不等 Windows 约 2s 的拒绝。
+async fn dial(
+    config: &AgentClientConfig,
+    rpc_url: &str,
+    connect_timeout: Duration,
+) -> Result<(Request, AgentStream), ConnectError> {
+    let request = authorized_request(config, rpc_url).await?;
     let stream = match connect_listener(rpc_url, connect_timeout).await {
         Ok(ListenerProbe::Listening(stream)) => stream,
         Ok(ListenerProbe::Refused) => return Err(ConnectError::Refused),
         Ok(ListenerProbe::TimedOut) => return Err(ConnectError::TimedOut(connect_timeout)),
         Err(error) => return Err(ConnectError::Transient(format!("connect: {error}"))),
     };
-    Ok((request, stream))
+    Ok((request, AgentStream::Tcp(stream)))
 }
 
-async fn upgrade(request: Request, stream: TcpStream) -> Result<Socket, ConnectError> {
+async fn upgrade(request: Request, stream: AgentStream) -> Result<Socket, ConnectError> {
     // 单帧上限 [`MAX_INBOUND_RPC_MESSAGE_BYTES`](32 MiB)：快照与替换事件只带头，任务表按页
     // （约 1.6 MB）拉取，仍保留余量给大页与插件 / 配置等大字段。
     let limit = Some(fluxdown_protocol::MAX_INBOUND_RPC_MESSAGE_BYTES);
     let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
         .max_frame_size(limit)
         .max_message_size(limit);
-    let (socket, _) = tokio_tungstenite::client_async_with_config(
-        request,
-        MaybeTlsStream::Plain(stream),
-        Some(config),
-    )
-    .await
-    .map_err(classify_connect_error)?;
+    let (socket, _) = tokio_tungstenite::client_async_with_config(request, stream, Some(config))
+        .await
+        .map_err(classify_connect_error)?;
     Ok(socket)
 }
 
@@ -799,6 +935,26 @@ async fn connect(
     handshake_timeout: Duration,
     reject_outdated: bool,
 ) -> Result<(Socket, Snapshot, Vec<EventFrame>), ConnectError> {
+    // IPC 端点上的 401 说明对端不是本数据目录的 agent（名字被占或推导不一致）：改走 TCP。
+    // 其余结果（含版本不兼容、握手超时）都是本机 agent 的真实应答，原样返回。
+    if let Some((request, stream)) = dial_ipc(config).await {
+        match tokio::time::timeout(
+            handshake_timeout,
+            handshake(request, stream, reject_outdated),
+        )
+        .await
+        {
+            Ok(Err(ConnectError::Unauthorized)) => {
+                log::warn!("agent IPC endpoint rejected the bearer token; using loopback TCP");
+            }
+            Ok(result) => return result,
+            Err(_) => {
+                return Err(ConnectError::Transient(format!(
+                    "handshake timed out after {handshake_timeout:?} over local IPC"
+                )));
+            }
+        }
+    }
     let (request, stream) = dial(config, rpc_url, connect_timeout).await?;
     match tokio::time::timeout(
         handshake_timeout,
@@ -816,9 +972,10 @@ async fn connect(
 /// WS 升级 + `system.hello` + `system.snapshot`；总时长由调用方限制。
 async fn handshake(
     request: Request,
-    stream: TcpStream,
+    stream: AgentStream,
     reject_outdated: bool,
 ) -> Result<(Socket, Snapshot, Vec<EventFrame>), ConnectError> {
+    let transport = stream.transport();
     let mut socket = upgrade(request, stream).await?;
     let mut buffered = Vec::new();
     let hello = serde_json::json!({
@@ -866,6 +1023,7 @@ async fn handshake(
     if !matches!(snapshot.body, SnapshotBody::Agent(_)) {
         return Err(ConnectError::Fatal(protocol_error()));
     }
+    log::info!("agent session established over {transport}");
     Ok((socket, snapshot, buffered))
 }
 

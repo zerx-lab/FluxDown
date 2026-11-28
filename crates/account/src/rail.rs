@@ -11,6 +11,7 @@
 use std::rc::Rc;
 
 use fluxdown_protocol::{CloudConnectionState, method};
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     ButtonVariant, FluxIcon, activity_button, button, nav_icon_color, sidebar_navigation_button,
     tooltip_view,
@@ -22,8 +23,7 @@ use gpui::{
     Styled, WeakEntity, Window, div, prelude::FluentBuilder as _, white,
 };
 use gpui_component::{
-    Disableable as _, Icon, WindowExt as _, h_flex, notification::Notification, popover::Popover,
-    switch::Switch, v_flex,
+    Disableable as _, Icon, WindowExt as _, h_flex, popover::Popover, switch::Switch, v_flex,
 };
 
 use crate::assets::CROWN_ICON_PATH;
@@ -200,7 +200,7 @@ fn run(
                     return;
                 }
                 let message = error_text(host.translator().read(cx), &error, context);
-                window.push_notification(Notification::error(message), cx);
+                window.push_notification(toast::error(message), cx);
             }) else {
                 // 窗口已关闭，失败无处提示。
                 return;

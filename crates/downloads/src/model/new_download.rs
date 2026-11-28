@@ -7,6 +7,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use fluxdown_protocol::{CreateTaskItem, CreateTaskRequest, MAX_TASK_SEGMENTS, PendingCaptureDto};
 
 use super::aria2c::{RequestHints, join_continuations, parse_command};
+use super::series_title::series_title;
+use super::url_range::{UrlRangeExpansion, parse_decimal_bounds};
 
 /// 一条解析出的下载条目（aria2 风格：URL + 可选 `out=` / `checksum=` 选项行）。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -88,6 +90,120 @@ pub(crate) fn url_file_segment(url: &str) -> Option<&str> {
         .filter(|segment| !segment.is_empty())
 }
 
+pub(crate) fn suggested_subfolder(base: &str, url: &str, file_name: &str) -> Option<String> {
+    let base = std::path::Path::new(base.trim());
+    if !base.is_absolute() {
+        return None;
+    }
+    let (scheme, rest) = url.split_once(':')?;
+    let magnet = scheme.eq_ignore_ascii_case("magnet");
+    if !magnet
+        && !["http", "https", "ftp", "ftps"]
+            .iter()
+            .any(|s| scheme.eq_ignore_ascii_case(s))
+    {
+        return None;
+    }
+    let decoded;
+    let name = if !file_name.trim().is_empty() {
+        file_name.trim()
+    } else if magnet {
+        let query = rest.strip_prefix('?')?;
+        let query = query.split_once('#').map_or(query, |(query, _)| query);
+        let (_, value) = query
+            .split('&')
+            .filter_map(|part| part.split_once('='))
+            .find(|(key, value)| key.eq_ignore_ascii_case("dn") && !value.is_empty())?;
+        decoded = percent_decode_utf8(&value.replace('+', " "))?;
+        decoded.as_str()
+    } else {
+        decoded = percent_decode_utf8(url_file_segment(url)?)?;
+        decoded.as_str()
+    };
+    if name.ends_with([' ', '.'])
+        || name
+            .chars()
+            .any(|ch| ch.is_control() || "/\\:<>\"|?*".contains(ch))
+    {
+        return None;
+    }
+    let name = name.trim_start();
+    let stem = series_title(name).unwrap_or_else(|| {
+        if magnet {
+            name
+        } else {
+            subfolder_file_stem(name)
+        }
+    });
+    let device = stem.split('.').next()?.trim_end();
+    if stem.is_empty()
+        || stem.starts_with('.')
+        || stem.ends_with('.')
+        || stem.len() > 255
+        || ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
+            .iter()
+            .any(|reserved| device.eq_ignore_ascii_case(reserved))
+        || device.get(..3).is_some_and(|prefix| {
+            (prefix.eq_ignore_ascii_case("COM") || prefix.eq_ignore_ascii_case("LPT"))
+                && matches!(
+                    device.get(3..),
+                    Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³")
+                )
+        })
+    {
+        return None;
+    }
+    base.join(stem).to_str().map(str::to_owned)
+}
+
+fn subfolder_file_stem(name: &str) -> &str {
+    let Some((stem, extension)) = name.rsplit_once('.') else {
+        return name;
+    };
+    if ["gz", "bz2", "xz", "zst"]
+        .iter()
+        .any(|suffix| extension.eq_ignore_ascii_case(suffix))
+        && let Some((archive, suffix)) = stem.rsplit_once('.')
+        && suffix.eq_ignore_ascii_case("tar")
+    {
+        return archive;
+    }
+    if extension.len() <= 8
+        && extension.bytes().all(|b| b.is_ascii_alphanumeric())
+        && extension.bytes().any(|b| b.is_ascii_alphabetic())
+    {
+        stem.trim_end()
+    } else {
+        name
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum SubfolderError {
+    Occupied,
+    BrokenLink,
+    Io(std::io::Error),
+}
+
+pub(crate) fn check_subfolder(path: &std::path::Path) -> Result<(), SubfolderError> {
+    use std::{fs, io::ErrorKind::NotFound};
+
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_dir() => Ok(()),
+        Err(error) if error.kind() == NotFound => match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.is_symlink() => Err(SubfolderError::BrokenLink),
+            // The directory may have been created between the two lookups.
+            Ok(metadata) if metadata.is_dir() => Ok(()),
+            Ok(_) => Err(SubfolderError::Occupied),
+            // Only a missing entry can be created by the engine when it opens the output.
+            Err(error) if error.kind() == NotFound => Ok(()),
+            Err(error) => Err(SubfolderError::Io(error)),
+        },
+        Ok(_) => Err(SubfolderError::Occupied),
+        Err(error) => Err(SubfolderError::Io(error)),
+    }
+}
+
 /// 解析多行文本为下载条目。
 ///
 /// - 原始行以空格 / Tab 开头且不以链接开头 = 选项行，附着到上一条（`out=` / `checksum=`）；
@@ -110,17 +226,33 @@ pub(crate) struct ParsedInput {
     pub(crate) entries: Vec<UrlEntry>,
     /// 第一条产出了条目的 aria2c 命令的头部信息（其余命令的不采用）；没有时为空。
     pub(crate) hints: RequestHints,
+    pub(crate) ranges: UrlRangeExpansion,
 }
 
 /// 解析规则见 [`parse_entries`]。行首为 `aria2c` 的命令（先合并其续行）按 shell 规则切词，
 /// 提取链接 / `-o` / `--checksum`（#299，详见 [`crate::model::aria2c`]），头部信息随结果
 /// 返回；其余行的行为不变。
 pub(crate) fn parse_input(text: &str, loose: bool) -> ParsedInput {
+    parse_input_impl(text, loose, None)
+}
+
+/// 只展开手动输入的链接行；外部导入和 aria2c 命令里的链接保持字面值。
+pub(crate) fn parse_manual_input(text: &str, literal_urls: &HashSet<String>) -> ParsedInput {
+    parse_input_impl(text, false, Some(literal_urls))
+}
+
+fn parse_input_impl(
+    text: &str,
+    loose: bool,
+    literal_urls: Option<&HashSet<String>>,
+) -> ParsedInput {
     let visible = strip_invisible(text);
     let text = join_continuations(&visible);
     let mut entries = Vec::new();
     let mut hints: Option<RequestHints> = None;
     let mut current: Option<UrlEntry> = None;
+    let mut current_manual = false;
+    let mut ranges = UrlRangeExpansion::default();
     for line in text.split('\n') {
         if (line.starts_with(' ') || line.starts_with('\t')) && !starts_with_link(line.trim()) {
             let Some(entry) = current.as_mut() else {
@@ -139,8 +271,12 @@ pub(crate) fn parse_input(text: &str, loose: bool) -> ParsedInput {
             continue;
         }
         if let Some(entry) = current.take() {
-            entries.push(entry);
+            ranges.push(&mut entries, entry, current_manual);
+            if ranges.limit_exceeded {
+                break;
+            }
         }
+        current_manual = false;
         if let Some(command) = parse_command(trimmed) {
             let mut produced = command.entries;
             if !produced.is_empty() && hints.is_none() {
@@ -164,14 +300,19 @@ pub(crate) fn parse_input(text: &str, loose: bool) -> ParsedInput {
             }
         } else if let Some(url) = leading_manual_url(trimmed) {
             current = Some(UrlEntry::with_url(url));
+            current_manual = literal_urls.is_some_and(|urls| !urls.contains(url));
         }
     }
     if let Some(entry) = current {
-        entries.push(entry);
+        ranges.push(&mut entries, entry, current_manual);
+    }
+    if literal_urls.is_some() {
+        ranges.deduplicate(&mut entries);
     }
     ParsedInput {
         entries,
         hints: hints.unwrap_or_default(),
+        ranges,
     }
 }
 
@@ -242,12 +383,21 @@ fn find_url(line: &str) -> Option<&str> {
 
 /// 去掉 URL 末尾常见标点（TXT 文本中 URL 后可能跟随句号 / 逗号等）。
 fn trim_url_tail(url: &str) -> &str {
-    url.trim_end_matches(|c: char| ".,;:!?()[]{}".contains(c))
+    let trimmed = url.trim_end_matches(|c: char| ".,;:!?()[]{}".contains(c));
+    // 数字范围的闭括号属于链接，而不是链接之后的正文标点。
+    if url.as_bytes().get(trimmed.len()) == Some(&b']')
+        && trimmed
+            .rsplit_once('[')
+            .is_some_and(|(_, bounds)| parse_decimal_bounds(bounds).is_some())
+    {
+        return url.get(..trimmed.len() + 1).unwrap_or(trimmed);
+    }
+    trimmed
 }
 
 /// 条目 → aria2 风格文本（含 `out=` / `checksum=` 选项行）。
-pub(crate) fn entry_to_text(entry: &UrlEntry) -> String {
-    let mut text = entry.url.clone();
+fn push_entry_text(text: &mut String, entry: &UrlEntry) {
+    text.push_str(&entry.url);
     if !entry.file_name.is_empty() {
         text.push_str("\n  out=");
         text.push_str(&entry.file_name);
@@ -256,14 +406,13 @@ pub(crate) fn entry_to_text(entry: &UrlEntry) -> String {
         text.push_str("\n  checksum=");
         text.push_str(&entry.checksum);
     }
-    text
 }
 
-/// 把条目追加到现有文本末尾：原文逐字保留（含注释 / 尚未输完的行 / aria2c 命令），已存在
-/// 的 URL 跳过。用于外部捕获与 TXT 导入陆续进入正在编辑的表单。
+/// 追加外部条目并记住新加入的潜在模板：已有文本原样保留，重复 URL 跳过。
 pub(crate) fn append_entries(
     existing_text: &str,
     entries: impl IntoIterator<Item = UrlEntry>,
+    literal_urls: &mut HashSet<String>,
 ) -> String {
     let mut seen = parse_entries(existing_text, false)
         .into_iter()
@@ -271,15 +420,31 @@ pub(crate) fn append_entries(
         .collect::<HashSet<_>>();
     let mut text = existing_text.trim_end().to_owned();
     for entry in entries {
-        if !seen.insert(entry.url.clone()) {
+        if seen.contains(&entry.url) {
             continue;
         }
         if !text.is_empty() {
             text.push('\n');
         }
-        text.push_str(&entry_to_text(&entry));
+        push_entry_text(&mut text, &entry);
+        if entry.url.contains('[') && !literal_urls.contains(&entry.url) {
+            literal_urls.insert(entry.url.clone());
+        }
+        seen.insert(entry.url);
     }
     text
+}
+
+/// 删除了外部链接行后，再手动输入同一链接时允许展开。
+pub(crate) fn retain_literal_urls(text: &str, literal_urls: &mut HashSet<String>) {
+    if literal_urls.is_empty() {
+        return;
+    }
+    let present: HashSet<_> = parse_entries(text, false)
+        .into_iter()
+        .map(|entry| entry.url)
+        .collect();
+    literal_urls.retain(|url| present.contains(url));
 }
 
 /// 强制直连哨兵值。
@@ -601,7 +766,7 @@ pub(crate) fn build_requests(entries: &[UrlEntry], options: &DraftOptions) -> Bu
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::{BTreeMap, HashMap, HashSet};
 
     use fluxdown_protocol::PendingCaptureDto;
 
@@ -610,6 +775,106 @@ mod tests {
         capture_entry, captured_referrer, checksum_spec, custom_segments, detect_ua_preset,
         manual_proxy_url, parse_entries, parse_input,
     };
+
+    #[test]
+    fn suggested_subfolder_uses_the_current_root_and_preserves_dotted_titles() {
+        let base = std::env::temp_dir().join("分类 Videos");
+        let root = base.to_str().expect("UTF-8 root");
+        for (url, name) in [
+            (
+                "https://example.org/%E8%A7%86%E9%A2%91.mkv?token=secret",
+                "视频",
+            ),
+            ("https://example.org/Show.Name.2024", "Show.Name.2024"),
+            ("https://example.org/Archive.tar.gz", "Archive"),
+            (
+                "magnet:?xt=urn:btih:abc&dn=Show.Name.2024",
+                "Show.Name.2024",
+            ),
+            ("magnet:?dn=Show+A%2BB#fragment", "Show A+B"),
+            ("https://example.org/Show.S01E02.mkv", "Show"),
+            ("magnet:?dn=Show.S01E100.1080p", "Show"),
+            ("magnet:?dn=%5BGroup%5D+Show+-+05+%5B1080p%5D", "Show"),
+            (
+                "https://example.org/Show%20-%2005.mkv.pt_BR.forced.srt",
+                "Show",
+            ),
+            (
+                "https://example.org/Report%20-%2012%20Months.pdf",
+                "Report - 12 Months",
+            ),
+        ] {
+            assert_eq!(
+                super::suggested_subfolder(root, url, "").as_deref(),
+                base.join(name).to_str(),
+                "{url}"
+            );
+        }
+        assert_eq!(
+            super::suggested_subfolder(root, "https://example.org/get", "Renamed.mp4").as_deref(),
+            base.join("Renamed").to_str()
+        );
+        for url in [
+            "https://example.org/..",
+            "https://example.org/a%2Fb.mkv",
+            "https://example.org/a%5Cb.mkv",
+            "https://example.org/NUL.mkv",
+            "https://example.org/COM%C2%B9.mkv",
+            "https://example.org/CON.S01E02.mp4",
+            "https://example.org/",
+            "magnet:?xt=urn:btih:abc",
+            "magnet:?dn=%2E%2E%2Fescape",
+        ] {
+            assert_eq!(super::suggested_subfolder(root, url, ""), None, "{url}");
+        }
+    }
+
+    #[test]
+    fn subfolder_check_distinguishes_directories_and_files() -> std::io::Result<()> {
+        use super::{SubfolderError, check_subfolder};
+        use std::{fs, io, time::SystemTime};
+
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_err(io::Error::other)?
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("fluxdown-subfolder-{}-{nonce}", std::process::id()));
+        fs::create_dir(&root)?;
+        let result = (|| {
+            let child = root.join("Movie");
+            check_subfolder(&child).expect("missing subfolder can be created");
+            fs::create_dir(&child)?;
+            check_subfolder(&child).expect("existing subfolder can be reused");
+            let file = root.join("occupied");
+            fs::write(&file, [])?;
+            assert!(matches!(
+                check_subfolder(&file),
+                Err(SubfolderError::Occupied)
+            ));
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::symlink;
+                let linked_dir = root.join("linked-dir");
+                symlink(&child, &linked_dir)?;
+                check_subfolder(&linked_dir).expect("linked subfolder can be reused");
+                let linked_file = root.join("linked-file");
+                symlink(&file, &linked_file)?;
+                assert!(matches!(
+                    check_subfolder(&linked_file),
+                    Err(SubfolderError::Occupied)
+                ));
+                fs::remove_dir(&child)?;
+                assert!(matches!(
+                    check_subfolder(&linked_dir),
+                    Err(SubfolderError::BrokenLink)
+                ));
+            }
+            Ok(())
+        })();
+        let cleanup = fs::remove_dir_all(&root);
+        result.and(cleanup)
+    }
 
     fn capture(url: &str, referrer: &str) -> PendingCaptureDto {
         PendingCaptureDto {
@@ -718,6 +983,7 @@ mod tests {
                     ..UrlEntry::default()
                 },
             ],
+            &mut HashSet::new(),
         );
         assert_eq!(
             text,
@@ -730,7 +996,8 @@ mod tests {
                 [UrlEntry {
                     url: "https://c.example/x".to_owned(),
                     ..UrlEntry::default()
-                }]
+                }],
+                &mut HashSet::new(),
             ),
             "https://c.example/x"
         );
@@ -897,6 +1164,7 @@ mod tests {
                     checksum: "md5=ff".to_owned(),
                 },
             ],
+            &mut HashSet::new(),
         );
         assert_eq!(
             merged,
@@ -918,7 +1186,7 @@ mod tests {
                 ..UrlEntry::default()
             },
         ];
-        let text = append_entries(existing, imported);
+        let text = append_entries(existing, imported, &mut HashSet::new());
         assert_eq!(text, format!("{existing}\nhttps://b.example/b.zip"));
         let parsed = parse_input(&text, false);
         assert_eq!(parsed.hints.cookie, "sid=abc");

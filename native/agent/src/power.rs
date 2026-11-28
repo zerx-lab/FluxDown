@@ -1,6 +1,7 @@
-//! 定时关机 / 睡眠：排定时有任务（活跃 / 排队 / 待重试）就等全部完成后再倒计时，没有任务则
-//! 立即倒计时；倒计时中若又出现任务则取消倒计时回到 armed（不完全解除），任务再次清空后重新
-//! 计时。到点执行平台关机或睡眠命令。
+//! 定时关机 / 睡眠 / 退出：等待活跃、排队、待重试及本地收尾工作清空后再倒计时。
+//! 没有任务则立即倒计时；若出现新任务则回到 armed，任务再次清空后重新计时。
+//! daemon 断连时重置倒计时，恢复连接并确认没有待完成的任务后才重新计时。
+//! 关机 / 睡眠也支持低速条件：速度恢复、工作清空、断连或本地收尾会重置计时，达标后留 30 秒取消。
 //!
 //! 状态机归 agent：关闭全部 UI（托盘驻留）后仍需按时执行。UI 只经 `agent.power.*`
 //! 发请求、经 `AgentEvent::PowerChanged` 渲染。
@@ -10,10 +11,15 @@ use std::process::{Command, ExitStatus};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
-use fluxdown_protocol::{AgentEvent, DaemonRuntimeStatsDto, PowerAction, PowerStatusDto};
+use fluxdown_protocol::{
+    AgentEvent, AgentSnapshot, DaemonEvent, DaemonRuntimeStatsDto, POWER_LOW_SPEED_WARNING_SECS,
+    PowerAction, PowerLowSpeedCondition, PowerStatusDto, ServiceEvent,
+};
+use tokio::sync::broadcast::error::RecvError;
 use tokio_util::sync::CancellationToken;
 
 use crate::event_hub::AgentEventHub;
+use crate::lifecycle::Lifecycle;
 
 /// 状态刷新 / 到点检查间隔。
 const TICK: Duration = Duration::from_secs(1);
@@ -28,6 +34,7 @@ const MONOTONIC_COUNTS_SLEEP: bool = cfg!(windows);
 pub struct PowerService {
     state: Mutex<PowerState>,
     events: AgentEventHub,
+    quit_lifecycle: Option<Arc<Lifecycle>>,
 }
 
 impl PowerService {
@@ -36,17 +43,47 @@ impl PowerService {
         Self {
             state: Mutex::new(PowerState::new()),
             events,
+            quit_lifecycle: None,
         }
     }
 
-    /// 排定 `action`：有任务时全部完成后再等 `delay`，没有任务时立即开始 `delay` 倒计时。
-    /// 没有任务却要求「完成后立即」（`delay = 0`）时拒绝并返回 `false`，避免误点即刻关机。
+    /// 仅桌面独立宿主允许排定完全退出。
+    #[must_use]
+    pub fn with_quit(mut self, lifecycle: Arc<Lifecycle>) -> Self {
+        self.quit_lifecycle = Some(lifecycle);
+        self
+    }
+
+    /// 排定 `action`：daemon 已连接且无任务时立即倒计时，否则等待确认任务清空。
+    /// 只有已连接且有任务时接受零延迟；非桌面宿主拒绝排定退出。
     pub fn arm(&self, delay: Duration, action: PowerAction) -> bool {
-        let (active, pending) = self
-            .events
-            .inspect(|snapshot| work_counts(&snapshot.daemon.runtime_stats));
-        let has_work = active > 0 || pending > 0;
-        let accepted = self.lock().arm(delay, action, has_work, Instant::now());
+        if action == PowerAction::Quit && self.quit_lifecycle.is_none() {
+            return false;
+        }
+        let observation = self.events.inspect(PowerObservation::from_snapshot);
+        let has_work = observation.has_unfinished_work();
+        if delay.is_zero() && !observation.connected {
+            return false;
+        }
+        let accepted = self.lock().arm(
+            delay,
+            action,
+            has_work || !observation.connected,
+            Instant::now(),
+        );
+        self.publish();
+        accepted
+    }
+
+    /// Arm a one-shot low-speed action only with known daemon statistics and download work.
+    pub fn arm_low_speed(&self, condition: PowerLowSpeedCondition, action: PowerAction) -> bool {
+        if action == PowerAction::Quit {
+            return false;
+        }
+        let observation = self.events.inspect(PowerObservation::from_snapshot);
+        let accepted = self
+            .lock()
+            .arm_low_speed(condition, action, observation, Instant::now());
         self.publish();
         accepted
     }
@@ -59,16 +96,38 @@ impl PowerService {
 
     pub async fn run(self: Arc<Self>, cancel: CancellationToken) {
         let mut interval = tokio::time::interval(TICK);
+        let mut events = self.events.subscribe();
         // 同时记墙钟与 Instant：进程 / 定时器被停顿或延后（macOS App Nap 等）时两者同步前进，
         // 只有系统挂起才让墙钟领先 Instant，据此区分「睡过」与「被延后」。
         let mut last_wall = SystemTime::now();
         let mut last_mono = Instant::now();
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            tokio::select! {
+            let (tick, stats) = tokio::select! {
                 _ = cancel.cancelled() => return,
-                _ = interval.tick() => {}
-            }
+                event = events.recv() => match event {
+                    Ok(frame) => match &frame.event {
+                        ServiceEvent::Agent(AgentEvent::Daemon(DaemonEvent::RuntimeStatsChanged(stats))) => {
+                            let mut observation = PowerObservation::default();
+                            observation.update_stats(stats);
+                            (false, Some(observation))
+                        }
+                        ServiceEvent::Agent(AgentEvent::DaemonConnectionChanged(_)
+                            | AgentEvent::DaemonSnapshotReplaced(_)) => {
+                            self.lock().reset_observations();
+                            (false, None)
+                        }
+                        _ => continue,
+                    },
+                    Err(RecvError::Lagged(skipped)) => {
+                        tracing::warn!(skipped, "power monitor lost observations; resetting countdown");
+                        self.lock().reset_observations();
+                        (false, None)
+                    }
+                    Err(RecvError::Closed) => return,
+                },
+                _ = interval.tick() => (true, None),
+            };
             // 必须先于 advance：唤醒后第一个 tick 若恰好无任务，会直接到点执行。
             let wall_now = SystemTime::now();
             let mono_now = Instant::now();
@@ -86,13 +145,60 @@ impl PowerService {
                 );
                 self.publish();
             }
-            let (active, pending) = self
-                .events
-                .inspect(|snapshot| work_counts(&snapshot.daemon.runtime_stats));
-            let fired = self.lock().advance(active, pending, Instant::now());
+            let observation = self.events.inspect(PowerObservation::from_snapshot);
+            let fired = {
+                let mut state = self.lock();
+                if state.low_speed.is_some() {
+                    if let Some(mut previous) = stats {
+                        previous.connected = observation.connected;
+                        if state
+                            .low_speed
+                            .is_some_and(|condition| !previous.qualifies(condition))
+                        {
+                            state.reset_low_speed();
+                        }
+                    }
+                    state.advance_low_speed(observation, mono_now)
+                } else if tick {
+                    // Preserve completion-mode cadence; terminal frames may precede retry scheduling.
+                    state.advance(observation, mono_now)
+                } else {
+                    None
+                }
+            };
             self.publish();
             if let Some(action) = fired {
-                tokio::task::spawn_blocking(move || execute(action));
+                self.execute(action);
+            }
+        }
+    }
+
+    fn execute(&self, action: PowerAction) {
+        if std::env::var_os("FLUXDOWN_SHUTDOWN_DRY_RUN").is_some() {
+            tracing::warn!(?action, "power dry-run: would run the scheduled action now");
+            return;
+        }
+        tracing::info!(?action, "scheduled power action is due");
+        match action {
+            PowerAction::Quit => {
+                if let Some(lifecycle) = &self.quit_lifecycle {
+                    lifecycle.request_quit();
+                }
+            }
+            #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+            PowerAction::Shutdown => {
+                tokio::task::spawn_blocking(move || execute_system(action, power_off));
+            }
+            #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+            PowerAction::Sleep => {
+                tokio::task::spawn_blocking(move || execute_system(action, suspend));
+            }
+            #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+            PowerAction::Shutdown | PowerAction::Sleep => {
+                tracing::warn!(
+                    ?action,
+                    "scheduled power actions are not supported on this platform"
+                );
             }
         }
     }
@@ -117,10 +223,57 @@ struct Armed {
     action: PowerAction,
 }
 
-/// 定时关机 / 睡眠的纯状态机：`Instant` 由调用方传入，便于单测构造固定时钟。
+/// Constant-size facts; never scan or clone the task table on a timer.
+#[derive(Clone, Copy, Default)]
+struct PowerObservation {
+    connected: bool,
+    active: u32,
+    waiting: u32,
+    retry_waiting: u32,
+    download_bps: i64,
+    local_work_count: Option<u32>,
+}
+
+impl PowerObservation {
+    fn from_snapshot(snapshot: &AgentSnapshot) -> Self {
+        let mut observation = Self {
+            connected: snapshot.daemon_connected,
+            ..Self::default()
+        };
+        observation.update_stats(&snapshot.daemon.runtime_stats);
+        observation
+    }
+
+    fn update_stats(&mut self, stats: &DaemonRuntimeStatsDto) {
+        (self.active, self.waiting) = work_counts(stats);
+        self.retry_waiting = stats.retry_pending_tasks;
+        self.download_bps = stats.total_download_bps;
+        self.local_work_count = stats.local_work_count;
+    }
+
+    fn has_work(self) -> bool {
+        // A queued task alone may belong to a manually paused queue, not a running session.
+        self.active > 0 || self.retry_waiting > 0
+    }
+
+    fn has_unfinished_work(self) -> bool {
+        self.active > 0 || self.waiting > 0 || self.local_work_count.is_some_and(|n| n > 0)
+    }
+
+    fn qualifies(self, condition: PowerLowSpeedCondition) -> bool {
+        self.connected
+            && self.has_work()
+            && self.local_work_count == Some(0)
+            && u64::try_from(self.download_bps).is_ok_and(|speed| speed < condition.threshold_bps)
+    }
+}
+
+/// 定时电源动作的纯状态机：`Instant` 由调用方传入，便于单测构造固定时钟。
 struct PowerState {
     armed: Option<Armed>,
     countdown_until: Option<Instant>,
+    low_speed: Option<PowerLowSpeedCondition>,
+    low_since: Option<Instant>,
 }
 
 impl PowerState {
@@ -128,6 +281,8 @@ impl PowerState {
         Self {
             armed: None,
             countdown_until: None,
+            low_speed: None,
+            low_since: None,
         }
     }
 
@@ -136,33 +291,90 @@ impl PowerState {
         if delay.is_zero() && !has_work {
             return false;
         }
+        self.low_speed = None;
+        self.low_since = None;
         self.armed = Some(Armed { delay, action });
         self.countdown_until = (!has_work).then(|| now + delay);
         true
     }
 
-    fn disarm(&mut self) {
-        self.armed = None;
+    fn arm_low_speed(
+        &mut self,
+        condition: PowerLowSpeedCondition,
+        action: PowerAction,
+        observation: PowerObservation,
+        now: Instant,
+    ) -> bool {
+        if !(1..=1024 * 1024 * 1024).contains(&condition.threshold_bps)
+            || !(60..=86400).contains(&condition.duration_secs)
+            || !observation.connected
+            || observation.local_work_count.is_none()
+            || !observation.has_work()
+        {
+            return false;
+        }
+        self.arm(
+            Duration::from_secs(POWER_LOW_SPEED_WARNING_SECS),
+            action,
+            true,
+            now,
+        );
+        self.low_speed = Some(condition);
+        // The first qualifying observation starts the interval; prior low-speed time never counts.
+        self.low_since = observation.qualifies(condition).then_some(now);
+        true
+    }
+
+    fn reset_low_speed(&mut self) {
+        if self.low_speed.is_some() {
+            self.reset_observations();
+        }
+    }
+
+    fn reset_observations(&mut self) {
+        self.low_since = None;
         self.countdown_until = None;
     }
 
-    /// 按当前任务计数与时钟推进一次；到点时返回要执行的操作（armed 状态已复位）。
-    fn advance(
+    fn advance_low_speed(
         &mut self,
-        active_tasks: u32,
-        pending_tasks: u32,
+        observation: PowerObservation,
         now: Instant,
     ) -> Option<PowerAction> {
-        let armed = self.armed?;
-        if active_tasks == 0 && pending_tasks == 0 {
-            if self.countdown_until.is_none() {
-                self.countdown_until = Some(now + armed.delay);
-            }
-        } else {
-            // 倒计时中又出现活跃 / 等待任务：取消倒计时，回到 armed（不完全解除）。
-            self.countdown_until = None;
+        let condition = self.low_speed?;
+        if !observation.qualifies(condition) {
+            self.reset_low_speed();
+            return None;
         }
-        let until = self.countdown_until?;
+        let since = *self.low_since.get_or_insert(now);
+        if now.saturating_duration_since(since).as_secs() < condition.duration_secs {
+            return None;
+        }
+        // Start a fresh visible warning, even if the monitor was stalled past the threshold.
+        let armed = self.armed?;
+        let until = *self.countdown_until.get_or_insert(now + armed.delay);
+        if now < until {
+            return None;
+        }
+        self.disarm();
+        Some(armed.action)
+    }
+
+    fn disarm(&mut self) {
+        self.armed = None;
+        self.countdown_until = None;
+        self.low_speed = None;
+        self.low_since = None;
+    }
+
+    /// 到点前须确认 daemon 在线且没有待完成任务；否则回到 armed，保留排定操作。
+    fn advance(&mut self, observation: PowerObservation, now: Instant) -> Option<PowerAction> {
+        let armed = self.armed?;
+        if !observation.connected || observation.has_unfinished_work() {
+            self.countdown_until = None;
+            return None;
+        }
+        let until = *self.countdown_until.get_or_insert(now + armed.delay);
         if now < until {
             return None;
         }
@@ -189,6 +401,10 @@ impl PowerState {
                 .countdown_until
                 .map(|until| until.saturating_duration_since(now).as_secs()),
             action: self.armed.map(|armed| armed.action).unwrap_or_default(),
+            low_speed: self.low_speed,
+            low_speed_elapsed_secs: self
+                .low_since
+                .map(|since| now.saturating_duration_since(since).as_secs()),
         }
     }
 }
@@ -220,19 +436,10 @@ fn work_counts(stats: &DaemonRuntimeStatsDto) -> (u32, u32) {
     )
 }
 
-/// 执行平台电源操作；`FLUXDOWN_SHUTDOWN_DRY_RUN` 设置时只记日志，便于 QA 验证不真的关机 / 睡眠。
+/// 执行并记录平台电源请求的结果。
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
-fn execute(action: PowerAction) {
-    if std::env::var_os("FLUXDOWN_SHUTDOWN_DRY_RUN").is_some() {
-        tracing::warn!(?action, "power dry-run: would run the scheduled action now");
-        return;
-    }
-    tracing::info!(?action, "scheduled power action is due");
-    let result = match action {
-        PowerAction::Shutdown => power_off(),
-        PowerAction::Sleep => suspend(),
-    };
-    match result {
+fn execute_system(action: PowerAction, command: fn() -> std::io::Result<ExitStatus>) {
+    match command() {
         Ok(status) if status.success() => tracing::info!(?action, "power request accepted"),
         Ok(status) => tracing::error!(%status, ?action, "power request failed"),
         Err(error) => tracing::error!(%error, ?action, "could not run power command"),
@@ -303,20 +510,24 @@ fn logind(verb: &str) -> std::io::Result<ExitStatus> {
     Command::new("loginctl").arg(verb).status()
 }
 
-/// Android / iOS 的应用不能关机或睡眠：宿主不应暴露该功能，误调用时只记录。
-#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
-fn execute(action: PowerAction) {
-    tracing::warn!(
-        ?action,
-        "scheduled power actions are not supported on this platform"
-    );
-}
+#[cfg(test)]
+#[path = "power/low_speed_tests.rs"]
+mod low_speed_tests;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const SHUTDOWN: PowerAction = PowerAction::Shutdown;
+
+    fn connected(active: u32, waiting: u32) -> PowerObservation {
+        PowerObservation {
+            connected: true,
+            active,
+            waiting,
+            ..PowerObservation::default()
+        }
+    }
 
     #[test]
     fn immediate_needs_work_but_timer_does_not() {
@@ -337,9 +548,12 @@ mod tests {
         let mut state = PowerState::new();
         let now = Instant::now();
         state.arm(Duration::from_secs(60), PowerAction::Sleep, false, now);
-        assert_eq!(state.advance(0, 0, now + Duration::from_secs(59)), None);
         assert_eq!(
-            state.advance(0, 0, now + Duration::from_secs(60)),
+            state.advance(connected(0, 0), now + Duration::from_secs(59)),
+            None
+        );
+        assert_eq!(
+            state.advance(connected(0, 0), now + Duration::from_secs(60)),
             Some(PowerAction::Sleep)
         );
         assert_eq!(state.status(now), PowerStatusDto::default());
@@ -350,11 +564,11 @@ mod tests {
         let mut state = PowerState::new();
         let now = Instant::now();
         assert!(state.arm(Duration::from_secs(60), SHUTDOWN, true, now));
-        assert_eq!(state.advance(1, 0, now), None);
+        assert_eq!(state.advance(connected(1, 0), now), None);
         assert_eq!(state.status(now).countdown_remaining_secs, None);
-        assert_eq!(state.advance(0, 1, now), None);
+        assert_eq!(state.advance(connected(0, 1), now), None);
         assert_eq!(state.status(now).countdown_remaining_secs, None);
-        assert_eq!(state.advance(0, 0, now), None);
+        assert_eq!(state.advance(connected(0, 0), now), None);
         assert_eq!(state.status(now).countdown_remaining_secs, Some(60));
     }
 
@@ -364,12 +578,12 @@ mod tests {
         let now = Instant::now();
         state.arm(Duration::from_secs(60), SHUTDOWN, false, now);
         let later = now + Duration::from_secs(30);
-        assert_eq!(state.advance(1, 0, later), None);
+        assert_eq!(state.advance(connected(1, 0), later), None);
         let status = state.status(later);
         assert_eq!(status.countdown_remaining_secs, None);
         assert_eq!(status.armed_delay_secs, Some(60));
         // 任务结束后按完整延迟重新计时，不沿用被打断前的剩余时间。
-        assert_eq!(state.advance(0, 0, later), None);
+        assert_eq!(state.advance(connected(0, 0), later), None);
         assert_eq!(state.status(later).countdown_remaining_secs, Some(60));
     }
 
@@ -378,13 +592,19 @@ mod tests {
         let mut state = PowerState::new();
         let now = Instant::now();
         state.arm(Duration::from_secs(5), SHUTDOWN, true, now);
-        state.advance(0, 0, now);
-        assert_eq!(state.advance(0, 0, now + Duration::from_secs(4)), None);
+        state.advance(connected(0, 0), now);
         assert_eq!(
-            state.advance(0, 0, now + Duration::from_secs(5)),
+            state.advance(connected(0, 0), now + Duration::from_secs(4)),
+            None
+        );
+        assert_eq!(
+            state.advance(connected(0, 0), now + Duration::from_secs(5)),
             Some(SHUTDOWN)
         );
-        assert_eq!(state.advance(0, 0, now + Duration::from_secs(6)), None);
+        assert_eq!(
+            state.advance(connected(0, 0), now + Duration::from_secs(6)),
+            None
+        );
         assert_eq!(
             state.status(now + Duration::from_secs(6)),
             PowerStatusDto::default()
@@ -392,11 +612,121 @@ mod tests {
     }
 
     #[test]
-    fn zero_delay_fires_on_first_idle_tick() {
+    fn zero_delay_fires_on_first_connected_idle_tick() {
+        let now = Instant::now();
+        for action in [PowerAction::Sleep, PowerAction::Quit] {
+            let mut state = PowerState::new();
+            assert!(state.arm(Duration::ZERO, action, true, now));
+            assert_eq!(state.advance(PowerObservation::default(), now), None);
+            assert_eq!(state.status(now).countdown_remaining_secs, None);
+            assert_eq!(state.advance(connected(0, 0), now), Some(action));
+        }
+    }
+
+    #[test]
+    fn local_finalization_prevents_quit_and_resets_countdown() {
         let mut state = PowerState::new();
         let now = Instant::now();
-        state.arm(Duration::ZERO, PowerAction::Sleep, true, now);
-        assert_eq!(state.advance(0, 0, now), Some(PowerAction::Sleep));
+        let delay = Duration::from_secs(5);
+        let finalizing = PowerObservation {
+            local_work_count: Some(1),
+            ..connected(0, 0)
+        };
+        assert!(state.arm(delay, PowerAction::Quit, false, now));
+        assert_eq!(state.advance(finalizing, now + delay), None);
+        assert_eq!(state.status(now + delay).countdown_remaining_secs, None);
+        assert_eq!(state.advance(finalizing, now + delay * 2), None);
+
+        let finalized = PowerObservation {
+            local_work_count: Some(0),
+            ..connected(0, 0)
+        };
+        assert_eq!(state.advance(finalized, now + delay * 2), None);
+        assert_eq!(
+            state.advance(finalized, now + delay * 3),
+            Some(PowerAction::Quit)
+        );
+    }
+
+    #[test]
+    fn local_work_alone_allows_immediate_completion_mode_to_arm() {
+        let mut snapshot = AgentSnapshot {
+            daemon_connected: true,
+            ..AgentSnapshot::default()
+        };
+        snapshot.daemon.runtime_stats.local_work_count = Some(1);
+        let events = AgentEventHub::new(snapshot);
+        let service = PowerService::new(events.clone());
+        assert!(service.arm(Duration::ZERO, PowerAction::Sleep));
+        let power = events.inspect(|snapshot| snapshot.power);
+        assert_eq!(power.armed_delay_secs, Some(0));
+        assert_eq!(power.countdown_remaining_secs, None);
+    }
+
+    #[test]
+    fn daemon_disconnect_resets_a_running_quit_countdown() {
+        let mut state = PowerState::new();
+        let now = Instant::now();
+        let delay = Duration::from_secs(5);
+        assert!(state.arm(delay, PowerAction::Quit, false, now));
+        let disconnected = now + delay;
+        assert_eq!(
+            state.advance(PowerObservation::default(), disconnected),
+            None
+        );
+        let status = state.status(disconnected);
+        assert_eq!(status.armed_delay_secs, Some(delay.as_secs()));
+        assert_eq!(status.countdown_remaining_secs, None);
+
+        let reconnected = disconnected + delay;
+        assert_eq!(state.advance(connected(0, 0), reconnected), None);
+        assert_eq!(
+            state.status(reconnected).countdown_remaining_secs,
+            Some(delay.as_secs())
+        );
+        assert_eq!(
+            state.advance(connected(0, 0), reconnected + delay),
+            Some(PowerAction::Quit)
+        );
+    }
+
+    #[test]
+    fn quit_cannot_replace_a_plan_on_a_host_without_desktop_lifecycle() {
+        let events = AgentEventHub::new(AgentSnapshot {
+            daemon_connected: true,
+            ..AgentSnapshot::default()
+        });
+        let service = PowerService::new(events.clone());
+        assert!(service.arm(Duration::from_secs(60), PowerAction::Sleep));
+        assert!(!service.arm(Duration::from_secs(60), PowerAction::Quit));
+        let power = events.inspect(|snapshot| snapshot.power);
+        assert_eq!(power.action, PowerAction::Sleep);
+        assert_eq!(power.armed_delay_secs, Some(60));
+    }
+
+    #[test]
+    fn quit_cannot_be_armed_by_a_low_speed_condition() {
+        let mut snapshot = AgentSnapshot {
+            daemon_connected: true,
+            ..AgentSnapshot::default()
+        };
+        snapshot.daemon.runtime_stats = DaemonRuntimeStatsDto {
+            active_tasks: 1,
+            local_work_count: Some(0),
+            ..DaemonRuntimeStatsDto::default()
+        };
+        let events = AgentEventHub::new(snapshot);
+        let service = PowerService::new(events.clone());
+        let condition = PowerLowSpeedCondition {
+            threshold_bps: 1024,
+            duration_secs: 60,
+        };
+        assert!(service.arm_low_speed(condition, PowerAction::Sleep));
+        assert!(!service.arm_low_speed(condition, PowerAction::Quit));
+        assert_eq!(
+            events.inspect(|snapshot| snapshot.power.action),
+            PowerAction::Sleep
+        );
     }
 
     #[test]
@@ -410,12 +740,15 @@ mod tests {
         state.arm(Duration::ZERO, SHUTDOWN, true, now);
         // 最后一个任务在重试间隙：活跃 / 排队都是 0，但仍有重试待定，不得触发关机。
         let (active, waiting) = work_counts(&stats(1));
-        assert_eq!(state.advance(active, waiting, now), None);
+        assert_eq!(state.advance(connected(active, waiting), now), None);
         assert_eq!(state.status(now).countdown_remaining_secs, None);
         // 重试重新派发后任务活跃，仍不关机；全部结束后才到点。
-        assert_eq!(state.advance(1, 0, now), None);
+        assert_eq!(state.advance(connected(1, 0), now), None);
         let (active, waiting) = work_counts(&stats(0));
-        assert_eq!(state.advance(active, waiting, now), Some(SHUTDOWN));
+        assert_eq!(
+            state.advance(connected(active, waiting), now),
+            Some(SHUTDOWN)
+        );
     }
 
     #[test]
@@ -425,7 +758,10 @@ mod tests {
         state.arm(Duration::from_secs(60), SHUTDOWN, false, now);
         state.disarm();
         assert_eq!(state.status(now), PowerStatusDto::default());
-        assert_eq!(state.advance(0, 0, now + Duration::from_secs(120)), None);
+        assert_eq!(
+            state.advance(connected(0, 0), now + Duration::from_secs(120)),
+            None
+        );
     }
 
     #[test]
@@ -437,7 +773,10 @@ mod tests {
         assert!(state.on_suspended(RESUME_GAP));
         assert_eq!(state.status(now), PowerStatusDto::default());
         // 唤醒后任务全部完成也不得再关机。
-        assert_eq!(state.advance(0, 0, now + Duration::from_secs(600)), None);
+        assert_eq!(
+            state.advance(connected(0, 0), now + Duration::from_secs(600)),
+            None
+        );
     }
 
     #[test]

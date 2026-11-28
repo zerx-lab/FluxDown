@@ -68,7 +68,9 @@ impl DownloadManager {
             .lock()
             .await
             .insert(task.task_id.clone(), WorkResult::Pending);
+        let local_work = crate::transfer_activity::LocalWorkGuard::new(self.sink.clone());
         tokio::spawn(async move {
+            let _local_work = local_work;
             let work = async {
                 let root = PathBuf::from(&task.save_dir);
                 let top = task.file_name.clone();
@@ -125,7 +127,10 @@ impl DownloadManager {
                         let sender = self.done_tx.clone();
                         let id = task_id.to_owned();
                         results.lock().await.insert(id.clone(), WorkResult::Pending);
+                        let local_work =
+                            crate::transfer_activity::LocalWorkGuard::new(self.sink.clone());
                         tokio::spawn(async move {
+                            let _local_work = local_work;
                             let result = match std::panic::AssertUnwindSafe(job)
                                 .catch_unwind()
                                 .await
@@ -206,7 +211,6 @@ async fn publish(results: Results, sender: mpsc::Sender<TaskDone>, id: String, r
         TaskDone {
             task_id: id.clone(),
             generation: 0,
-            reserved_temp_path: None,
             phase: TaskDonePhase::BtArchiveWorkReady,
         },
     )

@@ -3,7 +3,7 @@
 import type { TFunction } from '../../../../i18n'
 import { RpcError } from '../../../../lib/rpc'
 import { describeUploadError } from '../../../../lib/rpcErrorText'
-import type { ErrorReason } from '../../../../lib/rpc'
+import type { ErrorReason, PluginFailureDetail } from '../../../../lib/rpc'
 
 const REASON_KEYS: Partial<Record<ErrorReason, string>> = {
   marketUnreachable: 'pluginErrorMarketUnreachable',
@@ -37,5 +37,50 @@ export function extensionErrorText(t: TFunction, error: unknown): string {
       return t('settingsUnsupportedOnPlatform')
     default:
       return t('localServiceActionFailed')
+  }
+}
+
+/** Inline/copyable plugin diagnostics; do not expose generic JS exceptions or daemon messages. */
+export function pluginFailureText(t: TFunction, error: unknown): string {
+  if (!(error instanceof RpcError)) return t('localServiceActionFailed')
+  return pluginDetailText(t, error.data?.pluginDetail) ?? extensionErrorText(t, error)
+}
+
+export function pluginLoadFailureText(t: TFunction, detail?: PluginFailureDetail): string {
+  return pluginDetailText(t, detail) ?? t('pluginDiagnosticLoadFailed')
+}
+
+function pluginDetailText(t: TFunction, detail?: PluginFailureDetail): string | undefined {
+  switch (detail?.kind) {
+    case 'manifestUnreadable':
+      return t('pluginDiagnosticManifestUnreadable')
+    case 'manifestUnknownField':
+      return t('pluginDiagnosticManifestUnknownField')
+    case 'manifestJsonInvalid':
+      return t('pluginDiagnosticManifestJsonInvalid')
+    case 'manifestIdentityInvalid':
+      return t('pluginDiagnosticManifestIdentityInvalid')
+    case 'manifestNameMissing':
+      return t('pluginDiagnosticManifestNameMissing')
+    case 'manifestVersionInvalid':
+      return t('pluginDiagnosticManifestVersionInvalid')
+    case 'manifestMinAppVersionInvalid':
+      return t('pluginDiagnosticManifestMinAppVersionInvalid')
+    case 'manifestUnknownPermission':
+      return t('pluginDiagnosticManifestUnknownPermission')
+    case 'manifestAuthPermissionMissing':
+      return t('pluginDiagnosticManifestAuthPermissionMissing')
+    case 'scriptCompileFailed':
+      return t('pluginDiagnosticScriptCompileFailed')
+    case 'scriptCompileFailedAt':
+      return t('pluginDiagnosticScriptCompileFailedAt', { line: detail.line, column: detail.column })
+    case 'missingFile':
+      return t('pluginDiagnosticMissingFile', { path: detail.path })
+    case 'loadFailed':
+      return t('pluginDiagnosticLoadFailed')
+    case 'notDevPlugin':
+      return t('pluginDiagnosticNotDevPlugin')
+    default:
+      return undefined
   }
 }

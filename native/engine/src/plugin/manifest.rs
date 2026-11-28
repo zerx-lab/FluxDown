@@ -169,7 +169,8 @@ pub struct ResolverDecl {
     #[serde(rename = "match")]
     pub match_decl: ResolverMatchDecl,
     pub entry: String,
-    /// 单次 resolve 超时（毫秒）。可下调宿主预算，不可超 30s 硬顶。
+    /// 单次 resolve 超时（毫秒）。缺省取宿主默认 10s；可上调，超过 120s 硬顶按硬顶裁剪
+    /// （`quickjs::RESOLVE_TIMEOUT_CEILING`；0.6.8 及更早版本的硬顶是 30s）。
     #[serde(default)]
     pub timeout_ms: Option<u64>,
     /// 单次 resolve 的 QuickJS 堆上限（MiB）。缺省取宿主默认 64 MiB；可上调，超过

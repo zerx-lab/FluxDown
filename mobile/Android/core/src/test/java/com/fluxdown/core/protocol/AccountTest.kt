@@ -287,6 +287,8 @@ class AccountTest {
         assertEquals("errReasonPairingTimeout", AccountRules.errorKeyForReason("pairingTimeout", AccountErrorContext.Pairing))
         assertEquals("errReasonPeerClockSkew", AccountRules.errorKeyForReason("peerClockSkew", AccountErrorContext.Pairing))
         assertEquals("localPairingAddressInvalid", key(err(HostErrorCode.InvalidArgument), AccountErrorContext.Pairing))
+        assertEquals("errReasonRemoteTaskGone", AccountRules.errorKeyForReason("remoteTaskGone"))
+        assertEquals("errReasonRemoteTaskGone", key(err(HostErrorCode.NotFound, "remoteTaskGone"), general))
         assertEquals("localServiceDisconnected", key(err(HostErrorCode.Timeout), general))
         // 不可重试的 unavailable 不是「云端网络不通」。
         assertEquals("localServiceDisconnected", key(err(HostErrorCode.Unavailable), AccountErrorContext.Login))

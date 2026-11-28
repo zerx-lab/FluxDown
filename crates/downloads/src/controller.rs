@@ -8,9 +8,9 @@ use std::{
 
 use fluxdown_protocol::{
     AgentEvent, AgentSnapshot, CloudDevice, DaemonEvent, DaemonRuntimeStatsDto, DaemonSnapshot,
-    GroupDto, LinkDeviceInfo, LinkDispatchParams, QueueDto, RemoteCommandParams,
-    RemoteDispatchParams, RemoteTaskDto, ServiceEvent, TaskActivityPage, TaskActivityQuery,
-    TaskDto, TaskRuntimeDto, WsServerMsg,
+    GroupDto, LinkDeviceInfo, LinkDispatchParams, QueueDto, RemoteCommandManyParams,
+    RemoteCommandParams, RemoteDispatchParams, RemoteTaskDto, ServiceEvent, TaskActivityPage,
+    TaskActivityQuery, TaskDto, TaskRuntimeDto, WsServerMsg,
 };
 
 use crate::model::{
@@ -141,6 +141,9 @@ pub enum DownloadsCommand {
     Resume {
         task_id: String,
     },
+    SaveHtmlResponse {
+        task_id: String,
+    },
     Rename {
         task_id: String,
         file_name: String,
@@ -206,6 +209,8 @@ pub enum DownloadsCommand {
     SetBtLimits(fluxdown_protocol::SetTaskBtLimitsParams),
     /// 超级做种开关（`daemon.task.setSuperSeeding`）。
     SetSuperSeeding(fluxdown_protocol::SetTaskSuperSeedingParams),
+    /// Append a BEP 19 source to a BitTorrent task.
+    AddWebSeed(fluxdown_protocol::AddTaskWebSeedParams),
     /// 立即向 tracker 重新汇报（`daemon.task.reannounce`）；不在运行为 `taskStateConflict`。
     Reannounce {
         task_id: String,
@@ -213,6 +218,9 @@ pub enum DownloadsCommand {
     Delete {
         task_id: String,
         delete_files: bool,
+    },
+    ClearTaskFile {
+        task_id: String,
     },
     /// 批量暂停（`daemon.task.pauseMany`）：整批一次 RPC、一次任务快照。
     PauseMany {
@@ -227,6 +235,9 @@ pub enum DownloadsCommand {
         task_ids: Vec<String>,
         delete_files: bool,
     },
+    CleanUnfinished {
+        task_ids: Vec<String>,
+    },
     PauseAll,
     ResumeAll,
     /// 插件重试挂起 → 忽略并按普通任务继续。
@@ -239,6 +250,9 @@ pub enum DownloadsCommand {
     },
     /// 删除（含文件）后按原参数重建。
     Redownload(Box<fluxdown_protocol::CreateTaskRequest>, String),
+    RestartMissingFile {
+        task_id: String,
+    },
     MoveToQueue {
         task_id: String,
         queue_id: String,
@@ -306,12 +320,19 @@ pub enum DownloadsCommand {
     ProbeLink {
         url: String,
     },
+    /// Check for a file by name in the daemon's default download directory.
+    DefaultFileExists {
+        file_name: String,
+    },
     /// 经 FluxCloud 把链接下发到账号内另一台设备（`agent.remote.dispatch`）。
     RemoteDispatch(RemoteDispatchParams),
     /// 下发到局域网已配对设备（`agent.link.dispatch`）。
     LinkDispatch(LinkDispatchParams),
     /// 远程任务控制（`agent.remote.command`）。
     RemoteCommand(RemoteCommandParams),
+    /// 批量远程任务控制（`agent.remote.commandMany`）：同一动作作用于多条远程任务（每批至多
+    /// `REMOTE_COMMAND_MANY_MAX` 个）。任一条失败即以首个失败的错误作为命令结果。
+    RemoteCommandMany(RemoteCommandManyParams),
     OpenTask {
         task_id: String,
     },
@@ -373,6 +394,8 @@ impl DownloadsCommand {
 
 pub enum DownloadsResult {
     Unit,
+    /// 实际移除的未完成任务数，不含跳过项。
+    CleanedUnfinished(usize),
     Value(serde_json::Value),
     TaskEditInfo(Box<fluxdown_protocol::TaskEditSnapshot>),
     TaskActivity(TaskActivityPage),

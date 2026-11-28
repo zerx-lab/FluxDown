@@ -443,7 +443,7 @@
           "groups"
         ],
         "summary": "创建任务组",
-        "description": "根据文件清单创建任务组及其子任务，成功后返回任务组 ID。\n`items` 不能为空，否则返回 HTTP 400。",
+        "description": "根据文件清单创建任务组及其子任务，成功后返回任务组 ID；只有一个条目时不建组，\n直接建普通任务并返回 `taskId`（`groupId` 为空）。`items` 不能为空，否则返回 HTTP 400。",
         "operationId": "api_create_group",
         "requestBody": {
           "content": {
@@ -4362,7 +4362,7 @@
           },
           "groupName": {
             "type": "string",
-            "description": "组名（空 = 组根目录直接用 `save_dir`）。"
+            "description": "组名（仅用于显示，不参与目录）；全体成员共享公共目录时宿主改用该目录名。"
           },
           "ignoreTlsErrors": {
             "type": "boolean",
@@ -4392,7 +4392,7 @@
           },
           "saveDir": {
             "type": "string",
-            "description": "基础保存目录（组根目录 = `save_dir/sanitize(group_name)`）；\n空 = 使用全局默认保存目录。"
+            "description": "基础保存目录；组根 = 本目录 + 全体成员相对路径的公共目录，成员按去掉公共目录后的\n相对路径落在组根下（磁盘布局与 `rel_path` 一致）。空 = 使用全局默认保存目录。"
           },
           "segments": {
             "type": "integer",
@@ -4414,13 +4414,15 @@
       },
       "CreateGroupResponse": {
         "type": "object",
-        "description": "创建任务组响应（`POST /api/v1/groups`）。",
-        "required": [
-          "groupId"
-        ],
+        "description": "创建任务组响应（`POST /api/v1/groups`）。只有一个条目时不建组，直接建普通任务：\n此时 `groupId` 为空、`taskId` 为新任务 ID；建组时 `taskId` 为空。",
         "properties": {
           "groupId": {
-            "type": "string"
+            "type": "string",
+            "default": ""
+          },
+          "taskId": {
+            "type": "string",
+            "default": ""
           }
         }
       },
@@ -5551,9 +5553,20 @@
           "identity": {
             "type": "string"
           },
+          "loadDetail": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PluginFailureDetail",
+                "description": "Redacted load failure category and safe arguments; omitted for loaded plugins."
+              }
+            ]
+          },
           "loadError": {
             "type": "string",
-            "description": "加载失败的可读原因；成功时为空。"
+            "description": "Generic safe fallback for clients that do not understand `loadDetail`."
           },
           "loadStatus": {
             "type": "string",
@@ -5588,6 +5601,13 @@
               "type": "string"
             },
             "description": "manifest 声明的能力权限（如 `[\"ffmpeg\"]`，供 UI 展示授权徽章）。"
+          },
+          "resolverUrlConflicts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PluginResolverUrlConflictDto"
+            },
+            "description": "已安装插件列表中的 resolver URL 重叠提示。"
           },
           "resolverUrls": {
             "type": "array",
@@ -5632,6 +5652,237 @@
           }
         }
       },
+      "PluginFailureDetail": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "manifestUnreadable"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "manifestUnknownField"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "manifestJsonInvalid"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "manifestIdentityInvalid"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "manifestNameMissing"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "manifestVersionInvalid"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "manifestMinAppVersionInvalid"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "manifestUnknownPermission"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "manifestAuthPermissionMissing"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "scriptCompileFailed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "line",
+              "column",
+              "kind"
+            ],
+            "properties": {
+              "column": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "scriptCompileFailedAt"
+                ]
+              },
+              "line": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "path",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "missingFile"
+                ]
+              },
+              "path": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "loadFailed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "notDevPlugin"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "unknown"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Safe plugin diagnostics; clients localize the kind and interpolate only these arguments."
+      },
       "PluginPageScriptDeclDto": {
         "type": "object",
         "description": "页面脚本贡献声明（镜像 manifest `contributes.pageScripts[]` 的展示字段）。",
@@ -5657,6 +5908,32 @@
           "world": {
             "type": "string",
             "description": "`isolated` / `main`。"
+          }
+        }
+      },
+      "PluginResolverUrlConflictDto": {
+        "type": "object",
+        "required": [
+          "pattern",
+          "otherIdentity",
+          "otherPattern"
+        ],
+        "properties": {
+          "otherIdentity": {
+            "type": "string"
+          },
+          "otherPattern": {
+            "type": "string"
+          },
+          "pattern": {
+            "type": "string"
+          },
+          "site": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "重叠所在站点的站点键（同 `PluginSiteDefaultDto.site`），可据此设置站点默认插件；\n两侧主机都是通配或非层级 URL（`magnet:` 等）时为空，同插件重复声明恒为空。"
           }
         }
       },
@@ -6061,6 +6338,13 @@
           "guid": {
             "type": "string",
             "description": "去重主键。"
+          },
+          "imageCount": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Number of available description image thumbnails.",
+            "default": 0,
+            "minimum": 0
           },
           "link": {
             "type": "string"
@@ -6499,7 +6783,7 @@
         "properties": {
           "autoRoute": {
             "type": "string",
-            "description": "Auto 路由或站点规则标签（可追溯性）：Auto 为 `direct` /\n`direct:sampled` / `direct:pinned` / `direct:failover` /\n`proxy:cached` / `proxy:sampled` / `proxy:failover`（代理类标签带\n候选来源后缀 `:system`/`:manual`）；站点规则为 `rule:direct` /\n`rule:system` / `rule:manual` / `rule:custom`；空串 = 非 Auto 且未命中规则。"
+            "description": " 任务出口「链路」标签（可追溯性）：Auto 为 `direct` /\n `direct:sampled` / `direct:pinned` / `direct:failover` /\n `proxy:cached` / `proxy:sampled` / `proxy:failover`（代理类标签带\n 候选来源后缀 `:system`/`:manual`）；站点规则为 `rule:direct` /\n `rule:system` / `rule:manual` / `rule:custom`；全局代理为 `global:direct` /\n `global:bypass` / `global:manual` / `global:system` / `global:pac`；任务级代理为\n `task:proxy` / `task:direct`；协议代理覆盖为 `protocol:direct` / `protocol:proxy`；\n BT 会话为 `bt:direct` / `bt:trackers:{manual,system}` / `bt:all:{manual,system}`\n（BT 协议代理覆盖生效时为 `protocol:proxy`）。空串 = 尚未启动过（或出口构建失败退回全局直连）。"
           },
           "btDownloadLimitBps": {
             "type": "integer",

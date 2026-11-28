@@ -1023,6 +1023,317 @@
   border: 1px solid var(--line);
 }
 
+/* AI 助手回答:沿用 .prose,收紧为聊天气泡的字号与间距 */
+.prose.ai-md {
+  font-size: 14.5px;
+  line-height: 1.7;
+  color: var(--fg);
+  max-width: none;
+  overflow-wrap: anywhere;
+}
+.prose.ai-md > * + * {
+  margin-top: 0.75em;
+}
+.prose.ai-md h3 {
+  margin-top: 1.2em;
+  padding-top: 0;
+  border-top: 0;
+  font-size: 1.02rem;
+}
+.prose.ai-md h4 {
+  margin-top: 1em;
+  font-size: 0.95rem;
+}
+.prose.ai-md li > * + * {
+  margin-top: 0.4em;
+}
+.prose.ai-md hr {
+  margin-block: 1.2em;
+}
+.ai-code {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-sunken);
+}
+.ai-code-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px 4px 14px;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--fg-subtle);
+}
+.ai-code-bar button {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  color: var(--fg-muted);
+}
+.ai-code-bar button:hover {
+  color: var(--fg);
+  background: var(--bg-inset);
+}
+.prose .ai-code pre {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+/* ---------------------------- 全站悬浮 AI 助手 ---------------------------- */
+:root {
+  --ai-dock-w: 420px;
+}
+/* 停靠：宽屏下页面让出右侧宽度（sticky 头部随之收窄）；窄屏停靠按悬浮窗处理。 */
+@media (min-width: 1024px) {
+  html[data-ai-dock] body {
+    padding-right: var(--ai-dock-w);
+  }
+}
+.ai-launcher {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ai-launcher-orb {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 999px;
+  color: var(--accent-fg);
+  background: linear-gradient(140deg, oklch(0.68 0.19 285), var(--accent) 55%, oklch(0.62 0.16 230));
+  box-shadow: var(--shadow-window);
+  transition: transform 160ms ease;
+}
+.ai-launcher:hover .ai-launcher-orb,
+.ai-launcher:focus-visible .ai-launcher-orb {
+  transform: translateY(-2px) scale(1.04);
+}
+.ai-launcher:focus-visible {
+  outline: none;
+}
+.ai-launcher:focus-visible .ai-launcher-orb {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.ai-launcher-spark {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+}
+.ai-launcher-hint {
+  padding: 7px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 13px;
+  white-space: nowrap;
+  color: var(--fg);
+  background: var(--bg-elev);
+  box-shadow: var(--shadow-float);
+  opacity: 0;
+  translate: 6px 0;
+  pointer-events: none;
+  transition:
+    opacity 160ms ease,
+    translate 160ms ease;
+}
+.ai-launcher:hover .ai-launcher-hint,
+.ai-launcher:focus-visible .ai-launcher-hint {
+  opacity: 1;
+  translate: 0 0;
+}
+
+/* 悬浮窗（缺省）；手机上铺满整屏。 */
+.ai-widget {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  width: 400px;
+  height: min(680px, calc(100dvh - 40px));
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  color: var(--fg);
+  background: var(--bg-elev);
+  box-shadow: var(--shadow-window);
+  transform-origin: bottom right;
+  transition:
+    opacity 180ms ease,
+    transform 180ms ease;
+}
+.ai-widget:focus {
+  outline: none;
+}
+@starting-style {
+  .ai-widget {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+}
+/* 面板内的滚动容器到边界后不把滚动链交给页面（触屏与滚轮都适用）；滚轮在不可滚区域的拦截见 AssistantWidget。 */
+.ai-widget,
+.ai-widget * {
+  overscroll-behavior: contain;
+}
+@media (max-width: 639px) {
+  .ai-widget {
+    inset: 0;
+    width: auto;
+    height: 100dvh;
+    border: 0;
+    border-radius: 0;
+  }
+  /* 手机上面板铺满整屏：锁住背后页面，避免触摸标题栏 / 输入区时页面跟着滚 */
+  html:has(.ai-widget) {
+    overflow: hidden;
+  }
+}
+/* 拖过的悬浮窗：左上角定位（`--ai-x` / `--ai-y` 由岛写入并夹在视口内）。 */
+@media (min-width: 640px) {
+  .ai-widget[data-positioned] {
+    top: var(--ai-y);
+    left: var(--ai-x);
+    right: auto;
+    bottom: auto;
+  }
+  .ai-widget-head {
+    cursor: grab;
+    user-select: none;
+    touch-action: none;
+  }
+}
+html[data-ai-dragging],
+html[data-ai-dragging] * {
+  user-select: none !important;
+}
+html[data-ai-dragging="move"] * {
+  cursor: grabbing !important;
+}
+html[data-ai-dragging="resize"] * {
+  cursor: col-resize !important;
+}
+/* 停靠左缘的调宽把手：只在真正停靠（≥1024）时出现。 */
+.ai-dock-resize {
+  display: none;
+}
+@media (min-width: 1024px) {
+  .ai-widget[data-mode="dock"] {
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: auto;
+    width: var(--ai-dock-w);
+    height: 100dvh;
+    border-width: 0 0 0 1px;
+    border-radius: 0;
+    box-shadow: none;
+    transform-origin: right center;
+  }
+  .ai-widget[data-mode="dock"] .ai-widget-head {
+    cursor: default;
+  }
+  .ai-dock-resize {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 1;
+    display: block;
+    width: 6px;
+    cursor: col-resize;
+    touch-action: none;
+  }
+  .ai-dock-resize::after {
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 2px;
+    background: transparent;
+    transition: background-color 150ms;
+  }
+  .ai-dock-resize:hover::after,
+  .ai-dock-resize:focus-visible::after,
+  html[data-ai-dragging="resize"] .ai-dock-resize::after {
+    background: var(--accent);
+  }
+  .ai-dock-resize:focus-visible {
+    outline: none;
+  }
+}
+/* 助手图片大图预览（原生模态 dialog，顶层渲染） */
+.ai-image-viewer {
+  max-width: min(92vw, 1400px);
+  max-height: 90dvh;
+  margin: auto;
+  padding: 0;
+  overflow: visible;
+  border: 0;
+  background: transparent;
+}
+.ai-image-viewer::backdrop {
+  background: oklch(0 0 0 / 0.72);
+}
+.ai-image-viewer img {
+  display: block;
+  max-width: min(92vw, 1400px);
+  max-height: 90dvh;
+  border-radius: 10px;
+  object-fit: contain;
+  box-shadow: var(--shadow-window);
+}
+.ai-image-viewer-close {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  color: oklch(1 0 0);
+  background: oklch(0 0 0 / 0.5);
+}
+.ai-image-viewer-close:hover {
+  background: oklch(0 0 0 / 0.7);
+}
+.ai-icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 7px;
+  color: var(--fg-muted);
+  transition:
+    color 150ms,
+    background-color 150ms;
+}
+.ai-icon-btn:hover,
+.ai-icon-btn[aria-pressed="true"] {
+  color: var(--fg);
+  background: var(--bg-inset);
+}
+@media (prefers-reduced-motion: reduce) {
+  .ai-launcher-orb,
+  .ai-launcher-hint,
+  .ai-widget {
+    transition: none;
+  }
+}
+
 /* Shiki dual theme: follow the site theme attribute, not prefers-color-scheme. */
 .astro-code,
 .astro-code span {

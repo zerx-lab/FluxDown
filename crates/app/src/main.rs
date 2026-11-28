@@ -8,6 +8,7 @@ mod actions;
 mod activity;
 mod agent_client;
 mod agent_endpoint;
+mod agent_ipc;
 mod app;
 mod app_icon;
 mod assets;
@@ -24,6 +25,9 @@ mod logging;
 mod menus;
 mod plugin_contributions;
 mod plugin_notices;
+#[cfg(windows)]
+#[path = "../../../native/portable_process.rs"]
+mod portable_process;
 mod power;
 mod preference_writes;
 mod progress_windows;
@@ -47,6 +51,15 @@ use std::process::ExitCode;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() -> ExitCode {
+    #[cfg(windows)]
+    match portable_process::admit() {
+        Ok(true) => {}
+        Ok(false) => return ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("failed to acquire the portable installation lease: {error}");
+            return ExitCode::FAILURE;
+        }
+    }
     logging::init();
     let result = app::run();
     logging::finish(

@@ -25,7 +25,8 @@ struct PluginsProtocolTests {
           }],
           "settingsValues": {"quality": "hd"},
           "permissions": ["ffmpeg"], "authSupported": true, "subscriptionProviderIds": ["p"],
-          "loadStatus": "Failed", "loadError": "boom"
+          "loadStatus": "Failed", "loadError": "boom", "source": "private",
+          "loadDetail": {"kind": "scriptCompileFailedAt", "line": 12, "column": 3}
         }, {
           "identity": "min", "name": "Min", "version": "0.0.1", "enabled": false, "devMode": true,
           "disabledReason": "None", "settings": [], "settingsValues": {}
@@ -34,14 +35,34 @@ struct PluginsProtocolTests {
         let plugins = try decode([PluginDto].self, json)
         #expect(plugins.count == 2)
         #expect(plugins[0].loadFailed)
+        #expect(plugins[0].loadDetail == PluginDiagnostic(kind: "scriptCompileFailedAt", line: 12, column: 3))
         #expect(plugins[0].settings[0].defaultValue == "hd")
         #expect(plugins[0].settings[0].settingType == "string")
         #expect(plugins[0].settings[1].min == 1 && plugins[0].settings[1].max == 10)
         #expect(plugins[0].settings[1].options.isEmpty)
         #expect(plugins[0].disabledReason == "CircuitBreaker")
+        #expect(plugins[0].source == "private")
         // 缺省字段：loadStatus 默认 Loaded，其余集合为空。
         #expect(plugins[1].loadStatus == "Loaded" && !plugins[1].loadFailed)
+        #expect(plugins[1].loadDetail == nil)
         #expect(plugins[1].permissions.isEmpty && !plugins[1].authSupported && plugins[1].description.isEmpty)
+        #expect(plugins[1].source.isEmpty)
+    }
+
+    @Test func pluginLoadDetailToleratesOlderAndFutureDaemons() throws {
+        let base = #""identity":"x","name":"X","version":"1","enabled":true,"loadStatus":"Failed","loadError":"/private/raw-daemon-error""#
+        func plugin(_ extra: String = "") throws -> PluginDto {
+            try decode(PluginDto.self, "{\(base)\(extra)}")
+        }
+
+        #expect(try plugin().loadFailed)
+        #expect(try plugin().loadDetail == nil)
+        #expect(try plugin(#","loadDetail":null"#).loadDetail == nil)
+        #expect(try plugin(#","loadDetail":{}"#).loadDetail == nil)
+        #expect(try plugin(#","loadDetail":{"kind":"futureDiagnostic","path":"private-path"}"#).loadDetail
+            == PluginDiagnostic(kind: "futureDiagnostic", path: "private-path"))
+        #expect(try plugin(#","loadDetail":{"kind":"missingFile","path":"main.lua"}"#).loadDetail
+            == PluginDiagnostic(kind: "missingFile", path: "main.lua"))
     }
 
     @Test func authAndMarketAndInstalledDecode() throws {

@@ -11,6 +11,8 @@
     "test": "bun test tests",
     "docs:hash": "node scripts/docs-hash.mjs",
     "docs:lint": "node scripts/docs-lint.mjs",
+    "i18n:extract": "bun scripts/i18n-messages.ts extract",
+    "i18n:generate": "bun scripts/i18n-messages.ts generate",
     "indexnow": "node scripts/indexnow-ping.mjs"
   },
   "dependencies": {

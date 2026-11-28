@@ -151,6 +151,7 @@ fn occupy(manager: &mut DownloadManager, id: &str, queue_id: &str) {
     manager.active_tasks.insert(
         id.to_string(),
         ActiveTaskEntry {
+            hls_discard: None,
             token: CancellationToken::new(),
             generation: 0,
             handle: None,
@@ -343,7 +344,7 @@ fn dedup_filename_sync_matches_directory_scan_with_many_entries() {
     }
     let never = OverwritePolicy::Never;
     let check = |reserved: &HashSet<PathBuf>, expected: &str| {
-        let actual = dedup_filename_sync(&dir, "video.mp4", reserved, &never, false);
+        let actual = dedup_filename_sync(&dir, "video.mp4", reserved, &never, false, false);
         let reference = crate::downloader::dedup_reference_scan(
             &dir,
             "video.mp4",
@@ -361,7 +362,7 @@ fn dedup_filename_sync_matches_directory_scan_with_many_entries() {
     check(&reserved, "video (701).mp4");
     // 原名空闲时原样返回（目录里的无关文件不影响）。
     assert_eq!(
-        dedup_filename_sync(&dir, "fresh.bin", &HashSet::new(), &never, false),
+        dedup_filename_sync(&dir, "fresh.bin", &HashSet::new(), &never, false, false),
         "fresh.bin"
     );
     std::fs::remove_dir_all(dir).expect("remove fixture dir");
@@ -382,15 +383,24 @@ async fn concurrent_reservations_pick_distinct_smallest_free_names() {
         let reserved = Arc::clone(&reserved);
         let dir = dir.clone();
         handles.push(tokio::spawn(async move {
-            reserve_deduped_name(&reserved, &dir, "a.bin", &OverwritePolicy::Never, false)
-                .await
-                .expect("reservation must not panic")
+            reserve_deduped_name(
+                &reserved,
+                &dir,
+                "a.bin",
+                &OverwritePolicy::Never,
+                false,
+                false,
+            )
+            .await
+            .expect("reservation must not panic")
         }));
     }
     let mut names = Vec::new();
+    let mut reservations = Vec::new();
     for handle in handles {
         let (name, temp) = handle.await.expect("reservation task");
-        assert_eq!(temp, dir.join(format!("{name}.fdownloading")));
+        assert_eq!(temp.path, dir.join(format!("{name}.fdownloading")));
+        reservations.push(temp);
         names.push(name);
     }
     let distinct: HashSet<&String> = names.iter().collect();
@@ -407,5 +417,7 @@ async fn concurrent_reservations_pick_distinct_smallest_free_names() {
             .len(),
         24
     );
+    drop(reservations);
+    assert!(super::lock_reserved(&reserved).is_empty());
     std::fs::remove_dir_all(dir).expect("remove fixture dir");
 }

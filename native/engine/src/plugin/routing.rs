@@ -37,6 +37,8 @@ const SITE_DEFAULT_PREFIX: &str = "plugin.site_default.";
 const PLUGIN_CHOICE_TIMEOUT: Duration = Duration::from_secs(60);
 /// 站点键长度上限（DNS 主机名 253 + IPv6 方括号余量）。
 const MAX_SITE_LEN: usize = 255;
+/// 一条站点记录的候选插件上限（客户端预置候选时校验）。
+const MAX_SITE_CANDIDATES: usize = 64;
 
 /// 建任务时的 resolver 绑定结论。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -528,11 +530,15 @@ impl PluginManager {
         Ok(out)
     }
 
-    /// 确认 / 改选（`Some`，须是记录里的候选）或删除（`None`）站点记录。
+    /// 确认 / 改选（`Some`）或删除（`None`）站点记录。
+    ///
+    /// `candidates` 与已有记录的候选合并（保持已有顺序、去重）：插件页可在尚无记录时按
+    /// URL 模式冲突预先选定默认插件。`identity` 必须在合并后的候选里。
     pub async fn set_site_default(
         &self,
         site: &str,
         identity: Option<&str>,
+        candidates: &[String],
     ) -> Result<(), PluginError> {
         validate_site(site)?;
         let key = site_config_key(site);
@@ -544,10 +550,24 @@ impl PluginManager {
             self.publish_state().await;
             return Ok(());
         };
-        let Some(stored) = self.read_site_default(site).await else {
+        if candidates.len() > MAX_SITE_CANDIDATES
+            || candidates
+                .iter()
+                .any(|c| c.is_empty() || c.len() > MAX_SITE_LEN || c.chars().any(char::is_control))
+        {
+            return Err(invalid("candidates", "候选插件无效"));
+        }
+        let stored = self.read_site_default(site).await;
+        if stored.is_none() && candidates.is_empty() {
             return Err(invalid("site", format!("站点 {site} 没有插件选择记录")));
-        };
-        if !stored.candidates.iter().any(|known| known == identity) {
+        }
+        let mut merged = stored.map(|s| s.candidates).unwrap_or_default();
+        for candidate in candidates {
+            if !merged.contains(candidate) {
+                merged.push(candidate.clone());
+            }
+        }
+        if !merged.iter().any(|known| known == identity) {
             return Err(invalid(
                 "identity",
                 format!("插件 {identity} 不在站点 {site} 的候选插件中"),
@@ -555,7 +575,7 @@ impl PluginManager {
         }
         let record = StoredSiteDefault {
             identity: identity.to_owned(),
-            candidates: stored.candidates,
+            candidates: merged,
             automatic: false,
         };
         let json =

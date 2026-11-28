@@ -69,7 +69,8 @@ final class ManifestSelectModel {
     let resolverPluginId: String
     let archiveMetadata: ArchiveMetadataDto?
     var selection: ManifestSelection
-    var groupName: String
+    /// 仅用于显示的组名（清单名 / 来源地址末段），不建目录、不提供编辑。
+    let groupName: String
     var search = ""
     private(set) var submitting = false
 
@@ -126,9 +127,14 @@ final class ManifestSelectModel {
     var canSubmit: Bool { !submitting && selection.count > 0 }
 
     /// 成功返回 `true`（调用方关闭整个 Sheet）；失败已 Toast 并保留页面。
-    func submit(startPaused: Bool, queueId: String, container: AppContainer) async -> Bool {
+    func submit(startPaused: Bool, queueId: String, hostID: String, container: AppContainer) async -> Bool {
         guard canSubmit else { return false }
         let toasts = container.toasts
+        guard container.host.id == hostID else {
+            FluxHaptic.error.play()
+            toasts.show(text: L("mobileDownloadDraftHostChanged"), tone: .warning)
+            return false
+        }
         if container.store.state.isReadOnly {
             FluxHaptic.error.play()
             toasts.show(text: L("localServiceDisconnected"), tone: .error, systemImage: FluxSymbol.offline)
@@ -140,10 +146,9 @@ final class ManifestSelectModel {
         }
         submitting = true
         defer { submitting = false }
-        let trimmed = groupName.trimmingCharacters(in: .whitespacesAndNewlines)
         let request = base.groupRequest(
             sourceUrl: sourceUrl,
-            groupName: trimmed.isEmpty ? manifestName : trimmed,
+            groupName: groupName.isEmpty ? manifestName : groupName,
             queueId: queueId,
             startPaused: startPaused,
             items: selection.requestItems(),
@@ -152,8 +157,9 @@ final class ManifestSelectModel {
         )
         let session = container.session
         let count = request.items.count
+        let created: CreateGroupResponse
         do throws(HostError) {
-            let _: CreateGroupResponse = try await session.createGroup(request, offeredSaveDir: base.offeredSaveDir)
+            created = try await session.createGroup(request, offeredSaveDir: base.offeredSaveDir)
             await session.rememberCategoryMode(base.categoryMode)
         } catch {
             FluxHaptic.error.play()
@@ -161,7 +167,13 @@ final class ManifestSelectModel {
             return false
         }
         FluxHaptic.success.play()
-        toasts.show(text: L("manifestGroupCreatedToast", ["count": count]), tone: .success, systemImage: "square.stack.3d.down.right")
+        if created.createdSingleTask {
+            // 只选了一个条目：宿主直接建普通任务，不成组。
+            let text = startPaused ? L("taskCreatedToast") : L("mobileDownloadStarted")
+            toasts.show(text: text, tone: .success, systemImage: startPaused ? "clock" : "arrow.down")
+        } else {
+            toasts.show(text: L("manifestGroupCreatedToast", ["count": count]), tone: .success, systemImage: "square.stack.3d.down.right")
+        }
         return true
     }
 }
@@ -172,13 +184,16 @@ final class ManifestSelectModel {
 /// `close` 关闭承载它的整个 Sheet（建组成功后调用）。
 struct ManifestSelectView: View {
     let close: () -> Void
+    let hostID: String
 
     @Environment(AppContainer.self) private var container
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var model: ManifestSelectModel
+    @State private var taskInfoExport: TaskInfoDocument?
 
-    init(source: ManifestSource, base: ManifestBaseOptions, close: @escaping () -> Void) {
+    init(source: ManifestSource, base: ManifestBaseOptions, hostID: String, close: @escaping () -> Void) {
         _model = State(initialValue: ManifestSelectModel(source: source, base: base))
+        self.hostID = hostID
         self.close = close
     }
 
@@ -186,6 +201,9 @@ struct ManifestSelectView: View {
 
     var body: some View {
         readyList
+            .background {
+                Color.clear.taskInfoExporter($taskInfoExport)
+            }
             .navigationTitle(L("manifestDialogTitle"))
             .navigationBarTitleDisplayMode(.inline)
             .navigationBarBackButtonHidden(model.submitting)
@@ -235,8 +253,6 @@ struct ManifestSelectView: View {
     private var groupSection: some View {
         let queues = state.queues
         return Section {
-            TextField(L("manifestGroupNameTooltip"), text: $model.groupName, prompt: Text(L("manifestGroupNamePlaceholder")))
-                .disabled(model.submitting)
             if container.isLocalHost {
                 LabeledContent(L("saveDir")) {
                     Text(model.base.saveDir.isEmpty ? LocalPaths.documents.path : model.base.saveDir)
@@ -304,6 +320,12 @@ struct ManifestSelectView: View {
                 }
                 .accessibilityLabel(L("manifestSelectAll"))
             }
+            Button(L("exportTaskInfoTxt"), systemImage: "doc.text") {
+                taskInfoExport = TaskInfoDocument(model.selection.selectedExportRows().map {
+                    TaskInfoRow(name: $0.name, url: "", size: $0.size > 0 ? $0.size : nil)
+                }, labels: .localized)
+            }
+            .disabled(model.selection.count == 0 || model.submitting)
         }
     }
 
@@ -484,7 +506,7 @@ struct ManifestSelectView: View {
     private func run(startPaused: Bool, queueId: String) {
         guard model.canSubmit else { return }
         Task {
-            if await model.submit(startPaused: startPaused, queueId: queueId, container: container) { close() }
+            if await model.submit(startPaused: startPaused, queueId: queueId, hostID: hostID, container: container) { close() }
         }
     }
 }

@@ -1,5 +1,6 @@
 // RSS 页的纯展示逻辑：与 GPUI `crates/rss/src/{view,controller}.rs` 的文案/状态判定逐项对齐。
 
+import { byteUnit, type FileSizeUnits } from '../../lib/fileSizeUnits'
 import type { TFunction } from '../../i18n'
 import type { RssItemDto, RssSourceDto } from '../../lib/rpc'
 import { LATER_QUEUE_ID, MAIN_QUEUE_ID, RSS_ITEM_STATUS } from '../../lib/rpc'
@@ -17,16 +18,12 @@ export function dateText(timestamp: number): string {
 }
 
 /** 体积展示（1024 进制，1 位小数）；未知返回空串（GPUI `bytes_text`）。 */
-export function bytesText(bytes: number): string {
+export function bytesText(bytes: number, units?: FileSizeUnits): string {
   if (bytes <= 0) return ''
   let size = bytes
-  let unit = 'B'
-  for (const next of ['KiB', 'MiB', 'GiB', 'TiB']) {
-    if (size < 1024) break
-    size /= 1024
-    unit = next
-  }
-  return unit === 'B' ? `${bytes} B` : `${size.toFixed(1)} ${unit}`
+  let unit = 0
+  for (; unit < 4 && size >= 1024; unit += 1) size /= 1024
+  return unit === 0 ? `${bytes} ${byteUnit(unit, units)}` : `${size.toFixed(1)} ${byteUnit(unit, units)}`
 }
 
 export function effectiveInterval(source: Pick<RssSourceDto, 'intervalMinutes'>): number {
@@ -100,6 +97,8 @@ export function itemStatusKey(item: RssItemDto, tasks: LinkedTaskStates): string
       }
     }
     case RSS_ITEM_STATUS.ignored:
+      if (item.reason === 'duplicate_torrent') return 'rssStatusDuplicateTorrent'
+      if (item.reason === 'task_removed') return 'rssStatusTaskRemoved'
       return 'rssStatusIgnored'
     case RSS_ITEM_STATUS.filtered:
       return 'rssStatusFiltered'

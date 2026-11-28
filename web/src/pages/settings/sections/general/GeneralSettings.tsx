@@ -7,6 +7,7 @@ import { Switch } from '../../../../ui'
 import { mergeDevices } from '../../../downloads/model/devices'
 import { HIDE_TASK_SOURCE_PREF } from '../../../downloads/model/viewPrefs'
 import { PrefSwitchRow, SettingsPage, SettingsRow, SettingsSection, setPref, usePrefRaw } from '../../kit'
+import { useAssistantVisible } from '../../../../shell/useVisibleActivityEntries'
 
 /** `ui.show_sidebar_devices` 三态：未设置 = 登录或有其他设备（云 + 独立直连）时自动显示；开关显示有效值。 */
 function SidebarDevicesRow() {
@@ -27,6 +28,7 @@ function SidebarDevicesRow() {
 
 export function GeneralSettings() {
   const t = useT()
+  const assistantVisible = useAssistantVisible()
   return (
     <SettingsPage title={t('settingsCatGeneral')} description={t('settingsCatGeneralDesc')}>
       <SettingsSection title={t('settingsGroupSystem')}>
@@ -44,6 +46,7 @@ export function GeneralSettings() {
       <SettingsSection title={t('activityBarSection')} subtitle={t('activityBarSectionDesc')}>
         <PrefSwitchRow prefKey="ui.show_activity_rss" fallback titleKey="showActivityRss" descKey="showActivityRssDesc" />
         <PrefSwitchRow prefKey="ui.show_activity_webhooks" fallback titleKey="showActivityWebhooks" descKey="showActivityWebhooksDesc" />
+        {assistantVisible ? <PrefSwitchRow prefKey="ui.show_activity_assistant" fallback titleKey="showActivityAssistant" descKey="showActivityAssistantDesc" /> : null}
         <PrefSwitchRow prefKey="ui.show_activity_account" fallback titleKey="showActivityAccount" descKey="showActivityAccountDesc" />
       </SettingsSection>
     </SettingsPage>

@@ -169,7 +169,7 @@ internal fun FieldFrame(
  * 输入框（§12.21）：基于 `BasicTextField`，聚焦 accent 环，光标 `accentHi`，占位符 `inkFaint`。
  * 标签 / 输入 / 提示都可换行，输入框只设 `min 44dp`。[mono] = 等宽 13.5（URL / 路径 / 哈希）。
  * [error] 非空时进入错误态并替换提示；[warning] 为琥珀色非阻断提示（如“已调整为 n”）。
- * [rows] = 多行时的最少行数（最多 8 行后内部滚动）。[trailing] 建议放 [FluxFieldAction]。
+ * 多行时至少显示 [rows] 行，超过 [maxRows] 行后内部滚动；两者相同则高度固定。[trailing] 建议放 [FluxFieldAction]。
  */
 @Composable
 fun FluxField(
@@ -187,6 +187,7 @@ fun FluxField(
     mono: Boolean = false,
     singleLine: Boolean = true,
     rows: Int = 1,
+    maxRows: Int = maxOf(rows, 8),
     keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
     keyboardActions: KeyboardActions = KeyboardActions.Default,
     visualTransformation: VisualTransformation = VisualTransformation.None,
@@ -244,7 +245,7 @@ fun FluxField(
             keyboardActions = keyboardActions,
             singleLine = singleLine,
             minLines = if (singleLine) 1 else rows,
-            maxLines = if (singleLine) 1 else maxOf(rows, 8),
+            maxLines = if (singleLine) 1 else maxRows,
             visualTransformation = visualTransformation,
             cursorBrush = cursor,
             decorationBox = { inner ->

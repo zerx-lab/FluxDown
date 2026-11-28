@@ -97,7 +97,7 @@ object SettingsCatalog {
         daemon("dedup_same_url", bool, "false"),
         daemon("file_exists_behavior", choice(fileExistsBehaviors), "rename"),
         daemon("file_missing_action", choice(fileMissingActions), "keep"),
-        daemon("completed_record_retention_days", int(0, 3650), "0"),
+        daemon("completed_record_retention_days", int(-1, 3650), "0"),
         daemon("idle_file_scan", bool, "false"),
         daemon("hash_after_download", bool, "false"),
         daemon("hash_algorithm", choice(hashAlgorithms), "sha256"),
@@ -188,6 +188,12 @@ object SettingsCatalog {
         daemon("proxy_port", text, ""),
         daemon("proxy_username", text, ""),
         daemon("proxy_password", text, ""),
+        daemon("proxy_protocol_http", text, ""),
+        daemon("proxy_protocol_ftp", text, ""),
+        daemon("proxy_protocol_hls", text, ""),
+        daemon("proxy_protocol_dash", text, ""),
+        daemon("proxy_protocol_bt", text, ""),
+        daemon("proxy_protocol_ed2k", text, ""),
         daemon("proxy_no_list", text, ""),
         daemon("proxy_rules", text, ""),
         // Webhook / 组件 / 日志
@@ -216,6 +222,7 @@ object SettingsCatalog {
         pref("ui.show_sidebar_devices", bool, "true"),
         pref("ui.show_activity_rss", bool, "true"),
         pref("ui.show_activity_webhooks", bool, "true"),
+        pref("ui.show_activity_assistant", bool, "true"),
         pref("ui.show_activity_theme", bool, "true"),
         // 下载 / 通知
         pref("download.remember_last_save_dir", bool, "false"),
@@ -224,6 +231,8 @@ object SettingsCatalog {
         pref("download.silent_auto_category", bool, "true"),
         pref("download.silent_skip_selection", bool, "false"),
         pref("download.keep_awake", bool, "false"),
+        // 主机诊断（本机，不同步）
+        pref("diagnostics.log_level", choice(listOf("auto", "debug", "info", "warn", "error")), "auto"),
     )
 
     private val index: Map<String, SettingField> = (daemonFields + preferenceFields).associateBy { it.key }
@@ -242,7 +251,7 @@ object SettingsCatalog {
         "general.locale", "general.update_channel", "general.auto_check_update",
         "general.clipboard_watch", "general.floating_ball_enabled", "general.floating_ball_active_only",
         "ui.show_sidebar_status", "ui.show_sidebar_queues", "ui.show_sidebar_category",
-        "ui.show_sidebar_rss", "ui.show_activity_rss", "ui.show_activity_webhooks",
+        "ui.show_sidebar_rss", "ui.show_activity_rss", "ui.show_activity_webhooks", "ui.show_activity_assistant",
         "ui.show_activity_theme", "ui.show_activity_account", "ui.show_titlebar_pause_all", "ui.show_titlebar_resume_all",
         "ui.show_titlebar_settings", "ui.show_titlebar_theme",
         "download.remember_last_save_dir", "download.notify_on_complete", "download.silent_download",

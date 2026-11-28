@@ -1,7 +1,7 @@
 import { defineMessages } from "../define";
 
 /** 「参与贡献」分区文案:文档首页贡献区、页脚开源列、市场页贡献入口。键与 `lib/ecosystem.ts` 的 `ContributeId` 对应。 */
-export const contribute = defineMessages({
+export const contribute = defineMessages("contribute", {
   en: {
     eyebrow: "Contribute",
     title: "Build FluxDown <em>with us</em>",

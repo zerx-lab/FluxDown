@@ -23,28 +23,32 @@ const stored = () => JSON.parse(local.getItem(CHROME_LAYOUT_KEY) ?? 'null') as R
 describe('chromeStore', () => {
   test('成功的移动立即写入 localStorage，且写全六个区域', () => {
     expect(moveChromeItem('proxy', 'titleTrailing', null)).toBe(true)
-    expect(Object.keys(stored())).toHaveLength(6)
+    // 六个区域 + 默认隐藏的剩余空间（`hidden`）。
+    expect(Object.keys(stored())).toHaveLength(7)
+    expect(stored().hidden).toEqual(['diskFree'])
     expect(stored().titleTrailing).toEqual(['proxy'])
-    expect(stored().statusTrailing).toEqual(['downloadLimit', 'uploadLimit', 'diskFree'])
+    expect(stored().statusTrailing).toEqual(['downloadLimit', 'uploadLimit', 'diskFree', 'assistantPanel', 'appVersion'])
   })
 
   test('被拒绝的移动不写入；重置写入默认布局', () => {
     expect(moveChromeItem('downloadSpeed', 'railTop', null)).toBe(false)
     resetChromeLayout()
     expect(stored().titleTrailing).toEqual([])
-    expect(stored().statusTrailing).toEqual(['downloadLimit', 'uploadLimit', 'proxy', 'diskFree'])
+    expect(stored().statusTrailing).toEqual(['downloadLimit', 'uploadLimit', 'proxy', 'diskFree', 'assistantPanel', 'appVersion'])
   })
 
   test('隐藏 / 显示立即持久化，hidden 仅在非空时写入；位置不变，移动保留隐藏', () => {
-    expect(stored().hidden).toBeUndefined()
+    expect(stored().hidden).toEqual(['diskFree'])
     expect(setChromeItemHidden('rss', true)).toBe(true)
     expect(setChromeItemHidden('rss', true)).toBe(false)
-    expect(stored().hidden).toEqual(['rss'])
+    expect(stored().hidden).toEqual(['rss', 'diskFree'])
     expect(stored().railTop).toEqual(['downloads', 'rss', 'webhooks'])
     expect(moveChromeItem('rss', 'titleLeading', null)).toBe(true)
-    expect(stored().hidden).toEqual(['rss'])
+    expect(stored().hidden).toEqual(['rss', 'diskFree'])
     expect(setChromeItemHidden('rss', false)).toBe(true)
+    expect(setChromeItemHidden('diskFree', false)).toBe(true)
     expect(stored().hidden).toBeUndefined()
+    expect(getChromeLayout().hidden).toEqual([])
   })
 
   test('固定条目与未知条目不能隐藏；重置清除隐藏', () => {
@@ -54,7 +58,7 @@ describe('chromeStore', () => {
     expect(setChromeItemHidden('proxy', true)).toBe(true)
     expect(getChromeLayout().hidden).toEqual(['proxy'])
     resetChromeLayout()
-    expect(getChromeLayout().hidden).toEqual([])
-    expect(stored().hidden).toBeUndefined()
+    expect(getChromeLayout().hidden).toEqual(['diskFree'])
+    expect(stored().hidden).toEqual(['diskFree'])
   })
 })

@@ -12,6 +12,7 @@ import { hostOf } from "@/rules/url";
 import { installConnectionDiagnostics } from "@/utils/connection-diagnostics-background";
 import { ERROR_LOG_TYPES, handleErrorLogMessage } from "@/utils/error-log-background";
 import { checkRemoteAvailable, effectiveRemoteMode, warmupNativeHost } from "@/utils/download-dispatch";
+import { REMOTE_MANAGEMENT_UNAVAILABLE, remoteListTasks, remoteRemoveTask } from "@/utils/remote-server";
 import {
   nmhOpenFile,
   nmhRevealFile,
@@ -23,20 +24,26 @@ import { parseDashJson } from "@/utils/dash-manifest";
 import { normalizeHlsPlaylist } from "@/utils/hls-playlist";
 import { buildMediaCandidates } from "@/utils/media-candidates";
 import { buildResourceDebugLog } from "@/utils/resource-debug-log";
+import { loadManualServers, MANUAL_SERVERS_KEY } from "@/utils/manual-servers";
 import { profileFor } from "@/utils/site-profiles";
 import { armBypassClick, hasActiveBypass, isAppKnownDown, markAppUp, setBypassKeyHeld } from "./breaker";
 import {
   downloadCandidate,
+  downloadInterceptedMagnet,
+  downloadManualUrls,
   downloadResources,
-  downloadUrls,
+  downloadSelection,
   handoffPage,
 } from "./downloads";
+import { CANCELLED_SELECTION } from "./manual-batches";
+import { createManualServerWriter } from "./manual-server-writes";
+import { chooseManualTarget } from "./manual-target";
 import { showBrowserDownload } from "./browser-downloads";
 import { getCapabilities } from "./host";
 import { isInterceptActive, markPreempted } from "./intercept";
 import { rememberServiceWorkerScope } from "./sw-scopes";
 import { isReplayableUrl, scopeBelongsTo } from "@/utils/download-source";
-import { isLikelyDownloadClick } from "@/utils/settings";
+import { ensureRemoteSettingsVerified, isLikelyDownloadClick } from "@/utils/settings";
 import type { PageConfig } from "@/page/bridge";
 import type {
   HostStatus,
@@ -71,7 +78,7 @@ import {
   getRetiredElements,
   getTabPageUrl,
   ingestResources,
-  isCurrentPage,
+  isCurrentFramePage,
   registerSession,
   setContextTarget,
   setSessionHooks,
@@ -184,6 +191,10 @@ async function collectFrameLinks(tabId: number, frameId: number): Promise<PageLi
   return [];
 }
 
+const updateManualServers = createManualServerWriter(loadManualServers, (settings) =>
+  browser.storage.local.set({ [MANUAL_SERVERS_KEY]: settings }),
+);
+
 const handlers: { [A in MessageAction]: Handler<A> } = {
   async getPageConfig(req, sender) {
     const tabId = senderTabId(sender);
@@ -217,6 +228,7 @@ const handlers: { [A in MessageAction]: Handler<A> } = {
       floatPosition: settings.floatButtonPosition,
       titles: hints.flatMap((h) => h.titles),
       floatExclude: hints.flatMap((h) => h.players.map((p) => p.selector)),
+      floatInsets: hints.flatMap((h) => h.insets),
       pageDot: settings.showPageDot && profile.pageDot,
       frameIsTop: frameId === 0,
       interceptMagnet: settings.enabled && settings.interceptMagnet && profile.intercept !== "never",
@@ -236,8 +248,7 @@ const handlers: { [A in MessageAction]: Handler<A> } = {
     // 批量上报有 200 ms 合批延迟：顶层帧里不属于当前嗅探投影的资源来自已离开的旧页面，
     // 直接丢弃；不能再用它去同步 tab 页面 URL（会把刚换页清空的状态又改回旧页并再次清空）。
     // replaceState 改写过的旧 URL 仍属于当前投影（见 syncTabPageUrl）。
-    const resources =
-      frameId === 0 ? req.resources.filter((r) => isCurrentPage(tabId, r.pageUrl ?? "")) : req.resources;
+    const resources = req.resources.filter((r) => isCurrentFramePage(tabId, frameId, r.pageUrl ?? ""));
     if (resources.length === 0) return { added: 0 };
     const pageUrl = resources.find((r) => r.pageUrl)?.pageUrl || sender.tab?.url || "";
     // 旧页面的 content script 可能仍在运行：开关关闭时丢弃。
@@ -255,7 +266,7 @@ const handlers: { [A in MessageAction]: Handler<A> } = {
     const tabId = senderTabId(sender);
     if (tabId === undefined || !(await sniffEnabled(tabId, req.pageUrl))) return { ok: false };
     const playlist = normalizeHlsPlaylist(req.playlist);
-    if (!playlist || !isCurrentPage(tabId, req.pageUrl)) return { ok: false };
+    if (!playlist || !isCurrentFramePage(tabId, sender.frameId ?? 0, req.pageUrl)) return { ok: false };
     addHlsPlaylist(tabId, req.url, playlist, req.pageUrl);
     return { ok: true };
   },
@@ -403,17 +414,33 @@ const handlers: { [A in MessageAction]: Handler<A> } = {
   async downloadCandidate(req, sender) {
     const tabId = await resolveTabId(sender, req.tabId);
     if (tabId === undefined) return { success: false, message: "No tab" };
-    return downloadCandidate(tabId, req.candidateId, req.variantId, req.channel);
+    const channel = await chooseManualTarget(req.channel);
+    if (channel === null) return CANCELLED_SELECTION;
+    return downloadCandidate(tabId, req.candidateId, req.variantId, channel);
   },
 
   async downloadResources(req, sender) {
     const tabId = await resolveTabId(sender, req.tabId);
     if (tabId === undefined) return { success: false, message: "No tab" };
-    return downloadResources(tabId, req.resourceIds, req.channel);
+    const channel = await chooseManualTarget(req.channel);
+    if (channel === null) return CANCELLED_SELECTION;
+    return downloadResources(tabId, req.resourceIds, channel);
+  },
+
+  async downloadSelection(req, sender) {
+    const tabId = await resolveTabId(sender, req.tabId);
+    if (tabId === undefined) return { success: false, message: "No tab" };
+    return downloadSelection(tabId, req.candidates, req.resourceIds);
   },
 
   async downloadUrls(req, sender) {
-    return downloadUrls(req.urls, req.referrer, await resolveTabId(sender, req.tabId), req.channel);
+    const tabId = await resolveTabId(sender, req.tabId);
+    return downloadManualUrls(req.urls, req.referrer, tabId, req.channel);
+  },
+
+  async interceptMagnet(req, sender) {
+    if (typeof req.url !== "string" || !/^magnet:/i.test(req.url)) return { success: false };
+    return downloadInterceptedMagnet(req.url, req.referrer, await resolveTabId(sender));
   },
 
   async handoffPage(req) {
@@ -566,6 +593,11 @@ const handlers: { [A in MessageAction]: Handler<A> } = {
     });
   },
 
+  async updateManualServers(req, sender) {
+    if (!isExtensionPage(sender)) return { ok: false };
+    return { ok: await updateManualServers(req.change) };
+  },
+
   // 页面脚本管理：只接受扩展页（选项页 / popup），网页上下文的内容脚本消息一律拒绝。
   async pageScriptsStatus(req, sender) {
     if (!isExtensionPage(sender)) return refusedStatus();
@@ -594,14 +626,52 @@ interface TypedMessage {
   [key: string]: unknown;
 }
 
+async function taskPanelSettings() {
+  const { remoteMode, remoteUrl, remoteToken, remoteVerified } =
+    await ensureRemoteSettingsVerified(await getCachedSettings());
+  return {
+    mode: remoteVerified && remoteUrl ? remoteMode : "off",
+    config: { remoteUrl, remoteToken },
+  };
+}
+
+async function localTaskSnapshot() {
+  const result = await nmhListTasks();
+  if (!result.success) return { ok: false, connected: false, tasks: [] };
+  await processTasksPollResult(result.tasks);
+  return { ok: true, connected: true, tasks: result.tasks };
+}
+
 /** 任务面板（popup ↔ background）：`type` 族消息。返回 undefined 表示不属于本族。 */
-async function handleTypeMessage(message: TypedMessage): Promise<unknown> {
+async function handleTypeMessage(message: TypedMessage, sender: Sender): Promise<unknown> {
   switch (message.type) {
-    case "nmh-tasks": {
-      const result = await nmhListTasks();
-      if (!result.success) return { ok: false, connected: false, tasks: [] };
-      await processTasksPollResult(result.tasks);
-      return { ok: true, connected: true, tasks: result.tasks };
+    case "nmh-tasks":
+      return localTaskSnapshot();
+    case "task-panel-list": {
+      if (!isExtensionPage(sender)) return undefined;
+      const { mode, config } = await taskPanelSettings();
+      const switchable = mode === "fallback";
+      if (mode !== "always" && !(switchable && message.source === "remote")) {
+        return { ...await localTaskSnapshot(), switchable };
+      }
+      try {
+        const tasks = await remoteListTasks(config);
+        return { connected: true, tasks, remoteUrl: config.remoteUrl, switchable };
+      } catch (error) {
+        const managementUnavailable = error instanceof Error && error.message === REMOTE_MANAGEMENT_UNAVAILABLE;
+        return { connected: false, tasks: [], remoteUrl: config.remoteUrl, switchable, managementUnavailable };
+      }
+    }
+    case "task-panel-remove-remote": {
+      if (!isExtensionPage(sender) || typeof message.taskId !== "string") return { ok: false };
+      const { mode, config } = await taskPanelSettings();
+      // A row from a previous server must never be applied to the new server or NMH.
+      if (mode === "off" || config.remoteUrl !== message.remoteUrl) return { ok: false };
+      try {
+        return { ok: await remoteRemoveTask(config, message.taskId) };
+      } catch {
+        return { ok: false };
+      }
     }
     case "nmh-task-op": {
       const { op, taskId } = message;
@@ -642,7 +712,7 @@ export function installMessages(): void {
     if (typeof message.type === "string" && ERROR_LOG_TYPES.includes(message.type)) {
       return handleErrorLogMessage(message, sender);
     }
-    const typed = await handleTypeMessage(message);
+    const typed = await handleTypeMessage(message, sender);
     if (typed !== undefined) return typed;
 
     if (isMessageAction(message.action)) {

@@ -8,6 +8,7 @@ import android.util.Log
 import androidx.compose.runtime.snapshots.SnapshotStateSet
 import androidx.datastore.preferences.preferencesDataStore
 import com.fluxdown.app.data.AppearanceRepo
+import com.fluxdown.app.data.AppearanceState
 import com.fluxdown.app.data.DeviceSettings
 import com.fluxdown.app.data.HostRepo
 import com.fluxdown.app.data.SecretBox
@@ -18,6 +19,7 @@ import com.fluxdown.app.service.LocalActivity
 import com.fluxdown.app.diag.AppDiagnostics
 import com.fluxdown.app.service.DownloadServiceController
 import com.fluxdown.bridge.FluxBridge
+import com.fluxdown.core.format.Format
 import com.fluxdown.core.host.CreateTaskRequest
 import com.fluxdown.core.host.HostErrorCode
 import com.fluxdown.core.host.HostException
@@ -47,11 +49,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.plus
@@ -70,6 +73,7 @@ class FluxApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         AppDiagnostics.install(this)
+        DownloadServiceController.clearOrphanedTaskNotifications(this)
         container = AppContainer(this)
         // 本机出现下载活动时就尝试拉起前台服务——不限于界面在前台：RSS 自动下载、云端 / 局域网下发、
         // 队列调度都可能在后台产生任务。Android 12+ 后台启动多数会被拒（已在电池优化白名单时豁免），
@@ -104,6 +108,10 @@ class AppContainer(context: Context) {
     private val storeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1))
 
     val appearance = AppearanceRepo(context.prefs)
+    /** null until DataStore loads; never publish a legacy placeholder for a saved IEC preference. */
+    val appearanceState: StateFlow<AppearanceState?> = appearance.state
+        .onEach { Format.setFileSizeUnits(it.fileSizeUnits) }
+        .stateIn(appScope, SharingStarted.Eagerly, null)
     val viewPrefs = ViewPrefsRepo(context.prefs)
 
     /** 批量导入（进程级：关闭「新建下载」Sheet 后仍继续，进度显示在下载页）。 */
@@ -152,6 +160,13 @@ class AppContainer(context: Context) {
     private var localMonitor: Job? = null
 
     private val switchLock = Mutex()
+    internal val hostSelection = HostSelection(
+        appScope, switchLock, hostRepo,
+        currentHost = { _host.value },
+        hasSession = { session !is UnavailableSession },
+        open = ::openOrFail,
+        adopt = ::adopt,
+    )
 
     init {
         appScope.launch {
@@ -165,15 +180,6 @@ class AppContainer(context: Context) {
         appScope.launch(Dispatchers.IO) {
             store.state.map(::connectionSummary).distinctUntilChanged().collect { AppDiagnostics.event("host $it") }
         }
-    }
-
-    /**
-     * 切换主机。打开失败时保持原主机不变并返回失败（[HostException]）。
-     * 切到本机以外时本机引擎继续在进程内运行（由前台服务保活）。
-     */
-    suspend fun switchHost(ref: HostRef): Result<Unit> = switchLock.withLock {
-        if (ref.id == _host.value.id && session !is UnavailableSession) return@withLock Result.success(Unit)
-        openOrFail(ref).map { adopt(ref, it) }
     }
 
     /**
@@ -276,6 +282,7 @@ class AppContainer(context: Context) {
      */
     suspend fun removeHost(id: String) {
         if (id == HostRef.Local.ID) return
+        hostSelection.supersedeHostRestore()
         val fingerprint = (hosts.value.firstOrNull { it.id == id } as? HostRef.Remote)?.linkFingerprint
         switchLock.withLock {
             if (_host.value.id == id) {
@@ -302,8 +309,9 @@ class AppContainer(context: Context) {
         throw e
     } catch (e: Exception) {
         Log.w(TAG, "open host ${ref.id} failed: ${e.message}")
-        AppDiagnostics.event("host open failed (${hostKind(ref)}): ${e.message}")
-        Result.failure(e.asHostException())
+        val error = e.asHostException()
+        AppDiagnostics.event("host open failed (${hostKind(ref)}): ${error.code}")
+        Result.failure(error)
     }
 
     private suspend fun open(ref: HostRef): HostSession = when (ref) {
@@ -418,7 +426,10 @@ class AppContainer(context: Context) {
             save.mkdirs()
             data.path to save.path
         }
-        return FluxBridge.openLocal(dataDir = dataDir, saveDir = saveDir, platform = PLATFORM, deviceName = systemDeviceName())
+        return FluxBridge.openLocal(
+            dataDir = dataDir, saveDir = saveDir, platform = PLATFORM, deviceName = systemDeviceName(),
+            externalLogDir = AppDiagnostics.externalLogRoot?.path,
+        )
     }
 
     /** 开一个本机独立会话跑 [block]，结束（含失败 / 取消）即关闭。 */
@@ -463,7 +474,7 @@ private fun connectionSummary(state: HostState): String {
         Connection.Connecting -> "connecting"
         Connection.Live -> "live"
         Connection.Stale -> "stale"
-        is Connection.Failed -> "failed ${c.error.code}: ${c.error.message}"
+        is Connection.Failed -> "failed ${c.error.code}"
     }
     return if (state.tasksLoading) "$connection, tasks loading (${state.taskTotal})" else connection
 }

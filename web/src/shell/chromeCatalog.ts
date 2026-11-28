@@ -19,7 +19,12 @@ export const CHROME_CATALOG: readonly ChromeItemSpec[] = [
   { id: 'downloadLimit', defaultZone: 'statusTrailing', families: ['rail', 'title', 'status'] },
   { id: 'uploadLimit', defaultZone: 'statusTrailing', families: ['rail', 'title', 'status'] },
   { id: 'proxy', defaultZone: 'statusTrailing', families: ['rail', 'title', 'status'] },
-  { id: 'diskFree', defaultZone: 'statusTrailing', families: ['title', 'status'] },
+  // 剩余空间默认隐藏（状态栏右侧留给版本条目），可在自定义布局里显示。
+  { id: 'diskFree', defaultZone: 'statusTrailing', families: ['title', 'status'], defaultHidden: true },
+  // AI 助手入口（非路由，开关窗口右侧全高面板）：默认状态栏右侧，紧挨版本条目之前；显示与否另受偏好 `ui.show_activity_assistant` 控制。
+  { id: 'assistantPanel', defaultZone: 'statusTrailing', families: ['rail', 'title', 'status'] },
+  // 版本号（有更新时兼作更新入口）：默认状态栏最右；文字条目，放不进活动栏。
+  { id: 'appVersion', defaultZone: 'statusTrailing', families: ['title', 'status'] },
 ]
 
 /** 小部件条目的文案键（路由 / 账户条目沿用 `ACTIVITY_ENTRIES` 的 `labelKey`）；编辑态拖动手柄的名称提示用。 */
@@ -33,6 +38,7 @@ export const WIDGET_LABEL_KEY: Readonly<Record<string, string>> = {
   uploadLimit: 'uploadLimit',
   proxy: 'statusBarProxyLabel',
   diskFree: 'chromeWidgetDiskFree',
+  appVersion: 'chromeWidgetVersion',
 }
 
 // ── 动态条目（插件活动页）：与 GPUI `ShellView::set_dynamic_routes` 同 id（`plugin:<identity>:<viewId>`）、同默认位置（railTop）──

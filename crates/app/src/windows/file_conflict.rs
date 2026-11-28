@@ -17,7 +17,7 @@ use fluxdown_ui_downloads::{
     FILE_CONFLICT_WINDOW_HEIGHT, FILE_CONFLICT_WINDOW_WIDTH, FileConflictEvent, FileConflictView,
 };
 use fluxdown_ui_shell::{AuxiliaryWindowView, auxiliary_window_options};
-use gpui::{App, AppContext as _, Bounds, DisplayId, Window, WindowBounds, WindowKind, px, size};
+use gpui::{App, AppContext as _, DisplayId, Window, WindowBounds, WindowKind, px, size};
 use gpui_component::Root;
 
 use crate::{
@@ -84,7 +84,7 @@ fn open_if_closed(cx: &mut App) {
     }
 }
 
-/// 打开（或置前）聚合窗口，居中主窗口所在显示器。
+/// 打开（或置前）聚合窗口，居中主窗口当前边界（无主窗口时为主显示器）。
 pub fn open(cx: &mut App) {
     let display_id = WindowRegistry::main_display_id(cx);
     open_on(cx, display_id);
@@ -107,14 +107,16 @@ fn open_on(cx: &mut App, display_id: Option<DisplayId>) {
     options.window_min_size = None;
     options.kind = WindowKind::Floating;
     options.is_resizable = false;
-    options.window_bounds = Some(WindowBounds::Windowed(Bounds::centered(
-        display_id,
+    let (display_id, bounds) = WindowRegistry::place_following_main(
         size(
             px(FILE_CONFLICT_WINDOW_WIDTH),
             px(FILE_CONFLICT_WINDOW_HEIGHT),
         ),
+        display_id,
         cx,
-    )));
+    );
+    options.display_id = display_id;
+    options.window_bounds = Some(WindowBounds::Windowed(bounds));
 
     WindowRegistry::open_or_focus(cx, WindowKey::FileConflicts, options, move |window, cx| {
         let port = Arc::new(AgentDownloadsPort::new(client));

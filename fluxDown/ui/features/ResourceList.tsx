@@ -58,29 +58,18 @@ function allRows(view: TabView): CandidateRow[] {
   return [...view.playing, ...view.otherElements, ...view.unbound];
 }
 
-/** 批量下载所选项：候选逐个发送（各取播放中/首个清晰度），文件一次性批量发送。 */
-export async function downloadSelection(view: TabView, sel: ListSelection): Promise<SendResult> {
+/** 一次提交所选资源；候选保留用户看到的播放中/首个清晰度。 */
+export function downloadSelection(view: TabView, sel: ListSelection): Promise<SendResult> {
   const byId = new Map(allRows(view).map((r) => [r.candidate.id, r]));
-  let failure: SendResult | null = null;
-  for (const id of sel.candidateIds) {
-    const row = byId.get(id);
-    const res = await sendAction<"downloadCandidate">({
-      action: "downloadCandidate",
-      tabId: view.tabId,
-      candidateId: id,
-      variantId: row ? shownVariant(row)?.id : undefined,
-    });
-    if (!res?.success) failure ??= res ?? { success: false };
-  }
-  if (sel.resourceIds.length > 0) {
-    const res = await sendAction<"downloadResources">({
-      action: "downloadResources",
-      tabId: view.tabId,
-      resourceIds: sel.resourceIds,
-    });
-    if (!res?.success) failure ??= res ?? { success: false };
-  }
-  return failure ?? { success: true };
+  return sendAction<"downloadSelection">({
+    action: "downloadSelection",
+    tabId: view.tabId,
+    candidates: sel.candidateIds.map((candidateId) => {
+      const row = byId.get(candidateId);
+      return { candidateId, variantId: row ? shownVariant(row)?.id : undefined };
+    }),
+    resourceIds: sel.resourceIds,
+  });
 }
 
 interface Props {
@@ -193,7 +182,8 @@ export function ResourceList(props: Props): JSX.Element {
   const allChecked = visibleKeys.length > 0 && visibleKeys.every((k) => selected.has(k));
 
   const report = (res: SendResult | undefined) => {
-    if (res?.success) showToast(t("list.sent"), "success");
+    if (res?.cancelled) showToast(t("remote.manualCancelled"));
+    else if (res?.success) showToast(t("list.sent"), "success");
     else showToast(res?.message || t("list.sendFailed"), "error");
   };
 

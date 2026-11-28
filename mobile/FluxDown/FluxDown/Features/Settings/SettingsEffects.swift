@@ -4,8 +4,7 @@ import UIKit
 
 /// 设置带来的根级副作用（挂在根视图，与当前停留在哪个页面无关）：
 /// - 外观：主机偏好 ↔ `AppearanceStore`（`AppearanceSync`）；
-/// - 下载期间保持屏幕常亮（`download.keep_awake`，仅本机引擎且前台时）；
-/// - 完成 / 失败 / 选择请求的本地通知（`NotificationService`）。
+/// - 下载期间保持屏幕常亮（`download.keep_awake`，仅本机引擎且前台时）。
 ///
 /// 用法：根视图 `.settingsEffects()`（与 `.backgroundTransfers()` 同级）。
 @MainActor
@@ -21,7 +20,6 @@ final class SettingsEffects {
         guard self.container == nil else { return }
         self.container = container
         AppearanceSync.shared.attach(container: container)
-        NotificationService.shared.attach(container: container)
     }
 
     /// 下载期间保持常亮：偏好开启、当前主机是本机（手机自己在下载）、前台、且确有活跃下载。
@@ -61,10 +59,8 @@ private struct SettingsEffectsModifier: ViewModifier {
 }
 
 extension View {
-    /// 安装设置的根级副作用（外观同步 / 保持常亮 / 本地通知）。
+    /// 安装设置的根级副作用（外观同步 / 保持常亮）。
     func settingsEffects() -> some View {
-        // 通知代理必须尽早设置，冷启动由通知拉起时才收得到响应（`FluxDownApp.init` 里再触碰一次更稳妥）。
-        _ = NotificationService.shared
         return modifier(SettingsEffectsModifier())
     }
 }

@@ -28,6 +28,34 @@ pub const COMMAND_CAPACITY: usize = 64;
 
 /// 最后一次领域活动后静默多久收缩数据库连接池内存（见 `Db::release_idle_memory`）。
 const DB_MEMORY_TRIM_DELAY: Duration = Duration::from_secs(60);
+const REDOWNLOAD_STOP_TIMEOUT: Duration = Duration::from_secs(10);
+
+// Wait in the actor loop: TaskDone must release the old generation before
+// the command can reread state or touch any files.
+struct PendingRedownload {
+    generation: u64,
+    timer: tokio::task::AbortHandle,
+    recreate_if_present: bool,
+    ack: oneshot::Sender<Result<ActorResult, ActorError>>,
+}
+
+enum WorkerEvent {
+    Done(TaskDone),
+    RedownloadTimeout(Result<(String, u64), tokio::task::JoinError>),
+}
+
+async fn next_worker_event(
+    done: &mut mpsc::Receiver<TaskDone>,
+    timers: &mut tokio::task::JoinSet<(String, u64)>,
+) -> WorkerEvent {
+    tokio::select! {
+        // If both are ready, consume the worker completion before its timeout.
+        biased;
+        Some(done) = done.recv() => WorkerEvent::Done(done),
+        Some(timer) = timers.join_next(), if !timers.is_empty() => WorkerEvent::RedownloadTimeout(timer),
+        else => std::future::pending().await,
+    }
+}
 
 /// 本机做种任务的登记选项（`daemon.task.seedLocal`）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -84,7 +112,8 @@ pub enum ActorOperation {
     RecheckTask {
         task_id: String,
     },
-    /// 把 BT 任务的数据移动到新的保存目录（`daemon.task.moveStorage`，搬移在 actor 之外）。
+    /// 把任务数据移动到新的保存目录（`daemon.task.moveStorage`，搬移在 actor 之外）：
+    /// BT 任务走 BT 会话搬移，其余协议走统一编辑的搬移。
     MoveTaskStorage {
         task_id: String,
         save_dir: String,
@@ -120,6 +149,9 @@ pub enum ActorOperation {
     ResumeTask {
         task_id: String,
     },
+    SaveHtmlResponse {
+        task_id: String,
+    },
     RenameTask {
         task_id: String,
         file_name: String,
@@ -153,9 +185,20 @@ pub enum ActorOperation {
         task_id: String,
         enabled: bool,
     },
+    AddTaskWebSeed {
+        task_id: String,
+        url: String,
+    },
     DeleteTask {
         task_id: String,
         delete_files: bool,
+    },
+    ClearTaskFile {
+        task_id: String,
+    },
+    RestartMissingFile {
+        task_id: String,
+        recreate_if_present: bool,
     },
     PauseAll,
     ResumeAll,
@@ -169,6 +212,9 @@ pub enum ActorOperation {
     DeleteTasks {
         task_ids: Vec<String>,
         delete_files: bool,
+    },
+    CleanUnfinishedTasks {
+        task_ids: Vec<String>,
     },
     SetTaskSeedLimits {
         task_id: String,
@@ -239,6 +285,10 @@ pub enum ActorOperation {
         port: String,
         username: String,
         password: String,
+    },
+    /// 按真实下载出口测量来源吞吐（准备在 actor 内、传输在 actor 外）。
+    MeasureRoutes {
+        request: fluxdown_engine::net_probe::MeasureRequest,
     },
     PatchConfig {
         expected_revision: u64,
@@ -344,7 +394,10 @@ pub enum ActorOperation {
 /// actor 操作结果。
 pub enum ActorResult {
     Unit,
+    CleanedUnfinished(usize),
     Created(String),
+    /// 清单建组：多条目为组，单条目为普通任务。
+    GroupCreated(fluxdown_engine::download_manager::GroupCreation),
     /// 与 `CreateTasks` 的 `items` 逐条同序的结果。
     CreatedMany(Vec<CreateTaskOutcome>),
     Boolean(bool),
@@ -366,6 +419,7 @@ pub enum ActorResult {
     ResolvePreview(ResolvePreviewOutcome),
     RssValidation(Box<RssValidateOutcome>),
     LinkProbe(fluxdown_protocol::LinkProbeResult),
+    NetMeasure(fluxdown_protocol::NetMeasureResultDto),
     RssSources(Vec<RssSourceInfo>),
     WebhookDeliveries(Vec<fluxdown_engine::webhook::WebhookDelivery>),
     WebhookSimulation(usize),
@@ -396,9 +450,17 @@ pub enum ActorError {
     /// 任务当前状态不允许该操作（如对已完成 / 失败任务设优先下载）。
     #[error("task state conflict: {0}")]
     TaskStateConflict(String),
+    #[error(
+        "Restore the original save location and retry Delete File Only before editing the path"
+    )]
+    TaskFileClearPending,
     /// 删除被拒：任务文件删不掉，任务记录已保留（`in_use` = 文件正被其他程序占用）。
     #[error("{message}")]
     TaskFilesKept { in_use: bool, message: String },
+    #[error("{}", fluxdown_engine::downloader::POST_ONLY_RESUME_MESSAGE)]
+    BrowserRequestRequired,
+    #[error("Could not restart the download: the previous download did not stop in time.")]
+    TaskRestartTimeout,
 }
 
 /// daemon actor 命令。
@@ -417,7 +479,7 @@ pub enum PluginEvent {
     #[cfg(feature = "plugins")]
     Resolve(Box<ResolveOutcome>),
     #[cfg(feature = "plugins")]
-    Retry { task_id: String, delay_ms: u64 },
+    Retry(fluxdown_engine::download_manager::PluginRetryEvent),
 }
 
 /// off-actor 网络抓取回流，数据库提交只在 actor 内执行。
@@ -488,6 +550,8 @@ pub struct EngineReceivers {
     pub retry: mpsc::Receiver<String>,
     pub plugin: mpsc::UnboundedReceiver<PluginEvent>,
     pub missing_cleanup: mpsc::Receiver<Vec<String>>,
+    /// 做种在 actor 外落入停止原因，或刚完成 / 刚停止做种的宽限到期：再清一次已完成记录。
+    pub retention_purge: mpsc::Receiver<()>,
     /// 「下载完成后计算哈希」的结果回流。
     pub file_hash: mpsc::UnboundedReceiver<fluxdown_engine::file_hash::FileHashOutcome>,
 }
@@ -613,6 +677,8 @@ async fn run_actor(
     let db_memory_trim = tokio::time::sleep(DB_MEMORY_TRIM_DELAY);
     tokio::pin!(db_memory_trim);
     let mut db_memory_trim_armed = true;
+    let mut redownloads = HashMap::<String, PendingRedownload>::new();
+    let mut redownload_timers = tokio::task::JoinSet::new();
 
     loop {
         tokio::select! {
@@ -621,6 +687,30 @@ async fn run_actor(
                 arm_db_memory_trim(db_memory_trim.as_mut(), &mut db_memory_trim_armed);
                 match command {
                     DaemonCommand::Execute { operation, ack } => {
+                        if let ActorOperation::RestartMissingFile { task_id, recreate_if_present } = &operation {
+                            if redownloads.contains_key(task_id) {
+                                drop(ack.send(Err(ActorError::TaskStateConflict(
+                                    "a redownload already waits for this task".into(),
+                                ))));
+                                continue;
+                            }
+                            if let Some(generation) = engine.manager.redownload_worker_generation(task_id)
+                                && engine.db.load_task_by_id(task_id).await.is_ok_and(|task| {
+                                    task.is_some_and(|task| matches!(task.status, 3 | 4))
+                                })
+                            {
+                                let deadline = tokio::time::Instant::now() + REDOWNLOAD_STOP_TIMEOUT;
+                                let timer_id = task_id.clone();
+                                let timer = redownload_timers.spawn(async move {
+                                    tokio::time::sleep_until(deadline).await;
+                                    (timer_id, generation)
+                                });
+                                redownloads.insert(task_id.clone(), PendingRedownload {
+                                    generation, timer, recreate_if_present: *recreate_if_present, ack,
+                                });
+                                continue;
+                            }
+                        }
                         dispatch_operation(
                             operation,
                             ack,
@@ -640,10 +730,40 @@ async fn run_actor(
                     }
                 }
             }
-            Some(done) = receivers.done.recv() => {
-                arm_db_memory_trim(db_memory_trim.as_mut(), &mut db_memory_trim_armed);
-                engine.manager.on_task_done(&done).await;
-            }
+            event = next_worker_event(&mut receivers.done, &mut redownload_timers) => match event {
+                WorkerEvent::Done(done) => {
+                    arm_db_memory_trim(db_memory_trim.as_mut(), &mut db_memory_trim_armed);
+                    let request = if done.phase == fluxdown_engine::download_manager::TaskDonePhase::Finished
+                        && redownloads.get(&done.task_id)
+                            .is_some_and(|request| request.generation == done.generation)
+                    {
+                        redownloads.remove(&done.task_id)
+                    } else {
+                        None
+                    };
+                    engine.manager.on_task_done(&done).await;
+                    if let Some(request) = request {
+                        request.timer.abort();
+                        if !request.ack.is_closed() {
+                            dispatch_operation(
+                                ActorOperation::RestartMissingFile {
+                                    task_id: done.task_id,
+                                    recreate_if_present: request.recreate_if_present,
+                                },
+                                request.ack, &mut engine, &events, &maintenance_tx,
+                            ).await;
+                        }
+                    }
+                }
+                WorkerEvent::RedownloadTimeout(Ok((task_id, generation))) => {
+                    if redownloads.get(&task_id).is_some_and(|request| request.generation == generation)
+                        && let Some(request) = redownloads.remove(&task_id)
+                    {
+                        drop(request.ack.send(Err(ActorError::TaskRestartTimeout)));
+                    }
+                }
+                WorkerEvent::RedownloadTimeout(Err(_)) => {}
+            },
             Some(task_id) = receivers.retry.recv() => {
                 arm_db_memory_trim(db_memory_trim.as_mut(), &mut db_memory_trim_armed);
                 if engine.manager.is_task_in_error(&task_id).await {
@@ -656,8 +776,8 @@ async fn run_actor(
                     #[cfg(feature = "plugins")]
                     PluginEvent::Resolve(outcome) => engine.manager.on_resolve_ready(*outcome).await,
                     #[cfg(feature = "plugins")]
-                    PluginEvent::Retry { task_id, delay_ms } => {
-                        engine.manager.plugin_request_retry(&task_id, delay_ms).await;
+                    PluginEvent::Retry(event) => {
+                        engine.manager.handle_plugin_retry_event(event).await;
                     }
                 }
             }
@@ -674,12 +794,20 @@ async fn run_actor(
             }
             Some(ids) = receivers.missing_cleanup.recv() => {
                 arm_db_memory_trim(db_memory_trim.as_mut(), &mut db_memory_trim_armed);
-                // 删除事实由 delete_tasks_batch 自己发布（TasksDeleted），无需再推全量快照。
-                if let Err(error) = batch_delete_result(
-                    engine.manager.delete_tasks_batch(&ids, false).await,
-                ) {
-                    tracing::warn!(%error, "removing tasks whose files vanished failed");
+                match engine.db.unexpectedly_missing_task_ids(&ids).await {
+                    Ok(ids) => {
+                        if let Err(error) = batch_delete_result(
+                            engine.manager.delete_tasks_batch(&ids, false).await,
+                        ) {
+                            tracing::warn!(%error, "removing tasks whose files vanished failed");
+                        }
+                    }
+                    Err(error) => tracing::warn!(%error, "rechecking missing task files failed"),
                 }
+            }
+            Some(()) = receivers.retention_purge.recv() => {
+                arm_db_memory_trim(db_memory_trim.as_mut(), &mut db_memory_trim_armed);
+                engine.manager.purge_requested_completed_records().await;
             }
             _ = file_scan.tick() => {
                 // 完全空闲且 idle_file_scan 关闭时跳过，避免周期性唤醒 NAS 硬盘。
@@ -709,6 +837,8 @@ async fn run_actor(
         }
     }
 
+    drop(redownloads);
+    drop(redownload_timers);
     engine.manager.shutdown().await;
     match tokio::time::timeout(Duration::from_secs(5), engine.flush_task_activity()).await {
         Ok(Ok(())) => {}
@@ -987,10 +1117,15 @@ async fn dispatch_operation(
                         .await?
                         .and_then(|value| value.parse::<u16>().ok())
                         .unwrap_or(0);
-                    Ok::<_, fluxdown_engine::db::DbError>((cached, urls, listen_port))
+                    let proxy_url = engine
+                        .db
+                        .get_config(fluxdown_engine::protocol_proxy::ED2K_KEY)
+                        .await?
+                        .unwrap_or_default();
+                    Ok::<_, fluxdown_engine::db::DbError>((cached, urls, listen_port, proxy_url))
                 }
                 .await;
-                let (cached, urls, listen_port) = match inputs {
+                let (cached, urls, listen_port, proxy_url) = match inputs {
                     Ok(inputs) => inputs,
                     Err(error) => {
                         if ack
@@ -1011,6 +1146,7 @@ async fn dispatch_operation(
                         &urls,
                         listen_port,
                         &proxy,
+                        &proxy_url,
                     )
                     .await;
                     if maintenance_tx
@@ -1061,6 +1197,33 @@ async fn dispatch_operation(
                     tracing::debug!("link probe caller disconnected before result");
                 }
             });
+        }
+        ActorOperation::MeasureRoutes { request } => {
+            match engine.manager.measure_routes_future(request).await {
+                Ok(future) => {
+                    // 测量最长数分钟且不再读写引擎状态，不能占用 actor 循环；调用方断开
+                    // （RPC 取消、AI 执行被取消）即停止，不再继续消耗流量。
+                    let mut ack = ack;
+                    tokio::spawn(async move {
+                        let report = tokio::select! {
+                            report = future => report,
+                            () = ack.closed() => {
+                                tracing::debug!("route measurement caller disconnected; measurement stopped");
+                                return;
+                            }
+                        };
+                        let result = fluxdown_engine_protocol::net_measure_to_dto(report);
+                        if ack.send(Ok(ActorResult::NetMeasure(result))).is_err() {
+                            tracing::debug!("route measurement caller disconnected before result");
+                        }
+                    });
+                }
+                Err(error) => {
+                    if ack.send(Err(measure_error(error))).is_err() {
+                        tracing::debug!("route measurement caller disconnected before rejection");
+                    }
+                }
+            }
         }
         #[cfg_attr(not(feature = "bt"), allow(unused_variables))]
         ActorOperation::VerifyTask { task_id } => {
@@ -1151,30 +1314,37 @@ async fn dispatch_operation(
             });
         }
         ActorOperation::MoveTaskStorage { task_id, save_dir } => {
-            #[cfg(feature = "bt")]
-            start_bt_move(
-                engine,
-                maintenance_tx,
-                BtMoveRequest {
-                    task_id,
-                    save_dir,
-                    resume_after: false,
-                    deadline: tokio::time::Instant::now() + BT_MOVE_STOP_TIMEOUT,
-                    ack,
-                },
-            )
-            .await;
-            #[cfg(not(feature = "bt"))]
-            {
-                let _ = (task_id, save_dir);
-                if ack
-                    .send(Err(ActorError::InvalidArgument(
-                        UNSUPPORTED_PROTOCOL_MESSAGE.to_owned(),
-                    )))
-                    .is_err()
-                {
-                    tracing::debug!("storage move caller disconnected before rejection");
+            // 非 BT 任务（HTTP / FTP / eD2K / HLS…）走统一编辑的搬移：同一套
+            // 「停写入 → 复制发布 → 落库 → 删源」与中断恢复日志。
+            match fluxdown_engine::task_edit::storage_move(&engine.db, &task_id, &save_dir).await {
+                Ok(Some(patch)) => {
+                    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+                    let result = engine.manager.begin_task_edit(patch).await;
+                    task_edit::step(result, ack, deadline, engine, maintenance_tx).await;
                 }
+                Ok(None) => {
+                    #[cfg(feature = "bt")]
+                    start_bt_move(
+                        engine,
+                        maintenance_tx,
+                        BtMoveRequest {
+                            task_id,
+                            save_dir,
+                            resume_after: false,
+                            deadline: tokio::time::Instant::now() + BT_MOVE_STOP_TIMEOUT,
+                            ack,
+                        },
+                    )
+                    .await;
+                    #[cfg(not(feature = "bt"))]
+                    task_edit::reply(
+                        ack,
+                        Err(ActorError::InvalidArgument(
+                            UNSUPPORTED_PROTOCOL_MESSAGE.to_owned(),
+                        )),
+                    );
+                }
+                Err(error) => task_edit::reply(ack, Err(task_edit::edit_error(error))),
             }
         }
         ActorOperation::WebhookTest { endpoint_json } => {
@@ -1400,6 +1570,23 @@ async fn execute_operation(
                 ));
             }
         }
+        ActorOperation::AddTaskWebSeed { task_id, url } => {
+            #[cfg(feature = "bt")]
+            {
+                engine
+                    .manager
+                    .add_bt_web_seed(&task_id, &url)
+                    .await
+                    .map_err(bt_task_op_error)?;
+            }
+            #[cfg(not(feature = "bt"))]
+            {
+                let _ = (task_id, url);
+                return Err(ActorError::InvalidArgument(
+                    UNSUPPORTED_PROTOCOL_MESSAGE.to_owned(),
+                ));
+            }
+        }
         ActorOperation::BtTaskFiles { task_id } => {
             #[cfg(feature = "bt")]
             {
@@ -1615,11 +1802,28 @@ async fn execute_operation(
             }
             engine.manager.resume_task(&task_id).await;
         }
+        ActorOperation::SaveHtmlResponse { task_id } => {
+            let task_id = engine
+                .manager
+                .save_html_response(&task_id)
+                .await
+                .map_err(|error| match error.as_str() {
+                    "not-found" => ActorError::NotFound,
+                    "not-an-html-failure" | "browser-request-unavailable" => {
+                        ActorError::TaskStateConflict(error)
+                    }
+                    _ => ActorError::Operation(error),
+                })?;
+            return Ok(ActorResult::Created(task_id));
+        }
         ActorOperation::RenameTask { task_id, file_name } => engine
             .manager
             .rename_task(&task_id, &file_name)
             .await
-            .map_err(ActorError::Operation)?,
+            .map_err(|error| match error.as_str() {
+                "file-clear-pending" => ActorError::TaskFileClearPending,
+                _ => ActorError::Operation(error),
+            })?,
         ActorOperation::ChangeTaskUrl { task_id, url } => engine
             .manager
             .change_task_url(&task_id, &url)
@@ -1703,6 +1907,38 @@ async fn execute_operation(
             engine.manager.send_tasks_snapshot().await;
             result.map_err(delete_task_error)?;
         }
+        ActorOperation::ClearTaskFile { task_id } => {
+            engine
+                .manager
+                .clear_task_file(&task_id)
+                .await
+                .map_err(|error| ActorError::Operation(format!("{error:#}")))?;
+        }
+        ActorOperation::RestartMissingFile {
+            task_id,
+            recreate_if_present,
+        } => {
+            if recreate_if_present {
+                let restarted = engine
+                    .manager
+                    .try_restart_missing_task_file(&task_id)
+                    .await
+                    .map_err(restart_file_error)?;
+                if restarted {
+                    return Ok(ActorResult::Boolean(false));
+                }
+                // Only the actor may authorize recreation, after checking persisted state.
+                let result = engine.manager.delete_task(&task_id, true).await;
+                engine.manager.send_tasks_snapshot().await;
+                result.map_err(delete_task_error)?;
+                return Ok(ActorResult::Boolean(true));
+            }
+            engine
+                .manager
+                .restart_missing_task_file(&task_id)
+                .await
+                .map_err(restart_file_error)?;
+        }
         ActorOperation::PauseAll => {
             let mut ids = pause_all_task_ids(&engine.db).await?;
             ids.extend(engine.manager.retry_pending_task_ids());
@@ -1735,6 +1971,11 @@ async fn execute_operation(
             let ids = existing_task_ids(&engine.db, task_ids).await?;
             // 删除事实由 delete_tasks_batch 经 TasksDeleted 发布：大批量删除不再逐块推全量快照。
             batch_delete_result(engine.manager.delete_tasks_batch(&ids, delete_files).await)?;
+        }
+        ActorOperation::CleanUnfinishedTasks { task_ids } => {
+            let ids = existing_task_ids(&engine.db, task_ids).await?;
+            let deleted = batch_delete_result(engine.manager.delete_unfinished_tasks(&ids).await)?;
+            return Ok(ActorResult::CleanedUnfinished(deleted));
         }
         ActorOperation::ResumeAll => {
             engine.manager.resume_all_eligible().await;
@@ -1893,19 +2134,21 @@ async fn execute_operation(
         ActorOperation::CreateGroup { spec } => {
             let mut spec = *spec;
             spec.queue_id = resolve_queue_id(&engine.db, spec.queue_id).await?;
-            let group_id = engine
+            let created = engine
                 .manager
                 .create_task_group(spec)
                 .await
                 .ok_or_else(|| ActorError::Operation("failed to persist group".to_owned()))?;
-            return Ok(ActorResult::Created(group_id));
+            return Ok(ActorResult::GroupCreated(created));
         }
         ActorOperation::PauseGroup { group_id } => engine.manager.pause_group(&group_id).await,
         ActorOperation::ResumeGroup { group_id } => engine.manager.resume_group(&group_id).await,
         ActorOperation::DeleteGroup {
             group_id,
             delete_files,
-        } => batch_delete_result(engine.manager.delete_group(&group_id, delete_files).await)?,
+        } => {
+            batch_delete_result(engine.manager.delete_group(&group_id, delete_files).await)?;
+        }
         #[cfg(feature = "plugins")]
         ActorOperation::ResolvePreview { .. } => unreachable!("handled off actor"),
         ActorOperation::RssListSources => {
@@ -1965,6 +2208,7 @@ async fn execute_operation(
         | ActorOperation::HashTask { .. }
         | ActorOperation::WebhookTest { .. }
         | ActorOperation::TestProxy { .. }
+        | ActorOperation::MeasureRoutes { .. }
         | ActorOperation::MoveTaskStorage { .. } => unreachable!("handled off actor"),
         ActorOperation::EditTask(_) => {
             return Err(ActorError::Operation(
@@ -2591,6 +2835,16 @@ fn file_hash_error(error: fluxdown_engine::file_hash::FileHashError) -> ActorErr
     }
 }
 
+fn measure_error(error: fluxdown_engine::net_probe::MeasureError) -> ActorError {
+    use fluxdown_engine::net_probe::MeasureError;
+    match error {
+        MeasureError::NotFound => ActorError::NotFound,
+        MeasureError::InvalidArgument(message) => ActorError::InvalidArgument(message),
+        MeasureError::Busy => ActorError::Conflict(error.to_string()),
+        MeasureError::Failed(message) => ActorError::Operation(message),
+    }
+}
+
 /// 自动哈希没有调用方等待：任务在计算期间被删除 / 重新下载、产物是目录属正常，只记调试日志。
 fn log_auto_file_hash_error(task_id: &str, error: &fluxdown_engine::file_hash::FileHashError) {
     use fluxdown_engine::file_hash::FileHashError;
@@ -2770,6 +3024,8 @@ fn bt_status_to_dto(
                     WebSeedState::Downloading => "downloading",
                     WebSeedState::BackingOff => "backingOff",
                     WebSeedState::Disabled => "disabled",
+                    WebSeedState::Pending => "pending",
+                    WebSeedState::Rejected => "rejected",
                 }
                 .to_owned(),
                 downloaded: seed.downloaded,
@@ -3026,10 +3282,16 @@ async fn patch_config(
     {
         return Err(ActorError::InvalidArgument(first.message()));
     }
-    if values
-        .keys()
-        .any(|key| key.starts_with("proxy_") || key == "global_user_agent")
-    {
+    for (key, value) in &values {
+        if fluxdown_engine::protocol_proxy::is_key(key) {
+            fluxdown_engine::protocol_proxy::validate(key, value)
+                .map_err(|error| ActorError::InvalidArgument(format!("{key}: {error}")))?;
+        }
+    }
+    if values.keys().any(|key| {
+        (key.starts_with("proxy_") && !fluxdown_engine::protocol_proxy::is_key(key))
+            || key == "global_user_agent"
+    }) {
         // 与引擎实际应用时一致地构建 client：非法代理或 UA（HeaderValue 规则）
         // 必须在提交前被拒绝，否则毒值落库后会导致下次启动失败。
         let proxy = fluxdown_engine::proxy_config::ProxyConfig::from_config_map(&merged);
@@ -3243,6 +3505,7 @@ fn create_task_outcome(outcome: BatchItemOutcome) -> CreateTaskOutcome {
                     retryable: false,
                     field: Some(field.to_owned()),
                     revision: None,
+                    plugin_detail: None,
                     reason: None,
                 }),
             }
@@ -3361,9 +3624,10 @@ async fn apply_live_config<'a>(
     }
     if keys.contains(&"completed_record_retention_days") {
         engine.manager.set_completed_record_retention_days(
-            all.get("completed_record_retention_days")
-                .and_then(|value| value.parse::<u32>().ok())
-                .unwrap_or(0),
+            crate::runtime::completed_record_retention_days(
+                all.get("completed_record_retention_days")
+                    .map(String::as_str),
+            ),
         );
         // 设置变更立即生效（跳过去抖）；清理只删记录，失败只记日志。
         engine.manager.purge_expired_completed_records(true).await;
@@ -3377,10 +3641,15 @@ async fn apply_live_config<'a>(
             .map_err(|error| ActorError::Operation(format!("{error:#}")))?;
     }
     let rules_key = fluxdown_engine::proxy_rules::PROXY_RULES_KEY;
-    if keys
+    let bt_proxy_changed = keys
         .iter()
-        .any(|key| key.starts_with("proxy_") && *key != rules_key)
-    {
+        .any(|key| fluxdown_engine::protocol_proxy::is_key(key))
+        && engine.manager.set_protocol_proxies(all);
+    if keys.iter().any(|key| {
+        key.starts_with("proxy_")
+            && *key != rules_key
+            && !fluxdown_engine::protocol_proxy::is_key(key)
+    }) {
         engine
             .manager
             .set_proxy_config(fluxdown_engine::proxy_config::ProxyConfig::from_config_map(
@@ -3393,7 +3662,8 @@ async fn apply_live_config<'a>(
             fluxdown_engine::proxy_config::ProxyConfig::from_config_map(all).rules,
         );
     }
-    let bt_session_rebuild = crate::config::bt_session_rebuild_needed(&keys, all);
+    let bt_session_rebuild =
+        bt_proxy_changed || crate::config::bt_session_rebuild_needed(&keys, all);
     if bt_session_rebuild || keys.iter().any(|key| key.starts_with("bt_")) {
         engine
             .manager
@@ -3407,7 +3677,9 @@ async fn apply_live_config<'a>(
     // eD2K 设置热生效：UPnP 开关立即建立 / 撤销映射；服务器列表、Kad 开关与引导节点
     // 订阅由各任务在下一轮找源前重读。监听端口只在监听器首次绑定时读取。
     #[cfg(feature = "ed2k")]
-    if keys.iter().any(|key| key.starts_with("ed2k_")) {
+    if keys.iter().any(|key| key.starts_with("ed2k_"))
+        || keys.contains(&fluxdown_engine::protocol_proxy::ED2K_KEY)
+    {
         fluxdown_engine::ed2k::apply_live_settings(&engine.db)
             .await
             .map_err(|error| ActorError::Operation(format!("{error:#}")))?;
@@ -3476,9 +3748,9 @@ fn batch_delete_result(
         fluxdown_engine::download_manager::BatchDeleteOutcome,
         fluxdown_engine::db::DbError,
     >,
-) -> Result<(), ActorError> {
+) -> Result<usize, ActorError> {
     match result {
-        Ok(outcome) if outcome.failed == 0 => Ok(()),
+        Ok(outcome) if outcome.failed == 0 => Ok(outcome.deleted),
         Ok(outcome) => Err(ActorError::TaskFilesKept {
             in_use: outcome.files_in_use,
             message: format!(
@@ -3499,6 +3771,15 @@ fn delete_task_error(error: fluxdown_engine::download_manager::DeleteTaskError) 
             message: format!("task kept: {error}"),
         },
         DeleteTaskError::Record(_) => ActorError::Operation(error.to_string()),
+    }
+}
+
+fn restart_file_error(error: fluxdown_engine::downloader::DownloadError) -> ActorError {
+    match error {
+        fluxdown_engine::downloader::DownloadError::BrowserRequestRequired => {
+            ActorError::BrowserRequestRequired
+        }
+        _ => ActorError::Operation(format!("{error:#}")),
     }
 }
 
@@ -3973,6 +4254,73 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn invalid_protocol_proxy_rejects_the_whole_patch_without_exposing_credentials() {
+        let (_, dir) = open_db().await;
+        let dir_text = dir.to_string_lossy().into_owned();
+        let mut engine = fluxdown_engine::Engine::new(
+            fluxdown_engine::EngineConfig {
+                max_concurrent: 1,
+                speed_limit_bps: 0,
+                upload_limit_bps: 0,
+                default_save_dir: dir_text.clone(),
+                app_data_dir: dir_text,
+                bt_config: fluxdown_engine::bt_config::BtConfig::default(),
+                proxy_config: fluxdown_engine::proxy_config::ProxyConfig::default(),
+                user_agent: String::new(),
+                data_dir_override: Some(dir.clone()),
+                database_url: None,
+            },
+            std::sync::Arc::new(fluxdown_engine::NoopSink),
+            std::sync::Arc::new(fluxdown_engine::NoopSelection),
+        )
+        .await
+        .expect("construct engine");
+        let events =
+            crate::event_hub::DaemonEventHub::new(fluxdown_protocol::DaemonSnapshot::default(), 32);
+        let operation = |ed2k: &str| ActorOperation::PatchConfig {
+            expected_revision: 0,
+            values: BTreeMap::from([
+                ("proxy_protocol_ed2k".to_owned(), ed2k.to_owned()),
+                ("proxy_protocol_http".to_owned(), "direct://".to_owned()),
+            ]),
+        };
+        let invalid = execute_operation(
+            operation("http://alice:proxy-secret@relay.test:8080"),
+            &mut engine,
+            &events,
+        )
+        .await;
+        assert!(matches!(
+            &invalid,
+            Err(ActorError::InvalidArgument(message))
+                if message.starts_with("proxy_protocol_ed2k:")
+                    && !message.contains("alice") && !message.contains("proxy-secret")
+        ));
+        for key in ["proxy_protocol_ed2k", "proxy_protocol_http"] {
+            assert_eq!(engine.db.get_config(key).await.expect("read config"), None);
+        }
+        let valid = execute_operation(
+            ActorOperation::PatchConfig {
+                expected_revision: 0,
+                values: BTreeMap::from([(
+                    "proxy_protocol_http".to_owned(),
+                    "direct://".to_owned(),
+                )]),
+            },
+            &mut engine,
+            &events,
+        )
+        .await;
+        assert!(
+            matches!(valid, Ok(super::ActorResult::Config(snapshot)) if snapshot.revision == 1)
+        );
+        drop(engine);
+        if let Err(error) = tokio::fs::remove_dir_all(dir).await {
+            eprintln!("actor proxy test directory removal failed: {error}");
+        }
+    }
+
     /// 防吸血的 19 个设置键全部热生效：patch 之后 guard 配置立即变化，只读节奏（BT 会话）不被触碰；
     /// 其余 `bt_*` 键的 patch 不影响 guard 配置。
     #[cfg(feature = "bt")]
@@ -4436,6 +4784,213 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn desktop_redownload_prefers_queued_completion_to_ready_timeout() {
+        use super::{TaskDone, WorkerEvent, next_worker_event};
+
+        let (send, mut done) = tokio::sync::mpsc::channel(1);
+        let mut timers = tokio::task::JoinSet::new();
+        let timer = timers.spawn(async { ("task".into(), 7) });
+        while !timer.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        send.send(TaskDone::finished("task".into(), 7))
+            .await
+            .unwrap();
+        let WorkerEvent::Done(event) = next_worker_event(&mut done, &mut timers).await else {
+            panic!("queued completion must beat a ready timeout");
+        };
+        assert_eq!((event.task_id.as_str(), event.generation), ("task", 7));
+    }
+
+    #[tokio::test]
+    async fn desktop_redownload_timeout_retains_task_and_files() {
+        desktop_redownload_while_worker_is_finishing(false).await;
+    }
+
+    #[tokio::test]
+    async fn desktop_redownload_restarts_missing_file_after_worker_stops() {
+        desktop_redownload_while_worker_is_finishing(true).await;
+    }
+
+    async fn desktop_redownload_while_worker_is_finishing(worker_finishes: bool) {
+        use std::{sync::Arc, time::Duration};
+
+        use fluxdown_engine::{Engine, EngineConfig, NoopSelection, NoopSink};
+        use fluxdown_protocol::{
+            ApplicationErrorCode, ErrorReason, RequestId, RpcRequest, RpcResponse,
+        };
+        use tokio::{
+            io::{AsyncReadExt as _, AsyncWriteExt as _},
+            net::TcpListener,
+        };
+
+        let dir =
+            std::env::temp_dir().join(format!("fluxdown_redownload_{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .expect("create test dir");
+        let save_dir = dir.to_string_lossy().into_owned();
+        let mut engine = Engine::new(
+            EngineConfig {
+                max_concurrent: 1,
+                speed_limit_bps: 0,
+                upload_limit_bps: 0,
+                default_save_dir: save_dir.clone(),
+                app_data_dir: save_dir.clone(),
+                bt_config: Default::default(),
+                proxy_config: Default::default(),
+                user_agent: String::new(),
+                data_dir_override: Some(dir.clone()),
+                database_url: None,
+            },
+            Arc::new(NoopSink),
+            Arc::new(NoopSelection),
+        )
+        .await
+        .expect("engine");
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("test server");
+        let address = listener.local_addr().expect("test address");
+        let id = engine
+            .manager
+            .create_task(fluxdown_engine::download_manager::NewTaskSpec {
+                url: format!("http://{address}/sample.bin"),
+                file_name: "sample.bin".into(),
+                save_dir,
+                hint_file_size: 5,
+                segments: 1,
+                ..Default::default()
+            })
+            .await
+            .expect("start task");
+        let mut socket = tokio::time::timeout(Duration::from_secs(5), async {
+            let (mut socket, _) = listener.accept().await.expect("accept download");
+            assert!(socket.read_u8().await.is_ok(), "download sent a request");
+            socket
+        })
+        .await
+        .expect("worker reached the test server");
+        // Model a terminal state published while that generation still owns its
+        // worker. Keep the HTTP connection open without sending response headers.
+        let partial = dir.join("sample.bin.fdownloading");
+        tokio::fs::write(&partial, b"saved")
+            .await
+            .expect("write partial");
+        let db = engine.db.clone();
+        db.update_task_progress(&id, 5).await.expect("progress");
+        db.insert_segments(&id, &[(0, 0, 9)])
+            .await
+            .expect("checkpoint");
+        if worker_finishes {
+            db.update_task_status(&id, 3, "")
+                .await
+                .expect("completed state");
+            assert!(db.update_task_file_missing(&id, true).await.unwrap());
+        } else {
+            db.update_task_status(&id, 4, "original error")
+                .await
+                .expect("terminal state");
+        }
+
+        let events = crate::event_hub::DaemonEventHub::new(Default::default(), 32);
+        let selections = crate::selection::DaemonSelection::new(events.clone());
+        let blobs = Arc::new(
+            crate::blob_store::BlobStore::open(dir.join("blobs"))
+                .await
+                .expect("blobs"),
+        );
+        let mut receivers =
+            crate::runtime::take_engine_receivers(&mut engine).expect("engine receivers");
+        let (finished_tx, finished_rx) = tokio::sync::mpsc::channel(1);
+        let mut worker_done = std::mem::replace(&mut receivers.done, finished_rx);
+        let (actor, actor_task) = super::spawn_actor(
+            engine,
+            receivers,
+            selections.clone(),
+            events.clone(),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        let service = crate::service::DaemonService::new(
+            crate::service_hello("redownload-test", Vec::new()),
+            events.clone(),
+            selections,
+            blobs,
+            actor.clone(),
+            db.clone(),
+            dir.clone(),
+            #[cfg(feature = "plugins")]
+            None,
+        );
+        let request = RpcRequest::new(
+            RequestId::Integer(1),
+            fluxdown_protocol::method::DAEMON_TASK_RESTART_FILE,
+            Some(serde_json::json!({ "taskId": &id, "recreateIfPresent": true })),
+        );
+        let (response, ()) = tokio::join!(
+            biased;
+            service.call("redownload-test", true, request),
+            async {
+                // This command is sent after the RPC and must not queue behind the worker.
+                tokio::time::timeout(
+                    Duration::from_secs(3),
+                    actor.execute(ActorOperation::PauseTask { task_id: "other-task".into() }),
+                ).await.expect("actor stays responsive").expect("pause command");
+                if worker_finishes {
+                    socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nsaved")
+                        .await.expect("release old worker");
+                    let done = tokio::time::timeout(Duration::from_secs(3), worker_done.recv())
+                        .await.expect("old worker finishes").expect("TaskDone");
+                    // Model the completed file disappearing before the actor handles TaskDone.
+                    tokio::fs::remove_file(dir.join("sample.bin")).await.expect("remove published file");
+                    assert!(db.update_task_file_missing(&id, true).await.unwrap());
+                    finished_tx.send(done).await.expect("forward worker completion");
+                } else {
+                    tokio::time::pause();
+                    tokio::time::advance(super::REDOWNLOAD_STOP_TIMEOUT).await;
+                    tokio::time::resume();
+                }
+            }
+        );
+
+        let kept = db.load_task_by_id(&id).await.expect("load original task");
+        let segments = db
+            .load_segments(&id)
+            .await
+            .expect("load original checkpoint");
+        let saved = tokio::fs::read(&partial).await;
+        actor.shutdown().await.expect("shutdown actor");
+        actor_task.await.expect("join actor");
+        drop(socket);
+        drop(listener);
+        drop(service);
+        drop(db);
+        tokio::fs::remove_dir_all(dir)
+            .await
+            .expect("remove test dir");
+
+        if worker_finishes {
+            let RpcResponse::Success(response) = response else {
+                panic!("redownload must continue after the writer finishes");
+            };
+            assert_eq!(response.result, serde_json::json!(false));
+            assert_eq!(kept.expect("restart same task").task_id, id);
+            assert!(segments.is_empty(), "reset the old checkpoint");
+            return;
+        }
+        let RpcResponse::Failure(response) = response else {
+            panic!("redownload must not authorize recreation");
+        };
+        let data = response.error.data.expect("typed RPC error");
+        assert_eq!(data.code, ApplicationErrorCode::Conflict);
+        assert_eq!(data.reason, Some(ErrorReason::TaskRestartTimeout));
+        assert!(!data.retryable);
+        let task = kept.expect("keep original task");
+        assert_eq!((task.status, task.downloaded_bytes), (4, 5));
+        assert_eq!(task.error_message, "original error");
+        assert_eq!(saved.expect("keep original partial"), b"saved");
+        assert_eq!(segments.len(), 1, "keep original checkpoint");
+    }
+
     /// `daemon.task.delete`：文件删不掉时回报「任务已保留」而不是成功，任务记录与文件都在
     /// （#986：此前单任务删除吞掉清理失败，客户端误以为已删除）。
     #[tokio::test]
@@ -4816,6 +5371,132 @@ mod tests {
         drop(engine);
         if let Err(error) = tokio::fs::remove_dir_all(dir).await {
             eprintln!("actor verify test directory removal failed: {error}");
+        }
+    }
+
+    /// `daemon.task.moveStorage` 对非 BT 任务（这里是已完成的 eD2K ISO）走统一编辑的搬移：
+    /// 文件挪到新目录、任务位置落库；目标已有同名文件返回 `Conflict` 且原文件不动。
+    #[tokio::test]
+    async fn move_storage_relocates_completed_non_bt_task() {
+        let dir = std::env::temp_dir().join(format!(
+            "fluxdown_daemon_move_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .expect("create move test dir");
+        let dir_text = dir.to_string_lossy().into_owned();
+        let mut engine = fluxdown_engine::Engine::new(
+            fluxdown_engine::EngineConfig {
+                max_concurrent: 1,
+                speed_limit_bps: 0,
+                upload_limit_bps: 0,
+                default_save_dir: dir_text.clone(),
+                app_data_dir: dir_text.clone(),
+                bt_config: fluxdown_engine::bt_config::BtConfig::default(),
+                proxy_config: fluxdown_engine::proxy_config::ProxyConfig::default(),
+                user_agent: String::new(),
+                data_dir_override: Some(dir.clone()),
+                database_url: None,
+            },
+            std::sync::Arc::new(fluxdown_engine::NoopSink),
+            std::sync::Arc::new(fluxdown_engine::NoopSelection),
+        )
+        .await
+        .expect("construct engine");
+        let events =
+            crate::event_hub::DaemonEventHub::new(fluxdown_protocol::DaemonSnapshot::default(), 32);
+        let (maintenance_tx, mut maintenance_rx) = tokio::sync::mpsc::unbounded_channel();
+        engine
+            .db
+            .insert_task(
+                "ed2k",
+                "ed2k://|file|disc.iso|7|0123456789abcdef0123456789abcdef|/",
+                "disc.iso",
+                &dir_text,
+                1,
+                0,
+                "",
+                "",
+                "",
+                3,
+            )
+            .await
+            .expect("insert task");
+        tokio::fs::write(dir.join("disc.iso"), b"payload")
+            .await
+            .expect("write landed file");
+
+        let mut move_to = async |target: &std::path::Path| {
+            let (ack, mut response) = tokio::sync::oneshot::channel();
+            super::dispatch_operation(
+                ActorOperation::MoveTaskStorage {
+                    task_id: "ed2k".to_owned(),
+                    save_dir: target.to_string_lossy().into_owned(),
+                },
+                ack,
+                &mut engine,
+                &events,
+                &maintenance_tx,
+            )
+            .await;
+            loop {
+                tokio::select! {
+                    result = &mut response => break result.expect("move acknowledged"),
+                    Some(event) = maintenance_rx.recv() => {
+                        super::commit_maintenance(event, &mut engine, &events, &maintenance_tx)
+                            .await;
+                    }
+                }
+            }
+        };
+
+        let occupied = dir.join("occupied");
+        tokio::fs::create_dir_all(&occupied)
+            .await
+            .expect("create occupied dir");
+        tokio::fs::write(occupied.join("disc.iso"), b"other")
+            .await
+            .expect("write conflicting file");
+        assert!(matches!(
+            move_to(&occupied).await,
+            Err(ActorError::Conflict(_))
+        ));
+        assert_eq!(
+            tokio::fs::read(dir.join("disc.iso"))
+                .await
+                .expect("source kept"),
+            b"payload"
+        );
+
+        let target = dir.join("移动 硬盘");
+        assert!(matches!(
+            move_to(&target).await,
+            Ok(super::ActorResult::Unit)
+        ));
+        assert_eq!(
+            tokio::fs::read(target.join("disc.iso"))
+                .await
+                .expect("moved file"),
+            b"payload"
+        );
+        assert!(
+            !dir.join("disc.iso").exists(),
+            "source removed after commit"
+        );
+        let task = engine
+            .db
+            .load_task_by_id("ed2k")
+            .await
+            .expect("load task")
+            .expect("task exists");
+        assert_eq!(task.save_dir, target.to_string_lossy());
+        assert_eq!(task.status, 3, "completed task stays completed");
+
+        drop(engine);
+        if let Err(error) = tokio::fs::remove_dir_all(dir).await {
+            eprintln!("actor move test directory removal failed: {error}");
         }
     }
 

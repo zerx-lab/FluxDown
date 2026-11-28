@@ -6,6 +6,7 @@ use std::time::Duration;
 use fluxdown_protocol::{PluginAuthResponse, RpcErrorData};
 use fluxdown_ui_components::{
     BusyExt as _, ControlExt as _, FluxIcon, dialog_scroll_body, field_error, form, form_field,
+    toast,
 };
 use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_theme::active_theme;
@@ -245,7 +246,7 @@ impl PluginAuthDialog {
         }
         if notify_success && response.status == "success" {
             window.push_notification(
-                gpui_component::notification::Notification::success(
+                toast::success(
                     self.translator
                         .read(cx)
                         .text("pluginAuthSuccess")
@@ -341,10 +342,7 @@ impl PluginAuthDialog {
         cx: &mut Context<Self>,
     ) {
         cx.write_to_clipboard(ClipboardItem::new_string(value));
-        window.push_notification(
-            gpui_component::notification::Notification::success(copied_label),
-            cx,
-        );
+        window.push_notification(toast::success(copied_label), cx);
     }
 }
 

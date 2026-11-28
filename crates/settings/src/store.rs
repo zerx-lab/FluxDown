@@ -6,6 +6,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+use fluxdown_protocol::browser_extension::{
+    BrowserExtensionInstallResult, BrowserExtensionStatusDto, BrowserKind,
+};
 use fluxdown_protocol::{
     AgentEvent, AgentPreferencesDto, AgentSnapshot, ApplicationErrorCode,
     BtGuardFilterSourcesRefreshDto, BtGuardStateDto, BtPortStatusDto, ComponentStatusDto,
@@ -41,6 +44,10 @@ pub(crate) const DOCTOR_REPAIR_OUTCOME: &str = "doctor_repair_outcome";
 pub(crate) const PROXY_MANUAL_EXPANDED: &str = "proxy_manual_expanded";
 /// 只属于某个分类页的视图状态：切换分类时全部清除，下次进入恢复默认。
 const PAGE_VIEW_STATE: &[&str] = &[PROXY_MANUAL_EXPANDED];
+/// 关于页浏览器扩展状态的加载闸门 / 在途动作名。
+pub(crate) const BROWSER_EXTENSION_LOAD: &str = "browserExtensions";
+/// 浏览器扩展一键安装的在途动作名（按钮标签 = 浏览器线上取值）。
+pub(crate) const BROWSER_EXTENSION_INSTALL: &str = "browserExtensionInstall";
 
 /// 设置写回失败的 UI 可展示分类。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -144,6 +151,8 @@ pub struct SettingsStore {
 
     // ── 按需加载的动作结果 ──
     integration: Option<PlatformIntegrationDto>,
+    /// 本机浏览器与 FluxDown 扩展安装状态（关于页按需加载，安装后重新加载）。
+    browser_extensions: Option<BrowserExtensionStatusDto>,
     diagnostics: Option<DiagnosticsReportDto>,
     site_auth: Vec<SiteAuthEntryDto>,
     conn_policy: Option<ConnPolicySummaryDto>,
@@ -206,6 +215,7 @@ impl SettingsStore {
             conflict_retries: 0,
             mutations: mutation::DaemonMutations::default(),
             integration: None,
+            browser_extensions: None,
             diagnostics: None,
             site_auth: Vec::new(),
             conn_policy: None,
@@ -247,6 +257,21 @@ impl SettingsStore {
         self.daemon_connected = snapshot.daemon_connected;
         self.overlay_local_edits();
         self.last_error = None;
+        cx.notify();
+    }
+
+    /// Ingest the authoritative result of a direct revision-checked config patch.
+    pub(crate) fn absorb_daemon_snapshot(
+        &mut self,
+        snapshot: DaemonConfigSnapshot,
+        cx: &mut Context<Self>,
+    ) {
+        if snapshot.revision < self.daemon.revision {
+            return;
+        }
+        self.daemon = snapshot;
+        self.refresh_daemon_baselines();
+        self.overlay_local_edits();
         cx.notify();
     }
 
@@ -333,6 +358,8 @@ impl SettingsStore {
                 self.daemon_connected = *connected;
                 if *connected {
                     self.load_attempts.clear();
+                } else {
+                    self.bt_port_status = None;
                 }
             }
             _ => return,
@@ -342,6 +369,7 @@ impl SettingsStore {
 
     pub fn mark_stale(&mut self, cx: &mut Context<Self>) {
         self.stale = true;
+        self.bt_port_status = None;
         self.pending_daemon.clear();
         self.inflight_daemon.clear();
         self.pending_prefs.clear();
@@ -525,6 +553,10 @@ impl SettingsStore {
     #[must_use]
     pub fn integration(&self) -> Option<&PlatformIntegrationDto> {
         self.integration.as_ref()
+    }
+    #[must_use]
+    pub fn browser_extensions(&self) -> Option<&BrowserExtensionStatusDto> {
+        self.browser_extensions.as_ref()
     }
     #[must_use]
     pub fn diagnostics(&self) -> Option<&DiagnosticsReportDto> {
@@ -890,10 +922,18 @@ impl SettingsStore {
             }
             _ => None,
         };
-        let future = directory
-            .filter(|path| !path.trim().is_empty())
-            .and_then(|path| self.port.foreground_open_directory(path))
-            .unwrap_or_else(|| self.port.call(method, params));
+        let foreground = if method == method::AGENT_PLATFORM_INSTALL_BROWSER_EXTENSION {
+            params
+                .get("browser")
+                .and_then(Value::as_str)
+                .and_then(BrowserKind::parse)
+                .and_then(|browser| self.port.foreground_install_browser_extension(browser))
+        } else {
+            directory
+                .filter(|path| !path.trim().is_empty())
+                .and_then(|path| self.port.foreground_open_directory(path))
+        };
+        let future = foreground.unwrap_or_else(|| self.port.call(method, params));
         cx.spawn(async move |this, cx| {
             let result = future.await;
 
@@ -954,22 +994,34 @@ impl SettingsStore {
             Self::absorb_integration,
         );
     }
-    pub fn set_file_association(&mut self, enabled: bool, cx: &mut Context<Self>) {
+    /// `opt_out`：该关联的 opt-out 偏好键；用户在系统确认框里拒绝移交时撤销它。
+    pub fn set_file_association(
+        &mut self,
+        enabled: bool,
+        opt_out: Option<&'static str>,
+        cx: &mut Context<Self>,
+    ) {
         self.call_with(
             "integration",
             method::AGENT_PLATFORM_SET_FILE_ASSOCIATION,
             json!({ "enabled": enabled }),
             cx,
-            Self::absorb_integration,
+            Self::absorb_association(opt_out),
         );
     }
-    pub fn set_url_protocol(&mut self, scheme: &str, enabled: bool, cx: &mut Context<Self>) {
+    pub fn set_url_protocol(
+        &mut self,
+        scheme: &str,
+        enabled: bool,
+        opt_out: Option<&'static str>,
+        cx: &mut Context<Self>,
+    ) {
         self.call_with(
             "integration",
             method::AGENT_PLATFORM_SET_URL_PROTOCOL,
             json!({ "scheme": scheme, "enabled": enabled }),
             cx,
-            Self::absorb_integration,
+            Self::absorb_association(opt_out),
         );
     }
     fn absorb_integration(&mut self, result: Result<Value, RpcErrorData>, _cx: &mut Context<Self>) {
@@ -978,6 +1030,65 @@ impl SettingsStore {
         {
             self.integration = Some(dto);
         }
+    }
+    /// 关联开关的回调。`Cancelled` = 用户在 macOS 确认框里拒绝了变更：关闭时选「继续使用
+    /// FluxDown」→ 系统默认仍是 FluxDown，撤销刚写的 opt-out（否则开关显示关闭、捕获入口
+    /// 还会拦截系统交来的文件 / 链接）；开启时拒绝 → opt-out 本就为 false。不报错，重新探测。
+    fn absorb_association(
+        opt_out: Option<&'static str>,
+    ) -> impl FnOnce(&mut Self, Result<Value, RpcErrorData>, &mut Context<Self>) + 'static {
+        move |this, result, cx| match result {
+            Err(error) if error.code == ApplicationErrorCode::Cancelled => {
+                if let Some(key) = opt_out {
+                    this.set_pref_bool(key, false, cx);
+                }
+                this.load_integration(cx);
+            }
+            result => this.absorb_integration(result, cx),
+        }
+    }
+
+    /// 关于页「浏览器扩展」：拉取本机浏览器与扩展安装状态。
+    pub fn load_browser_extensions(&mut self, cx: &mut Context<Self>) {
+        self.call_with(
+            BROWSER_EXTENSION_LOAD,
+            method::AGENT_PLATFORM_BROWSER_EXTENSION_STATUS,
+            json!({}),
+            cx,
+            |this, result, _| {
+                if let Ok(value) = result
+                    && let Ok(dto) = serde_json::from_value::<BrowserExtensionStatusDto>(value)
+                {
+                    this.browser_extensions = Some(dto);
+                }
+            },
+        );
+    }
+
+    /// 为 `browser` 安装 FluxDown 扩展：登记商店外部扩展（平台支持时）并在该浏览器打开安装页。
+    pub fn install_browser_extension(&mut self, browser: BrowserKind, cx: &mut Context<Self>) {
+        self.call_with(
+            BROWSER_EXTENSION_INSTALL,
+            method::AGENT_PLATFORM_INSTALL_BROWSER_EXTENSION,
+            json!({ "browser": browser }),
+            cx,
+            |this, result, cx| {
+                let Ok(value) = result else {
+                    return;
+                };
+                let registered = serde_json::from_value::<BrowserExtensionInstallResult>(value)
+                    .is_ok_and(|result| result.external_registered);
+                // 登记状态已变：放行重新加载（`call_with` 会清掉提示，故先发起再写提示）。
+                this.load_attempts.remove(BROWSER_EXTENSION_LOAD);
+                this.load_browser_extensions(cx);
+                this.last_notice = Some(if registered {
+                    "browserExtensionInstallRegistered"
+                } else {
+                    "browserExtensionInstallStoreOpened"
+                });
+            },
+        );
+        self.tag_busy(BROWSER_EXTENSION_INSTALL, browser.as_str());
     }
 
     pub fn run_diagnostics(&mut self, cx: &mut Context<Self>) {
@@ -1194,10 +1305,10 @@ impl SettingsStore {
         }
     }
 
-    /// 端口映射状态轮询：不走 `call_with`——每 5 秒一次的后台刷新不能清掉 / 改写页面上的
-    /// 错误与提示横幅。上一轮仍在途则跳过；失败（含旧 daemon 无此方法）保留旧快照。
+    /// 监听与映射状态轮询：不走 `call_with`，避免后台刷新改写页面横幅。
+    /// 上一轮仍在途则跳过；瞬态错误保留最后一次成功的快照。
     pub fn load_bt_port_status(&mut self, cx: &mut Context<Self>) {
-        if self.stale || self.in_flight(BT_PORT_STATUS_ACTION) {
+        if !self.daemon_connected() || self.in_flight(BT_PORT_STATUS_ACTION) {
             return;
         }
         self.busy.insert(BT_PORT_STATUS_ACTION);
@@ -1219,11 +1330,19 @@ impl SettingsStore {
         result: Result<Value, RpcErrorData>,
         cx: &mut Context<Self>,
     ) {
-        if let Ok(value) = result
-            && let Ok(dto) = serde_json::from_value::<BtPortStatusDto>(value)
-            && self.bt_port_status.as_ref() != Some(&dto)
-        {
-            self.bt_port_status = Some(dto);
+        if !self.daemon_connected() {
+            return;
+        }
+        let status = match result {
+            Ok(value) => match serde_json::from_value::<BtPortStatusDto>(value) {
+                Ok(status) => Some(status),
+                Err(_) => return,
+            },
+            Err(error) if error.code == ApplicationErrorCode::Unsupported => None,
+            Err(_) => return,
+        };
+        if self.bt_port_status != status {
+            self.bt_port_status = status;
             cx.notify();
         }
     }
@@ -1677,6 +1796,9 @@ mod tests {
             assert!(!preference_is_synced(key), "{key}");
         }
         assert!(!preference_is_synced(fluxdown_ui_theme::FONT_FAMILY_KEY));
+        assert!(!preference_is_synced(
+            fluxdown_ui_components::size_units::PREF_KEY
+        ));
         assert!(!preference_is_synced("unknown.key"));
         // 同步目录内的键（含自定义分类与带每机属性的 BT / ED2K 开关）走同步链路，
         // 由「在此设备同步的范围」按需设为本机专属。

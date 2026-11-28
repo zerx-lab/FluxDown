@@ -69,6 +69,10 @@ public final class L10n: Sendable {
                 // 繁中资源缺失时仍遵循原有中文、英文回退顺序。
             }
             if let match = available.first(where: { $0.caseInsensitiveCompare(base) == .orderedSame }) { return match }
+            // 同主语言的其他地区（pt-PT → pt-BR）：与 crates/i18n 的主语言匹配一致，按文件名排序取第一个。
+            if let match = available.sorted().first(where: {
+                $0.split(separator: "-").first.map { String($0).lowercased() } == base
+            }) { return match }
         }
         return "en"
     }

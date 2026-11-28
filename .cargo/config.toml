@@ -1,5 +1,12 @@
 [alias]
 desktop-dev = "run --quiet -p fluxdown-desktop-dev --"
 
+# debug 构建不做栈槽复用：daemon actor 的大 match（run_actor → dispatch_operation →
+# execute_operation）单次 poll 链在 macOS 上约 1.7 MiB，Linux 更大，std 默认 2 MiB 线程栈
+# 会溢出（CI `desktop_redownload_restarts_missing_file_after_worker_stops`）。release 帧小得多。
+# 只作用于 cargo 启动的进程（cargo test / nextest / run）及未显式设栈大小的线程（含 tokio worker）。
+[env]
+RUST_MIN_STACK = "8388608"
+
 # x86_64 产物一律用 rustc 默认基线 x86-64，不设 target-cpu：曾提到 x86-64-v2，
 # 无 SSSE3 / SSE4.2 的老 CPU（AMD K10、Core 2 等）启动即 0xc000001d 崩溃（#1020）。

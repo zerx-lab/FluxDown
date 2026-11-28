@@ -7,12 +7,13 @@ use std::sync::Arc;
 use fluxdown_protocol::ErrorReason;
 use fluxdown_ui_account::{
     AccountHost, AccountHostEvent, confirm_unpair_by_fingerprint, open_add_device,
-    open_link_rename_by_fingerprint, open_pairing_prompt,
+    open_link_rename_by_fingerprint, open_pairing_prompt, open_plan_purchase,
 };
+use fluxdown_ui_components::toast;
 use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_settings::SettingsStore;
 use gpui::{App, AppContext as _, Entity, Window};
-use gpui_component::{WindowExt as _, notification::Notification};
+use gpui_component::WindowExt as _;
 
 use crate::{
     account_port::AgentAccountPort,
@@ -138,7 +139,7 @@ fn notify_device_paired(host: &Entity<AccountHost>, name: &str, cx: &mut App) {
     };
     let message = host.read(cx).device_paired_message(name, cx);
     if let Err(error) = handle.update(cx, |_, window, cx| {
-        window.push_notification(Notification::success(message), cx);
+        window.push_notification(toast::success(message), cx);
     }) {
         log::debug!("window released before paired notification: {error:#}");
     }
@@ -152,7 +153,7 @@ fn notify_session_revoked(host: &Entity<AccountHost>, reason: ErrorReason, cx: &
     let message = host.read(cx).session_revoked_message(reason, cx);
     let shown = handle
         .update(cx, |_, window, cx| {
-            window.push_notification(Notification::warning(message), cx);
+            window.push_notification(toast::warning(message), cx);
         })
         .is_ok();
     if shown {
@@ -166,6 +167,12 @@ fn notify_session_revoked(host: &Entity<AccountHost>, reason: ErrorReason, cx: &
 pub(crate) fn open_add_device_dialog(window: &mut Window, cx: &mut App) {
     let host = Desktop::global(cx).account_host.clone();
     open_add_device(&host, window, cx);
+}
+
+/// AI 助手「开通会员」卡片入口：打开套餐购买对话框（选套餐 → 扫码 → 成功）。
+pub(crate) fn open_plan_purchase_dialog(window: &mut Window, cx: &mut App) {
+    let host = Desktop::global(cx).account_host.clone();
+    open_plan_purchase(&host, window, cx);
 }
 
 /// 侧栏直连设备「重命名」入口。

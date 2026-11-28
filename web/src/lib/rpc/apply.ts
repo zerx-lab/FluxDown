@@ -2,6 +2,7 @@
 // `apply_engine_message` 逐条移植。全部为不可变更新（返回新对象，未变化的分支保持引用不变），
 // 以便 React 选择器按引用比较。一批事件走 `DaemonDraft`：大集合整批只复制一次，见该类说明。
 
+import { EMPTY_ASSISTANT_STATE } from './protocol'
 import type {
   AgentEvent,
   AgentSnapshot,
@@ -902,7 +903,7 @@ function applyNonDaemonAgentEvent(snapshot: AgentSnapshot, event: Exclude<AgentE
         daemon: event.data ? snapshot.daemon : { ...snapshot.daemon, taskRuntime: {} },
       }
     case 'sessionChanged':
-      // 会话结束后账号维度投影随之失效（对应 Rust apply_agent_event）。
+      // 会话结束后账号维度投影随之失效（对应 Rust apply_agent_event）；助手入口可见性例外：agent 只在它变化时推送，重置会让 UI 卡在隐藏。
       return event.data === null
         ? {
             ...snapshot,
@@ -910,6 +911,7 @@ function applyNonDaemonAgentEvent(snapshot: AgentSnapshot, event: Exclude<AgentE
             cloudDevices: [],
             remoteTasks: [],
             cloudConnection: { state: 'disconnected' },
+            assistant: { ...EMPTY_ASSISTANT_STATE, visible: snapshot.assistant?.visible === true },
             cloudNotify: snapshot.cloudNotify
               ? {
                   ...snapshot.cloudNotify,
@@ -957,6 +959,8 @@ function applyNonDaemonAgentEvent(snapshot: AgentSnapshot, event: Exclude<AgentE
       return { ...snapshot, power: event.data }
     case 'cloudNotifyChanged':
       return { ...snapshot, cloudNotify: event.data }
+    case 'assistantChanged':
+      return { ...snapshot, assistant: event.data }
     case 'captureTasksStarted':
     case 'captureTasksResumed':
     case 'sessionRevoked':

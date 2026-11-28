@@ -4,6 +4,24 @@
 import { call } from '../client';
 import { METHOD } from '../protocol';
 import type {
+  AssistantAskParams,
+  AssistantAskResult,
+  AssistantClearedSessions,
+  AssistantConfirmParams,
+  AssistantIssueDto,
+  AssistantIssueParams,
+  AssistantRateParams,
+  AssistantSessionDetail,
+  AssistantSessionIdParams,
+  AssistantSessionPage,
+  AssistantSessionsParams,
+  AssistantSessionDto,
+  AssistantRenameParams,
+  AssistantExportParams,
+  AssistantExportResult,
+  AssistantAttachmentParams,
+  AssistantAttachmentResult,
+  AssistantStateDto,
   CloudNotifyChannelCreateParams,
   CloudNotifyChannelDto,
   CloudNotifyChannelIdParams,
@@ -93,6 +111,8 @@ import type {
   LinkPairFinishResponse,
   LinkRenameParams,
   LinkPairingCodeDto,
+  RemoteCommandManyParams,
+  RemoteCommandManyResult,
   RemoteCommandParams,
   RemoteDispatchParams,
   RemoteDispatchResult,
@@ -224,6 +244,8 @@ const remote = {
   dispatch: (params: RemoteDispatchParams) =>
     call<RemoteDispatchResult>(METHOD.AGENT_REMOTE_DISPATCH, params),
   command: (params: RemoteCommandParams) => call<OkResult>(METHOD.AGENT_REMOTE_COMMAND, params),
+  commandMany: (params: RemoteCommandManyParams) =>
+    call<RemoteCommandManyResult>(METHOD.AGENT_REMOTE_COMMAND_MANY, params),
 };
 
 const plan = {
@@ -304,7 +326,7 @@ const update = {
 };
 
 const power = {
-  /** 定时关机 / 睡眠：没有任务时立即倒计时；`delaySecs = 0` 无任务时不受理（`armed: false`）。 */
+  /** One-shot completion or low-speed power action; lowSpeed requires download work and allows 30 seconds to cancel. */
   arm: (params: PowerArmParams) => call<PowerArmResult>(METHOD.AGENT_POWER_ARM, params),
   disarm: () => call<OkResult>(METHOD.AGENT_POWER_DISARM),
 };
@@ -335,6 +357,35 @@ const cloudNotify = {
     call<CloudNotifyEmailCodeResult>(METHOD.AGENT_CLOUD_NOTIFY_SEND_EMAIL_CODE, params),
   verifyEmail: (params: CloudNotifyEmailVerifyParams) =>
     call<OkResult>(METHOD.AGENT_CLOUD_NOTIFY_VERIFY_EMAIL, params),
+};
+
+/** AI 助手（FluxCloud 代理的模型对话）：执行经 `assistantChanged` 推送，历史会话按需从云端读取。 */
+const assistant = {
+  /** 读本机缓存；配置过期时 agent 后台刷新并经 `assistantChanged` 推送。 */
+  get: () => call<AssistantStateDto>(METHOD.AGENT_ASSISTANT_GET),
+  /** 立即向 FluxCloud 拉取配置。 */
+  refresh: () => call<AssistantStateDto>(METHOD.AGENT_ASSISTANT_REFRESH),
+  sessions: (params?: AssistantSessionsParams) => call<AssistantSessionPage>(METHOD.AGENT_ASSISTANT_SESSIONS, params),
+  session: (params: AssistantSessionIdParams) => call<AssistantSessionDetail>(METHOD.AGENT_ASSISTANT_SESSION, params),
+  /** 删除会话（只在用户侧隐藏，云端保留；进行中的执行先取消）。 */
+  deleteSession: (params: AssistantSessionIdParams) => call<OkResult>(METHOD.AGENT_ASSISTANT_DELETE_SESSION, params),
+  /** 清空本人全部会话（只在用户侧隐藏，云端保留；进行中的执行先取消）。 */
+  clearSessions: () => call<AssistantClearedSessions>(METHOD.AGENT_ASSISTANT_CLEAR_SESSIONS),
+  /** 提问：`channel` 由调用方显式给出（Web 为 `web`）；执行随后经 `assistantChanged` 推送。 */
+  ask: (params: AssistantAskParams) => call<AssistantAskResult>(METHOD.AGENT_ASSISTANT_ASK, params),
+  cancel: (params: AssistantSessionIdParams) => call<OkResult>(METHOD.AGENT_ASSISTANT_CANCEL, params),
+  /** 批准 / 拒绝一次非只读客户端工具调用。 */
+  confirm: (params: AssistantConfirmParams) => call<OkResult>(METHOD.AGENT_ASSISTANT_CONFIRM, params),
+  rate: (params: AssistantRateParams) => call<OkResult>(METHOD.AGENT_ASSISTANT_RATE, params),
+  /** 确认提交云端起草的问题单（可改标题与正文）。 */
+  confirmIssue: (params: AssistantIssueParams) => call<AssistantIssueDto>(METHOD.AGENT_ASSISTANT_CONFIRM_ISSUE, params),
+  discardIssue: (params: AssistantIssueParams) => call<OkResult>(METHOD.AGENT_ASSISTANT_DISCARD_ISSUE, params),
+  /** 给会话改名（标题去首尾空白后 1–`ASSISTANT_MAX_TITLE_CHARS` 字符）。 */
+  renameSession: (params: AssistantRenameParams) => call<AssistantSessionDto>(METHOD.AGENT_ASSISTANT_RENAME_SESSION, params),
+  /** 导出会话（云端生成 Markdown / JSON，UI 负责下载）。 */
+  exportSession: (params: AssistantExportParams) => call<AssistantExportResult>(METHOD.AGENT_ASSISTANT_EXPORT_SESSION, params),
+  /** 读取本人会话里的提问图片（`AssistantMessageDto.images` 的附件 ID → `data:` URL）。 */
+  attachment: (params: AssistantAttachmentParams) => call<AssistantAttachmentResult>(METHOD.AGENT_ASSISTANT_ATTACHMENT, params),
 };
 
 
@@ -370,5 +421,6 @@ export const agent = {
   update,
   power,
   cloudNotify,
+  assistant,
   platform,
 };

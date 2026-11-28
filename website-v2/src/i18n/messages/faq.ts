@@ -4,7 +4,7 @@ import { defineMessages } from "../define";
  * FAQ 页文案。问答按主题分组;`link` 为答案下方的延伸阅读(无语言前缀路径,渲染时本地化)。
  * FAQPage JSON-LD 直接由同一份 `q` / `a` 生成,保证结构化数据与可见文本一致。
  */
-export const faq = defineMessages({
+export const faq = defineMessages("faq", {
   en: {
     meta: {
       title: "FluxDown FAQ — Free IDM Alternative, Pricing, Platforms & Extension",

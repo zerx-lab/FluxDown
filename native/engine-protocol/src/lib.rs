@@ -2,6 +2,7 @@
 //!
 //! 两端 crate 保持彼此独立；宿主只在边界调用本 crate 的命名函数。
 
+mod net_diag;
 mod task_edit;
 use fluxdown_engine::downloader::CapturedRequestBody;
 use fluxdown_engine::model::{
@@ -18,6 +19,8 @@ use fluxdown_protocol::daemon::{
 };
 #[cfg(feature = "components")]
 use fluxdown_protocol::daemon::{ComponentFfmpegStatus, ComponentVersions, ComponentYtdlpStatus};
+use fluxdown_protocol::task_activity::HlsFragmentProgress;
+pub use net_diag::{net_interfaces_to_dto, net_measure_request, net_measure_to_dto};
 pub use task_edit::{task_edit_snapshot_to_dto, task_edit_to_engine, task_properties_to_dto};
 
 /// 将捕获请求体转换为引擎请求体。
@@ -192,6 +195,9 @@ pub fn task_runtime_to_dto(
                 active: segment.active,
             })
             .collect(),
+        hls_fragments: runtime
+            .hls_fragments
+            .map(|(written, total)| HlsFragmentProgress { written, total }),
         source_bytes: runtime.source_bytes.map(source_bytes_to_dto),
     }
 }
@@ -389,10 +395,17 @@ pub fn rss_source_dto_to_engine(source: RssSourceDto) -> RssSourceInfo {
 #[must_use]
 pub fn rss_item_info_to_dto(item: RssItemInfo) -> RssItemDto {
     RssItemDto {
-        source_id: item.source_id,
         guid: item.guid,
         title: item.title,
         link: item.link,
+        image_count: if item.source_id.is_empty() {
+            0
+        } else {
+            item.image_urls
+                .as_ref()
+                .map_or(0, |urls| u8::try_from(urls.len()).unwrap_or_default())
+        },
+        source_id: item.source_id,
         enclosure_url: item.enclosure_url,
         enclosure_length: item.enclosure_length,
         pub_date: item.pub_date,
@@ -612,10 +625,49 @@ pub fn setting_field_to_dto(
     }
 }
 
-/// 将已安装插件投影转换为 wire DTO。
+/// Convert a redacted load or operation diagnostic to its wire representation.
 #[cfg(feature = "plugins")]
 #[must_use]
-pub fn plugin_info_to_dto(
+pub fn plugin_failure_detail_to_dto(
+    diagnostic: fluxdown_engine::plugin::PluginFailureDiagnostic,
+) -> fluxdown_protocol::PluginFailureDetail {
+    use fluxdown_engine::plugin::PluginFailureDiagnostic as Diagnostic;
+    use fluxdown_protocol::PluginFailureDetail as Detail;
+
+    match diagnostic {
+        Diagnostic::ManifestUnreadable => Detail::ManifestUnreadable,
+        Diagnostic::ManifestUnknownField => Detail::ManifestUnknownField,
+        Diagnostic::ManifestJsonInvalid => Detail::ManifestJsonInvalid,
+        Diagnostic::ManifestIdentityInvalid => Detail::ManifestIdentityInvalid,
+        Diagnostic::ManifestNameMissing => Detail::ManifestNameMissing,
+        Diagnostic::ManifestVersionInvalid => Detail::ManifestVersionInvalid,
+        Diagnostic::ManifestMinAppVersionInvalid => Detail::ManifestMinAppVersionInvalid,
+        Diagnostic::ManifestUnknownPermission => Detail::ManifestUnknownPermission,
+        Diagnostic::ManifestAuthPermissionMissing => Detail::ManifestAuthPermissionMissing,
+        Diagnostic::ScriptCompileFailed => Detail::ScriptCompileFailed,
+        Diagnostic::ScriptCompileFailedAt { line, column } => {
+            Detail::ScriptCompileFailedAt { line, column }
+        }
+        Diagnostic::MissingFile { path } => Detail::MissingFile { path },
+        Diagnostic::LoadFailed => Detail::LoadFailed,
+        Diagnostic::NotDevPlugin => Detail::NotDevPlugin,
+    }
+}
+
+/// 将同一份插件快照转换为列表，并标出按完整 URL 匹配时重叠或重复的模式。
+#[cfg(feature = "plugins")]
+#[must_use]
+pub fn plugin_list_to_dtos(
+    plugins: Vec<fluxdown_engine::plugin::PluginInfo>,
+) -> Vec<fluxdown_protocol::daemon::PluginDto> {
+    plugin_conflicts::annotate(plugins.into_iter().map(plugin_info_to_dto).collect())
+}
+
+#[cfg(feature = "plugins")]
+mod plugin_conflicts;
+
+#[cfg(feature = "plugins")]
+fn plugin_info_to_dto(
     plugin: fluxdown_engine::plugin::PluginInfo,
 ) -> fluxdown_protocol::daemon::PluginDto {
     fluxdown_protocol::daemon::PluginDto {
@@ -637,8 +689,14 @@ pub fn plugin_info_to_dto(
         auth_supported: plugin.auth_supported,
         subscription_provider_ids: plugin.subscription_provider_ids,
         resolver_urls: plugin.resolver_urls,
+        resolver_url_conflicts: Vec::new(),
         load_status: plugin.load_status,
-        load_error: plugin.load_error,
+        load_error: if plugin.load_detail.is_some() {
+            "Plugin failed to load. See daemon diagnostics.".to_owned()
+        } else {
+            String::new()
+        },
+        load_detail: plugin.load_detail.map(plugin_failure_detail_to_dto),
         contributions: plugin_contributions_to_dto(&plugin.contributions, plugin.view_icons),
         risk: plugin.risk.as_str().to_owned(),
         consent_pending: plugin.consent_pending,

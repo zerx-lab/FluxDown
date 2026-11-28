@@ -9,9 +9,10 @@ use std::collections::BTreeMap;
 use fluxdown_ui_settings::ActivityBarToggle;
 use fluxdown_ui_shell::{RouteId, ShellView};
 use fluxdown_ui_theme::{THEME_MODE_KEY, ThemePreference, active_theme};
-use gpui::{App, Context, Window};
+use gpui::{App, Context, WeakEntity, Window};
 
 use crate::app::Desktop;
+use crate::windows::{WindowKey, WindowRegistry};
 
 /// 主窗口路由标识：主窗口装配与命令面板导航共用。
 const DOWNLOADS_ID: &str = "downloads";
@@ -21,7 +22,8 @@ pub(crate) const DOWNLOADS_ROUTE: RouteId = RouteId::new(DOWNLOADS_ID);
 pub(crate) const RSS_ROUTE: RouteId = RouteId::new(RSS_ID);
 pub(crate) const WEBHOOKS_ROUTE: RouteId = RouteId::new(WEBHOOKS_ID);
 
-/// 活动栏条目，按自上而下顺序（路由在上，动作在下）。
+/// chrome 条目，按自上而下顺序（路由在上，动作在下）。AI 助手不是路由：它是窗口右侧面板的
+/// 开关，默认摆在状态栏（见 `chrome_layout::catalog`）。
 ///
 /// [`Self::ALL`] 是唯一构造点：新增变体未登记进 `ALL` 会触发 `dead_code`（`clippy -D warnings` 拦截），
 /// 而 [`Self::button_id`] / [`Self::toggle`] 与主窗口装配的穷尽 `match` 迫使补齐元数据与内容。
@@ -30,15 +32,17 @@ pub(crate) enum ActivityEntry {
     Downloads,
     Rss,
     Webhooks,
+    Assistant,
     Account,
     Settings,
 }
 
 impl ActivityEntry {
-    pub(crate) const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 6] = [
         Self::Downloads,
         Self::Rss,
         Self::Webhooks,
+        Self::Assistant,
         Self::Account,
         Self::Settings,
     ];
@@ -49,17 +53,20 @@ impl ActivityEntry {
             Self::Downloads => "activity-downloads",
             Self::Rss => "activity-rss",
             Self::Webhooks => "activity-webhooks",
+            Self::Assistant => "activity-assistant",
             Self::Account => "activity-account",
             Self::Settings => "activity-settings",
         }
     }
 
     /// chrome 布局里的条目 id：路由沿用路由标识，动作取稳定短名（与 Web 同名）。
+    /// AI 助手条目由活动栏路由 `assistant` 改为面板开关时换了 id，旧布局里的位置随之作废。
     pub(crate) const fn layout_id(self) -> &'static str {
         match self {
             Self::Downloads => DOWNLOADS_ID,
             Self::Rss => RSS_ID,
             Self::Webhooks => WEBHOOKS_ID,
+            Self::Assistant => "assistantPanel",
             Self::Account => "account",
             Self::Settings => "settings",
         }
@@ -71,6 +78,7 @@ impl ActivityEntry {
             Self::Downloads => fluxdown_ui_i18n::keys::MOBILE_NAV_DOWNLOADS,
             Self::Rss => "sidebarRss",
             Self::Webhooks => "pushNavTitle",
+            Self::Assistant => "assistantNavTitle",
             Self::Account => "settingsCatAccount",
             Self::Settings => fluxdown_ui_i18n::keys::SETTINGS,
         }
@@ -82,7 +90,7 @@ impl ActivityEntry {
             Self::Downloads => Some(DOWNLOADS_ROUTE),
             Self::Rss => Some(RSS_ROUTE),
             Self::Webhooks => Some(WEBHOOKS_ROUTE),
-            Self::Account | Self::Settings => None,
+            Self::Assistant | Self::Account | Self::Settings => None,
         }
     }
 
@@ -100,6 +108,11 @@ impl ActivityEntry {
                 title_key: "showActivityWebhooks",
                 desc_key: "showActivityWebhooksDesc",
             }),
+            Self::Assistant => Some(ActivityBarToggle {
+                pref_key: "ui.show_activity_assistant",
+                title_key: "showActivityAssistant",
+                desc_key: "showActivityAssistantDesc",
+            }),
             Self::Account => Some(ActivityBarToggle {
                 pref_key: "ui.show_activity_account",
                 title_key: "showActivityAccount",
@@ -109,12 +122,34 @@ impl ActivityEntry {
     }
 }
 
-/// 设置页「活动栏」分区的开关行，与活动栏同序。
-pub(crate) fn toggles() -> Vec<ActivityBarToggle> {
+/// 设置页「活动栏」分区的开关行，与活动栏同序；云端未开放助手入口时不含助手开关。
+pub(crate) fn toggles(cx: &App) -> Vec<ActivityBarToggle> {
+    let assistant_visible = Desktop::global(cx).assistant_visible;
     ActivityEntry::ALL
         .into_iter()
+        .filter(|entry| *entry != ActivityEntry::Assistant || assistant_visible)
         .filter_map(ActivityEntry::toggle)
         .collect()
+}
+
+/// 云端入口可见性 → 主窗口状态栏按钮（与偏好取与）；变为不可见时收起已打开的助手面板。
+/// 命令面板与设置页在构建时读 [`Desktop::assistant_visible`]。
+pub(crate) fn set_assistant_visible(cx: &mut App, visible: bool) {
+    let desktop = Desktop::global_mut(cx);
+    if desktop.assistant_visible == visible {
+        return;
+    }
+    desktop.assistant_visible = visible;
+    let Some(shell) = desktop.main_shell.as_ref().and_then(WeakEntity::upgrade) else {
+        return;
+    };
+    let preferences = Desktop::preferences(cx).clone();
+    shell.update(cx, |shell, cx| {
+        apply_visibility(shell, &preferences, cx);
+        if !visible {
+            shell.set_side_panel_open(false, cx);
+        }
+    });
 }
 
 /// 偏好 → 活动栏可选入口可见性；幂等，窗口创建与每次偏好快照/事件都走这里。
@@ -123,6 +158,7 @@ pub(crate) fn apply_visibility(
     preferences: &BTreeMap<String, serde_json::Value>,
     cx: &mut Context<ShellView>,
 ) {
+    let assistant_visible = Desktop::global(cx).assistant_visible;
     for entry in ActivityEntry::ALL {
         let Some(toggle) = entry.toggle() else {
             continue;
@@ -130,7 +166,8 @@ pub(crate) fn apply_visibility(
         let visible = preferences
             .get(toggle.pref_key)
             .and_then(serde_json::Value::as_bool)
-            .unwrap_or(true);
+            .unwrap_or(true)
+            && (entry != ActivityEntry::Assistant || assistant_visible);
         shell.set_entry_visible(entry.button_id(), visible, cx);
     }
 }
@@ -145,6 +182,51 @@ pub(crate) fn open_account(cx: &mut App) {
             row: None,
         },
     );
+}
+
+/// 状态栏 AI 助手按钮之外的入口（命令面板）：主窗口到前台并开关右侧 AI 助手面板。
+pub(crate) fn toggle_assistant(cx: &mut App) {
+    if !Desktop::global(cx).assistant_visible {
+        return;
+    }
+    cx.defer(|cx| {
+        crate::windows::main::reveal(cx);
+        if let Some(shell) = Desktop::global(cx)
+            .main_shell
+            .as_ref()
+            .and_then(WeakEntity::upgrade)
+        {
+            shell.update(cx, |shell, cx| shell.toggle_side_panel(cx));
+        }
+    });
+}
+
+/// 命令面板「问 AI 助手」：主窗口到前台、打开右侧 AI 助手面板，开新对话发出这段问题。
+pub(crate) fn ask_assistant(cx: &mut App, query: String) {
+    if !Desktop::global(cx).assistant_visible {
+        return;
+    }
+    cx.defer(move |cx| {
+        crate::windows::main::reveal(cx);
+        let desktop = Desktop::global(cx);
+        let shell = desktop.main_shell.as_ref().and_then(WeakEntity::upgrade);
+        let assistant = desktop
+            .main_assistant
+            .as_ref()
+            .and_then(WeakEntity::upgrade);
+        let (Some(shell), Some(assistant)) = (shell, assistant) else {
+            return;
+        };
+        let Some(handle) = WindowRegistry::handle(cx, &WindowKey::Main) else {
+            return;
+        };
+        shell.update(cx, |shell, cx| shell.set_side_panel_open(true, cx));
+        if let Err(error) = handle.update(cx, |_, window, cx| {
+            assistant.update(cx, |assistant, cx| assistant.ask(query, window, cx));
+        }) {
+            log::debug!("view or window released before lifecycle update: {error:#}");
+        }
+    });
 }
 
 /// 命令面板的明暗切换：只写 [`THEME_MODE_KEY`]，换肤由偏好投影统一完成——

@@ -971,7 +971,7 @@ impl PluginManager {
         };
         let count = streak.fetch_add(1, Ordering::SeqCst) + 1;
         if count >= CIRCUIT_BREAKER_THRESHOLD {
-            self.trip_circuit_breaker(identity).await;
+            self.trip_circuit_breaker(identity, error).await;
         }
     }
 
@@ -1355,14 +1355,18 @@ impl PluginManager {
     // ---------------------------------------------------------------------
 
     /// `notify` 路径：把声明在 `main.events` 中的事件投给宿主（必要时激活）。
-    pub(super) fn deliver_host_event(self: &Arc<Self>, identity: &str, event: PluginEvent) {
+    pub(super) fn deliver_host_event(
+        self: &Arc<Self>,
+        identity: &str,
+        event: PluginEvent,
+    ) -> tokio::task::JoinHandle<()> {
         let me = self.clone();
         let identity = identity.to_string();
         self.runtime.spawn_handle().spawn(async move {
             if let Err(e) = me.host_call(&identity, HostCall::Event(event)).await {
                 log_info!("[plugin] {identity} 宿主事件投递失败: {e}");
             }
-        });
+        })
     }
 
     // ---------------------------------------------------------------------

@@ -1,9 +1,11 @@
 //! agent 官方 UI Gateway：单一 RPC 会话、agent 快照与 daemon 透明转发。
 
+mod ipc;
 mod local;
 mod restart;
 mod session_auth;
 
+pub use ipc::IpcListener;
 pub use local::{LocalConnection, LocalEventError};
 pub(crate) use session_auth::RpcCredential;
 use session_auth::{
@@ -19,6 +21,7 @@ use axum::extract::{ConnectInfo, Path as AxumPath, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use fluxdown_protocol::error::RSS_IMAGE_PROXY_UNVERIFIABLE_HEADER;
 use fluxdown_protocol::method;
 use fluxdown_protocol::{
     ApplicationErrorCode, ClientHello, EventFrame, RpcErrorData, RpcErrorObject, RpcRequest,
@@ -31,6 +34,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::api_host::AgentApiHost;
+use crate::assistant::{AssistantError, AssistantService};
 use crate::capture::{BlobError, BlobKind, CaptureError, CaptureService, DaemonBlobClient};
 use crate::cloud::{CloudApi, CloudAuthService, CloudError};
 use crate::cloud_notify::CloudNotifyService;
@@ -70,6 +74,8 @@ pub struct GatewayService {
     sync: Arc<SyncService>,
     remote: Arc<RemoteTaskService>,
     notify: Arc<CloudNotifyService>,
+    /// AI 助手；嵌入式宿主不装配（`agent.assistant.*` 返回 Unsupported）。
+    assistant: Option<Arc<AssistantService>>,
     capture: Arc<CaptureService>,
     blobs: Arc<DaemonBlobClient>,
     private_plugins: PrivatePluginService,
@@ -83,6 +89,7 @@ pub struct GatewayService {
     open_associations: crate::open_association::OpenAssociationGuard,
     local: GatewayShell,
     server_mode: bool,
+    logging_dir: Option<std::path::PathBuf>,
     /// 嵌入宿主：`exportLogs` 的目标路径由同进程 App 给出（应用沙盒内），server 模式下仍放行。
     local_log_export: bool,
     link: Option<Arc<LinkService>>,
@@ -130,6 +137,7 @@ impl GatewayService {
             sync,
             remote,
             notify,
+            assistant: None,
             capture,
             blobs,
             private_plugins,
@@ -146,6 +154,7 @@ impl GatewayService {
                     method::CAPABILITY_AGENT_AUTH.to_owned(),
                     method::CAPABILITY_AGENT_SYNC.to_owned(),
                     method::CAPABILITY_AGENT_REMOTE_TASKS.to_owned(),
+                    method::CAPABILITY_AGENT_REMOTE_BATCH.to_owned(),
                     method::CAPABILITY_AGENT_BILLING.to_owned(),
                     method::CAPABILITY_AGENT_REFERRALS.to_owned(),
                     method::CAPABILITY_AGENT_EXTERNAL_CAPTURE.to_owned(),
@@ -154,6 +163,7 @@ impl GatewayService {
             open_associations,
             local,
             server_mode: false,
+            logging_dir: None,
             local_log_export: false,
             link: None,
             access_key_epoch: tokio::sync::watch::Sender::new(0),
@@ -166,6 +176,11 @@ impl GatewayService {
     #[must_use]
     pub fn with_server_mode(mut self, enabled: bool) -> Self {
         self.server_mode = enabled;
+        self
+    }
+
+    pub(crate) fn with_logging_dir(mut self, path: std::path::PathBuf) -> Self {
+        self.logging_dir = Some(path);
         self
     }
 
@@ -186,6 +201,19 @@ impl GatewayService {
             self.hello.capabilities.push(capability);
         }
         self
+    }
+
+    /// 装配 AI 助手（`agent.assistant.*`）。
+    #[must_use]
+    pub(crate) fn with_assistant(mut self, assistant: Arc<AssistantService>) -> Self {
+        self.assistant = Some(assistant);
+        self
+    }
+
+    fn assistant(&self) -> Result<&Arc<AssistantService>, RpcErrorData> {
+        self.assistant
+            .as_ref()
+            .ok_or_else(|| RpcErrorData::new(ApplicationErrorCode::Unsupported, false))
     }
 
     /// 构造 RPC 响应，并把连接级上下文（「本机来源」判定、会话凭据）透传给 [`Self::dispatch_with`]。
@@ -277,10 +305,14 @@ impl GatewayService {
             }
             method::AGENT_POWER_ARM => {
                 let params = parse_params::<fluxdown_protocol::PowerArmParams>(request.params)?;
-                let armed = self.local.power.arm(
-                    std::time::Duration::from_secs(params.delay_secs),
-                    params.action,
-                );
+                let armed = if let Some(condition) = params.low_speed {
+                    self.local.power.arm_low_speed(condition, params.action)
+                } else {
+                    self.local.power.arm(
+                        std::time::Duration::from_secs(params.delay_secs),
+                        params.action,
+                    )
+                };
                 Ok(serde_json::json!({ "armed": armed }))
             }
             method::AGENT_POWER_DISARM => {
@@ -575,6 +607,70 @@ impl GatewayService {
                     parse_params::<fluxdown_protocol::CloudNotifyDeliveriesParams>(request.params)?;
                 cloud_value(self.notify.deliveries(&params).await)
             }
+            method::AGENT_ASSISTANT_GET => to_value(self.assistant()?.get().await),
+            method::AGENT_ASSISTANT_REFRESH => assistant_value(self.assistant()?.refresh().await),
+            method::AGENT_ASSISTANT_SESSIONS => {
+                let params =
+                    parse_params::<fluxdown_protocol::AssistantSessionsParams>(request.params)?;
+                assistant_value(self.assistant()?.sessions(params).await)
+            }
+            method::AGENT_ASSISTANT_SESSION => {
+                let params =
+                    parse_params::<fluxdown_protocol::AssistantSessionIdParams>(request.params)?;
+                assistant_value(self.assistant()?.session(params).await)
+            }
+            method::AGENT_ASSISTANT_DELETE_SESSION => {
+                let params =
+                    parse_params::<fluxdown_protocol::AssistantSessionIdParams>(request.params)?;
+                assistant_ok(self.assistant()?.delete_session(params).await)
+            }
+            method::AGENT_ASSISTANT_CLEAR_SESSIONS => {
+                assistant_value(self.assistant()?.clear_sessions().await)
+            }
+            method::AGENT_ASSISTANT_ASK => {
+                let params = parse_params::<fluxdown_protocol::AssistantAskParams>(request.params)?;
+                assistant_value(self.assistant()?.ask(params).await)
+            }
+            method::AGENT_ASSISTANT_CANCEL => {
+                let params =
+                    parse_params::<fluxdown_protocol::AssistantSessionIdParams>(request.params)?;
+                assistant_ok(self.assistant()?.cancel(params).await)
+            }
+            method::AGENT_ASSISTANT_CONFIRM => {
+                let params =
+                    parse_params::<fluxdown_protocol::AssistantConfirmParams>(request.params)?;
+                assistant_ok(self.assistant()?.confirm(params).await)
+            }
+            method::AGENT_ASSISTANT_RATE => {
+                let params =
+                    parse_params::<fluxdown_protocol::AssistantRateParams>(request.params)?;
+                assistant_ok(self.assistant()?.rate(params).await)
+            }
+            method::AGENT_ASSISTANT_CONFIRM_ISSUE => {
+                let params =
+                    parse_params::<fluxdown_protocol::AssistantIssueParams>(request.params)?;
+                assistant_value(self.assistant()?.confirm_issue(params).await)
+            }
+            method::AGENT_ASSISTANT_DISCARD_ISSUE => {
+                let params =
+                    parse_params::<fluxdown_protocol::AssistantIssueParams>(request.params)?;
+                assistant_ok(self.assistant()?.discard_issue(params).await)
+            }
+            method::AGENT_ASSISTANT_RENAME_SESSION => {
+                let params =
+                    parse_params::<fluxdown_protocol::AssistantRenameParams>(request.params)?;
+                assistant_value(self.assistant()?.rename_session(params).await)
+            }
+            method::AGENT_ASSISTANT_EXPORT_SESSION => {
+                let params =
+                    parse_params::<fluxdown_protocol::AssistantExportParams>(request.params)?;
+                assistant_value(self.assistant()?.export_session(params).await)
+            }
+            method::AGENT_ASSISTANT_ATTACHMENT => {
+                let params =
+                    parse_params::<fluxdown_protocol::AssistantAttachmentParams>(request.params)?;
+                assistant_value(self.assistant()?.attachment(params).await)
+            }
             method::AGENT_SYNC_GET => to_value(self.sync.status().await),
             method::AGENT_SYNC_ENABLE => sync_value(self.sync.set_enabled(true).await),
             method::AGENT_SYNC_DISABLE => sync_value(self.sync.set_enabled(false).await),
@@ -609,6 +705,11 @@ impl GatewayService {
                         .await
                         .map(|()| serde_json::json!({ "ok": true })),
                 )
+            }
+            method::AGENT_REMOTE_COMMAND_MANY => {
+                let params =
+                    parse_params::<fluxdown_protocol::RemoteCommandManyParams>(request.params)?;
+                remote_value(self.remote.command_many(params).await)
             }
             method::AGENT_LINK_PAIRING_CODE
             | method::AGENT_LINK_STOP_PAIRING
@@ -695,6 +796,41 @@ impl GatewayService {
                 self.platform_app_icon_image(params).await
             }
             method::AGENT_PLATFORM_SYNC_WINDOW_ICONS => self.platform_sync_window_icons().await,
+            method::AGENT_PLATFORM_ACK_TRAY_DOWNLOADS => {
+                #[cfg(all(windows, feature = "desktop"))]
+                {
+                    #[derive(serde::Deserialize)]
+                    #[serde(rename_all = "camelCase")]
+                    struct SeenCursor {
+                        epoch: String,
+                        sequence: u64,
+                        #[serde(default)]
+                        seen_failures: Vec<String>,
+                    }
+                    let seen = parse_params::<SeenCursor>(request.params)?;
+                    self.events.acknowledge_tray_downloads(
+                        &seen.epoch,
+                        seen.sequence,
+                        &seen.seen_failures,
+                    );
+                }
+                Ok(serde_json::json!({ "ok": true }))
+            }
+            method::AGENT_PLATFORM_BROWSER_EXTENSION_STATUS => {
+                platform_blocking(|| Ok(crate::platform::browser_extension::status()))
+                    .await
+                    .and_then(to_value)
+            }
+            method::AGENT_PLATFORM_INSTALL_BROWSER_EXTENSION => {
+                let params = parse_params::<
+                    fluxdown_protocol::browser_extension::BrowserExtensionInstallParams,
+                >(request.params)?;
+                platform_blocking(move || {
+                    crate::platform::browser_extension::install(params.browser)
+                })
+                .await
+                .and_then(to_value)
+            }
             method::AGENT_SOUND_PREVIEW => {
                 let params =
                     parse_params::<fluxdown_protocol::sound::SoundPreviewParams>(request.params)?;
@@ -833,7 +969,7 @@ impl GatewayService {
     ) -> Result<serde_json::Value, RpcErrorData> {
         let patch = parse_params::<fluxdown_protocol::GatewayPatchParams>(Some(params))?;
         let _transaction = self.gateway_patch_lock.lock().await;
-        // server 模式的密钥同时是首次设置的开关：空值会把服务重新暴露给匿名 setup，
+        // server 模式的密钥同时是首次设置的开关：空值会在下次启动重新要求引导码，
         // 不合规的值会让 Web 登录页拒绝自己。二者都在这里拒绝。
         if self.server_mode
             && patch
@@ -1210,6 +1346,36 @@ impl GatewayService {
             .unwrap_or(true);
         let mut revision = 0_u64;
         for (key, value) in values {
+            if key == crate::logging::LEVEL_PREF {
+                let root = self
+                    .logging_dir
+                    .clone()
+                    .ok_or_else(|| RpcErrorData::new(ApplicationErrorCode::Unsupported, false))?;
+                let configured = value
+                    .as_str()
+                    .and_then(|value| fluxdown_logfile::startup::parse_setting(value).ok())
+                    .ok_or_else(|| invalid_field(crate::logging::LEVEL_PREF))?;
+                let _guard = self.gateway_patch_lock.lock().await;
+                tokio::task::spawn_blocking(move || {
+                    fluxdown_logfile::startup::write_level(&root, configured)
+                })
+                .await
+                .map_err(|error| {
+                    tracing::error!(%error, "log level configuration write task failed");
+                    RpcErrorData::new(ApplicationErrorCode::Internal, false)
+                })?
+                .map_err(|error| {
+                    tracing::error!(%error, "cannot save log level configuration");
+                    RpcErrorData::new(ApplicationErrorCode::Internal, false)
+                })?;
+                let level = fluxdown_logfile::startup::setting_name(configured);
+                let revision_now = self
+                    .sync
+                    .project_local_preference(key.clone(), level.into())
+                    .await;
+                revision = revision.max(revision_now);
+                continue;
+            }
             // JSON null = 恢复默认（墓碑）：本机移除该偏好 / daemon 键回到默认，并把删除同步给云端。
             let deleted = value.is_null();
             let result = if sync {
@@ -1634,6 +1800,7 @@ fn invalid_field(field: &str) -> RpcErrorData {
         retryable: false,
         field: Some(field.to_owned()),
         revision: None,
+        plugin_detail: None,
         reason: None,
     }
 }
@@ -1787,6 +1954,7 @@ fn platform_error_data(error: PlatformError) -> RpcErrorData {
             tracing::debug!(path = %path.display(), "platform target is missing");
             RpcErrorData::new(ApplicationErrorCode::NotFound, false)
         }
+        PlatformError::Declined => RpcErrorData::new(ApplicationErrorCode::Cancelled, false),
         error @ (PlatformError::Io(_) | PlatformError::Failed(_)) => {
             internal_error("platform action", error)
         }
@@ -1862,36 +2030,9 @@ pub(crate) fn ensure_exposed_auth_token(state: &mut crate::state::AgentState) ->
 fn remote_value<T: serde::Serialize>(
     result: Result<T, RemoteError>,
 ) -> Result<serde_json::Value, RpcErrorData> {
-    result.map_err(remote_error_data).and_then(to_value)
-}
-
-fn remote_error_data(error: RemoteError) -> RpcErrorData {
-    match error {
-        RemoteError::Daemon(error) => error,
-        RemoteError::Cloud(error) => cloud_error_data(error),
-        RemoteError::NotFound(_) => RpcErrorData::new(ApplicationErrorCode::NotFound, false),
-        RemoteError::TaskUnavailable(_) => RpcErrorData::new(ApplicationErrorCode::Conflict, false)
-            .with_reason(fluxdown_protocol::ErrorReason::TaskStateConflict),
-        RemoteError::InvalidArgument {
-            field,
-            reason,
-            message,
-        } => {
-            tracing::debug!(field, %message, "remote RPC argument rejected");
-            let mut data = invalid_field(field);
-            data.reason = reason;
-            data
-        }
-        RemoteError::InvalidAction(action) => {
-            tracing::debug!(%action, "unknown remote task action");
-            invalid_field("action")
-        }
-        RemoteError::Json(error) => internal_error("remote task response", error),
-        RemoteError::State(error) => internal_error("agent state", error),
-        RemoteError::Protocol(message) => internal_error("remote task protocol", message),
-        RemoteError::Kicked => RpcErrorData::new(ApplicationErrorCode::Conflict, false)
-            .with_reason(fluxdown_protocol::ErrorReason::OnlineDeviceLimit),
-    }
+    result
+        .map_err(RemoteError::into_rpc_error)
+        .and_then(to_value)
 }
 
 fn params_or_empty(params: Option<serde_json::Value>) -> serde_json::Value {
@@ -1913,6 +2054,29 @@ fn cloud_error_data(error: CloudError) -> RpcErrorData {
         "FluxCloud request failed"
     );
     error.to_rpc_error()
+}
+
+fn assistant_value<T: serde::Serialize>(
+    result: Result<T, AssistantError>,
+) -> Result<serde_json::Value, RpcErrorData> {
+    result.map_err(assistant_error_data).and_then(to_value)
+}
+
+fn assistant_ok(result: Result<(), AssistantError>) -> Result<serde_json::Value, RpcErrorData> {
+    result
+        .map(|()| serde_json::json!({ "ok": true }))
+        .map_err(assistant_error_data)
+}
+
+/// 助手错误 → RPC 错误。RPC 错误体不带文本：可读原因进日志;提问 / 刷新配置失败另记入
+/// `AssistantStateDto.last_error_message`,由 UI 展示。
+fn assistant_error_data(error: AssistantError) -> RpcErrorData {
+    tracing::debug!(
+        code = ?error.data.code,
+        message = %error.message,
+        "assistant request failed"
+    );
+    error.data
 }
 
 fn sync_value(
@@ -1961,6 +2125,7 @@ struct GatewayState {
 )]
 pub async fn serve(
     listener: TcpListener,
+    ipc: Option<IpcListener>,
     service: Arc<GatewayService>,
     api_host: Arc<AgentApiHost>,
     api_config: fluxdown_api::server::ApiServerConfig,
@@ -1979,6 +2144,7 @@ pub async fn serve(
     let rpc = Router::new()
         .route("/rpc", get(rpc_upgrade))
         .route("/api/web/plugin-images/{session}/{id}", get(plugin_image))
+        .route("/api/web/rss-images", get(rss_image))
         .with_state(state);
     let app = fluxdown_api::server::api_router(api_host, api_config).merge(rpc);
     // SPA fallback 只在 server 模式挂载，且 API / `/rpc` 路由优先。
@@ -1988,8 +2154,95 @@ pub async fn serve(
     };
     service
         .listener_control
-        .run(listener, app, bearer, cancel, endpoint_dir)
+        .run(listener, ipc, app, bearer, cancel, endpoint_dir)
         .await
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RssImageQuery {
+    source_id: String,
+    guid: String,
+    index: u8,
+}
+
+async fn rss_image(
+    State(state): State<GatewayState>,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<RssImageQuery>,
+) -> Response {
+    use base64::Engine as _;
+    if let Err(status) = authorize_image(&state, peer.ip(), &headers).await {
+        return status.into_response();
+    }
+    let payload: serde_json::Value = match state.service.daemon.call(
+        method::DAEMON_RSS_GET_IMAGE,
+        Some(serde_json::json!({"sourceId": query.source_id, "guid": query.guid, "index": query.index})),
+    ).await {
+        Ok(payload) => payload,
+        Err(error)
+            if error.reason == Some(fluxdown_protocol::ErrorReason::RssImageProxyUnverifiable) =>
+        {
+            return (
+                StatusCode::FORBIDDEN,
+                [
+                    (RSS_IMAGE_PROXY_UNVERIFIABLE_HEADER, "1"),
+                    (header::CACHE_CONTROL.as_str(), "no-store"),
+                ],
+            )
+                .into_response();
+        }
+        Err(_) => return StatusCode::BAD_GATEWAY.into_response(),
+    };
+    let Some(encoded) = payload.get("pngBase64").and_then(serde_json::Value::as_str) else {
+        return StatusCode::BAD_GATEWAY.into_response();
+    };
+    let Ok(png) = base64::engine::general_purpose::STANDARD.decode(encoded) else {
+        return StatusCode::BAD_GATEWAY.into_response();
+    };
+    if png.len() > 512 * 1024 {
+        return StatusCode::BAD_GATEWAY.into_response();
+    }
+    (
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "no-store"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        png,
+    )
+        .into_response()
+}
+
+async fn authorize_image(
+    state: &GatewayState,
+    peer: std::net::IpAddr,
+    headers: &HeaderMap,
+) -> Result<(), StatusCode> {
+    if crate::server_mode::bearer_token(headers).is_none()
+        || !crate::server_mode::origin_allowed(headers)
+    {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    match state.server.as_deref() {
+        Some(server) => {
+            server
+                .authorize_rpc_from(peer, headers, &state.bearer)
+                .await
+        }
+        None => {
+            authorize_desktop_rpc(
+                &state.service,
+                &state.throttle,
+                &state.bearer,
+                peer,
+                headers,
+            )
+            .await
+        }
+    }
+    .map(|_| ())
 }
 
 async fn plugin_image(
@@ -1998,34 +2251,8 @@ async fn plugin_image(
     AxumPath((session, id)): AxumPath<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    // Binary resources use headers only: never place access keys in an image URL.
-    if crate::server_mode::bearer_token(&headers).is_none()
-        || !crate::server_mode::origin_allowed(&headers)
-    {
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
-    match state.server.as_deref() {
-        Some(server) => {
-            if let Err(status) = server
-                .authorize_rpc_from(peer.ip(), &headers, &state.bearer)
-                .await
-            {
-                return status.into_response();
-            }
-        }
-        None => {
-            if let Err(status) = authorize_desktop_rpc(
-                &state.service,
-                &state.throttle,
-                &state.bearer,
-                peer.ip(),
-                &headers,
-            )
-            .await
-            {
-                return status.into_response();
-            }
-        }
+    if let Err(status) = authorize_image(&state, peer.ip(), &headers).await {
+        return status.into_response();
     }
     match state.service.blobs.plugin_image(&session, &id).await {
         Ok(bytes) => (
@@ -2054,10 +2281,26 @@ pub async fn load_or_create_bearer(
     let path = override_path
         .map(Path::to_path_buf)
         .unwrap_or_else(|| data_dir.join("agent.token"));
-    if let Ok(value) = tokio::fs::read_to_string(&path).await
-        && !value.trim().is_empty()
-    {
-        return Ok(value.trim().to_owned());
+    match tokio::fs::read_to_string(&path).await {
+        Ok(value) if !value.trim().is_empty() => return Ok(value.trim().to_owned()),
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        // 读不了（ACL 只授权给重装前的旧账户 SID、内容不是 UTF-8）：删掉后重建；桌面每次连接前
+        // 重读 bearer。删不掉时带上原因失败，不让 rename 报一个看不出缘由的拒绝访问。
+        Err(error) => {
+            tracing::warn!(path = %path.display(), error = %error, "agent token is unreadable; replacing it");
+            if let Err(remove) = tokio::fs::remove_file(&path).await
+                && remove.kind() != std::io::ErrorKind::NotFound
+            {
+                return Err(std::io::Error::new(
+                    remove.kind(),
+                    format!(
+                        "agent token {} is unreadable ({error}) and cannot be replaced: {remove}",
+                        path.display()
+                    ),
+                ));
+            }
+        }
     }
     let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
     let parent = path.parent().unwrap_or(data_dir);
@@ -2502,9 +2745,10 @@ enum Lane {
     Cloud,
     /// 透传给 daemon 的下载命令与设置写入，同通道串行以保持命令顺序。
     Daemon,
-    /// 透传给 daemon 的长耗时方法（组件安装、插件市场、连通性测试等，清单见
-    /// `fluxdown_protocol::method::SLOW_DAEMON_METHODS`）：daemon 本就按请求并发处理，
-    /// 这里同样并发下发，不堵住普通 daemon 命令，也不被彼此堵住。
+    /// 并发下发的通道：透传给 daemon 的长耗时方法（组件安装、插件市场、连通性测试等，清单见
+    /// `fluxdown_protocol::method::SLOW_DAEMON_METHODS`）与 `agent.assistant.*`（提问期间的取消 /
+    /// 确认必须能越过在途请求）。daemon 本就按请求并发处理，这里同样并发下发，不堵住普通
+    /// daemon 命令，也不被彼此堵住。
     DaemonSlow,
     /// 其余本机操作。
     Local,
@@ -2512,7 +2756,8 @@ enum Lane {
     Icon,
     /// 局域网配对 / 诊断：含最长约 70s 的对端等待或外部探测，单独成道，不堵住心跳与本机设置操作。
     Slow,
-    /// Doctor 修复：可能等待用户在系统授权对话框里操作数分钟，单独成道，不堵住配对与重新诊断。
+    /// 等待用户在系统对话框里操作（Doctor 修复的授权框、macOS 改默认程序的确认框），可能
+    /// 持续数分钟：单独成道，不堵住配对、重新诊断与其他本机操作；同道串行，确认框不叠弹。
     Repair,
 }
 
@@ -2526,6 +2771,11 @@ fn lane_for(method_name: &str) -> Lane {
         } else {
             Lane::Daemon
         };
+    }
+    // 助手方法是云端往返(建会话、提问等响应头),且 `cancel` / `confirm` 必须能越过在途的提问:
+    // 与慢 daemon 调用同道并发下发,不占用串行的 Local / Cloud 通道。
+    if method_name.starts_with("agent.assistant.") {
+        return Lane::DaemonSlow;
     }
     // 私有包安装 = 云端目录 + 下载（分钟级）+ daemon 安装：与慢 daemon 调用同道并发下发，
     // 不占用串行的 Cloud 通道（登录 / 设备 / 同步等不能被它堵住）。目录 `list` 仍走 Cloud。
@@ -2563,7 +2813,12 @@ fn lane_for(method_name: &str) -> Lane {
         .any(|prefix| method_name.starts_with(prefix))
     {
         Lane::Cloud
-    } else if method_name == fluxdown_protocol::method::AGENT_DIAGNOSTICS_REPAIR {
+    } else if matches!(
+        method_name,
+        fluxdown_protocol::method::AGENT_DIAGNOSTICS_REPAIR
+            | fluxdown_protocol::method::AGENT_PLATFORM_SET_FILE_ASSOCIATION
+            | fluxdown_protocol::method::AGENT_PLATFORM_SET_URL_PROTOCOL
+    ) {
         Lane::Repair
     } else if method_name.starts_with("agent.link.")
         || method_name == method::AGENT_SOUND_PREVIEW
@@ -2788,6 +3043,18 @@ mod tests {
         }
     }
 
+    struct GatewayTestDirectory(std::path::PathBuf);
+
+    impl Drop for GatewayTestDirectory {
+        fn drop(&mut self) {
+            if let Err(error) = std::fs::remove_dir_all(&self.0)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!(path = %self.0.display(), %error, "gateway test cleanup failed");
+            }
+        }
+    }
+
     struct TestGateway {
         service: Arc<GatewayService>,
         state: Arc<tokio::sync::Mutex<crate::state::AgentState>>,
@@ -2798,6 +3065,7 @@ mod tests {
         bound_ip: std::net::IpAddr,
         cancel: tokio_util::sync::CancellationToken,
         server_task: tokio::task::JoinHandle<Result<(), std::io::Error>>,
+        cleanup: GatewayTestDirectory,
     }
 
     #[tokio::test]
@@ -2986,12 +3254,24 @@ mod tests {
             allow_local_platform: bool,
             address: &str,
         ) -> Self {
-            Self::new_bound_link(label, server_mode, allow_local_platform, address, true).await
+            Self::new_bound_link(
+                label,
+                server_mode,
+                allow_local_platform,
+                address,
+                true,
+                false,
+            )
+            .await
         }
 
         /// 不装配直连服务的网关（精简宿主）：不下发 `agent.deviceLink` 能力。
         async fn new_without_link(label: &str) -> Self {
-            Self::new_bound_link(label, false, false, "127.0.0.1:0", false).await
+            Self::new_bound_link(label, false, false, "127.0.0.1:0", false, false).await
+        }
+
+        async fn new_with_logging(label: &str) -> Self {
+            Self::new_bound_link(label, false, false, "127.0.0.1:0", true, true).await
         }
 
         async fn new_bound_link(
@@ -3000,12 +3280,14 @@ mod tests {
             allow_local_platform: bool,
             address: &str,
             attach_link: bool,
+            attach_logging: bool,
         ) -> Self {
             let dir = std::env::temp_dir().join(format!(
                 "fluxdown_agent_{label}_{}_{}",
                 std::process::id(),
                 uuid::Uuid::new_v4()
             ));
+            let cleanup = GatewayTestDirectory(dir.clone());
             let store = Arc::new(
                 crate::state::StateStore::open(dir.clone())
                     .await
@@ -3142,6 +3424,11 @@ mod tests {
             api_config.token = api_token.clone();
             api_config.lan_enabled = !bound.ip().is_loopback();
             api_config.enforce_loopback_host = bound.ip().is_loopback();
+            let assistant = Arc::new(crate::assistant::AssistantService::new(
+                cloud_api.clone(),
+                events.clone(),
+                tokio_util::sync::CancellationToken::new(),
+            ));
             let mut gateway = GatewayService::new(
                 daemon,
                 events.clone(),
@@ -3160,9 +3447,13 @@ mod tests {
                 api_token.clone(),
                 local,
             )
-            .with_server_mode(server_mode);
+            .with_server_mode(server_mode)
+            .with_assistant(assistant);
             if attach_link {
                 gateway = gateway.with_link(link.clone());
+            }
+            if attach_logging {
+                gateway = gateway.with_logging_dir(dir.join("engine-data"));
             }
             let service = Arc::new(gateway);
             let cancel = tokio_util::sync::CancellationToken::new();
@@ -3182,6 +3473,7 @@ mod tests {
                         demo: false,
                         allow_local_platform,
                         link: attach_link.then(|| link.clone()),
+                        setup_gate: Arc::new(crate::server_mode::SetupGate::new(&dir)),
                     })
                     .expect("server handle"),
                 ))
@@ -3190,6 +3482,7 @@ mod tests {
             };
             let server_task = tokio::spawn(super::serve(
                 listener,
+                None,
                 service.clone(),
                 api_host,
                 api_config,
@@ -3211,6 +3504,7 @@ mod tests {
                 bound_ip: bound.ip(),
                 cancel,
                 server_task,
+                cleanup,
             }
         }
 
@@ -3229,11 +3523,12 @@ mod tests {
                 state,
                 store,
                 api_token: _,
-                dir,
+                dir: _,
                 endpoint_dir: _,
                 bound_ip: _,
                 cancel,
                 server_task,
+                cleanup,
             } = self;
             cancel.cancel();
             server_task
@@ -3243,9 +3538,53 @@ mod tests {
             drop(service);
             drop(state);
             drop(store);
-            if let Err(error) = tokio::fs::remove_dir_all(&dir).await {
-                tracing::warn!(path = %dir.display(), %error, "gateway test cleanup failed");
-            }
+            drop(cleanup);
+        }
+
+        async fn patch_log_level(&self, level: &str) -> RpcResponse {
+            self.call(
+                fluxdown_protocol::method::AGENT_PREFERENCES_PATCH,
+                serde_json::json!({"values": {(crate::logging::LEVEL_PREF): level}}),
+            )
+            .await
+        }
+
+        async fn wire_snapshot(&self) -> serde_json::Value {
+            let response = self
+                .call(
+                    fluxdown_protocol::method::SYSTEM_SNAPSHOT,
+                    serde_json::json!({}),
+                )
+                .await;
+            let RpcResponse::Success(snapshot) = response else {
+                panic!("snapshot failed: {response:?}");
+            };
+            snapshot.result
+        }
+
+        async fn assert_log_level_rejected(
+            &self,
+            level: &str,
+            code: ApplicationErrorCode,
+            field: Option<&str>,
+        ) {
+            let before = self.wire_snapshot().await;
+            let preferences = self.state.lock().await.preferences.clone();
+            let response = self.patch_log_level(level).await;
+            let RpcResponse::Failure(failure) = response else {
+                panic!("log level patch unexpectedly succeeded: {response:?}");
+            };
+            let data = failure.error.data.expect("log level error data");
+            assert_eq!(data.code, code);
+            assert_eq!(data.field.as_deref(), field);
+            assert!(!data.retryable);
+            assert_eq!(self.state.lock().await.preferences, preferences);
+            let after = self.wire_snapshot().await;
+            assert_eq!(after["sequence"], before["sequence"]);
+            assert_eq!(
+                after["body"]["snapshot"]["preferences"],
+                before["body"]["snapshot"]["preferences"]
+            );
         }
 
         async fn patch_gateway(&self, params: serde_json::Value) -> serde_json::Value {
@@ -3308,6 +3647,72 @@ mod tests {
             assert_eq!(&*self.api_token.get(), "original-token");
             assert_eq!(self.service.events.snapshot().sequence, sequence);
         }
+    }
+
+    #[tokio::test]
+    async fn log_level_preference_patch_persists_and_projects() {
+        let harness = TestGateway::new_with_logging("log_level_persists").await;
+        let response = harness.patch_log_level(" debug ").await;
+        let RpcResponse::Success(success) = response else {
+            panic!("log level patch failed: {response:?}");
+        };
+        assert_eq!(success.result["ok"], true);
+        assert!(
+            success.result["revision"]
+                .as_u64()
+                .is_some_and(|rev| rev > 0)
+        );
+        assert_eq!(
+            fluxdown_logfile::startup::read_level(&harness.dir.join("engine-data"))
+                .expect("read persisted log level"),
+            Some(fluxdown_logfile::Level::Debug)
+        );
+        let snapshot = harness.wire_snapshot().await;
+        let preferences = &snapshot["body"]["snapshot"]["preferences"];
+        assert_eq!(preferences["values"][crate::logging::LEVEL_PREF], "debug");
+        assert_eq!(preferences["revision"], success.result["revision"]);
+        harness.finish().await;
+    }
+
+    #[tokio::test]
+    async fn log_level_preference_patch_rejects_invalid_value() {
+        let harness = TestGateway::new_with_logging("log_level_invalid").await;
+        harness
+            .assert_log_level_rejected(
+                "trace",
+                ApplicationErrorCode::InvalidArgument,
+                Some(crate::logging::LEVEL_PREF),
+            )
+            .await;
+        assert!(!harness.dir.join("engine-data").exists());
+        harness.finish().await;
+    }
+
+    #[tokio::test]
+    async fn log_level_preference_patch_requires_logging_dir() {
+        let harness = TestGateway::new("log_level_unsupported").await;
+        harness
+            .assert_log_level_rejected("debug", ApplicationErrorCode::Unsupported, None)
+            .await;
+        harness.finish().await;
+    }
+
+    #[tokio::test]
+    async fn log_level_preference_patch_does_not_publish_on_write_failure() {
+        let harness = TestGateway::new_with_logging("log_level_write_failure").await;
+        // A file cannot replace this directory, even with elevated permissions.
+        tokio::fs::create_dir_all(
+            harness
+                .dir
+                .join("engine-data")
+                .join(fluxdown_logfile::startup::FILE_NAME),
+        )
+        .await
+        .expect("obstruct log level file");
+        harness
+            .assert_log_level_rejected("debug", ApplicationErrorCode::Internal, None)
+            .await;
+        harness.finish().await;
     }
 
     #[tokio::test]
@@ -4139,6 +4544,7 @@ mod tests {
             refresh_token: "refresh".to_owned(),
             expires_at_unix: i64::MAX,
             session: None,
+            issuer: String::new(),
         });
         let response = tokio::time::timeout(
             Duration::from_secs(1),
@@ -4744,6 +5150,17 @@ mod tests {
             Lane::Slow
         ));
         assert!(matches!(lane_for("agent.remote.reconnect"), Lane::Local));
+        // 助手的取消 / 确认要能越过在途的提问：并发通道，不与串行的 Local / Cloud 共道。
+        for name in [
+            fluxdown_protocol::method::AGENT_ASSISTANT_ASK,
+            fluxdown_protocol::method::AGENT_ASSISTANT_CANCEL,
+            fluxdown_protocol::method::AGENT_ASSISTANT_CONFIRM,
+            fluxdown_protocol::method::AGENT_ASSISTANT_RENAME_SESSION,
+            fluxdown_protocol::method::AGENT_ASSISTANT_EXPORT_SESSION,
+            fluxdown_protocol::method::AGENT_ASSISTANT_ATTACHMENT,
+        ] {
+            assert!(matches!(lane_for(name), Lane::DaemonSlow), "{name}");
+        }
         for name in [
             fluxdown_protocol::method::AGENT_PLUGIN_FAVORITE_LIST,
             fluxdown_protocol::method::AGENT_PLUGIN_FAVORITE_SET,
@@ -4756,6 +5173,13 @@ mod tests {
             lane_for(fluxdown_protocol::method::AGENT_PRIVATE_PLUGIN_INSTALL),
             Lane::DaemonSlow
         ));
+        // 关联开关阻塞到用户在系统确认框作答，不堵住打开文件等本机操作。
+        for name in [
+            fluxdown_protocol::method::AGENT_PLATFORM_SET_FILE_ASSOCIATION,
+            fluxdown_protocol::method::AGENT_PLATFORM_SET_URL_PROTOCOL,
+        ] {
+            assert!(matches!(lane_for(name), Lane::Repair), "{name}");
+        }
     }
 
     #[tokio::test]
@@ -4795,6 +5219,7 @@ mod tests {
             refresh_token: "refresh".to_owned(),
             expires_at_unix: i64::MAX,
             session: None,
+            issuer: String::new(),
         });
         let service = Arc::new(harness.service);
         let (responses, mut receiver) = tokio::sync::mpsc::channel(4);
@@ -4879,6 +5304,8 @@ mod tests {
             fluxdown_protocol::method::AGENT_PLATFORM_INTEGRATION_GET,
             fluxdown_protocol::method::AGENT_PLATFORM_SET_AUTOSTART,
             fluxdown_protocol::method::AGENT_SOUND_PREVIEW,
+            fluxdown_protocol::method::AGENT_PLATFORM_BROWSER_EXTENSION_STATUS,
+            fluxdown_protocol::method::AGENT_PLATFORM_INSTALL_BROWSER_EXTENSION,
         ] {
             let response = harness.call(method_name, serde_json::json!({})).await;
             let RpcResponse::Failure(failure) = response else {

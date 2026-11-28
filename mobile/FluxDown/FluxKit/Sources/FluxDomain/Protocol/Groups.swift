@@ -200,7 +200,7 @@ public struct GroupItemRequest: Codable, Sendable, Hashable {
 /// `daemon.group.create`；`items` 不可为空。
 public struct CreateGroupRequest: Codable, Sendable, Hashable {
     public var sourceUrl: String
-    /// 空 = 组根目录直接用 `saveDir`。
+    /// 仅用于显示，不参与目录；全体成员共享公共目录时宿主改用该目录名。
     public var groupName: String
     public var saveDir: String
     public var queueId: String
@@ -257,10 +257,26 @@ public struct CreateGroupRequest: Codable, Sendable, Hashable {
     }
 }
 
+/// 只有一个条目时宿主不建组、直接建普通任务：`groupId` 为空、`taskId` 为新任务 ID。
 public struct CreateGroupResponse: Codable, Sendable, Hashable {
     public var groupId: String
+    public var taskId: String
 
-    public init(groupId: String) { self.groupId = groupId }
+    public init(groupId: String, taskId: String = "") {
+        self.groupId = groupId
+        self.taskId = taskId
+    }
+
+    /// 单条目建普通任务（不成组）。
+    public var createdSingleTask: Bool { groupId.isEmpty && !taskId.isEmpty }
+
+    private enum CodingKeys: String, CodingKey { case groupId, taskId }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        groupId = try c.decodeIfPresent(String.self, forKey: .groupId) ?? ""
+        taskId = try c.decodeIfPresent(String.self, forKey: .taskId) ?? ""
+    }
 }
 
 /// `agent.capture.preview`（90 s；不消费事务）：表单上下文，捕获原 URL / method / body 不可被覆盖。
@@ -396,13 +412,21 @@ public struct ManifestSelection: Sendable, Hashable {
         return item.variants.first { $0.id == id }
     }
 
-    /// 有效大小：选了规格且规格大小已知用规格，否则条目大小；0 = 未知。
+    /// 有效大小：显式规格用规格大小，否则用条目大小；0 = 未知。
     public func effectiveSize(of item: PreviewItemDto) -> Int64 {
-        if let variant = variant(for: item), variant.size > 0 { return variant.size }
-        return max(item.size, 0)
+        max(variant(for: item)?.size ?? item.size, 0)
     }
 
     public var selectedItems: [PreviewItemDto] { items.filter { selected.contains($0.id) } }
+
+    /// Checked files in manifest order, independent of the active search.
+    public func selectedExportRows() -> [(name: String, size: Int64)] {
+        items.compactMap { item in
+            guard selected.contains(item.id) else { return nil }
+            let name = item.path.isEmpty ? item.name : "\(item.path)/\(item.name)"
+            return (name, effectiveSize(of: item))
+        }
+    }
 
     /// 已选总大小（字节，未知条目计 0）与未知大小条目数。
     public var selectedSize: (bytes: Int64, unknown: Int) {

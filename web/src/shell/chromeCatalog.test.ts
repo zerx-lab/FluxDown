@@ -27,7 +27,28 @@ describe('dynamic chrome catalog', () => {
     const spec = { id: 'plugin:a@x:dash', defaultZone: 'railTop' as const, families: ['rail', 'title'] as const }
     setPluginChromeSpecs([spec])
     const layout = normalizeLayout({ hidden: ['plugin:a@x:dash', 'downloads', 'settings', 'rss'] }, getChromeCatalog())
-    expect(layout.hidden).toEqual(['rss', 'plugin:a@x:dash'])
+    // 存储值没摆放 diskFree：默认隐藏条目按目录顺序加入。
+    expect(layout.hidden).toEqual(['rss', 'diskFree', 'plugin:a@x:dash'])
     setPluginChromeSpecs([])
+  })
+})
+
+describe('static chrome catalog', () => {
+  test('assistantPanel 默认落在状态栏右侧、紧挨 appVersion 之前，且没有旧 assistant 路由条目', () => {
+    const ids = CHROME_CATALOG.map((spec) => spec.id)
+    expect(ids.includes('assistant')).toBe(false)
+    expect(ids.indexOf('assistantPanel')).toBe(ids.indexOf('appVersion') - 1)
+    const spec = CHROME_CATALOG.find((item) => item.id === 'assistantPanel')
+    expect(spec?.defaultZone).toBe('statusTrailing')
+    expect(spec?.families).toEqual(['rail', 'title', 'status'])
+    expect(spec?.fixed).toBeUndefined()
+    const layout = normalizeLayout(null, CHROME_CATALOG)
+    expect(layout.statusTrailing.slice(-2)).toEqual(['assistantPanel', 'appVersion'])
+  })
+
+  test('旧布局里存的 assistant 被丢弃，assistantPanel 落到默认位置', () => {
+    const layout = normalizeLayout({ railTop: ['downloads', 'assistant', 'rss'] }, CHROME_CATALOG)
+    expect(layout.railTop.includes('assistant')).toBe(false)
+    expect(layout.statusTrailing.includes('assistantPanel')).toBe(true)
   })
 })

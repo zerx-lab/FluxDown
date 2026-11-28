@@ -3,14 +3,15 @@
  * 302 到对应语言的文档首页。
  */
 import type { APIRoute } from "astro";
+import { isLang } from "@/i18n/config";
 import { parseAcceptLanguage } from "@/lib/locale-detect";
+import { LOCALE_KEY } from "@/lib/locale-pref";
 import { withBase } from "@/lib/base";
 
 export const prerender = false;
 
 export const GET: APIRoute = ({ cookies, request, redirect }) => {
-  const cookie = cookies.get("fluxdown-locale")?.value;
-  const lang =
-    cookie === "zh" || cookie === "en" ? cookie : parseAcceptLanguage(request.headers.get("accept-language"));
+  const cookie = cookies.get(LOCALE_KEY)?.value;
+  const lang = isLang(cookie) ? cookie : parseAcceptLanguage(request.headers.get("accept-language"));
   return redirect(withBase(`/docs/${lang}/`), 302);
 };

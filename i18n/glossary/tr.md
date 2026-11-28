@@ -1,6 +1,6 @@
 # tr（Türkçe）翻译术语表
 
-ZerxLabBot 翻译自动化（`i18n` 任务）翻译 `assets/i18n/tr.json` 时必读；人工修正术语时也以本表为准。用词对齐 Windows / Android 土耳其语界面与 qBittorrent 土耳其语译文的通行说法。
+GitHub Actions 工作流 `.github/workflows/i18n-mt.yml`（qwen-mt）翻译 `assets/i18n/tr.json` 时读取本表；人工修正术语时也以本表为准。用词对齐 Windows / Android 土耳其语界面与 qBittorrent 土耳其语译文的通行说法。
 
 ## 原则
 
@@ -62,3 +62,78 @@ FluxDown、FluxCloud、ZerxLabBot、BitTorrent、BT、eD2K、aria2、yt-dlp、FF
 | Quota | Kota | |
 | Diagnostics | Tanılama | |
 | Log | Günlük | |
+
+## qwen-mt 机器翻译配置
+
+`scripts/i18n-mt` 只读取本节的 JSON 代码块；改上文术语时同步这里。
+
+```json
+{
+  "targetLang": "Turkish",
+  "source": "en",
+  "domains": "UI strings of FluxDown, a desktop and mobile download manager (HTTP, BitTorrent, eD2K). Standard Turkish with correct ç ğ ı İ ö ş ü and i/İ, ı/I casing (İndir, not Indir). Neutral polite tone: buttons and menus in imperative base form (İndir, Duraklat, Sil); hints in polite plural second person or impersonal, never informal 'sen'. Sentence case, no final period on buttons and labels. Decimal comma (1,5 GB), space before unit, percent first: %{percent}. Quotes “ ”, ellipsis …. Keep {placeholder} names unchanged; apostrophe before suffixes ({name}'e); noun after {count} stays singular.",
+  "siteDomains": "Website and documentation of FluxDown, a free open-source download manager (HTTP, BitTorrent, eD2K) for desktop, mobile, NAS and servers. Standard Turkish with correct ç ğ ı İ ö ş ü and i/İ, ı/I casing; neutral polite tone (polite plural second person or impersonal, never informal 'sen'). Sentence case for headings. Apostrophe before suffixes on names. Do not translate code, commands, file paths, config keys, environment variables, URLs, product names or placeholders such as {0} or {name}; keep HTML tags and Markdown markup unchanged.",
+  "keep": [
+    "FluxDown", "FluxCloud", "ZerxLabBot", "BitTorrent", "BT", "eD2K", "aria2", "yt-dlp", "FFmpeg", "HLS", "DASH",
+    "M3U8", "RSS", "Webhook", "Telegram", "WebDAV", "SMB", "DHT", "UPnP", "uTP", "PEX", "HTTP", "HTTPS", "FTP",
+    "SOCKS5", "URL", "API", "MCP", "JSON", "CLI", "NAS", "Docker", "Windows", "macOS", "Linux", "Android", "iOS",
+    "Chrome", "Edge", "Firefox", "Safari", "GitHub", "Torrent", "Magnet",
+    "Proxy", "Plan"
+  ],
+  "terms": {
+    "Seeding": "Paylaşılıyor",
+    "Completed": "Tamamlandı",
+    "Failed": "Başarısız",
+    "Paused": "Duraklatıldı",
+    "Pause": "Duraklat",
+    "Resume": "Sürdür",
+    "Start": "Başlat",
+    "Cancel": "İptal",
+    "Confirm": "Onayla",
+    "OK": "Tamam",
+    "Delete": "Sil",
+    "Remove": "Kaldır",
+    "Task": "Görev",
+    "Task group": "Görev grubu",
+    "Queue": "Kuyruk",
+    "Category": "Kategori",
+    "File": "Dosya",
+    "Folder": "Klasör",
+    "Path": "Yol",
+    "File name": "Dosya adı",
+    "Extension": "Uzantı",
+    "Save location": "Kayıt konumu",
+    "Settings": "Ayarlar",
+    "Default": "Varsayılan",
+    "Advanced": "Gelişmiş",
+    "Speed limit": "Hız sınırı",
+    "Threads": "İş parçacığı",
+    "Connections": "Bağlantı",
+    "Segment": "Parça",
+    "Direct": "Doğrudan",
+    "Plugin": "Eklenti",
+    "Browser extension": "Tarayıcı uzantısı",
+    "Component": "Bileşen",
+    "Device": "Cihaz",
+    "Account": "Hesap",
+    "Sign in": "Oturum aç",
+    "Sign out": "Oturumu kapat",
+    "Sync": "Eşitleme",
+    "Notification": "Bildirim",
+    "Theme": "Tema",
+    "Appearance": "Görünüm",
+    "Language": "Dil",
+    "Tray": "Sistem tepsisi",
+    "Shortcut": "Kısayol",
+    "Update": "Güncelleme",
+    "Subscription": "Abonelik",
+    "Feed": "Akış",
+    "Tracker": "İzleyici",
+    "Peer": "Eş",
+    "Quota": "Kota",
+    "Diagnostics": "Tanılama",
+    "Log": "Günlük"
+  },
+  "copyKeys": []
+}
+```

@@ -4,6 +4,10 @@
 
 use tokio_util::sync::CancellationToken;
 
+#[cfg(windows)]
+#[path = "../../portable_process.rs"]
+mod portable_process;
+
 /// mimalloc 全局分配器：多线程 tokio 下吞吐与内存碎片均优于 musl/glibc 默认分配器。
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -14,6 +18,10 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 const MAX_WORKER_THREADS: usize = 4;
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    #[cfg(windows)]
+    if !portable_process::admit()? {
+        return Ok(());
+    }
     let workers = std::thread::available_parallelism()
         .map_or(2, std::num::NonZeroUsize::get)
         .clamp(2, MAX_WORKER_THREADS);

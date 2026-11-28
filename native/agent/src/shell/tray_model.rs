@@ -43,6 +43,8 @@ pub(super) struct TrayPresenter {
     port: Option<Arc<dyn TrayPort>>,
     translator: Option<Translator>,
     last: Option<Inputs>,
+    #[cfg(windows)]
+    last_dot: Option<super::DownloadDot>,
     icons: IconStore,
     /// 当前选择对应的图标；选择变化时才重新读取 / 缩放图片。
     icon: Option<(AppIconChoice, TrayIconSource)>,
@@ -63,6 +65,8 @@ impl TrayPresenter {
             port,
             translator,
             last: None,
+            #[cfg(windows)]
+            last_dot: None,
             icons: IconStore::new(agent_data_dir.as_ref()),
             icon: None,
         }
@@ -73,6 +77,8 @@ impl TrayPresenter {
             port,
             translator,
             last,
+            #[cfg(windows)]
+            last_dot,
             icons,
             icon,
         } = self;
@@ -80,7 +86,12 @@ impl TrayPresenter {
             return;
         };
         let inputs = events.inspect(Inputs::read);
-        if last.as_ref() == Some(&inputs) {
+        #[cfg(windows)]
+        let download_dot = events.tray_download_dot();
+        let unchanged = last.as_ref() == Some(&inputs);
+        #[cfg(windows)]
+        let unchanged = unchanged && *last_dot == download_dot;
+        if unchanged {
             return;
         }
         let locale = inputs
@@ -90,6 +101,21 @@ impl TrayPresenter {
         translator.set_locale(&locale);
         let mut model = build(translator, &inputs, COUNTDOWN_IN_MENU);
         model.icon = cached_icon(icon, icons, &inputs.icon);
+        #[cfg(windows)]
+        {
+            model.download_dot = download_dot;
+            if let Some(dot) = download_dot {
+                use std::fmt::Write as _;
+                let label = match dot {
+                    super::DownloadDot::Downloading => "trayDownloadsInProgress",
+                    super::DownloadDot::Completed => "trayDownloadsCompleted",
+                    super::DownloadDot::Failed => "trayDownloadsFailed",
+                };
+                let result = write!(model.tooltip, " · {}", translator.text(label));
+                debug_assert!(result.is_ok());
+            }
+            *last_dot = download_dot;
+        }
         port.apply(&model);
         *last = Some(inputs);
     }
@@ -112,13 +138,14 @@ fn cached_icon(
 }
 
 /// macOS 不给状态栏项设 tooltip（#953：macOS 27 上 tooltip 收不到移出事件而常驻），
-/// 倒计时改挂在「取消关机 / 睡眠」菜单项上。
+/// 倒计时改挂在取消完成动作的菜单项上。
 const COUNTDOWN_IN_MENU: bool = cfg!(target_os = "macos");
 
 fn build(translator: &Translator, inputs: &Inputs, countdown_in_menu: bool) -> TrayModel {
     let (countdown_key, cancel_key) = match inputs.power.action {
         PowerAction::Shutdown => ("shutdownCountdown", "trayCancelShutdown"),
         PowerAction::Sleep => ("sleepCountdown", "trayCancelSleep"),
+        PowerAction::Quit => ("quitCountdown", "trayCancelQuit"),
     };
     let remaining = inputs.power.countdown_remaining_secs.map(format_remaining);
     let tooltip = remaining.as_ref().map_or_else(
@@ -144,6 +171,8 @@ fn build(translator: &Translator, inputs: &Inputs, countdown_in_menu: bool) -> T
         tooltip,
         // 图标由 `TrayPresenter` 按应用图标偏好填入（需要读图片文件）。
         icon: TrayIconSource::Default,
+        #[cfg(windows)]
+        download_dot: None,
     }
 }
 
@@ -171,6 +200,7 @@ mod tests {
                 armed_delay_secs: Some(60),
                 countdown_remaining_secs: Some(65),
                 action: PowerAction::Shutdown,
+                ..PowerStatusDto::default()
             },
             icon: AppIconChoice::Default,
         };
@@ -202,6 +232,7 @@ mod tests {
                 "trayCancelShutdown",
             ),
             (PowerAction::Sleep, "sleepCountdown", "trayCancelSleep"),
+            (PowerAction::Quit, "quitCountdown", "trayCancelQuit"),
         ] {
             let inputs = Inputs {
                 visible: true,
@@ -210,6 +241,7 @@ mod tests {
                     armed_delay_secs: Some(0),
                     countdown_remaining_secs: Some(1),
                     action,
+                    ..PowerStatusDto::default()
                 },
                 icon: AppIconChoice::Default,
             };

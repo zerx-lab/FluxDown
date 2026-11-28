@@ -18,8 +18,8 @@ use gpui::{Action, App, Entity, Global, KeyBinding, KeyBindingContextPredicate, 
 use std::collections::HashMap;
 
 use crate::actions::{
-    CloseWindow, Hide, HideOthers, MinimizeWindow, OpenSettings, Quit, ToggleCommandPalette,
-    ToggleFullScreen,
+    CloseWindow, Hide, HideOthers, MinimizeWindow, OpenSettings, Quit, ToggleAssistant,
+    ToggleCommandPalette, ToggleFullScreen,
 };
 
 /// 一个应用内快捷键 id 对应的 GPUI 动作与键位上下文。
@@ -51,6 +51,7 @@ const ACTIONS: &[ActionBinding] = &[
     everywhere("new_download", || Box::new(dl::NewDownload)),
     everywhere("open_settings", || Box::new(OpenSettings)),
     everywhere("command_palette", || Box::new(ToggleCommandPalette)),
+    everywhere("toggle_assistant", || Box::new(ToggleAssistant)),
     everywhere("close_window", || Box::new(CloseWindow)),
     everywhere("minimize_window", || Box::new(MinimizeWindow)),
     everywhere("toggle_fullscreen", || Box::new(ToggleFullScreen)),
@@ -73,6 +74,61 @@ const ACTIONS: &[ActionBinding] = &[
     download_list("cycle_group", || Box::new(dl::CycleGroupBy)),
     download_list("cycle_sort", || Box::new(dl::CycleSort)),
 ];
+
+/// 跟随某个目录快捷键键位、只在更窄键位上下文生效的附属动作：不进目录、不单独可编辑。
+///
+/// 无上下文的绑定按「最深层」参与优先级比较，单写 `AssistantView` 会输给全局的新建下载
+/// （焦点在输入框时 `Input` 更深）。`AssistantView > !AssistantView` 让附属绑定在面板内任意
+/// 深度都按最深层匹配，同深度时后装入者胜出（附属绑定紧跟原绑定装入）。
+const FOLLOWERS: &[(&str, ActionBinding)] = &[(
+    "new_download",
+    ActionBinding {
+        id: "assistant_new_chat",
+        context: Some(ASSISTANT_PANEL_PREDICATE),
+        make: || Box::new(fluxdown_ui_assistant::actions::NewChat),
+    },
+)];
+
+/// 助手面板内的固定按键（不进目录、不可编辑，也没有可跟随的目录键位）：Esc 取消 / 停止 / 退出
+/// 历史视图，历史列表里上下键移动光标、回车打开。键位上下文限定在助手面板内，不抢对话框与
+/// 其他输入框的按键；装入时机晚于 gpui-component 的初始化，同深度的 `Input` 绑定输给它们。
+const ASSISTANT_FIXED: &[(&str, ActionBinding)] = &[
+    (
+        "escape",
+        ActionBinding {
+            id: "assistant_dismiss",
+            context: Some(ASSISTANT_PANEL_PREDICATE),
+            make: || Box::new(fluxdown_ui_assistant::actions::Dismiss),
+        },
+    ),
+    (
+        "up",
+        ActionBinding {
+            id: "assistant_history_prev",
+            context: Some(fluxdown_ui_assistant::actions::HISTORY_KEY_CONTEXT),
+            make: || Box::new(fluxdown_ui_assistant::actions::HistoryPrev),
+        },
+    ),
+    (
+        "down",
+        ActionBinding {
+            id: "assistant_history_next",
+            context: Some(fluxdown_ui_assistant::actions::HISTORY_KEY_CONTEXT),
+            make: || Box::new(fluxdown_ui_assistant::actions::HistoryNext),
+        },
+    ),
+    (
+        "enter",
+        ActionBinding {
+            id: "assistant_history_open",
+            context: Some(fluxdown_ui_assistant::actions::HISTORY_KEY_CONTEXT),
+            make: || Box::new(fluxdown_ui_assistant::actions::HistoryOpen),
+        },
+    ),
+];
+
+/// 焦点在助手面板（`fluxdown_ui_assistant::actions::KEY_CONTEXT`）内任意位置。
+const ASSISTANT_PANEL_PREDICATE: &str = "AssistantView || (AssistantView > !AssistantView)";
 
 fn action_binding(id: &str) -> Option<&'static ActionBinding> {
     ACTIONS.iter().find(|binding| binding.id == id)
@@ -134,6 +190,22 @@ pub fn install(cx: &mut App, store: &Entity<SettingsStore>, translator: &Entity<
         Some(fluxdown_ui_components::DIALOG_PRIMARY_KEY_CONTEXT),
     )]);
     fluxdown_ui_command_palette::bind_keys(cx);
+    let assistant_keys: Vec<KeyBinding> = ASSISTANT_FIXED
+        .iter()
+        .filter_map(
+            |(keystroke, binding)| match build_binding(binding, keystroke, cx) {
+                Ok(key_binding) => Some(key_binding),
+                Err(error) => {
+                    log::warn!(
+                        "skipping fixed shortcut `{}` = `{keystroke}`: {error}",
+                        binding.id
+                    );
+                    None
+                }
+            },
+        )
+        .collect();
+    cx.bind_keys(assistant_keys);
 
     sync(store, translator, cx);
     let (observed_store, observed_translator) = (store.clone(), translator.clone());
@@ -169,12 +241,18 @@ fn sync(store: &Entity<SettingsStore>, translator: &Entity<Translator>, cx: &mut
             match trigger {
                 ShortcutTrigger::Chord(chord) => {
                     let keystroke = chord_keystroke(chord);
-                    match build_binding(binding, &keystroke, cx) {
-                        Ok(key_binding) => bindings.push(key_binding),
-                        Err(error) => log::warn!(
-                            "skipping shortcut `{}` = `{keystroke}`: {error}",
-                            entry.spec.id
-                        ),
+                    let followers = FOLLOWERS
+                        .iter()
+                        .filter(|(id, _)| *id == entry.spec.id)
+                        .map(|(_, follower)| follower);
+                    for target in std::iter::once(binding).chain(followers) {
+                        match build_binding(target, &keystroke, cx) {
+                            Ok(key_binding) => bindings.push(key_binding),
+                            Err(error) => log::warn!(
+                                "skipping shortcut `{}` = `{keystroke}`: {error}",
+                                target.id
+                            ),
+                        }
                     }
                 }
                 ShortcutTrigger::DoubleTap(modifier) => {
@@ -187,6 +265,7 @@ fn sync(store: &Entity<SettingsStore>, translator: &Entity<Translator>, cx: &mut
     // 只替换受管动作的绑定；其他 crate（gpui-component、命令面板、对话框）的绑定原样保留。
     let managed: Vec<&'static str> = ACTIONS
         .iter()
+        .chain(FOLLOWERS.iter().map(|(_, follower)| follower))
         .map(|binding| (binding.make)().name())
         .collect();
     let keymap = cx.key_bindings();
@@ -332,6 +411,94 @@ mod tests {
             };
             assert_eq!(binding.context, expected, "{}", spec.id);
         }
+    }
+
+    #[test]
+    fn assistant_panel_takes_new_download_chord() {
+        let new_download = action_binding("new_download").unwrap();
+        let (_, follower) = FOLLOWERS
+            .iter()
+            .find(|(id, _)| *id == "new_download")
+            .unwrap();
+        let keymap = gpui::Keymap::new(vec![
+            KeyBinding::new("cmd-n", dl::NewDownload, new_download.context),
+            KeyBinding::new(
+                "cmd-n",
+                fluxdown_ui_assistant::actions::NewChat,
+                follower.context,
+            ),
+        ]);
+        let keystroke = [Keystroke::parse("cmd-n").unwrap()];
+        let first_action = |stack: &[&str]| {
+            let contexts: Vec<gpui::KeyContext> = stack
+                .iter()
+                .map(|context| gpui::KeyContext::parse(context).unwrap())
+                .collect();
+            let (bindings, _) = keymap.bindings_for_input(&keystroke, &contexts);
+            bindings.first().map(|binding| binding.action().name())
+        };
+        let new_chat = Some(fluxdown_ui_assistant::actions::NewChat.name());
+        let assistant = fluxdown_ui_assistant::actions::KEY_CONTEXT;
+        assert_eq!(first_action(&["Root", assistant, "Input"]), new_chat);
+        assert_eq!(first_action(&["Root", assistant]), new_chat);
+        assert_eq!(
+            first_action(&["Root", "DownloadView", "Input"]),
+            Some(dl::NewDownload.name())
+        );
+        assert_eq!(first_action(&[]), Some(dl::NewDownload.name()));
+    }
+
+    #[test]
+    fn assistant_fixed_keys_stay_inside_the_panel() {
+        use fluxdown_ui_assistant::actions as ai;
+        // 与 `ASSISTANT_FIXED` 同序同上下文；这里只验证上下文谓词的作用域。
+        let context_of = |keystroke: &str| {
+            ASSISTANT_FIXED
+                .iter()
+                .find(|(key, _)| *key == keystroke)
+                .and_then(|(_, binding)| binding.context)
+        };
+        let keymap = gpui::Keymap::new(vec![
+            KeyBinding::new("escape", ai::Dismiss, context_of("escape")),
+            KeyBinding::new("up", ai::HistoryPrev, context_of("up")),
+            KeyBinding::new("down", ai::HistoryNext, context_of("down")),
+            KeyBinding::new("enter", ai::HistoryOpen, context_of("enter")),
+        ]);
+        let first_action = |key: &'static str, stack: &[&str]| {
+            let keystroke = [Keystroke::parse(key).unwrap()];
+            let contexts: Vec<gpui::KeyContext> = stack
+                .iter()
+                .map(|context| gpui::KeyContext::parse(context).unwrap())
+                .collect();
+            let (bindings, _) = keymap.bindings_for_input(&keystroke, &contexts);
+            bindings.first().map(|binding| binding.action().name())
+        };
+        let panel = ai::KEY_CONTEXT;
+        let history = ai::HISTORY_KEY_CONTEXT;
+        assert_eq!(
+            first_action("escape", &["Root", panel, "Input"]),
+            Some(ai::Dismiss.name())
+        );
+        assert_eq!(
+            first_action("escape", &["Root", panel]),
+            Some(ai::Dismiss.name())
+        );
+        assert_eq!(first_action("escape", &["Root", "Dialog", "Input"]), None);
+        assert_eq!(first_action("escape", &["Root"]), None);
+        assert_eq!(
+            first_action("up", &["Root", panel, history]),
+            Some(ai::HistoryPrev.name())
+        );
+        assert_eq!(
+            first_action("down", &["Root", panel, history]),
+            Some(ai::HistoryNext.name())
+        );
+        assert_eq!(
+            first_action("enter", &["Root", panel, history]),
+            Some(ai::HistoryOpen.name())
+        );
+        assert_eq!(first_action("enter", &["Root", panel, "Input"]), None);
+        assert_eq!(first_action("up", &["Root", "DownloadView"]), None);
     }
 
     #[test]

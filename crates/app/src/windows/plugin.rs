@@ -12,8 +12,8 @@ use fluxdown_protocol::PluginDto;
 use fluxdown_ui_plugin_ui::{PluginWindowSpec, ViewContainer};
 use fluxdown_ui_shell::{AuxiliaryWindowView, auxiliary_window_options};
 use gpui::{
-    AnyView, App, AppContext as _, Bounds, Context, Global, IntoElement, ParentElement as _,
-    Render, SharedString, Styled as _, WeakEntity, Window, WindowBounds, div, px, size,
+    AnyView, App, AppContext as _, Context, Global, IntoElement, ParentElement as _, Render,
+    SharedString, Styled as _, WeakEntity, Window, WindowBounds, div, px, size,
 };
 use gpui_component::Root;
 
@@ -87,11 +87,9 @@ pub fn open(cx: &mut App, plugin: &PluginDto, view_id: &str) {
     let window_size = size(px(width), px(height));
     let mut options = auxiliary_window_options(title.clone());
     options.window_min_size = Some(size(px(width.min(MIN_EDGE)), px(height.min(MIN_EDGE))));
-    options.window_bounds = Some(WindowBounds::Windowed(Bounds::centered(
-        None,
-        window_size,
-        cx,
-    )));
+    let (display_id, bounds) = WindowRegistry::place_following_main(window_size, None, cx);
+    options.display_id = display_id;
+    options.window_bounds = Some(WindowBounds::Windowed(bounds));
     options.is_resizable = true;
     options.is_minimizable = true;
 

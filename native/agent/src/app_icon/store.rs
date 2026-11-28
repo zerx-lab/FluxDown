@@ -1,5 +1,5 @@
 //! `<agent 数据目录>/icons/` 下的图标文件：自定义母版 `custom.png`（导入时原子写入），以及
-//! Windows 专用的派生 `.ico`（`custom-<revision>.ico` / `bolt.ico`）。
+//! Windows 专用的派生 `.ico`（`custom-<revision>.ico` / 内置图标 `<key>.ico`）。
 //!
 //! `.ico` 文件名带修订号：Windows 外壳按路径缓存图标，同名覆盖不会刷新任务栏 / 开始菜单。
 
@@ -13,8 +13,6 @@ use super::image::{self as pipeline, ImageError};
 
 const DIR_NAME: &str = "icons";
 const MASTER_FILE: &str = "custom.png";
-#[cfg(any(windows, test))]
-const BOLT_ICO_FILE: &str = "bolt.ico";
 #[cfg(any(windows, test))]
 const CUSTOM_ICO_PREFIX: &str = "custom-";
 #[cfg(any(windows, test))]
@@ -89,14 +87,16 @@ impl IconStore {
         }
     }
 
-    /// 非默认选择对应的位图（闪电 = 内置资源，自定义 = 母版）；默认返回 `None`。
+    /// 非默认选择对应的位图（内置 = 随包资源，自定义 = 母版）；默认返回 `None`。
     pub(crate) fn image_for(
         &self,
         choice: &AppIconChoice,
     ) -> Result<Option<RgbaImage>, StoreError> {
         match choice {
             AppIconChoice::Default => Ok(None),
-            AppIconChoice::Bolt => Ok(Some(pipeline::decode_limited(super::BOLT_PNG)?)),
+            AppIconChoice::Builtin(icon) => {
+                Ok(Some(pipeline::decode_limited(super::builtin_png(*icon))?))
+            }
             AppIconChoice::Custom { .. } => Ok(Some(self.master()?.1)),
         }
     }
@@ -106,7 +106,9 @@ impl IconStore {
     pub(crate) fn ico_path(&self, choice: &AppIconChoice) -> Option<PathBuf> {
         match choice {
             AppIconChoice::Default => None,
-            AppIconChoice::Bolt => Some(self.dir.join(BOLT_ICO_FILE)),
+            AppIconChoice::Builtin(icon) => {
+                Some(self.dir.join(format!("{}.{ICO_EXTENSION}", icon.key())))
+            }
             AppIconChoice::Custom { revision } => Some(
                 self.dir
                     .join(format!("{CUSTOM_ICO_PREFIX}{revision}.{ICO_EXTENSION}")),
@@ -116,7 +118,7 @@ impl IconStore {
 
     /// 保证选择对应的 `.ico` 已落盘并返回路径；默认返回 `None`。
     ///
-    /// 自定义的文件名含修订号，存在即视为有效；闪电的固定文件名逐字节比较后才重写。
+    /// 自定义的文件名含修订号，存在即视为有效；内置图标的固定文件名逐字节比较后才重写。
     /// 写入自定义 `.ico` 后清理其它修订号的旧文件。
     #[cfg(any(windows, test))]
     pub(crate) fn ensure_ico(&self, choice: &AppIconChoice) -> Result<Option<PathBuf>, StoreError> {
@@ -125,8 +127,9 @@ impl IconStore {
         };
         match choice {
             AppIconChoice::Default => Ok(None),
-            AppIconChoice::Bolt => {
-                let ico = pipeline::build_ico(&pipeline::decode_limited(super::BOLT_PNG)?)?;
+            AppIconChoice::Builtin(icon) => {
+                let ico =
+                    pipeline::build_ico(&pipeline::decode_limited(super::builtin_png(*icon))?)?;
                 if !std::fs::read(&path).is_ok_and(|existing| existing == ico) {
                     write_atomic(&path, &ico)?;
                 }
@@ -292,20 +295,18 @@ mod tests {
     }
 
     #[test]
-    fn bolt_ico_is_written_once_and_left_alone_when_identical() {
+    fn builtin_ico_is_written_once_and_left_alone_when_identical() {
         let dir = temp_dir("bolt");
         let store = IconStore::new(&dir);
+        let bolt = AppIconChoice::Builtin(fluxdown_protocol::app_icon::BuiltinAppIcon::Bolt);
 
-        let path = store
-            .ensure_ico(&AppIconChoice::Bolt)
-            .expect("ico")
-            .expect("path");
+        let path = store.ensure_ico(&bolt).expect("ico").expect("path");
         let first = std::fs::metadata(&path)
             .expect("meta")
             .modified()
             .expect("mtime");
         std::thread::sleep(std::time::Duration::from_millis(20));
-        store.ensure_ico(&AppIconChoice::Bolt).expect("ico again");
+        store.ensure_ico(&bolt).expect("ico again");
         let second = std::fs::metadata(&path)
             .expect("meta")
             .modified()

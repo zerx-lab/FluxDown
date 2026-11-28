@@ -11,6 +11,7 @@
 use std::{collections::HashSet, time::Duration};
 
 use fluxdown_protocol::{ApplicationErrorCode, ErrorReason, HASH_ALGORITHMS, RpcErrorData};
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     ControlExt as _, FluxIcon, IconControlExt as _, tabular_numbers, tooltip_view,
 };
@@ -391,14 +392,14 @@ fn hash_notification(
 fn hash_failure_notice(translator: &Translator, name: &str, error: &RpcErrorData) -> Notification {
     if error.code == ApplicationErrorCode::Conflict {
         if error.reason == Some(ErrorReason::TaskStateConflict) {
-            return Notification::error(translator.text_with("fileHashChanged", &[("name", name)]));
+            return toast::error(translator.text_with("fileHashChanged", &[("name", name)]));
         }
         if error.reason.is_none() {
-            return Notification::warning(translator.text_with("fileHashBusy", &[("name", name)]));
+            return toast::warning(translator.text_with("fileHashBusy", &[("name", name)]));
         }
     }
     let detail = error_text(translator, error);
-    Notification::error(translator.text_with(
+    toast::error(translator.text_with(
         "fileHashFailed",
         &[("name", name), ("error", detail.as_str())],
     ))

@@ -10,6 +10,7 @@ use super::{
     MAIN_QUEUE_ID, NewTaskSpec, ProxyConfig, TaskDone, TaskDonePhase,
 };
 use crate::pac_route::PacRouting;
+use crate::protocol_proxy::DownloadProtocol;
 
 #[derive(Default)]
 struct NullSink(Mutex<Vec<EngineEvent>>);
@@ -29,7 +30,7 @@ async fn fixture(config: &[(&str, &str)]) -> (Db, DownloadManager) {
         .iter()
         .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
         .collect();
-    let manager = DownloadManager::new(
+    let mut manager = DownloadManager::new(
         db.clone(),
         DownloadManagerConfig {
             max_concurrent: 5,
@@ -46,6 +47,7 @@ async fn fixture(config: &[(&str, &str)]) -> (Db, DownloadManager) {
         Arc::new(crate::NoopSelection),
     )
     .expect("download manager");
+    manager.set_protocol_proxies(&map);
     (db, manager)
 }
 
@@ -54,8 +56,16 @@ const RULE: &str = r#"[{"id":"a","match":"regex","pattern":"/dl/","action":"cust
 #[tokio::test]
 async fn matching_rule_decides_the_task_egress_in_mode_none() {
     let (_db, manager) = fixture(&[("proxy_mode", "none"), ("proxy_rules", RULE)]).await;
-    let egress =
-        manager.task_http_context("https://a.test/dl/x", "", "", MAIN_QUEUE_ID, false, None);
+    let egress = manager
+        .task_http_context(
+            ("https://a.test/dl/x", DownloadProtocol::Http, None),
+            "",
+            "",
+            MAIN_QUEUE_ID,
+            false,
+            None,
+        )
+        .expect("task egress");
     assert_eq!(egress.route, "rule:custom");
     assert_eq!(egress.proxy.port, 9);
     assert_eq!(egress.proxy.host, "127.0.0.1");
@@ -75,7 +85,16 @@ async fn unmatched_url_in_auto_mode_keeps_the_auto_decision_and_has_no_base_rule
         ("proxy_rules", RULE),
     ])
     .await;
-    let egress = manager.task_http_context("https://b.test/x", "", "", MAIN_QUEUE_ID, false, None);
+    let egress = manager
+        .task_http_context(
+            ("https://b.test/x", DownloadProtocol::Http, None),
+            "",
+            "",
+            MAIN_QUEUE_ID,
+            false,
+            None,
+        )
+        .expect("task egress");
     assert!(!crate::auto_proxy::route::is_rule_label(egress.route));
     let router = egress.router.expect("router");
     assert_eq!(router.base_rule(), None);
@@ -85,24 +104,69 @@ async fn unmatched_url_in_auto_mode_keeps_the_auto_decision_and_has_no_base_rule
 #[tokio::test]
 async fn task_level_proxy_ignores_rules_entirely() {
     let (_db, manager) = fixture(&[("proxy_mode", "none"), ("proxy_rules", RULE)]).await;
-    let egress = manager.task_http_context(
-        "https://a.test/dl/x",
-        "direct://",
-        "",
-        MAIN_QUEUE_ID,
-        false,
-        None,
-    );
+    let egress = manager
+        .task_http_context(
+            ("https://a.test/dl/x", DownloadProtocol::Http, None),
+            "direct://",
+            "",
+            MAIN_QUEUE_ID,
+            false,
+            None,
+        )
+        .expect("task egress");
     assert!(egress.router.is_none());
-    assert_eq!(egress.route, "");
+    assert_eq!(egress.route, crate::auto_proxy::route::TASK_DIRECT);
 }
 
-async fn failover_pending_after_transport_error(auto_route: &str) -> bool {
+#[tokio::test]
+async fn protocol_fallback_respects_task_and_site_precedence() {
+    let (_db, manager) = fixture(&[
+        ("proxy_mode", "auto"),
+        ("proxy_rules", RULE),
+        ("proxy_protocol_http", "http://127.0.0.1:1080"),
+        ("proxy_protocol_hls", "direct://"),
+        ("proxy_protocol_ftp", "socks5://127.0.0.1:1081"),
+    ])
+    .await;
+    for (url, task_proxy, port, pac) in [
+        ("https://host.test/a.zip", "", 1080, PacRouting::Off),
+        ("https://host.test/live.m3u8", "", 0, PacRouting::Off),
+        ("ftp://host.test/a.zip", "", 1081, PacRouting::Off),
+        ("https://host.test/a.mpd", "", 0, PacRouting::Auto),
+        ("https://host.test/dl/a.zip", "", 9, PacRouting::Off),
+        (
+            "https://host.test/dl/a.zip",
+            "direct://",
+            0,
+            PacRouting::Off,
+        ),
+    ] {
+        let protocol = DownloadProtocol::for_http_family(url, false);
+        let egress = manager
+            .task_http_context(
+                (url, protocol, None),
+                task_proxy,
+                "",
+                MAIN_QUEUE_ID,
+                false,
+                None,
+            )
+            .expect("task egress");
+        if pac == PacRouting::Off {
+            assert_eq!(egress.proxy.port, port, "{url}");
+            assert!(egress.auto_ctx.is_none(), "{url}");
+        }
+        assert_eq!(egress.pac, pac, "{url}");
+    }
+}
+
+async fn failover_pending_after_transport_error(auto_route: &str, override_url: &str) -> bool {
     let (db, mut manager) = fixture(&[
         ("proxy_mode", "auto"),
         ("proxy_type", "http"),
         ("proxy_host", "127.0.0.1"),
         ("proxy_port", "9"),
+        ("proxy_protocol_http", override_url),
     ])
     .await;
     let id = manager
@@ -125,6 +189,7 @@ async fn failover_pending_after_transport_error(auto_route: &str) -> bool {
     manager.active_tasks.insert(
         id.clone(),
         ActiveTaskEntry {
+            hls_discard: None,
             token: CancellationToken::new(),
             generation: 1,
             handle: None,
@@ -136,7 +201,6 @@ async fn failover_pending_after_transport_error(auto_route: &str) -> bool {
         .handle_task_done(&TaskDone {
             task_id: id.clone(),
             generation: 1,
-            reserved_temp_path: None,
             phase: TaskDonePhase::Finished,
         })
         .await;
@@ -146,13 +210,26 @@ async fn failover_pending_after_transport_error(auto_route: &str) -> bool {
 #[tokio::test]
 async fn rule_routed_task_is_not_failed_over_by_auto() {
     assert!(
-        !failover_pending_after_transport_error("rule:custom").await,
+        !failover_pending_after_transport_error("rule:custom", "").await,
         "a rule-decided exit must not be retried through another path"
     );
     if crate::route_health::network_reachable() {
         assert!(
-            failover_pending_after_transport_error("direct").await,
+            failover_pending_after_transport_error("direct", "").await,
             "control: a plain Auto direct task is failed over to the proxy"
         );
+        assert!(
+            failover_pending_after_transport_error("", "").await,
+            "legacy tasks without a recorded route can still use Auto failover"
+        );
     }
+}
+
+#[tokio::test]
+async fn protocol_override_never_fails_over_to_the_global_proxy() {
+    assert!(!failover_pending_after_transport_error("", "direct://").await);
+    assert!(
+        !failover_pending_after_transport_error(crate::protocol_proxy::PROXY_ROUTE, "").await,
+        "an in-flight fixed route is not an Auto route even after its setting is cleared"
+    );
 }

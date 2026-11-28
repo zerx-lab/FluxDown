@@ -111,11 +111,15 @@ pub(crate) fn reason_key(reason: ErrorReason, context: ErrorContext) -> Option<&
         ErrorReason::PeerOutdated => "errReasonPeerOutdated",
         ErrorReason::LinkUnavailable => "errReasonLinkUnavailable",
         ErrorReason::TargetDeviceOffline => "errReasonTargetDeviceOffline",
+        ErrorReason::RemoteTaskGone => "errReasonRemoteTaskGone",
         ErrorReason::TaskStateConflict => "errReasonTaskStateConflict",
         ErrorReason::TaskDeviceMismatch => "errReasonTaskDeviceMismatch",
         ErrorReason::SaveDirUnavailable => "errReasonSaveDirUnavailable",
         ErrorReason::TaskFilesInUse => "errReasonTaskFilesInUse",
         ErrorReason::TaskFilesNotDeleted => "errReasonTaskFilesNotDeleted",
+        ErrorReason::TaskFileClearPending => "errReasonTaskFileClearPending",
+        ErrorReason::BrowserRequestRequired => "taskErrorPostOnlyResume",
+        ErrorReason::TaskRestartTimeout => "errReasonTaskRestartTimeout",
         ErrorReason::PaymentDisabled
         | ErrorReason::PaymentGatewayFailed
         | ErrorReason::PlanNotPurchasable
@@ -128,8 +132,12 @@ pub(crate) fn reason_key(reason: ErrorReason, context: ErrorContext) -> Option<&
         | ErrorReason::ReferralAlreadyUsed
         | ErrorReason::ReferralPlanExcluded
         | ErrorReason::ReferralCodeTaken => return crate::billing::billing_reason_key(reason),
-        // 插件市场、Doctor、API 服务切换与云端推送由各自页面展示；这里退回按 code 的通用文案。
-        ErrorReason::MarketUnreachable
+        // 插件市场、Doctor、API 服务切换与云端推送由各自页面展示;AI 助手的额度、会话上限与确认过期由
+        // 助手面板展示;这里退回按 code 的通用文案。
+        ErrorReason::AssistantQuotaExceeded
+        | ErrorReason::AssistantSessionLimit
+        | ErrorReason::AssistantConfirmExpired
+        | ErrorReason::MarketUnreachable
         | ErrorReason::MarketIndexInvalid
         | ErrorReason::MarketIndexRollback
         | ErrorReason::PluginNotInMarket
@@ -149,6 +157,7 @@ pub(crate) fn reason_key(reason: ErrorReason, context: ErrorContext) -> Option<&
         | ErrorReason::NotifyDisabled
         | ErrorReason::NotifyTargetInvalid
         | ErrorReason::SoundUnplayable
+        | ErrorReason::RssImageProxyUnverifiable
         | ErrorReason::Unknown => return None,
     })
 }
@@ -439,11 +448,13 @@ mod tests {
             ErrorReason::PeerOutdated,
             ErrorReason::LinkUnavailable,
             ErrorReason::TargetDeviceOffline,
+            ErrorReason::RemoteTaskGone,
             ErrorReason::TaskStateConflict,
             ErrorReason::TaskDeviceMismatch,
             ErrorReason::SaveDirUnavailable,
             ErrorReason::TaskFilesInUse,
             ErrorReason::TaskFilesNotDeleted,
+            ErrorReason::TaskFileClearPending,
         ];
         let contexts = [
             ErrorContext::General,

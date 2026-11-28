@@ -131,7 +131,7 @@ return jsc;
     context: { clientName: "WEB", clientVersion: "2.20260708.00.00" }
   };
   var DEFAULT_CLIENTS = ["tv_samsung", "visionos"];
-  var DEFAULT_AUTHED_CLIENTS = ["web_embedded", "tv_samsung"];
+  var DEFAULT_AUTHED_CLIENTS = ["tv_samsung", "web_embedded"];
   var EMBED_URL = "https://www.reddit.com/";
   var BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
   function parseClientSetting(value) {
@@ -800,8 +800,9 @@ return jsc;
   var MAX_CACHED = 3;
   var REUSE_MS = 24 * 3600 * 1e3;
   var PLAYER_ID_RE = /\/s\/player\/([0-9a-zA-Z_-]{8,})\//;
+  var PLAYER_VARIANT = "tv";
   function playerUrl(id) {
-    return `${ORIGIN}/s/player/${id}/player_ias.vflset/en_US/base.js`;
+    return `${ORIGIN}/s/player/${id}/tv-player-ias.vflset/tv-player-ias.js`;
   }
   function extractSts(code) {
     const m = /(?:signatureTimestamp|sts)\s*:\s*([0-9]{5})/.exec(code || "");
@@ -827,7 +828,7 @@ return jsc;
     if (!raw) return [];
     try {
       const list = JSON.parse(raw);
-      return Array.isArray(list) ? list.filter((e) => e && typeof e.id === "string" && Number(e.sts) > 0 && e.ejs === EJS_VERSION) : [];
+      return Array.isArray(list) ? list.filter((e) => e && typeof e.id === "string" && Number(e.sts) > 0 && e.ejs === EJS_VERSION && e.variant === PLAYER_VARIANT) : [];
     } catch {
       return [];
     }
@@ -836,7 +837,7 @@ return jsc;
   async function savePlayer(id, sts, code, now) {
     await flux.fs.writeFile(fileOf(id), code);
     const index = (await loadIndex()).filter((e) => e.id !== id);
-    index.unshift({ id, sts, saved: now, ejs: EJS_VERSION });
+    index.unshift({ id, sts, saved: now, ejs: EJS_VERSION, variant: PLAYER_VARIANT });
     const kept = index.slice(0, MAX_CACHED);
     await flux.storage.set(INDEX_KEY, JSON.stringify(kept));
     const keep = new Set(kept.map((e) => fileOf(e.id)));

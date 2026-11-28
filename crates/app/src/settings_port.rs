@@ -33,4 +33,12 @@ impl SettingsPort for AgentSettingsPort {
             Ok(serde_json::json!({ "ok": true }))
         }))
     }
+
+    #[cfg(windows)]
+    fn foreground_install_browser_extension(
+        &self,
+        browser: fluxdown_protocol::browser_extension::BrowserKind,
+    ) -> Option<PortFuture<serde_json::Value>> {
+        Some(Box::pin(crate::shell_open::browser_extension(browser)))
+    }
 }

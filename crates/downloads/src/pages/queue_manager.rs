@@ -724,13 +724,13 @@ impl QueueManagerView {
     /// 标准字段：标签 → 输入框 → 可选说明。
     fn render_field(
         &self,
-        label_key: &str,
+        label: SharedString,
         input: &Entity<InputState>,
         hint_key: Option<&str>,
         cx: &mut Context<Self>,
     ) -> Div {
         form_field(
-            self.t(label_key, cx),
+            label,
             Input::new(input).control(cx).w_full(),
             hint_key.map(|key| self.t(key, cx)),
             cx,
@@ -742,7 +742,7 @@ impl QueueManagerView {
             // 内置队列名称固定：标题已显示本地化名，这里只留说明。
             return field_hint(self.t("builtinQueueRenameHint", cx), cx);
         }
-        self.render_field("queueNameLabel", &form.name, None, cx)
+        self.render_field(self.t("queueNameLabel", cx), &form.name, None, cx)
     }
 
     fn render_save_dir_field(&self, form: &QueueForm, cx: &mut Context<Self>) -> Div {
@@ -962,6 +962,14 @@ impl QueueManagerView {
 
     fn render_body(&self, form: &QueueForm, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let tokens = active_theme(cx).tokens().clone();
+        let rate_label = |key| {
+            SharedString::from(self.translator.read(cx).text_with(
+                key,
+                &[("unit", fluxdown_ui_components::size_units::rate_labels()[1])],
+            ))
+        };
+        let download_limit = rate_label("queueDownloadLimitWithUnit");
+        let upload_limit = rate_label("queueUploadLimitWithUnit");
         let body = form_layout(cx)
             .px(tokens.spacing.lg)
             .pt(tokens.spacing.lg)
@@ -970,14 +978,14 @@ impl QueueManagerView {
             .child(form_row(
                 [
                     self.render_field(
-                        "queueSpeedLimit",
+                        download_limit,
                         &form.speed_limit,
                         Some("queueSpeedLimitHint"),
                         cx,
                     )
                     .into_any_element(),
                     self.render_field(
-                        "queueUploadLimit",
+                        upload_limit,
                         &form.upload_limit,
                         Some("queueUploadLimitDesc"),
                         cx,
@@ -992,14 +1000,14 @@ impl QueueManagerView {
                     .child(form_row(
                         [
                             self.render_field(
-                                "queueMaxConcurrent",
+                                self.t("queueMaxConcurrent", cx),
                                 &form.max_concurrent,
                                 Some("queueMaxConcurrentHint"),
                                 cx,
                             )
                             .into_any_element(),
                             self.render_field(
-                                "queueDefaultSegments",
+                                self.t("queueDefaultSegments", cx),
                                 &form.segments,
                                 Some("queueDefaultSegmentsHint"),
                                 cx,
@@ -1016,7 +1024,7 @@ impl QueueManagerView {
             )
             .child(self.render_save_dir_field(form, cx))
             .child(self.render_field(
-                "queueDefaultUserAgent",
+                self.t("queueDefaultUserAgent", cx),
                 &form.user_agent,
                 Some("queueUaHint"),
                 cx,

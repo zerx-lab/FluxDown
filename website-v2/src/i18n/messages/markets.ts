@@ -1,7 +1,7 @@
 import { defineMessages } from "../define";
 
 /** 插件市场 `/plugins/` 与主题市场 `/themes/` 文案。 */
-export const markets = defineMessages({
+export const markets = defineMessages("markets", {
   en: {
     common: {
       search: "Search",

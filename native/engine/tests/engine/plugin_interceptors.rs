@@ -385,10 +385,17 @@ async fn prepare_patch_survives_adaptation_and_retry_without_persisting() {
     let task = engine.db.load_task_by_id(&id).await.unwrap().unwrap();
     assert_eq!(task.status, 4, "first run must fail under 403");
 
-    let (retry_id, delay) = tokio::time::timeout(Duration::from_secs(10), retry_rx.recv())
+    let event = tokio::time::timeout(Duration::from_secs(10), retry_rx.recv())
         .await
         .expect("failed stage requests retry")
         .expect("retry channel open");
+    let fluxdown_engine::download_manager::PluginRetryEvent::Retry {
+        task_id: retry_id,
+        delay_ms: delay,
+    } = event
+    else {
+        panic!("expected a retry before completion");
+    };
     assert_eq!((retry_id.as_str(), delay), (id.as_str(), 5));
 
     armed.store(false, Ordering::SeqCst);
@@ -821,14 +828,39 @@ async fn failed_stage_retry_works_with_auto_retry_disabled() {
     let task = engine.db.load_task_by_id(&id).await.unwrap().unwrap();
     assert_eq!(task.status, 4, "first run must fail under 403");
 
-    let (retry_id, delay) = tokio::time::timeout(Duration::from_secs(10), plugin_retry_rx.recv())
+    let event = tokio::time::timeout(Duration::from_secs(10), plugin_retry_rx.recv())
         .await
         .expect("failed stage requests retry")
         .expect("retry channel open");
+    let fluxdown_engine::download_manager::PluginRetryEvent::Retry {
+        task_id: retry_id,
+        delay_ms: delay,
+    } = event
+    else {
+        panic!("expected a retry before completion");
+    };
     assert_eq!((retry_id.as_str(), delay), (id.as_str(), 5));
 
     armed.store(false, Ordering::SeqCst);
-    engine.manager.plugin_request_retry(&retry_id, delay).await;
+    engine
+        .manager
+        .handle_plugin_retry_event(fluxdown_engine::download_manager::PluginRetryEvent::Retry {
+            task_id: retry_id,
+            delay_ms: delay,
+        })
+        .await;
+    let settled = tokio::time::timeout(Duration::from_secs(10), plugin_retry_rx.recv())
+        .await
+        .ok()
+        .flatten();
+    assert!(matches!(
+        settled,
+        Some(fluxdown_engine::download_manager::PluginRetryEvent::FailureSettled { generation, .. })
+            if generation == done.generation
+    ));
+    if let Some(settled) = settled {
+        engine.manager.handle_plugin_retry_event(settled).await;
+    }
     let scheduled = tokio::time::timeout(Duration::from_secs(10), retry_rx.recv())
         .await
         .expect("retry must be scheduled despite max_auto_retries == 0")
@@ -1630,6 +1662,10 @@ async fn archive_plugin_group_preserves_member_tree_under_authorized_base() {
         })
         .await
         .expect("create group");
+    let group_id = group_id
+        .group_id()
+        .expect("two items form a group")
+        .to_owned();
     let expected = work.join("视频/哔哩哔哩/小猪仔步履不停/小猪仔评财报");
     let group = engine
         .db
@@ -1637,7 +1673,12 @@ async fn archive_plugin_group_preserves_member_tree_under_authorized_base() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(Path::new(&group.save_dir), expected.as_path());
+    // 成员共享 `chapter`：组根落在归档目录下的 `chapter`，磁盘布局不变。
+    assert_eq!(
+        Path::new(&group.save_dir),
+        expected.join("chapter").as_path()
+    );
+    assert_eq!(group.name, "chapter");
     for _ in 0..2 {
         let done = tokio::time::timeout(Duration::from_secs(60), done_rx.recv())
             .await

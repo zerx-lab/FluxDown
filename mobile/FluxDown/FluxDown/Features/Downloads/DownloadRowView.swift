@@ -29,6 +29,7 @@ struct DownloadRowView: View, Equatable {
     @Environment(\.confirmTaskDelete) private var confirmDelete
     @Environment(\.dynamicTypeSize) private var typeSize
     @Environment(\.fluxAccent) private var accent
+    @Environment(AppearanceStore.self) private var appearance
 
     static func == (lhs: DownloadRowView, rhs: DownloadRowView) -> Bool {
         lhs.item == rhs.item && lhs.style == rhs.style && lhs.isLocalHost == rhs.isLocalHost
@@ -39,7 +40,7 @@ struct DownloadRowView: View, Equatable {
     private var compact: Bool { style.density == .compact }
 
     var body: some View {
-        let text = RowText.live
+        let text = RowText.live(units: appearance.fileSizeUnits)
         let nowSec = Int64(Date().timeIntervalSince1970)
         let status = text.status(item, fields: style.fields, queuePosition: queuePosition)
         let percent = text.percent(item)

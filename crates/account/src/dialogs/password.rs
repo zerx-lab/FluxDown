@@ -4,6 +4,7 @@
 //! 成功后 agent 持久化最新资料并发布 `SessionChanged`，本对话框只负责提示并关闭。
 
 use fluxdown_protocol::method;
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     BusyExt as _, ControlExt as _, dialog_title, field_error, field_hint, form, form_field,
     input_with_action,
@@ -18,7 +19,6 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputContentType, InputEvent, InputState},
-    notification::Notification,
     v_flex,
 };
 
@@ -354,7 +354,7 @@ impl PasswordDialog {
                         let key = this.code_key();
                         this.host.update(cx, |host, _| host.sent_codes.forget(&key));
                         window.push_notification(
-                            Notification::success(this.text("accountPasswordChangeSuccess", cx)),
+                            toast::success(this.text("accountPasswordChangeSuccess", cx)),
                             cx,
                         );
                         this.closed = true;

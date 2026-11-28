@@ -1,9 +1,22 @@
 //! 数据目录 / 凭据文件的私有权限收紧。
 //!
-//! Unix 用 0700/0600；Windows 无安全的 std 封装，改用 `icacls` 子进程把 ACL 收紧为仅当前用户。
-//! 默认 `%LOCALAPPDATA%` 已是用户私有，便携模式（exe 同级目录）与自定义数据目录则继承父目录 ACL。
+//! Unix 用 0700/0600；Windows 无安全的 std 封装，改用 `icacls` 子进程把 ACL 收紧为当前用户、
+//! SYSTEM 与 Administrators（保留后两者，账户 SID 变化后管理员仍能接管，#1222）。与 agent
+//! `state.rs` 同一组授权。
+//!
+//! Windows 便携版（`fluxdown_engine::data_dir::portable_data_dir`）不收紧：便携目录随文件夹在
+//! 机器与账户之间迁移，旁边的程序文件同样只受文件夹权限保护；锁给单一 SID 后重装系统即连
+//! 管理员都打不开。旧版本收紧过的便携目录在首次启动时一次性恢复为继承。
 
 use std::path::Path;
+
+/// 私有 ACL 在当前用户之外授予的账户：SYSTEM 与本机 Administrators 组。
+#[cfg(windows)]
+const EXTRA_SIDS: [&str; 2] = ["S-1-5-18", "S-1-5-32-544"];
+
+/// 便携目录已恢复为继承父目录 ACL 的标记（与 agent 同名）。
+#[cfg(windows)]
+const INHERITED_ACL_MARKER: &str = ".acl-inherited";
 
 /// 启动时收紧数据目录：其后在目录内创建的 DB、token、blob 目录自动继承。
 pub async fn secure_data_dir(path: &Path) -> Result<(), std::io::Error> {
@@ -12,34 +25,52 @@ pub async fn secure_data_dir(path: &Path) -> Result<(), std::io::Error> {
         use std::os::unix::fs::PermissionsExt;
         tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).await
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        if is_portable_path(path) {
+            return restore_inherited_acl(path).await;
+        }
+        restrict_to_current_user(path, true).await
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         restrict_to_current_user(path, true).await
     }
 }
 
-/// 仅当前用户可访问 `path`；`inheritable` 为真时对目录内新建项可继承。非 Windows 为空操作。
+/// `path` 是否位于 Windows 便携数据目录内。
 #[cfg(windows)]
-pub async fn restrict_to_current_user(
-    path: &Path,
-    inheritable: bool,
-) -> Result<(), std::io::Error> {
+fn is_portable_path(path: &Path) -> bool {
+    fluxdown_engine::data_dir::portable_data_dir()
+        .is_some_and(|portable| path.starts_with(portable))
+}
+
+/// `%SystemRoot%\System32\icacls.exe`；取不到时退回按 PATH 查找。
+#[cfg(windows)]
+fn icacls_program() -> std::path::PathBuf {
+    std::env::var_os("SystemRoot")
+        .map(|root| {
+            std::path::PathBuf::from(root)
+                .join("System32")
+                .join("icacls.exe")
+        })
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| std::path::PathBuf::from("icacls"))
+}
+
+#[cfg(windows)]
+async fn run_icacls(path: &Path, args: Vec<String>) -> Result<(), std::io::Error> {
     use std::os::windows::process::CommandExt;
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let sid = current_user_sid().await?;
-    let grant = if inheritable {
-        format!("*{sid}:(OI)(CI)(F)")
-    } else {
-        format!("*{sid}:(F)")
-    };
     let path = path.to_owned();
     let status = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("icacls")
+        std::process::Command::new(icacls_program())
             .arg(path)
-            .args(["/inheritance:r", "/grant:r", &grant])
+            .args(args)
             .creation_flags(CREATE_NO_WINDOW)
             .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .status()
     })
     .await
@@ -47,8 +78,43 @@ pub async fn restrict_to_current_user(
     if status.success() {
         Ok(())
     } else {
-        Err(std::io::Error::other("icacls failed"))
+        Err(std::io::Error::other(format!("icacls failed ({status})")))
     }
+}
+
+/// 便携目录：一次性把整棵树恢复为继承所在文件夹的 ACL；失败只记录，结果写入标记不再重复遍历。
+#[cfg(windows)]
+async fn restore_inherited_acl(path: &Path) -> Result<(), std::io::Error> {
+    let marker = path.join(INHERITED_ACL_MARKER);
+    if tokio::fs::try_exists(&marker).await? {
+        return Ok(());
+    }
+    let args = ["/reset", "/T", "/C", "/Q"].map(str::to_owned).to_vec();
+    if let Err(error) = run_icacls(path, args).await {
+        tracing::warn!(path = %path.display(), error = %error, "could not restore inherited ACLs on the portable data directory");
+    }
+    tokio::fs::write(&marker, b"").await
+}
+
+/// 仅当前用户（及 SYSTEM / Administrators）可访问 `path`；`inheritable` 为真时对目录内新建项
+/// 可继承。便携目录内与非 Windows 为空操作。
+#[cfg(windows)]
+pub async fn restrict_to_current_user(
+    path: &Path,
+    inheritable: bool,
+) -> Result<(), std::io::Error> {
+    if is_portable_path(path) {
+        return Ok(());
+    }
+    let sid = current_user_sid().await?;
+    let inherit = if inheritable { "(OI)(CI)" } else { "" };
+    let mut args = vec!["/inheritance:r".to_owned(), "/grant:r".to_owned()];
+    args.extend(
+        std::iter::once(sid.as_str())
+            .chain(EXTRA_SIDS)
+            .map(|sid| format!("*{sid}:{inherit}(F)")),
+    );
+    run_icacls(path, args).await
 }
 
 #[cfg(not(windows))]

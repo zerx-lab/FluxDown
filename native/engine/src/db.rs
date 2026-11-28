@@ -11,7 +11,7 @@ use sqlx::pool::PoolConnection;
 use sqlx::{AssertSqlSafe, Row};
 use thiserror::Error;
 
-use crate::model::{GroupInfo, MAIN_QUEUE_ID, QueueInfo, SourceBytes, TaskInfo};
+use crate::model::{FileClearState, GroupInfo, MAIN_QUEUE_ID, QueueInfo, SourceBytes, TaskInfo};
 use crate::rss::model::{RssItemInfo, RssItemStatus, RssSourceInfo};
 
 mod bt_guard;
@@ -19,6 +19,8 @@ pub use bt_guard::{
     BT_GUARD_EVENT_RING, BtGuardBatch, BtGuardEntryOp, BtGuardEntryQuery, BtGuardEntryRow,
     BtGuardEventQuery, BtGuardEventRow, BtGuardLedgerRow, BtGuardPrune, BtGuardStrikeRow,
 };
+
+const RSS_TASK_REMOVED: &str = "task_removed";
 
 #[derive(Error, Debug)]
 pub enum DbError {
@@ -49,17 +51,90 @@ pub enum ConfigPatchError {
     InvalidStoredRevision(String),
 }
 
+// Keep deletion/restart and resume on the same task-ID-scoped checkpoint predicate.
+macro_rules! resume_checkpoint_sql {
+    ($id:literal) => {
+        concat!(
+            "CASE WHEN EXISTS (SELECT 1 FROM task_segments WHERE task_id = ",
+            $id,
+            ")
+               OR EXISTS (SELECT 1 FROM ed2k_blocks WHERE task_id = ",
+            $id,
+            ")
+               OR EXISTS (SELECT 1 FROM config WHERE key IN
+                   ('hls_resume_' || ",
+            $id,
+            ", 'hls_audio_resume_' || ",
+            $id,
+            "))
+             THEN 1 ELSE 0 END"
+        )
+    };
+}
+
+macro_rules! select_cleanup_tasks {
+    ($where_clause:literal) => {
+        concat!(
+            "SELECT id, save_dir, file_name, url, status, downloaded_bytes,
+                    exists_decision, file_missing, http_partial_name, audio_partial_name, audio_output_name, ",
+            resume_checkpoint_sql!("tasks.id"),
+            " AS has_checkpoint FROM tasks ",
+            $where_clause
+        )
+    };
+}
+
 /// [`Db::load_deletion_facts`] 的结果：批量删除决定逐任务删哪些文件所需的全部库内事实。
 #[derive(Debug, Default)]
-pub struct DeletionFacts {
-    /// 任务 → 「文件已存在」决定原值（'' / rename / overwrite / skip）；缺失 = 任务不存在。
-    pub exists_decisions: HashMap<String, String>,
-    /// 带独立音轨（`audio_url` 非空）的任务。
-    pub has_audio_url: HashSet<String>,
+pub(crate) struct DeletionFacts {
+    pub tasks: Vec<DeletionTask>,
     /// 任务 → 已登记的衍生产物文件名。
     pub artifacts: HashMap<String, Vec<String>>,
-    /// `(save_dir, file_name)` → 把该名字登记为自己 `file_name` 的全部任务 id。
-    pub file_owners: HashMap<(String, String), Vec<String>>,
+    /// Directory → registered filename → all task IDs that claim it.
+    pub file_owners: HashMap<String, HashMap<String, Vec<String>>>,
+}
+
+/// 同一条数据库记录中的路径、运行状态与归属，不能分开读取。
+#[derive(Debug)]
+pub(crate) struct DeletionTask {
+    pub task_id: String,
+    pub save_dir: String,
+    pub file_name: String,
+    pub url: String,
+    pub status: i32,
+    pub downloaded_bytes: i64,
+    pub has_checkpoint: bool,
+    pub file_clear_state: FileClearState,
+    pub unowned_path: bool,
+    pub http_partial_name: String,
+    pub audio_partial_name: String,
+    pub audio_output_name: String,
+}
+
+impl DeletionTask {
+    fn from_row(row: AnyRow) -> Result<Self, sqlx::Error> {
+        let decision: String = row.try_get("exists_decision")?;
+        let http_partial_name = row.try_get("http_partial_name")?;
+        Ok(Self {
+            task_id: row.try_get("id")?,
+            save_dir: row.try_get("save_dir")?,
+            file_name: row.try_get("file_name")?,
+            url: row.try_get("url")?,
+            status: row.try_get("status")?,
+            downloaded_bytes: row.try_get("downloaded_bytes")?,
+            has_checkpoint: row.try_get::<i32, _>("has_checkpoint")? != 0,
+            file_clear_state: match row.try_get::<i32, _>("file_missing")? {
+                2 => FileClearState::Cleared,
+                3 => FileClearState::Pending,
+                4 => FileClearState::RestartPending,
+                _ => FileClearState::None,
+            },
+            unowned_path: crate::file_exists::ExistsDecision::from_db(&decision).has_unowned_path(),
+            http_partial_name,
+            audio_partial_name: row.try_get("audio_partial_name")?,
+            audio_output_name: row.try_get("audio_output_name")?,
+        })
+    }
 }
 
 /// 一条 `DELETE FROM config WHERE key IN (...)` 覆盖的任务数（每任务 5 个键，
@@ -128,6 +203,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     orig_etag TEXT NOT NULL DEFAULT '',
     orig_last_modified TEXT NOT NULL DEFAULT '',
     audio_url TEXT NOT NULL DEFAULT '',
+    http_partial_name TEXT NOT NULL DEFAULT '',
+    audio_partial_name TEXT NOT NULL DEFAULT '',
+    audio_output_name TEXT NOT NULL DEFAULT '',
     file_missing INTEGER NOT NULL DEFAULT 0,
     file_hash TEXT NOT NULL DEFAULT '',
     range_verified INTEGER NOT NULL DEFAULT 1,
@@ -138,6 +216,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     category_route TEXT NOT NULL DEFAULT '',
     request_method TEXT NOT NULL DEFAULT '',
     edit_properties TEXT NOT NULL DEFAULT '{}',
+    html_only INTEGER NOT NULL DEFAULT 0,
     queue_order INTEGER NOT NULL DEFAULT 0,
     uploaded_bytes BIGINT NOT NULL DEFAULT 0,
     uploaded_at_completion BIGINT NOT NULL DEFAULT 0,
@@ -156,7 +235,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     bt_download_limit_bps INTEGER NOT NULL DEFAULT 0,
     bt_super_seeding INTEGER NOT NULL DEFAULT 0,
     bt_file_priorities TEXT NOT NULL DEFAULT '',
-    bt_file_renames TEXT NOT NULL DEFAULT ''
+    bt_file_renames TEXT NOT NULL DEFAULT '',
+    bt_web_seeds TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS task_segments (
     task_id TEXT NOT NULL,
@@ -218,6 +298,7 @@ CREATE TABLE IF NOT EXISTS task_groups (
     name TEXT NOT NULL,
     source_url TEXT NOT NULL DEFAULT '',
     save_dir TEXT NOT NULL DEFAULT '',
+    base_dir TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS link_devices (
@@ -266,6 +347,7 @@ CREATE TABLE IF NOT EXISTS rss_items (
     guid TEXT NOT NULL,
     title TEXT NOT NULL DEFAULT '',
     link TEXT NOT NULL DEFAULT '',
+    image_urls TEXT,
     enclosure_url TEXT NOT NULL DEFAULT '',
     resolver_item TEXT NOT NULL DEFAULT '',
     enclosure_length INTEGER NOT NULL DEFAULT 0,
@@ -427,6 +509,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     orig_etag TEXT NOT NULL DEFAULT '',
     orig_last_modified TEXT NOT NULL DEFAULT '',
     audio_url TEXT NOT NULL DEFAULT '',
+    http_partial_name TEXT NOT NULL DEFAULT '',
+    audio_partial_name TEXT NOT NULL DEFAULT '',
+    audio_output_name TEXT NOT NULL DEFAULT '',
     file_missing INTEGER NOT NULL DEFAULT 0,
     file_hash TEXT NOT NULL DEFAULT '',
     range_verified INTEGER NOT NULL DEFAULT 1,
@@ -437,6 +522,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     category_route TEXT NOT NULL DEFAULT '',
     request_method TEXT NOT NULL DEFAULT '',
     edit_properties TEXT NOT NULL DEFAULT '{}',
+    html_only INTEGER NOT NULL DEFAULT 0,
     queue_order INTEGER NOT NULL DEFAULT 0,
     uploaded_bytes BIGINT NOT NULL DEFAULT 0,
     uploaded_at_completion BIGINT NOT NULL DEFAULT 0,
@@ -455,7 +541,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     bt_download_limit_bps BIGINT NOT NULL DEFAULT 0,
     bt_super_seeding INTEGER NOT NULL DEFAULT 0,
     bt_file_priorities TEXT NOT NULL DEFAULT '',
-    bt_file_renames TEXT NOT NULL DEFAULT ''
+    bt_file_renames TEXT NOT NULL DEFAULT '',
+    bt_web_seeds TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS task_segments (
     task_id TEXT NOT NULL,
@@ -517,6 +604,7 @@ CREATE TABLE IF NOT EXISTS task_groups (
     name TEXT NOT NULL,
     source_url TEXT NOT NULL DEFAULT '',
     save_dir TEXT NOT NULL DEFAULT '',
+    base_dir TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS link_devices (
@@ -565,6 +653,7 @@ CREATE TABLE IF NOT EXISTS rss_items (
     guid TEXT NOT NULL,
     title TEXT NOT NULL DEFAULT '',
     link TEXT NOT NULL DEFAULT '',
+    image_urls TEXT,
     enclosure_url TEXT NOT NULL DEFAULT '',
     resolver_item TEXT NOT NULL DEFAULT '',
     enclosure_length BIGINT NOT NULL DEFAULT 0,
@@ -823,6 +912,7 @@ pub struct Db {
 /// `unwrap_or_default`/`unwrap_or`，与既有字段风格一致；运行路径下这些列已由
 /// `add_column_if_missing` 补齐。
 fn task_from_row(row: &AnyRow) -> Result<TaskInfo, sqlx::Error> {
+    let file_state = row.try_get::<i32, _>("file_missing").unwrap_or_default();
     Ok(TaskInfo {
         task_id: row.try_get("id")?,
         url: row.try_get("url")?,
@@ -837,7 +927,13 @@ fn task_from_row(row: &AnyRow) -> Result<TaskInfo, sqlx::Error> {
         queue_id: row.try_get("queue_id").unwrap_or_default(),
         checksum: row.try_get("checksum").unwrap_or_default(),
         ignore_tls_errors: row.try_get::<i32, _>("ignore_tls_errors").unwrap_or(0) != 0,
-        file_missing: row.try_get::<i32, _>("file_missing").unwrap_or(0) != 0,
+        file_missing: matches!(file_state, 1 | 2),
+        file_clear_state: match file_state {
+            2 => FileClearState::Cleared,
+            3 => FileClearState::Pending,
+            4 => FileClearState::RestartPending,
+            _ => FileClearState::None,
+        },
         completed_at: row.try_get("completed_at").unwrap_or_default(),
         file_hash: row.try_get("file_hash").unwrap_or_default(),
         segments: row.try_get("segments").unwrap_or(0),
@@ -873,15 +969,17 @@ fn task_from_row(row: &AnyRow) -> Result<TaskInfo, sqlx::Error> {
         },
         properties: serde_json::from_str(row.try_get::<&str, _>("edit_properties")?)
             .map_err(|error| sqlx::Error::Decode(Box::new(error)))?,
+        html_only: row.try_get::<i32, _>("html_only")? != 0,
     })
 }
 
-const TASK_COLUMNS: &str = "id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at, proxy_url, queue_id, checksum, ignore_tls_errors, file_missing, completed_at, file_hash, segments, queue_order, uploaded_bytes, uploaded_at_completion, seeding_status, seeding_message, seeding_time_secs, seed_ratio_limit_milli, seed_post_ratio_limit_milli, seed_time_limit_minutes, seed_inactive_time_limit_minutes, seed_upload_limit_bps, bt_sequential, bt_first_last_pieces_first, bt_download_limit_bps, bt_super_seeding, referrer, group_id, rss_source_id, origin_url, auto_route, src_cdn_bytes, src_proxy_bytes, src_nic_bytes, edit_properties";
+const TASK_COLUMNS: &str = "id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at, proxy_url, queue_id, checksum, ignore_tls_errors, file_missing, completed_at, file_hash, segments, queue_order, uploaded_bytes, uploaded_at_completion, seeding_status, seeding_message, seeding_time_secs, seed_ratio_limit_milli, seed_post_ratio_limit_milli, seed_time_limit_minutes, seed_inactive_time_limit_minutes, seed_upload_limit_bps, bt_sequential, bt_first_last_pieces_first, bt_download_limit_bps, bt_super_seeding, referrer, group_id, rss_source_id, origin_url, auto_route, src_cdn_bytes, src_proxy_bytes, src_nic_bytes, edit_properties, html_only";
 
 /// 新建任务的完整落库行（[`Db::insert_new_tasks`]）。
 ///
 /// 一行 INSERT 携带创建时已知的全部列，取代「INSERT + 多条 UPDATE」；
 /// 字段全部借用调用方的准备结果，避免批量创建时逐字段复制。
+#[derive(Default)]
 pub struct NewTaskRow<'a> {
     pub id: &'a str,
     pub url: &'a str,
@@ -921,6 +1019,9 @@ pub struct NewTaskRow<'a> {
     /// BT 选片（新任务按设置默认值落库）：按顺序下载 / 先下载首尾文件块。
     pub bt_sequential: bool,
     pub bt_first_last_pieces_first: bool,
+    pub(crate) html_only: bool,
+    pub(crate) edit_properties: Option<&'a str>,
+    pub(crate) inline_credentials: Option<&'a crate::auth::AuthProfile>,
 }
 
 /// 批量建任务的幂等记录（[`Db::insert_new_tasks`] 与任务行同事务写入）。
@@ -959,6 +1060,17 @@ fn group_from_row(row: &AnyRow) -> Result<GroupInfo, sqlx::Error> {
     })
 }
 
+/// 任务组的目录事实（[`Db::load_group_dir_facts`]），供删除成员后的空目录清理使用。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupDirFacts {
+    pub group_id: String,
+    pub name: String,
+    /// 组根目录。
+    pub save_dir: String,
+    /// 组根推导前的基础目录（用户选的 / 分类或归档结果）；空 = 旧版组。
+    pub base_dir: String,
+}
+
 /// [`Db::fission_into_group`] 的单个兄弟任务描述（清单中母任务之外的条目）。
 #[derive(Debug, Clone, Default)]
 pub struct GroupSiblingSpec {
@@ -981,6 +1093,8 @@ pub struct FissionSpec {
     pub group_id: String,
     pub group_name: String,
     pub group_save_dir: String,
+    /// 组根推导前的基础目录（见 [`GroupDirFacts::base_dir`]）。
+    pub group_base_dir: String,
     pub group_source_url: String,
     pub mother_task_id: String,
     pub mother_resolver_item: String,
@@ -1534,6 +1648,8 @@ impl Db {
             .await?;
         self.add_column_if_missing("rss_items", "retry_after", "BIGINT NOT NULL DEFAULT 0")
             .await?;
+        self.add_column_if_missing("rss_items", "image_urls", "TEXT")
+            .await?;
         self.add_column_if_missing("tasks", "proxy_url", "TEXT NOT NULL DEFAULT ''")
             .await?;
         self.add_column_if_missing("tasks", "queue_id", "TEXT NOT NULL DEFAULT ''")
@@ -1559,6 +1675,14 @@ impl Db {
             .await?;
         self.add_column_if_missing("tasks", "audio_url", "TEXT NOT NULL DEFAULT ''")
             .await?;
+        for column in [
+            "http_partial_name",
+            "audio_partial_name",
+            "audio_output_name",
+        ] {
+            self.add_column_if_missing("tasks", column, "TEXT NOT NULL DEFAULT ''")
+                .await?;
+        }
         // 任务请求上下文（cookies/referrer/extra_headers JSON）持久化：resume
         // 时恢复鉴权上下文。鉴权站点（cookie+token 双因子的 fnOS、带
         // Authorization 的私有服务）没有它们 resume 必然 4xx。
@@ -1627,6 +1751,9 @@ impl Db {
         // 多文件任务组：group_id 关联 task_groups.id（空 = 不属于任何组）；
         // resolver_item 为二段解析标识（不透明字符串，专用 getter，不进 TaskInfo）。
         self.add_column_if_missing("tasks", "group_id", "TEXT NOT NULL DEFAULT ''")
+            .await?;
+        // 组根推导前的基础目录：空目录清理止于此;旧组为空,回退按组名判定组根归属。
+        self.add_column_if_missing("task_groups", "base_dir", "TEXT NOT NULL DEFAULT ''")
             .await?;
         self.add_column_if_missing("tasks", "resolver_item", "TEXT NOT NULL DEFAULT ''")
             .await?;
@@ -1750,6 +1877,8 @@ impl Db {
             .await?;
         self.add_column_if_missing("tasks", "bt_file_renames", "TEXT NOT NULL DEFAULT ''")
             .await?;
+        self.add_column_if_missing("tasks", "bt_web_seeds", "TEXT NOT NULL DEFAULT '[]'")
+            .await?;
         // 队列级上传限速（KB/s；0 = 不限）。BT add/re-add 时与任务级
         // 覆盖一起折算成 librqbit 上传上限，见 download_manager。
         self.add_column_if_missing("queues", "upload_limit_kbps", "BIGINT NOT NULL DEFAULT 0")
@@ -1775,6 +1904,8 @@ impl Db {
         self.add_column_if_missing("tasks", "request_method", "TEXT NOT NULL DEFAULT ''")
             .await?;
         self.add_column_if_missing("tasks", "edit_properties", "TEXT NOT NULL DEFAULT '{}'")
+            .await?;
+        self.add_column_if_missing("tasks", "html_only", "INTEGER NOT NULL DEFAULT 0")
             .await?;
         Ok(())
     }
@@ -1950,9 +2081,9 @@ impl Db {
                  created_at, proxy_url, queue_id, checksum, ignore_tls_errors, queue_order, cookies, referrer, \
                  extra_headers, origin_url, audio_url, resolver_plugin_id, group_id, resolver_item, unattended, \
                  bt_selected_files, resolver_choice_pending, category_route, request_method, \
-                 bt_sequential, bt_first_last_pieces_first, browser_original_url) \
+                 bt_sequential, bt_first_last_pieces_first, html_only, edit_properties, browser_original_url) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, \
-                 $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)",
+                 $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32)",
             )
             .bind(row.id)
             .bind(row.url)
@@ -1983,9 +2114,14 @@ impl Db {
             .bind(row.request_method)
             .bind(i32::from(row.bt_sequential))
             .bind(i32::from(row.bt_first_last_pieces_first))
+            .bind(i32::from(row.html_only))
+            .bind(row.edit_properties.unwrap_or("{}"))
             .bind(row.browser_original_url)
             .execute(&mut *tx)
             .await?;
+            if let Some(profile) = row.inline_credentials {
+                crate::task_edit::insert_inline_credential(&mut tx, profile).await?;
+            }
             if !row.torrent_file_bytes.is_empty() {
                 sqlx::query(
                     "INSERT INTO torrent_files (task_id, file_bytes) VALUES ($1, $2)
@@ -2204,7 +2340,7 @@ impl Db {
     ///
     /// 一条语句内聚合 + 写入（主键前缀索引，≤ 512 行），不把段行搬进内存；
     /// `segments_epoch` 守卫使被新 spawn 夺权后的旧下载器 0 行生效。与
-    /// `restart_task` 的 `delete_segments`（同事务删段 + 进度归零）并发时不得
+    /// `delete_segments`（同事务删段 + 进度归零）并发时不得
     /// 出现「读到删前段和、写在归零之后」：SQLite 单语句天然原子；pg 读已提交
     /// 下子查询快照早于行锁，故先 `FOR UPDATE` 锁任务行，再以锁后的新快照聚合。
     pub async fn sync_task_progress_from_segments(
@@ -2389,8 +2525,108 @@ impl Db {
         Ok(result.rows_affected() > 0)
     }
 
-    /// 批量落库文件跟踪标志：语义与 [`Self::update_task_file_missing`] 完全
-    /// 一致（逐行 `WHERE id AND status = 3`），但整批在**同一个事务**里提交。
+    // 0 = present, 1 = unexpectedly missing, 2 = explicitly cleared,
+    // 3 = explicit unlink pending. The scanner may only write states 0 and 1.
+    pub(crate) async fn begin_task_file_clear(&self, id: &str) -> Result<bool, DbError> {
+        let result = sqlx::query(
+            "UPDATE tasks SET file_missing = 3 WHERE id = $1 AND status = 3 AND file_missing = 0",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub(crate) async fn finish_task_file_clear(
+        &self,
+        id: &str,
+        removed: bool,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE tasks SET file_missing = $1 WHERE id = $2 AND status = 3 AND file_missing = 3",
+        )
+        .bind(if removed { 2 } else { 0 })
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn pending_task_file_clears(
+        &self,
+    ) -> Result<Vec<(String, String, String)>, DbError> {
+        let rows = sqlx::query(
+            "SELECT id, save_dir, file_name FROM tasks WHERE status = 3 AND file_missing = 3",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| Ok((row.try_get(0)?, row.try_get(1)?, row.try_get(2)?)))
+            .collect()
+    }
+
+    // file_missing = 4 is an internal pre-start state, not a completed missing file.
+    // Keep it through queueing, resolving and startup recovery until naming is settled.
+    // The restart probes like a fresh hint-less start, so Range starts verified as it does there.
+    pub(crate) async fn reset_missing_task_for_restart(&self, id: &str) -> Result<bool, DbError> {
+        let mut tx = self.pool.begin().await?;
+        let updated = sqlx::query(
+            "UPDATE tasks SET status = 0, file_missing = 4, downloaded_bytes = 0, total_bytes = 0,
+                 src_cdn_bytes = 0, src_proxy_bytes = 0, src_nic_bytes = 0,
+                 error_message = '', completed_at = '', file_hash = '', exists_decision = '',
+                 orig_etag = '', orig_last_modified = '', range_verified = 1,
+                 http_partial_name = '', audio_partial_name = '', audio_output_name = ''
+             WHERE id = $1 AND status = 3 AND file_missing IN (1, 2)",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if updated == 0 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        sqlx::query("DELETE FROM task_segments WHERE task_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM ed2k_blocks WHERE task_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        // The new download must not inherit registrations from the previous transfer.
+        sqlx::query("DELETE FROM task_artifacts WHERE task_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM config WHERE key IN ($1, $2, $3, $4)")
+            .bind(format!("hls_resume_{id}"))
+            .bind(format!("hls_audio_resume_{id}"))
+            .bind(format!("hls_filter_{id}"))
+            .bind(format!("hls_audio_filter_{id}"))
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    // Publish the reserved name before the downloader can create any resumable state.
+    pub(crate) async fn bind_missing_task_restart(
+        &self,
+        id: &str,
+        name: &str,
+    ) -> Result<bool, DbError> {
+        let updated = sqlx::query(
+            "UPDATE tasks SET file_name = $1, file_missing = 0 WHERE id = $2 AND file_missing = 4",
+        )
+        .bind(name)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(updated.rows_affected() != 0)
+    }
+
+    /// 批量落库文件跟踪标志。跳过非完成任务与显式清理的记录。
     /// SQLite 在 WAL + `synchronous=NORMAL` 下提交不再逐次 fsync，但每条独立
     /// UPDATE 仍是一次隐式事务（一次 WAL 写入与写锁往返）；
     /// 外置盘掉线这类「上万条同时翻转」的场景下那是显著阻塞，还会和下载
@@ -2409,12 +2645,13 @@ impl Db {
         let mut tx = self.pool.begin().await?;
         let mut applied = Vec::with_capacity(updates.len());
         for (id, missing) in updates {
-            let result =
-                sqlx::query("UPDATE tasks SET file_missing = $1 WHERE id = $2 AND status = 3")
-                    .bind(*missing as i32)
-                    .bind(id.as_str())
-                    .execute(&mut *tx)
-                    .await?;
+            let result = sqlx::query(
+                "UPDATE tasks SET file_missing = $1 WHERE id = $2 AND status = 3 AND file_missing IN (0, 1)",
+            )
+            .bind(*missing as i32)
+            .bind(id.as_str())
+            .execute(&mut *tx)
+            .await?;
             if result.rows_affected() > 0 {
                 applied.push((id.clone(), *missing));
             }
@@ -2630,6 +2867,59 @@ impl Db {
     ) -> Result<(), DbError> {
         sqlx::query("UPDATE tasks SET bt_super_seeding = $1 WHERE id = $2")
             .bind(i32::from(enabled))
+            .bind(task_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// User-added BEP 19 sources, separate from the original torrent or magnet.
+    #[cfg(feature = "bt")]
+    pub(crate) async fn task_web_seeds(&self, task_id: &str) -> Result<Vec<String>, DbError> {
+        let json: Option<String> =
+            sqlx::query_scalar("SELECT bt_web_seeds FROM tasks WHERE id = $1")
+                .bind(task_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        json.as_deref()
+            .map_or_else(|| Ok(Vec::new()), Self::decode_web_seeds)
+    }
+
+    #[cfg(feature = "bt")]
+    fn decode_web_seeds(json: &str) -> Result<Vec<String>, DbError> {
+        serde_json::from_str(json)
+            .map_err(|error| DbError::InvalidConfig(format!("BT web seeds: {error}")))
+    }
+
+    /// Loads only the persisted inputs needed by BT detail polling.
+    #[cfg(feature = "bt")]
+    pub(crate) async fn load_bt_status_inputs(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<(String, Option<Vec<u8>>, Vec<String>)>, DbError> {
+        let row: Option<(String, Option<Vec<u8>>, String)> = sqlx::query_as(
+            "SELECT tasks.url, torrent_files.file_bytes, tasks.bt_web_seeds
+             FROM tasks LEFT JOIN torrent_files ON torrent_files.task_id = tasks.id
+             WHERE tasks.id = $1",
+        )
+        .bind(task_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|(url, bytes, json)| Ok((url, bytes, Self::decode_web_seeds(&json)?)))
+            .transpose()
+    }
+
+    /// Persists the task's user-added sources without rewriting torrent metadata.
+    #[cfg(feature = "bt")]
+    pub(crate) async fn set_task_web_seeds(
+        &self,
+        task_id: &str,
+        seeds: &[String],
+    ) -> Result<(), DbError> {
+        let json = serde_json::to_string(seeds)
+            .map_err(|error| DbError::InvalidConfig(format!("BT web seeds: {error}")))?;
+        sqlx::query("UPDATE tasks SET bt_web_seeds = $1 WHERE id = $2")
+            .bind(json)
             .bind(task_id)
             .execute(&self.pool)
             .await?;
@@ -2885,6 +3175,65 @@ impl Db {
         Ok(())
     }
 
+    pub(crate) async fn rename_registered_artifact(
+        tx: &mut sqlx::Transaction<'_, Any>,
+        task_id: &str,
+        old: &Path,
+        new: &Path,
+    ) -> Result<(), DbError> {
+        if let (Some(old), Some(new)) = (
+            old.file_name().and_then(|name| name.to_str()),
+            new.file_name().and_then(|name| name.to_str()),
+        ) && old != new
+        {
+            sqlx::query(
+                "UPDATE task_artifacts SET file_name = $1 WHERE task_id = $2 AND file_name = $3",
+            )
+            .bind(new)
+            .bind(task_id)
+            .bind(old)
+            .execute(&mut **tx)
+            .await?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn rename_task_outputs(
+        &self,
+        task: &str,
+        name: &str,
+        partial: Option<(&str, &str)>,
+        audio: Option<(&str, &str)>,
+        audio_partial: Option<(&str, &str)>,
+    ) -> Result<(), DbError> {
+        let (old_partial, new_partial) = partial.unzip();
+        let (old_audio, new_audio) = audio.unzip();
+        let (old_audio_partial, new_audio_partial) = audio_partial.unzip();
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "UPDATE tasks SET file_name = $1, name_inferred = 0, exists_decision = '',
+                 http_partial_name = CASE WHEN http_partial_name = $2 THEN $3 ELSE http_partial_name END,
+                 audio_output_name = CASE WHEN audio_output_name = $4 THEN $5 ELSE audio_output_name END,
+                 audio_partial_name = CASE WHEN audio_partial_name = $6 THEN $7 ELSE audio_partial_name END
+             WHERE id = $8",
+        )
+        .bind(name)
+        .bind(old_partial)
+        .bind(new_partial)
+        .bind(old_audio)
+        .bind(new_audio)
+        .bind(old_audio_partial)
+        .bind(new_audio_partial)
+        .bind(task)
+        .execute(&mut *tx)
+        .await?;
+        if let Some((old, new)) = audio {
+            Self::rename_registered_artifact(&mut tx, task, Path::new(old), Path::new(new)).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// 无条件改写任务文件名，保留 `name_inferred`（引擎侧改名：启动序幕的 dedup、
     /// HLS/DASH 扩展名归一化）。来源随名字一起变时用 [`Self::set_task_file_name_with_source`]。
     pub async fn set_task_file_name(&self, task_id: &str, file_name: &str) -> Result<(), DbError> {
@@ -2947,7 +3296,7 @@ impl Db {
     pub async fn load_file_tracking_rows(&self) -> Result<Vec<FileTrackingRow>, DbError> {
         let rows = sqlx::query(
             "SELECT id, save_dir, file_name, file_missing, status FROM tasks \
-             WHERE status IN (0, 1, 3, 5)",
+             WHERE status IN (0, 1, 3, 5) AND file_missing IN (0, 1)",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -2982,9 +3331,10 @@ impl Db {
     /// 用同一套归一化规则处理。任务量通常是几十到几百条，一次性取回后在
     /// 内存比较比逐条查询更省 round-trip。
     pub async fn active_task_urls(&self) -> Result<Vec<(String, String)>, DbError> {
-        let rows = sqlx::query("SELECT id, url FROM tasks WHERE status IN (0, 1, 2, 5)")
-            .fetch_all(&self.pool)
-            .await?;
+        let rows =
+            sqlx::query("SELECT id, url FROM tasks WHERE status IN (0, 1, 2, 5) AND html_only = 0")
+                .fetch_all(&self.pool)
+                .await?;
         let mut out = Vec::with_capacity(rows.len());
         for row in &rows {
             out.push((row.try_get("id")?, row.try_get("url")?));
@@ -3019,8 +3369,67 @@ impl Db {
         Ok(results)
     }
 
+    /// Only paused/failed tasks may be stopped by partial-only cleanup.
+    pub(crate) async fn unfinished_cleanup_ids(
+        &self,
+        ids: &[String],
+    ) -> Result<Vec<String>, DbError> {
+        let mut eligible = Vec::with_capacity(ids.len());
+        for chunk in ids.chunks(500) {
+            let placeholders = numbered_placeholders(chunk.len());
+            let sql =
+                format!("SELECT id FROM tasks WHERE status IN (2, 4) AND id IN ({placeholders})");
+            let mut query = sqlx::query_scalar::<Any, String>(AssertSqlSafe(sql));
+            for id in chunk {
+                query = query.bind(id.as_str());
+            }
+            eligible.extend(query.fetch_all(&self.pool).await?);
+        }
+        Ok(eligible)
+    }
+
+    /// Recheck detached scan results before the actor removes task records.
+    pub async fn unexpectedly_missing_task_ids(
+        &self,
+        ids: &[String],
+    ) -> Result<Vec<String>, DbError> {
+        let mut results = Vec::with_capacity(ids.len());
+        for chunk in ids.chunks(500) {
+            let placeholders = (1..=chunk.len())
+                .map(|i| format!("${i}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT id FROM tasks WHERE status = 3 AND file_missing = 1 AND id IN ({placeholders})"
+            );
+            let mut query = sqlx::query_scalar::<Any, String>(AssertSqlSafe(sql));
+            for id in chunk {
+                query = query.bind(id.as_str());
+            }
+            results.extend(query.fetch_all(&self.pool).await?);
+        }
+        Ok(results)
+    }
+
     /// 删除任务及其 RSS 回链，返回状态/回链实际改变的订阅源 ID（去重）。
     pub async fn delete_task(&self, id: &str) -> Result<Vec<String>, DbError> {
+        self.delete_task_with_rss_reason(id, RSS_TASK_REMOVED).await
+    }
+
+    #[cfg(feature = "bt")]
+    pub(crate) async fn delete_duplicate_torrent_task(
+        &self,
+        id: &str,
+    ) -> Result<Vec<String>, DbError> {
+        self.delete_task_with_rss_reason(id, "duplicate_torrent")
+            .await
+    }
+
+    async fn delete_task_with_rss_reason(
+        &self,
+        id: &str,
+        reason: &str,
+    ) -> Result<Vec<String>, DbError> {
         // RAII 事务：任何 `?` 提前返回时 Drop 自动 ROLLBACK，不会泄漏事务。
         let mut tx = self.pool.begin().await?;
         sqlx::query("DELETE FROM task_segments WHERE task_id = $1")
@@ -3049,17 +3458,25 @@ impl Db {
         // 已下载条目变为已读，而非 New：否则下一轮抓取会自动重新派发。
         // 已忽略/过滤等状态原样保留，只清除无效任务回链；与任务删除同事务。
         let mut affected_sources: Vec<String> = sqlx::query_scalar(
-            "UPDATE rss_items SET status = CASE WHEN status = $1 THEN $2 ELSE status END, task_id = '' WHERE task_id = $3 RETURNING source_id",
+            "UPDATE rss_items SET status = CASE WHEN status = $1 THEN $2 ELSE status END, \
+             reason = CASE WHEN status = $1 THEN $3 ELSE reason END, \
+             task_id = '' WHERE task_id = $4 RETURNING source_id",
         )
         .bind(RssItemStatus::Downloaded.as_i32())
         .bind(RssItemStatus::Ignored.as_i32())
+        .bind(reason)
         .bind(id)
         .fetch_all(&mut *tx)
         .await?;
-        sqlx::query("DELETE FROM tasks WHERE id = $1")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
+        let properties: Option<Option<String>> = sqlx::query_scalar(
+            "DELETE FROM tasks WHERE id = $1 RETURNING NULLIF(edit_properties, '{}')",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(properties) = properties.flatten() {
+            crate::task_edit::delete_inline_credential(&mut tx, &properties).await?;
+        }
         tx.commit().await?;
         affected_sources.sort_unstable();
         affected_sources.dedup();
@@ -3110,7 +3527,9 @@ impl Db {
                 query.execute(&mut *tx).await?;
             }
             let rss_sql = format!(
-                "UPDATE rss_items SET status = CASE WHEN status = {downloaded} THEN {ignored} ELSE status END, task_id = '' WHERE task_id IN ({placeholders}) RETURNING source_id",
+                "UPDATE rss_items SET status = CASE WHEN status = {downloaded} THEN {ignored} ELSE status END, \
+                 reason = CASE WHEN status = {downloaded} THEN '{RSS_TASK_REMOVED}' ELSE reason END, \
+                 task_id = '' WHERE task_id IN ({placeholders}) RETURNING source_id",
                 downloaded = RssItemStatus::Downloaded.as_i32(),
                 ignored = RssItemStatus::Ignored.as_i32(),
             );
@@ -3121,12 +3540,17 @@ impl Db {
             let sources: Vec<String> = rss_query.fetch_all(&mut *tx).await?;
             affected_sources.extend(sources);
 
-            let sql = format!("DELETE FROM tasks WHERE id IN ({placeholders})");
-            let mut query = sqlx::query(AssertSqlSafe(sql));
+            let sql = format!(
+                "DELETE FROM tasks WHERE id IN ({placeholders}) RETURNING NULLIF(edit_properties, '{{}}')"
+            );
+            let mut query = sqlx::query_scalar(AssertSqlSafe(sql));
             for id in chunk {
                 query = query.bind(id.as_str());
             }
-            query.execute(&mut *tx).await?;
+            let properties: Vec<Option<String>> = query.fetch_all(&mut *tx).await?;
+            for properties in properties.into_iter().flatten() {
+                crate::task_edit::delete_inline_credential(&mut tx, &properties).await?;
+            }
         }
         tx.commit().await?;
         let mut affected_sources: Vec<_> = affected_sources.into_iter().collect();
@@ -3184,37 +3608,91 @@ impl Db {
         Ok(rows)
     }
 
+    pub(crate) async fn record_http_partial(&self, task: &str, name: &str) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE tasks SET http_partial_name = $1, downloaded_bytes = 0,
+                 src_cdn_bytes = 0, src_proxy_bytes = 0, src_nic_bytes = 0 WHERE id = $2",
+        )
+        .bind(name)
+        .bind(task)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn record_audio_partial(&self, task: &str, name: &str) -> Result<(), DbError> {
+        sqlx::query("UPDATE tasks SET audio_partial_name = $1 WHERE id = $2")
+            .bind(name)
+            .bind(task)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn record_audio_output(&self, task: &str, name: &str) -> Result<(), DbError> {
+        let result = sqlx::query(
+            "UPDATE tasks SET audio_partial_name = '', audio_output_name = $1 WHERE id = $2",
+        )
+        .bind(name)
+        .bind(task)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(sqlx::Error::RowNotFound.into());
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn audio_partial_name(&self, task: &str) -> Result<String, DbError> {
+        Ok(
+            sqlx::query_scalar("SELECT audio_partial_name FROM tasks WHERE id = $1")
+                .bind(task)
+                .fetch_one(&self.pool)
+                .await?,
+        )
+    }
+
+    pub(crate) async fn audio_output_name(&self, task: &str) -> Result<String, DbError> {
+        Ok(
+            sqlx::query_scalar("SELECT audio_output_name FROM tasks WHERE id = $1")
+                .bind(task)
+                .fetch_one(&self.pool)
+                .await?,
+        )
+    }
+
+    /// Read the path and evidence for named-file cleanup from one database snapshot.
+    pub(crate) async fn load_cleanup_task(
+        &self,
+        id: &str,
+    ) -> Result<Option<DeletionTask>, DbError> {
+        let row = sqlx::query(select_cleanup_tasks!("WHERE id = $1"))
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(DeletionTask::from_row).transpose()?)
+    }
+
     /// 批量删除前一次读出整批任务的删除上下文，替代逐任务查询
     /// （`get_exists_decision` / `load_audio_url` / `load_task_artifacts` /
     /// `list_task_ids_by_file`）。
     ///
-    /// `save_dirs` 是批内任务涉及的保存目录：`file_owners` 只覆盖这些目录下登记的产物名，
-    /// 足以回答「某目录下某名字还归不归批外任务」。
-    pub async fn load_deletion_facts(
+    /// 产物名归属索引只覆盖这些任务实际所在的保存目录。
+    pub(crate) async fn load_deletion_facts(
         &self,
         ids: &[String],
-        save_dirs: &[String],
     ) -> Result<DeletionFacts, DbError> {
         const CHUNK: usize = 500;
         let mut facts = DeletionFacts::default();
         for chunk in ids.chunks(CHUNK) {
             let placeholders = numbered_placeholders(chunk.len());
-            let sql = format!(
-                "SELECT id, exists_decision, audio_url FROM tasks WHERE id IN ({placeholders})"
-            );
+            let sql = format!(select_cleanup_tasks!("WHERE id IN ({})"), placeholders);
             let mut query = sqlx::query(AssertSqlSafe(sql));
             for id in chunk {
                 query = query.bind(id.as_str());
             }
             for row in query.fetch_all(&self.pool).await? {
-                let id: String = row.try_get("id")?;
-                let audio_url: String = row.try_get("audio_url")?;
-                if !audio_url.is_empty() {
-                    facts.has_audio_url.insert(id.clone());
-                }
-                facts
-                    .exists_decisions
-                    .insert(id, row.try_get("exists_decision")?);
+                facts.tasks.push(DeletionTask::from_row(row)?);
             }
 
             let sql = format!(
@@ -3232,21 +3710,44 @@ impl Db {
                     .push(row.try_get("file_name")?);
             }
         }
+        let mut save_dirs: Vec<_> = facts
+            .tasks
+            .iter()
+            .map(|task| task.save_dir.as_str())
+            .collect();
+        save_dirs.sort_unstable();
+        save_dirs.dedup();
         for chunk in save_dirs.chunks(CHUNK) {
             let placeholders = numbered_placeholders(chunk.len());
+            // Cleared and restart-pending rows retain historical names, not file claims.
             let sql = format!(
-                "SELECT id, save_dir, file_name FROM tasks WHERE save_dir IN ({placeholders})"
+                "SELECT id, save_dir, file_name, audio_partial_name, audio_output_name,
+                        CASE WHEN status <> 3 THEN http_partial_name ELSE '' END AS http_partial_name
+                 FROM tasks WHERE save_dir IN ({placeholders}) AND file_missing NOT IN (2, 4)
+                 UNION ALL
+                 SELECT tasks.id, tasks.save_dir, task_artifacts.file_name, '', '', ''
+                 FROM task_artifacts JOIN tasks ON tasks.id = task_artifacts.task_id
+                 WHERE tasks.save_dir IN ({placeholders}) AND tasks.file_missing NOT IN (2, 4)"
             );
             let mut query = sqlx::query(AssertSqlSafe(sql));
             for dir in chunk {
-                query = query.bind(dir.as_str());
+                query = query.bind(*dir);
             }
             for row in query.fetch_all(&self.pool).await? {
-                facts
-                    .file_owners
-                    .entry((row.try_get("save_dir")?, row.try_get("file_name")?))
-                    .or_default()
-                    .push(row.try_get("id")?);
+                let save_dir: String = row.try_get("save_dir")?;
+                let id: String = row.try_get("id")?;
+                let owners = facts.file_owners.entry(save_dir).or_default();
+                for column in [
+                    "file_name",
+                    "audio_partial_name",
+                    "audio_output_name",
+                    "http_partial_name",
+                ] {
+                    let name: String = row.try_get(column)?;
+                    if !name.is_empty() {
+                        owners.entry(name).or_default().push(id.clone());
+                    }
+                }
             }
         }
         Ok(facts)
@@ -3402,6 +3903,35 @@ impl Db {
         }
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Check for task-bound progress or a reserved single-stream partial, even
+    /// if the writer stopped before saving its first byte.
+    pub(crate) async fn has_resume_checkpoint(&self, task_id: &str) -> Result<bool, DbError> {
+        let found: i32 = sqlx::query_scalar(concat!(
+            "SELECT CASE WHEN EXISTS (
+                 SELECT 1 FROM tasks WHERE id = $1 AND status <> 3 AND file_missing NOT IN (2, 4)
+                   AND http_partial_name = file_name || $2
+             ) THEN 1 ELSE ",
+            resume_checkpoint_sql!("$1"),
+            " END"
+        ))
+        .bind(task_id)
+        .bind(crate::downloader::TEMP_EXT)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(found != 0)
+    }
+
+    pub(crate) async fn has_segment_checkpoint(&self, task_id: &str) -> Result<bool, DbError> {
+        let found: i32 = sqlx::query_scalar(
+            "SELECT CASE WHEN EXISTS (SELECT 1 FROM task_segments WHERE task_id = $1)
+             THEN 1 ELSE 0 END",
+        )
+        .bind(task_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(found != 0)
     }
 
     pub async fn load_segments(&self, task_id: &str) -> Result<Vec<SegmentInfo>, DbError> {
@@ -3782,17 +4312,26 @@ impl Db {
     /// 把 `save_dir` 下 `file_name` 登记为自己产物名的全部任务 id。
     ///
     /// 删除任务文件前用来确认该名字没有同时属于别的任务：两条任务的 `file_name`
-    /// 指向同一磁盘名时，删除其一不得带走对方的产物。
+    /// 指向同一磁盘名时，删除其一不得带走对方的产物。已清理（2）与待从零重下（4）的
+    /// 记录只保留历史名，不算认领，与 `load_deletion_facts` 同口径。
     pub async fn list_task_ids_by_file(
         &self,
         save_dir: &str,
         file_name: &str,
     ) -> Result<Vec<String>, DbError> {
-        let rows = sqlx::query("SELECT id FROM tasks WHERE save_dir = $1 AND file_name = $2")
-            .bind(save_dir)
-            .bind(file_name)
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query(
+            "SELECT id FROM tasks WHERE save_dir = $1 AND file_missing NOT IN (2, 4)
+             AND (file_name = $2 OR audio_output_name = $2 OR audio_partial_name = $2
+                  OR (status <> 3 AND http_partial_name = $2))
+             UNION
+             SELECT tasks.id FROM task_artifacts JOIN tasks ON tasks.id = task_artifacts.task_id
+             WHERE tasks.save_dir = $1 AND tasks.file_missing NOT IN (2, 4)
+               AND task_artifacts.file_name = $2",
+        )
+        .bind(save_dir)
+        .bind(file_name)
+        .fetch_all(&self.pool)
+        .await?;
         let mut out = Vec::with_capacity(rows.len());
         for row in &rows {
             out.push(row.try_get("id")?);
@@ -3818,6 +4357,34 @@ impl Db {
         let default_sub_urls = crate::tracker_subscription::default_subscription_urls();
         #[cfg(feature = "ed2k")]
         let default_ed2k_met_urls = crate::ed2k::server_subscription::default_server_met_urls();
+        // 每个安装只在端口键缺失时随机生成；已有配置（包括 eD2K 的 0）原样保留。
+        // BT 只缺一个边界时沿用另一个，避免把手动端口拼成无效范围。
+        #[cfg(feature = "bt")]
+        let default_bt_port = match self.get_config("bt_port_start").await? {
+            Some(port) => port,
+            None => self
+                .get_config("bt_port_end")
+                .await?
+                .unwrap_or_else(|| rand::random_range(49152u16..=65535).to_string()),
+        };
+        #[cfg(feature = "ed2k")]
+        let default_ed2k_port = self
+            .get_config("ed2k_listen_port")
+            .await?
+            .unwrap_or_else(|| {
+                #[cfg(feature = "bt")]
+                let bt_port = default_bt_port.parse::<u16>().ok();
+                #[cfg(feature = "bt")]
+                let port = loop {
+                    let port = rand::random_range(49152u16..=65535);
+                    if Some(port) != bt_port {
+                        break port;
+                    }
+                };
+                #[cfg(not(feature = "bt"))]
+                let port = rand::random_range(49152u16..=65535);
+                port.to_string()
+            });
         #[cfg_attr(
             not(any(feature = "bt", feature = "ed2k")),
             allow(unused_mut, clippy::useless_vec)
@@ -3892,8 +4459,8 @@ impl Db {
             ("bt_enable_dht", "true"),
             ("bt_enable_upnp", "true"),
             ("bt_enable_utp", "true"),
-            ("bt_port_start", "6881"),
-            ("bt_port_end", "6891"),
+            ("bt_port_start", &default_bt_port),
+            ("bt_port_end", &default_bt_port),
             // MSE 三态逃生开关（disabled/enabled/forced），无 UI，经 config API/CLI 可设。
             ("bt_mse_mode", "enabled"),
             ("bt_custom_trackers", ""),
@@ -3924,9 +4491,9 @@ impl Db {
             ("ed2k_server_sub_urls", &default_ed2k_met_urls),
             ("ed2k_server_sub_cache", ""),
             ("ed2k_server_sub_updated_at", "0"),
-            // eD2K 客户端：监听端口（0=OS 选）、UPnP 端口映射争取 HighID、
-            // Kad DHT 去中心化找源。UPnP/Kad 默认启用（best-effort，失败回退）。
-            ("ed2k_listen_port", "0"),
+            // eD2K 客户端：TCP 监听端口（首次随机固定，0=OS 每次选）、
+            // UPnP 争取 HighID、Kad DHT 去中心化找源。
+            ("ed2k_listen_port", &default_ed2k_port),
             ("ed2k_enable_upnp", "true"),
             ("ed2k_enable_kad", "true"),
             // Kad bootstrap：nodes.dat 订阅地址（每行一个，社区维护）+ 合并后的缓存
@@ -3939,6 +4506,8 @@ impl Db {
             ("ed2k_nodes_dat_count", "0"),
             ("ed2k_nodes_dat_updated_at", "0"),
         ]);
+        // 同一事务写入，避免首次启动中断后只留下 BT 范围的一个边界。
+        let mut transaction = self.pool.begin().await?;
         for (key, value) in &defaults {
             sqlx::query(
                 "INSERT INTO config (key, value) VALUES ($1, $2)
@@ -3946,9 +4515,10 @@ impl Db {
             )
             .bind(*key)
             .bind(*value)
-            .execute(&self.pool)
+            .execute(&mut *transaction)
             .await?;
         }
+        transaction.commit().await?;
         self.migrate_idle_file_scan_default_off().await?;
         self.migrate_completed_at_backfill().await?;
         #[cfg(feature = "ed2k")]
@@ -4015,22 +4585,45 @@ impl Db {
         cutoff_secs: i64,
         limit: i64,
     ) -> Result<Vec<String>, DbError> {
+        let rows = self
+            .list_expired_completed_task_ids_after(cutoff_secs, limit, None)
+            .await?;
+        Ok(rows.into_iter().map(|(id, _)| id).collect())
+    }
+
+    /// 同 [`Self::list_expired_completed_task_ids`]，但从 `(completed_at, id)` 之后继续。
+    /// `after` 为 `None` 时从头开始。返回 `(id, completed_at)`，调用方据此推进游标，
+    /// 以免本轮要跳过的 id 占满一页后反复选中同一批。
+    pub(crate) async fn list_expired_completed_task_ids_after(
+        &self,
+        cutoff_secs: i64,
+        limit: i64,
+        after: Option<(&str, &str)>,
+    ) -> Result<Vec<(String, String)>, DbError> {
+        let (after_completed_at, after_id) = after.unwrap_or(("", ""));
         let sql = format!(
-            "SELECT id FROM tasks
+            "SELECT id, completed_at FROM tasks
              WHERE status = 3 AND completed_at <> ''
                AND seeding_status NOT IN ({active}, {queued})
                AND (CASE WHEN completed_at = '' THEN 0 ELSE CAST(completed_at AS BIGINT) END) < $1
+               AND ($2 = '' OR completed_at > $2 OR (completed_at = $2 AND id > $3))
              ORDER BY completed_at ASC, id ASC
-             LIMIT $2",
+             LIMIT $4",
             active = crate::bt_seeding::SEEDING_STATUS_ACTIVE,
             queued = crate::bt_seeding::SEEDING_STATUS_QUEUED,
         );
-        let ids = sqlx::query_scalar(AssertSqlSafe(sql))
+        let rows = sqlx::query(AssertSqlSafe(sql))
             .bind(cutoff_secs)
+            .bind(after_completed_at)
+            .bind(after_id)
             .bind(limit)
             .fetch_all(&self.pool)
             .await?;
-        Ok(ids)
+        let mut out = Vec::with_capacity(rows.len());
+        for row in &rows {
+            out.push((row.try_get("id")?, row.try_get("completed_at")?));
+        }
+        Ok(out)
     }
 
     /// 测试专用：直接写入 `completed_at`（正常路径只会写入当前时刻，无法造出「旧」记录）。
@@ -4938,6 +5531,7 @@ impl Db {
 
     /// 插入任务组行。`created_at` 内部生成（Unix 秒字符串），与
     /// [`Self::insert_task_with_tls_policy`] 惯例一致，不暴露给调用方。
+    /// `base_dir` 是组根推导前的基础目录（见 [`GroupDirFacts::base_dir`]）。
     ///
     /// # Examples
     ///
@@ -4945,7 +5539,8 @@ impl Db {
     /// # async fn run() -> Result<(), fluxdown_engine::db::DbError> {
     /// use fluxdown_engine::db::Db;
     /// let db = Db::connect("sqlite::memory:").await?;
-    /// db.insert_group("g1", "我的相册", "https://pan.example.com/s/x", "/tmp/我的相册").await?;
+    /// db.insert_group("g1", "我的相册", "https://pan.example.com/s/x", "/tmp/我的相册", "/tmp")
+    ///     .await?;
     /// assert_eq!(db.load_all_groups().await?.len(), 1);
     /// # Ok(())
     /// # }
@@ -4956,18 +5551,37 @@ impl Db {
         name: &str,
         source_url: &str,
         save_dir: &str,
+        base_dir: &str,
     ) -> Result<(), DbError> {
         sqlx::query(
-            "INSERT INTO task_groups (id, name, source_url, save_dir, created_at) VALUES ($1, $2, $3, $4, $5)",
+            "INSERT INTO task_groups (id, name, source_url, save_dir, base_dir, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(id)
         .bind(name)
         .bind(source_url)
         .bind(save_dir)
+        .bind(base_dir)
         .bind(chrono_now())
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// 全部任务组的目录事实（删除成员后的空目录清理用）。
+    pub async fn load_group_dir_facts(&self) -> Result<Vec<GroupDirFacts>, DbError> {
+        let rows = sqlx::query("SELECT id, name, save_dir, base_dir FROM task_groups")
+            .fetch_all(&self.pool)
+            .await?;
+        let mut facts = Vec::with_capacity(rows.len());
+        for row in &rows {
+            facts.push(GroupDirFacts {
+                group_id: row.try_get("id")?,
+                name: row.try_get("name")?,
+                save_dir: row.try_get("save_dir")?,
+                base_dir: row.try_get("base_dir")?,
+            });
+        }
+        Ok(facts)
     }
 
     /// 全部任务组，按创建时间倒序（新建的组排前面，与 [`Self::load_all_tasks`]
@@ -5219,12 +5833,13 @@ impl Db {
 
         let now = chrono_now();
         sqlx::query(
-            "INSERT INTO task_groups (id, name, source_url, save_dir, created_at) VALUES ($1, $2, $3, $4, $5)",
+            "INSERT INTO task_groups (id, name, source_url, save_dir, base_dir, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(&spec.group_id)
         .bind(&spec.group_name)
         .bind(&spec.group_source_url)
         .bind(&spec.group_save_dir)
+        .bind(&spec.group_base_dir)
         .bind(&now)
         .execute(&mut *tx)
         .await?;
@@ -5526,7 +6141,7 @@ impl Db {
     ) -> Result<Vec<RssItemInfo>, DbError> {
         let rows = sqlx::query(
             "SELECT source_id, guid, title, link, enclosure_url, enclosure_type, enclosure_length, pub_date, fetched_at, \
-             status, task_id, episode_key, resolver_item, reason FROM rss_items \
+             status, task_id, episode_key, resolver_item, reason, image_urls FROM rss_items \
              WHERE source_id = $1 AND status = 0 AND retry_after <= $3 \
              ORDER BY CASE WHEN reason = '' THEN 0 ELSE 1 END ASC, pub_date ASC, fetched_at ASC, guid ASC LIMIT $2",
         )
@@ -5549,7 +6164,7 @@ impl Db {
     ) -> Result<Vec<RssItemInfo>, DbError> {
         let rows = sqlx::query(
             "SELECT source_id, guid, title, link, enclosure_url, enclosure_type, enclosure_length, pub_date, fetched_at, \
-             status, task_id, episode_key, resolver_item, reason FROM rss_items WHERE source_id = $1 \
+             status, task_id, episode_key, resolver_item, reason, image_urls FROM rss_items WHERE source_id = $1 \
              ORDER BY pub_date DESC, fetched_at DESC, guid ASC LIMIT $2",
         )
         .bind(source_id)
@@ -5570,7 +6185,7 @@ impl Db {
     ) -> Result<Option<RssItemInfo>, DbError> {
         let items = sqlx::query(
             "SELECT source_id, guid, title, link, enclosure_url, enclosure_type, enclosure_length, pub_date, fetched_at, \
-             status, task_id, episode_key, resolver_item, reason FROM rss_items WHERE source_id = $1 AND guid = $2",
+             status, task_id, episode_key, resolver_item, reason, image_urls FROM rss_items WHERE source_id = $1 AND guid = $2",
         )
         .bind(source_id)
         .bind(guid)
@@ -5620,8 +6235,8 @@ impl Db {
         for item in items {
             let r = sqlx::query(
                 "INSERT INTO rss_items (source_id, guid, title, link, enclosure_url, enclosure_type, resolver_item, \
-                 enclosure_length, pub_date, fetched_at, status, task_id, episode_key, reason) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
+                 enclosure_length, pub_date, fetched_at, status, task_id, episode_key, reason, image_urls) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) \
                  ON CONFLICT (source_id, guid) DO NOTHING",
             )
             .bind(&item.source_id)
@@ -5638,12 +6253,56 @@ impl Db {
             .bind(&item.task_id)
             .bind(&item.episode_key)
             .bind(&item.reason)
+            .bind(item.image_urls.as_ref().map(serde_json::to_string).transpose().map_err(|e| sqlx::Error::Encode(Box::new(e)))?)
             .execute(&mut *tx)
             .await?;
             inserted += r.rows_affected();
         }
         tx.commit().await?;
         Ok(inserted)
+    }
+
+    /// Fill missing historical RSS image references without modifying item state.
+    pub(crate) async fn backfill_rss_images(
+        &self,
+        source_id: &str,
+        items: &[(&str, &[String])],
+    ) -> Result<bool, DbError> {
+        if items.is_empty() {
+            return Ok(false);
+        }
+        let missing: HashSet<String> = sqlx::query_scalar(
+            "SELECT guid FROM rss_items WHERE source_id = $1 AND image_urls IS NULL",
+        )
+        .bind(source_id)
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .collect();
+        if !items.iter().any(|(guid, _)| missing.contains(*guid)) {
+            return Ok(false);
+        }
+        let mut tx = self.pool.begin().await?;
+        let mut changed = false;
+        for &(guid, urls) in items {
+            if !missing.contains(guid) {
+                continue;
+            }
+            let json = serde_json::to_string(urls)
+                .map_err(|error| sqlx::Error::Encode(Box::new(error)))?;
+            let result = sqlx::query(
+                "UPDATE rss_items SET image_urls = $1 \
+                 WHERE source_id = $2 AND guid = $3 AND image_urls IS NULL",
+            )
+            .bind(json)
+            .bind(source_id)
+            .bind(guid)
+            .execute(&mut *tx)
+            .await?;
+            changed |= result.rows_affected() != 0;
+        }
+        tx.commit().await?;
+        Ok(changed)
     }
 
     /// 回填历史条目缺失的发布时间。
@@ -6105,6 +6764,14 @@ fn rss_item_from_row(row: &AnyRow) -> Result<RssItemInfo, sqlx::Error> {
         guid: row.try_get("guid")?,
         title: row.try_get("title").unwrap_or_default(),
         link: row.try_get("link").unwrap_or_default(),
+        image_urls: row
+            .try_get::<Option<String>, _>("image_urls")?
+            .map(|json| serde_json::from_str(&json))
+            .transpose()
+            .map_err(|e| sqlx::Error::ColumnDecode {
+                index: "image_urls".into(),
+                source: Box::new(e),
+            })?,
         enclosure_url: row.try_get("enclosure_url").unwrap_or_default(),
         resolver_item: row.try_get("resolver_item").unwrap_or_default(),
         enclosure_type: row.try_get("enclosure_type").unwrap_or_default(),
@@ -6877,6 +7544,7 @@ mod tests {
             "我的相册",
             "https://pan.example.com/s/x",
             "/tmp/我的相册",
+            "/tmp",
         )
         .await
         .expect("insert group");
@@ -7058,7 +7726,7 @@ mod tests {
     async fn set_task_group_and_resolver_item_roundtrip() {
         let (db, dir) = open_test_db().await;
         insert_task(&db, "t1").await;
-        db.insert_group("g1", "组", "", "/tmp/g1")
+        db.insert_group("g1", "组", "", "/tmp/g1", "/tmp")
             .await
             .expect("insert group");
         db.set_task_group("t1", "g1").await.expect("set group");
@@ -7082,7 +7750,7 @@ mod tests {
     #[tokio::test]
     async fn group_member_ids_orders_by_queue_order() {
         let (db, dir) = open_test_db().await;
-        db.insert_group("g1", "组", "", "/tmp/g1")
+        db.insert_group("g1", "组", "", "/tmp/g1", "/tmp")
             .await
             .expect("insert group");
         insert_task(&db, "second").await;
@@ -7101,10 +7769,10 @@ mod tests {
     #[tokio::test]
     async fn gc_empty_groups_deletes_orphan_group_rows_only() {
         let (db, dir) = open_test_db().await;
-        db.insert_group("empty", "空组", "", "/tmp/empty")
+        db.insert_group("empty", "空组", "", "/tmp/empty", "/tmp")
             .await
             .expect("insert empty group");
-        db.insert_group("populated", "有成员组", "", "/tmp/populated")
+        db.insert_group("populated", "有成员组", "", "/tmp/populated", "/tmp")
             .await
             .expect("insert populated group");
         insert_task(&db, "member").await;
@@ -7190,6 +7858,7 @@ mod tests {
             group_id: "g1".to_string(),
             group_name: "我的相册".to_string(),
             group_save_dir: "/tmp/我的相册".to_string(),
+            group_base_dir: "/tmp".to_string(),
             group_source_url: "https://pan.example.com/s/x".to_string(),
             mother_task_id: "mother".to_string(),
             mother_resolver_item: "f1".to_string(),
@@ -8624,14 +9293,14 @@ mod tests {
         }
     }
 
-    /// PostgreSQL 冒烟（需要本地 pg 实例）：
-    /// `PG_TEST_URL=postgres://postgres:pw@localhost/postgres \
-    ///  cargo test -p fluxdown_engine -- --ignored pg_smoke`
+    /// PostgreSQL 冒烟（仅在一次性测试库串行执行；使用同一 schema）：
+    /// `PG_TEST_URL=postgres://localhost/fluxdown_smoke_disposable \
+    ///  cargo test -p fluxdown_engine --lib pg_smoke -- --ignored --test-threads=1`
     #[tokio::test]
     #[ignore = "requires a running PostgreSQL instance (set PG_TEST_URL)"]
     async fn pg_smoke_roundtrip() {
         let url = std::env::var("PG_TEST_URL")
-            .unwrap_or_else(|_| "postgres://postgres:pw@localhost/postgres".to_owned());
+            .expect("set PG_TEST_URL to a disposable PostgreSQL database");
         let db = Db::connect(&url).await.expect("connect pg");
         let id = format!("pg-smoke-{}", std::process::id());
         // 清理上次残留（幂等）。
@@ -8665,6 +9334,7 @@ mod tests {
             .expect("present");
         assert_eq!(task.total_bytes, 5_000_000_000);
         assert_eq!(task.downloaded_bytes, 3_000_000_000, "GREATEST 钳制生效");
+        assert!(!db.has_resume_checkpoint(&id).await.expect("no checkpoint"));
 
         // 分段 + 配置 upsert。
         db.insert_segments(
@@ -8676,6 +9346,36 @@ mod tests {
         let segs = db.load_segments(&id).await.expect("load segs");
         assert_eq!(segs.len(), 2);
         assert_eq!(segs[1].end_byte, 4_999_999_999);
+        assert!(
+            db.has_resume_checkpoint(&id)
+                .await
+                .expect("resume checkpoint")
+        );
+        assert!(
+            db.has_segment_checkpoint(&id)
+                .await
+                .expect("segment checkpoint")
+        );
+        db.record_audio_partial(&id, "big.audio.m4a.fdownloading")
+            .await
+            .expect("register audio partial");
+        let facts = db
+            .load_deletion_facts(std::slice::from_ref(&id))
+            .await
+            .expect("deletion facts");
+        let [task] = facts.tasks.as_slice() else {
+            panic!("expected one task in deletion facts");
+        };
+        assert!(task.has_checkpoint);
+        assert_eq!(task.audio_partial_name, "big.audio.m4a.fdownloading");
+        assert!(facts.file_owners["/tmp"][&task.audio_partial_name].contains(&id));
+        db.update_task_status(&id, 2, "").await.expect("pause task");
+        assert_eq!(
+            db.unfinished_cleanup_ids(std::slice::from_ref(&id))
+                .await
+                .expect("cleanup eligibility"),
+            std::slice::from_ref(&id)
+        );
         db.set_config("pg_smoke_key", "v1").await.expect("set");
         db.set_config("pg_smoke_key", "v2").await.expect("upsert");
         assert_eq!(
@@ -8715,13 +9415,140 @@ mod tests {
         db.delete_config("pg_smoke_key").await.expect("clean cfg");
     }
 
+    #[tokio::test]
+    async fn task_file_ownership_upgrade_sqlite() -> Result<(), DbError> {
+        let db = Db::connect_uninitialized("sqlite::memory:").await?;
+        task_file_ownership_upgrade(&db, SQLITE_SCHEMA).await
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty, disposable PostgreSQL database (set PG_OWNERSHIP_UPGRADE_URL)"]
+    async fn pg_ownership_upgrade() -> anyhow::Result<()> {
+        let url = std::env::var("PG_OWNERSHIP_UPGRADE_URL")?;
+        anyhow::ensure!(url.starts_with("postgres://") || url.starts_with("postgresql://"));
+        let db = Db::connect_uninitialized(&url).await?;
+        let empty: i32 =
+            sqlx::query_scalar("SELECT CASE WHEN to_regclass('tasks') IS NULL THEN 1 ELSE 0 END")
+                .fetch_one(&db.pool)
+                .await?;
+        anyhow::ensure!(
+            empty == 1,
+            "ownership upgrade requires a fresh disposable database"
+        );
+        task_file_ownership_upgrade(&db, POSTGRES_SCHEMA).await?;
+        Ok(())
+    }
+
+    async fn task_file_ownership_upgrade(db: &Db, schema: &str) -> Result<(), DbError> {
+        let legacy = [
+            "http_partial_name",
+            "audio_partial_name",
+            "audio_output_name",
+        ]
+        .into_iter()
+        .fold(schema.to_owned(), |ddl, name| {
+            ddl.replace(&format!("    {name} TEXT NOT NULL DEFAULT '',\n"), "")
+        });
+        sqlx::raw_sql(AssertSqlSafe(legacy))
+            .execute(&db.pool)
+            .await?;
+        sqlx::query(
+            "INSERT INTO tasks (id, url, file_name, save_dir, status, created_at)
+             VALUES ('legacy-audio', 'https://example.com/v.mpd', 'v.mp4', '/tmp', 3, '1')",
+        )
+        .execute(&db.pool)
+        .await?;
+        db.init_schema().await?;
+        let id = "legacy-audio";
+        let task = db
+            .load_cleanup_task(id)
+            .await?
+            .ok_or(sqlx::Error::RowNotFound)?;
+        assert_eq!((task.file_name.as_str(), task.status), ("v.mp4", 3));
+        assert!(task.http_partial_name.is_empty());
+        assert!(task.audio_partial_name.is_empty());
+        assert!(
+            task.audio_output_name.is_empty(),
+            "upgrade must not guess ownership"
+        );
+        db.record_audio_output(id, "v.audio.m4a").await?;
+        let ids = [id.to_owned()];
+        let facts = db.load_deletion_facts(&ids).await?;
+        assert_eq!(
+            facts.file_owners["/tmp"]["v.audio.m4a"].as_slice(),
+            ids.as_slice()
+        );
+        db.delete_task(id).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rss_images_upgrade_sqlite() -> Result<(), DbError> {
+        rss_images_upgrade("sqlite::memory:", SQLITE_SCHEMA).await
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty, disposable PostgreSQL database (set PG_RSS_UPGRADE_URL)"]
+    async fn rss_images_upgrade_postgres() -> anyhow::Result<()> {
+        let url = std::env::var("PG_RSS_UPGRADE_URL")?;
+        anyhow::ensure!(url.starts_with("postgres://") || url.starts_with("postgresql://"));
+        rss_images_upgrade(&url, POSTGRES_SCHEMA).await?;
+        Ok(())
+    }
+
+    async fn rss_images_upgrade(url: &str, schema: &str) -> Result<(), DbError> {
+        let db = Db::connect_uninitialized(url).await?;
+        // Run the old table definitions before production initialization performs the migration.
+        let legacy_schema = schema.replace("    image_urls TEXT,\n", "");
+        sqlx::raw_sql(AssertSqlSafe(legacy_schema))
+            .execute(&db.pool)
+            .await?;
+        db.insert_rss_source(&RssSourceInfo {
+            source_id: "rss-image-migration".into(),
+            ..Default::default()
+        })
+        .await?;
+        let source = "rss-image-migration";
+        sqlx::query(
+            "INSERT INTO rss_items (source_id, guid, status, task_id) VALUES ($1, 'known', 1, 'task'), ($1, 'expired', 2, '')",
+        )
+        .bind(source)
+        .execute(&db.pool)
+        .await?;
+
+        db.init_schema().await?;
+        let before = db
+            .rss_item(source, "known")
+            .await?
+            .ok_or(sqlx::Error::RowNotFound)?;
+        assert_eq!(before.image_urls, None);
+        let refs = ["https://example.com/cover.png".to_owned()];
+        assert!(db.backfill_rss_images(source, &[("known", &refs)]).await?);
+        let after = db
+            .rss_item(source, "known")
+            .await?
+            .ok_or(sqlx::Error::RowNotFound)?;
+        assert_eq!(after.image_urls.as_deref(), Some(refs.as_slice()));
+        assert_eq!(after.status, before.status);
+        assert_eq!(after.task_id, before.task_id);
+        assert!(!db.backfill_rss_images(source, &[("known", &[])]).await?);
+        assert_eq!(
+            db.rss_item(source, "expired")
+                .await?
+                .ok_or(sqlx::Error::RowNotFound)?
+                .image_urls,
+            None
+        );
+        Ok(())
+    }
+
     /// pg 版 bt_guard 往返：BIGINT（> 4 GiB）/ BYTEA / NULL 过期 / ON CONFLICT upsert / 事件环。
     /// 用时间戳派生的唯一 id / infohash / 规则名，对共享库无副作用（事件行除外，受环形上限约束）。
     #[tokio::test]
     #[ignore = "requires a running PostgreSQL instance (set PG_TEST_URL)"]
     async fn pg_smoke_bt_guard_roundtrip() {
         let url = std::env::var("PG_TEST_URL")
-            .unwrap_or_else(|_| "postgres://postgres:pw@localhost/postgres".to_owned());
+            .expect("set PG_TEST_URL to a disposable PostgreSQL database");
         let db = Db::connect(&url).await.expect("connect pg");
         let tag = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -9954,32 +10781,10 @@ mod tests {
             id,
             url: "http://example.test/a.bin",
             file_name: "a.bin",
-            name_inferred: false,
             save_dir: "/tmp",
-            segments: 0,
             status: 2,
-            error_message: "",
-            proxy_url: "",
             queue_id,
-            checksum: "",
-            ignore_tls_errors: false,
-            cookies: "",
-            referrer: "",
-            extra_headers_json: "",
-            origin_url: "",
-            browser_original_url: None,
-            audio_url: "",
-            resolver_plugin_id: "",
-            group_id: "",
-            resolver_item: "",
-            unattended: false,
-            resolver_choice_pending: false,
-            bt_selected_files: "",
-            category_route: "",
-            request_method: "",
-            torrent_file_bytes: &[],
-            bt_sequential: false,
-            bt_first_last_pieces_first: false,
+            ..Default::default()
         }
     }
 
@@ -10166,6 +10971,112 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn default_listen_ports_survive_database_reopen() {
+        let (db, dir) = open_test_db().await;
+        db.init_default_config("/tmp").await.expect("init");
+        let config = db.get_all_config().await.expect("config");
+        #[cfg(feature = "bt")]
+        {
+            let port = config["bt_port_start"].parse::<u16>().expect("BT port");
+            assert!(port >= 1024, "default port must not require privileges");
+            assert_eq!(config["bt_port_start"], config["bt_port_end"]);
+        }
+        #[cfg(not(feature = "bt"))]
+        {
+            assert!(!config.contains_key("bt_port_start"));
+            assert!(!config.contains_key("bt_port_end"));
+        }
+        #[cfg(feature = "ed2k")]
+        {
+            let port = config["ed2k_listen_port"]
+                .parse::<u16>()
+                .expect("eD2K port");
+            assert!(port >= 1024, "default port must be fixed and unprivileged");
+            #[cfg(feature = "bt")]
+            assert_ne!(config["ed2k_listen_port"], config["bt_port_start"]);
+        }
+        #[cfg(not(feature = "ed2k"))]
+        assert!(!config.contains_key("ed2k_listen_port"));
+        db.pool.close().await;
+        let reopened = Db::open(&dir).await.expect("reopen");
+        reopened.init_default_config("/tmp").await.expect("restart");
+        let after = reopened.get_all_config().await.expect("config");
+        for key in ["bt_port_start", "bt_port_end", "ed2k_listen_port"] {
+            assert_eq!(config.get(key), after.get(key), "{key} changed on restart");
+        }
+        close_test_db(&reopened, dir).await;
+    }
+
+    #[tokio::test]
+    async fn default_listen_ports_preserve_existing_configuration() {
+        let (db, dir) = open_test_db().await;
+        for (start, end, ed2k) in [
+            ("6881", "6891", "0"),
+            ("16881", "56891", "0"),
+            ("52000", "52000", "53000"),
+        ] {
+            for (key, value) in [
+                ("bt_port_start", start),
+                ("bt_port_end", end),
+                ("ed2k_listen_port", ed2k),
+            ] {
+                db.set_config(key, value).await.expect("existing setting");
+            }
+            db.init_default_config("/tmp").await.expect("init");
+            let config = db.get_all_config().await.expect("config");
+            assert_eq!(config["bt_port_start"], start);
+            assert_eq!(config["bt_port_end"], end);
+            assert_eq!(config["ed2k_listen_port"], ed2k);
+        }
+        close_test_db(&db, dir).await;
+    }
+
+    #[cfg(feature = "bt")]
+    #[tokio::test]
+    async fn default_listen_ports_complete_partial_bt_range() {
+        let (db, dir) = open_test_db().await;
+        for (present, missing) in [
+            ("bt_port_start", "bt_port_end"),
+            ("bt_port_end", "bt_port_start"),
+        ] {
+            db.delete_config(missing).await.expect("missing boundary");
+            db.set_config(present, "52000")
+                .await
+                .expect("existing port");
+            db.init_default_config("/tmp").await.expect("init");
+            assert_eq!(
+                db.get_config(missing).await.expect("read"),
+                Some("52000".to_owned())
+            );
+        }
+        close_test_db(&db, dir).await;
+    }
+
+    #[cfg(feature = "bt")]
+    #[tokio::test]
+    async fn default_listen_ports_roll_back_incomplete_bt_range() {
+        let (db, dir) = open_test_db().await;
+        sqlx::query(
+            "CREATE TRIGGER reject_bt_port BEFORE INSERT ON config
+             WHEN NEW.key = 'bt_port_end' BEGIN SELECT RAISE(FAIL, 'reject port'); END",
+        )
+        .execute(&db.pool)
+        .await
+        .expect("trigger");
+        assert!(db.init_default_config("/tmp").await.is_err());
+        assert_eq!(db.get_config("bt_port_start").await.expect("read"), None);
+        assert_eq!(db.get_config("bt_port_end").await.expect("read"), None);
+        sqlx::query("DROP TRIGGER reject_bt_port")
+            .execute(&db.pool)
+            .await
+            .expect("drop trigger");
+        db.init_default_config("/tmp").await.expect("retry init");
+        let config = db.get_all_config().await.expect("config");
+        assert_eq!(config["bt_port_start"], config["bt_port_end"]);
+        close_test_db(&db, dir).await;
+    }
+
+    #[tokio::test]
     async fn idle_file_scan_legacy_seed_migrates_once() {
         let (db, dir) = open_test_db().await;
         // 新库：默认关闭。
@@ -10284,6 +11195,16 @@ mod tests {
             .await
             .expect("limit");
         assert_eq!(limited, ["old"]);
+        let page = db
+            .list_expired_completed_task_ids_after(5000, 1, None)
+            .await
+            .expect("page");
+        assert_eq!(page, vec![("old".to_string(), "1000".to_string())]);
+        let next = db
+            .list_expired_completed_task_ids_after(5000, 10, Some(("1000", "old")))
+            .await
+            .expect("next page");
+        assert_eq!(next, vec![("seedstop".to_string(), "2000".to_string())]);
         close_test_db(&db, dir).await;
     }
 

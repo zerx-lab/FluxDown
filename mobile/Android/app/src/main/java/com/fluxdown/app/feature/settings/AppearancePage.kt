@@ -17,7 +17,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -32,11 +31,11 @@ import com.fluxdown.fluxui.controls.FluxDivider
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.fluxdown.app.R
-import com.fluxdown.app.data.AppearanceState
 import com.fluxdown.app.data.ThemeMode
 import com.fluxdown.app.i18n.str
 import com.fluxdown.app.nav.SettingsPage
 import com.fluxdown.app.nav.LocalNavigator
+import com.fluxdown.app.shell.LocalAppearance
 import com.fluxdown.app.shell.LocalAppContainer
 import com.fluxdown.fluxui.controls.ButtonSize
 import com.fluxdown.fluxui.controls.ButtonVariant
@@ -45,11 +44,14 @@ import com.fluxdown.fluxui.controls.FluxListRow
 import com.fluxdown.fluxui.controls.FluxSwitchRow
 import com.fluxdown.fluxui.controls.GlassSection
 import com.fluxdown.fluxui.icons.FluxIcon
+import com.fluxdown.core.format.FileSizeUnits
 import com.fluxdown.fluxui.icons.FluxIcons
 import com.fluxdown.fluxui.material.rememberFlowInGate
 import com.fluxdown.fluxui.overlay.FluxToastKind
 import com.fluxdown.fluxui.overlay.LocalFluxOverlays
 import com.fluxdown.fluxui.theme.FluxText
+import com.fluxdown.fluxui.controls.FluxSegmented
+import com.fluxdown.fluxui.controls.SegOption
 import com.fluxdown.fluxui.theme.FluxTheme
 import com.fluxdown.fluxui.theme.wallpaperAccent
 import kotlinx.coroutines.delay
@@ -70,7 +72,7 @@ internal fun AppearancePage() {
     val context = LocalContext.current
     val haptics = FluxTheme.haptics
     val repo = container.appearance
-    val appearance by repo.state.collectAsState(initial = AppearanceState())
+    val appearance = LocalAppearance.current
     val gate = rememberFlowInGate()
     val motion = FluxTheme.motion
     val animateSize = Modifier.animateContentSize(motion.of(motion.fluid))
@@ -223,6 +225,23 @@ internal fun AppearancePage() {
                         },
                     )
                 }
+                row {
+                    Column(
+                        Modifier.fillMaxWidth().settingsFocus("appearance.fileSizeUnits"),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        FluxText(str(R.string.fileSizeUnits), style = FluxTheme.type.sm, color = FluxTheme.colors.ink)
+                        FluxText(str(R.string.fileSizeUnitsDesc), style = FluxTheme.type.micro, color = FluxTheme.colors.inkMuted)
+                        FluxSegmented(
+                            options = listOf(
+                                SegOption(FileSizeUnits.Legacy, str(R.string.fileSizeUnitsLegacy)),
+                                SegOption(FileSizeUnits.Iec, str(R.string.fileSizeUnitsIec)),
+                            ),
+                            selected = appearance.fileSizeUnits,
+                            onSelect = { units -> if (units != appearance.fileSizeUnits) write { repo.setFileSizeUnits(units) } },
+                        )
+                    }
+                }
             }
         }
     }
@@ -288,6 +307,13 @@ internal fun appearanceSearchEntries(ctx: SettingsSearchContext): List<SettingsE
                 "appearance.textSize", SettingsPage.Appearance, "interface", R.string.mobileSystemTextSize,
                 R.string.mobileSystemTextSizeDesc, ctx.crumb(R.string.settingsCatAppearance, R.string.settingsGroupInterface),
                 FluxIcons.Type,
+            ),
+        )
+        add(
+            ctx.entry(
+                "appearance.fileSizeUnits", SettingsPage.Appearance, "interface", R.string.fileSizeUnits,
+                R.string.fileSizeUnitsDesc, ctx.crumb(R.string.settingsCatAppearance, R.string.settingsGroupInterface),
+                FluxIcons.HardDrive,
             ),
         )
     }

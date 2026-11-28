@@ -33,6 +33,10 @@ use super::runtime::{
 /// handler 据此掐死 `while(true)` 类忙循环。挂起（`await` 外部 future，如 ffmpeg
 /// 子进程）不烧 CPU、不触发 interrupt，故不计入此顶（见 [`Self::run_script`]）。
 pub const HARD_TIMEOUT_CEILING: Duration = Duration::from_secs(30);
+/// resolve 平面的硬顶（墙钟与中断共用）：manifest `resolvers[].timeoutMs` 可上调到此。
+/// 比其它平面宽，是因为合法的 resolve 可能在脚本内做重计算（如把约 3 MB 的 YouTube
+/// 播放器 JS 解析成 AST），这在 ARM NAS 上比桌面慢一个数量级，30s 不够。
+pub const RESOLVE_TIMEOUT_CEILING: Duration = Duration::from_secs(120);
 /// 硬顶（**墙钟**预算）：单次调用的总墙钟时长上限（外层 `tokio::time::timeout`）。
 /// 覆盖长时 `await`（ffmpeg 转码可达分钟级），远大于中断顶。
 pub const HARD_WALL_CEILING: Duration = Duration::from_secs(1830);
@@ -175,8 +179,13 @@ impl QuickJsScriptRuntime {
         // 可累加的纳秒截止；`flux.ffmpeg.run` 完成后把挂起时长补进截止（见
         // inject_bridge），使长时子进程返回后 JS 仍保有中断预算、不被立刻中断。
         let base = Instant::now();
+        let cpu_ceiling = if entry == "resolve" {
+            RESOLVE_TIMEOUT_CEILING
+        } else {
+            HARD_TIMEOUT_CEILING
+        };
         let interrupt_ns = Arc::new(AtomicU64::new(
-            budget.timeout.min(HARD_TIMEOUT_CEILING).as_nanos() as u64,
+            budget.timeout.min(cpu_ceiling).as_nanos() as u64
         ));
         let dl = interrupt_ns.clone();
         rt.set_interrupt_handler(Some(Box::new(move || {
@@ -276,6 +285,13 @@ impl QuickJsScriptRuntime {
         };
         drop(exec);
         match outcome {
+            // 中断预算耗尽时 QuickJS 抛的是普通 `Error: interrupted`；按截止判定归一为
+            // Timeout（不靠匹配异常文本），让用户看到「执行超时」而非 JS 栈，熔断也能计数。
+            Some(Err(_))
+                if base.elapsed().as_nanos() as u64 >= interrupt_ns.load(Ordering::Acquire) =>
+            {
+                Err(PluginError::Timeout)
+            }
             Some(r) => {
                 // 尽力回收 job 队列（不阻塞主流程）。
                 rt.idle().await;
@@ -1553,6 +1569,49 @@ mod tests {
         assert!(
             matches!(err, PluginError::MemoryLimitExceeded),
             "expected MemoryLimitExceeded, got: {err:?}"
+        );
+    }
+
+    /// 回归：中断预算耗尽（同步忙循环）QuickJS 抛的是普通 `Error: interrupted`，必须归为
+    /// `Timeout`（熔断据此计数），不能作为「插件运行时错误」带着 JS 栈交给用户。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn exhausted_interrupt_budget_is_reported_as_timeout() {
+        let rt = QuickJsScriptRuntime::new(1).expect("runtime");
+        let script = PluginScript {
+            identity: "test@busy".to_string(),
+            source: "globalThis.resolve = async () => { for (;;) {} };".to_string(),
+            entry_fn_hint: PluginEntryKind::Resolve,
+            version: "1.0.0".to_string(),
+            app_version: "0.0.0".to_string(),
+        };
+        let req = ResolveRequest {
+            browser_original_url: None,
+            task_id: "t1".to_string(),
+            url: "http://example.com/".to_string(),
+            auth_ref: String::new(),
+            cookies: String::new(),
+            referrer: String::new(),
+            user_agent: String::new(),
+            extra_headers: Default::default(),
+            resolver_item: String::new(),
+        };
+        let err = rt
+            .invoke_resolve(
+                &script,
+                req,
+                "{}".to_string(),
+                Arc::new(NullBridge),
+                ExecutionBudget {
+                    timeout: Duration::from_millis(200),
+                    memory_limit_bytes: 16 * 1024 * 1024,
+                },
+                HostContext::default(),
+            )
+            .await
+            .expect_err("busy loop must be interrupted");
+        assert!(
+            matches!(err, PluginError::Timeout),
+            "expected Timeout, got: {err:?}"
         );
     }
 

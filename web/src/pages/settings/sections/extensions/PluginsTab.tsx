@@ -3,6 +3,7 @@
 import { FolderOpen, Info, Package, RotateCw, ScrollText, Settings, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useT } from '../../../../i18n'
+import { copyText } from '../../../../lib/copy'
 import { METHOD, call, rpc, uploadBlob, useDaemon } from '../../../../lib/rpc'
 import type { DaemonSnapshot, InstalledPlugin, PluginArchiveRulesDto, PluginDto } from '../../../../lib/rpc'
 import { Badge, Button, Card, ConfirmFooter, Dialog, EmptyState, FormField, Input, InputWithAction, Switch, confirmDialog, toast } from '../../../../ui'
@@ -10,15 +11,19 @@ import { hasPluginSettings } from '../../../plugins/contributions'
 import { BlockTitle, ExtLink, IconButton, ListCard, ListRow } from './common'
 import { detailFromPlugin } from './detail'
 import type { PluginDetail } from './detail'
-import { extensionErrorText } from './errors'
+import { extensionErrorText, pluginFailureText, pluginLoadFailureText } from './errors'
+import { PluginFeedbackDialog } from './PluginFeedbackDialog'
+import type { FeedbackPlugin } from './PluginFeedbackDialog'
 import { MarketSection } from './MarketSection'
 import { PrivateSection } from './PrivateSection'
 import { PluginAuditDialog } from './PluginAuditDialog'
 import { PluginAuthDialog } from './PluginAuthDialog'
 import { GrantConsentDialog, RiskBadge } from './PluginConsentDialog'
 import { PluginDetailDialog } from './PluginDetailDialog'
+import { ResolverConflictCard } from './ResolverConflictCard'
+import { useSiteDefaults } from './useSiteDefaults'
 import { PluginSettingsDialog } from './PluginSettingsDialog'
-import { liveDialogPlugins, postInstallConsent } from './logic'
+import { conflictNotice, hasPendingConsent, liveDialogPlugins, postInstallConsent } from './logic'
 import type { ConsentSet } from './logic'
 
 const EMPTY_PLUGINS: PluginDto[] = []
@@ -48,6 +53,8 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
   /** 「插件市场」刷新按钮点击计数；递增即让专属插件目录强制重拉。 */
   const [privateRefresh, setPrivateRefresh] = useState(0)
   const [devDir, setDevDir] = useState('')
+  const [installError, setInstallError] = useState<string>()
+  const [reloadErrors, setReloadErrors] = useState<Partial<Record<string, string>>>({})
   const [installingDir, setInstallingDir] = useState(false)
   const [zipPhase, setZipPhase] = useState<ZipPhase>(null)
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set())
@@ -57,6 +64,7 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
   const [missing, setMissing] = useState<string[] | null>(null)
   const [consentIdentity, setConsentIdentity] = useState<string | null>(null)
   const [audit, setAudit] = useState<{ identity: string | null } | null>(null)
+  const [feedback, setFeedback] = useState<FeedbackPlugin | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const pluginsRef = useRef(plugins)
   pluginsRef.current = plugins
@@ -121,20 +129,45 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
   /** 操作发起时已安装的插件 identity（引擎在应答前就广播新插件表，应答后再看快照已分不出是安装还是更新）。 */
   const installedIdentities = (): ReadonlySet<string> => new Set(pluginsRef.current.map((item) => item.identity))
 
+  const clearReloadError = (identity: string) => {
+    setReloadErrors((current) => {
+      if (!Object.hasOwn(current, identity)) return current
+      const next = { ...current }
+      delete next[identity]
+      return next
+    })
+  }
+
+  const siteDefaults = useSiteDefaults(plugins, active)
+
+  const showResolverConflicts = async (latest: PluginDto[], identity: string) => {
+    // 提示需对照最新站点默认；读取失败按「无记录」处理（宁可多提示）。
+    const defaults = await rpc.daemon.plugin.siteDefaults().catch(() => [])
+    const message = conflictNotice(latest, defaults, identity, t)
+    if (message !== null) toast.warning(`${t('pluginResolverConflictsHeading')}\n\n${message}`)
+  }
+
+  const readPluginsForConflictCheck = async () => {
+    try {
+      return await rpc.daemon.plugin.list()
+    } catch (error) {
+      toast.error(t('pluginResolverUrlConflictsCheckFailed', { message: extensionErrorText(t, error) }))
+      return null
+    }
+  }
+
   /**
    * 安装 / 更新成功后的统一授权流程：待授权集合与用户安装前确认的集合吻合 → 直接授权，否则弹授权对话框。
    * `confirmed` 仅市场路径提供；`updating` = 操作发起时该插件已安装（提示文案用「已更新」）。
    */
   const onInstalled = async (result: InstalledPlugin, confirmed: ConsentSet | null = null, updating = false) => {
+    setInstallError(undefined)
+    clearReloadError(result.identity)
     toast.success(t(updating ? 'pluginOpUpdateSuccess' : 'pluginOpInstallSuccess'))
     if (result.missingComponents?.length) setMissing(result.missingComponents)
-    let plugin: PluginDto | undefined
-    try {
-      plugin = (await rpc.daemon.plugin.list()).find((item) => item.identity === result.identity)
-    } catch (error) {
-      toast.error(t('pluginConsentFailed', { message: extensionErrorText(t, error) }))
-      return
-    }
+    let latest = await readPluginsForConflictCheck()
+    if (latest === null) return
+    const plugin = latest.find((item) => item.identity === result.identity)
     if (plugin === undefined) return
     const action = postInstallConsent(plugin, confirmed)
     if (action === 'dialog') {
@@ -142,13 +175,17 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
     } else if (action === 'grant') {
       try {
         await rpc.daemon.plugin.consent({ identity: plugin.identity, permissions: plugin.permissions, networkHosts: plugin.networkHosts })
+        // Market pre-approval can turn a potential overlap into an active one.
+        latest = await readPluginsForConflictCheck()
       } catch (error) {
         toast.error(t('pluginConsentFailed', { message: extensionErrorText(t, error) }))
         setConsentIdentity(plugin.identity)
       }
     }
+    if (latest !== null) await showResolverConflicts(latest, result.identity)
   }
   const onInstallFailed = (error: unknown) => {
+    setInstallError(t('pluginOpInstallFailed', { message: pluginFailureText(t, error) }))
     toast.error(t('pluginOpInstallFailed', { message: extensionErrorText(t, error) }))
   }
 
@@ -172,6 +209,11 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
         await rpc.daemon.plugin.setEnabled({ identity: plugin.identity, enabled })
       } catch (error) {
         toast.error(t('pluginOpEnabledFailed', { message: extensionErrorText(t, error) }))
+        return
+      }
+      if (enabled) {
+        const latest = await readPluginsForConflictCheck()
+        if (latest !== null) await showResolverConflicts(latest, plugin.identity)
       }
     })
 
@@ -186,6 +228,7 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
     await withBusy(plugin.identity, async () => {
       try {
         await rpc.daemon.plugin.uninstall({ identity: plugin.identity })
+        clearReloadError(plugin.identity)
         toast.success(t('pluginOpUninstallSuccess'))
       } catch (error) {
         toast.error(t('pluginOpUninstallFailed', { message: extensionErrorText(t, error) }))
@@ -195,11 +238,16 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
 
   const reload = (plugin: PluginDto) =>
     withBusy(plugin.identity, async () => {
+      clearReloadError(plugin.identity)
       try {
         const result = await rpc.daemon.plugin.reloadDev({ identity: plugin.identity })
         toast.success(t('pluginOpReloadSuccess'))
         if (result.missingComponents?.length) setMissing(result.missingComponents)
       } catch (error) {
+        setReloadErrors((current) => ({
+          ...current,
+          [plugin.identity]: t('pluginOpReloadFailed', { message: pluginFailureText(t, error) }),
+        }))
         toast.error(t('pluginOpReloadFailed', { message: extensionErrorText(t, error) }))
       }
     })
@@ -207,6 +255,7 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
   /** 浏览器选 zip → 上传 blob → `daemon.plugin.install {blobId}`。 */
   const installZip = async (file: File) => {
     if (zipPhase) return
+    setInstallError(undefined)
     setZipPhase({ kind: 'uploading', fraction: 0 })
     const installedBefore = installedIdentities()
     try {
@@ -226,6 +275,7 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
   const installDir = async () => {
     const dirPath = devDir.trim()
     if (dirPath === '' || installingDir) return
+    setInstallError(undefined)
     setInstallingDir(true)
     const installedBefore = installedIdentities()
     try {
@@ -307,6 +357,16 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
           </FormField>
         </Card>
       ) : null}
+      {installError && <PluginFailure message={installError} onClose={() => setInstallError(undefined)} />}
+
+      <ResolverConflictCard
+        plugins={plugins}
+        defaults={siteDefaults.entries}
+        defaultsLoaded={siteDefaults.loaded}
+        devMode={devMode}
+        stale={stale}
+        onChanged={siteDefaults.refresh}
+      />
 
       {plugins.length === 0 ? (
         <EmptyState icon={Package} title={t('pluginsEmpty')} />
@@ -316,6 +376,8 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
             <PluginRow
               key={plugin.identity}
               plugin={plugin}
+              reloadError={reloadErrors[plugin.identity]}
+              onCloseReloadError={() => clearReloadError(plugin.identity)}
               disabled={stale || busy.has(plugin.identity)}
               onDetail={() => setDetail({ kind: 'installed', identity: plugin.identity })}
               onSettings={() => setSettingsIdentity(plugin.identity)}
@@ -353,12 +415,19 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
         detail={shownDetail}
         onClose={() => setDetail(null)}
         onAudit={shownDetail && plugins.some((item) => item.identity === shownDetail.identity) ? (identity) => setAudit({ identity }) : undefined}
+        onFeedback={archivePlugin ? () => setFeedback({
+          identity: archivePlugin.identity,
+          version: archivePlugin.version,
+          localOnly: archivePlugin.source === 'private' || archivePlugin.devMode,
+          loadStatus: archivePlugin.loadStatus === 'Loaded' || archivePlugin.loadStatus === 'Failed' ? archivePlugin.loadStatus : null,
+        }) : undefined}
         archiveRules={archivePlugin?.contributions.archiveRules ? archiveStatus : null}
         archiveDisabled={!archivePlugin?.enabled || archiveBusy || stale}
         archiveBusy={archiveBusy}
         archiveMessage={archiveMessage}
         onArchiveRefresh={() => void refreshArchiveRules()}
       />
+      {feedback ? <PluginFeedbackDialog plugin={feedback} onClose={() => setFeedback(null)} /> : null}
       <PluginSettingsDialog plugin={settingsPlugin} onClose={() => setSettingsIdentity(null)} />
       <PluginAuthDialog plugin={authPlugin} onClose={() => setAuthIdentity(null)} />
       <GrantConsentDialog plugin={consentPlugin} onClose={() => setConsentIdentity(null)} />
@@ -391,6 +460,19 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
   )
 }
 
+function PluginFailure({ message, onClose }: { message: string; onClose: () => void }) {
+  const t = useT()
+  return (
+    <div role="alert" className="flex min-w-0 flex-col items-start gap-2">
+      <p className="whitespace-pre-wrap break-words text-sm text-destructive">{message}</p>
+      <div className="flex gap-2">
+        <Button variant="outline" onClick={() => copyText(message)}>{t('pluginLoadErrorCopy')}</Button>
+        <Button variant="ghost" onClick={onClose}>{t('close')}</Button>
+      </div>
+    </div>
+  )
+}
+
 function PluginRow({
   plugin,
   disabled,
@@ -399,10 +481,14 @@ function PluginRow({
   onAuth,
   onConsent,
   onUninstall,
+  reloadError,
+  onCloseReloadError,
   onReload,
   onToggle,
 }: {
   plugin: PluginDto
+  reloadError?: string
+  onCloseReloadError: () => void
   disabled: boolean
   onDetail: () => void
   onSettings: () => void
@@ -414,6 +500,7 @@ function PluginRow({
 }) {
   const t = useT()
   const loadFailed = plugin.loadStatus === 'Failed'
+  const consentPending = !loadFailed && hasPendingConsent(plugin)
   return (
     <ListRow
       info={
@@ -428,18 +515,19 @@ function PluginRow({
             {plugin.disabledReason === 'Manual' ? <Badge>{t('pluginDisabledManual')}</Badge> : null}
             {plugin.disabledReason === 'CircuitBreaker' ? <Badge tone="destructive">{t('pluginDisabledCircuitBreaker')}</Badge> : null}
             {plugin.disabledReason === 'Revoked' ? <Badge tone="destructive">{t('pluginDisabledRevoked')}</Badge> : null}
-            {plugin.disabledReason === 'ConsentRequired' ? <Badge tone="warning">{t('pluginDisabledConsentRequired')}</Badge> : null}
+            {consentPending ? <Badge tone="warning">{t('pluginDisabledConsentRequired')}</Badge> : null}
           </div>
           {plugin.homepage ? <ExtLink href={plugin.homepage} /> : null}
           {plugin.description ? <div className="line-clamp-2 break-words text-xs text-muted-foreground">{plugin.description}</div> : null}
-          {loadFailed && plugin.loadError ? <div className="break-words text-xs text-destructive">{plugin.loadError}</div> : null}
+          {loadFailed && <div className="break-words text-xs text-destructive">{pluginLoadFailureText(t, plugin.loadDetail)}</div>}
+          {reloadError && <PluginFailure message={reloadError} onClose={onCloseReloadError} />}
         </>
       }
       actions={
         <>
           {plugin.devMode ? <IconButton icon={RotateCw} label={t('pluginReloadTooltip')} onClick={onReload} disabled={disabled} /> : null}
           <IconButton icon={Info} label={t('pluginDetailDescription')} onClick={onDetail} />
-          {plugin.disabledReason === 'ConsentRequired' ? (
+          {consentPending ? (
             <Button variant="outline" onClick={onConsent} disabled={disabled}>
               {t('pluginConsentButton')}
             </Button>
@@ -455,7 +543,7 @@ function PluginRow({
           <IconButton icon={Trash2} label={t('pluginUninstallTooltip')} onClick={onUninstall} disabled={disabled} destructive />
           <Switch
             checked={plugin.enabled && !loadFailed}
-            disabled={disabled || loadFailed}
+            disabled={disabled || loadFailed || consentPending}
             aria-label={plugin.name}
             onCheckedChange={onToggle}
             className="mx-1"

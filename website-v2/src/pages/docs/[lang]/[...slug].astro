@@ -1,8 +1,8 @@
 ---
 /**
  * 文档正文页(全部静态预渲染)。
- * 路由:以 en 集合为 slug 全集 × {en, zh};zh 缺译 → 渲染 en 内容 + 未翻译横幅 + noindex,
- * 不参与 hreflang / sitemap(判定单一来源 docs-fallback.ts)。zh 的 sourceHash 与 en 正文哈希
+ * 路由:以 en 集合为 slug 全集 × LANGS;非 en 语言缺译 → 渲染 en 内容 + 未翻译横幅 + noindex,
+ * 不参与 hreflang / sitemap(判定单一来源 docs-fallback.ts)。译文的 sourceHash 与 en 正文哈希
  * 不一致 → 过期横幅(sourceHash 缺失视为新鲜度未知,不提示)。
  */
 import { getCollection, render } from "astro:content";
@@ -15,48 +15,54 @@ import DocsSearch from "@/components/docs/DocsSearch";
 import DocsFeedbackForm from "@/components/docs/DocsFeedbackForm";
 import { BrandIcon } from "@/components/icons/brand";
 import { docsAlternates, docsSourceLinks } from "@/components/docs/meta";
-import { buildDocsNav, type DocsLang } from "@/lib/docs-nav";
+import { buildDocsNav, docsEntriesOf } from "@/lib/docs-nav";
 import { getFallbackSlugs } from "@/lib/docs-fallback";
 import { docsSourceHash } from "@/lib/docs-hash";
 import { docs } from "@/i18n/messages/docs";
+import { DEFAULT_LANG, HTML_LANG, LANGS, type Lang } from "@/i18n/config";
 import { withBase } from "@/lib/base";
 
 export const prerender = true;
 
 export async function getStaticPaths() {
   const all = await getCollection("docs");
-  const en = all.filter((e) => e.id.startsWith("en/"));
-  const zhMap = new Map(all.filter((e) => e.id.startsWith("zh/")).map((e) => [e.id.slice(3), e]));
-  const fallbackSlugs = getFallbackSlugs();
+  const base = docsEntriesOf(all, DEFAULT_LANG);
+  const translations = new Map(LANGS.map((l) => [l, docsEntriesOf(all, l)]));
+  const fallbacks = new Map(LANGS.map((l) => [l, getFallbackSlugs(l)]));
 
-  return en.flatMap((e) => {
-    const slug = e.id.slice(3);
-    const zh = zhMap.get(slug);
-    const hasZh = zh !== undefined && !fallbackSlugs.has(slug);
-    const enPath = { params: { lang: "en", slug }, props: { entry: e, slug, fallback: false, stale: false, hasZh } };
-    if (!hasZh) {
-      return [enPath, { params: { lang: "zh", slug }, props: { entry: e, slug, fallback: true, stale: false, hasZh } }];
-    }
-    const stale = zh.data.sourceHash !== undefined && zh.data.sourceHash !== docsSourceHash(e.body ?? "");
-    return [enPath, { params: { lang: "zh", slug }, props: { entry: zh, slug, fallback: false, stale, hasZh } }];
+  return [...base].flatMap(([slug, e]) => {
+    // 真实存在译文的语言(hreflang 簇成员);en 恒在,回退页不入簇
+    const translated = LANGS.filter(
+      (l) => l === DEFAULT_LANG || (translations.get(l)?.has(slug) && !fallbacks.get(l)?.has(slug)),
+    );
+    return LANGS.map((l) => {
+      const params = { lang: l, slug };
+      const tr = l === DEFAULT_LANG ? e : translations.get(l)?.get(slug);
+      if (!tr || !translated.includes(l)) {
+        return { params, props: { entry: e, slug, fallback: true, stale: false, translated } };
+      }
+      const stale =
+        l !== DEFAULT_LANG && tr.data.sourceHash !== undefined && tr.data.sourceHash !== docsSourceHash(e.body ?? "");
+      return { params, props: { entry: tr, slug, fallback: false, stale, translated } };
+    });
   });
 }
 
-const { entry, slug, fallback, stale, hasZh } = Astro.props;
-const lang = Astro.params.lang as DocsLang;
+const { entry, slug, fallback, stale, translated } = Astro.props;
+const lang = Astro.params.lang as Lang;
 const t = docs[lang];
 
 const all = await getCollection("docs");
 const { groups, flat } = buildDocsNav(all, lang);
 const { Content, headings } = await render(entry);
 
-const alternates = fallback ? [] : docsAlternates(`${slug}/`, hasZh ? ["en", "zh"] : ["en"]);
+const alternates = fallback ? [] : docsAlternates(`${slug}/`, translated);
 const idx = flat.findIndex((i) => i.slug === slug);
 const prev = idx > 0 ? (flat[idx - 1] ?? null) : null;
 const next = idx >= 0 && idx < flat.length - 1 ? (flat[idx + 1] ?? null) : null;
 
-const contentLang = fallback ? "en" : lang;
-const links = docsSourceLinks(contentLang, slug, fallback);
+const contentLang = fallback ? DEFAULT_LANG : lang;
+const links = docsSourceLinks(contentLang, slug, fallback ? lang : undefined);
 const pagePath = `/docs/${lang}/${slug}/`;
 const section = groups.find((g) => g.id === entry.data.section);
 ---
@@ -111,13 +117,13 @@ const section = groups.find((g) => g.id === entry.data.section);
       <div class="docs-main">
         <article
           data-docs-article
-          lang={contentLang === "zh" ? "zh-CN" : "en"}
+          lang={HTML_LANG[contentLang]}
           data-anchor-label={t.anchor("")}
           data-copy-label={t.copy}
           data-copy-aria={t.copyCode}
           data-copied-label={t.copied}
         >
-          <nav aria-label={t.breadcrumb} class="docs-crumbs" lang={lang === "zh" ? "zh-CN" : "en"}>
+          <nav aria-label={t.breadcrumb} class="docs-crumbs" lang={HTML_LANG[lang]}>
             <ol>
               <li><a href={withBase(`/docs/${lang}/`)}>{t.docs}</a></li>
               {section && <li><a href={withBase(`/docs/${lang}/#${section.id}`)}>{section.label}</a></li>}
@@ -127,7 +133,7 @@ const section = groups.find((g) => g.id === entry.data.section);
 
           {
             fallback && (
-              <p class="docs-note" lang="zh-CN">
+              <p class="docs-note" lang={HTML_LANG[lang]}>
                 <Languages size={15} strokeWidth={1.75} className="docs-note-icon" aria-hidden="true" />
                 <span>
                   {t.fallbackBanner}{" "}
@@ -156,7 +162,7 @@ const section = groups.find((g) => g.id === entry.data.section);
             {section && <p class="eyebrow">{section.label}</p>}
             <h1 class="docs-title">{entry.data.title}</h1>
             {entry.data.description && <p class="docs-desc">{entry.data.description}</p>}
-            <a href={links.edit} target="_blank" rel="noopener noreferrer" class="docs-edit" lang={lang === "zh" ? "zh-CN" : "en"}>
+            <a href={links.edit} target="_blank" rel="noopener noreferrer" class="docs-edit" lang={HTML_LANG[lang]}>
               <BrandIcon name="github" size={13} />
               {t.edit}
             </a>

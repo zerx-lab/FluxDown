@@ -57,7 +57,7 @@ impl CaptureOutcome {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CaptureOrigin {
     /// 系统默认处理程序交来的链接（`magnet:` / `ed2k://` / 直链）：遵循「免打扰下载」偏好——
-    /// 开启时全选、不二次选择直接建任务；关闭时排入确认队列，由官方 UI 弹新建下载窗口。
+    /// 开启时直接建任务，二次选择由对应子开关决定；关闭时排入确认队列，由官方 UI 弹新建下载窗口。
     SystemOpen,
     /// 浏览器扩展 / 用户脚本 / NMH 等外部接管：按「免打扰下载」偏好静默或确认。
     External,
@@ -270,7 +270,9 @@ impl CaptureService {
             return Ok(json!({ "taskIds": [] }));
         }
         if origin == CaptureOrigin::SystemOpen && policy.silent {
-            return self.create_all(requests, None, true, None).await;
+            return self
+                .create_all(requests, None, policy.skip_selection, None)
+                .await;
         }
         if origin == CaptureOrigin::External && policy.silent {
             let save_dir = policy.remembered_save_dir.as_deref();
@@ -385,7 +387,7 @@ impl CaptureService {
     }
 
     /// 用户选定的本机 `.torrent`（已上传为 daemon blob）直接建任务；`options.unattended`
-    /// 为 true 时全选文件不弹选择框，否则由 daemon 发 BT 文件选择请求。保存目录取
+    /// 与免打扰、跳过二次选择偏好同时开启时不弹选择框，否则由 daemon 请求选择。保存目录取
     /// `request.save_dir`（空 = daemon 默认），队列与暂停取 `options`。
     pub async fn create_torrent(
         &self,
@@ -398,8 +400,12 @@ impl CaptureService {
             spec.request.queue_id = queue_id;
         }
         spec.request.start_paused = options.start_paused;
-        self.create(spec, Some(torrent_blob_id), options.unattended)
-            .await
+        let unattended = options.unattended
+            && self.events.inspect(|snapshot| {
+                let policy = ExternalPolicy::from_preferences(&snapshot.preferences.values);
+                policy.silent && policy.skip_selection
+            });
+        self.create(spec, Some(torrent_blob_id), unattended).await
     }
 
     pub async fn list(&self) -> Vec<PendingCaptureDto> {
@@ -1883,6 +1889,121 @@ mod tests {
         })
         .await
         .expect("capture notification lifecycle");
+    }
+
+    /// 系统打开的磁力 / `.torrent` 文件：仅「免打扰下载」与「跳过二次选择」同时开启才 `unattended`。
+    #[tokio::test]
+    async fn system_open_unattended_follows_skip_selection_preference() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let (capture, mut calls, daemon_events, stop, server) = daemon_service().await;
+            for (index, (silent, skip, expected)) in [
+                (true, true, true),
+                (true, false, false),
+                (false, true, false),
+                (false, false, false),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let revision = index as u64 + 1;
+                capture.events.publish(AgentEvent::PreferencesChanged(
+                    fluxdown_protocol::AgentPreferencesDto {
+                        revision,
+                        values: [
+                            (SILENT_DOWNLOAD_PREF.to_owned(), json!(silent)),
+                            (super::SILENT_SKIP_SELECTION_PREF.to_owned(), json!(skip)),
+                        ]
+                        .into(),
+                    },
+                ));
+
+                // `.torrent` 文件：RPC `silent:true` 也要受偏好门控。
+                let torrent = {
+                    let capture = Arc::clone(&capture);
+                    tokio::spawn(async move {
+                        capture
+                            .create_torrent(
+                                get_capture(),
+                                "blob".to_owned(),
+                                super::TorrentCreateOptions {
+                                    unattended: true,
+                                    queue_id: None,
+                                    start_paused: false,
+                                },
+                            )
+                            .await
+                    })
+                };
+                let (request, reply) = calls.recv().await.expect("torrent create");
+                assert_eq!(
+                    request
+                        .params
+                        .as_ref()
+                        .and_then(|p| p["unattended"].as_bool()),
+                    Some(expected),
+                    "torrent file silent={silent} skip={skip}"
+                );
+                reply.send(Ok(json!({ "taskId": "t" }))).expect("reply");
+                torrent.await.expect("torrent caller").expect("torrent");
+
+                // 表单入口 `silent:false` 恒不 unattended。
+                let form = {
+                    let capture = Arc::clone(&capture);
+                    tokio::spawn(async move {
+                        capture
+                            .create_torrent(
+                                get_capture(),
+                                "blob".to_owned(),
+                                super::TorrentCreateOptions {
+                                    unattended: false,
+                                    queue_id: None,
+                                    start_paused: false,
+                                },
+                            )
+                            .await
+                    })
+                };
+                let (request, reply) = calls.recv().await.expect("form create");
+                assert_eq!(
+                    request
+                        .params
+                        .as_ref()
+                        .and_then(|p| p["unattended"].as_bool()),
+                    Some(false)
+                );
+                reply.send(Ok(json!({ "taskId": "f" }))).expect("reply");
+                form.await.expect("form caller").expect("form");
+
+                // 系统打开的链接：仅免打扰开启时直接建任务，二次选择取子开关。
+                if silent {
+                    let link = {
+                        let capture = Arc::clone(&capture);
+                        tokio::spawn(async move {
+                            capture
+                                .submit(get_capture(), CaptureOrigin::SystemOpen)
+                                .await
+                        })
+                    };
+                    let (request, reply) = calls.recv().await.expect("link create");
+                    assert_eq!(
+                        request
+                            .params
+                            .as_ref()
+                            .and_then(|p| p["unattended"].as_bool()),
+                        Some(skip),
+                        "system open link skip={skip}"
+                    );
+                    reply.send(Ok(json!({ "taskId": "l" }))).expect("reply");
+                    link.await.expect("link caller").expect("link");
+                }
+            }
+            stop.send(()).expect("stop test daemon");
+            drop(capture);
+            drop(daemon_events);
+            server.await.expect("daemon server");
+        })
+        .await
+        .expect("unattended preference gating");
     }
 
     /// 页面脚本调用开始的任务：恰好一个才通知，新建与恢复各用各的事件；多个（含一建一恢复）不通知。

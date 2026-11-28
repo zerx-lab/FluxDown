@@ -23,6 +23,9 @@ pub struct DaemonConfig {
     /// 是否发布 `daemon-endpoint.json`（独立进程为真，嵌入式为假）。
     pub publish_endpoint: bool,
     pub data_dir_override: Option<PathBuf>,
+    /// Android log path supplied by the app; independent of the database directory.
+    #[cfg(target_os = "android")]
+    pub log_dir_override: Option<PathBuf>,
     pub database_url: Option<String>,
     pub token_file_override: Option<PathBuf>,
     /// `FLUXDOWN_SAVE_DIR`：仅在库中 `default_save_dir` 尚未设置时播种（见 `init_default_config`）。
@@ -55,6 +58,8 @@ impl DaemonConfig {
             bind_fallback,
             publish_endpoint: true,
             data_dir_override: std::env::var_os("FLUXDOWN_DATA_DIR").map(PathBuf::from),
+            #[cfg(target_os = "android")]
+            log_dir_override: None,
             database_url: std::env::var("FLUXDOWN_DATABASE_URL")
                 .ok()
                 .filter(|value| !value.trim().is_empty()),
@@ -78,6 +83,8 @@ impl DaemonConfig {
             bind_fallback: false,
             publish_endpoint: false,
             data_dir_override: Some(data_dir),
+            #[cfg(target_os = "android")]
+            log_dir_override: None,
             database_url: None,
             token_file_override: None,
             save_dir_seed: save_dir_seed
@@ -376,6 +383,12 @@ pub fn bt_session_rebuild_needed(keys: &[&str], all: &HashMap<String, String>) -
     if keys.iter().any(|key| BT_SESSION_KEYS.contains(key)) {
         return true;
     }
+    if all
+        .get(fluxdown_engine::protocol_proxy::BT_KEY)
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return false;
+    }
     let manual_bt_proxy = all.get("bt_proxy_enabled").is_some_and(|v| v == "true")
         && all
             .get("bt_proxy_source")
@@ -385,9 +398,11 @@ pub fn bt_session_rebuild_needed(keys: &[&str], all: &HashMap<String, String>) -
             == fluxdown_engine::bt_config::BtProxySource::Manual;
     let rules_key = fluxdown_engine::proxy_rules::PROXY_RULES_KEY;
     manual_bt_proxy
-        && keys
-            .iter()
-            .any(|key| key.starts_with("proxy_") && *key != rules_key)
+        && keys.iter().any(|key| {
+            key.starts_with("proxy_")
+                && *key != rules_key
+                && !fluxdown_engine::protocol_proxy::is_key(key)
+        })
 }
 
 /// 从持久化配置构建 BT 防吸血配置（`bt_guard_*` 键，值域见 `fluxdown_protocol::DAEMON_CONFIG_FIELDS`）。
@@ -850,6 +865,18 @@ mod tests {
 
         let off = stored(&[("bt_proxy_enabled", "false")]);
         assert!(!super::bt_session_rebuild_needed(&["proxy_host"], &off));
+    }
+
+    #[test]
+    fn fixed_bt_route_ignores_changes_to_the_global_proxy_server() {
+        for route in ["direct://", "socks5://relay.test:1080"] {
+            let config = stored(&[("bt_proxy_enabled", "true"), ("proxy_protocol_bt", route)]);
+            assert!(!super::bt_session_rebuild_needed(&["proxy_host"], &config));
+            assert!(super::bt_session_rebuild_needed(
+                &["bt_proxy_source"],
+                &config
+            ));
+        }
     }
 
     #[test]

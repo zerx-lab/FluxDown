@@ -11,7 +11,7 @@ import { showToast } from "@/ui/components/Toast";
 import { useT } from "@/ui/i18n";
 import "./features.css";
 
-export function QuickDownload(props: { onSent?: () => void }): JSX.Element {
+export function QuickDownload(props: { onSent?: () => void; channel?: "remote" }): JSX.Element {
   const t = useT();
   const [url, setUrl] = useState("");
   const [busy, setBusy] = useState(false);
@@ -27,8 +27,10 @@ export function QuickDownload(props: { onSent?: () => void }): JSX.Element {
     }
     setBusy(true);
     try {
-      const res = await sendAction<"downloadUrls">({ action: "downloadUrls", urls: [value] });
-      if (res?.success) {
+      const res = await sendAction<"downloadUrls">({ action: "downloadUrls", urls: [value], channel: props.channel });
+      if (res?.cancelled) {
+        showToast(t("remote.manualCancelled"));
+      } else if (res?.success) {
         showToast(t("popup.quickDownload.sent"), "success");
         setUrl("");
         props.onSent?.();

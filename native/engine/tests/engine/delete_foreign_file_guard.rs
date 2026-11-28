@@ -7,7 +7,7 @@
 //! - `delete_task` / `delete_tasks_batch` 带 `delete_files=true` 对未完成
 //!   （status≠3）任务**不得**删除 `save_dir/file_name`；
 //! - 对已完成（status=3）任务必须照常删除其产物；
-//! - `restart_task` 对从未启动的任务同样不得删除同名既有文件。
+//! - 删除未启动的任务后重新创建同名任务，启动时应编号避让同名既有文件。
 //!
 //! 复现场景：下载完成 A → 删任务保留文件 → 同链接重新添加为稍后下载 →
 //! 「删除任务和文件」曾把早前的成品 A 一并删掉。
@@ -17,7 +17,7 @@
 use std::sync::Arc;
 
 use fluxdown_engine::bt_config::BtConfig;
-use fluxdown_engine::download_manager::NewTaskSpec;
+use fluxdown_engine::download_manager::{FileExistsBehavior, NewTaskSpec};
 use fluxdown_engine::proxy_config::ProxyConfig;
 use fluxdown_engine::{Engine, EngineConfig, NoopSelection, NoopSink};
 
@@ -188,8 +188,8 @@ async fn batch_delete_files_on_never_started_tasks_keeps_foreign_files() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn restart_never_started_task_keeps_foreign_file() {
-    let work = std::env::temp_dir().join(format!("fluxdown-delguard-restart-{}", uniq()));
+async fn deleting_and_recreating_a_never_started_task_keeps_foreign_file() {
+    let work = std::env::temp_dir().join(format!("fluxdown-delguard-recreate-{}", uniq()));
     tokio::fs::create_dir_all(&work).await.expect("mkdir");
     let save_dir = work.to_string_lossy().into_owned();
     let existing = work.join("r.bin");
@@ -200,9 +200,34 @@ async fn restart_never_started_task_keeps_foreign_file() {
     let mut engine = make_engine(&work).await;
     let id = create_later_task(&mut engine, &save_dir, "r.bin").await;
 
-    // 「重新下载」的磁盘复位同步完成于函数返回前；随后的下载会因端口拒绝
-    // 而失败，但启动期 dedup 会另起新名，绝不触碰既有同名文件。
-    engine.manager.restart_task(&id).await;
+    engine
+        .manager
+        .set_file_exists_behavior(FileExistsBehavior::Rename);
+    engine
+        .manager
+        .delete_task(&id, true)
+        .await
+        .expect("delete never-started task");
+    let recreated = create_later_task(&mut engine, &save_dir, "r.bin").await;
+    assert_ne!(recreated, id);
+    engine.manager.resume_task(&recreated).await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let task = engine
+                .db
+                .load_task_by_id(&recreated)
+                .await
+                .expect("load task")
+                .expect("recreated task");
+            if task.status == 4 {
+                assert_eq!(task.file_name, "r (1).bin");
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the renamed download fails on the closed port");
 
     let content = tokio::fs::read(&existing)
         .await
@@ -281,10 +306,10 @@ async fn delete_files_keeps_file_named_by_another_task() {
     }
 }
 
-/// HLS 任务的独立音轨 sidecar（`<stem>.audio.m4a`）及其 `.fdownloading` 临时文件，
-/// 与断点 config 行一起在「删除任务并删除文件」时被清理。
+/// A legacy checkpoint alone gives no proof of a completed sidecar's ownership.
+/// Delete the task and its checkpoints, but preserve unregistered audio.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn delete_files_removes_hls_audio_sidecar_and_checkpoints() {
+async fn delete_files_keeps_unregistered_hls_audio_and_removes_checkpoints() {
     let work = std::env::temp_dir().join(format!("fluxdown-delguard-hls-{}", uniq()));
     tokio::fs::create_dir_all(&work).await.expect("mkdir");
     let save_dir = work.to_string_lossy().into_owned();
@@ -330,8 +355,16 @@ async fn delete_files_removes_hls_audio_sidecar_and_checkpoints() {
         .expect("delete task");
 
     assert!(!video.exists(), "video product must be removed");
-    assert!(!audio.exists(), "hls audio sidecar must be removed");
-    assert!(!audio_temp.exists(), "hls audio temp must be removed");
+    assert_eq!(
+        tokio::fs::read(audio).await.expect("unregistered audio"),
+        b"x"
+    );
+    assert_eq!(
+        tokio::fs::read(audio_temp)
+            .await
+            .expect("unregistered audio temp"),
+        b"x"
+    );
     for key in [format!("hls_resume_{id}"), format!("hls_audio_resume_{id}")] {
         assert!(
             engine.db.get_config(&key).await.expect("config").is_none(),
@@ -344,4 +377,76 @@ async fn delete_files_removes_hls_audio_sidecar_and_checkpoints() {
     {
         eprintln!("best-effort test directory cleanup: {error}");
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unfinished_cleanup_keeps_outputs_and_rejects_active_and_completed_tasks() {
+    let work = std::env::temp_dir().join(format!("fluxdown-unfinished-{}", uniq()));
+    tokio::fs::create_dir_all(&work).await.expect("mkdir");
+    let save_dir = work.to_string_lossy().into_owned();
+    let mut engine = make_engine(&work).await;
+    let mut ids = Vec::new();
+    for (name, status) in [
+        ("paused", 2),
+        ("failed", 4),
+        ("completed", 3),
+        ("active", 1),
+    ] {
+        let id = create_later_task(&mut engine, &save_dir, name).await;
+        engine
+            .db
+            .update_task_status(&id, status, "")
+            .await
+            .expect("status");
+        engine
+            .db
+            .insert_segments(&id, &[(0, 0, 2)])
+            .await
+            .expect("checkpoint");
+        tokio::fs::write(work.join(name), FOREIGN_CONTENT)
+            .await
+            .expect("output");
+        tokio::fs::write(work.join(format!("{name}.fdownloading")), b"partial")
+            .await
+            .expect("partial");
+        ids.push(id);
+    }
+    let outcome = engine
+        .manager
+        .delete_unfinished_tasks(&ids)
+        .await
+        .expect("cleanup");
+    assert_eq!(
+        (outcome.deleted, outcome.failed, outcome.skipped),
+        (2, 0, 2)
+    );
+    for ((name, removed), id) in [
+        ("paused", true),
+        ("failed", true),
+        ("completed", false),
+        ("active", false),
+    ]
+    .into_iter()
+    .zip(&ids)
+    {
+        assert_eq!(
+            engine
+                .db
+                .load_task_by_id(id)
+                .await
+                .expect("record")
+                .is_none(),
+            removed
+        );
+        assert_eq!(work.join(format!("{name}.fdownloading")).exists(), !removed);
+        assert_eq!(
+            tokio::fs::read(work.join(name)).await.expect("output"),
+            FOREIGN_CONTENT
+        );
+    }
+    engine.manager.shutdown().await;
+    drop(engine);
+    tokio::fs::remove_dir_all(&work)
+        .await
+        .expect("cleanup fixture");
 }

@@ -7,7 +7,7 @@ order: 9
 
 This page is for the moment something does not work. It covers where to look, what each plugin state means, which action a given edit needs, and — most useful — the **error messages** with their causes.
 
-> **About the language of messages.** Most errors raised by FluxDown's plugin engine are in Chinese, and that is exactly what you see in the app and in logs. This page quotes them **verbatim** so you can search for them, and adds an English gloss in parentheses. Messages from the SDK command line are in English.
+> **About the language of messages.** Most errors in the FluxDown plugin engine's logs are in Chinese. This page quotes them **verbatim** so you can search for them, and adds an English gloss in parentheses. Messages from the SDK command line are in English.
 
 ## Quick checklist
 
@@ -110,15 +110,20 @@ Three **consecutive** timeouts or out-of-memory errors in a resolver, an interce
 
 ## Install and validation errors
 
-These appear when you install, reload or run `npm run validate`. The install dialog shows `Install failed: …` / `Plugin installation failed: …` followed by the message; the same text goes to the log.
+On desktop and Web, install and update failures appear near the install controls, and reload failures appear on the affected plugin row. Failed rows in the plugin list also show a localized, redacted diagnostic, including after a refresh. **Copy error** copies the localized operation failure shown in the app. Diagnostics may include a manifest validation category, a package-relative file name, or a script line and column. They do not include raw exception text or absolute paths. For the original error, including the name of an unknown field, see the daemon diagnostics log; for local validation, run `npm run validate`.
 
-### Messages from the engine (and `npm run validate`)
+A successful installation clears the last install error. Reinstalling or uninstalling a plugin clears its previous reload error.
 
-The engine reports these with the prefix `manifest 非法: ` (“manifest invalid:”). `npm run validate` and the SDK validator use the same rules and almost the same wording, without that prefix, and report every problem at once instead of stopping at the first. Where the wording differs, the table shows the engine's text.
+On Android and iOS, a failed install, update, or reload opens a diagnostic dialog. **Copy error** copies the same localized text shown in the dialog.
+On iOS, cancelling the file picker does not show an error. If the selected file is missing, inaccessible, or unreadable, the dialog shows what to check without including its local path.
+
+### Original engine messages in the daemon diagnostics log
+
+The table quotes the engine's original messages, not the desktop or Web text. Manifest errors in the log have the prefix `manifest 非法: ` (“manifest invalid:”). `npm run validate` and the SDK validator check the same manifest rules, use their own wording, and report every problem at once instead of stopping at the first.
 
 | Message | Cause | Fix |
 |---|---|---|
-| `JSON 解析失败: …` (“JSON parse failed”) | `manifest.json` is not valid JSON, has a wrong value type, or contains a field the engine does not know (the detail then reads `unknown field …`). | Fix the syntax; remove the unknown field — spelling and nesting are checked, see the [manifest reference](/docs/en/plugins/manifest/). With the SDK you get `manifest: 未知字段 <key>` (“unknown field”) instead. |
+| `JSON 解析失败: …` (“JSON parse failed”) | `manifest.json` is not valid JSON, has a wrong value type, or contains a field the engine does not know (the log then reads `unknown field …`). | Fix the syntax; remove the unknown field — spelling and nesting are checked, see the [manifest reference](/docs/en/plugins/manifest/). With the SDK you get `manifest: 未知字段 <key>` (“unknown field”) instead. |
 | `identity '…' 非法：须匹配 ^[a-z0-9_-]+@[a-z0-9_-]+$` | The identity is not `author@name` with lowercase letters, digits, `_`, `-`. | Rename, e.g. `me@my-plugin`. No dots, no uppercase. |
 | `name 不可为空` (“name must not be empty”) | Empty `name`. | Set it. |
 | `version '…' 非法：须为 MAJOR.MINOR.PATCH` | Not three dot-separated numbers. | Use `1.0.0`. The SDK and the plugin index are stricter: no `v` prefix, no suffix. |
@@ -132,7 +137,7 @@ The engine reports these with the prefix `manifest 非法: ` (“manifest invali
 | `interceptors match.urls 不可为空` | An empty pattern list. | Add at least one pattern; `interceptors.match` is required. |
 | `interceptors timeoutMs 不可为 0` | `timeoutMs` is `0`. | Use a positive integer, at most 30000 effective. |
 | `声明 interceptors 时 permissions 必须包含 intercept` | `interceptors` without the `intercept` permission. | Add `"intercept"` to `permissions`. |
-| `resolver timeoutMs 不可为 0` | `timeoutMs` is `0` (also checked for `auth` and `subscription`). | Use a positive integer, at most 30000 effective. |
+| `resolver timeoutMs 不可为 0` | `timeoutMs` is `0` (also checked for `auth` and `subscription`). | Use a positive integer; effective maximum is 120000 for a resolver, 30000 for the others. |
 | `hooks.events 不可为空` | `hooks` without events. | List at least one event. |
 | `未知事件 '…'，合法：[…]` | Not one of `onStart`, `onError`, `onDone`, `onMetaProbed`, `onCancel`. | Fix the name (also applies to `main.events`). |
 | `未知权限 '…'，合法：[…]` | A permission name that does not exist. | Use one of `ffmpeg`, `ytdlp`, `auth`, `tasks`, `browserRules`, `desktop`, `background`, `intercept`, `pageScripts`, `archive`. |
@@ -197,7 +202,7 @@ All of these appear as `[插件] <identity>: <message>`. Messages from the host 
 | `插件运行时错误: <your error message>` | Your script threw (or a rejected `await` was not caught). `<your message>` is `error.message`. | Read the log lines before it, and wrap `flux.fetch` in `try/catch` if you want to handle failures. |
 | `插件运行时错误: 入口 resolve 未定义` (“entry resolve is not defined”) | The script ran, but did not put a function on `globalThis.resolve` — a missing `defineResolver(...)`, a wrongly named function, or an ES `export` instead of the global. | Define `resolve`. Hooks: the names are `onStart`/`onError`/`onDone`/`onMetaProbed`/`onCancel`; auth: `authenticate`; subscription: `subscribe`. |
 | `脚本编译失败: …` | Syntax error in the script. | Fix it. |
-| `脚本执行超时` (“script execution timed out”) | The call did not finish within the budget (10 s by default, at most 30 s). Counts toward the circuit breaker. | Speed up or lower the number of requests; raise `timeoutMs` up to 30000 if a slow host needs it. |
+| `脚本执行超时` (“script execution timed out”) | The call did not finish within the budget (10 s by default; at most 120 s for a resolver, 30 s for the other planes), or the script used up its CPU budget (previously shown as `插件运行时错误: Error: interrupted …`). Counts toward the circuit breaker. | Speed up or lower the number of requests; raise `timeoutMs` (up to 120000 in a resolver, 30000 elsewhere) if a slow host needs it. |
 | `脚本超出内存上限` (“script exceeded the memory limit”) | More memory used than the budget (64 MB by default). Counts toward the breaker. | Do not hold big responses; use `truncated` bodies carefully. A resolver that really needs more can declare `memoryLimitMb` (up to 512). |
 | `插件运行时过载（并发已满）` (“plugin runtime overloaded”) | Too many resolves at once; waiting for a free slot timed out after 3 s. | Retry the task. |
 | `插件输出非法: resolve 返回值非法: …` (“resolve return value invalid”) | The returned object has wrong field types, e.g. `totalBytes` that is not a number. | Return the shape from the [API reference](/docs/en/plugins/api-reference/). |

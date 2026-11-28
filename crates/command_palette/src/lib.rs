@@ -10,5 +10,6 @@ mod view;
 
 pub use usage::UsageStats;
 pub use view::{
-    PaletteConfig, PaletteItem, PaletteItemKind, UsageSink, bind_keys, close, is_open, open,
+    PaletteConfig, PaletteItem, PaletteItemKind, PaletteQueryAction, UsageSink, bind_keys, close,
+    is_open, open,
 };

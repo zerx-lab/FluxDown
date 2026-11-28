@@ -238,6 +238,53 @@ impl SubscriptionKind {
     }
 }
 
+/// 上一次「立即更新」的结果。`success` 与 `error` 可同时出现：至少一个源成功（缓存已更新），
+/// 但 `error` 非空说明有源失败，必须让用户看到（Web `refreshStatus.ts::classifyRefresh` 同语义）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum RefreshStatus {
+    Ok,
+    /// 成功但有源失败；内容是 daemon 给出的「源: 原因」摘要。
+    Partial(String),
+    Failed,
+}
+
+impl RefreshStatus {
+    /// daemon 刷新响应 → 状态；调用本身失败（`None`）或 `success` 缺失 / 为假都算失败。
+    fn from_response(response: Option<&serde_json::Value>) -> Self {
+        let Some(response) = response else {
+            return Self::Failed;
+        };
+        if response.get("success").and_then(serde_json::Value::as_bool) != Some(true) {
+            return Self::Failed;
+        }
+        match response
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+        {
+            Some(detail) if !detail.is_empty() => Self::Partial(detail.to_owned()),
+            _ => Self::Ok,
+        }
+    }
+
+    /// 存入 store 的 transient：`true` = 失败，字符串 = 部分失败的摘要，其余 = 正常。
+    fn to_transient(&self) -> serde_json::Value {
+        match self {
+            Self::Ok => json!(false),
+            Self::Partial(detail) => json!(detail),
+            Self::Failed => json!(true),
+        }
+    }
+
+    fn from_transient(value: Option<&serde_json::Value>) -> Self {
+        match value {
+            Some(serde_json::Value::Bool(true)) => Self::Failed,
+            Some(serde_json::Value::String(detail)) => Self::Partial(detail.clone()),
+            _ => Self::Ok,
+        }
+    }
+}
+
 /// 订阅状态：已订阅条数、更新时间、立即更新。
 pub(crate) fn status_item(
     ctx: &SectionContext,
@@ -257,10 +304,7 @@ pub(crate) fn status_item(
         let count = kind.count_source().count(snapshot);
         let updated_at = snapshot.daemon_i64(kind.updated_at_key());
         let busy = snapshot.is_busy(kind.action());
-        let last_failed = snapshot
-            .transient(kind.action())
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
+        let refresh_status = RefreshStatus::from_transient(snapshot.transient(kind.action()));
         let status = translator.text_with(&format!("{prefix}Status"), &[("n", &count.to_string())]);
         let time = if updated_at > 0 {
             translator.text_with(
@@ -269,6 +313,13 @@ pub(crate) fn status_item(
             )
         } else {
             never.to_string()
+        };
+        let issue: Option<SharedString> = match &refresh_status {
+            RefreshStatus::Ok => None,
+            RefreshStatus::Failed => Some(failed.clone()),
+            RefreshStatus::Partial(detail) => Some(SharedString::from(
+                translator.text_with("subscriptionUpdatePartial", &[("error", detail.as_str())]),
+            )),
         };
         let click_store = store.clone();
         h_flex()
@@ -282,16 +333,12 @@ pub(crate) fn status_item(
                     .child(body_text(cx).child(SharedString::from(status)))
                     .child(
                         meta_text(cx)
-                            .text_color(if last_failed {
+                            .text_color(if issue.is_some() {
                                 tokens.colors.destructive
                             } else {
                                 tokens.colors.muted_foreground
                             })
-                            .child(if last_failed {
-                                failed.clone()
-                            } else {
-                                SharedString::from(time)
-                            }),
+                            .child(issue.unwrap_or_else(|| SharedString::from(time))),
                     ),
             )
             .child(
@@ -315,13 +362,8 @@ pub(crate) fn status_item(
                             json!({}),
                             cx,
                             move |store, result, cx| {
-                                let ok = result
-                                    .as_ref()
-                                    .ok()
-                                    .and_then(|value| value.get("success"))
-                                    .and_then(serde_json::Value::as_bool)
-                                    .unwrap_or(false);
-                                store.set_transient(kind.action(), json!(!ok), cx);
+                                let status = RefreshStatus::from_response(result.as_ref().ok());
+                                store.set_transient(kind.action(), status.to_transient(), cx);
                             },
                         );
                     });
@@ -366,6 +408,39 @@ mod tests {
         ));
         assert_eq!(SubscriptionKind::Ed2kNodes.prefix(), "ed2kNodesSub");
         assert_eq!(SubscriptionKind::Ed2kNodes.action(), "ed2kNodesRefresh");
+    }
+
+    #[test]
+    fn refresh_status_surfaces_partial_failure_and_round_trips_transient() {
+        use super::RefreshStatus;
+        use serde_json::json;
+
+        let partial = json!({"success": true, "error": " https://x/nodes.dat: not a server.met "});
+        assert_eq!(
+            RefreshStatus::from_response(Some(&partial)),
+            RefreshStatus::Partial("https://x/nodes.dat: not a server.met".to_owned())
+        );
+        assert_eq!(
+            RefreshStatus::from_response(Some(&json!({"success": true, "error": ""}))),
+            RefreshStatus::Ok
+        );
+        assert_eq!(
+            RefreshStatus::from_response(Some(&json!({"success": false, "error": "a: timeout"}))),
+            RefreshStatus::Failed
+        );
+        assert_eq!(RefreshStatus::from_response(None), RefreshStatus::Failed);
+
+        for status in [
+            RefreshStatus::Ok,
+            RefreshStatus::Failed,
+            RefreshStatus::Partial("a: x".to_owned()),
+        ] {
+            assert_eq!(
+                RefreshStatus::from_transient(Some(&status.to_transient())),
+                status
+            );
+        }
+        assert_eq!(RefreshStatus::from_transient(None), RefreshStatus::Ok);
     }
 
     #[test]

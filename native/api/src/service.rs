@@ -326,8 +326,12 @@ pub trait ApiHost: Send + Sync {
         })
     }
 
-    /// 创建多文件任务组（建组 + N 子任务），返回新组 ID。
-    async fn create_task_group(&self, req: CreateGroupRequest) -> Result<String, ApiError> {
+    /// 按清单选择建任务：多条目建组 + N 子任务，单条目直接建普通任务（见
+    /// [`fluxdown_protocol::CreateGroupResponse`]）。
+    async fn create_task_group(
+        &self,
+        req: CreateGroupRequest,
+    ) -> Result<fluxdown_protocol::CreateGroupResponse, ApiError> {
         let _ = req;
         Err(groups_unsupported())
     }

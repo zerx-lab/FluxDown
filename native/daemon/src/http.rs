@@ -92,14 +92,32 @@ pub async fn load_or_create_token(
     let path = override_path
         .map(Path::to_path_buf)
         .unwrap_or_else(|| data_dir.join("daemon.token"));
-    if let Ok(existing) = tokio::fs::read_to_string(&path).await {
-        let token = existing.trim();
-        if !token.is_empty() {
-            // 便携模式下旧版本创建的 token 可能仍继承宽松 ACL，每次启动重新收紧。
+    match tokio::fs::read_to_string(&path).await {
+        Ok(existing) if !existing.trim().is_empty() => {
+            // 安装版旧 token 可能仍是宽松或仅授权单一 SID 的 ACL，每次启动按当前授权重新收紧
+            // （便携目录内为空操作）。
             if let Err(error) = set_private_file_permissions(&path).await {
                 tracing::warn!(error = %error, "failed to restrict daemon token permissions");
             }
-            return Ok(token.to_owned());
+            return Ok(existing.trim().to_owned());
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        // 读不了（ACL 只授权给重装前的旧账户 SID、内容不是 UTF-8）：删掉后重建，agent 每次连接
+        // 前重读 token。删不掉时带上原因失败，不让 rename 报一个看不出缘由的拒绝访问。
+        Err(error) => {
+            tracing::warn!(path = %path.display(), error = %error, "daemon token is unreadable; replacing it");
+            if let Err(remove) = tokio::fs::remove_file(&path).await
+                && remove.kind() != std::io::ErrorKind::NotFound
+            {
+                return Err(std::io::Error::new(
+                    remove.kind(),
+                    format!(
+                        "daemon token {} is unreadable ({error}) and cannot be replaced: {remove}",
+                        path.display()
+                    ),
+                ));
+            }
         }
     }
     let parent = path.parent().unwrap_or(data_dir);
@@ -372,7 +390,7 @@ async fn run_socket(
                         let reply = match session.accept(&text) {
                             Step::Reply(reply) => reply,
                             Step::Call(call) if call.is_slow() => {
-                                match slow.spawn(call.id(), call.run()) {
+                                match slow.spawn(call.id(), call.is_cancellable(), call.run()) {
                                     Ok(()) => continue,
                                     Err(rejection) => SessionReply::reply(*rejection),
                                 }
@@ -380,6 +398,13 @@ async fn run_socket(
                             Step::Call(call) => {
                                 ordered.as_mut().set(Some(call.run()));
                                 continue;
+                            }
+                            Step::Cancel { id, target } => {
+                                let cancelled = slow.cancel(&target);
+                                SessionReply::reply(RpcResponse::success(
+                                    id,
+                                    serde_json::json!({ "cancelled": cancelled }),
+                                ))
                             }
                         };
                         if reply.became_ready {

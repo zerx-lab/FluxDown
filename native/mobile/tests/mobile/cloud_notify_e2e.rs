@@ -307,6 +307,7 @@ impl Dirs {
     fn config(&self) -> LocalHostConfig {
         LocalHostConfig {
             data_dir: self.data().display().to_string(),
+            external_log_dir: None,
             save_dir: self.save().display().to_string(),
             platform: "test".to_owned(),
             device_name: None,
@@ -364,6 +365,7 @@ async fn seed_agent_state(dirs: &Dirs, cloud: SocketAddr) {
                 }))
                 .expect("session fixture"),
             ),
+            issuer: String::new(),
         }),
         cloud_base_url_override: Some(format!("http://{cloud}")),
         cloud_notify: CloudNotifyPrefs {

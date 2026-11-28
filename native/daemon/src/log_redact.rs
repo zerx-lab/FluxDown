@@ -13,6 +13,11 @@ pub fn redact_snapshot(snapshot: &mut DaemonSnapshot) {
             *value = REDACTED.to_owned();
         }
     }
+    for (key, value) in &mut snapshot.config.values {
+        if fluxdown_engine::protocol_proxy::is_key(key) && !value.is_empty() {
+            *value = REDACTED.to_owned();
+        }
+    }
     if let Some(value) = snapshot.config.values.get_mut("proxy_rules") {
         *value = redact_proxy_rules(value);
     }

@@ -574,6 +574,13 @@ pub const SHORTCUT_SPECS: &[ShortcutSpec] = &[
         &["ctrl-w"],
     ),
     app(
+        "toggle_assistant",
+        Everywhere,
+        "shortcutActionToggleAssistant",
+        &["shift-super-a"],
+        &["ctrl-shift-a"],
+    ),
+    app(
         "minimize_window",
         Everywhere,
         "shortcutActionMinimizeWindow",

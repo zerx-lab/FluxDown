@@ -50,11 +50,41 @@ function urlFileSegment(url: string): string | null {
   return segment === '' ? null : segment
 }
 
+export function batchExportRow(entry: UrlEntry) {
+  const fields = /^ed2k:\/\/\|file\|[^|]+\|(\+?[0-9]+)\|([0-9a-f]{32})(?:\||$)/i.exec(entry.url)
+  const size = Number(fields?.[1])
+  // The engine's eD2k ceiling is below Number.MAX_SAFE_INTEGER.
+  const knownSize = size <= 0x40_0000_0000 &&
+    (size !== 0 || fields?.[2]?.toLowerCase() === '31d6cfe0d16ae931b73c59d7e0c089c0')
+  return { name: batchEntryName(entry), url: entry.url, originUrl: '', sizeBytes: knownSize ? size : null }
+}
+
+function batchEntryName({ fileName, url }: UrlEntry): string {
+  if (fileName !== '') return fileName
+  if (/^magnet:\?/i.test(url)) {
+    const raw = url.slice(8).split('#', 1)[0]?.split('&').find((part) => part.startsWith('dn='))?.slice(3)
+    return decodedMetadataName(raw)
+  }
+  if (/^ed2k:\/\/\|file\|/i.test(url)) {
+    return decodedMetadataName(url.split('|', 3)[2])
+  }
+  const segment = /^(https?|ftp):\/\//i.test(url) ? urlFileSegment(url) : null
+  return segment === null ? '' : safeDecode(segment) ?? segment
+}
+
+function decodedMetadataName(raw: string | undefined): string {
+  if (raw === undefined) return ''
+  const name = safeDecode(raw) ?? raw
+  return rustTrim(name) === '' ? '' : name
+}
+
 const LEADING_URL = /^(?:https?|ftp):\/\/\S+/i
 const INLINE_URL = /(?:https?|ftp):\/\/\S+/i
 
 function trimUrlTail(url: string): string {
-  return url.replace(/[.,;:!?()[\]{}]+$/, '')
+  const trimmed = url.replace(/[.,;:!?()[\]{}]+$/, '')
+  // Keep the closing bracket of a filename range even when it is followed by prose punctuation.
+  return url[trimmed.length] === ']' && /\[[0-9]+-[0-9]+$/.test(trimmed) ? `${trimmed}]` : trimmed
 }
 
 /** 零宽字符与 BOM（U+200B/C/D、U+2060、U+FEFF）：不可见且不属于链接，解析前剔除。 */
@@ -79,6 +109,10 @@ export function parseEntries(text: string, loose: boolean): UrlEntry[] {
  * 其余行的行为不变。
  */
 export function parseInput(text: string, loose: boolean): ParsedInput {
+  return parseLines(text, loose)
+}
+
+function parseLines(text: string, loose: boolean, manualEntries?: Set<UrlEntry>): ParsedInput {
   const joined = joinContinuations(text.replace(INVISIBLE, ''))
   const entries: UrlEntry[] = []
   let hints: RequestHints | null = null
@@ -118,11 +152,76 @@ export function parseInput(text: string, loose: boolean): ParsedInput {
       }
     } else {
       const found = LEADING_URL.exec(trimmed)
-      if (found) current = entry(found[0])
+      if (found) {
+        current = entry(found[0])
+        manualEntries?.add(current)
+      }
     }
   }
   if (current) entries.push(current)
   return { entries, hints: hints ?? emptyHints() }
+}
+
+export const URL_RANGE_LIMIT = 1000
+
+export interface ManualInput extends ParsedInput {
+  rangeCount: number
+  rangeLimitExceeded: boolean
+  rangePreview: { first: string; last: string } | null
+}
+
+/** Expand one decimal range in each manually entered HTTP(S) filename, without rewriting the URL. */
+export function parseManualInput(text: string, literalUrls?: ReadonlySet<string>): ManualInput {
+  const manualEntries = new Set<UrlEntry>()
+  const parsed = parseLines(text, false, manualEntries)
+  const entries: UrlEntry[] = []
+  const seen = new Set<string>()
+  const append = (item: UrlEntry) => {
+    if (seen.has(item.url)) return
+    seen.add(item.url)
+    entries.push(item)
+  }
+  let rangeCount = 0
+  let firstRangeUrl: string | undefined
+  let lastRangeUrl: string | undefined
+  for (const item of parsed.entries) {
+    const filename = manualEntries.has(item) && !literalUrls?.has(item.url) && isHttpUrl(item.url)
+      ? urlFileSegment(item.url)
+      : null
+    const range = filename?.match(/^([^[\]]*)\[([0-9]+)-([0-9]+)\]([^[\]]*)$/)
+    if (filename === null || !range) {
+      append(item)
+      continue
+    }
+    const start = BigInt(range[2])
+    const end = BigInt(range[3])
+    if (start > end) {
+      append(item)
+      continue
+    }
+    const count = end - start + 1n
+    if (count > BigInt(URL_RANGE_LIMIT - rangeCount)) {
+      // An oversized range blocks the entire form, including ordinary URLs.
+      return { ...parsed, entries: [], rangeCount: 0, rangeLimitExceeded: true, rangePreview: null }
+    }
+    const pathEnd = item.url.search(/[?#]/)
+    const filenameEnd = pathEnd < 0 ? item.url.length : pathEnd
+    const prefix = item.url.slice(0, filenameEnd - filename.length) + range[1]
+    const suffix = range[4] + item.url.slice(filenameEnd)
+    const width = range[2].length
+    rangeCount += Number(count)
+    for (let value = start; value <= end; value += 1n) {
+      // A singleton keeps its item options; a series cannot share a filename or digest.
+      const url = `${prefix}${String(value).padStart(width, '0')}${suffix}`
+      append(count === 1n ? { ...item, url } : entry(url))
+      firstRangeUrl ??= url
+      lastRangeUrl = url
+    }
+  }
+  const rangePreview = firstRangeUrl !== undefined && lastRangeUrl !== undefined
+    ? { first: firstRangeUrl, last: lastRangeUrl }
+    : null
+  return { ...parsed, entries, rangeCount, rangeLimitExceeded: false, rangePreview }
 }
 
 /** 条目 → aria2 风格文本（含 `out=` / `checksum=` 选项行）。 */
@@ -133,17 +232,27 @@ export function entryToText(item: UrlEntry): string {
   return text
 }
 
-/** 把条目追加到现有文本末尾：原文逐字保留（含注释 / 尚未输完的行），已存在的 URL 跳过。 */
-export function appendEntries(existingText: string, entries: Iterable<UrlEntry>): string {
-  const seen = new Set(parseEntries(existingText, false).map((item) => item.url))
-  let text = existingText.replace(/\s+$/, '')
+export interface UrlDraft {
+  text: string
+  literalUrls: ReadonlySet<string>
+}
+
+/** Only newly inserted entries become literal; a skipped duplicate does not change a manual range. */
+export function appendLiteralEntries(draft: UrlDraft, entries: Iterable<UrlEntry>): UrlDraft {
+  let literalUrls: Set<string> | undefined
+  const seen = new Set(parseEntries(draft.text, false).map((item) => item.url))
+  let text = draft.text.replace(/\s+$/, '')
   for (const item of entries) {
     if (seen.has(item.url)) continue
     seen.add(item.url)
+    if (item.url.includes('[')) {
+      literalUrls ??= new Set(draft.literalUrls)
+      literalUrls.add(item.url)
+    }
     if (text !== '') text += '\n'
     text += entryToText(item)
   }
-  return text
+  return { text, literalUrls: literalUrls ?? draft.literalUrls }
 }
 
 export type ProxyChoice = 'follow' | 'direct' | 'system' | 'globalManual' | 'custom'

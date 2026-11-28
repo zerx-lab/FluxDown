@@ -1,83 +1,142 @@
 ---
 title: Interface Overview
-description: A tour of FluxDown's three-panel layout, sidebar, top bar, task list, detail panel, status bar, shortcuts, and tray.
+description: "A tour of the FluxDown desktop window: activity rail, sidebar, toolbar, task list, View menu, detail panel, status bar, themes, shortcuts, and tray."
 section: getting-started
 order: 3
 ---
+The main window has five areas: an activity rail, a sidebar, a toolbar, the task list, and a status bar. A detail panel opens inside the task list area when you need it.
 
-FluxDown's main window is a three-panel layout: a resizable **sidebar** on the left, the **task list** in the center, and an optional **detail panel** on the right that opens when you select a task.
+![FluxDown desktop main window with numbered callouts for the activity rail, sidebar, toolbar, task list, and status bar](/docs/desktop/main-window-annotated.en.webp)
 
-<!-- TODO(screenshot): 主窗口整体布局,展示侧边栏+任务列表+详情面板三栏结构 -->
+1. **Activity rail** - switches between pages (Downloads, RSS, Notifications); account and **Settings** sit at the bottom.
+2. **Sidebar** - filters the list by status, category, and queue.
+3. **Toolbar** - New Task, task actions, search, and the **View** menu.
+4. **Task list** - one row per task.
+5. **Status bar** - live speeds, speed limits, proxy, power menu, and version.
 
-## Layout Overview
+## Activity Rail
 
-- **Sidebar** — drag its right edge to resize between 180px and 320px. If you hide every sidebar section (see below), the sidebar disappears entirely and the task list takes the full width.
-- **Task list** — always takes up the remaining space between the sidebar and the detail panel.
-- **Detail panel** — hidden until you click a task row; drag its left edge to resize between 240px and 420px. Click the row again, or the panel's close button, to hide it.
+The narrow icon column on the far left:
+
+- **Downloads** - the page described here.
+- **RSS** and **Notifications** - RSS subscriptions and push-notification channels. Each can be hidden under **Settings → General → Activity Bar**.
+- **Account** and **Settings** - at the bottom of the rail.
 
 ## Sidebar
 
-Three collapsible sections, each independently toggleable:
+The sidebar has a **STATUS** folder and a **QUEUES** section. Click an entry to filter the task list; each shows a live task count.
 
-- **Status** — All / Downloading / Completed / Paused / Failed, each showing a live task count; the Downloading entry also gets a small activity dot while something is transferring. Click an entry to filter the task list.
-- **Queues** (expanded by default) — the built-in **Main Queue** and **Download Later** queues plus any named queues you've created (click **+** to create one). Each queue shows a running/stopped state dot; hover an entry for start/stop, manage, and (custom queues only) delete buttons, all also available from its right-click menu. The manager dialog has three tabs — **Settings** (name, speed limit, max concurrent, save directory, default threads, default User-Agent), **Schedule** (daily start/stop times plus weekdays; scheduled queues show a small alarm-clock icon), and **Task Order** (the order tasks resume in when the queue starts). See [Quick Start](/docs/en/getting-started/quickstart/#queues-and-speed-limits) for how queue start/stop works.
-- **Category** (collapsed by default) — seven built-in file-type filters (All Files, Video, Audio, Document, Image, Archive, Other) plus any custom categories you define in **Settings → General → Custom Categories**, matched by extension or regular expression.
+- **All** - every task. Click it to expand the category sub-items nested under it: Video, Audio, Document, Image, Programs, Archive, Other, plus any custom categories. Only **All** nests categories; there is no separate Categories section. Right-click a category to **Edit Category** or **Add Category**.
+- **Downloading**, **Completed**, **Seeding**, **Failed**, **Paused** - one entry per state. Seeding tasks also count as completed.
+- **Main Queue**, **Download Later**, and any queues you created. The manage button in the **QUEUES** section opens the queue manager; right-click a queue for **Start Queue** / **Stop Queue**, **Manage Queue**, and **Delete Queue**. See [Quick Start](/docs/en/getting-started/quickstart/#queues-and-speed-limits).
+- A **Devices** section appears only when other devices are linked to your account.
 
-Right-click a section header for **Hide this section**; bring it back from **Settings → General → Sidebar Sections**. The sidebar's footer shows the current version and an inline update button once one is available.
+Right-click a section header and choose **Hide this section**, or manage them under **Settings → General → Sidebar Sections**. The toolbar's sidebar button collapses and expands the sidebar; drag its edge to resize it.
 
-## Top Bar
+## Toolbar
 
-- **New Download** — opens the download dialog.
-- **Search** (<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>F</kbd>) — searches both task names/URLs and settings items as you type; use the arrow keys to move through results and Enter to jump to one.
-- **Tool buttons** (top-right, next to the window controls) — Pause All, Resume All, Settings, and a light/dark theme toggle. Each can be hidden independently from **Settings → General → Titlebar Buttons**, or by right-clicking the button itself.
+From left to right:
 
-On macOS the traffic-light window controls sit in the top-left corner; on Windows and Linux the tool buttons and window controls are grouped in the top-right.
+- **Sidebar toggle** - **Collapse sidebar** / **Expand sidebar**.
+- **New Task** - opens the New Download window. In layout edit mode (see below) it can be shown as an icon or as a labelled button.
+- **Clear Completed Tasks** - removes finished tasks from the list.
+- **More Actions** - **Clean up invalid tasks** and **Clean up selected paused or failed tasks**.
+- **Pause All**, **Resume All**, **Retry failed tasks**.
+- **Search tasks...** (<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>F</kbd>) - filters the list as you type. To search commands and settings instead, press <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>K</kbd>.
+- **View** - columns, grouping, sorting, and display options.
 
 ## Task List
 
-The column header shows File Name / Progress / Speed / ETA / Status, with a manage-mode toggle next to the file name column.
+Each row shows the file name with its category and source site underneath, then the columns you have enabled. By default these are **File Name**, **Size**, **Progress**, **Status** (speed, remaining time, and downloaded / total), and **Created**. To hide the source site, turn on **Hide task source** under **Settings → General**.
 
-- **Manage mode** — press <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>A</kbd> or click the toggle button to enter it. The header switches to a checkbox, and the top bar becomes a batch action bar (Select All / Deselect All, a selected-count badge, Delete Task, Delete Task & File, Cancel).
-- **Grouping** — an always-expanded **Active** group sits at the top for downloading/pending/preparing tasks (with its own pause-all shortcut), followed by collapsible time groups — Today, Yesterday, This Week, This Month, Older — based on when each task was created. Click a group header to collapse or expand it.
-- **Double-click** a row to pause it (if active), resume it (if paused/failed), or open the finished file (if completed).
-- **Right-click** a row for the full context menu, top to bottom: Pause/Resume, Boost Download / Cancel Boost, Open File (completed tasks only) / Open Folder, Copy URL, Delete Task, Delete Task & File.
-- **Right-click empty space** below the list for New Download, Start All, and Pause All.
+- **Select** - click a row; <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+click toggles rows and <kbd>Shift</kbd>+click selects a range. With several rows selected a selection bar shows **{n} selected** and bulk actions: pause/resume, open file/folder, **Copy task information**, **Export task information (.txt)**, delete, and **Deselect All**.
+- **Double-click** - opens a completed task's file. For any other task it opens the detail panel.
+- **Hover actions** - while the pointer is over a row, its right end shows Pause / Resume (Retry for failed tasks), Open File, Open Folder, and **Details**.
+- **Right-click** - the context menu. Items depend on the task type and state: **Pause** / **Resume**, **Boost Download** / **Cancel Boost**, **Open File**, **Open Folder**, **Copy File**, **Rename**, **Change link**, **Edit task**, **Verify Integrity**, **Re-download**, **Move to Queue**, **Copy URL**, **Select**, **Select All**, **Delete Task**, **Delete Task & File**, and **Details**.
 
-<!-- TODO(screenshot): 任务列表按时间分组(今天/昨天/本周)并展示某个分组折叠状态 -->
+## View Menu
+
+**View** in the toolbar has four pages. The View menu **Columns** page lists every column with a checkbox and a drag handle; drag to reorder, and **Reset to Default Columns** restores the defaults. Optional columns: **Speed**, **ETA**, **Protocol**, **Source**, **Queue**.
+
+| Page | Options |
+|---|---|
+| **Columns** | Show, hide, and reorder columns. |
+| **Group By** | **No Grouping**, **Status**, **Date**, **Type**, **Queue**, **Site**, **Directory**, **Series title**. |
+| **Sort** | **Smart**, **Created Time**, **Name**, **Size**, **Progress**, **Speed**, **Status**, each **Ascending** or **Descending**. |
+| **Display** | **Density** (**Comfortable** / **Compact** / **Relaxed**), **Header Alignment**, and the **Detail Panel**: **Show Detail Panel** plus **Bottom** or **Right** placement. |
+
+Groups can be collapsed by clicking the group header. The screenshot shows **Group By → Status**.
+
+![Task list grouped by status into Downloading, Error, Paused, and Completed groups](/docs/desktop/group-by-status.en.webp)
 
 ## Detail Panel
 
-Click a task to open it. From top to bottom:
+Select a task and press <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>I</kbd>, or choose **Details** from the context menu, to open the panel. By default it docks at the bottom; switch to the right side under **View → Display**. A button in the panel pops it out into its own window. With nothing selected it shows **Select a task to view details**.
 
-- **File info** — icon, extension, and full file name.
-- **Progress** — a large percentage readout, a segmented progress bar, and (once segment data exists) an IDM-style pixel grid where each cell reflects how full that byte range is, plus a legend listing each segment's number and percentage. When FluxDown proactively or reactively splits a slow segment, a running split count and the most recent split's byte range are shown alongside the progress bar.
-- **Info table** — Size, Downloaded, Speed, Remaining (ETA), Status, Threads (while active), Path, URL (with a one-click copy button), and an Error message row if the task failed.
-- **Actions** — a Pause/Resume button, and a destructive Delete Task & File button.
+HTTP tasks have these tabs:
 
-<!-- TODO(screenshot): 详情面板的 IDM 风格分段网格,展示动态拆分产生的多个分段 -->
+- **General** - status, size, downloaded, speed, remaining time, save path, route, and the source breakdown.
+- **Speed** - a speed chart with current, average, and peak speed.
+- **Log** - the task's activity events (retries, segment splits, CDN and network events).
+- **Advanced** - the proxy route and TLS option the task uses.
+
+BitTorrent tasks add **Files**, **Seeding**, **Trackers**, and **Peers**; eD2K tasks add their own sources and network tabs; plugins can contribute more.
 
 ## Status Bar
 
-A thin bar along the bottom of the window:
+The status bar runs along the bottom of the window.
 
-- **Left** — a status dot (green while any task is active, gray when idle) with a label, the live combined download speed, and an "N active · N paused · N total" summary.
-- **Right** — a speed-limit popover (toggle plus presets of 128 KB/s / 512 KB/s / 1 MB/s / 2 MB/s / 5 MB/s, or a custom value), and a scheduled shutdown / sleep menu (pick Shut down or Sleep, then 1/5/10/30 minutes or a custom delay; with tasks running the countdown starts after they all finish and "Immediately when done" is also offered, otherwise it starts right away; a live countdown shows once armed).
+![Status bar with seven numbered callouts: download speed, upload speed, download limit, upload limit, proxy, power menu, version](/docs/desktop/statusbar.en.webp)
+
+1. **Download speed** - total speed of all tasks.
+2. **Upload speed** - total upload speed (BitTorrent).
+3. **Download limit** - click to choose **Unlimited**, a preset (1, 5, 10, or 50 MB/s), or **Custom**. Recent custom values are listed and can be cleared with **Clear recent**.
+4. **Upload limit** - the same choices; limits BitTorrent upload, including seeding.
+5. **Proxy** - switch between **No Proxy**, **System Proxy**, **Manual**, and **Auto (Recommended)**. If no proxy is configured it points you to **Settings** first.
+6. **Power menu** (**Scheduled Power Actions**) - pick **Shut down**, **Sleep**, or **Quit FluxDown**, then when: **Immediately when done**, after 1 / 5 / 10 / 30 minutes, **Custom**, or **When download speed stays low**. Once armed, the status bar shows the countdown; click it (or use the tray menu) to cancel.
+7. **Version** - the installed version; an update prompt appears here when one is available.
+
+A **Free space** readout is available but hidden by default (see layout editing below).
+
+## Themes
+
+Choose **Light**, **Dark**, or **System** under **Settings → Appearance → Theme Mode**. The command palette (<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>K</kbd>) also has **Toggle theme**.
+
+![FluxDown main window in the dark theme](/docs/desktop/dark-theme.en.webp)
+
+## Customizing the Layout
+
+Right-click the toolbar, the activity rail, or the status bar and choose **Customize layout...**. Drag items to reorder them or move them between the title bar, activity bar, and status bar; click the eye icon on an item to hide or show it. **Reset layout** restores the defaults and **Done** leaves edit mode.
 
 ## Keyboard Shortcuts
 
-These work anywhere in the main window (not while Settings or a dialog is open):
+| Shortcut | Action | Where |
+|---|---|---|
+| <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>N</kbd> | New download | Any window |
+| <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>,</kbd> | Open settings | Any window |
+| <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>K</kbd> | Command palette (commands and settings) | Any window |
+| <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>W</kbd> | Close window | Any window |
+| <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>F</kbd> | Focus search | Task list |
+| <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>A</kbd> | Select all tasks | Task list |
+| <kbd>Esc</kbd> | Clear selection | Task list |
+| <kbd>Space</kbd> | Pause / resume selected | Task list |
+| <kbd>Delete</kbd> / <kbd>Backspace</kbd> | Delete selected | Task list |
+| <kbd>Shift</kbd>+<kbd>Delete</kbd> | Delete selected with files | Task list |
+| <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>I</kbd> | Toggle detail panel | Task list |
+| <kbd>Shift</kbd>+<kbd>D</kbd> | Cycle list density | Task list |
+| <kbd>G</kbd> | Cycle grouping | Task list |
+| <kbd>S</kbd> | Cycle sort order | Task list |
 
-| Shortcut | Action |
-|---|---|
-| <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>F</kbd> | Focus the search box |
-| <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>A</kbd> | Select all visible tasks (enters manage mode) |
-| <kbd>Esc</kbd> | Exit manage mode |
-| <kbd>Delete</kbd> (or <kbd>Cmd</kbd>+<kbd>Backspace</kbd> on macOS) | Delete the checked tasks, with a confirmation prompt (manage mode only) |
+All of these can be changed under **Settings → Shortcuts**.
 
 ## System Tray
 
-FluxDown keeps a tray icon running while the window is minimized or closed to tray. Right-click it for:
+With **Minimize to Tray on Close** on (the default), closing the window keeps FluxDown running in the tray. Left-click the tray icon to bring the window back, or right-click for the menu:
 
-- **Show Window** — bring the main window back to front.
-- **Show Floating Ball** (checkbox) — an always-on-top desktop widget showing live speed and progress; you can drop URLs or torrent files onto it to start a download. Unavailable on Wayland — the tray falls back to showing live speed, and copied links are auto-filled into the download dialog when you reopen the main window.
-- **Exit** — quits FluxDown.
+- **Show Window**
+- **Pause All**, **Resume All**
+- **Settings**
+- **Restart**
+- **Exit** - quits FluxDown.
+
+While a scheduled power action is armed, a **Cancel Scheduled Shutdown** (or Sleep / Quit) item also appears.

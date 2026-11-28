@@ -28,26 +28,32 @@ fn startup_failure_is_current(record_at_ms: u64, spawned_at_ms: u64) -> bool {
 }
 
 /// 读取 `bearer_path` 同目录下的 agent 启动失败记录；只采用不早于 `spawned_at_ms` 的记录。
+/// 该目录本身读不了时（Windows 上目录 ACL 属于旧账户 SID 等），agent 把记录写在
+/// `local_service::local_fallback_dir`，这里随后读那一份。
 /// 文件不存在属正常（agent 从未走到写记录的环节，如被系统直接杀死）；读不到或解析失败只记日志。
 pub(crate) async fn read_startup_failure(
     bearer_path: &Path,
     spawned_at_ms: u64,
 ) -> Option<AgentStartupFailure> {
-    let path = bearer_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(AGENT_STARTUP_FAILURE_FILE);
-    let bytes = match tokio::fs::read(&path).await {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
-        Err(error) => {
-            log::warn!(
+    let directory = bearer_path.parent().unwrap_or_else(|| Path::new("."));
+    let primary = directory.join(AGENT_STARTUP_FAILURE_FILE);
+    let fallback = fluxdown_protocol::local_service::local_fallback_dir(directory)
+        .map(|dir| dir.join(AGENT_STARTUP_FAILURE_FILE));
+    let mut found = None;
+    for path in std::iter::once(primary).chain(fallback) {
+        match tokio::fs::read(&path).await {
+            Ok(bytes) => {
+                found = Some((path, bytes));
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => log::warn!(
                 "could not read agent startup failure record {}: {error:#}",
                 path.display()
-            );
-            return None;
+            ),
         }
-    };
+    }
+    let (path, bytes) = found?;
     let record = match serde_json::from_slice::<AgentStartupFailure>(&bytes) {
         Ok(record) => record,
         Err(error) => {

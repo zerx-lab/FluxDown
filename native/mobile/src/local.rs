@@ -36,6 +36,8 @@ const SESSION_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct LocalHostConfig {
     /// 应用私有数据目录（引擎 DB、agent 状态都在其下）。
     pub data_dir: String,
+    /// Android app-specific external diagnostics root; no effect on data or downloads.
+    pub external_log_dir: Option<String>,
     /// 默认保存目录（仅在库里尚无 `default_save_dir` 时播种）。
     pub save_dir: String,
     /// 设备平台名：`android` / `ios`。
@@ -66,9 +68,19 @@ impl LocalHost {
         }
         let data_dir = PathBuf::from(data_dir);
         let agent_data_dir = data_dir.join("agent");
-        // 先于 daemon 装订阅者：同进程的 daemon / agent 事件都落到 `<agent>/logs/agent.log`
-        // （诊断「日志目录」检查与日志导出读这里）；移动端没有可读的 stderr。
-        fluxdown_agent::logging::init_embedded(&agent_data_dir, &data_dir);
+        // Install before starting the daemon and read logging.conf from the engine data root.
+        let external_logs = config.external_log_dir.as_deref().map(std::path::Path::new);
+        #[cfg(target_os = "android")]
+        let engine_sink: Option<fluxdown_agent::logging::EngineLogSink> =
+            Some(fluxdown_daemon::write_android_engine_event);
+        #[cfg(not(target_os = "android"))]
+        let engine_sink = None;
+        fluxdown_agent::logging::init_embedded(
+            &agent_data_dir,
+            &data_dir,
+            external_logs.map(|dir| dir.join("agent")).as_deref(),
+            engine_sink,
+        );
         let host_cancel = CancellationToken::new();
 
         let (ready_tx, ready_rx) = oneshot::channel::<DaemonReady>();
@@ -76,6 +88,11 @@ impl LocalHost {
             data_dir.clone(),
             Some(config.save_dir.clone()).filter(|dir| !dir.trim().is_empty()),
         );
+        #[cfg(target_os = "android")]
+        let daemon_config = DaemonConfig {
+            log_dir_override: external_logs.map(|dir| dir.join("engine")),
+            ..daemon_config
+        };
         let daemon_cancel = host_cancel.child_token();
         let mut daemon: DaemonTask = tokio::spawn(async move {
             run_with(daemon_config, daemon_cancel, Some(ready_tx))

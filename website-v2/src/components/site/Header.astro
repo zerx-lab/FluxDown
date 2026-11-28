@@ -2,13 +2,17 @@
 /**
  * 站点顶栏:沿页面导轨(rails)延伸的细线外框;下拉菜单纯 CSS(hover / focus-within),
  * 移动端菜单使用原生 Popover API(零 JS)。`D` 快捷键命中 `data-shortcut="d"` 的下载按钮。
+ * 导航与操作区文字一律不换行;放不下时由内联脚本按 `data-compact` 逐级收起
+ * (搜索文字 → 赞助文字 → 账户文字 → 整个桌面导航改汉堡菜单),适配任意语言的文案宽度。
+ * AI 助手入口(`data-ai-entry`,桌面导航与移动菜单各一处)缺省隐藏,由 `<html data-ai-visible>` 放行,
+ * 显隐规则与来源见 `src/lib/account/ai-entry.ts`;显隐变化后顶栏要重新计算收起步骤。
  */
-import { ArrowRight, ChevronDown, Menu, Moon, Search, Sun, X, Languages } from "lucide-react";
+import { ArrowRight, ChevronDown, Menu, Moon, Search, Sun, UserRound, X, Languages } from "lucide-react";
 import { BrandIcon } from "../icons/brand";
 import Logo from "./Logo.astro";
 import { common } from "../../i18n/messages/common";
 import { href, switchLang, stripLang } from "../../i18n/routing";
-import { LANG_LABEL, type Lang } from "../../i18n/config";
+import { HREFLANG, HTML_LANG, LANG_LABEL, LANGS, type Lang } from "../../i18n/config";
 import { COMMUNITY_LINKS, GITHUB_URL, PRODUCT_LINKS, SPONSOR_LINK, docsPath, navHref } from "../../lib/site-nav";
 import { stripBase } from "@/lib/base";
 
@@ -18,8 +22,13 @@ interface Props {
 const { lang } = Astro.props;
 const t = common[lang];
 const path = stripLang(Astro.url.pathname);
-const other: Lang = lang === "en" ? "zh" : "en";
-const otherHref = switchLang(Astro.url.pathname, other);
+// 语言切换:每种语言一条(当前语言标记 aria-current),href 保持当前页路径
+const langItems = LANGS.map((l) => ({
+  lang: l,
+  label: LANG_LABEL[l],
+  href: switchLang(Astro.url.pathname, l),
+  current: l === lang,
+}));
 
 const menus = [
   {
@@ -53,6 +62,7 @@ const flat = [
   { label: t.nav.docs, href: href(docsPath(lang), lang), active: stripBase(Astro.url.pathname).startsWith("/docs") },
   { label: t.nav.pricing, href: href("/pricing", lang), active: path.startsWith("/pricing") },
   { label: t.nav.changelog, href: href("/changelog", lang), active: path.startsWith("/changelog") },
+  { label: t.nav.assistant, href: href("/assistant", lang), active: path.startsWith("/assistant"), aiEntry: true },
 ];
 const sponsor = {
   label: t.nav[SPONSOR_LINK.label],
@@ -65,11 +75,11 @@ const isActive = (links: typeof PRODUCT_LINKS) =>
 
 <header class="site-header">
   <div class="frame header-inner">
-    <a href={href("/", lang)} class="flex items-center rounded-md" aria-label="FluxDown">
+    <a href={href("/", lang)} class="header-logo flex items-center rounded-md" aria-label="FluxDown">
       <Logo size={22} />
     </a>
 
-    <nav class="hidden items-center gap-0.5 lg:flex" aria-label="Main">
+    <nav class="header-nav" aria-label="Main">
       {
         menus.map((menu) => (
           <div class="nav-item">
@@ -131,43 +141,102 @@ const isActive = (links: typeof PRODUCT_LINKS) =>
       }
       {
         flat.map((item) => (
-          <a href={item.href} class="nav-link" data-active={item.active || undefined}>
+          <a href={item.href} class="nav-link" data-active={item.active || undefined} data-ai-entry={item.aiEntry || undefined}>
             {item.label}
           </a>
         ))
       }
       <a href={sponsor.href} class="nav-link nav-sponsor" data-active={sponsor.active || undefined}>
-        <SPONSOR_LINK.icon size={14} strokeWidth={2} className="nav-sponsor-icon" />
-        {sponsor.label}
+        <SPONSOR_LINK.icon size={14} strokeWidth={2} className="nav-sponsor-icon" aria-hidden="true" />
+        <span class="nav-sponsor-label">{sponsor.label}</span>
       </a>
     </nav>
 
-    <div class="ml-auto flex items-center gap-1.5">
+    <div class="header-actions ml-auto flex items-center gap-1.5">
       <button type="button" class="search-trigger hidden md:inline-flex" data-palette-open aria-label={t.search.open}>
         <Search size={14} strokeWidth={2} />
-        <span class="text-[13px]">{t.search.open}</span>
+        <span class="search-label text-[13px]">{t.search.open}</span>
         <span class="kbd ml-3">⌘K</span>
       </button>
       <a href={GITHUB_URL} class="icon-btn hidden sm:inline-grid" aria-label={t.nav.github} target="_blank" rel="noopener">
         <BrandIcon name="github" size={16} />
       </a>
-      <a href={otherHref} class="icon-btn hidden sm:inline-grid" hreflang={other} data-lang-switch={other} aria-label={LANG_LABEL[other]} title={LANG_LABEL[other]}>
-        <span class="mono text-[11.5px] font-semibold">{other === "zh" ? "中" : "EN"}</span>
-      </a>
+      <div class="lang-menu hidden sm:block">
+        <button type="button" class="icon-btn" aria-haspopup="true" aria-label={LANG_LABEL[lang]} title={LANG_LABEL[lang]}>
+          <Languages size={16} strokeWidth={1.75} />
+        </button>
+        <div class="lang-panel">
+          <ul class="lang-panel-inner">
+            {
+              langItems.map((item) => (
+                <li>
+                  <a
+                    href={item.href}
+                    class="lang-option"
+                    lang={HTML_LANG[item.lang]}
+                    hreflang={HREFLANG[item.lang]}
+                    data-lang-switch={item.lang}
+                    aria-current={item.current ? "true" : undefined}
+                  >
+                    {item.label}
+                  </a>
+                </li>
+              ))
+            }
+          </ul>
+        </div>
+      </div>
       <button type="button" class="icon-btn header-theme" data-theme-toggle aria-label={t.theme.toggle}>
         <Sun size={16} strokeWidth={1.75} className="theme-sun" />
         <Moon size={16} strokeWidth={1.75} className="theme-moon" />
       </button>
+      <a
+        href={href("/account", lang)}
+        class="btn btn-secondary btn-sm account-btn ml-1.5 hidden sm:inline-flex"
+        data-account-link
+        data-label-in={t.nav.account}
+      >
+        <UserRound size={14} strokeWidth={1.75} aria-hidden="true" />
+        <span data-account-text>{t.nav.signIn}</span>
+        <span class="account-dot" aria-hidden="true"></span>
+      </a>
       <a href={href("/download", lang)} class="btn btn-primary btn-sm ml-1.5" data-shortcut="d">
         {t.nav.download}
         <span class="kbd hidden sm:inline-grid">D</span>
       </a>
-      <button type="button" class="icon-btn lg:hidden" popovertarget="mobile-nav" aria-label={t.nav.menu}>
+      <button type="button" class="icon-btn header-menu-btn" popovertarget="mobile-nav" aria-label={t.nav.menu}>
         <Menu size={18} strokeWidth={1.75} />
       </button>
     </div>
   </div>
 </header>
+
+<!--
+  顶栏自适应:文字不换行,溢出时按步骤逐级收起(写入 header 的 data-compact,空格分隔、累积)。
+  内联同步执行,首帧前完成;窗口宽度或字体加载变化、AI 助手入口显隐变化(事件名同 ai-entry.ts::AI_ENTRY_EVENT)时重算。
+  无 JS 时退化为不换行 + lg 断点切换。
+-->
+<script is:inline>
+  (function () {
+    var header = document.querySelector(".site-header");
+    var inner = header && header.querySelector(".header-inner");
+    if (!inner) return;
+    var steps = ["search", "sponsor", "account", "nav"];
+    function fit() {
+      var applied = [];
+      header.setAttribute("data-compact", "");
+      for (var i = 0; i < steps.length && inner.scrollWidth > inner.clientWidth; i++) {
+        applied.push(steps[i]);
+        header.setAttribute("data-compact", applied.join(" "));
+      }
+    }
+    fit();
+    if ("ResizeObserver" in window) new ResizeObserver(fit).observe(inner);
+    else window.addEventListener("resize", fit);
+    window.addEventListener("fd:ai-visible", fit);
+    if (document.fonts) document.fonts.ready.then(fit);
+  })();
+</script>
 
 <div id="mobile-nav" popover class="mobile-nav">
   <div class="flex h-[var(--header-h)] items-center justify-between border-b border-line px-5">
@@ -180,7 +249,7 @@ const isActive = (links: typeof PRODUCT_LINKS) =>
     <a href={href("/download", lang)} class="btn btn-primary btn-lg mb-6 w-full">{t.nav.download}</a>
     {
       [...flat].map((item) => (
-        <a href={item.href} class="mobile-link">
+        <a href={item.href} class="mobile-link" data-ai-entry={item.aiEntry || undefined}>
           {item.label}
         </a>
       ))
@@ -188,6 +257,16 @@ const isActive = (links: typeof PRODUCT_LINKS) =>
     <a href={sponsor.href} class="mobile-link">
       <SPONSOR_LINK.icon size={16} strokeWidth={1.75} className="nav-sponsor-icon" />
       {sponsor.label}
+    </a>
+    <a
+      href={href("/account", lang)}
+      class="mobile-link"
+      data-account-link
+      data-label-in={t.nav.account}
+    >
+      <UserRound size={16} strokeWidth={1.75} className="text-subtle" />
+      <span data-account-text>{t.nav.signIn}</span>
+      <span class="account-dot" aria-hidden="true"></span>
     </a>
     {
       menus.map((menu) => (
@@ -202,11 +281,23 @@ const isActive = (links: typeof PRODUCT_LINKS) =>
         </div>
       ))
     }
-    <div class="mt-8 flex items-center gap-2 border-t border-line pt-6">
-      <a href={otherHref} class="btn btn-secondary btn-sm" hreflang={other} data-lang-switch={other}>
-        <Languages size={14} strokeWidth={1.75} />
-        {LANG_LABEL[other]}
-      </a>
+    <div class="mt-8 flex flex-wrap items-center gap-2 border-t border-line pt-6">
+      {
+        langItems
+          .filter((item) => !item.current)
+          .map((item) => (
+            <a
+              href={item.href}
+              class="btn btn-secondary btn-sm"
+              lang={HTML_LANG[item.lang]}
+              hreflang={HREFLANG[item.lang]}
+              data-lang-switch={item.lang}
+            >
+              <Languages size={14} strokeWidth={1.75} />
+              {item.label}
+            </a>
+          ))
+      }
       <a href={GITHUB_URL} class="btn btn-secondary btn-sm" target="_blank" rel="noopener">
         <BrandIcon name="github" size={14} />
         GitHub
@@ -215,12 +306,39 @@ const isActive = (links: typeof PRODUCT_LINKS) =>
   </div>
 </div>
 
+<!--
+  账户入口:静态页拿不到登录态,读非 HttpOnly 的提示 Cookie `fd_signed_in=1`(同 src/lib/account/client.ts::SIGNED_IN_COOKIE,
+  只决定显示「登录」还是「账户」,不作鉴权)。内联同步执行,首帧前完成切换;无 Cookie 时什么都不改。
+-->
+<script is:inline>
+  (function () {
+    var signedIn = document.cookie.split(";").some(function (part) {
+      return part.trim() === "fd_signed_in=1";
+    });
+    if (!signedIn) return;
+    document.querySelectorAll("[data-account-link]").forEach(function (el) {
+      el.setAttribute("data-signed-in", "");
+      var label = el.getAttribute("data-label-in");
+      if (!label) return;
+      if (el.hasAttribute("aria-label")) el.setAttribute("aria-label", label);
+      if (el.hasAttribute("title")) el.setAttribute("title", label);
+      var text = el.querySelector("[data-account-text]");
+      if (text) text.textContent = label;
+    });
+  })();
+</script>
+
 <script>
+  import { refreshAiEntryVisibility } from "../../lib/account/ai-entry";
+
   document.addEventListener("click", (event) => {
     if ((event.target as Element | null)?.closest("[data-palette-open]")) {
       window.dispatchEvent(new CustomEvent("palette:open"));
     }
   });
+
+  // AI 助手入口:首帧已按缓存放行(Layout.astro 内联脚本),这里取最新结果并刷新缓存
+  void refreshAiEntryVisibility();
 </script>
 
 <style is:global>
@@ -279,17 +397,58 @@ const isActive = (links: typeof PRODUCT_LINKS) =>
         display: none;
       }
     }
+    .header-logo,
+    .header-actions {
+      flex: none;
+    }
+    .header-nav {
+      display: none;
+      flex: none;
+      align-items: center;
+      gap: 2px;
+    }
+    @media (min-width: 1024px) {
+      .header-nav {
+        display: flex;
+      }
+    }
+    .site-header[data-compact~="nav"] .header-nav {
+      display: none;
+    }
+    /* 收起的文字仍留给读屏:视觉隐藏而非 display:none,绝对定位也不占 flex gap */
+    .site-header[data-compact~="search"] .search-label,
+    .site-header[data-compact~="sponsor"] .nav-sponsor-label,
+    .site-header[data-compact~="account"] .account-btn [data-account-text] {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
+    }
+    .site-header[data-compact~="search"] .search-trigger .kbd {
+      display: none;
+    }
+    .site-header[data-compact~="search"] .search-trigger,
+    .site-header[data-compact~="account"] .account-btn {
+      justify-content: center;
+      width: 32px;
+      padding-inline: 0;
+    }
     .nav-item {
       position: relative;
+      flex: none;
     }
     .nav-link {
       display: inline-flex;
+      flex: none;
       align-items: center;
       gap: 4px;
       height: 32px;
       padding-inline: 10px;
       border-radius: 7px;
       font-size: 13.5px;
+      white-space: nowrap;
       color: var(--fg-muted);
       transition:
         color 150ms,
@@ -504,7 +663,112 @@ const isActive = (links: typeof PRODUCT_LINKS) =>
       color: var(--fg);
       background: var(--bg-inset);
     }
+    .header-menu-btn {
+      flex: none;
+    }
+    @media (min-width: 1024px) {
+      .header-menu-btn {
+        display: none;
+      }
+    }
+    .site-header[data-compact~="nav"] .header-menu-btn {
+      display: inline-grid;
+    }
+    /* 语言菜单:与 .nav-panel 同一套 hover / focus-within 展开,右对齐 */
+    .lang-menu {
+      position: relative;
+    }
+    .lang-panel {
+      position: absolute;
+      right: -6px;
+      top: 100%;
+      padding-top: 12px;
+      opacity: 0;
+      visibility: hidden;
+      transform: translateY(-6px) scale(0.985);
+      transform-origin: right top;
+      transition:
+        opacity 160ms,
+        transform 240ms var(--ease-out),
+        visibility 0s 240ms;
+    }
+    .lang-menu:hover .lang-panel,
+    .lang-menu:focus-within .lang-panel {
+      opacity: 1;
+      visibility: visible;
+      transform: none;
+      transition-delay: 60ms, 60ms, 0s;
+    }
+    /* 悬停桥:按钮与面板之间的空隙不丢 hover */
+    .lang-panel::before {
+      content: "";
+      position: absolute;
+      inset: 0 0 auto;
+      height: 12px;
+    }
+    .lang-panel-inner {
+      display: grid;
+      gap: 2px;
+      min-width: 152px;
+      margin: 0;
+      padding: 6px;
+      list-style: none;
+      border-radius: 12px;
+      background: var(--bg-elev);
+      box-shadow:
+        0 0 0 1px var(--line),
+        var(--shadow-float);
+    }
+    .lang-option {
+      display: flex;
+      align-items: center;
+      height: 32px;
+      padding-inline: 10px;
+      border-radius: 7px;
+      font-size: 13.5px;
+      white-space: nowrap;
+      color: var(--fg-muted);
+      transition:
+        color 150ms,
+        background-color 150ms;
+    }
+    .lang-option:hover,
+    .lang-option[aria-current] {
+      color: var(--fg);
+      background: var(--bg-inset);
+    }
+    .lang-option[aria-current] {
+      font-weight: 600;
+    }
+    .account-btn {
+      position: relative;
+    }
+    .account-btn[data-signed-in] {
+      color: var(--fg);
+    }
+    /* 已登录指示:按钮右上角一枚小圆点(桌面)/ 行尾圆点(移动端菜单) */
+    .account-dot {
+      display: none;
+      width: 7px;
+      height: 7px;
+      border-radius: 999px;
+      background: var(--ok);
+    }
+    [data-signed-in] > .account-dot {
+      display: block;
+    }
+    .account-btn > .account-dot {
+      position: absolute;
+      top: -3px;
+      right: -3px;
+      box-shadow: 0 0 0 2px var(--bg);
+    }
+    .mobile-link > .account-dot {
+      margin-left: auto;
+    }
     .search-trigger {
+      flex: none;
+      white-space: nowrap;
       align-items: center;
       gap: 8px;
       height: 32px;
@@ -562,5 +826,10 @@ const isActive = (links: typeof PRODUCT_LINKS) =>
       border-bottom: 1px solid var(--line);
       font-size: 16px;
     }
+  }
+  /* AI 助手入口缺省隐藏,`<html data-ai-visible>` 放行(见 src/lib/account/ai-entry.ts)。不放进 @layer:未分层规则
+     压过 components 层里 `.nav-link` / `.mobile-link` 的 display。 */
+  html:not([data-ai-visible]) [data-ai-entry] {
+    display: none;
   }
 </style>
