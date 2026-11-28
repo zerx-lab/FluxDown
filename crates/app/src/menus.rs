@@ -13,7 +13,7 @@ use gpui_component::{GlobalState, menu::AppMenuBar};
 use crate::{
     actions::{
         About, BringAllToFront, CheckUpdate, CloseWindow, Hide, HideOthers, MinimizeWindow,
-        OpenLogsFolder, OpenSettings, OpenWebsite, Quit, ShowAll, ShowMainWindow,
+        OpenLogsFolder, OpenSettings, OpenWebsite, Quit, ShowAll, ShowMainWindow, ToggleAssistant,
         ToggleCommandPalette, ToggleFullScreen, ZoomWindow,
     },
     app::Desktop,
@@ -232,6 +232,7 @@ pub fn install_global_actions(cx: &mut App) {
     cx.on_action(|_: &OpenLogsFolder, cx| open_logs_folder(cx));
     cx.on_action(|_: &About, cx| open_about(cx));
     cx.on_action(|_: &ToggleCommandPalette, cx| crate::command_palette::toggle(cx));
+    cx.on_action(|_: &ToggleAssistant, cx| crate::activity::toggle_assistant(cx));
     install_download_fallbacks(cx);
 }
 

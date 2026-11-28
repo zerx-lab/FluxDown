@@ -167,6 +167,9 @@ pub(crate) enum ShellActionContent {
     View(AnyView),
 }
 
+/// 动作按钮右上角状态圆点的判定闭包。
+type ActionIndicator = Rc<dyn Fn(&App) -> bool>;
+
 /// 由应用装配并注入 shell 的窗口级动作（默认摆在活动栏底部，可经布局移动）。
 pub struct ShellAction {
     pub(crate) button_id: &'static str,
@@ -178,6 +181,9 @@ pub struct ShellAction {
     /// 可选动作参与活动栏「是否整体渲染」的判定；固定动作（如设置）不参与。
     pub(crate) optional: bool,
     pub(crate) visible: bool,
+    /// 按钮右上角的状态圆点（如「有待处理事项」）；只读实体 / 全局状态，刷新靠 app 对数据源
+    /// `cx.observe` 后 `shell.notify`，渲染期不写状态。
+    pub(crate) indicator: Option<ActionIndicator>,
 }
 
 impl ShellAction {
@@ -200,6 +206,7 @@ impl ShellAction {
             },
             optional: false,
             visible: true,
+            indicator: None,
         }
     }
 
@@ -213,6 +220,7 @@ impl ShellAction {
             content: ShellActionContent::View(view),
             optional: false,
             visible: true,
+            indicator: None,
         }
     }
 
@@ -233,6 +241,7 @@ impl ShellAction {
             },
             optional: false,
             visible: true,
+            indicator: None,
         }
     }
 
@@ -245,6 +254,14 @@ impl ShellAction {
     /// 标记该动作是否为「可选」：活动栏在没有任何可见可选项时整体收起。
     pub fn optional(mut self, optional: bool) -> Self {
         self.optional = optional;
+        self
+    }
+
+    /// 按钮右上角的状态圆点：闭包返回 `true` 时显示。闭包只读实体 / 全局状态；
+    /// 状态变化后由 app 调 `ShellView` 的 `notify` 触发重绘。
+    #[must_use]
+    pub fn indicator(mut self, indicator: impl Fn(&App) -> bool + 'static) -> Self {
+        self.indicator = Some(Rc::new(indicator));
         self
     }
 }
@@ -281,6 +298,8 @@ pub struct ShellSidePanel {
     close_label_key: &'static str,
     /// 面板被打开时调用（经 `cx.defer`，如把焦点交给输入框）。
     on_open: Option<ShellActionHandler>,
+    /// 面板被收起时调用（经 `cx.defer`，如归还打开前的焦点）。
+    on_close: Option<ShellActionHandler>,
 }
 
 impl ShellSidePanel {
@@ -294,6 +313,7 @@ impl ShellSidePanel {
             content: content.into(),
             close_label_key,
             on_open: None,
+            on_close: None,
         }
     }
 
@@ -301,6 +321,13 @@ impl ShellSidePanel {
     #[must_use]
     pub fn on_open(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
         self.on_open = Some(Rc::new(handler));
+        self
+    }
+
+    /// 面板被收起时的回调（在 `cx.defer` 中执行）。
+    #[must_use]
+    pub fn on_close(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_close = Some(Rc::new(handler));
         self
     }
 }
@@ -559,7 +586,7 @@ impl ShellView {
         self.side_panel_open && self.side_panel.is_some()
     }
 
-    /// 打开 / 收起右侧面板；打开时调用面板的 `on_open`。没有面板时忽略。
+    /// 打开 / 收起右侧面板；打开时调用面板的 `on_open`，收起时调用 `on_close`。没有面板时忽略。
     pub fn set_side_panel_open(&mut self, open: bool, cx: &mut Context<Self>) {
         let Some(panel) = &self.side_panel else {
             return;
@@ -568,7 +595,12 @@ impl ShellView {
             return;
         }
         self.side_panel_open = open;
-        if open && let Some(handler) = panel.on_open.clone() {
+        let handler = if open {
+            panel.on_open.clone()
+        } else {
+            panel.on_close.clone()
+        };
+        if let Some(handler) = handler {
             self.run_in_window(handler, cx);
         }
         cx.notify();

@@ -16,5 +16,6 @@ gpui.workspace = true
 gpui-component.workspace = true
 # 图片附件：识别 / 转 PNG / 生成缩略图。编解码特性与 gpui 已启用的一致（Cargo.lock 无新增包）。
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff"] }
+jiff = "1"
 log = "0.4"
 serde_json = "1"

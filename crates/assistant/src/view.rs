@@ -1,37 +1,36 @@
-//! 助手视图：状态、用户动作与会话事件处理。绘制在 `render.rs`。
+//! 助手视图：状态、会话事件与对话动作。绘制在 `render*.rs`，历史会话在 `history.rs`，
+//! 提问流程在 `ask.rs`，输入草稿与图片附件在 `draft.rs`。
 
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
     rc::Rc,
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use fluxdown_protocol::{
-    AgentEvent, AgentSnapshot, AssistantAskParams, AssistantChannel, AssistantIssueDto,
-    AssistantIssueParams, AssistantMessageDto, AssistantRateParams, AssistantRunDto,
-    AssistantRunItemDto, AssistantSessionDto, AssistantSessionKind, AssistantSessionsParams,
-    AssistantStateDto, RpcErrorData, ServiceEvent,
+    AgentEvent, AgentSnapshot, AssistantIssueDto, AssistantIssueParams, AssistantMessageDto,
+    AssistantRateParams, AssistantRunDto, AssistantRunItemDto, AssistantSessionDto,
+    AssistantSessionKind, AssistantStateDto, RpcErrorData, ServiceEvent,
 };
-use fluxdown_ui_components::{size_units::format_bytes, toast};
 use fluxdown_ui_i18n::Translator;
 use gpui::{
-    App, AppContext as _, ClipboardItem, Context, Entity, Image, PathPromptOptions, ScrollHandle,
-    SharedString, Subscription, Task, Window, px,
+    App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, ScrollHandle, SharedString,
+    Subscription, Window, px,
 };
-use gpui_component::{
-    WindowExt as _,
-    input::{InputEvent, InputState, TextareaState},
-};
+use gpui_component::input::{InputEvent, InputState, TextareaState};
+use jiff::ZonedDateTime;
 
 use crate::{
     AssistantPort, PortFuture,
-    attachment::{ImageError, ImageSource, Prepared, clipboard_sources, prepare},
+    ask::{Editing, Outgoing},
+    dates::local_now,
+    draft::{Attachment, SentImages},
+    history::{Load, Rename, SessionList},
+    images::ImageCache,
     model::{
-        Gate, SESSION_PAGE_SIZE, SendFailure, Turn, build_timeline, classify_send_error, gate,
-        insert_placeholder, map_offset, orphaned_images, pending_confirmations,
-        placeholder_remnant, remove_placeholder, turn_transcript,
+        ActionError, Gate, SendFailure, Turn, agent_now_ms, build_timeline, clock_offset_ms, gate,
+        pending_confirmations, turn_transcript,
     },
 };
 
@@ -43,6 +42,11 @@ const INPUT_MIN_ROWS: usize = 3;
 const INPUT_MAX_ROWS: usize = 8;
 /// 倒计时刷新间隔。
 const TICK: Duration = Duration::from_secs(1);
+/// 面板重新打开时，配置 / 会话列表超过这个时长就后台刷新。
+const CONFIG_STALE_AFTER: Duration = Duration::from_secs(60);
+const SESSIONS_STALE_AFTER: Duration = Duration::from_secs(30);
+/// 「已复制」提示的显示时长。
+const COPIED_FLASH: Duration = Duration::from_millis(1500);
 
 /// 主窗口中的独立动作（app 注入；本 crate 不认识其他页面）。
 pub type WindowAction = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -56,56 +60,24 @@ pub struct AssistantHost {
     pub open_plan_purchase: WindowAction,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Load {
-    Idle,
-    Loading,
-    Ready,
-    Failed,
-}
-
-/// 云端会话列表。
-pub(crate) struct SessionList {
-    pub(crate) items: Vec<AssistantSessionDto>,
-    pub(crate) total: u64,
-    pub(crate) load: Load,
-    pub(crate) more_loading: bool,
-    epoch: u64,
-}
-
-impl SessionList {
-    fn new() -> Self {
-        Self {
-            items: Vec::new(),
-            total: 0,
-            load: Load::Idle,
-            more_loading: false,
-            epoch: 0,
-        }
-    }
-
-    pub(crate) fn has_more(&self) -> bool {
-        (self.items.len() as u64) < self.total
-    }
-}
-
 /// 当前会话在云端的历史。
 pub(crate) struct Detail {
     pub(crate) load: Load,
     pub(crate) session: Option<AssistantSessionDto>,
     pub(crate) messages: Vec<AssistantMessageDto>,
     pub(crate) issues: Vec<AssistantIssueDto>,
+    /// 只增不减：任何会让在途读取作废的变化（换会话、重读、账号变化）都递增。
     epoch: u64,
 }
 
 impl Detail {
-    fn new() -> Self {
+    fn new(epoch: u64) -> Self {
         Self {
             load: Load::Idle,
             session: None,
             messages: Vec::new(),
             issues: Vec::new(),
-            epoch: 0,
+            epoch,
         }
     }
 }
@@ -115,92 +87,127 @@ pub(crate) struct IssueEditor {
     pub(crate) issue_id: String,
     pub(crate) title: Entity<InputState>,
     pub(crate) body: Entity<TextareaState>,
-    /// 输入变化时重绘(提交按钮的可用性取决于标题 / 正文是否为空)。
+    /// 输入变化时重绘（提交按钮的可用性取决于标题 / 正文是否为空）。
     _subscriptions: [Subscription; 2],
 }
 
-/// 一张已处理好、待随下一条提问发送的图片。
-pub(crate) struct Attachment {
-    /// `data:image/<type>;base64,...`。
-    pub(crate) data_url: String,
-    /// 输入区的缩略图。
-    pub(crate) thumbnail: Arc<Image>,
-}
-
-/// 刚发出的带图提问：气泡据此显示本地缩略图（云端历史里只有图片 ID）。
-pub(crate) struct SentImages {
-    pub(crate) session_id: String,
-    /// 提问文本（含占位符），用来对上对应的那一轮。
-    pub(crate) text: String,
-    pub(crate) thumbnails: Vec<Arc<Image>>,
+/// 刚复制过什么：按钮短暂显示勾。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CopyKind {
+    /// 整轮对话（含过程）。
+    Turn,
+    /// 只复制回答。
+    Answer,
 }
 
 pub struct AssistantView {
     pub(crate) translator: Entity<Translator>,
     pub(crate) port: Arc<dyn AssistantPort>,
     pub(crate) host: AssistantHost,
+    /// 面板根焦点：点面板空白处获得焦点，面板内快捷键据此生效；收起面板时据此判断是否交还焦点。
+    pub(crate) root_focus: FocusHandle,
     /// 面板显示会话列表（历史视图）而不是对话；选中会话 / 新对话后回到对话。
     pub(crate) history_open: bool,
     /// 宿主带进来的提问（[`Self::ask`]）：配置加载完成后自动发出，确认无法提问则留在输入框。
     pending_submit: bool,
+    /// 账号变化后要清空输入框（下一次渲染里生效，那里才有 `window`）。
+    pub(crate) draft_reset: bool,
     pub(crate) input: Entity<TextareaState>,
     /// 输入框当前 placeholder；语言切换后在 render 中同步（输入框只在构造时取一次）。
     pub(crate) input_placeholder: SharedString,
+    /// 历史视图的搜索框。
+    pub(crate) search: Entity<InputState>,
+    pub(crate) search_placeholder: SharedString,
+    /// 搜索框当前文本（本地即时过滤用）。
+    pub(crate) search_text: String,
+    pub(crate) search_gen: u64,
     pub(crate) scroll: ScrollHandle,
+    pub(crate) history_scroll: ScrollHandle,
+    /// 历史列表容器的焦点（键盘上下 / 回车）。
+    pub(crate) history_focus: FocusHandle,
+    /// 键盘光标所在的会话。
+    pub(crate) history_cursor: Option<String>,
+    /// 历史视图里动作失败的提示（文案键）。
+    pub(crate) history_error: Option<&'static str>,
+    /// 会话列表日期换算用的本机「现在」，打开历史 / 列表更新时刷新。
+    pub(crate) now_local: ZonedDateTime,
 
     pub(crate) state: AssistantStateDto,
     pub(crate) signed_in: bool,
+    /// 当前登录账号；账号变化（登出 / 换号）时作废全部账号相关缓存。
+    user_id: Option<String>,
+    /// 只增不减：回写前与发起时比较，账号变化后旧账号的在途响应一律丢弃。
+    pub(crate) account_epoch: u64,
     /// 与 agent 断开：内容保留只读，动作禁用。
     pub(crate) stale: bool,
     /// 配置拉取失败（本机服务 / 云端不可达）。
     pub(crate) config_failed: bool,
     pub(crate) config_loading: bool,
     config_requested: bool,
+    /// 配置在途时又来了一次强制刷新：当前这次返回后再取一次。
+    config_refetch: bool,
+    config_loaded_at: Option<Instant>,
+    /// agent 主机时钟比本机快多少毫秒（换算确认截止时刻用）。
+    clock_offset: i64,
 
     pub(crate) sessions: SessionList,
     /// 当前会话；`None` = 新对话。
     pub(crate) current: Option<String>,
     pub(crate) detail: Detail,
+    /// 当前会话的时间线缓存：只在状态 / 历史 / 问题单变化时重建，倒计时刷新不重建。
+    pub(crate) timeline: Vec<Turn>,
     /// 新对话的类型（已有会话沿用其类型）。
     pub(crate) kind: AssistantSessionKind,
 
-    pub(crate) sending: bool,
+    /// 已发出但还没被实时执行接管显示的提问。
+    pub(crate) outgoing: Option<Outgoing>,
+    pub(crate) outgoing_gen: u64,
     pub(crate) cancelling: bool,
     pub(crate) send_failure: Option<SendFailure>,
-    /// 其他动作失败的提示（确认 / 评分 / 问题单 / 删除）。
-    pub(crate) action_failed: bool,
+    /// 其他动作失败的提示（确认 / 评分 / 问题单 / 取消 / 重命名）。
+    pub(crate) action_error: Option<ActionError>,
     /// 已发出、等待结果的确认请求（避免重复点击）。
     pub(crate) confirming: HashSet<String>,
     /// 用户对「过程」折叠区的显式选择（键 = 轮次键）。
     pub(crate) steps_choice: HashMap<String, bool>,
-    /// 已展开参数 JSON 的工具调用（键 = 调用 ID / 请求 ID）。
+    /// 已展开参数 / 结果的工具调用（键 = 调用键）。
     pub(crate) args_open: HashSet<String>,
     /// 本地确认 / 丢弃后的问题单最新状态。
     pub(crate) issue_overrides: HashMap<String, AssistantIssueDto>,
     pub(crate) issue_busy: HashSet<String>,
     pub(crate) issue_editor: Option<IssueEditor>,
-    /// 等待再次点击确认删除的会话：删除按钮原位变为危险态，鼠标移出该行即取消。
+    /// 等待再次点击确认删除的会话；超时或 Esc 取消。
     pub(crate) delete_pending: Option<String>,
-    /// 等待再次点击确认的「清空全部会话」；鼠标移出按钮即取消。
+    /// 等待再次点击确认的「清空全部会话」；超时或 Esc 取消。
     pub(crate) clear_pending: bool,
+    /// 删除请求进行中的会话。
+    pub(crate) deleting: HashSet<String>,
     /// 清空请求进行中。
     pub(crate) clearing: bool,
+    /// 二次确认的超时代数：旧定时器不能取消新的确认。
+    pub(crate) confirm_gen: u64,
+    pub(crate) renaming: Option<Rename>,
+    /// 正在导出的会话。
+    pub(crate) exporting: Option<String>,
+    /// 正在编辑重发的历史提问。
+    pub(crate) editing: Option<Editing>,
     /// 每条回答（键 = 消息 ID）的本地评价状态：点击后立即写入（乐观更新），失败回滚；
     /// 优先于云端历史里的值。切换会话时清空（新读到的历史即为准）。
     pub(crate) ratings: HashMap<String, Option<String>>,
     /// 评价请求进行中的消息 ID（避免重复点击）。
     pub(crate) rating_busy: HashSet<String>,
-    /// 刚复制过的轮次键（按钮显示勾）；`copied_generation` 防止旧定时器提前复位。
-    pub(crate) copied_turn: Option<String>,
+    pub(crate) copied: Option<(String, CopyKind)>,
     copied_generation: u32,
     /// 待随下一条提问发送的图片；第 n 张对应输入文本里的 `[Image #n]`。
     pub(crate) attachments: Vec<Attachment>,
     /// 上次处理过的输入框文本，用来识别一次删除是否只删掉了占位符的一部分。
-    input_text: SharedString,
+    pub(crate) input_text: SharedString,
     /// 正在后台读取 / 转码的图片数（计入数量上限）。
     pub(crate) attaching: usize,
     /// 刚发出的带图提问。
     pub(crate) sent_images: Option<SentImages>,
+    /// 历史提问附图（按附件 ID 缓存解码后的缩略图）。
+    pub(crate) images: ImageCache,
     /// 倒计时刷新任务是否在运行（只在有待确认的工具时存在）。
     ticker_running: bool,
 }
@@ -220,6 +227,12 @@ impl AssistantView {
                 .text("assistantInputPlaceholder")
                 .to_owned(),
         );
+        let search_placeholder = SharedString::from(
+            translator
+                .read(cx)
+                .text("assistantSearchPlaceholder")
+                .to_owned(),
+        );
         let input = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .auto_grow(INPUT_MIN_ROWS, INPUT_MAX_ROWS)
@@ -237,29 +250,57 @@ impl AssistantView {
             },
         )
         .detach();
+        let search =
+            cx.new(|cx| InputState::new(window, cx).placeholder(search_placeholder.clone()));
+        cx.subscribe_in(
+            &search,
+            window,
+            |this: &mut Self, _, event: &InputEvent, window, cx| {
+                this.on_search_event(event, window, cx);
+            },
+        )
+        .detach();
         Self {
             translator,
             port,
             host,
+            root_focus: cx.focus_handle(),
             history_open: false,
             pending_submit: false,
+            draft_reset: false,
             input,
             input_placeholder,
+            search,
+            search_placeholder,
+            search_text: String::new(),
+            search_gen: 0,
             scroll: ScrollHandle::new(),
+            history_scroll: ScrollHandle::new(),
+            history_focus: cx.focus_handle(),
+            history_cursor: None,
+            history_error: None,
+            now_local: local_now(),
             state: AssistantStateDto::default(),
             signed_in: false,
+            user_id: None,
+            account_epoch: 0,
             stale: false,
             config_failed: false,
             config_loading: false,
             config_requested: false,
+            config_refetch: false,
+            config_loaded_at: None,
+            clock_offset: 0,
             sessions: SessionList::new(),
             current: None,
-            detail: Detail::new(),
+            detail: Detail::new(0),
+            timeline: Vec::new(),
             kind: AssistantSessionKind::Ask,
-            sending: false,
+            outgoing: None,
+            outgoing_gen: 0,
             cancelling: false,
             send_failure: None,
-            action_failed: false,
+            action_error: None,
             confirming: HashSet::new(),
             steps_choice: HashMap::new(),
             args_open: HashSet::new(),
@@ -268,15 +309,21 @@ impl AssistantView {
             issue_editor: None,
             delete_pending: None,
             clear_pending: false,
+            deleting: HashSet::new(),
             clearing: false,
+            confirm_gen: 0,
+            renaming: None,
+            exporting: None,
+            editing: None,
             ratings: HashMap::new(),
             rating_busy: HashSet::new(),
-            copied_turn: None,
+            copied: None,
             copied_generation: 0,
             attachments: Vec::new(),
             input_text: SharedString::default(),
             attaching: 0,
             sent_images: None,
+            images: ImageCache::default(),
             ticker_running: false,
         }
     }
@@ -287,9 +334,45 @@ impl AssistantView {
         cx.new(|cx| crate::AssistantPanelHeader::new(view, cx))
     }
 
-    /// 面板打开时把焦点交给输入框。
-    pub fn focus_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.input.update(cx, |input, cx| input.focus(window, cx));
+    /// 所有会话里等待用户确认的工具调用数（状态栏 / 活动栏按钮的提醒点据此绘制）。
+    pub fn pending_count(&self) -> usize {
+        pending_confirmations(&self.state, self.agent_now())
+    }
+
+    /// 面板打开：焦点交给输入框（历史视图则交给列表），配置与会话列表过期就后台刷新。
+    pub fn on_panel_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let open = matches!(self.gate(), Gate::Open { .. });
+        if self.history_open && open {
+            window.focus(&self.history_focus, cx);
+        } else {
+            self.focus_input(window, cx);
+        }
+        if !self.signed_in || self.stale {
+            return;
+        }
+        if self.config_requested
+            && self
+                .config_loaded_at
+                .is_none_or(|at| at.elapsed() > CONFIG_STALE_AFTER)
+        {
+            self.fetch_config(true, cx);
+        }
+        if open
+            && self.sessions.load != Load::Loading
+            && self
+                .sessions
+                .loaded_at
+                .is_none_or(|at| at.elapsed() > SESSIONS_STALE_AFTER)
+        {
+            self.reload_sessions(cx);
+        }
+    }
+
+    /// 面板收起：焦点还在面板里就清掉，让快捷键回到主区。
+    pub fn on_panel_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.root_focus.contains_focused(window, cx) {
+            window.blur(cx);
+        }
     }
 
     /// 宿主入口（命令面板「问 AI 助手」）：开新对话并发出这段问题。配置还在加载时等加载完再发；
@@ -323,19 +406,6 @@ impl AssistantView {
         }
     }
 
-    /// 切换历史视图（会话列表）；回到对话时焦点交给输入框。
-    pub(crate) fn toggle_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.history_open = !self.history_open;
-        if self.history_open {
-            if self.sessions.load == Load::Failed {
-                self.reload_sessions(cx);
-            }
-        } else {
-            self.focus_input(window, cx);
-        }
-        cx.notify();
-    }
-
     /// 面板顶栏标题：历史视图为「历史会话」，对话视图为当前会话标题（新对话 / 无标题有各自文案）。
     pub(crate) fn heading(&self, cx: &App) -> SharedString {
         if !matches!(self.gate(), Gate::Open { .. }) {
@@ -347,22 +417,30 @@ impl AssistantView {
         let Some(current) = self.current.as_deref() else {
             return self.t("assistantNewChat", cx);
         };
+        let title = self
+            .session_info(current)
+            .map(|session| session.title.trim());
+        match title.filter(|title| !title.is_empty()) {
+            Some(title) => SharedString::from(title.to_owned()),
+            None => self.t("assistantUntitled", cx),
+        }
+    }
+
+    /// 会话信息：优先当前会话已读到的详情，其次列表。
+    pub(crate) fn session_info(&self, id: &str) -> Option<&AssistantSessionDto> {
         self.detail
             .session
             .as_ref()
-            .filter(|session| session.id == current)
-            .or_else(|| {
-                self.sessions
-                    .items
-                    .iter()
-                    .find(|session| session.id == current)
-            })
-            .map(|session| session.title.trim())
-            .filter(|title| !title.is_empty())
-            .map_or_else(
-                || self.t("assistantUntitled", cx),
-                |title| SharedString::from(title.to_owned()),
-            )
+            .filter(|session| session.id == id)
+            .or_else(|| self.sessions.items.iter().find(|session| session.id == id))
+    }
+
+    /// 顶栏标题可点击重命名：对话视图里的已有会话。
+    pub(crate) fn can_rename_current(&self) -> bool {
+        matches!(self.gate(), Gate::Open { .. })
+            && !self.history_open
+            && !self.stale
+            && self.current.is_some()
     }
 
     /// 今日用量（有每日上限时）。
@@ -395,6 +473,11 @@ impl AssistantView {
         gate(self.signed_in, &self.state, self.config_failed)
     }
 
+    /// 现在的 agent 时钟（与 `confirm_deadline_unix_ms` 同一时钟）。
+    pub(crate) fn agent_now(&self) -> i64 {
+        agent_now_ms(now_unix_ms(), self.clock_offset)
+    }
+
     /// 当前会话里进行中的执行。
     pub(crate) fn current_run(&self) -> Option<&AssistantRunDto> {
         let id = self.current.as_deref()?;
@@ -410,13 +493,7 @@ impl AssistantView {
         let Some(id) = self.current.as_deref() else {
             return self.kind;
         };
-        let session = self
-            .detail
-            .session
-            .as_ref()
-            .filter(|session| session.id == id)
-            .or_else(|| self.sessions.items.iter().find(|session| session.id == id));
-        match session.map(|session| session.kind.as_str()) {
+        match self.session_info(id).map(|session| session.kind.as_str()) {
             Some("feedback") => AssistantSessionKind::Feedback,
             _ => AssistantSessionKind::Ask,
         }
@@ -426,7 +503,11 @@ impl AssistantView {
 
     pub fn replace_snapshot(&mut self, snapshot: &AgentSnapshot, cx: &mut Context<Self>) {
         self.stale = false;
-        self.set_signed_in(snapshot.session.is_some());
+        let user = snapshot
+            .session
+            .as_ref()
+            .map(|session| session.user.id.clone());
+        self.set_account(user);
         self.apply_state(snapshot.assistant.clone(), cx);
         cx.notify();
     }
@@ -437,7 +518,8 @@ impl AssistantView {
                 self.apply_state(state.clone(), cx)
             }
             ServiceEvent::Agent(AgentEvent::SessionChanged(session)) => {
-                self.set_signed_in(session.is_some())
+                let user = (**session).as_ref().map(|session| session.user.id.clone());
+                self.set_account(user)
             }
             _ => false,
         };
@@ -451,19 +533,29 @@ impl AssistantView {
         cx.notify();
     }
 
-    /// 登录态变化：账号相关的缓存（会话、历史、配置）一律作废。返回是否变化。
-    fn set_signed_in(&mut self, signed_in: bool) -> bool {
-        if self.signed_in == signed_in {
+    /// 账号变化（登出 / 换号）：账号相关的一切（会话、历史、配置、草稿、附件、评分、在途请求）
+    /// 一律作废。同一账号重复推送不动。返回是否变化。
+    fn set_account(&mut self, user: Option<String>) -> bool {
+        if self.user_id == user {
             return false;
         }
-        self.signed_in = signed_in;
-        self.sessions = SessionList::new();
+        self.signed_in = user.is_some();
+        self.user_id = user;
+        // 旧账号的在途响应回写前会与它比较，对不上就丢弃。
+        self.account_epoch += 1;
+        self.sessions.reset();
         self.current = None;
-        self.detail = Detail::new();
+        self.reset_detail(Load::Idle);
+        self.timeline.clear();
         self.config_failed = false;
         self.config_requested = false;
+        self.config_loading = false;
+        self.config_refetch = false;
+        self.config_loaded_at = None;
         self.send_failure = None;
-        self.action_failed = false;
+        self.action_error = None;
+        self.history_error = None;
+        self.history_cursor = None;
         self.confirming.clear();
         self.steps_choice.clear();
         self.args_open.clear();
@@ -471,27 +563,52 @@ impl AssistantView {
         self.issue_busy.clear();
         self.issue_editor = None;
         self.delete_pending = None;
+        self.clear_pending = false;
+        self.deleting.clear();
+        self.clearing = false;
+        self.renaming = None;
+        self.exporting = None;
+        self.editing = None;
         self.history_open = false;
         self.pending_submit = false;
-        self.clear_pending = false;
+        self.search_text.clear();
         self.ratings.clear();
+        self.rating_busy.clear();
+        self.copied = None;
+        self.outgoing = None;
+        self.cancelling = false;
         self.sent_images = None;
+        self.images.clear();
+        self.attachments.clear();
+        self.attaching = 0;
+        self.draft_reset = true;
         true
     }
 
     /// 用推送 / 快照整体替换助手状态；返回是否变化。
     fn apply_state(&mut self, state: AssistantStateDto, cx: &mut Context<Self>) -> bool {
+        let mut state = state;
+        // agent 时钟只用来算偏差；它每次推送都在变，不参与「是否变化」的比较。
+        if state.now_unix_ms != 0 {
+            self.clock_offset = clock_offset_ms(now_unix_ms(), state.now_unix_ms);
+        }
+        state.now_unix_ms = self.state.now_unix_ms;
         if self.state == state {
             return false;
         }
         let follow = self.near_bottom();
         let before = active_runs(&self.state);
+        let runs_changed = self.state.runs != state.runs;
         self.state = state;
         let after = active_runs(&self.state);
         let pending = pending_request_ids(&self.state);
         self.confirming.retain(|id| pending.contains(id.as_str()));
         if self.state.config.is_some() {
             self.config_failed = false;
+        }
+        if runs_changed {
+            self.settle_outgoing();
+            self.rebuild_timeline(cx);
         }
 
         // 有执行结束：刷新云端历史与会话列表（已落库的历史取代实时覆盖层，列表排序 / 标题更新）。
@@ -520,9 +637,9 @@ impl AssistantView {
         max <= px(0.) || offset + max < px(FOLLOW_BOTTOM_SLACK)
     }
 
-    /// 倒计时:有待确认的工具时每秒重绘;待确认消失(到期)后补刷一次并停止。
+    /// 倒计时：有待确认的工具时每秒重绘（只重绘，不重建时间线）；待确认消失（到期）后补刷一次并停止。
     fn ensure_ticker(&mut self, cx: &mut Context<Self>) {
-        if self.ticker_running || pending_confirmations(&self.state, now_unix_ms()) == 0 {
+        if self.ticker_running || self.pending_count() == 0 {
             return;
         }
         self.ticker_running = true;
@@ -530,12 +647,12 @@ impl AssistantView {
             loop {
                 cx.background_executor().timer(TICK).await;
                 let Ok(more) = this.update(cx, |this, cx| {
-                    let more = pending_confirmations(&this.state, now_unix_ms()) > 0;
+                    let more = this.pending_count() > 0;
                     this.ticker_running = more;
                     cx.notify();
                     more
                 }) else {
-                    // 助手页已释放,结束倒计时刷新。
+                    // 助手页已释放，结束倒计时刷新。
                     return;
                 };
                 if !more {
@@ -548,14 +665,21 @@ impl AssistantView {
 
     // ───────────────────────── 异步辅助 ─────────────────────────
 
-    fn run<T: 'static>(
+    /// 等一个 agent 请求并回写；账号变化后旧账号的响应直接丢弃。
+    pub(crate) fn run<T: 'static>(
+        &self,
         future: PortFuture<T>,
         cx: &mut Context<Self>,
         done: impl FnOnce(&mut Self, Result<T, RpcErrorData>, &mut Context<Self>) + 'static,
     ) {
+        let account = self.account_epoch;
         cx.spawn(async move |this, cx| {
             let result = future.await;
-            let Ok(()) = this.update(cx, move |this, cx| done(this, result, cx)) else {
+            let Ok(()) = this.update(cx, move |this, cx| {
+                if this.account_epoch == account {
+                    done(this, result, cx);
+                }
+            }) else {
                 // 助手页已随窗口释放，无需回写。
                 return;
             };
@@ -563,10 +687,27 @@ impl AssistantView {
         .detach();
     }
 
-    fn fail_action(&mut self, what: &str, error: &RpcErrorData, cx: &mut Context<Self>) {
-        log::warn!("assistant {what} failed: {:?}", error.code);
-        self.action_failed = true;
-        cx.notify();
+    /// 同 [`Self::run`]，回写时带 `window`。
+    pub(crate) fn run_in<T: 'static>(
+        &self,
+        window: &mut Window,
+        future: PortFuture<T>,
+        cx: &mut Context<Self>,
+        done: impl FnOnce(&mut Self, Result<T, RpcErrorData>, &mut Window, &mut Context<Self>) + 'static,
+    ) {
+        let account = self.account_epoch;
+        cx.spawn_in(window, async move |this, cx| {
+            let result = future.await;
+            let Ok(()) = this.update_in(cx, move |this, window, cx| {
+                if this.account_epoch == account {
+                    done(this, result, window, cx);
+                }
+            }) else {
+                // 助手页已随窗口释放，无需回写。
+                return;
+            };
+        })
+        .detach();
     }
 
     // ───────────────────────── 配置 ─────────────────────────
@@ -585,8 +726,11 @@ impl AssistantView {
         }
     }
 
+    /// 取云端配置；`refresh` 强制向云端刷新（额度、开放状态可能已变）。
     pub(crate) fn fetch_config(&mut self, refresh: bool, cx: &mut Context<Self>) {
         if self.config_loading {
+            // 在途的这次可能比刚发生的事更早：返回后再强制取一次。
+            self.config_refetch |= refresh;
             return;
         }
         self.config_loading = true;
@@ -595,7 +739,7 @@ impl AssistantView {
         } else {
             self.port.get()
         };
-        Self::run(future, cx, move |this, result, cx| {
+        self.run(future, cx, move |this, result, cx| {
             this.config_loading = false;
             match result {
                 Ok(state) => {
@@ -603,101 +747,50 @@ impl AssistantView {
                     let runs = this.state.runs.clone();
                     this.apply_state(AssistantStateDto { runs, ..state }, cx);
                     this.config_failed = false;
+                    this.config_loaded_at = Some(Instant::now());
                 }
                 Err(error) => {
                     log::warn!("assistant config fetch failed: {:?}", error.code);
                     this.config_failed = true;
                 }
             }
-            cx.notify();
-        });
-    }
-
-    // ───────────────────────── 会话列表 ─────────────────────────
-
-    /// 重新读取会话列表第一页（已加载更多页时保持原有条数）。
-    pub(crate) fn reload_sessions(&mut self, cx: &mut Context<Self>) {
-        if !self.signed_in {
-            return;
-        }
-        self.sessions.epoch += 1;
-        let epoch = self.sessions.epoch;
-        self.sessions.load = Load::Loading;
-        let limit = u32::try_from(self.sessions.items.len())
-            .unwrap_or(SESSION_PAGE_SIZE)
-            .max(SESSION_PAGE_SIZE);
-        let future = self.port.sessions(AssistantSessionsParams {
-            limit: Some(limit),
-            offset: Some(0),
-        });
-        Self::run(future, cx, move |this, result, cx| {
-            if this.sessions.epoch != epoch {
-                return;
-            }
-            match result {
-                Ok(page) => {
-                    this.sessions.items = page.items;
-                    this.sessions.total = page.total;
-                    this.sessions.load = Load::Ready;
-                }
-                Err(error) => {
-                    log::warn!("assistant sessions load failed: {:?}", error.code);
-                    this.sessions.load = Load::Failed;
-                }
+            if std::mem::take(&mut this.config_refetch) {
+                this.fetch_config(true, cx);
             }
             cx.notify();
         });
-        cx.notify();
-    }
-
-    pub(crate) fn load_more_sessions(&mut self, cx: &mut Context<Self>) {
-        if self.sessions.more_loading || !self.sessions.has_more() {
-            return;
-        }
-        self.sessions.more_loading = true;
-        let epoch = self.sessions.epoch;
-        let offset = u32::try_from(self.sessions.items.len()).unwrap_or(u32::MAX);
-        let future = self.port.sessions(AssistantSessionsParams {
-            limit: Some(SESSION_PAGE_SIZE),
-            offset: Some(offset),
-        });
-        Self::run(future, cx, move |this, result, cx| {
-            this.sessions.more_loading = false;
-            // 期间列表被整体刷新：这一页的偏移已失效。
-            if this.sessions.epoch == epoch {
-                match result {
-                    Ok(page) => {
-                        for item in page.items {
-                            if this.sessions.items.iter().all(|known| known.id != item.id) {
-                                this.sessions.items.push(item);
-                            }
-                        }
-                        this.sessions.total = page.total;
-                    }
-                    Err(error) => this.fail_action("sessions page", &error, cx),
-                }
-            }
-            cx.notify();
-        });
-        cx.notify();
     }
 
     // ───────────────────────── 当前会话 ─────────────────────────
 
-    pub(crate) fn new_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.current = None;
-        self.history_open = false;
+    /// 用空历史换掉当前详情（`epoch` 递增，在途的读取作废）。
+    pub(crate) fn reset_detail(&mut self, load: Load) {
+        let epoch = self.detail.epoch + 1;
         self.detail = Detail {
-            epoch: self.detail.epoch + 1,
-            ..Detail::new()
+            load,
+            ..Detail::new(epoch)
         };
+    }
+
+    /// 进入某个会话（`None` = 新对话）：清掉上一个会话的界面状态，时间线按新会话重建。
+    fn enter_session(&mut self, session: Option<String>, cx: &mut Context<Self>) {
+        self.current = session;
+        self.reset_detail(Load::Idle);
         self.send_failure = None;
-        self.action_failed = false;
-        self.delete_pending = None;
+        self.action_error = None;
         self.issue_editor = None;
+        self.issue_overrides.clear();
         self.ratings.clear();
         self.sent_images = None;
-        self.input.update(cx, |input, cx| input.focus(window, cx));
+        self.rebuild_timeline(cx);
+    }
+
+    pub(crate) fn new_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_edit(window, cx);
+        self.cancel_transient();
+        self.history_open = false;
+        self.enter_session(None, cx);
+        self.focus_input(window, cx);
         cx.notify();
     }
 
@@ -708,24 +801,15 @@ impl AssistantView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.cancel_edit(window, cx);
+        self.cancel_transient();
         self.history_open = false;
         self.focus_input(window, cx);
         if self.current.as_deref() == Some(session_id.as_str()) {
             cx.notify();
             return;
         }
-        self.current = Some(session_id.clone());
-        self.detail = Detail {
-            epoch: self.detail.epoch + 1,
-            ..Detail::new()
-        };
-        self.send_failure = None;
-        self.action_failed = false;
-        self.delete_pending = None;
-        self.issue_editor = None;
-        self.issue_overrides.clear();
-        self.ratings.clear();
-        self.sent_images = None;
+        self.enter_session(Some(session_id.clone()), cx);
         self.scroll.scroll_to_bottom();
         self.load_detail(session_id, cx);
         cx.notify();
@@ -736,7 +820,8 @@ impl AssistantView {
         let epoch = self.detail.epoch;
         self.detail.load = Load::Loading;
         let future = self.port.session(session_id.clone());
-        Self::run(future, cx, move |this, result, cx| {
+        self.run(future, cx, move |this, result, cx| {
+            // 期间换了会话 / 又读了一次：新的状态自己负责 `load`，旧响应不能再写。
             if this.detail.epoch != epoch || this.current.as_deref() != Some(session_id.as_str()) {
                 return;
             }
@@ -749,6 +834,7 @@ impl AssistantView {
                     this.detail.issues = detail.issues;
                     // 新读到的历史里问题单状态以云端为准。
                     this.issue_overrides.clear();
+                    this.rebuild_timeline(cx);
                     if follow {
                         this.scroll.scroll_to_bottom();
                     }
@@ -763,217 +849,78 @@ impl AssistantView {
         cx.notify();
     }
 
-    pub(crate) fn request_delete(&mut self, session_id: String, cx: &mut Context<Self>) {
-        self.delete_pending = Some(session_id);
-        cx.notify();
-    }
-
-    pub(crate) fn cancel_delete(&mut self, session_id: &str, cx: &mut Context<Self>) {
-        if self.delete_pending.as_deref() == Some(session_id) {
-            self.delete_pending = None;
-            cx.notify();
-        }
-    }
-
-    pub(crate) fn delete_session(&mut self, session_id: String, cx: &mut Context<Self>) {
-        self.delete_pending = None;
-        let future = self.port.delete_session(session_id.clone());
-        Self::run(future, cx, move |this, result, cx| {
-            match result {
-                Ok(()) => {
-                    this.sessions
-                        .items
-                        .retain(|session| session.id != session_id);
-                    this.sessions.total = this.sessions.total.saturating_sub(1);
-                    if this.current.as_deref() == Some(session_id.as_str()) {
-                        this.leave_current();
-                    }
-                }
-                Err(error) => this.fail_action("delete session", &error, cx),
-            }
-            cx.notify();
-        });
-        cx.notify();
-    }
-
-    pub(crate) fn request_clear(&mut self, cx: &mut Context<Self>) {
-        self.clear_pending = true;
-        cx.notify();
-    }
-
-    pub(crate) fn cancel_clear(&mut self, cx: &mut Context<Self>) {
-        if self.clear_pending {
-            self.clear_pending = false;
-            cx.notify();
-        }
-    }
-
-    /// 清空全部会话（云端只在用户侧隐藏）：成功后列表清空、回到新对话；在途的列表请求结果作废。
-    pub(crate) fn clear_sessions(&mut self, cx: &mut Context<Self>) {
-        self.clear_pending = false;
-        self.delete_pending = None;
-        self.clearing = true;
-        let future = self.port.clear_sessions();
-        Self::run(future, cx, move |this, result, cx| {
-            this.clearing = false;
-            match result {
-                Ok(_) => {
-                    this.sessions.epoch += 1;
-                    this.sessions.items.clear();
-                    this.sessions.total = 0;
-                    this.sessions.more_loading = false;
-                    if this.current.is_some() {
-                        this.leave_current();
-                    }
-                }
-                Err(error) => this.fail_action("clear sessions", &error, cx),
-            }
-            cx.notify();
-        });
-        cx.notify();
-    }
-
     /// 当前会话已不存在（被删 / 清空）：回到新对话。
-    fn leave_current(&mut self) {
-        self.current = None;
-        self.detail = Detail {
-            epoch: self.detail.epoch + 1,
-            ..Detail::new()
-        };
-        self.issue_editor = None;
-        self.ratings.clear();
-        self.sent_images = None;
+    pub(crate) fn leave_current(&mut self, cx: &mut Context<Self>) {
+        self.editing = None;
+        self.enter_session(None, cx);
     }
 
-    // ───────────────────────── 提问 / 停止 ─────────────────────────
+    // ───────────────────────── 时间线与附图 ─────────────────────────
 
-    /// 输入框文本（已去首尾空白）。
-    pub(crate) fn draft(&self, cx: &App) -> String {
-        self.input.read(cx).value().trim().to_owned()
-    }
-
-    pub(crate) fn can_send(&self, cx: &App) -> bool {
-        let Gate::Open {
-            quota_exhausted: false,
-        } = self.gate()
-        else {
-            return false;
-        };
-        if self.stale || self.sending || self.attaching > 0 || self.current_run().is_some() {
-            return false;
+    /// 重建时间线缓存（并为其中的历史附图发起读取）：状态 / 历史 / 问题单变化时调用。
+    pub(crate) fn rebuild_timeline(&mut self, cx: &mut Context<Self>) {
+        let session_id = self.current.clone().unwrap_or_default();
+        self.timeline = build_timeline(
+            &session_id,
+            &self.detail.messages,
+            &self.detail.issues,
+            &self.state.runs,
+            &self.issue_overrides,
+        );
+        let wanted: Vec<String> = self
+            .timeline
+            .iter()
+            .flat_map(|turn| turn.image_ids.iter().cloned())
+            .collect();
+        for id in wanted {
+            // 只取还没有状态的；失败的由用户点占位重试，免得每次推送都重取。
+            if self.images.get(&id).is_none() {
+                self.fetch_image(id, cx);
+            }
         }
-        let draft = self.draft(cx);
-        if draft.is_empty() {
-            return false;
-        }
-        let limit = self
-            .state
-            .config
-            .as_ref()
-            .map_or(0, |config| config.max_message_chars as usize);
-        limit == 0 || draft.chars().count() <= limit
     }
 
-    pub(crate) fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.can_send(cx) {
+    /// 取一张历史附图并在后台解码成缩略图；已在加载 / 已完成的不重复取。
+    pub(crate) fn fetch_image(&mut self, id: String, cx: &mut Context<Self>) {
+        if !self.images.begin(&id) {
             return;
         }
-        let text = self.draft(cx);
-        let images: Vec<String> = self
-            .attachments
-            .iter()
-            .map(|attachment| attachment.data_url.clone())
-            .collect();
-        let thumbnails: Vec<Arc<Image>> = self
-            .attachments
-            .iter()
-            .map(|attachment| Arc::clone(&attachment.thumbnail))
-            .collect();
-        let params = AssistantAskParams {
-            session_id: self.current.clone(),
-            kind: self.current_kind(),
-            channel: AssistantChannel::Desktop,
-            text: text.clone(),
-            images,
-            locale: Some(self.translator.read(cx).locale().to_owned()),
-        };
-        self.sending = true;
-        self.send_failure = None;
-        self.action_failed = false;
-        let future = self.port.ask(params);
-        cx.spawn_in(window, async move |this, cx| {
-            let result = future.await;
-            let Ok(()) = this.update_in(cx, move |this, window, cx| {
-                this.sending = false;
-                match result {
-                    Ok(answer) => {
-                        let created = this.current.as_deref() != Some(answer.session_id.as_str());
-                        // 本地缩略图记在这次提问所属的会话下，气泡据此显示。
-                        this.sent_images = (!thumbnails.is_empty()).then(|| SentImages {
-                            session_id: answer.session_id.clone(),
-                            text,
-                            thumbnails,
-                        });
-                        if created {
-                            this.current = Some(answer.session_id);
-                            // 新会话在云端还没有任何已落库的历史：直接以空历史起步，
-                            // 提问内容由推送的实时执行显示。
-                            this.detail = Detail {
-                                load: Load::Ready,
-                                epoch: this.detail.epoch + 1,
-                                ..Detail::new()
-                            };
-                        }
-                        this.input
-                            .update(cx, |input, cx| input.set_value("", window, cx));
-                        this.sync_input_text(cx);
-                        this.attachments.clear();
-                        this.scroll.scroll_to_bottom();
-                        this.reload_sessions(cx);
-                    }
-                    Err(error) => {
-                        let failure = classify_send_error(&error);
-                        log::warn!("assistant ask failed: {:?} ({failure:?})", error.code);
-                        this.send_failure = Some(failure);
-                        // 额度 / 开放状态可能已变：重新取配置让页面门禁跟上。
-                        if matches!(failure, SendFailure::QuotaExceeded | SendFailure::NotOpen) {
-                            this.fetch_config(true, cx);
+        let future = self.port.attachment(id.clone());
+        let account = self.account_epoch;
+        cx.spawn(async move |this, cx| {
+            let image = match future.await {
+                Ok(attachment) => {
+                    let decoded = cx
+                        .background_executor()
+                        .spawn(async move {
+                            crate::attachment::thumbnail_from_data_url(&attachment.data_url)
+                        })
+                        .await;
+                    match decoded {
+                        Ok(image) => Some(image),
+                        Err(error) => {
+                            log::warn!("assistant attachment decode failed: {error:?}");
+                            None
                         }
                     }
                 }
-                cx.notify();
+                Err(error) => {
+                    log::warn!("assistant attachment fetch failed: {:?}", error.code);
+                    None
+                }
+            };
+            let Ok(()) = this.update(cx, move |this, cx| {
+                if this.account_epoch == account {
+                    this.images.finish(id, image);
+                    cx.notify();
+                }
             }) else {
-                // 助手页已随窗口释放，无需回写。
+                // 助手页已释放，无需回写。
                 return;
             };
         })
         .detach();
         cx.notify();
-    }
-
-    pub(crate) fn stop(&mut self, cx: &mut Context<Self>) {
-        let Some(session_id) = self.current_run().map(|run| run.session_id.clone()) else {
-            return;
-        };
-        if self.cancelling {
-            return;
-        }
-        self.cancelling = true;
-        Self::run(self.port.cancel(session_id), cx, |this, result, cx| {
-            this.cancelling = false;
-            if let Err(error) = result {
-                this.fail_action("cancel", &error, cx);
-            }
-            cx.notify();
-        });
-        cx.notify();
-    }
-
-    pub(crate) fn set_kind(&mut self, kind: AssistantSessionKind, cx: &mut Context<Self>) {
-        if self.current.is_none() && self.kind != kind {
-            self.kind = kind;
-            cx.notify();
-        }
     }
 
     // ───────────────────────── 工具确认 ─────────────────────────
@@ -987,19 +934,16 @@ impl AssistantView {
         if self.stale || !self.confirming.insert(request_id.clone()) {
             return;
         }
-        self.action_failed = false;
-        Self::run(
-            self.port.confirm(request_id.clone(), approved),
-            cx,
-            move |this, result, cx| {
-                // 成功后状态由推送改写；失败则放开按钮让用户重试（若已过期，推送会让卡片变为过期）。
-                if let Err(error) = result {
-                    this.confirming.remove(&request_id);
-                    this.fail_action("confirm", &error, cx);
-                }
-                cx.notify();
-            },
-        );
+        self.action_error = None;
+        let future = self.port.confirm(request_id.clone(), approved);
+        self.run(future, cx, move |this, result, cx| {
+            // 成功后状态由推送改写；失败则放开按钮让用户重试（若已过期，推送会让卡片变为过期）。
+            if let Err(error) = result {
+                this.confirming.remove(&request_id);
+                this.report_failure("confirm", &error, cx);
+            }
+            cx.notify();
+        });
         cx.notify();
     }
 
@@ -1015,37 +959,47 @@ impl AssistantView {
         cx.notify();
     }
 
-    /// 复制一轮对话到剪贴板，按钮短暂显示「已复制」。
+    // ───────────────────────── 复制 ─────────────────────────
+
+    /// 复制一轮对话（含过程）到剪贴板，按钮短暂显示「已复制」。
     pub(crate) fn copy_turn(&mut self, key: &str, cx: &mut Context<Self>) {
-        let session_id = self.current.clone().unwrap_or_default();
-        let turns = build_timeline(
-            &session_id,
-            &self.detail.messages,
-            &self.detail.issues,
-            &self.state.runs,
-            &self.issue_overrides,
-        );
-        let Some(turn) = turns.iter().find(|turn| turn.key == key) else {
+        let Some(turn) = self.timeline.iter().find(|turn| turn.key == key) else {
             return;
         };
         let text = {
             let translator = self.translator.read(cx);
-            turn_transcript(turn, now_unix_ms(), |label| {
-                translator.text(label).to_owned()
+            turn_transcript(turn, self.agent_now(), &|label, args| {
+                translator.text_with(label, args)
             })
         };
         cx.write_to_clipboard(ClipboardItem::new_string(text));
+        self.flash_copied(key, CopyKind::Turn, cx);
+    }
+
+    /// 只复制这一轮的回答（不含工具参数与结果）。
+    pub(crate) fn copy_answer(&mut self, key: &str, cx: &mut Context<Self>) {
+        let Some(answer) = self
+            .timeline
+            .iter()
+            .find(|turn| turn.key == key)
+            .and_then(|turn| turn.answer.as_deref())
+        else {
+            return;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(answer.to_owned()));
+        self.flash_copied(key, CopyKind::Answer, cx);
+    }
+
+    fn flash_copied(&mut self, key: &str, kind: CopyKind, cx: &mut Context<Self>) {
         let generation = self.copied_generation.wrapping_add(1);
         self.copied_generation = generation;
-        self.copied_turn = Some(key.to_owned());
+        self.copied = Some((key.to_owned(), kind));
         cx.notify();
         cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(1500))
-                .await;
+            cx.background_executor().timer(COPIED_FLASH).await;
             let Ok(()) = this.update(cx, |this, cx| {
                 if this.copied_generation == generation {
-                    this.copied_turn = None;
+                    this.copied = None;
                     cx.notify();
                 }
             }) else {
@@ -1087,7 +1041,7 @@ impl AssistantView {
         let previous = self.ratings.get(&message_id).cloned();
         let shown = self.shown_rating(&message_id, server.as_deref());
         let next = (shown != Some(rating)).then(|| rating.to_owned());
-        self.action_failed = false;
+        self.action_error = None;
         self.rating_busy.insert(message_id.clone());
         self.ratings.insert(message_id.clone(), next.clone());
         let params = AssistantRateParams {
@@ -1096,7 +1050,8 @@ impl AssistantView {
             rating: next.clone(),
             comment: None,
         };
-        Self::run(self.port.rate(params), cx, move |this, result, cx| {
+        let future = self.port.rate(params);
+        self.run(future, cx, move |this, result, cx| {
             this.rating_busy.remove(&message_id);
             if let Err(error) = result {
                 // 回滚到点击之前的状态；期间已被清空 / 改写的不动。
@@ -1110,301 +1065,18 @@ impl AssistantView {
                         }
                     }
                 }
-                this.fail_action("rate", &error, cx);
+                this.report_failure("rate", &error, cx);
             }
             cx.notify();
         });
         cx.notify();
     }
 
-    // ───────────────────────── 图片附件 ─────────────────────────
-
-    /// 云端接收图片时的 `(单条消息最多张数, 单张最大字节数)`；不接收（或张数为 0）为 `None`。
-    pub(crate) fn image_limits(&self) -> Option<(usize, u64)> {
-        let config = self.state.config.as_ref()?;
-        (config.images_supported && config.max_images > 0)
-            .then_some((config.max_images as usize, config.max_image_bytes))
-    }
-
-    /// 现在能否添加图片（入口可用、粘贴 / 拖入被接管的前提）。
-    pub(crate) fn can_attach(&self) -> bool {
-        matches!(
-            self.gate(),
-            Gate::Open {
-                quota_exhausted: false
-            }
-        ) && !self.stale
-            && !self.sending
-            && self.image_limits().is_some()
-    }
-
-    /// 还能再加几张（已有 + 处理中都占名额）。
-    fn free_image_slots(&self) -> usize {
-        let max = self.image_limits().map_or(0, |(max, _)| max);
-        max.saturating_sub(self.attachments.len() + self.attaching)
-    }
-
-    /// 图片附件相关的警示 toast。
-    fn warn(&self, key: &str, args: &[(&str, &str)], window: &mut Window, cx: &mut Context<Self>) {
-        let message = self.with(key, args, cx);
-        window.push_notification(toast::warning(message), cx);
-    }
-
-    fn warn_limit(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let max = self.image_limits().map_or(0, |(max, _)| max);
-        self.warn(
-            "assistantAttachErrTooMany",
-            &[("max", &max.to_string())],
-            window,
-            cx,
-        );
-    }
-
-    /// 输入框收到粘贴：剪贴板里是图片（或全是图片文件）就接管，返回 `true`；否则交还输入框按文字粘贴。
-    pub(crate) fn paste_images(
-        &mut self,
-        item: &ClipboardItem,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if !self.can_attach() {
-            return false;
+    pub(crate) fn set_kind(&mut self, kind: AssistantSessionKind, cx: &mut Context<Self>) {
+        if self.current.is_none() && self.kind != kind {
+            self.kind = kind;
+            cx.notify();
         }
-        let sources = clipboard_sources(item);
-        if sources.is_empty() {
-            return false;
-        }
-        self.add_images(sources, window, cx);
-        true
-    }
-
-    /// 把文件拖进输入卡片。
-    pub(crate) fn drop_files(
-        &mut self,
-        paths: &[PathBuf],
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if !self.can_attach() {
-            return;
-        }
-        let sources = paths.iter().cloned().map(ImageSource::File).collect();
-        self.add_images(sources, window, cx);
-    }
-
-    /// 点「+」：系统文件选择器（可多选）。
-    pub(crate) fn pick_images(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.can_attach() {
-            return;
-        }
-        if self.free_image_slots() == 0 {
-            self.warn_limit(window, cx);
-            return;
-        }
-        let receiver = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: true,
-            prompt: None,
-        });
-        cx.spawn_in(window, async move |this, cx| {
-            let paths = match receiver.await {
-                Ok(Ok(Some(paths))) => paths,
-                // 用户取消了选择。
-                Ok(Ok(None)) => return,
-                Ok(Err(error)) => {
-                    log::warn!("assistant image picker failed: {error:#}");
-                    return;
-                }
-                Err(error) => {
-                    log::warn!("assistant image picker closed: {error}");
-                    return;
-                }
-            };
-            let sources = paths.into_iter().map(ImageSource::File).collect();
-            let Ok(()) = this.update_in(cx, move |this, window, cx| {
-                this.add_images(sources, window, cx);
-            }) else {
-                // 助手页已随窗口释放，无需回写。
-                return;
-            };
-        })
-        .detach();
-    }
-
-    /// 把一批图片交给后台读取 / 转码；完成后按顺序加入附件并在光标处插入占位符。
-    fn add_images(
-        &mut self,
-        mut sources: Vec<ImageSource>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some((_, max_bytes)) = self.image_limits() else {
-            return;
-        };
-        let room = self.free_image_slots();
-        if sources.len() > room {
-            self.warn_limit(window, cx);
-            sources.truncate(room);
-        }
-        if sources.is_empty() {
-            return;
-        }
-        self.attaching += sources.len();
-        let executor = cx.background_executor().clone();
-        let tasks: Vec<Task<Result<Prepared, ImageError>>> = sources
-            .into_iter()
-            .map(|source| executor.spawn(async move { prepare(source, max_bytes) }))
-            .collect();
-        cx.spawn_in(window, async move |this, cx| {
-            let mut results = Vec::with_capacity(tasks.len());
-            for task in tasks {
-                results.push(task.await);
-            }
-            let Ok(()) = this.update_in(cx, move |this, window, cx| {
-                this.finish_adding(results, max_bytes, window, cx);
-            }) else {
-                // 助手页已随窗口释放，无需回写。
-                return;
-            };
-        })
-        .detach();
-        cx.notify();
-    }
-
-    fn finish_adding(
-        &mut self,
-        results: Vec<Result<Prepared, ImageError>>,
-        max_bytes: u64,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.attaching = self.attaching.saturating_sub(results.len());
-        let max_images = self.image_limits().map_or(0, |(max, _)| max);
-        let mut added = false;
-        let mut over_limit = false;
-        let mut unsupported = false;
-        let mut unreadable = false;
-        let mut too_large = false;
-        for result in results {
-            match result {
-                // 占位符编号取「加入后的张数」，与 `attachments` 的顺序一致。
-                Ok(prepared) if self.attachments.len() < max_images => {
-                    self.attachments.push(Attachment {
-                        data_url: prepared.data_url,
-                        thumbnail: prepared.thumbnail,
-                    });
-                    let number = self.attachments.len();
-                    self.insert_image_placeholder(number, window, cx);
-                    added = true;
-                }
-                Ok(_) => over_limit = true,
-                Err(ImageError::Unsupported) => unsupported = true,
-                Err(ImageError::Unreadable) => unreadable = true,
-                Err(ImageError::TooLarge) => too_large = true,
-            }
-        }
-        if added {
-            self.input.update(cx, |input, cx| input.focus(window, cx));
-        }
-        if over_limit {
-            self.warn_limit(window, cx);
-        }
-        if too_large {
-            let size = format_bytes(max_bytes, 2);
-            self.warn("assistantAttachErrTooLarge", &[("size", &size)], window, cx);
-        }
-        if unsupported {
-            self.warn("assistantAttachErrType", &[], window, cx);
-        }
-        if unreadable {
-            self.warn("assistantAttachErrRead", &[], window, cx);
-        }
-        cx.notify();
-    }
-
-    /// 在输入框光标处（有选区则替换选区）放入第 `number` 张图的占位符。
-    fn insert_image_placeholder(
-        &mut self,
-        number: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.input.update(cx, |input, cx| {
-            let text = input.value();
-            let edit = insert_placeholder(&text, input.selected_range(), number);
-            input.set_selected_range(edit.range, cx);
-            input.replace(edit.text, window, cx);
-        });
-        self.sync_input_text(cx);
-    }
-
-    /// 记下输入框当前文本：程序改动（`set_value` 不发 `Change`、占位符增删）后调用，
-    /// 免得下一次用户编辑被拿来和过期文本比较。
-    fn sync_input_text(&mut self, cx: &App) {
-        self.input_text = self.input.read(cx).value();
-    }
-
-    /// 输入框文本变了：删到一半的占位符整体删掉；占位符已不在文本里的图片随之移除
-    /// （手动删除、剪切、撤销插入等）。
-    fn input_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.input.read(cx).value();
-        let previous = std::mem::replace(&mut self.input_text, text.clone());
-        if let Some(range) = placeholder_remnant(&previous, &text, self.attachments.len()) {
-            self.input.update(cx, |input, cx| {
-                input.set_selected_range(range, cx);
-                input.replace("", window, cx);
-            });
-            self.sync_input_text(cx);
-        }
-        // 从大到小移除，前面的编号才不受重排影响。
-        let orphaned = orphaned_images(&self.input_text, self.attachments.len());
-        for number in orphaned.into_iter().rev() {
-            self.remove_image(number, window, cx);
-        }
-        cx.notify();
-    }
-
-    /// 移除第 `number` 张图：删掉文本里它的占位符，后面的占位符与缩略图编号依次减 1。
-    pub(crate) fn remove_image(
-        &mut self,
-        number: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let count = self.attachments.len();
-        if self.sending || number == 0 || number > count {
-            return;
-        }
-        self.attachments.remove(number - 1);
-        let text = self.input.read(cx).value();
-        let edits = remove_placeholder(&text, number, count);
-        if !edits.is_empty() {
-            self.input.update(cx, |input, cx| {
-                let selection = input.selected_range();
-                // 从后往前改，前面的偏移才不会失效；逐处替换保留撤销历史与滚动位置。
-                for edit in edits.iter().rev() {
-                    input.set_selected_range(edit.range.clone(), cx);
-                    input.replace(edit.text.clone(), window, cx);
-                }
-                let start = map_offset(selection.start, &edits);
-                let end = map_offset(selection.end, &edits);
-                input.set_selected_range(start..end, cx);
-            });
-            self.sync_input_text(cx);
-        }
-        cx.notify();
-    }
-
-    /// 这一轮提问的本地缩略图：只认刚发出的那条（最后一轮、文本一致、张数对得上）。
-    pub(crate) fn local_thumbnails(&self, turn: &Turn, last: bool) -> Option<&[Arc<Image>]> {
-        let sent = self.sent_images.as_ref()?;
-        let session = self.current.as_deref()?;
-        let same = last
-            && sent.session_id == session
-            && sent.text == turn.question
-            && (turn.live.is_some() || turn.image_count == sent.thumbnails.len());
-        same.then_some(sent.thumbnails.as_slice())
     }
 
     // ───────────────────────── 问题单 ─────────────────────────
@@ -1486,28 +1158,26 @@ impl AssistantView {
         if self.stale || !self.issue_busy.insert(issue_id.clone()) {
             return;
         }
-        self.action_failed = false;
+        self.action_error = None;
         let (title, body) = edited.unzip();
         let params = AssistantIssueParams {
             issue_id: issue_id.clone(),
             title,
             body,
         };
-        Self::run(
-            self.port.confirm_issue(params),
-            cx,
-            move |this, result, cx| {
-                this.issue_busy.remove(&issue_id);
-                match result {
-                    Ok(issue) => {
-                        this.issue_overrides.insert(issue_id, issue);
-                        this.issue_editor = None;
-                    }
-                    Err(error) => this.fail_action("confirm issue", &error, cx),
+        let future = self.port.confirm_issue(params);
+        self.run(future, cx, move |this, result, cx| {
+            this.issue_busy.remove(&issue_id);
+            match result {
+                Ok(issue) => {
+                    this.issue_overrides.insert(issue_id, issue);
+                    this.issue_editor = None;
+                    this.rebuild_timeline(cx);
                 }
-                cx.notify();
-            },
-        );
+                Err(error) => this.report_failure("confirm issue", &error, cx),
+            }
+            cx.notify();
+        });
         cx.notify();
     }
 
@@ -1515,26 +1185,50 @@ impl AssistantView {
         if self.stale || !self.issue_busy.insert(issue_id.clone()) {
             return;
         }
-        self.action_failed = false;
+        self.action_error = None;
         let snapshot = self.find_issue(&issue_id);
-        Self::run(
-            self.port.discard_issue(issue_id.clone()),
-            cx,
-            move |this, result, cx| {
-                this.issue_busy.remove(&issue_id);
-                match result {
-                    Ok(()) => {
-                        if let Some(mut issue) = snapshot {
-                            "discarded".clone_into(&mut issue.status);
-                            this.issue_overrides.insert(issue_id, issue);
-                        }
-                        this.issue_editor = None;
+        let future = self.port.discard_issue(issue_id.clone());
+        self.run(future, cx, move |this, result, cx| {
+            this.issue_busy.remove(&issue_id);
+            match result {
+                Ok(()) => {
+                    if let Some(mut issue) = snapshot {
+                        "discarded".clone_into(&mut issue.status);
+                        this.issue_overrides.insert(issue_id, issue);
                     }
-                    Err(error) => this.fail_action("discard issue", &error, cx),
+                    this.issue_editor = None;
+                    this.rebuild_timeline(cx);
                 }
-                cx.notify();
-            },
-        );
+                Err(error) => this.report_failure("discard issue", &error, cx),
+            }
+            cx.notify();
+        });
+        cx.notify();
+    }
+
+    // ───────────────────────── 键盘 ─────────────────────────
+
+    /// Esc：依次取消待确认的删除 / 清空、重命名、编辑重发，其次停止进行中的回答，清掉搜索词，
+    /// 最后关闭历史视图。什么都没有可取消时交还给上层（不吞掉 Esc）。
+    pub(crate) fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.delete_pending.is_some() || self.clear_pending {
+            self.delete_pending = None;
+            self.clear_pending = false;
+            self.confirm_gen = self.confirm_gen.wrapping_add(1);
+        } else if self.renaming.is_some() {
+            self.renaming = None;
+        } else if self.editing.is_some() && !self.history_open {
+            self.cancel_edit(window, cx);
+        } else if self.can_stop() && !self.history_open {
+            self.stop(cx);
+        } else if self.history_open && !self.search_text.is_empty() {
+            self.clear_search(window, cx);
+        } else if self.history_open {
+            self.toggle_history(window, cx);
+        } else {
+            cx.propagate();
+            return;
+        }
         cx.notify();
     }
 }

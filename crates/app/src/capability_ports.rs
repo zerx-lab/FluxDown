@@ -204,4 +204,36 @@ impl fluxdown_ui_assistant::AssistantPort for AgentAssistantPort {
             },
         )
     }
+
+    fn rename_session(
+        &self,
+        session_id: String,
+        title: String,
+    ) -> fluxdown_ui_assistant::PortFuture<fluxdown_protocol::AssistantSessionDto> {
+        self.client.call(
+            fluxdown_protocol::method::AGENT_ASSISTANT_RENAME_SESSION,
+            Some(fluxdown_protocol::AssistantRenameParams { session_id, title }),
+        )
+    }
+
+    fn export_session(
+        &self,
+        session_id: String,
+        format: fluxdown_protocol::AssistantExportFormat,
+    ) -> fluxdown_ui_assistant::PortFuture<fluxdown_protocol::AssistantExportResult> {
+        self.client.call(
+            fluxdown_protocol::method::AGENT_ASSISTANT_EXPORT_SESSION,
+            Some(fluxdown_protocol::AssistantExportParams { session_id, format }),
+        )
+    }
+
+    fn attachment(
+        &self,
+        attachment_id: String,
+    ) -> fluxdown_ui_assistant::PortFuture<fluxdown_protocol::AssistantAttachmentResult> {
+        self.client.call(
+            fluxdown_protocol::method::AGENT_ASSISTANT_ATTACHMENT,
+            Some(fluxdown_protocol::AssistantAttachmentParams { attachment_id }),
+        )
+    }
 }

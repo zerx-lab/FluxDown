@@ -644,14 +644,34 @@ impl ShellView {
         let theme = active_theme(cx);
         let radius = theme.components().nav_item_radius;
         let selected_bg = theme.extended().colors.nav_selected;
+        let indicator_color = theme.extended().colors.warning;
+        // 圆点直径取小图标的一半；贴按钮右上角，内缩到图标外沿，不改变按钮布局。
+        let indicator_size = theme.extended().icon.sm / 2.;
+        let indicator_inset = ((button_size - icon_size) / 2.).max(px(0.));
+        let indicator = action
+            .indicator
+            .as_ref()
+            .is_some_and(|indicator| indicator(cx));
         let icon_color = nav_icon_color(selected, cx);
         frame
             .id(tooltip_id)
             .tooltip(move |window, cx| tooltip_view(tooltip_label.clone(), window, cx))
             .child(
                 div()
+                    .relative()
                     .rounded(radius)
                     .when(selected, |this| this.bg(selected_bg))
+                    .when(indicator, |this| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .top(indicator_inset)
+                                .right(indicator_inset)
+                                .size(indicator_size)
+                                .rounded_full()
+                                .bg(indicator_color),
+                        )
+                    })
                     .child(
                         activity_button(
                             action.button_id,

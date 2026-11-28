@@ -239,6 +239,27 @@ pub(crate) fn prepare(source: ImageSource, max_bytes: u64) -> Result<Prepared, I
     })
 }
 
+/// 历史提问里取回的图片（`data:` URL）→ 对话气泡下的缩略图；解码较重，调用方在后台线程执行。
+pub(crate) fn thumbnail_from_data_url(url: &str) -> Result<Arc<gpui::Image>, ImageError> {
+    let (header, payload) = url.split_once(',').ok_or(ImageError::Unsupported)?;
+    if !header.starts_with("data:image/") || !header.ends_with(";base64") {
+        return Err(ImageError::Unsupported);
+    }
+    let bytes = STANDARD
+        .decode(payload.trim())
+        .map_err(|_| ImageError::Unsupported)?;
+    let decoded = decode(&bytes)?;
+    let thumbnail = if decoded.width().max(decoded.height()) <= THUMBNAIL_EDGE {
+        encode_png(&decoded)?
+    } else {
+        encode_png(&decoded.thumbnail(THUMBNAIL_EDGE, THUMBNAIL_EDGE))?
+    };
+    Ok(Arc::new(gpui::Image::from_bytes(
+        gpui::ImageFormat::Png,
+        thumbnail,
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use gpui::ExternalPaths;
@@ -400,5 +421,35 @@ mod tests {
             entries: vec![ClipboardEntry::ExternalPaths(mixed)],
         };
         assert!(clipboard_sources(&item).is_empty());
+    }
+
+    #[test]
+    fn history_data_url_becomes_a_small_thumbnail_and_rejects_junk() {
+        let png = sample(ImageFormat::Png, 400, 300);
+        let url = data_url(Mime::Png, &png);
+        let thumbnail = thumbnail_from_data_url(&url).unwrap();
+        let decoded = image::load_from_memory(&thumbnail.bytes).unwrap();
+        assert!(decoded.width().max(decoded.height()) <= THUMBNAIL_EDGE);
+        // 头部合法但负载不是图片 / 不是 base64：不支持，不 panic。
+        assert_eq!(
+            thumbnail_from_data_url("data:image/png;base64,aGk=").err(),
+            Some(ImageError::Unsupported)
+        );
+        assert_eq!(
+            thumbnail_from_data_url("data:image/png,aGk=").err(),
+            Some(ImageError::Unsupported)
+        );
+        assert_eq!(
+            thumbnail_from_data_url("data:text/plain;base64,aGk=").err(),
+            Some(ImageError::Unsupported)
+        );
+        assert_eq!(
+            thumbnail_from_data_url("not a data url").err(),
+            Some(ImageError::Unsupported)
+        );
+        assert_eq!(
+            thumbnail_from_data_url("data:image/png;base64,@@@").err(),
+            Some(ImageError::Unsupported)
+        );
     }
 }

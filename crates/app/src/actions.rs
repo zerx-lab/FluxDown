@@ -23,6 +23,8 @@ actions!(
         ShowAll,
         BringAllToFront,
         /// 打开 / 关闭全局命令面板（⌘K / Ctrl+K）。
-        ToggleCommandPalette
+        ToggleCommandPalette,
+        /// 开关主窗口右侧 AI 助手面板（云端未开放助手入口时无效）。
+        ToggleAssistant
     ]
 );

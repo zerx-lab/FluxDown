@@ -124,6 +124,7 @@ fn command_shortcut_id(command_id: &str) -> Option<&'static str> {
         "cmd.cycle_sort" => "cycle_sort",
         "cmd.toggle_detail_panel" => "toggle_detail",
         "cmd.open_settings" => "open_settings",
+        "cmd.toggle_assistant" => "toggle_assistant",
         "cmd.quit" => "quit",
         _ => return None,
     })

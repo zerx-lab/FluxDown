@@ -7,17 +7,30 @@
 //! 工具调用以内嵌确认卡片等待用户允许。
 
 pub mod actions;
+mod ask;
 mod attachment;
+mod dates;
+mod draft;
 mod header;
+mod history;
+mod images;
+mod markdown;
 mod model;
+mod preview;
 mod render;
+mod render_composer;
+mod render_history;
+mod render_issue;
+mod render_steps;
 mod view;
+mod widgets;
 
 use std::{future::Future, pin::Pin};
 
 use fluxdown_protocol::{
-    AssistantAskParams, AssistantAskResult, AssistantClearedSessions, AssistantIssueDto,
-    AssistantIssueParams, AssistantRateParams, AssistantSessionDetail, AssistantSessionPage,
+    AssistantAskParams, AssistantAskResult, AssistantAttachmentResult, AssistantClearedSessions,
+    AssistantExportFormat, AssistantExportResult, AssistantIssueDto, AssistantIssueParams,
+    AssistantRateParams, AssistantSessionDetail, AssistantSessionDto, AssistantSessionPage,
     AssistantSessionsParams, AssistantStateDto, RpcErrorData,
 };
 
@@ -52,4 +65,14 @@ pub trait AssistantPort: Send + Sync {
     fn confirm_issue(&self, params: AssistantIssueParams) -> PortFuture<AssistantIssueDto>;
     /// `agent.assistant.discardIssue`。
     fn discard_issue(&self, issue_id: String) -> PortFuture<()>;
+    /// `agent.assistant.renameSession`：重命名会话（标题 trim 后 1–80 字符）。
+    fn rename_session(&self, session_id: String, title: String) -> PortFuture<AssistantSessionDto>;
+    /// `agent.assistant.exportSession`：导出会话为 Markdown / JSON（云端生成，UI 负责保存）。
+    fn export_session(
+        &self,
+        session_id: String,
+        format: AssistantExportFormat,
+    ) -> PortFuture<AssistantExportResult>;
+    /// `agent.assistant.attachment`：按附件 ID 取历史提问里的一张图（data URL）。
+    fn attachment(&self, attachment_id: String) -> PortFuture<AssistantAttachmentResult>;
 }
