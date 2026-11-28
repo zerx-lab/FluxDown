@@ -36,7 +36,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::output::{display_path, iso_millis, truncate_chars, url_host};
-use super::settings::{denied_setting_reason, wire_to_json};
+use super::settings::{denied_setting_reason, display_setting_value, wire_to_json};
 use super::tasks::{check_max, invalid};
 use super::{ToolContext, ToolError, expect_no_args, parse_args, to_json};
 
@@ -286,7 +286,8 @@ impl SettingsView {
             self.settings
                 .insert(key.to_owned(), Value::String(MASKED.to_owned()));
         } else {
-            self.settings.insert(key.to_owned(), value);
+            self.settings
+                .insert(key.to_owned(), display_setting_value(key, value));
         }
     }
 }
@@ -1221,6 +1222,35 @@ mod tests {
         assert_eq!(view["unmatchedFilters"], json!(["no_such_key"]));
         let masked = view["maskedKeys"].as_array().expect("masked keys");
         assert!(masked.iter().any(|key| key == "proxy_password"));
+    }
+
+    #[test]
+    fn settings_view_shows_tracker_origins_without_passkey_paths() {
+        let mut config = DaemonConfigSnapshot::default();
+        config.values.insert(
+            "bt_custom_trackers".to_owned(),
+            "https://tracker.example/SECRETPASSKEY/announce\n\n  udp://t2.example:6969/announce?k=SECRET2 \n"
+                .to_owned(),
+        );
+        config.values.insert(
+            "proxy_protocol_http".to_owned(),
+            "http://user:hunter2@proxy.example:8080/".to_owned(),
+        );
+        let filters = parse_filters(vec![
+            "bt_custom_trackers".to_owned(),
+            "proxy_protocol_http".to_owned(),
+        ])
+        .expect("valid");
+        let view = settings_view(&config, &AgentPreferencesDto::default(), &filters);
+        assert_eq!(
+            view["settings"]["bt_custom_trackers"],
+            "https://tracker.example\nudp://t2.example:6969"
+        );
+        let text = view.to_string();
+        for leaked in ["SECRETPASSKEY", "SECRET2", "hunter2", "user:"] {
+            assert!(!text.contains(leaked), "{leaked} leaked: {text}");
+        }
+        assert!(text.contains("proxy.example"));
     }
 
     #[test]

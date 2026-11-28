@@ -15,6 +15,10 @@ pub(super) const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_SANITIZE_BYTES: usize = 4 * MAX_OUTPUT_BYTES;
 /// 截断标注的预留长度(标注最长约 80 字节)。
 const TRUNCATION_RESERVE: usize = 96;
+/// 合法 JSON 兜底外壳(固定字段 + 数字)的预留长度。
+const ENVELOPE_RESERVE: usize = 256;
+/// 列表预算在回传上限之外再留的固定余量:裁剪时追加的计数字段、脱敏改写。
+const ITEMS_HEADROOM: usize = 160;
 /// 展示用 URL 路径的字符上限。
 const MAX_URL_PATH_CHARS: usize = 200;
 /// 无法解析的 URL 原样展示时的字符上限。
@@ -113,9 +117,9 @@ pub(super) fn truncate_chars(text: &str, max: usize) -> String {
     }
 }
 
-/// 纯文本输出(错误消息、日志文本)的收尾:预截断 → 文本脱敏 → 主目录 → 截断。
-pub(super) fn finalize_text(text: &str) -> String {
-    finalize_text_with(text, home_dir(), MAX_OUTPUT_BYTES)
+/// 纯文本输出(错误消息、日志文本)的收尾:预截断 → 文本脱敏 → 主目录 → 截断到 `max` 字节。
+pub(super) fn finalize_text(text: &str, max: usize) -> String {
+    finalize_text_with(text, home_dir(), max)
 }
 
 fn finalize_text_with(text: &str, home: Option<&str>, max: usize) -> String {
@@ -132,16 +136,93 @@ fn finalize_text_with(text: &str, home: Option<&str>, max: usize) -> String {
     truncate_utf8(cleaned, max)
 }
 
-/// JSON 结果的收尾:键名脱敏 → 逐串文本脱敏 + 主目录 → 紧凑序列化 → 截断。
-pub(super) fn finalize_json(value: Value) -> String {
-    finalize_json_with(value, home_dir(), MAX_OUTPUT_BYTES)
+/// JSON 结果的收尾:键名脱敏 → 逐串文本脱敏 + 主目录 → 紧凑序列化 → 超过 `max` 字节时换成合法 JSON 外壳。
+pub(super) fn finalize_json(value: Value, max: usize) -> String {
+    finalize_json_with(value, home_dir(), max)
 }
 
 fn finalize_json_with(mut value: Value, home: Option<&str>, max: usize) -> String {
     // 先按键名抹掉密钥类值(与日志导出同一份判定),再逐串脱敏与替换主目录,最后紧凑序列化。
     crate::log_export::redact_secret_values(&mut value);
     scrub_value(&mut value, home);
-    truncate_utf8(value.to_string(), max)
+    let text = value.to_string();
+    if text.len() <= max {
+        text
+    } else {
+        truncated_envelope(&text, max)
+    }
+}
+
+/// 序列化后仍超出上限的最后兜底:按字节切坏的 JSON 模型读不了,所以把前缀放进一个合法的 JSON 外壳,
+/// 带上保留 / 总字节数。大列表应在更早处按条目数裁剪(见 [`fit_items`]),不该走到这里。
+fn truncated_envelope(text: &str, max: usize) -> String {
+    let total = text.len();
+    let mut end = max.saturating_sub(ENVELOPE_RESERVE).min(total);
+    loop {
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        let candidate = serde_json::json!({
+            "truncated": true,
+            "note": "output exceeded the size limit; partialJson is only the beginning of the result and is not complete JSON",
+            "keptBytes": end,
+            "totalBytes": total,
+            "partialJson": &text[..end],
+        })
+        .to_string();
+        if candidate.len() <= max || end == 0 {
+            return candidate;
+        }
+        // 每少一个源字节,转义后至少少一个字节:按超出量收缩一次必然更接近上限。
+        end = end.saturating_sub(candidate.len() - max);
+    }
+}
+
+/// 只数字节数的 writer:预算判断不必为每个条目分配字符串。
+#[derive(Default)]
+struct ByteCount(usize);
+
+impl std::io::Write for ByteCount {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.saturating_add(buf.len());
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// `value` 紧凑序列化后的字节数。
+pub(super) fn json_len(value: &Value) -> usize {
+    let mut count = ByteCount::default();
+    // 计数 writer 不会失败;万一序列化失败按「放不下」处理,而不是当成 0 字节。
+    serde_json::to_writer(&mut count, value).map_or(usize::MAX, |()| count.0)
+}
+
+/// 列表条目可用的字节预算:回传上限扣掉列表之外的骨架,再留出被裁剪时附加的计数字段与脱敏改写余量。
+pub(super) fn items_budget(limit: usize, skeleton: &Value) -> usize {
+    limit
+        .saturating_sub(json_len(skeleton))
+        .saturating_sub(limit / 20 + ITEMS_HEADROOM)
+}
+
+/// 按预算保留最长的条目前缀(保序,被丢弃的是排在后面的条目),返回保留的条目与被丢弃的条数。
+/// 输出因此永远是完整的 JSON 数组,调用方把丢弃条数写进结果。
+pub(super) fn fit_items(mut items: Vec<Value>, budget: usize) -> (Vec<Value>, usize) {
+    let mut used = 0_usize;
+    let mut keep = items.len();
+    for (index, item) in items.iter().enumerate() {
+        // 条目自身 + 数组里的分隔逗号。
+        used = used.saturating_add(json_len(item)).saturating_add(1);
+        if used > budget {
+            keep = index;
+            break;
+        }
+    }
+    let omitted = items.len() - keep;
+    items.truncate(keep);
+    (items, omitted)
 }
 
 /// 展示用 URL:去 userinfo、fragment、query(只标注有 query),路径过长截断。
@@ -264,9 +345,55 @@ mod tests {
         let value = json!({ "text": "日志".repeat(MAX_OUTPUT_BYTES) });
         let out = finalize_json_with(value, None, MAX_OUTPUT_BYTES);
         assert!(out.len() <= MAX_OUTPUT_BYTES);
-        assert!(out.contains("[output truncated"));
+        let parsed: Value = serde_json::from_str(&out).expect("the fallback is valid JSON");
+        assert_eq!(parsed["truncated"], true);
         let text = finalize_text_with(&"🙂".repeat(MAX_OUTPUT_BYTES), None, MAX_OUTPUT_BYTES);
         assert!(text.len() <= MAX_OUTPUT_BYTES);
+    }
+
+    #[test]
+    fn oversized_json_always_comes_back_as_valid_json_within_the_limit() {
+        // 引号 / 反斜杠 / 控制字符转义后会变长:外壳必须把转义膨胀算进去。
+        for max in [600, 1_000, 4_096, MAX_OUTPUT_BYTES] {
+            let value = json!({ "lines": vec!["a\"b\\c\n\u{1}日志"; 5_000] });
+            let out = finalize_json_with(value, None, max);
+            assert!(out.len() <= max, "len {} > {max}", out.len());
+            let parsed: Value = serde_json::from_str(&out).expect("valid JSON");
+            assert_eq!(parsed["truncated"], true);
+            let kept = parsed["keptBytes"].as_u64().expect("kept bytes");
+            let total = parsed["totalBytes"].as_u64().expect("total bytes");
+            assert!(kept < total);
+            assert_eq!(
+                parsed["partialJson"].as_str().expect("prefix").len() as u64,
+                kept
+            );
+        }
+        let small = finalize_json_with(json!({ "a": 1 }), None, 600);
+        assert_eq!(small, r#"{"a":1}"#);
+    }
+
+    #[test]
+    fn list_items_are_kept_as_a_prefix_within_the_budget() {
+        let items: Vec<Value> = (0..50).map(|index| json!({ "n": index })).collect();
+        let each = json_len(&items[0]) + 1;
+        let (kept, omitted) = fit_items(items.clone(), each * 10);
+        assert_eq!((kept.len(), omitted), (10, 40));
+        assert_eq!(kept[0], items[0], "the leading items survive");
+        assert_eq!(kept[9], items[9]);
+        let (all, none) = fit_items(items.clone(), usize::MAX);
+        assert_eq!((all.len(), none), (50, 0));
+        let (empty, dropped) = fit_items(items, 0);
+        assert_eq!((empty.len(), dropped), (0, 50));
+    }
+
+    #[test]
+    fn items_budget_subtracts_the_skeleton_and_the_headroom() {
+        let skeleton = json!({ "matched": 3, "tasks": [] });
+        let limit = 24_000;
+        let budget = items_budget(limit, &skeleton);
+        assert!(budget < limit - json_len(&skeleton));
+        assert!(budget >= limit - json_len(&skeleton) - limit / 20 - ITEMS_HEADROOM);
+        assert_eq!(items_budget(100, &skeleton), 0, "never underflows");
     }
 
     #[test]

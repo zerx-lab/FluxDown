@@ -56,12 +56,30 @@ const MEASURE_TIMEOUT: Duration = Duration::from_secs(300);
 /// 首次读取任务实时速率前,等待速率采样器收到第一批进度帧的时间。
 const SPEED_WARMUP: Duration = Duration::from_millis(1500);
 
+/// 云端未下发 `maxOutputChars`(旧云端)时的输出预算:FluxCloud 默认的 `maxToolOutputChars`。
+const DEFAULT_OUTPUT_BYTES: usize = 24_000;
+/// 输出预算的下限:再小连截断说明和 JSON 外壳都放不下。
+const MIN_OUTPUT_BYTES: usize = 512;
+
+/// `clientToolCall.maxOutputChars` → 本机输出字节预算:不超过本机上限 [`output::MAX_OUTPUT_BYTES`]。
+/// 字节数不小于字符数,按同一个数取预算,云端按字符截断时就不会切到我们的输出;缺失按云端默认值。
+pub(crate) fn output_budget(max_output_chars: Option<u32>) -> usize {
+    match max_output_chars {
+        Some(chars) => usize::try_from(chars)
+            .unwrap_or(usize::MAX)
+            .clamp(MIN_OUTPUT_BYTES, output::MAX_OUTPUT_BYTES),
+        None => DEFAULT_OUTPUT_BYTES,
+    }
+}
+
 /// 一次客户端工具调用(云端 `clientToolCall` 事件的内容)。
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ToolCall {
     pub name: String,
     pub version: u32,
     pub arguments: Value,
+    /// 回传输出的字节预算(见 [`output_budget`]):工具按它裁剪大列表,收尾按它兜底。
+    pub max_output_bytes: usize,
 }
 
 /// 工具执行结果,原样回传云端。
@@ -176,20 +194,21 @@ impl ToolContext {
         hub.live_speeds()
     }
 
-    async fn run(&self, id: ToolId, args: Value) -> Result<Value, ToolError> {
+    /// `limit` = 回传输出的字节预算:会产出大列表的工具(任务 / BT 文件 / 日志)按它按条目裁剪。
+    async fn run(&self, id: ToolId, args: Value, limit: usize) -> Result<Value, ToolError> {
         match id {
             ToolId::GetAppInfo => read::app_info(self, args).await,
             ToolId::GetSettings => read::settings(self, args).await,
-            ToolId::ListTasks => read_tasks::list_tasks(self, args).await,
+            ToolId::ListTasks => read_tasks::list_tasks(self, args, limit).await,
             ToolId::GetTask => read_tasks::get_task(self, args).await,
             ToolId::GetRuntimeStats => read::runtime_stats(self, args).await,
-            ToolId::GetBtStatus => read_tasks::bt_status(self, args, false).await,
-            ToolId::GetBtStatusV2 => read_tasks::bt_status(self, args, true).await,
+            ToolId::GetBtStatus => read_tasks::bt_status(self, args, false, limit).await,
+            ToolId::GetBtStatusV2 => read_tasks::bt_status(self, args, true, limit).await,
             ToolId::GetNetworkStatus => read::network_status(self, args).await,
             ToolId::ListPlugins => read::plugins(self, args).await,
             ToolId::ListComponents => read::components(self, args).await,
             ToolId::RunDiagnostics => read::diagnostics(self, args).await,
-            ToolId::GetLogs => read_logs::logs(self, args).await,
+            ToolId::GetLogs => read_logs::logs(self, args, limit).await,
             ToolId::GetNetInterfaces => read::net_interfaces(self, args).await,
             ToolId::MeasureRoutes => read::measure_routes(self, args).await,
             ToolId::CreateTasks => tasks::create_tasks(self, args).await,
@@ -379,30 +398,30 @@ fn lookup(name: &str, version: u32) -> Result<&'static ToolDef, String> {
     }
 }
 
-fn error_output(message: &str) -> ToolOutput {
+fn error_output(message: &str, limit: usize) -> ToolOutput {
     ToolOutput {
-        output: output::finalize_text(message),
+        output: output::finalize_text(message, limit),
         is_error: true,
         interrupted: false,
     }
 }
 
 /// 写类工具被中途停止(取消 / 超时 / 任务崩溃):已发出的请求可能已生效,结果未知。
-fn interrupted_output(message: &str) -> ToolOutput {
+fn interrupted_output(message: &str, limit: usize) -> ToolOutput {
     ToolOutput {
         interrupted: true,
-        ..error_output(message)
+        ..error_output(message, limit)
     }
 }
 
-fn finish(outcome: Result<Value, ToolError>) -> ToolOutput {
+fn finish(outcome: Result<Value, ToolError>, limit: usize) -> ToolOutput {
     match outcome {
         Ok(value) => ToolOutput {
-            output: output::finalize_json(value),
+            output: output::finalize_json(value, limit),
             is_error: false,
             interrupted: false,
         },
-        Err(error) => error_output(&error.to_string()),
+        Err(error) => error_output(&error.to_string(), limit),
     }
 }
 
@@ -417,14 +436,15 @@ where
         name,
         version,
         arguments,
+        max_output_bytes: limit,
     } = call;
     let tool = match lookup(&name, version) {
         Ok(tool) => tool,
-        Err(message) => return error_output(&message),
+        Err(message) => return error_output(&message, limit),
     };
     let work = run(tool.id, arguments);
     if tool.writes {
-        return execute_write(tool, cancel, work).await;
+        return execute_write(tool, cancel, work, limit).await;
     }
     let outcome = tokio::select! {
         biased;
@@ -432,14 +452,17 @@ where
         timed = tokio::time::timeout(tool.timeout, work) => match timed {
             Ok(result) => result,
             Err(_) => {
-                return error_output(&format!(
-                    "client tool '{name}' timed out after {} seconds",
-                    tool.timeout.as_secs()
-                ));
+                return error_output(
+                    &format!(
+                        "client tool '{name}' timed out after {} seconds",
+                        tool.timeout.as_secs()
+                    ),
+                    limit,
+                );
             }
         },
     };
-    finish(outcome)
+    finish(outcome, limit)
 }
 
 /// 写类工具:工作放到独立任务里跑(自带时限)。执行期间被取消时不丢弃它——已发出的 daemon 请求
@@ -448,13 +471,14 @@ async fn execute_write<Fut>(
     tool: &'static ToolDef,
     cancel: CancellationToken,
     work: Fut,
+    output_limit: usize,
 ) -> ToolOutput
 where
     Fut: Future<Output = Result<Value, ToolError>> + Send + 'static,
 {
     // 还没开始执行就已取消:什么都没发出,不是「结果未知」。
     if cancel.is_cancelled() {
-        return error_output(&ToolError::Cancelled.to_string());
+        return error_output(&ToolError::Cancelled.to_string(), output_limit);
     }
     let name = tool.name;
     let limit = tool.timeout;
@@ -466,16 +490,22 @@ where
         () = cancel.cancelled() => None,
     };
     match joined {
-        Some(Ok(Ok(result))) => finish(result),
-        Some(Ok(Err(_))) => interrupted_output(&format!(
-            "client tool '{name}' timed out after {} seconds; the operation may or may not have completed, check the current state before retrying",
-            limit.as_secs()
-        )),
+        Some(Ok(Ok(result))) => finish(result, output_limit),
+        Some(Ok(Err(_))) => interrupted_output(
+            &format!(
+                "client tool '{name}' timed out after {} seconds; the operation may or may not have completed, check the current state before retrying",
+                limit.as_secs()
+            ),
+            output_limit,
+        ),
         Some(Err(error)) => {
             tracing::error!(tool = name, %error, "assistant write tool task failed");
-            interrupted_output(&format!(
-                "client tool '{name}' ended unexpectedly; the operation may or may not have completed, check the current state before retrying"
-            ))
+            interrupted_output(
+                &format!(
+                    "client tool '{name}' ended unexpectedly; the operation may or may not have completed, check the current state before retrying"
+                ),
+                output_limit,
+            )
         }
         None => {
             tokio::spawn(async move {
@@ -500,9 +530,12 @@ where
                     }
                 }
             });
-            interrupted_output(&format!(
-                "the run was stopped while client tool '{name}' was executing; it may still complete in the background, check the current state before retrying"
-            ))
+            interrupted_output(
+                &format!(
+                    "the run was stopped while client tool '{name}' was executing; it may still complete in the background, check the current state before retrying"
+                ),
+                output_limit,
+            )
         }
     }
 }
@@ -530,8 +563,9 @@ impl ClientTools {
     /// `is_error = true` 返回。
     pub(crate) async fn execute(&self, call: ToolCall, cancel: CancellationToken) -> ToolOutput {
         let ctx = Arc::clone(&self.ctx);
+        let limit = call.max_output_bytes;
         execute_with(call, cancel, move |id, args| async move {
-            ctx.run(id, args).await
+            ctx.run(id, args, limit).await
         })
         .await
     }
@@ -553,6 +587,7 @@ mod tests {
             name: name.to_owned(),
             version,
             arguments,
+            max_output_bytes: output::MAX_OUTPUT_BYTES,
         }
     }
 
@@ -697,7 +732,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn oversized_multibyte_results_are_truncated_on_a_char_boundary() {
+    async fn oversized_multibyte_results_become_a_valid_json_envelope_within_the_limit() {
         let out = execute_with(
             call("fd_get_logs", 1, json!({})),
             CancellationToken::new(),
@@ -710,11 +745,28 @@ mod tests {
             "{}",
             out.output.len()
         );
-        assert!(
-            out.output.contains("[output truncated"),
-            "tail: {}",
-            &out.output[out.output.len() - 80..]
-        );
+        let parsed: Value = serde_json::from_str(&out.output).unwrap_or(Value::Null);
+        assert_eq!(parsed["truncated"], json!(true), "len {}", out.output.len());
+    }
+
+    #[tokio::test]
+    async fn the_output_budget_follows_the_call_limit() {
+        let mut small = call("fd_get_logs", 1, json!({}));
+        small.max_output_bytes = output_budget(Some(2_000));
+        let out = execute_with(small, CancellationToken::new(), |_, _| async {
+            Ok(json!({ "text": "x".repeat(10_000) }))
+        })
+        .await;
+        assert!(out.output.len() <= 2_000, "{}", out.output.len());
+        assert!(serde_json::from_str::<Value>(&out.output).is_ok());
+    }
+
+    #[test]
+    fn output_budget_clamps_and_defaults() {
+        assert_eq!(output_budget(None), 24_000);
+        assert_eq!(output_budget(Some(24_000)), 24_000);
+        assert_eq!(output_budget(Some(200_000)), output::MAX_OUTPUT_BYTES);
+        assert_eq!(output_budget(Some(0)), MIN_OUTPUT_BYTES);
     }
 
     #[tokio::test]

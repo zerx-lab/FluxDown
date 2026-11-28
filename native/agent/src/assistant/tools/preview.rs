@@ -16,7 +16,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::admin::{ComponentArgs, PluginArgs, QueueAction, QueueArgs, RepairArgs, component_name};
-use super::output::{display_path, display_url, finalize_text, truncate_chars};
+use super::output::{MAX_OUTPUT_BYTES, display_path, display_url, finalize_text, truncate_chars};
 use super::read_tasks::file_priority_label;
 use super::settings;
 use super::task_ops::{self, SeedLimits};
@@ -68,7 +68,7 @@ fn parse<T: for<'de> Deserialize<'de>>(args: &Value) -> Option<T> {
 }
 
 fn text(raw: &str) -> String {
-    truncate_chars(&finalize_text(raw), MAX_TEXT_CHARS)
+    truncate_chars(&finalize_text(raw, MAX_OUTPUT_BYTES), MAX_TEXT_CHARS)
 }
 
 /// 设置值的展示文本:字符串原样(脱敏 + 截断),其余取紧凑 JSON。
@@ -287,10 +287,11 @@ async fn update_settings(env: &impl PreviewEnv, args: &Value) -> Option<ToolPrev
     let mut rows: Vec<AssistantSettingChangeDto> = changes
         .iter()
         .map(|(key, before, after)| {
+            let (before, after) = settings::display_change(key, before.clone(), after.clone());
             change(
                 key,
-                (!before.is_null()).then(|| value_text(before)),
-                value_text(after),
+                (!before.is_null()).then(|| value_text(&before)),
+                value_text(&after),
             )
         })
         .collect();
@@ -511,6 +512,7 @@ mod tests {
             name: name.to_owned(),
             version: 1,
             arguments,
+            max_output_bytes: super::super::output_budget(None),
         }
     }
 
@@ -706,6 +708,52 @@ mod tests {
         assert_eq!(dto.settings[0].key, "max_concurrent_tasks");
         assert_eq!(dto.settings[0].from.as_deref(), Some("3"));
         assert_eq!(dto.settings[0].to, "5");
+    }
+
+    #[tokio::test]
+    async fn tracker_preview_shows_the_real_diff_and_never_a_restored_removal() {
+        let mut env = env();
+        env.rpc.config.values.insert(
+            "bt_custom_trackers".to_owned(),
+            "https://t.example/SECRETPASSKEY/announce\nudp://old.example:6969/announce".to_owned(),
+        );
+        // 模型只看得到展示形态:保留第一条、删掉第二条、新增一条。
+        let out = build(
+            &env,
+            &call(
+                "fd_update_settings",
+                json!({ "values": {
+                    "bt_custom_trackers": "https://t.example\nudp://new.example:80/announce"
+                } }),
+            ),
+        )
+        .await;
+        let card = dto(&out);
+        assert_eq!(card.settings.len(), 1);
+        // 被还原的第一条既不算移除也不算新增;移除的是第二条,新增的是第三条。
+        assert_eq!(
+            card.settings[0].from.as_deref(),
+            Some("udp://old.example:6969")
+        );
+        assert_eq!(card.settings[0].to, "udp://new.example:80");
+        let text = format!("{:?}", card.settings);
+        assert!(!text.contains("SECRETPASSKEY"), "{text}");
+
+        // 只新增:没有「改前」。
+        let added = build(
+            &env,
+            &call(
+                "fd_update_settings",
+                json!({ "values": {
+                    "bt_custom_trackers":
+                        "https://t.example\nudp://old.example:6969\nudp://new.example:80/announce"
+                } }),
+            ),
+        )
+        .await;
+        let added_card = dto(&added);
+        assert_eq!(added_card.settings[0].from, None);
+        assert_eq!(added_card.settings[0].to, "udp://new.example:80");
     }
 
     #[tokio::test]

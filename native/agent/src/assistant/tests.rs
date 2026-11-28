@@ -244,6 +244,9 @@ struct MockCloud {
     resume: Mutex<VecDeque<(StatusCode, String)>>,
     /// `PATCH /sessions/{id}` 的请求体。
     renames: Mutex<Vec<Value>>,
+    /// `GET /sessions` 的应答(默认空列表)与 `GET /sessions/{id}` 的应答(默认 404)。
+    sessions: Mutex<Option<Value>>,
+    detail: Mutex<Option<Value>>,
     /// 会话列表 / 导出请求的「名字 + 查询串」。
     queries: Mutex<Vec<String>>,
     /// `GET /attachments/{id}` 的应答:`Content-Type` + 正文。
@@ -350,7 +353,32 @@ async fn mock_cancel(State(mock): State<Mock>, Path(_session): Path<String>) -> 
 
 async fn mock_sessions(State(mock): State<Mock>, RawQuery(query): RawQuery) -> axum::Json<Value> {
     lock(&mock.queries).push(format!("sessions?{}", query.unwrap_or_default()));
-    axum::Json(json!({"total": 0, "items": []}))
+    let page = lock(&mock.sessions).clone();
+    axum::Json(page.unwrap_or_else(|| json!({"total": 0, "items": []})))
+}
+
+async fn mock_session_detail(State(mock): State<Mock>, Path(session): Path<String>) -> Response {
+    record(&mock, format!("detail {session}"));
+    match lock(&mock.detail).clone() {
+        Some(body) => axum::Json(body).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+fn session_json(active_run: Option<&str>) -> Value {
+    let mut session = json!({
+        "id": "sess-1", "channel": "desktop", "kind": "ask", "title": "", "messageCount": 0,
+        "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z"
+    });
+    if let Some(run_id) = active_run {
+        session["active"] = json!(true);
+        session["activeRunId"] = json!(run_id);
+    }
+    session
+}
+
+fn detail_json(messages: Value) -> Value {
+    json!({"session": session_json(None), "messages": messages, "issues": [], "questionsUsed": 1})
 }
 
 async fn mock_rename(
@@ -548,7 +576,9 @@ impl Harness {
             )
             .route(
                 "/api/v1/ai/sessions/{id}",
-                patch(mock_rename).delete(mock_delete_session),
+                patch(mock_rename)
+                    .delete(mock_delete_session)
+                    .get(mock_session_detail),
             )
             .route("/api/v1/ai/sessions/{id}/export", get(mock_export))
             .route("/api/v1/ai/sessions/{id}/messages", post(mock_ask))
@@ -1638,8 +1668,8 @@ async fn resume_refused_with_gone_fails_the_run_as_stream_lost() {
     );
     assert_eq!(
         harness.log(),
-        ["events run-1 after=2"],
-        "410 is final: no retry"
+        ["events run-1 after=2", "detail sess-1"],
+        "410 is final: no retry, only one check of the persisted answer"
     );
     harness.finish().await;
 }
@@ -1990,5 +2020,366 @@ async fn attachment_returns_a_data_url_with_the_response_mime_and_respects_the_c
     fetch("missing").await.expect_err("unknown attachment");
     let error = fetch(" ").await.expect_err("empty id");
     assert_eq!(error.data.field.as_deref(), Some("attachmentId"));
+    harness.finish().await;
+}
+
+// ------------------------------------------------------------------ 本机独自要求确认(云端声明成只读)
+
+/// 云端把 `fd_create_tasks`(本机判定为写入)声明成只读且不给确认窗口:只有本机要求确认。
+async fn pending_local_only_call(harness: &Harness, timeout_secs: u64) {
+    harness.send(json!({"type": "run", "runId": "run-1", "sessionId": "sess-1"}));
+    harness.send(
+        json!({"type": "toolStarted", "callId": "c1", "name": "fd_create_tasks", "kind": "client"}),
+    );
+    harness.send(json!({
+        "type": "clientToolCall", "requestId": "r1", "name": "fd_create_tasks", "version": 1,
+        "arguments": {"tasks": []}, "effect": "read", "timeoutSecs": timeout_secs
+    }));
+    harness.ask().await;
+    harness
+        .eventually("pending local confirmation", |h| {
+            h.service.state().runs.last().is_some_and(|run| {
+                run.items.iter().any(|item| {
+                    matches!(item, AssistantRunItemDto::Tool { call }
+                        if call.confirmation == Some(AssistantConfirmationState::Pending))
+                })
+            })
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn floor_upgraded_read_call_runs_after_a_local_approval_without_the_cloud_confirmation() {
+    let harness = Harness::new("floor_approve").await;
+    pending_local_only_call(&harness, 60).await;
+    assert!(lock(&harness.tools.calls).is_empty());
+    harness
+        .service
+        .confirm(confirm("r1", true))
+        .await
+        .expect("approve");
+    harness
+        .eventually("result report", |h| h.has_log("result run-1 r1"))
+        .await;
+    let log = harness.log();
+    assert!(
+        !log.iter().any(|entry| entry.starts_with("confirm ")),
+        "no cloud confirmation may be sent: {log:?}"
+    );
+    assert_eq!(
+        log,
+        vec![
+            "exec fd_create_tasks".to_owned(),
+            "result run-1 r1".to_owned()
+        ]
+    );
+    assert_eq!(lock(&harness.mock.results)[0]["isError"], json!(false));
+    harness.finish().await;
+}
+
+#[tokio::test]
+async fn floor_upgraded_read_call_declined_locally_reports_a_failure_result() {
+    let harness = Harness::new("floor_decline").await;
+    pending_local_only_call(&harness, 60).await;
+    harness
+        .service
+        .confirm(confirm("r1", false))
+        .await
+        .expect("decline");
+    harness
+        .eventually("failure result", |h| h.has_log("result run-1 r1"))
+        .await;
+    let result = lock(&harness.mock.results)[0].clone();
+    assert_eq!(result["isError"], json!(true));
+    assert!(
+        result["output"]
+            .as_str()
+            .is_some_and(|text| text.contains("declined")),
+        "{result}"
+    );
+    assert!(lock(&harness.tools.calls).is_empty());
+    assert!(!harness.has_log("confirm "));
+    assert_eq!(
+        harness.tool("r1").confirmation,
+        Some(AssistantConfirmationState::Declined)
+    );
+    harness.finish().await;
+}
+
+#[tokio::test]
+async fn floor_upgraded_read_call_expiring_locally_reports_a_failure_result() {
+    let harness = Harness::new("floor_expire").await;
+    // 确认窗口不会长过云端等结果的时限(1 秒)。
+    pending_local_only_call(&harness, 1).await;
+    harness
+        .eventually("expiry result", |h| h.has_log("result run-1 r1"))
+        .await;
+    let result = lock(&harness.mock.results)[0].clone();
+    assert_eq!(result["isError"], json!(true));
+    assert!(
+        result["output"]
+            .as_str()
+            .is_some_and(|text| text.contains("did not confirm")),
+        "{result}"
+    );
+    assert!(lock(&harness.tools.calls).is_empty());
+    assert_eq!(
+        harness.tool("r1").confirmation,
+        Some(AssistantConfirmationState::Expired)
+    );
+    harness
+        .service
+        .confirm(confirm("r1", true))
+        .await
+        .expect_err("an expired call cannot be confirmed");
+    harness.finish().await;
+}
+
+// ------------------------------------------------------------------ 未知 effect / 读不懂的调用
+
+#[tokio::test]
+async fn unknown_effect_is_treated_as_write_and_needs_confirmation() {
+    let harness = Harness::new("unknown_effect").await;
+    harness.send(json!({"type": "run", "runId": "run-1", "sessionId": "sess-1"}));
+    harness.send(json!({
+        "type": "clientToolCall", "requestId": "r1", "name": "fd_get_app_info", "version": 1,
+        "arguments": {}, "effect": "teleport", "timeoutSecs": 60
+    }));
+    harness.ask().await;
+    harness
+        .eventually("pending confirmation", |h| {
+            h.service.state().runs.last().is_some_and(|run| {
+                run.items.iter().any(|item| {
+                    matches!(item, AssistantRunItemDto::Tool { call }
+                        if call.confirmation == Some(AssistantConfirmationState::Pending))
+                })
+            })
+        })
+        .await;
+    assert_eq!(harness.tool("r1").effect, AssistantToolEffect::Write);
+    assert!(lock(&harness.tools.calls).is_empty());
+    assert!(!harness.has_log("result "));
+    harness.finish().await;
+}
+
+#[tokio::test]
+async fn unreadable_tool_call_with_a_request_id_reports_a_failure_result() {
+    let harness = Harness::new("unreadable_call").await;
+    harness.send(json!({"type": "run", "runId": "run-1", "sessionId": "sess-1"}));
+    // 缺 `arguments`:整帧解析失败,但拿得到 requestId。
+    harness.send(json!({
+        "type": "clientToolCall", "requestId": "r9", "name": "fd_get_app_info", "version": 1,
+        "effect": "read", "timeoutSecs": 20
+    }));
+    harness.ask().await;
+    harness
+        .eventually("failure result", |h| h.has_log("result run-1 r9"))
+        .await;
+    let result = lock(&harness.mock.results)[0].clone();
+    assert_eq!(result["isError"], json!(true));
+    assert!(
+        result["output"]
+            .as_str()
+            .is_some_and(|text| text.contains("could not read")),
+        "{result}"
+    );
+    assert!(lock(&harness.tools.calls).is_empty());
+    harness.finish().await;
+}
+
+// ------------------------------------------------------------------ 事件流丢失后核实
+
+#[tokio::test]
+async fn lost_stream_is_settled_from_the_persisted_answer() {
+    let harness = Harness::new("settle").await;
+    *lock(&harness.mock.detail) = Some(detail_json(json!([
+        {"id": "m7", "runId": "run-1", "seq": 2, "role": "assistant",
+         "content": "Hello there", "createdAt": "2026-01-01T00:00:00Z"}
+    ])));
+    harness.send(json!({"type": "run", "runId": "run-1", "sessionId": "sess-1"}));
+    harness.ask().await;
+    harness.close_stream();
+    harness
+        .eventually("settled run", |h| {
+            h.run().status == AssistantRunStatus::Completed
+        })
+        .await;
+    let run = harness.run();
+    assert_eq!(run.message_id.as_deref(), Some("m7"));
+    assert!(run.error.is_none());
+    assert!(
+        run.items.iter().any(
+            |item| matches!(item, AssistantRunItemDto::Text { text } if text == "Hello there")
+        )
+    );
+    harness.finish().await;
+}
+
+#[tokio::test]
+async fn lost_stream_stays_failed_when_the_cloud_has_no_answer_for_the_run() {
+    let harness = Harness::new("settle_none").await;
+    *lock(&harness.mock.detail) = Some(detail_json(json!([
+        {"id": "m3", "runId": "run-0", "seq": 2, "role": "assistant",
+         "content": "older", "createdAt": "2026-01-01T00:00:00Z"}
+    ])));
+    harness.send(json!({"type": "run", "runId": "run-1", "sessionId": "sess-1"}));
+    harness.ask().await;
+    harness.close_stream();
+    harness
+        .eventually("failed run", |h| {
+            h.run().status == AssistantRunStatus::Failed
+        })
+        .await;
+    let run = harness.run();
+    assert_eq!(run.error_reason.as_deref(), Some("streamLost"));
+    assert!(run.message_id.is_none());
+    harness.finish().await;
+}
+
+// ------------------------------------------------------------------ 旁观别的设备发起的执行
+
+#[tokio::test]
+async fn a_run_started_elsewhere_is_joined_as_an_observer_exactly_once() {
+    let harness = Harness::new("observe").await;
+    // 旧云端 / 没有进行中的执行:会话没有 activeRunId,什么都不接回。
+    *lock(&harness.mock.sessions) = Some(json!({"total": 1, "items": [session_json(None)]}));
+    harness
+        .service
+        .sessions(AssistantSessionsParams::default())
+        .await
+        .expect("sessions");
+    assert!(harness.service.state().runs.is_empty());
+
+    *lock(&harness.mock.sessions) =
+        Some(json!({"total": 1, "items": [session_json(Some("run-9"))]}));
+    *lock(&harness.mock.resume) = VecDeque::from([(
+        StatusCode::OK,
+        sse_body(&[
+            (
+                1,
+                json!({"type": "run", "runId": "run-9", "sessionId": "sess-1"}),
+            ),
+            (2, json!({"type": "text", "delta": "Hi"})),
+            (
+                3,
+                json!({"type": "toolStarted", "callId": "c1", "name": "fd_create_tasks", "kind": "client"}),
+            ),
+            (
+                4,
+                json!({
+                    "type": "clientToolCall", "requestId": "ro", "name": "fd_create_tasks",
+                    "version": 1, "arguments": {"tasks": []}, "effect": "write",
+                    "confirmTimeoutSecs": 120, "timeoutSecs": 60
+                }),
+            ),
+            (
+                5,
+                json!({"type": "done", "status": "completed", "messageId": "m1", "text": "Hi"}),
+            ),
+        ]),
+    )]);
+    harness
+        .service
+        .sessions(AssistantSessionsParams::default())
+        .await
+        .expect("sessions");
+    harness
+        .eventually("observed run finished", |h| {
+            h.service
+                .state()
+                .runs
+                .last()
+                .is_some_and(|run| run.status == AssistantRunStatus::Completed)
+        })
+        .await;
+    let run = harness.run();
+    assert!(run.observing);
+    assert_eq!(run.run_id.as_deref(), Some("run-9"));
+    // 旁观:不挂起确认(不计待确认角标),本机不执行它的工具。
+    assert_eq!(harness.tool("ro").confirmation, None);
+    assert!(lock(&harness.tools.calls).is_empty());
+    let error = harness
+        .service
+        .confirm(confirm("ro", true))
+        .await
+        .expect_err("an observed run cannot be confirmed here");
+    assert!(
+        error.message.contains("another device"),
+        "{}",
+        error.message
+    );
+
+    // 同一执行不重复接回。
+    harness
+        .service
+        .sessions(AssistantSessionsParams::default())
+        .await
+        .expect("sessions again");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let joined = harness
+        .log()
+        .iter()
+        .filter(|entry| entry.starts_with("events run-9"))
+        .count();
+    assert_eq!(joined, 1);
+    assert_eq!(harness.service.state().runs.len(), 1);
+    assert!(!harness.has_log("confirm ") && !harness.has_log("result "));
+    harness.finish().await;
+}
+
+#[tokio::test]
+async fn an_observed_run_adopted_from_the_list_gets_its_question_when_the_session_is_opened() {
+    let harness = Harness::new("observe_fill").await;
+    *lock(&harness.mock.sessions) =
+        Some(json!({"total": 1, "items": [session_json(Some("run-9"))]}));
+    // 事件流只推一帧 `run`:读完后进入续读退避,执行在测试期间保持进行中。
+    *lock(&harness.mock.resume) = VecDeque::from([(
+        StatusCode::OK,
+        sse_body(&[(
+            1,
+            json!({"type": "run", "runId": "run-9", "sessionId": "sess-1"}),
+        )]),
+    )]);
+    harness
+        .service
+        .sessions(AssistantSessionsParams::default())
+        .await
+        .expect("sessions");
+    harness
+        .eventually("observer joined", |h| h.has_log("events run-9"))
+        .await;
+    let run = harness.run();
+    assert!(run.observing);
+    assert_eq!(run.question, "");
+    assert!(run.image_ids.is_empty());
+
+    // 打开这个会话:详情里有进行中执行的提问与附图。
+    let mut detail = detail_json(json!([
+        {"id": "u0", "runId": "run-8", "seq": 1, "role": "user",
+         "content": "an older question", "createdAt": "2026-01-01T00:00:00Z"},
+        {"id": "u1", "runId": "run-9", "seq": 3, "role": "user", "content": "what is up",
+         "images": ["att-1", "att-2"], "createdAt": "2026-01-01T00:00:00Z"}
+    ]));
+    detail["session"] = session_json(Some("run-9"));
+    *lock(&harness.mock.detail) = Some(detail);
+    harness
+        .service
+        .session(AssistantSessionIdParams {
+            session_id: "sess-1".to_owned(),
+        })
+        .await
+        .expect("session detail");
+    let run = harness.run();
+    assert_eq!(run.question, "what is up");
+    assert_eq!(run.image_ids, ["att-1", "att-2"]);
+    assert!(run.observing);
+    // 仍是同一个旁观执行:没有重复接回。
+    assert_eq!(harness.service.state().runs.len(), 1);
+    let joined = harness
+        .log()
+        .iter()
+        .filter(|entry| entry.as_str() == "events run-9 after=0")
+        .count();
+    assert_eq!(joined, 1);
     harness.finish().await;
 }

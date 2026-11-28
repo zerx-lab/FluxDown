@@ -293,6 +293,14 @@ pub struct AssistantRunDto {
     /// 提问附带的图片张数（执行中提问气泡据此显示占位 / 本地缩略图）。
     #[serde(default)]
     pub image_count: u32,
+    /// 沿用的旧图（`keepImages` 重新生成 / 编辑重发）的附件 ID，经 `agent.assistant.attachment` 取图；
+    /// 与 `image_count`（本次新附的张数）分开计。
+    #[serde(default)]
+    pub image_ids: Vec<String>,
+    /// 旁观执行：由其他设备或本机重启前发起、本机只接回事件流显示进度。本机不执行它的客户端工具，
+    /// 也不能确认 / 拒绝其中的待确认调用；UI 显示 `assistantRunObserving` 提示并隐藏确认按钮。
+    #[serde(default)]
+    pub observing: bool,
     pub started_at_unix_ms: i64,
     #[serde(default)]
     pub items: Vec<AssistantRunItemDto>,
@@ -356,6 +364,9 @@ pub struct AssistantSessionDto {
     /// 云端正在回答中。
     #[serde(default)]
     pub active: bool,
+    /// 云端进行中执行的 ID（`active` 时；旧云端不带）。agent 用它接回本机未跟踪的执行（旁观）。
+    #[serde(default)]
+    pub active_run_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }

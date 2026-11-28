@@ -10,8 +10,9 @@
 //! 整个调用先全部校验，任何键未知 / 只读 / 非法 / 被拒都不改动任何设置。值只接受字符串、数字、布尔，
 //! 且必须符合目录类型。返回每个键的改前 / 改后值。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
+use fluxdown_protocol::proxy_rules::proxy_display_endpoint;
 use fluxdown_protocol::{
     DaemonConfigField, DaemonConfigKind, DaemonConfigPatch, SettingOwner, SettingSpec,
     daemon_config_default, daemon_config_field, method, normalize_daemon_config_value,
@@ -20,6 +21,7 @@ use fluxdown_protocol::{
 use serde::Deserialize;
 use serde_json::{Map, Number, Value, json};
 
+use super::output::origin_only;
 use super::tasks::{
     ToolRpc, check_abs_dir, check_max, encode, invalid, is_conflict, normalize_proxy_url,
 };
@@ -150,6 +152,126 @@ pub(super) fn denied_setting_reason(key: &str) -> Option<&'static str> {
     None
 }
 
+/// 设置值给模型 / 确认卡片看的形态:带地址的设置去掉可能携带凭据的部分。
+/// - `bt_custom_trackers`:每行一个 tracker,只留 `scheme://host[:port]`(路径里常带 passkey);
+/// - `proxy_protocol_*`:协议级代理覆盖,去账号只留 `scheme://host:port`。
+///
+/// 其余键原样返回;其它 URL 类设置(订阅源、webhook、规则文档)已在拒绝表里整键遮蔽。
+/// 模型据此改写后提交的值不含被去掉的部分,写入前由 [`restore_hidden_parts`] 还原。
+pub(super) fn display_setting_value(key: &str, value: Value) -> Value {
+    let canonical = setting_spec(key).map_or(key, |spec| spec.storage_key);
+    match value {
+        Value::String(text) if canonical == "bt_custom_trackers" => {
+            Value::String(display_tracker_lines(&tracker_lines(&text)))
+        }
+        Value::String(text) if canonical.starts_with("proxy_protocol_") => {
+            Value::String(proxy_display_endpoint(&text))
+        }
+        other => other,
+    }
+}
+
+/// 确认卡片上一个键的「改前 / 改后」展示值。`bt_custom_trackers` 展示真实差异——被移除的现有行与新增的行
+/// (被还原的行不算移除),而不是把两份完整列表各展示一遍;没有差异时两侧都展示当前列表。
+/// 其余键同 [`display_setting_value`]。
+pub(super) fn display_change(key: &str, before: Value, after: Value) -> (Value, Value) {
+    let canonical = setting_spec(key).map_or(key, |spec| spec.storage_key);
+    if canonical == "bt_custom_trackers"
+        && let (Value::String(old), Value::String(new)) = (&before, &after)
+    {
+        let old_lines = tracker_lines(old);
+        let new_lines = tracker_lines(new);
+        let removed: Vec<&str> = old_lines
+            .iter()
+            .filter(|line| !new_lines.contains(line))
+            .copied()
+            .collect();
+        let added: Vec<&str> = new_lines
+            .iter()
+            .filter(|line| !old_lines.contains(line))
+            .copied()
+            .collect();
+        if !removed.is_empty() || !added.is_empty() {
+            let before = if removed.is_empty() {
+                Value::Null
+            } else {
+                Value::String(display_tracker_lines(&removed))
+            };
+            return (before, Value::String(display_tracker_lines(&added)));
+        }
+    }
+    (
+        display_setting_value(key, before),
+        display_setting_value(key, after),
+    )
+}
+
+/// tracker 列表里的有效行(每行一个,去首尾空白,跳过空行)。
+fn tracker_lines(text: &str) -> Vec<&str> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
+fn display_tracker_lines(lines: &[&str]) -> String {
+    lines
+        .iter()
+        .map(|line| origin_only(line))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 模型看到的 `bt_custom_trackers` 去掉了路径(passkey)、协议级代理去掉了账号,它读—改—写提交的值因此不含
+/// 这些部分;直接写入会悄悄丢掉私有 tracker 的 passkey / 代理账号。写入前按当前值还原:
+/// - tracker:提议里与某条现有项(完整形态或展示形态)相同的行映射回完整的现有项;展示形态相同的现有项
+///   有多条时全部保留;没有对应现有项的行是新增,原样保留;提议里没有的现有项才算被移除;
+/// - 代理:提议值等于当前值的展示形态则保留当前值(含账号)。
+fn restore_hidden_parts(key: &str, proposed: &str, current: &str) -> String {
+    if key == "bt_custom_trackers" {
+        let existing: Vec<(&str, String)> = tracker_lines(current)
+            .into_iter()
+            .map(|line| (line, origin_only(line)))
+            .collect();
+        let mut restored: HashSet<&str> = HashSet::new();
+        let mut lines: Vec<&str> = Vec::new();
+        for line in tracker_lines(proposed) {
+            let mut matched = false;
+            for (full, origin) in &existing {
+                if *full == line || origin.as_str() == line {
+                    matched = true;
+                    if restored.insert(full) {
+                        lines.push(full);
+                    }
+                }
+            }
+            if !matched {
+                lines.push(line);
+            }
+        }
+        lines.join("\n")
+    } else if key.starts_with("proxy_protocol_")
+        && !current.is_empty()
+        && current != "direct://"
+        && proxy_display_endpoint(current) == proposed
+    {
+        current.to_owned()
+    } else {
+        proposed.to_owned()
+    }
+}
+
+/// 一个 daemon 键实际写入的 wire 值与带类型值:提议值按当前值还原被隐藏的部分之后的结果。
+fn resolve_daemon_after(key: &str, plan: &DaemonPlan, current_wire: &str) -> (String, Value) {
+    let wire = restore_hidden_parts(key, &plan.wire, current_wire);
+    if wire == plan.wire {
+        (wire, plan.after.clone())
+    } else {
+        let after = wire_to_json(plan.kind, &wire);
+        (wire, after)
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct UpdateArgs {
@@ -217,11 +339,8 @@ pub(super) async fn preview_changes(
                     .values
                     .get(key)
                     .map_or_else(|| daemon_config_default(key), String::as_str);
-                out.push((
-                    key.clone(),
-                    wire_to_json(plan.kind, before_wire),
-                    plan.after,
-                ));
+                let (_, after) = resolve_daemon_after(key, &plan, before_wire);
+                out.push((key.clone(), wire_to_json(plan.kind, before_wire), after));
             }
             Ok(Planned::Preference(after)) => {
                 let before = current.values.get(key).cloned().unwrap_or(Value::Null);
@@ -307,8 +426,8 @@ async fn update_settings_with(rpc: &impl ToolRpc, args: Value) -> Result<Value, 
         .map(|change| {
             json!({
                 "key": change.key,
-                "before": change.before,
-                "after": change.after,
+                "before": display_setting_value(&change.key, change.before),
+                "after": display_setting_value(&change.key, change.after),
                 "changed": change.changed,
             })
         })
@@ -577,14 +696,15 @@ async fn apply_daemon(
                 .get(key)
                 .map_or_else(|| daemon_config_default(key), String::as_str);
             let before = wire_to_json(plan.kind, before_wire);
-            let changed = before != plan.after;
+            let (wire, after) = resolve_daemon_after(key, plan, before_wire);
+            let changed = before != after;
             if changed {
-                patch.insert(key.clone(), plan.wire.clone());
+                patch.insert(key.clone(), wire);
             }
             changes.push(Change {
                 key: key.clone(),
                 before,
-                after: plan.after.clone(),
+                after,
                 changed,
             });
         }
@@ -618,7 +738,7 @@ mod tests {
 
     use super::super::ToolError;
     use super::super::tasks::test_support::MockRpc;
-    use super::{denied_setting_reason, update_settings_with};
+    use super::{denied_setting_reason, display_setting_value, update_settings_with};
 
     fn ok_rpc() -> MockRpc {
         MockRpc::new(|_, _| Ok(json!({ "ok": true })))
@@ -894,6 +1014,114 @@ mod tests {
         assert_no_writes(&rpc);
     }
 
+    const PRIVATE_TRACKERS: &str =
+        "https://tracker.example/PASSKEY1/announce\nudp://t2.example:6969/announce";
+
+    #[test]
+    fn tracker_list_written_back_in_display_form_keeps_the_hidden_paths() {
+        let mut rpc = ok_rpc();
+        with_config(&mut rpc, 4, &[("bt_custom_trackers", PRIVATE_TRACKERS)]);
+        // 模型读到的是只留 `scheme://host[:port]` 的形态,据此加一条再整体写回。
+        let shown = display_setting_value("bt_custom_trackers", json!(PRIVATE_TRACKERS));
+        assert_eq!(
+            shown,
+            json!("https://tracker.example\nudp://t2.example:6969")
+        );
+        let proposed = format!(
+            "{}\nudp://new.example:80/announce",
+            shown.as_str().unwrap_or_default()
+        );
+        let result = call(&rpc, json!({ "bt_custom_trackers": proposed }))
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let patches = rpc.calls_of(method::DAEMON_CONFIG_PATCH);
+        assert_eq!(patches.len(), 1);
+        assert_eq!(
+            patches[0]["values"]["bt_custom_trackers"],
+            json!(format!("{PRIVATE_TRACKERS}\nudp://new.example:80/announce")),
+            "the passkey path and the announce path survive the round trip"
+        );
+        assert_eq!(result["changed"], json!(1));
+        let text = result.to_string();
+        assert!(!text.contains("PASSKEY1"), "{text}");
+    }
+
+    #[test]
+    fn tracker_written_back_unchanged_makes_no_patch_and_removals_are_honoured() {
+        let mut rpc = ok_rpc();
+        with_config(&mut rpc, 4, &[("bt_custom_trackers", PRIVATE_TRACKERS)]);
+        let result = call(
+            &rpc,
+            json!({ "bt_custom_trackers": "https://tracker.example\nudp://t2.example:6969" }),
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(result["changed"], json!(0));
+        assert!(rpc.calls_of(method::DAEMON_CONFIG_PATCH).is_empty());
+
+        // 提议里没有的现有项才算被移除。
+        let result = call(
+            &rpc,
+            json!({ "bt_custom_trackers": "udp://t2.example:6969" }),
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(result["changed"], json!(1));
+        let patches = rpc.calls_of(method::DAEMON_CONFIG_PATCH);
+        assert_eq!(
+            patches[0]["values"]["bt_custom_trackers"],
+            json!("udp://t2.example:6969/announce")
+        );
+    }
+
+    #[test]
+    fn trackers_sharing_an_origin_are_all_kept_and_new_lines_pass_through() {
+        let existing = "https://t.example/A/announce\nhttps://t.example/B/announce";
+        let restored = super::restore_hidden_parts(
+            "bt_custom_trackers",
+            "https://t.example\nhttps://other.example/announce\nhttps://t.example",
+            existing,
+        );
+        assert_eq!(
+            restored,
+            "https://t.example/A/announce\nhttps://t.example/B/announce\nhttps://other.example/announce",
+        );
+        // 完整形态的现有行原样保留,不会被同源的其它行重复展开。
+        let restored = super::restore_hidden_parts(
+            "bt_custom_trackers",
+            "https://t.example/B/announce",
+            existing,
+        );
+        assert_eq!(restored, "https://t.example/B/announce");
+    }
+
+    #[test]
+    fn proxy_override_written_back_in_display_form_keeps_its_account() {
+        let mut rpc = ok_rpc();
+        with_config(
+            &mut rpc,
+            2,
+            &[("proxy_protocol_http", "http://user:pw@proxy.example:3128")],
+        );
+        let result = call(
+            &rpc,
+            json!({ "proxy_protocol_http": "http://proxy.example:3128" }),
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(result["changed"], json!(0));
+        assert!(rpc.calls_of(method::DAEMON_CONFIG_PATCH).is_empty());
+
+        // 换成别的代理:不再是展示形态,按新值写入。
+        call(
+            &rpc,
+            json!({ "proxy_protocol_http": "http://other.example:8080" }),
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        let patches = rpc.calls_of(method::DAEMON_CONFIG_PATCH);
+        assert_eq!(
+            patches[0]["values"]["proxy_protocol_http"],
+            json!("http://other.example:8080")
+        );
+    }
+
     #[test]
     fn revision_conflict_rereads_and_retries() {
         let attempts = std::sync::Arc::new(AtomicUsize::new(0));
@@ -990,5 +1218,30 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn address_settings_are_shown_without_credential_paths() {
+        let trackers = display_setting_value(
+            "bt_custom_trackers",
+            json!("https://tracker.example/PASSKEY/announce\nudp://t2.example:6969/a?k=v"),
+        );
+        assert_eq!(
+            trackers,
+            json!("https://tracker.example\nudp://t2.example:6969")
+        );
+        // 规范目录里的别名键(`bt.custom_trackers`)同口径。
+        let aliased = display_setting_value("bt.custom_trackers", json!("https://t.example/KEY"));
+        assert_eq!(aliased, json!("https://t.example"));
+        let proxy = display_setting_value(
+            "proxy_protocol_ftp",
+            json!("socks5://user:pw@proxy.example:1080"),
+        );
+        assert_eq!(proxy, json!("socks5://proxy.example:1080"));
+        assert_eq!(display_setting_value("proxy_host", json!("h")), json!("h"));
+        assert_eq!(
+            display_setting_value("bt_custom_trackers", Value::Null),
+            Value::Null
+        );
     }
 }

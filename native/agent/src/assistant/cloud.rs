@@ -15,7 +15,7 @@ use fluxdown_protocol::{
     AssistantToolEffect, ErrorReason, RpcErrorData,
 };
 use reqwest::Method;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::cloud::{CloudApi, CloudError, RequestEpoch, encode_path_segment};
@@ -224,10 +224,14 @@ pub(crate) enum RunEvent {
         name: String,
         version: u32,
         arguments: Value,
+        #[serde(deserialize_with = "effect_or_write")]
         effect: AssistantToolEffect,
         #[serde(default)]
         confirm_timeout_secs: Option<u32>,
         timeout_secs: u32,
+        /// 本次生效的输出上限(云端 `limits.maxToolOutputChars`;旧云端不带)。
+        #[serde(default)]
+        max_output_chars: Option<u32>,
     },
     ToolFinished {
         call_id: String,
@@ -269,6 +273,37 @@ pub(crate) enum RunEvent {
 
 pub(crate) fn parse_event(payload: &[u8]) -> Result<RunEvent, serde_json::Error> {
     serde_json::from_slice(payload)
+}
+
+/// 云端 `effect` 的线上取值;云端日后新增的未知取值按最严的 `write` 处理(宁可多确认)。
+fn effect_or_write<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<AssistantToolEffect, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    enum Wire {
+        Read,
+        Network,
+        Write,
+        #[serde(other)]
+        Unknown,
+    }
+    Ok(match Wire::deserialize(deserializer)? {
+        Wire::Read => AssistantToolEffect::Read,
+        Wire::Network => AssistantToolEffect::Network,
+        Wire::Write | Wire::Unknown => AssistantToolEffect::Write,
+    })
+}
+
+/// 解析失败的帧若是 `clientToolCall` 且带 `requestId`,返回它:云端在等这次调用的结果,本机至少要回传一个
+/// 失败结果,而不是让它等满确认 / 执行时限。
+pub(crate) fn unreadable_call_id(payload: &[u8]) -> Option<String> {
+    let value: Value = serde_json::from_slice(payload).ok()?;
+    if value.get("type")?.as_str()? != "clientToolCall" {
+        return None;
+    }
+    let id = value.get("requestId")?.as_str()?.trim();
+    (!id.is_empty()).then(|| id.to_owned())
 }
 
 // ------------------------------------------------------------------ SSE
@@ -488,17 +523,23 @@ struct AskBody<'a> {
     replace_from: Option<&'a str>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     keep_images: bool,
+    /// 本次提问时本机实现的客户端工具(形状同建会话的 `client.clientTools`):云端用它代替会话存的声明,
+    /// 跨渠道续聊的会话因此总是按当前客户端的能力出工具。
+    client_tools: Vec<ToolRef<'a>>,
+    client_tool_protocol: u32,
 }
 
-/// 一次提问的内容（`POST /sessions/{id}/messages` 的请求体）。
+/// 一次提问的内容(`POST /sessions/{id}/messages` 的请求体)。
 pub(crate) struct AskRequest<'a> {
     pub(crate) text: &'a str,
     pub(crate) images: &'a [String],
     pub(crate) locale: Option<&'a str>,
-    /// 重新生成 / 编辑重发：被替换的 user 消息 ID。
+    /// 重新生成 / 编辑重发:被替换的 user 消息 ID。
     pub(crate) replace_from: Option<&'a str>,
     /// 沿用被替换提问的附图。
     pub(crate) keep_images: bool,
+    /// 本机实现的 `(name, version)`。
+    pub(crate) client_tools: &'a [(&'static str, u32)],
 }
 
 #[derive(Serialize)]
@@ -593,13 +634,7 @@ impl AiCloud {
                 app_version: fluxdown_protocol::APP_VERSION,
                 platform: Some(platform.as_str()).filter(|platform| !platform.is_empty()),
                 locale,
-                client_tools: tools
-                    .iter()
-                    .map(|(name, version)| ToolRef {
-                        name,
-                        version: *version,
-                    })
-                    .collect(),
+                client_tools: tool_refs(tools),
                 client_tool_protocol: ASSISTANT_CLIENT_TOOL_PROTOCOL,
             },
         };
@@ -775,6 +810,8 @@ impl AiCloud {
             locale: request.locale,
             replace_from: request.replace_from,
             keep_images: request.keep_images,
+            client_tools: tool_refs(request.client_tools),
+            client_tool_protocol: ASSISTANT_CLIENT_TOOL_PROTOCOL,
         };
         let response = self
             .api
@@ -882,4 +919,14 @@ impl AiCloud {
             )
             .await
     }
+}
+
+fn tool_refs<'a>(tools: &'a [(&'static str, u32)]) -> Vec<ToolRef<'a>> {
+    tools
+        .iter()
+        .map(|(name, version)| ToolRef {
+            name,
+            version: *version,
+        })
+        .collect()
 }

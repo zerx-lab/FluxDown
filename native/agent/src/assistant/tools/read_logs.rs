@@ -28,8 +28,10 @@ const MAX_QUERY_CHARS: usize = 200;
 const TAIL_BYTES: u64 = 1024 * 1024;
 /// 每个组件最多回溯的文件数(当前文件 + 轮转 / 前几天)。
 const MAX_FILES_PER_SOURCE: usize = 4;
-/// 全部组件合计的输出字节预算;远小于 64 KiB 的回传上限,保证被截断的永远是最旧的行而不是最新的行。
-const TOTAL_BYTE_BUDGET: usize = 48 * 1024;
+/// 每个组件的 JSON 骨架(组件名 / 文件名列表 / 计数字段)预留的字节数。
+const SOURCE_OVERHEAD_BYTES: usize = 320;
+/// 顶层字段(`level` / `query` / `order` ……)预留的字节数;`query` 最长 200 字符,转义后可能翻倍。
+const ENVELOPE_OVERHEAD_BYTES: usize = 160 + 2 * MAX_QUERY_CHARS;
 const MAX_RECORD_CHARS: usize = 400;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -298,7 +300,17 @@ async fn read_source(
     })
 }
 
-pub(super) async fn logs(ctx: &ToolContext, args: Value) -> Result<Value, ToolError> {
+/// 全部组件合计的行字节预算:回传上限扣掉骨架与 1/8 的脱敏 / 转义余量。
+/// 预算按回传上限等比缩放,且永远小于它:被丢弃的只会是最旧的行(见 [`select`]),最新的行与
+/// `olderMatchesOmitted` 标注原样保留,而不是被收尾阶段从尾部截掉。
+fn total_budget(limit: usize, sources: usize) -> usize {
+    limit
+        .saturating_sub(limit / 8)
+        .saturating_sub(ENVELOPE_OVERHEAD_BYTES)
+        .saturating_sub(sources * SOURCE_OVERHEAD_BYTES)
+}
+
+pub(super) async fn logs(ctx: &ToolContext, args: Value, limit: usize) -> Result<Value, ToolError> {
     let LogArgs {
         source,
         level,
@@ -324,7 +336,7 @@ pub(super) async fn logs(ctx: &ToolContext, args: Value) -> Result<Value, ToolEr
     let paths: LogPathsDto = ctx
         .call_as(method::AGENT_DIAGNOSTICS_LOG_PATHS, json!({}))
         .await?;
-    let budget = TOTAL_BYTE_BUDGET / sources.len();
+    let budget = total_budget(limit, sources.len()) / sources.len();
     let mut reports = Vec::with_capacity(sources.len());
     for source in sources {
         reports.push(read_source(source, &paths, level, query.as_deref(), lines, budget).await);
@@ -447,6 +459,62 @@ second session header line
                 "multi-byte text is cut at a char boundary"
             );
         }
+    }
+
+    #[test]
+    fn total_budget_scales_with_the_limit_and_never_underflows() {
+        let small = total_budget(24_000, 3);
+        let large = total_budget(64 * 1024, 3);
+        assert!(small < 24_000 && small > 12_000, "{small}");
+        assert!(large > small && large < 64 * 1024, "{large}");
+        assert_eq!(total_budget(512, 3), 0);
+    }
+
+    #[tokio::test]
+    async fn big_logs_keep_the_newest_lines_and_the_marker_inside_the_limit() {
+        let dir = std::env::temp_dir().join(format!("fluxdown-logs-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let mut text = String::new();
+        for index in 0..2_000 {
+            text.push_str(&format!(
+                "2026-11-27T01:{:02}:{:02}.000Z INFO  line-{index} {}\n",
+                (index / 60) % 60,
+                index % 60,
+                "x".repeat(150)
+            ));
+        }
+        std::fs::write(dir.join("agent.log"), text).expect("write log");
+        let paths = LogPathsDto {
+            agent_log_dir: dir.to_string_lossy().into_owned(),
+            ..LogPathsDto::default()
+        };
+        for limit in [8_000_usize, 24_000, 64 * 1024] {
+            let report = read_source(
+                LogSource::Agent,
+                &paths,
+                LogLevel::Info,
+                None,
+                500,
+                total_budget(limit, 1),
+            )
+            .await;
+            let out = super::super::output::finalize_json(
+                json!({ "level": "info", "sources": [report] }),
+                limit,
+            );
+            assert!(out.len() <= limit, "{} > {limit}", out.len());
+            let parsed: Value = serde_json::from_str(&out).expect("valid JSON");
+            assert!(
+                parsed.get("truncated").is_none(),
+                "must not fall back to the envelope"
+            );
+            let source = &parsed["sources"][0];
+            assert_eq!(source["olderMatchesOmitted"], json!(true));
+            let lines = source["lines"].as_array().expect("lines");
+            let last = lines.last().and_then(Value::as_str).unwrap_or_default();
+            assert!(last.contains("line-1999 "), "newest line kept: {last}");
+        }
+        std::fs::remove_dir_all(&dir).expect("cleanup");
     }
 
     #[test]
