@@ -56,7 +56,7 @@ function Workspace({ lang, t, guard, config }: { lang: Lang; t: AssistantMessage
       />
       <Panel className="flex h-[calc(100dvh-var(--header-h)-7rem)] min-h-[560px] flex-col">
         <ChatHeader lang={lang} t={t} session={session} config={s.config} onDelete={s.remove} onRename={s.rename} onExport={s.exportSession} />
-        <ChatArea lang={lang} t={t} guard={guard} s={s} newChatNonce={newChatNonce} />
+        <ChatArea lang={lang} t={t} guard={guard} s={s} newChatNonce={newChatNonce} onNewChat={newChat} />
       </Panel>
     </div>
   );

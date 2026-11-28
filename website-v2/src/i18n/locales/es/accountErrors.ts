@@ -17,6 +17,7 @@ export default {
   ai_unavailable: "The AI assistant is unavailable right now, please try again later",
   ai_disabled: "Your plan doesn't include the AI assistant",
   ai_quota_exceeded: "You've used all of today's questions — come back tomorrow",
+  ai_session_limit: "This conversation has reached its question limit — start a new chat to continue",
   not_found: "No encontrado: es posible que ya se haya eliminado",
   unauthorized: "Tu sesión ha caducado, inicia sesión de nuevo",
   forbidden: "La solicitud fue bloqueada, actualiza la página e inténtalo de nuevo",

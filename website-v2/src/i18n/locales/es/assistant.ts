@@ -118,6 +118,10 @@ export default {
     answerDone: "Answer complete",
     otherAnswering: "Another conversation is still answering — wait for it to finish.",
     resuming: "Answering…",
+    sessionLimitTitle: "This conversation has reached its question limit",
+    sessionLimitDesc: (limit: number) =>
+      `Each conversation allows up to ${limit} questions. Start a new chat to keep asking — this one stays available to read.`,
+    sessionRemaining: (count: number) => (count === 1 ? "1 question left in this conversation" : `${count} questions left in this conversation`),
   },
   issue: {
     kinds: {

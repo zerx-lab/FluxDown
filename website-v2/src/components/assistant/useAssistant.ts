@@ -8,6 +8,7 @@ import type { Failure, Guard } from "@/components/account/dashboard/resource";
 import { attachmentUrl } from "./attachments";
 import { downloadText, type ExportFormat } from "./download";
 import { applyEvent, asStreamEvent, resumeTarget, settle, startRun, type LiveRun, type Segment } from "./live";
+import { SESSION_LIMIT_CODE } from "./sessionLimit";
 
 const PAGE_SIZE = 30;
 /** BFF 单页上限（`ai-routes.ts::MAX_PAGE`）：刷新列表时按已加载的条数重拉，最多这么多。 */
@@ -190,6 +191,8 @@ export function useAssistant(lang: Lang, guard: Guard, initialConfig: AiConfig, 
   const [live, setLive] = useState<LiveRun | null>(null);
   const [notice, setNotice] = useState<RunNotice | null>(null);
   const [sendError, setSendError] = useState<Failure | null>(null);
+  const configRef = useRef(config);
+  configRef.current = config;
   const [ratings, setRatings] = useState<Ratings>(new Map());
   const ratingsRef = useRef(ratings);
   const ratingBusy = useRef(new Set<string>());
@@ -407,8 +410,20 @@ export function useAssistant(lang: Lang, guard: Guard, initialConfig: AiConfig, 
 
         if (!result.ok && !run.started && !controller.signal.aborted) {
           putLive(null);
-          if (!guardRef.current(result)) setSendError(result);
-          if (replaceFrom !== undefined) void loadDetail(sessionId, true);
+          const guarded = guardRef.current(result);
+          if (!guarded) setSendError(result);
+          const limited = !guarded && result.code === SESSION_LIMIT_CODE;
+          if (limited) {
+            // 本对话已达上限：先按配置的上限视作用满，再以服务端的详情 / 配置为准（输入区随之换成提示卡）
+            const limit = configRef.current.sessionLimit ?? 0;
+            if (limit > 0) {
+              setDetail((d) =>
+                d.data && d.data.session.id === sessionId ? { ...d, data: { ...d.data, questionsUsed: Math.max(d.data.questionsUsed ?? 0, limit) } } : d,
+              );
+            }
+            void refreshConfig();
+          }
+          if (replaceFrom !== undefined || limited) void loadDetail(sessionId, true);
           return false;
         }
         await finalize(settle(run, controller.signal.aborted));
@@ -417,7 +432,7 @@ export function useAssistant(lang: Lang, guard: Guard, initialConfig: AiConfig, 
         streamingRef.current = false;
       }
     },
-    [lang, finalize, loadDetail, putLive, track],
+    [lang, finalize, loadDetail, putLive, refreshConfig, track],
   );
 
   /** 接回云端还在跑的执行：从头补发事件，重建进行中的展示。 */

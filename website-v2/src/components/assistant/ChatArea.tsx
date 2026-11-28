@@ -10,6 +10,7 @@ import { attachmentUrl, imageLimits } from "./attachments";
 import Composer from "./Composer";
 import Conversation from "./Conversation";
 import { Greeting } from "./parts";
+import { sendErrorKind, sessionLimitView } from "./sessionLimit";
 import type { AssistantState } from "./useAssistant";
 
 interface Props {
@@ -21,6 +22,8 @@ interface Props {
   compact?: boolean;
   /** 每次「新对话」递增：已在新对话上再按一次也要把焦点送回输入框。 */
   newChatNonce: number;
+  /** 开始新对话（会话达到提问上限时提示卡上的按钮）。 */
+  onNewChat: () => void;
 }
 
 /** 回答完成的朗读提示保留多久（够读屏软件念完即可）。 */
@@ -30,7 +33,7 @@ const ANNOUNCE_MS = 4000;
  * 对话区（整页与悬浮面板共用）：消息时间线 / 问候 / 加载与失败态 + 发送失败提示 + 输入框。
  * 重新生成与编辑重发在这里串起来：二者都带上被替换的最后一条提问（`replaceFrom`），沿用它的附图（`keepImages`）。
  */
-export default function ChatArea({ lang, t, guard, s, compact = false, newChatNonce }: Props) {
+export default function ChatArea({ lang, t, guard, s, compact = false, newChatNonce, onNewChat }: Props) {
   const [kind, setKind] = useState<AiSessionKind>("ask");
   const [prefill, setPrefill] = useState<{ text: string; nonce: number } | null>(null);
   const [editing, setEditing] = useState<AiMessage | null>(null);
@@ -54,16 +57,20 @@ export default function ChatArea({ lang, t, guard, s, compact = false, newChatNo
   const session = selectedId === null ? null : (s.detail.data?.session ?? s.sessions.items.find((i) => i.id === selectedId) ?? null);
   const readOnly = session !== null && session.channel !== "website";
   const quotaFull = s.config.dailyLimit > 0 && s.config.usedToday >= s.config.dailyLimit;
-  const blocked = readOnly ? t.chat.readOnly : quotaFull && !live ? t.chat.quotaReached : null;
-  const sendError = s.sendError
-    ? s.sendError.status === 409
+  // 单会话提问上限：只针对已存在、已加载详情的当前会话；用量以服务端详情为准，不在客户端累加
+  const questionsUsed = selectedId !== null && s.detail.data?.session.id === selectedId ? s.detail.data.questionsUsed : undefined;
+  const limitView = sessionLimitView(readOnly ? undefined : s.config.sessionLimit, questionsUsed, s.answering);
+  const blocked = readOnly ? t.chat.readOnly : limitView.reached ? null : quotaFull && !live ? t.chat.quotaReached : null;
+  const sendFailure = s.sendError;
+  const sendError = sendFailure
+    ? sendErrorKind(sendFailure.status, sendFailure.code) === "busy"
       ? t.chat.busy
-      : accountErrorText(lang, s.sendError.code)
+      : accountErrorText(lang, sendFailure.code)
     : null;
   const effectiveKind = session?.kind ?? kind;
   /** 另一个会话正在回答：同一时间只允许一条流。 */
   const busyElsewhere = s.busy && !live;
-  const canRevise = !readOnly && !s.busy && !s.answering && !quotaFull && s.detail.status === "ready";
+  const canRevise = !readOnly && !s.busy && !s.answering && !quotaFull && !limitView.reached && s.detail.status === "ready";
   const pad = compact ? "px-4" : "px-4 sm:px-6";
 
   const edit = (message: AiMessage) => {
@@ -154,6 +161,8 @@ export default function ChatArea({ lang, t, guard, s, compact = false, newChatNo
         streaming={s.answering}
         busyElsewhere={busyElsewhere}
         blockedReason={blocked}
+        sessionLimit={limitView.reached ? { limit: s.config.sessionLimit ?? 0, onNewChat } : null}
+        remaining={limitView.remaining}
         prefill={prefill}
         editing={editing !== null}
         onCancelEdit={() => setEditing(null)}

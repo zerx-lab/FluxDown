@@ -43,7 +43,7 @@ const MAX_SEARCH_CHARS = 100;
 const MAX_TITLE_CHARS = 80;
 
 const CONFIG_KEYS = [
-  "available", "reason", "visible", "maxMessageChars", "dailyLimit", "usedToday", "imagesSupported", "maxImages", "maxImageBytes",
+  "available", "reason", "visible", "maxMessageChars", "sessionLimit", "dailyLimit", "usedToday", "imagesSupported", "maxImages", "maxImageBytes",
 ] as const;
 const SESSION_KEYS = [
   "id", "channel", "kind", "title", "messageCount", "rating", "active", "createdAt", "updatedAt",
@@ -134,7 +134,13 @@ function detailOf(body: unknown): Body | null {
   const session = sessionOf(body.session);
   const messages = messagesOf(body.messages);
   const issues = all(body.issues, issueOf);
-  return session && messages && issues ? { session, messages, issues } : null;
+  if (!session || !messages || !issues) return null;
+  const out: Body = { session, messages, issues };
+  // 本会话已计入提问上限的次数：旧版 FluxCloud 不带，缺失时不补（浏览器按「不限」处理）
+  if (typeof body.questionsUsed === "number" && Number.isSafeInteger(body.questionsUsed) && body.questionsUsed >= 0) {
+    out.questionsUsed = body.questionsUsed;
+  }
+  return out;
 }
 
 /** 非负整数查询参数；缺省 / 非法时用 `fallback`，超过 `max` 时截到 `max`。 */

@@ -222,6 +222,16 @@ test("config: carries the entry visibility next to availability; internals stay 
   });
 });
 
+test("config: carries the per-session question limit", async () => {
+  reply = () =>
+    Response.json({
+      available: true, reason: null, visible: true, maxMessageChars: 2000, sessionLimit: 10, dailyLimit: 20, usedToday: 1,
+      imagesSupported: false, maxImages: 0, maxImageBytes: 0,
+    });
+  const res = await call("ai/config");
+  expect(((await res.json()) as Record<string, unknown>).sessionLimit).toBe(10);
+});
+
 test("status: a signed-in visitor gets the verdict for their own account from ai/config (plan limits don't hide the entry)", async () => {
   reply = () => Response.json({ available: false, reason: "plan_disabled", visible: true, usedToday: 3 });
   const res = await call("ai/status");
@@ -312,6 +322,31 @@ test("sessions: list clamps paging and detail drops tool messages but keeps imag
     { id: "m1", runId: "r1", seq: 1, role: "user", content: "Q", createdAt: "t", images: ["a1", "a2"] },
     { id: "m4", runId: "r1", seq: 4, role: "assistant", content: "A", createdAt: "t", images: [] },
   ]);
+});
+
+test("sessions: detail forwards questionsUsed only when it is a non-negative integer", async () => {
+  const upstream = (extra: Record<string, unknown>) =>
+    Response.json({
+      session: { id: SESSION_ID, channel: "website", kind: "ask", title: "Q", messageCount: 0, rating: null, active: false, createdAt: "t", updatedAt: "t" },
+      messages: [],
+      issues: [],
+      ...extra,
+    });
+  reply = () => upstream({ questionsUsed: 7 });
+  expect(((await (await call(`ai/sessions/${SESSION_ID}`)).json()) as Record<string, unknown>).questionsUsed).toBe(7);
+  reply = () => upstream({});
+  expect(await (await call(`ai/sessions/${SESSION_ID}`)).json()).not.toHaveProperty("questionsUsed");
+  for (const bad of [-1, 1.5, "3", null]) {
+    reply = () => upstream({ questionsUsed: bad });
+    expect(await (await call(`ai/sessions/${SESSION_ID}`)).json()).not.toHaveProperty("questionsUsed");
+  }
+});
+
+test("ask: the per-session question limit refusal passes through as ai_session_limit", async () => {
+  reply = () => Response.json({ code: "ai_session_limit", message: "本对话已达提问上限" }, { status: 403 });
+  const res = await call(`ai/sessions/${SESSION_ID}/messages`, { method: "POST", body: { text: "hi" } });
+  expect(res.status).toBe(403);
+  expect(await res.json()).toEqual({ code: "ai_session_limit", message: "本对话已达提问上限" });
 });
 
 test("rating: PUT per answer forwards to the message route; the old per-session route is gone", async () => {

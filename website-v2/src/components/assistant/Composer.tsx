@@ -23,6 +23,10 @@ interface Props {
   busyElsewhere: boolean;
   /** 不可输入时的说明（额度用完 / 只读会话）；null = 可输入。 */
   blockedReason: string | null;
+  /** 本对话已达提问上限：输入区换成提示卡（草稿保留在组件里，不显示输入框 / 附图 / 发送）；null = 未达上限。 */
+  sessionLimit: { limit: number; onNewChat: () => void } | null;
+  /** 剩余可提问次数（1..=3 时给值，输入区附近显示弱化提示）。 */
+  remaining: number | null;
   /** 已排队到输入框的文字（点建议问题 / 编辑重发时填入）。 */
   prefill: { text: string; nonce: number } | null;
   /** 正在编辑重发一条旧提问：显示提示条，发送会替换它及其后的内容。 */
@@ -49,7 +53,7 @@ const toMb = (bytes: number) => Math.floor(bytes / 1024 / 1024);
  * `focusKey` 变化与填入文字时（用户动作，直接抢）。触屏设备不自动聚焦，免得弹出键盘挡住内容。
  */
 export default function Composer({
-  t, placeholder, maxChars, streaming, busyElsewhere, blockedReason, prefill, editing, onCancelEdit, images, onSend, onStop, focusKey,
+  t, placeholder, maxChars, streaming, busyElsewhere, blockedReason, sessionLimit, remaining, prefill, editing, onCancelEdit, images, onSend, onStop, focusKey,
 }: Props) {
   const id = useId();
   const [text, setText] = useState("");
@@ -178,7 +182,7 @@ export default function Composer({
   const count = charCount(text);
   const trimmed = text.trim();
   const tooLong = maxChars > 0 && count > maxChars;
-  const canSend = !streaming && !busyElsewhere && blockedReason === null && trimmed !== "" && !tooLong && pending === 0;
+  const canSend = !streaming && !busyElsewhere && blockedReason === null && sessionLimit === null && trimmed !== "" && !tooLong && pending === 0;
 
   const submit = async () => {
     if (!canSend) return;
@@ -224,7 +228,7 @@ export default function Composer({
 
   const hasFiles = (event: DragEvent) => event.dataTransfer.types.includes("Files");
   const dropProps =
-    blockedReason === null
+    blockedReason === null && sessionLimit === null
       ? {
           onDragEnter: (event: DragEvent) => {
             if (!hasFiles(event)) return;
@@ -257,7 +261,7 @@ export default function Composer({
           ? t.chat.imageErrors.count(images?.max ?? 0)
           : t.chat.imageErrors[imageError];
   const hint =
-    blockedReason !== null
+    blockedReason !== null || sessionLimit !== null
       ? null
       : busyElsewhere
         ? t.chat.otherAnswering
@@ -277,7 +281,7 @@ export default function Composer({
       {...dropProps}
     >
       <div className="mx-auto max-w-[760px]">
-        {editing && blockedReason === null && (
+        {editing && blockedReason === null && sessionLimit === null && (
           <p className="mb-2 flex items-center justify-between gap-3 rounded-lg bg-accent-soft px-3 py-1.5 text-[12.5px] text-accent-ink">
             <span>{t.chat.editNotice}</span>
             <button type="button" onClick={cancelEdit} className="shrink-0 underline underline-offset-2">
@@ -289,6 +293,14 @@ export default function Composer({
           <p role="status" className="rounded-xl border border-line bg-inset px-4 py-3 text-[13.5px] text-muted">
             {blockedReason}
           </p>
+        ) : sessionLimit !== null ? (
+          <div role="status" className="rounded-xl border border-line bg-inset px-4 py-3">
+            <p className="text-[13.5px] font-medium text-fg">{t.chat.sessionLimitTitle}</p>
+            <p className="mt-1 text-[13px] text-muted">{t.chat.sessionLimitDesc(sessionLimit.limit)}</p>
+            <button type="button" onClick={sessionLimit.onNewChat} className="btn btn-primary mt-3">
+              {t.sidebar.newChat}
+            </button>
+          </div>
         ) : (
           <div
             className={`relative rounded-xl border bg-elev px-3 py-2 focus-within:border-line-strong ${dragging ? "border-accent" : "border-line"}`}
@@ -393,7 +405,12 @@ export default function Composer({
         )}
         <div id={`${id}-hint`} className="mt-2 flex flex-wrap justify-between gap-x-4 gap-y-1 text-[12px] text-subtle">
           <span>{t.chat.disclaimer}</span>
-          {hint && <span className={tooLong ? "text-danger" : undefined}>{hint}</span>}
+          {((remaining !== null && sessionLimit === null) || hint) && (
+            <span className="flex flex-wrap gap-x-3">
+              {remaining !== null && sessionLimit === null && <span>{t.chat.sessionRemaining(remaining)}</span>}
+              {hint && <span className={tooLong ? "text-danger" : undefined}>{hint}</span>}
+            </span>
+          )}
         </div>
       </div>
       {viewing && <ImageViewer image={viewing} t={t} onClose={() => setViewing(null)} />}

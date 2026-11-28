@@ -171,6 +171,8 @@ export interface AiConfig {
   visible: boolean;
   /** 单次提问的字数上限（不可用时为 0）。 */
   maxMessageChars: number;
+  /** 单个对话的提问次数上限；0 = 不限（旧版 FluxCloud 不带，按不限处理）。 */
+  sessionLimit?: number;
   /** 每日提问次数上限；0 = 不限。 */
   dailyLimit: number;
   /** 今日（UTC+08:00 自然日）已用的提问次数，固定回复不计。 */
@@ -257,6 +259,8 @@ export interface AiSessionDetail {
   session: AiSession;
   messages: AiMessage[];
   issues: AiIssue[];
+  /** 本会话已计入上限的提问数（含重新生成 / 编辑重发；旧版 FluxCloud 不带）。 */
+  questionsUsed?: number;
 }
 
 /** `GET /api/account/ai/sessions/{id}/export`：下载用的文件名、MIME 与正文。 */

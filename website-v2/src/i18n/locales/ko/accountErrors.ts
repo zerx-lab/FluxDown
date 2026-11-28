@@ -17,6 +17,7 @@ export default {
   ai_unavailable: "The AI assistant is unavailable right now, please try again later",
   ai_disabled: "Your plan doesn't include the AI assistant",
   ai_quota_exceeded: "You've used all of today's questions — come back tomorrow",
+  ai_session_limit: "This conversation has reached its question limit — start a new chat to continue",
   not_found: "찾을 수 없음 — 이미 삭제되었을 수 있습니다",
   unauthorized: "세션이 만료되었습니다. 다시 로그인해 주세요",
   forbidden: "요청이 차단되었습니다. 페이지를 새로 고침한 후 다시 시도해 주세요",

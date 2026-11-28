@@ -153,7 +153,7 @@ function WidgetChat({ lang, t, guard, config, frame }: { lang: Lang; t: Assistan
       ) : (
         <>
           {session && <ChatHeader compact lang={lang} t={t} session={session} config={s.config} onDelete={s.remove} onRename={s.rename} onExport={s.exportSession} />}
-          <ChatArea compact lang={lang} t={t} guard={guard} s={s} newChatNonce={newChatNonce} />
+          <ChatArea compact lang={lang} t={t} guard={guard} s={s} newChatNonce={newChatNonce} onNewChat={newChat} />
         </>
       )}
     </Frame>

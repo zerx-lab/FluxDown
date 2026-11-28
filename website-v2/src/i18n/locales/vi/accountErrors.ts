@@ -17,6 +17,7 @@ export default {
   ai_unavailable: "The AI assistant is unavailable right now, please try again later",
   ai_disabled: "Your plan doesn't include the AI assistant",
   ai_quota_exceeded: "You've used all of today's questions — come back tomorrow",
+  ai_session_limit: "This conversation has reached its question limit — start a new chat to continue",
   not_found: "Không tìm thấy — có thể đã bị xóa",
   unauthorized: "Phiên của bạn đã hết hạn, vui lòng đăng nhập lại",
   forbidden: "Yêu cầu đã bị chặn, vui lòng tải lại trang và thử lại",

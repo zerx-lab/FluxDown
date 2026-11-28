@@ -119,6 +119,10 @@ export const assistant = defineMessages("assistant", {
       answerDone: "Answer complete",
       otherAnswering: "Another conversation is still answering — wait for it to finish.",
       resuming: "Answering…",
+      sessionLimitTitle: "This conversation has reached its question limit",
+      sessionLimitDesc: (limit: number) =>
+        `Each conversation allows up to ${limit} questions. Start a new chat to keep asking — this one stays available to read.`,
+      sessionRemaining: (count: number) => (count === 1 ? "1 question left in this conversation" : `${count} questions left in this conversation`),
     },
     issue: {
       kinds: {
@@ -284,6 +288,9 @@ export const assistant = defineMessages("assistant", {
       answerDone: "回答完成",
       otherAnswering: "另一段对话还在回答，请等它答完。",
       resuming: "回答中…",
+      sessionLimitTitle: "本对话已达提问上限",
+      sessionLimitDesc: (limit: number) => `每个对话最多提问 ${limit} 次。开始新对话继续提问，本对话仍可查看。`,
+      sessionRemaining: (count: number) => `本对话还可提问 ${count} 次`,
     },
     issue: {
       kinds: {
