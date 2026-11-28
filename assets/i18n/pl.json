@@ -2507,8 +2507,6 @@
   "timeUnitDays": "dni",
   "settingsTabSeeding": "Seedowanie",
   "manifestDialogTitle": "Wybierz pliki do pobrania",
-  "manifestGroupNamePlaceholder": "Grupa zadań bez tytułu",
-  "manifestGroupNameTooltip": "Nazwa grupy zadań (edytowalna)",
   "manifestSummary": "{count} pozycji · {size}",
   "manifestPluginBadge": "Wtyczka przetworzona",
   "manifestSearchPlaceholder": "Wyszukaj we wszystkich poziomach…",

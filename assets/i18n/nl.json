@@ -2507,8 +2507,6 @@
   "timeUnitDays": "dagen",
   "settingsTabSeeding": "Seeden",
   "manifestDialogTitle": "Bestanden selecteren om te downloaden",
-  "manifestGroupNamePlaceholder": "Taakgroep zonder naam",
-  "manifestGroupNameTooltip": "Naam van de taakgroep (bewerkbaar)",
   "manifestSummary": "{count} items · {size}",
   "manifestPluginBadge": "Plug-in geparseerd",
   "manifestSearchPlaceholder": "Alle niveaus doorzoeken…",

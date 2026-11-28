@@ -12,12 +12,12 @@ use fluxdown_engine::log_info;
 use fluxdown_protocol::method;
 use fluxdown_protocol::{
     ApplicationErrorCode, CREATE_TASKS_BATCH_ID_MAX_LEN, CREATE_TASKS_MAX_ITEMS,
-    CdnConfigApplyParams, CdnReportAckParams, CreateGroupRequest, CreateQueueRequest,
-    DaemonConfigPatch, DaemonCreateTaskParams, DaemonCreateTasksParams, DaemonCreateTasksResult,
-    DaemonDeleteTasksParams, DaemonTaskIdsParams, MigrationAckParams, RpcErrorData, RpcErrorObject,
-    RpcRequest, RpcResponse, SelectionResolutionDto, ServiceHello, SiteAuthCredentialDto,
-    SiteAuthDeleteParams, SiteAuthMatchParams, SnapshotBody, TaskActivityQuery,
-    TaskSpeedHistoryQuery,
+    CdnConfigApplyParams, CdnReportAckParams, CreateGroupRequest, CreateGroupResponse,
+    CreateQueueRequest, DaemonConfigPatch, DaemonCreateTaskParams, DaemonCreateTasksParams,
+    DaemonCreateTasksResult, DaemonDeleteTasksParams, DaemonTaskIdsParams, MigrationAckParams,
+    RpcErrorData, RpcErrorObject, RpcRequest, RpcResponse, SelectionResolutionDto, ServiceHello,
+    SiteAuthCredentialDto, SiteAuthDeleteParams, SiteAuthMatchParams, SnapshotBody,
+    TaskActivityQuery, TaskSpeedHistoryQuery,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -794,7 +794,10 @@ impl DaemonService {
                     })
                     .await
                 {
-                    Ok(ActorResult::Created(group_id)) => to_value(json!({ "groupId": group_id })),
+                    Ok(ActorResult::GroupCreated(created)) => to_value(CreateGroupResponse {
+                        group_id: created.group_id().unwrap_or_default().to_owned(),
+                        task_id: created.task_id().unwrap_or_default().to_owned(),
+                    }),
                     Ok(_) => Err(internal_error("unexpected actor result".to_owned())),
                     Err(error) => Err(actor_error(error)),
                 }

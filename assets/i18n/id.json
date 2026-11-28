@@ -2507,8 +2507,6 @@
   "timeUnitDays": "hari",
   "settingsTabSeeding": "Seeding",
   "manifestDialogTitle": "Pilih File untuk Diunduh",
-  "manifestGroupNamePlaceholder": "Grup tugas tanpa nama",
-  "manifestGroupNameTooltip": "Nama grup tugas (dapat diedit)",
   "manifestSummary": "{count} item · {size}",
   "manifestPluginBadge": "Plugin terurai",
   "manifestSearchPlaceholder": "Cari di semua tingkat…",

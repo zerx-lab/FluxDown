@@ -297,6 +297,7 @@ CREATE TABLE IF NOT EXISTS task_groups (
     name TEXT NOT NULL,
     source_url TEXT NOT NULL DEFAULT '',
     save_dir TEXT NOT NULL DEFAULT '',
+    base_dir TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS link_devices (
@@ -601,6 +602,7 @@ CREATE TABLE IF NOT EXISTS task_groups (
     name TEXT NOT NULL,
     source_url TEXT NOT NULL DEFAULT '',
     save_dir TEXT NOT NULL DEFAULT '',
+    base_dir TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS link_devices (
@@ -1055,6 +1057,17 @@ fn group_from_row(row: &AnyRow) -> Result<GroupInfo, sqlx::Error> {
     })
 }
 
+/// 任务组的目录事实（[`Db::load_group_dir_facts`]），供删除成员后的空目录清理使用。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupDirFacts {
+    pub group_id: String,
+    pub name: String,
+    /// 组根目录。
+    pub save_dir: String,
+    /// 组根推导前的基础目录（用户选的 / 分类或归档结果）；空 = 旧版组。
+    pub base_dir: String,
+}
+
 /// [`Db::fission_into_group`] 的单个兄弟任务描述（清单中母任务之外的条目）。
 #[derive(Debug, Clone, Default)]
 pub struct GroupSiblingSpec {
@@ -1077,6 +1090,8 @@ pub struct FissionSpec {
     pub group_id: String,
     pub group_name: String,
     pub group_save_dir: String,
+    /// 组根推导前的基础目录（见 [`GroupDirFacts::base_dir`]）。
+    pub group_base_dir: String,
     pub group_source_url: String,
     pub mother_task_id: String,
     pub mother_resolver_item: String,
@@ -1733,6 +1748,9 @@ impl Db {
         // 多文件任务组：group_id 关联 task_groups.id（空 = 不属于任何组）；
         // resolver_item 为二段解析标识（不透明字符串，专用 getter，不进 TaskInfo）。
         self.add_column_if_missing("tasks", "group_id", "TEXT NOT NULL DEFAULT ''")
+            .await?;
+        // 组根推导前的基础目录：空目录清理止于此;旧组为空,回退按组名判定组根归属。
+        self.add_column_if_missing("task_groups", "base_dir", "TEXT NOT NULL DEFAULT ''")
             .await?;
         self.add_column_if_missing("tasks", "resolver_item", "TEXT NOT NULL DEFAULT ''")
             .await?;
@@ -5495,6 +5513,7 @@ impl Db {
 
     /// 插入任务组行。`created_at` 内部生成（Unix 秒字符串），与
     /// [`Self::insert_task_with_tls_policy`] 惯例一致，不暴露给调用方。
+    /// `base_dir` 是组根推导前的基础目录（见 [`GroupDirFacts::base_dir`]）。
     ///
     /// # Examples
     ///
@@ -5502,7 +5521,8 @@ impl Db {
     /// # async fn run() -> Result<(), fluxdown_engine::db::DbError> {
     /// use fluxdown_engine::db::Db;
     /// let db = Db::connect("sqlite::memory:").await?;
-    /// db.insert_group("g1", "我的相册", "https://pan.example.com/s/x", "/tmp/我的相册").await?;
+    /// db.insert_group("g1", "我的相册", "https://pan.example.com/s/x", "/tmp/我的相册", "/tmp")
+    ///     .await?;
     /// assert_eq!(db.load_all_groups().await?.len(), 1);
     /// # Ok(())
     /// # }
@@ -5513,18 +5533,37 @@ impl Db {
         name: &str,
         source_url: &str,
         save_dir: &str,
+        base_dir: &str,
     ) -> Result<(), DbError> {
         sqlx::query(
-            "INSERT INTO task_groups (id, name, source_url, save_dir, created_at) VALUES ($1, $2, $3, $4, $5)",
+            "INSERT INTO task_groups (id, name, source_url, save_dir, base_dir, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(id)
         .bind(name)
         .bind(source_url)
         .bind(save_dir)
+        .bind(base_dir)
         .bind(chrono_now())
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// 全部任务组的目录事实（删除成员后的空目录清理用）。
+    pub async fn load_group_dir_facts(&self) -> Result<Vec<GroupDirFacts>, DbError> {
+        let rows = sqlx::query("SELECT id, name, save_dir, base_dir FROM task_groups")
+            .fetch_all(&self.pool)
+            .await?;
+        let mut facts = Vec::with_capacity(rows.len());
+        for row in &rows {
+            facts.push(GroupDirFacts {
+                group_id: row.try_get("id")?,
+                name: row.try_get("name")?,
+                save_dir: row.try_get("save_dir")?,
+                base_dir: row.try_get("base_dir")?,
+            });
+        }
+        Ok(facts)
     }
 
     /// 全部任务组，按创建时间倒序（新建的组排前面，与 [`Self::load_all_tasks`]
@@ -5775,12 +5814,13 @@ impl Db {
 
         let now = chrono_now();
         sqlx::query(
-            "INSERT INTO task_groups (id, name, source_url, save_dir, created_at) VALUES ($1, $2, $3, $4, $5)",
+            "INSERT INTO task_groups (id, name, source_url, save_dir, base_dir, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(&spec.group_id)
         .bind(&spec.group_name)
         .bind(&spec.group_source_url)
         .bind(&spec.group_save_dir)
+        .bind(&spec.group_base_dir)
         .bind(&now)
         .execute(&mut *tx)
         .await?;
@@ -7459,6 +7499,7 @@ mod tests {
             "我的相册",
             "https://pan.example.com/s/x",
             "/tmp/我的相册",
+            "/tmp",
         )
         .await
         .expect("insert group");
@@ -7640,7 +7681,7 @@ mod tests {
     async fn set_task_group_and_resolver_item_roundtrip() {
         let (db, dir) = open_test_db().await;
         insert_task(&db, "t1").await;
-        db.insert_group("g1", "组", "", "/tmp/g1")
+        db.insert_group("g1", "组", "", "/tmp/g1", "/tmp")
             .await
             .expect("insert group");
         db.set_task_group("t1", "g1").await.expect("set group");
@@ -7664,7 +7705,7 @@ mod tests {
     #[tokio::test]
     async fn group_member_ids_orders_by_queue_order() {
         let (db, dir) = open_test_db().await;
-        db.insert_group("g1", "组", "", "/tmp/g1")
+        db.insert_group("g1", "组", "", "/tmp/g1", "/tmp")
             .await
             .expect("insert group");
         insert_task(&db, "second").await;
@@ -7683,10 +7724,10 @@ mod tests {
     #[tokio::test]
     async fn gc_empty_groups_deletes_orphan_group_rows_only() {
         let (db, dir) = open_test_db().await;
-        db.insert_group("empty", "空组", "", "/tmp/empty")
+        db.insert_group("empty", "空组", "", "/tmp/empty", "/tmp")
             .await
             .expect("insert empty group");
-        db.insert_group("populated", "有成员组", "", "/tmp/populated")
+        db.insert_group("populated", "有成员组", "", "/tmp/populated", "/tmp")
             .await
             .expect("insert populated group");
         insert_task(&db, "member").await;
@@ -7772,6 +7813,7 @@ mod tests {
             group_id: "g1".to_string(),
             group_name: "我的相册".to_string(),
             group_save_dir: "/tmp/我的相册".to_string(),
+            group_base_dir: "/tmp".to_string(),
             group_source_url: "https://pan.example.com/s/x".to_string(),
             mother_task_id: "mother".to_string(),
             mother_resolver_item: "f1".to_string(),

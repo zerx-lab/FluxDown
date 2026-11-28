@@ -2507,8 +2507,6 @@
   "timeUnitDays": "日",
   "settingsTabSeeding": "シード中",
   "manifestDialogTitle": "ダウンロードするファイルを選択",
-  "manifestGroupNamePlaceholder": "未タイトルのタスクグループ",
-  "manifestGroupNameTooltip": "タスクグループ名（編集可）",
   "manifestSummary": "{count}件 · {size}",
   "manifestPluginBadge": "プラグインを解析しました",
   "manifestSearchPlaceholder": "すべてのレベルを検索…",

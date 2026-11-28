@@ -2507,8 +2507,6 @@
   "timeUnitDays": "ngày",
   "settingsTabSeeding": "Đang seed",
   "manifestDialogTitle": "Chọn tệp để tải xuống",
-  "manifestGroupNamePlaceholder": "Nhóm tác vụ không tên",
-  "manifestGroupNameTooltip": "Tên nhóm tác vụ (có thể chỉnh sửa)",
   "manifestSummary": "{count} mục · {size}",
   "manifestPluginBadge": "Plugin đã được phân tích cú pháp",
   "manifestSearchPlaceholder": "Tìm kiếm tất cả các cấp…",

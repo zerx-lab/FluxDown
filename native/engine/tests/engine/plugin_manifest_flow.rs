@@ -2,11 +2,11 @@
 //!
 //! 覆盖契约 Phase A+B 的四个验收场景（照 `plugin_lazy_resolve.rs` 模板）：
 //! - 裂变端到端：初段返回 manifest(2 items) → 引擎自动裂变为组 + 2 成员 →
-//!   两文件落盘于 `组根/path/`，组行存在，母任务 task_id 不变。
+//!   两文件按清单路径落盘；成员共享的公共目录成为组根并给出组名，母任务 task_id 不变。
 //! - preview 只读：`begin_resolve_preview` → `ResolvePreviewReady(items=2)`
 //!   且不建任何任务行；resolver 未声明 `multi` → 立即无清单（不跑 resolve）。
 //! - `create_task_group` + `delete_group`：2 items 建组 → 断言行；删组后
-//!   任务+组行清空（gc_empty_groups）。
+//!   任务+组行清空（gc_empty_groups）；单条目不成组、直接建普通任务。
 //! - 超阈值：清单 sizes 合计 > 10GiB → 全成员 status=2（paused），
 //!   不触发任何二段 resolve、不发生下载。
 //!
@@ -22,7 +22,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use fluxdown_engine::bt_config::BtConfig;
-use fluxdown_engine::download_manager::{CreateGroupSpec, GroupItemSpec, NewTaskSpec};
+use fluxdown_engine::download_manager::{
+    CreateGroupSpec, GroupCreation, GroupItemSpec, NewTaskSpec,
+};
 use fluxdown_engine::events::{EngineEvent, EventSink};
 use fluxdown_engine::proxy_config::ProxyConfig;
 use fluxdown_engine::{Engine, EngineConfig, NoopSelection, NoopSink};
@@ -225,8 +227,14 @@ async fn recv_preview_ready(
 
 /// 场景 1：裂变端到端。单任务命中 resolver → 初段返回 2-item 清单 → 引擎
 /// 自动裂变为组（母任务原地改写 + 1 个兄弟任务），二段 resolve 各自取得
-/// 真实直链并完成下载；两文件落盘于 `组根/vids/`，组行存在，母任务 ID 不变。
-async fn run_fission_download(manifest_name: &str, expected_group_name: &str) {
+/// 真实直链并完成下载；两文件按清单路径（`vids/` 与 `second_path/`）落盘，组根 =
+/// 保存目录 + 公共目录，组行存在，母任务 ID 不变。
+async fn run_fission_download(
+    manifest_name: &str,
+    second_path: &str,
+    expected_group_name: &str,
+    expected_root: &str,
+) {
     let work = std::env::temp_dir().join(format!("fluxdown-manifest-it-{}", uuid_like()));
     tokio::fs::create_dir_all(&work).await.expect("mkdir work");
     let (port, _srv) = spawn_server();
@@ -249,7 +257,7 @@ async fn run_fission_download(manifest_name: &str, expected_group_name: &str) {
         "name": manifest_name,
         "items": [
             {"id":"f1","name":"a.mp4","path":"vids","size":100},
-            {"id":"f2","name":"b.mp4","path":"vids","size":200}
+            {"id":"f2","name":"b.mp4","path":second_path,"size":200}
         ]
     });
     pm.update_settings(
@@ -293,6 +301,10 @@ async fn run_fission_download(manifest_name: &str, expected_group_name: &str) {
     let group = &groups[0];
     assert_eq!(group.name, expected_group_name);
     assert_eq!(group.source_url, "http://share.test/album/xyz");
+    assert_eq!(
+        std::path::Path::new(&group.save_dir),
+        work.join(expected_root)
+    );
 
     let member_ids = engine
         .db
@@ -305,9 +317,9 @@ async fn run_fission_download(manifest_name: &str, expected_group_name: &str) {
         "mother task_id must be preserved (in-place rewrite, not a new row)"
     );
 
-    // 两文件落盘于 组根/vids/，内容正确。
-    let a_path = work.join(expected_group_name).join("vids").join("a.mp4");
-    let b_path = work.join(expected_group_name).join("vids").join("b.mp4");
+    // 组名只用于显示：两文件按清单相对路径落盘。
+    let a_path = work.join("vids").join("a.mp4");
+    let b_path = work.join(second_path).join("b.mp4");
     assert_eq!(
         tokio::fs::read(&a_path).await.expect("read a.mp4"),
         FILE_BODY
@@ -336,12 +348,18 @@ async fn run_fission_download(manifest_name: &str, expected_group_name: &str) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fission_end_to_end_creates_group_and_downloads_members() {
-    run_fission_download("share_bundle", "share_bundle").await;
+    run_fission_download("share_bundle", "", "share_bundle", "").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn unnamed_manifest_group_uses_first_member_name_as_its_root() {
-    run_fission_download("", "a.mp4").await;
+async fn unnamed_manifest_group_uses_first_member_name_as_display_name() {
+    run_fission_download("", "", "a.mp4", "").await;
+}
+
+/// 分享里只有一个文件夹：公共目录成为组根与组名，组内不再重复一层。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fission_shared_folder_becomes_group_root_and_name() {
+    run_fission_download("share_bundle", "vids", "vids", "vids").await;
 }
 
 /// 场景 2：`begin_resolve_preview` 只读——命中声明 `multi=true` 的 resolver
@@ -470,7 +488,7 @@ async fn create_task_group_then_delete_group_cleans_up_rows() {
     .expect("engine");
 
     let save = work.to_string_lossy().into_owned();
-    let group_id = engine
+    let created = engine
         .manager
         .create_task_group(CreateGroupSpec {
             source_url: real_url.clone(),
@@ -496,6 +514,10 @@ async fn create_task_group_then_delete_group_cleans_up_rows() {
         })
         .await
         .expect("create_task_group returns id");
+    let group_id = created
+        .group_id()
+        .expect("two items form a group")
+        .to_owned();
 
     // 断言：组行 + 2 成员任务存在，且都归属本组。
     let groups = engine.db.load_all_groups().await.expect("load groups");
@@ -543,6 +565,147 @@ async fn create_task_group_then_delete_group_cleans_up_rows() {
             .is_empty(),
         "delete_group must GC the now-empty group row"
     );
+
+    if let Err(error) = tokio::fs::remove_dir_all(&work).await
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        eprintln!("best-effort test directory cleanup: {error}");
+    }
+}
+
+/// 清单只选了一个条目：不建组行，直接建普通任务，落在 `基础目录/rel_path`。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn single_item_selection_creates_plain_task_without_group() {
+    let work = std::env::temp_dir().join(format!("fluxdown-manifest-it-{}", uuid_like()));
+    tokio::fs::create_dir_all(&work).await.expect("mkdir work");
+    let mut engine = Engine::new(
+        engine_config(&work),
+        Arc::new(NoopSink),
+        Arc::new(NoopSelection),
+    )
+    .await
+    .expect("engine");
+
+    let created = engine
+        .manager
+        .create_task_group(CreateGroupSpec {
+            source_url: "http://share.test/album/one".to_owned(),
+            group_name: "share".to_owned(),
+            base_save_dir: work.to_string_lossy().into_owned(),
+            segments: 1,
+            start_paused: true,
+            items: vec![GroupItemSpec {
+                // 无插件可绑定：空 resolver_item 让暂停的普通任务不走二段解析失败收尾。
+                resolver_item: String::new(),
+                file_name: "a.bin".to_owned(),
+                rel_path: "folder/sub".to_owned(),
+                size: 5,
+            }],
+            ..Default::default()
+        })
+        .await
+        .expect("create single item");
+    let GroupCreation::Task(task_id) = created else {
+        panic!("a single item must not form a group: {created:?}");
+    };
+    assert!(
+        engine
+            .db
+            .load_all_groups()
+            .await
+            .expect("groups")
+            .is_empty()
+    );
+    let task = engine
+        .db
+        .load_task_by_id(&task_id)
+        .await
+        .expect("load task")
+        .expect("task exists");
+    assert!(task.group_id.is_empty());
+    assert_eq!(task.file_name, "a.bin");
+    assert_eq!(task.status, 2, "start_paused is honored");
+    assert_eq!(
+        std::path::Path::new(&task.save_dir),
+        work.join("folder").join("sub")
+    );
+
+    if let Err(error) = tokio::fs::remove_dir_all(&work).await
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        eprintln!("best-effort test directory cleanup: {error}");
+    }
+}
+
+/// 成员共享一个文件夹：它成为组根与组名；删组（带文件）后空的组文件夹一并清理，
+/// 用户选的基础目录保留。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shared_folder_group_root_is_named_and_pruned_on_delete() {
+    let work = std::env::temp_dir().join(format!("fluxdown-manifest-it-{}", uuid_like()));
+    tokio::fs::create_dir_all(&work).await.expect("mkdir work");
+    let mut engine = Engine::new(
+        engine_config(&work),
+        Arc::new(NoopSink),
+        Arc::new(NoopSelection),
+    )
+    .await
+    .expect("engine");
+    let base = work.join("downloads");
+    tokio::fs::create_dir_all(&base).await.expect("mkdir base");
+
+    let item = |file: &str, rel: &str| GroupItemSpec {
+        resolver_item: file.to_owned(),
+        file_name: file.to_owned(),
+        rel_path: rel.to_owned(),
+        size: 1,
+    };
+    let created = engine
+        .manager
+        .create_task_group(CreateGroupSpec {
+            source_url: "http://share.test/album/pack".to_owned(),
+            group_name: "网盘分享".to_owned(),
+            base_save_dir: base.to_string_lossy().into_owned(),
+            segments: 1,
+            start_paused: true,
+            items: vec![item("a.bin", "pack"), item("b.bin", "pack/sub")],
+            ..Default::default()
+        })
+        .await
+        .expect("create group");
+    let GroupCreation::Group(group_id) = created else {
+        panic!("two items form a group: {created:?}");
+    };
+    let root = base.join("pack");
+    let group = engine
+        .db
+        .load_group_by_id(&group_id)
+        .await
+        .expect("load group")
+        .expect("group exists");
+    assert_eq!(group.name, "pack", "the shared folder names the group");
+    assert_eq!(std::path::Path::new(&group.save_dir), root);
+    let mut dirs: Vec<std::path::PathBuf> = engine
+        .db
+        .load_all_tasks()
+        .await
+        .expect("tasks")
+        .into_iter()
+        .map(|task| std::path::PathBuf::from(task.save_dir))
+        .collect();
+    dirs.sort();
+    assert_eq!(dirs, vec![root.clone(), root.join("sub")]);
+
+    tokio::fs::create_dir_all(root.join("sub"))
+        .await
+        .expect("mkdir member dirs");
+    let outcome = engine
+        .manager
+        .delete_group(&group_id, true)
+        .await
+        .expect("delete group");
+    assert_eq!(outcome.failed, 0);
+    assert!(!root.exists(), "the empty group folder is removed");
+    assert!(base.exists(), "the user's base directory stays");
 
     if let Err(error) = tokio::fs::remove_dir_all(&work).await
         && error.kind() != std::io::ErrorKind::NotFound
@@ -752,38 +915,45 @@ async fn source_archive_groups_preserve_paths_and_explicit_directory_choice() ->
         archive_metadata: Some(metadata.clone()),
         category_route: authorized.then(|| route.clone()),
         start_paused: true,
-        items: vec![GroupItemSpec {
-            file_name: "one.mp4".to_owned(),
-            rel_path: "extras".to_owned(),
-            ..Default::default()
-        }],
+        items: vec![
+            GroupItemSpec {
+                file_name: "one.mp4".to_owned(),
+                rel_path: "extras".to_owned(),
+                ..Default::default()
+            },
+            GroupItemSpec {
+                file_name: "two.mp4".to_owned(),
+                rel_path: "extras".to_owned(),
+                ..Default::default()
+            },
+        ],
         ..Default::default()
     };
+    // 两个成员共享 `extras`：组根 = 归档 / 显式目录 + `extras`，成员直接落在组根。
     for (name, authorized, expected) in [
-        ("Playlist", true, video_dir.join("Creator").join("Playlist")),
-        ("Creator", true, video_dir.join("Creator")),
-        ("Custom", false, work.join("manual").join("Custom")),
+        ("Playlist", true, video_dir.join("Creator").join("extras")),
+        ("Creator", true, video_dir.join("Creator").join("extras")),
+        ("Custom", false, work.join("manual").join("extras")),
     ] {
         let id = engine
             .manager
             .create_task_group(make_spec(name, authorized))
             .await
             .expect("create group");
+        let id = id.group_id().expect("group").to_owned();
         let groups = engine.db.load_all_groups().await.expect("groups");
         let group = groups
             .iter()
             .find(|group| group.group_id == id)
             .expect("group");
         assert_eq!(std::path::Path::new(&group.save_dir), expected);
+        assert_eq!(group.name, "extras");
         let tasks = engine.db.load_all_tasks().await.expect("tasks");
         let member = tasks
             .iter()
             .find(|task| task.group_id == id)
             .expect("member");
-        assert_eq!(
-            std::path::Path::new(&member.save_dir),
-            expected.join("extras")
-        );
+        assert_eq!(std::path::Path::new(&member.save_dir), expected);
         assert_eq!(member.status, 2);
     }
 
@@ -822,17 +992,14 @@ async fn source_archive_groups_preserve_paths_and_explicit_directory_choice() ->
         .expect("resolve timeout")
         .expect("resolve outcome");
     engine.manager.on_resolve_ready(outcome).await;
-    let automatic = video_dir.join("Creator").join("Automatic");
+    let automatic = video_dir.join("Creator").join("parts");
     let persisted = engine
         .db
         .load_task_by_id(&mother)
         .await
         .expect("load mother")
         .expect("mother");
-    assert_eq!(
-        std::path::Path::new(&persisted.save_dir),
-        automatic.join("parts")
-    );
+    assert_eq!(std::path::Path::new(&persisted.save_dir), automatic);
     assert_eq!(persisted.status, 2);
     drop(pm);
     drop(engine);
@@ -850,10 +1017,7 @@ async fn source_archive_groups_preserve_paths_and_explicit_directory_choice() ->
         .await
         .expect("reload mother")
         .expect("mother after restart");
-    assert_eq!(
-        std::path::Path::new(&persisted.save_dir),
-        automatic.join("parts")
-    );
+    assert_eq!(std::path::Path::new(&persisted.save_dir), automatic);
     let groups = restarted.db.load_all_groups().await.expect("reload groups");
     assert!(
         groups

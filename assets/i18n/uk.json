@@ -2507,8 +2507,6 @@
   "timeUnitDays": "дні",
   "settingsTabSeeding": "Роздача",
   "manifestDialogTitle": "Виберіть файли для завантаження",
-  "manifestGroupNamePlaceholder": "Без назви, група завдань",
-  "manifestGroupNameTooltip": "Назва групи завдань (редагується)",
   "manifestSummary": "{count} елементів · {size}",
   "manifestPluginBadge": "Плагін з проаналізованим вмістом",
   "manifestSearchPlaceholder": "Пошук на всіх рівнях…",

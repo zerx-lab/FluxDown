@@ -2507,8 +2507,6 @@
   "timeUnitDays": "Tage",
   "settingsTabSeeding": "Seeding",
   "manifestDialogTitle": "Dateien zum Download auswählen",
-  "manifestGroupNamePlaceholder": "Aufgabengruppe ohne Titel",
-  "manifestGroupNameTooltip": "Name der Aufgabengruppe (bearbeitbar)",
   "manifestSummary": "{count} Elemente · {size}",
   "manifestPluginBadge": "Plug-in verarbeitet",
   "manifestSearchPlaceholder": "Alle Ebenen durchsuchen…",

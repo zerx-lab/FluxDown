@@ -420,8 +420,8 @@ pub struct GroupInfo {
     pub name: String,
     /// 原始分享/清单链接（展示/复制用）。
     pub source_url: String,
-    /// 组根目录（`base_save_dir/sanitize(name)`），子任务落盘 = 本值 +
-    /// 清单条目的相对路径。
+    /// 组根目录（= 基础保存目录 + 成员公共目录，组名不参与目录），子任务落盘 = 本值 +
+    /// 去掉公共目录后的相对路径。
     pub save_dir: String,
     /// Unix seconds 时间戳。
     pub created_at: String,

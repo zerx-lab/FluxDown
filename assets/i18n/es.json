@@ -2124,8 +2124,6 @@
   "timeUnitDays": "días",
   "settingsTabSeeding": "Siembra",
   "manifestDialogTitle": "Seleccionar archivos para descargar",
-  "manifestGroupNamePlaceholder": "Grupo de tareas sin título",
-  "manifestGroupNameTooltip": "Nombre del grupo de tareas (editable)",
   "manifestSummary": "{count} elementos · {size}",
   "manifestPluginBadge": "Complemento analizado",
   "manifestSearchPlaceholder": "Buscar todos los niveles…",

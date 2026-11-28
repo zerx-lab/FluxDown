@@ -443,7 +443,7 @@
           "groups"
         ],
         "summary": "创建任务组",
-        "description": "根据文件清单创建任务组及其子任务，成功后返回任务组 ID。\n`items` 不能为空，否则返回 HTTP 400。",
+        "description": "根据文件清单创建任务组及其子任务，成功后返回任务组 ID；只有一个条目时不建组，\n直接建普通任务并返回 `taskId`（`groupId` 为空）。`items` 不能为空，否则返回 HTTP 400。",
         "operationId": "api_create_group",
         "requestBody": {
           "content": {
@@ -4362,7 +4362,7 @@
           },
           "groupName": {
             "type": "string",
-            "description": "组名（空 = 组根目录直接用 `save_dir`）。"
+            "description": "组名（仅用于显示，不参与目录）；全体成员共享公共目录时宿主改用该目录名。"
           },
           "ignoreTlsErrors": {
             "type": "boolean",
@@ -4392,7 +4392,7 @@
           },
           "saveDir": {
             "type": "string",
-            "description": "基础保存目录（组根目录 = `save_dir/sanitize(group_name)`）；\n空 = 使用全局默认保存目录。"
+            "description": "基础保存目录；组根 = 本目录 + 全体成员相对路径的公共目录，成员按去掉公共目录后的\n相对路径落在组根下（磁盘布局与 `rel_path` 一致）。空 = 使用全局默认保存目录。"
           },
           "segments": {
             "type": "integer",
@@ -4414,13 +4414,15 @@
       },
       "CreateGroupResponse": {
         "type": "object",
-        "description": "创建任务组响应（`POST /api/v1/groups`）。",
-        "required": [
-          "groupId"
-        ],
+        "description": "创建任务组响应（`POST /api/v1/groups`）。只有一个条目时不建组，直接建普通任务：\n此时 `groupId` 为空、`taskId` 为新任务 ID；建组时 `taskId` 为空。",
         "properties": {
           "groupId": {
-            "type": "string"
+            "type": "string",
+            "default": ""
+          },
+          "taskId": {
+            "type": "string",
+            "default": ""
           }
         }
       },

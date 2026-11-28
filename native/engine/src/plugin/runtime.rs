@@ -182,8 +182,8 @@ pub struct ResolveResult {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ResolveManifest {
-    /// 文件夹名/组名（gopeed `Res.Name` 同义）。空 = 由宿主用母任务文件名/
-    /// 首个条目名兜底（引擎自动裂变路径的语义，见 `on_resolve_ready`）。
+    /// 任务组显示名（不参与目录；需要目录写进 `items[].path`）。空 = 由宿主用
+    /// 母任务文件名/首个条目名兜底（见 `on_resolve_ready`）；成员共享公共目录时宿主改用该目录名。
     pub name: String,
     /// Root-level source classification hints shared by all manifest items.
     pub archive_metadata: Option<crate::model::ArchiveMetadata>,

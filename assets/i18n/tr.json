@@ -2170,8 +2170,6 @@
   "timeUnitDays": "gün",
   "settingsTabSeeding": "Paylaşım",
   "manifestDialogTitle": "İndirilecek dosyaları seç",
-  "manifestGroupNamePlaceholder": "Adsız görev grubu",
-  "manifestGroupNameTooltip": "Görev grubu adı (düzenlenebilir)",
   "manifestSummary": "{count} öğe · {size}",
   "manifestPluginBadge": "Eklenti ayrıştırdı",
   "manifestSearchPlaceholder": "Tüm düzeylerde ara…",

@@ -2105,8 +2105,6 @@
   "timeUnitDays": "天",
   "settingsTabSeeding": "做種",
   "manifestDialogTitle": "選擇要下載的檔案",
-  "manifestGroupNamePlaceholder": "未命名任務群組",
-  "manifestGroupNameTooltip": "任務群組名稱（可編輯）",
   "manifestSummary": "{count} 項 · {size}",
   "manifestPluginBadge": "外掛解析",
   "manifestSearchPlaceholder": "搜尋全部層級…",

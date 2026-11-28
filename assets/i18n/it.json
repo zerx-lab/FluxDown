@@ -2507,8 +2507,6 @@
   "timeUnitDays": "giorni",
   "settingsTabSeeding": "In seeding",
   "manifestDialogTitle": "Seleziona file da scaricare",
-  "manifestGroupNamePlaceholder": "Gruppo di attività senza titolo",
-  "manifestGroupNameTooltip": "Nome del gruppo di attività (modificabile)",
   "manifestSummary": "{count} elementi · {size}",
   "manifestPluginBadge": "Plugin analizzato",
   "manifestSearchPlaceholder": "Cerca in tutti i livelli…",

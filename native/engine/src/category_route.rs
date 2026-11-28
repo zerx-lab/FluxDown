@@ -210,8 +210,10 @@ pub(crate) async fn persist_archive_metadata(
     db.set_task_category_route(task_id, &column).await
 }
 
-/// Route a complete group at one root. Modern callback destinations use the authorized fallback
-/// directory regardless of category matches; legacy folderName results keep category-child behavior.
+/// Route a complete group at one root. The group name is display-only: it is passed to archive
+/// plugins as context but never becomes a directory. Modern callback destinations use the
+/// authorized fallback directory regardless of category matches; legacy folderName results keep
+/// category-child behavior.
 pub(crate) async fn archive_group_root(
     fallback: &str,
     group_name: &str,
@@ -266,19 +268,7 @@ pub(crate) async fn archive_group_root(
         } else {
             &route.base_dir
         };
-        let mut components = result.components;
-        if result.legacy {
-            let clean_group_name = if group_name.is_empty() {
-                String::new()
-            } else {
-                crate::naming::sanitize_filename(group_name)
-            };
-            if !clean_group_name.is_empty()
-                && !clean_group_name.eq_ignore_ascii_case(&components[0])
-            {
-                components.push(clean_group_name);
-            }
-        }
+        let components = result.components;
         if valid_archive_directories(&components) {
             let archive = ArchiveRoute {
                 category_dir: base.to_owned(),
@@ -294,19 +284,7 @@ pub(crate) async fn archive_group_root(
             }
         }
     }
-    category_dir.map_or_else(
-        || fallback.to_owned(),
-        |directory| {
-            if group_name.is_empty() {
-                directory
-            } else {
-                Path::new(&directory)
-                    .join(crate::naming::sanitize_filename(group_name))
-                    .to_string_lossy()
-                    .into_owned()
-            }
-        },
-    )
+    category_dir.unwrap_or_else(|| fallback.to_owned())
 }
 
 impl CategoryRule {
@@ -1429,7 +1407,7 @@ mod tests {
         };
         let interceptor = crate::intercept::NoopInterceptor;
         let common = super::archive_group_root(
-            "/base/group",
+            "/base",
             "group",
             &[
                 ("a.mp4", "https://host/a.mp4"),
@@ -1441,12 +1419,9 @@ mod tests {
             &interceptor,
         )
         .await;
-        assert_eq!(
-            std::path::Path::new(&common),
-            std::path::Path::new("/video").join("group")
-        );
+        assert_eq!(common, "/video");
         let mixed = super::archive_group_root(
-            "/base/group",
+            "/base",
             "group",
             &[
                 ("a.mp4", "https://host/a.mp4"),
@@ -1458,7 +1433,7 @@ mod tests {
             &interceptor,
         )
         .await;
-        assert_eq!(mixed, "/base/group");
+        assert_eq!(mixed, "/base");
     }
     #[tokio::test]
     async fn archive_header_read_is_bounded_to_four_kibibytes() {

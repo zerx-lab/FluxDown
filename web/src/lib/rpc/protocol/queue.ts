@@ -96,7 +96,7 @@ export interface GroupItemRequest {
 /** 创建任务组请求；`items` 不可为空。 */
 export interface CreateGroupRequest {
   sourceUrl?: string;
-  /** 空 = 组根目录直接用 `saveDir`。 */
+  /** 仅用于显示，不参与目录；全体成员共享公共目录时宿主改用该目录名。 */
   groupName?: string;
   saveDir?: string;
   queueId?: string;
@@ -119,8 +119,11 @@ export interface CreateGroupRequest {
   items: GroupItemRequest[];
 }
 
+/** 只有一个条目时宿主不建组、直接建普通任务：`groupId` 为空、`taskId` 为新任务 ID。 */
 export interface CreateGroupResponse {
   groupId: string;
+  /** 旧宿主不发送。 */
+  taskId?: string;
 }
 
 /** 前置预解析请求（只读，不建任务）。 */

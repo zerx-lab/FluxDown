@@ -2870,7 +2870,7 @@ pub struct GroupDto {
     pub name: String,
     /// 原始分享/清单链接（展示/复制用）。
     pub source_url: String,
-    /// 组根目录（子任务落盘 = 本值 + 清单条目的相对路径）。
+    /// 组根目录（= 基础保存目录 + 成员公共目录；子任务落盘 = 本值 + 去掉公共目录后的相对路径）。
     pub save_dir: String,
     /// Unix 秒级时间戳（字符串）。
     pub created_at: String,
@@ -2920,11 +2920,11 @@ pub struct CreateGroupRequest {
     /// 原始分享/清单链接（组行 `source_url`，展示/复制用）。
     #[serde(default)]
     pub source_url: String,
-    /// 组名（空 = 组根目录直接用 `save_dir`）。
+    /// 组名（仅用于显示，不参与目录）；全体成员共享公共目录时宿主改用该目录名。
     #[serde(default)]
     pub group_name: String,
-    /// 基础保存目录（组根目录 = `save_dir/sanitize(group_name)`）；
-    /// 空 = 使用全局默认保存目录。
+    /// 基础保存目录；组根 = 本目录 + 全体成员相对路径的公共目录，成员按去掉公共目录后的
+    /// 相对路径落在组根下（磁盘布局与 `rel_path` 一致）。空 = 使用全局默认保存目录。
     #[serde(default)]
     pub save_dir: String,
     /// 命名队列 ID（空 = 默认队列）。
@@ -2966,12 +2966,14 @@ pub struct CreateGroupRequest {
     pub items: Vec<GroupItemRequest>,
 }
 
-/// 创建任务组响应（`POST /api/v1/groups`）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// 创建任务组响应（`POST /api/v1/groups`）。只有一个条目时不建组，直接建普通任务：
+/// 此时 `groupId` 为空、`taskId` 为新任务 ID；建组时 `taskId` 为空。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct CreateGroupResponse {
     pub group_id: String,
+    pub task_id: String,
 }
 
 /// 前置预解析请求（`POST /api/v1/resolve/preview`）。只读、不建任务、

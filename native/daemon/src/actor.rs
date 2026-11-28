@@ -395,6 +395,8 @@ pub enum ActorResult {
     Unit,
     CleanedUnfinished(usize),
     Created(String),
+    /// 清单建组：多条目为组，单条目为普通任务。
+    GroupCreated(fluxdown_engine::download_manager::GroupCreation),
     /// 与 `CreateTasks` 的 `items` 逐条同序的结果。
     CreatedMany(Vec<CreateTaskOutcome>),
     Boolean(bool),
@@ -2129,12 +2131,12 @@ async fn execute_operation(
         ActorOperation::CreateGroup { spec } => {
             let mut spec = *spec;
             spec.queue_id = resolve_queue_id(&engine.db, spec.queue_id).await?;
-            let group_id = engine
+            let created = engine
                 .manager
                 .create_task_group(spec)
                 .await
                 .ok_or_else(|| ActorError::Operation("failed to persist group".to_owned()))?;
-            return Ok(ActorResult::Created(group_id));
+            return Ok(ActorResult::GroupCreated(created));
         }
         ActorOperation::PauseGroup { group_id } => engine.manager.pause_group(&group_id).await,
         ActorOperation::ResumeGroup { group_id } => engine.manager.resume_group(&group_id).await,

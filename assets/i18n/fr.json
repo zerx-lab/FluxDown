@@ -2507,8 +2507,6 @@
   "timeUnitDays": "jours",
   "settingsTabSeeding": "Partage",
   "manifestDialogTitle": "Sélectionner les fichiers à télécharger",
-  "manifestGroupNamePlaceholder": "Groupe de tâches sans titre",
-  "manifestGroupNameTooltip": "Nom du groupe de tâches (modifiable)",
   "manifestSummary": "{count} éléments · {size}",
   "manifestPluginBadge": "Plugin analysé",
   "manifestSearchPlaceholder": "Rechercher dans tous les niveaux…",

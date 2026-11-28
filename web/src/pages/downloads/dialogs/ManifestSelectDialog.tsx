@@ -75,7 +75,7 @@ export function ManifestSelectDialog({
   const [extFilter, setExtFilter] = useState<Set<string>>(() => new Set())
   const [search, setSearch] = useState('')
   const [sortKey, setSortKey] = useState<ManifestSortKey>('name')
-  const [groupName, setGroupName] = useState(() => manifestDefaultGroupName(preview.name, sourceUrl))
+  const groupName = manifestDefaultGroupName(preview.name, sourceUrl)
   const [saveDir, setSaveDir] = useState(base.saveDir)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -117,7 +117,7 @@ export function ManifestSelectDialog({
         : saveDir.trim()
       await rpc.daemon.group.create({
         sourceUrl,
-        groupName: groupName.trim() || preview.name || undefined,
+        groupName: groupName || preview.name || undefined,
         saveDir: submittedSaveDir || undefined,
         queueId: queueId || undefined,
         segments: base.segments,
@@ -206,9 +206,6 @@ export function ManifestSelectDialog({
         }
       >
         <div className="flex flex-col gap-3">
-          <FormField label={t('manifestGroupNameTooltip')} htmlFor="manifest-group-name">
-            <Input id="manifest-group-name" value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder={t('manifestGroupNamePlaceholder')} spellCheck={false} />
-          </FormField>
           <FormField label={t('saveDir')} htmlFor="manifest-save-dir">
             <InputWithAction
               input={<Input id="manifest-save-dir" value={saveDir} onChange={(event) => setSaveDir(event.target.value)} spellCheck={false} />}

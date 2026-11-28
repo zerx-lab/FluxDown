@@ -23,6 +23,13 @@ struct GroupsProtocolTests {
         #expect(withPlugin.pluginId == "com.x.p")
     }
 
+    @Test func createGroupResponseDistinguishesSingleTaskFromGroup() throws {
+        let group = try ProtocolJSON.decode(CreateGroupResponse.self, from: Data(#"{"groupId":"g1"}"#.utf8), what: "r")
+        #expect(group.groupId == "g1" && group.taskId.isEmpty && !group.createdSingleTask)
+        let task = try ProtocolJSON.decode(CreateGroupResponse.self, from: Data(#"{"groupId":"","taskId":"t1"}"#.utf8), what: "r")
+        #expect(task.createdSingleTask && task.taskId == "t1")
+    }
+
     @Test func createGroupRequestEncodesWireNames() throws {
         let request = CreateGroupRequest(
             sourceUrl: "https://x/s/1", groupName: "Album", saveDir: "/d", queueId: "q", segments: 2,

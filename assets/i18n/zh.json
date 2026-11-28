@@ -2514,8 +2514,6 @@
   "timeUnitDays": "天",
   "settingsTabSeeding": "做种",
   "manifestDialogTitle": "选择要下载的文件",
-  "manifestGroupNamePlaceholder": "未命名任务组",
-  "manifestGroupNameTooltip": "任务组名称（可编辑）",
   "manifestSummary": "{count} 项 · {size}",
   "manifestPluginBadge": "插件解析",
   "manifestSearchPlaceholder": "搜索全部层级…",

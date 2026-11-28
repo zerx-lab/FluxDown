@@ -141,7 +141,7 @@ A manifest describes several files in one result (a share link, a cloud-drive fo
 | Field | Rule |
 |---|---|
 | `items` | 1 to 1000 entries (`manifest items 数量非法`). |
-| `name` | Group / folder name. Empty = the host falls back to the parent task's file name. |
+| `name` | Group display name (does not create a folder; put folders in `items[].path`). When every selected item shares a common folder, the host names the group after that folder and uses it as the group root. Empty = the host falls back to the parent task's file name. A single selected item is downloaded as a plain task, not a group. |
 | `items[].id` | Plugin-owned selection token. Non-empty, ≤ 200 characters. Passed back as `ctx.resolverItem`. |
 | `items[].name` | File name, non-empty, same rule as `fileName`. |
 | `items[].path` | Relative sub-directory (`""` = group root). Must be a safe relative path (no absolute path, no `..`), at most **8** levels, and `path + "/" + name` at most **180** characters. |

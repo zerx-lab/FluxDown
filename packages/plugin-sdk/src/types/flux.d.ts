@@ -517,7 +517,12 @@ export interface ResolveResult {
   defaultVariantIndex?: number;
   /** Request overlay applied to this task's every run (same shape as the `prepare` result). */
   request?: RequestPatch;
-  /** Multi-file listing; mutually exclusive with `url` / `variants` / `audioUrl`. */
+  /**
+   * Multi-file listing; mutually exclusive with `url` / `variants` / `audioUrl`.
+   * `name` is the task group's display name only; it never creates a folder. Put any folders
+   * in `items[].path`. When all selected items share a common folder, the host names the group
+   * after that folder; a single selected item is downloaded as a plain task, not a group.
+   */
   manifest?: { name?: string; items: ManifestItem[]; archiveMetadata?: ArchiveMetadata };
   /** Root metadata shared by this resolver result and its manifest items. */
   archiveMetadata?: ArchiveMetadata;

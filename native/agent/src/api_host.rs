@@ -405,9 +405,11 @@ impl ApiHost for AgentApiHost {
             .await
     }
 
-    async fn create_task_group(&self, request: CreateGroupRequest) -> Result<String, ApiError> {
-        let created: CreateGroupResponse = self.rpc(method::DAEMON_GROUP_CREATE, request).await?;
-        Ok(created.group_id)
+    async fn create_task_group(
+        &self,
+        request: CreateGroupRequest,
+    ) -> Result<CreateGroupResponse, ApiError> {
+        self.rpc(method::DAEMON_GROUP_CREATE, request).await
     }
 
     async fn list_groups(&self) -> Result<Vec<GroupDto>, ApiError> {

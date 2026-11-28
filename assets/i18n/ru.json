@@ -2363,8 +2363,6 @@
   "timeUnitDays": "дн",
   "settingsTabSeeding": "Раздача",
   "manifestDialogTitle": "Выбор файлов для загрузки",
-  "manifestGroupNamePlaceholder": "Группа задач без названия",
-  "manifestGroupNameTooltip": "Название группы задач (можно изменить)",
   "manifestSummary": "Элементов: {count} · {size}",
   "manifestPluginBadge": "Разобрано плагином",
   "manifestSearchPlaceholder": "Поиск по всем уровням…",

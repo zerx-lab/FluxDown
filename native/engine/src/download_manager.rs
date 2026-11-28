@@ -3548,9 +3548,10 @@ pub struct GroupItemSpec {
 pub struct CreateGroupSpec {
     /// 原始分享/清单链接（组行 `source_url`，展示/复制用）。
     pub source_url: String,
-    /// 组名（`task_groups.name`；空 = 组根目录直接用 `base_save_dir`）。
+    /// 组名（`task_groups.name`；仅用于显示，不参与目录）。成员共享公共目录时由引擎改用
+    /// 该目录名。
     pub group_name: String,
-    /// 基础保存目录（组根目录 = `base_save_dir/sanitize(group_name)`）。
+    /// 基础保存目录；组根 = 本目录 + 成员公共目录，成员按去掉公共目录后的 `rel_path` 落在其下。
     pub base_save_dir: String,
     pub queue_id: String,
     pub segments: i32,
@@ -3571,6 +3572,33 @@ pub struct CreateGroupSpec {
     pub archive_metadata: Option<crate::model::ArchiveMetadata>,
     /// Optional caller-authorized category routing.
     pub category_route: Option<crate::category_route::CategoryRoute>,
+}
+
+/// [`DownloadManager::create_task_group`] 的结果：单条目不成组，直接建普通任务。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GroupCreation {
+    /// 多条目：新组 ID。
+    Group(String),
+    /// 单条目：新任务 ID（不建组行）。
+    Task(String),
+}
+
+impl GroupCreation {
+    /// 新组 ID；单条目建普通任务时为 `None`。
+    pub fn group_id(&self) -> Option<&str> {
+        match self {
+            Self::Group(id) => Some(id),
+            Self::Task(_) => None,
+        }
+    }
+
+    /// 新任务 ID；建组时为 `None`。
+    pub fn task_id(&self) -> Option<&str> {
+        match self {
+            Self::Group(_) => None,
+            Self::Task(id) => Some(id),
+        }
+    }
 }
 
 /// [`DownloadManager::spawn_resolve_preview`] 的一次性结果，经 `oneshot`
@@ -5787,9 +5815,14 @@ impl DownloadManager {
             return;
         }
 
-        // 多条目：单事务裂变为组（Db::fission_into_group，失败整体回滚）。
+        // 多条目：单事务裂变为组（Db::fission_into_group，失败整体回滚）。组根 = 基准目录 +
+        // 成员公共目录（组名不建目录）；有公共目录时组名就是该目录名。
         let group_id = Uuid::new_v4().to_string();
-        let group_name = if !manifest.name.is_empty() {
+        let common_dir =
+            group_dirs::common_member_dir(manifest.items.iter().map(|item| item.path.as_str()));
+        let group_name = if let Some(dir) = common_dir.last() {
+            (*dir).to_owned()
+        } else if !manifest.name.is_empty() {
             manifest.name.clone()
         } else if !task.file_name.is_empty() {
             task.file_name.clone()
@@ -5799,11 +5832,7 @@ impl DownloadManager {
                 .first()
                 .map_or_else(String::new, |item| item.name.clone())
         };
-        let fallback_group_dir = if group_name.is_empty() {
-            manifest_base.to_owned()
-        } else {
-            join_manifest_path(manifest_base, &naming::sanitize_filename(&group_name))
-        };
+        let fallback_group_dir = manifest_base.to_owned();
         let group_items: Vec<(&str, &str)> = manifest
             .items
             .iter()
@@ -5814,7 +5843,7 @@ impl DownloadManager {
                 .as_ref()
                 .and_then(|route| route.archive_metadata.as_ref())
         });
-        let group_save_dir = if let Some(route) = route.as_ref() {
+        let group_base_dir = if let Some(route) = route.as_ref() {
             let interceptor = self.task_interceptor(&task_id, &task.url, &task.url).await;
             crate::category_route::archive_group_root(
                 &fallback_group_dir,
@@ -5829,6 +5858,11 @@ impl DownloadManager {
         } else {
             fallback_group_dir
         };
+        let group_save_dir = group_dirs::join_member_dir(&group_base_dir, &common_dir);
+        let member_dir = |path: &str| {
+            let rel = group_dirs::strip_member_dir(path, common_dir.len());
+            join_manifest_path(&group_save_dir, &rel)
+        };
 
         let total_size: i64 = manifest
             .items
@@ -5840,7 +5874,7 @@ impl DownloadManager {
 
         let mother_item = &manifest.items[0];
         let mother_resolver_item = manifest_item_resolver_token(mother_item);
-        let mother_save_dir = join_manifest_path(&group_save_dir, &mother_item.path);
+        let mother_save_dir = member_dir(&mother_item.path);
         let mother_file_name = mother_item.name.clone();
         let mother_total_bytes = mother_item.size.unwrap_or(0).max(0);
 
@@ -5849,7 +5883,7 @@ impl DownloadManager {
             .map(|item| crate::db::GroupSiblingSpec {
                 id: Uuid::now_v7().to_string(),
                 file_name: item.name.clone(),
-                save_dir: join_manifest_path(&group_save_dir, &item.path),
+                save_dir: member_dir(&item.path),
                 resolver_item: manifest_item_resolver_token(item),
                 total_bytes: item.size.unwrap_or(0).max(0),
                 status,
@@ -5860,6 +5894,7 @@ impl DownloadManager {
             group_id,
             group_name,
             group_save_dir,
+            group_base_dir,
             group_source_url: task.url.clone(),
             mother_task_id: task_id.clone(),
             mother_resolver_item,
@@ -17355,23 +17390,29 @@ impl DownloadManager {
         }
     }
 
-    /// 创建任务组并以组根目录为基准保留各成员的相对路径。
+    /// 按清单选择建任务：多条目建组，单条目直接建普通任务（不成组）。
     ///
+    /// 组根 = 基础保存目录（或分类 / 插件归档结果）+ 成员公共目录，成员按去掉公共目录后的
+    /// 相对路径落在组根下，磁盘布局与 `rel_path` 一致；有公共目录时组名改用该目录名。
     /// `category_route` 只授权自动目录规划；显式保存目录不附带路由。
     /// `archive_metadata` 为组级来源信息，插件只在组根调用一次。
-    /// 清单为空或持久化失败时返回 `None`，成功时返回组 ID。
-    pub async fn create_task_group(&mut self, spec: CreateGroupSpec) -> Option<String> {
+    /// 清单为空或持久化失败时返回 `None`。
+    pub async fn create_task_group(&mut self, spec: CreateGroupSpec) -> Option<GroupCreation> {
+        if let [item] = spec.items.as_slice() {
+            return self
+                .create_manifest_task(&spec, item)
+                .await
+                .map(GroupCreation::Task);
+        }
         if spec.items.is_empty() {
             return None;
         }
-        let mut group_save_dir = if spec.group_name.trim().is_empty() {
-            spec.base_save_dir.clone()
-        } else {
-            PathBuf::from(&spec.base_save_dir)
-                .join(naming::sanitize_filename(&spec.group_name))
-                .to_string_lossy()
-                .into_owned()
-        };
+        let common_dir =
+            group_dirs::common_member_dir(spec.items.iter().map(|item| item.rel_path.as_str()));
+        let group_name = common_dir
+            .last()
+            .map_or_else(|| spec.group_name.clone(), |dir| (*dir).to_owned());
+        let mut group_save_dir = spec.base_save_dir.clone();
         let item_names: Vec<(&str, &str)> = spec
             .items
             .iter()
@@ -17385,7 +17426,7 @@ impl DownloadManager {
                 .await;
             group_save_dir = crate::category_route::archive_group_root(
                 &group_save_dir,
-                &spec.group_name,
+                &group_name,
                 &item_names,
                 &spec.source_url,
                 spec.archive_metadata.as_ref(),
@@ -17394,14 +17435,17 @@ impl DownloadManager {
             )
             .await;
         }
+        let group_base_dir = group_save_dir;
+        let group_save_dir = group_dirs::join_member_dir(&group_base_dir, &common_dir);
         let group_id = Uuid::new_v4().to_string();
         if let Err(e) = self
             .db
             .insert_group(
                 &group_id,
-                &spec.group_name,
+                &group_name,
                 &spec.source_url,
                 &group_save_dir,
+                &group_base_dir,
             )
             .await
         {
@@ -17412,11 +17456,12 @@ impl DownloadManager {
         // 排队一条全量队列位置（O(N²) 载荷）；尾部快照 + 单次位置广播覆盖。
         self.suppress_bulk_broadcasts = true;
         for item in &spec.items {
-            let save_dir = if item.rel_path.is_empty() {
+            let rel_path = group_dirs::strip_member_dir(&item.rel_path, common_dir.len());
+            let save_dir = if rel_path.is_empty() {
                 group_save_dir.clone()
             } else {
                 PathBuf::from(&group_save_dir)
-                    .join(&item.rel_path)
+                    .join(&rel_path)
                     .to_string_lossy()
                     .into_owned()
             };
@@ -17446,7 +17491,68 @@ impl DownloadManager {
         self.broadcast_queue_positions();
         self.send_tasks_snapshot().await;
         self.send_all_groups().await;
-        Some(group_id)
+        Some(GroupCreation::Group(group_id))
+    }
+
+    /// 清单只选了一个条目：建普通任务，落在 `基础目录/rel_path`。无子路径时沿用分类路由
+    /// （按条目名选目录、完成前复核，来源元数据随路由保存）；带子路径的条目保持来源结构，
+    /// 不再路由——与引擎自动裂变的单条目语义一致。
+    async fn create_manifest_task(
+        &mut self,
+        spec: &CreateGroupSpec,
+        item: &GroupItemSpec,
+    ) -> Option<String> {
+        let rel_path = group_dirs::strip_member_dir(&item.rel_path, 0);
+        let category_route = if rel_path.is_empty() {
+            spec.category_route.clone().map(|mut route| {
+                route.base_dir.clone_from(&spec.base_save_dir);
+                if spec.archive_metadata.is_some() {
+                    route.archive_metadata.clone_from(&spec.archive_metadata);
+                }
+                route
+            })
+        } else {
+            None
+        };
+        let save_dir = if rel_path.is_empty() {
+            spec.base_save_dir.clone()
+        } else {
+            PathBuf::from(&spec.base_save_dir)
+                .join(&rel_path)
+                .to_string_lossy()
+                .into_owned()
+        };
+        // 清单条目归产出清单的插件：未显式给出时按预览同款规则选 multi resolver（与组成员
+        // 一致），不走普通任务的 `route_resolver`，免得交给不认识该条目标识的插件。
+        #[cfg(feature = "plugins")]
+        let resolver_plugin_id =
+            if spec.resolver_plugin_id.is_empty() && !item.resolver_item.is_empty() {
+                self.plugin_auto_resolver(&spec.source_url, true).await.0
+            } else {
+                spec.resolver_plugin_id.clone()
+            };
+        #[cfg(not(feature = "plugins"))]
+        let resolver_plugin_id = spec.resolver_plugin_id.clone();
+        self.create_task(NewTaskSpec {
+            url: spec.source_url.clone(),
+            save_dir,
+            file_name: item.file_name.clone(),
+            segments: spec.segments,
+            cookies: spec.cookies.clone(),
+            referrer: spec.referrer.clone(),
+            hint_file_size: item.size,
+            proxy_url: spec.proxy_url.clone(),
+            user_agent: spec.user_agent.clone(),
+            queue_id: spec.queue_id.clone(),
+            ignore_tls_errors: spec.ignore_tls_errors,
+            extra_headers: spec.extra_headers.clone(),
+            start_paused: spec.start_paused,
+            resolver_item: item.resolver_item.clone(),
+            resolver_plugin_id,
+            category_route,
+            ..Default::default()
+        })
+        .await
     }
 
     /// 暂停组内成员（批量路径：排队成员批量摘除落库、活跃成员逐个取消，

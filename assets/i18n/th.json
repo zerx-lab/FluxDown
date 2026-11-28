@@ -2507,8 +2507,6 @@
   "timeUnitDays": "วัน",
   "settingsTabSeeding": "กำลังซีด",
   "manifestDialogTitle": "เลือกไฟล์เพื่อดาวน์โหลด",
-  "manifestGroupNamePlaceholder": "กลุ่มงานไม่มีชื่อ",
-  "manifestGroupNameTooltip": "ชื่อกลุ่มงาน (แก้ไขได้)",
   "manifestSummary": "{count} รายการ · {size}",
   "manifestPluginBadge": "ปลั๊กอินถูกแยกวิเคราะห์แล้ว",
   "manifestSearchPlaceholder": "ค้นหาทุกระดับ…",

@@ -2507,8 +2507,6 @@
   "timeUnitDays": "일",
   "settingsTabSeeding": "시딩 중",
   "manifestDialogTitle": "다운로드할 파일 선택",
-  "manifestGroupNamePlaceholder": "제목 없는 작업 그룹",
-  "manifestGroupNameTooltip": "작업 그룹 이름(편집 가능)",
   "manifestSummary": "{count}개 항목 · {size}",
   "manifestPluginBadge": "플러그인 분석됨",
   "manifestSearchPlaceholder": "모든 수준 검색…",

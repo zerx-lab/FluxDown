@@ -1662,6 +1662,10 @@ async fn archive_plugin_group_preserves_member_tree_under_authorized_base() {
         })
         .await
         .expect("create group");
+    let group_id = group_id
+        .group_id()
+        .expect("two items form a group")
+        .to_owned();
     let expected = work.join("视频/哔哩哔哩/小猪仔步履不停/小猪仔评财报");
     let group = engine
         .db
@@ -1669,7 +1673,12 @@ async fn archive_plugin_group_preserves_member_tree_under_authorized_base() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(Path::new(&group.save_dir), expected.as_path());
+    // 成员共享 `chapter`：组根落在归档目录下的 `chapter`，磁盘布局不变。
+    assert_eq!(
+        Path::new(&group.save_dir),
+        expected.join("chapter").as_path()
+    );
+    assert_eq!(group.name, "chapter");
     for _ in 0..2 {
         let done = tokio::time::timeout(Duration::from_secs(60), done_rx.recv())
             .await

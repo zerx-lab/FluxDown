@@ -69,7 +69,8 @@ final class ManifestSelectModel {
     let resolverPluginId: String
     let archiveMetadata: ArchiveMetadataDto?
     var selection: ManifestSelection
-    var groupName: String
+    /// 仅用于显示的组名（清单名 / 来源地址末段），不建目录、不提供编辑。
+    let groupName: String
     var search = ""
     private(set) var submitting = false
 
@@ -145,10 +146,9 @@ final class ManifestSelectModel {
         }
         submitting = true
         defer { submitting = false }
-        let trimmed = groupName.trimmingCharacters(in: .whitespacesAndNewlines)
         let request = base.groupRequest(
             sourceUrl: sourceUrl,
-            groupName: trimmed.isEmpty ? manifestName : trimmed,
+            groupName: groupName.isEmpty ? manifestName : groupName,
             queueId: queueId,
             startPaused: startPaused,
             items: selection.requestItems(),
@@ -157,8 +157,9 @@ final class ManifestSelectModel {
         )
         let session = container.session
         let count = request.items.count
+        let created: CreateGroupResponse
         do throws(HostError) {
-            let _: CreateGroupResponse = try await session.createGroup(request, offeredSaveDir: base.offeredSaveDir)
+            created = try await session.createGroup(request, offeredSaveDir: base.offeredSaveDir)
             await session.rememberCategoryMode(base.categoryMode)
         } catch {
             FluxHaptic.error.play()
@@ -166,7 +167,13 @@ final class ManifestSelectModel {
             return false
         }
         FluxHaptic.success.play()
-        toasts.show(text: L("manifestGroupCreatedToast", ["count": count]), tone: .success, systemImage: "square.stack.3d.down.right")
+        if created.createdSingleTask {
+            // 只选了一个条目：宿主直接建普通任务，不成组。
+            let text = startPaused ? L("taskCreatedToast") : L("mobileDownloadStarted")
+            toasts.show(text: text, tone: .success, systemImage: startPaused ? "clock" : "arrow.down")
+        } else {
+            toasts.show(text: L("manifestGroupCreatedToast", ["count": count]), tone: .success, systemImage: "square.stack.3d.down.right")
+        }
         return true
     }
 }
@@ -246,8 +253,6 @@ struct ManifestSelectView: View {
     private var groupSection: some View {
         let queues = state.queues
         return Section {
-            TextField(L("manifestGroupNameTooltip"), text: $model.groupName, prompt: Text(L("manifestGroupNamePlaceholder")))
-                .disabled(model.submitting)
             if container.isLocalHost {
                 LabeledContent(L("saveDir")) {
                     Text(model.base.saveDir.isEmpty ? LocalPaths.documents.path : model.base.saveDir)

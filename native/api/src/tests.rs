@@ -447,11 +447,17 @@ impl ApiHost for MockHost {
         })
     }
 
-    async fn create_task_group(&self, req: CreateGroupRequest) -> Result<String, ApiError> {
+    async fn create_task_group(
+        &self,
+        req: CreateGroupRequest,
+    ) -> Result<fluxdown_protocol::CreateGroupResponse, ApiError> {
         let mut inner = self.inner.lock().unwrap();
-        let id = inner.next_group_id.clone();
+        let group_id = inner.next_group_id.clone();
         inner.created_groups.push(req);
-        Ok(id)
+        Ok(fluxdown_protocol::CreateGroupResponse {
+            group_id,
+            task_id: String::new(),
+        })
     }
 
     async fn list_groups(&self) -> Result<Vec<GroupDto>, ApiError> {

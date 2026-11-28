@@ -2514,8 +2514,6 @@
   "timeUnitDays": "days",
   "settingsTabSeeding": "Seeding",
   "manifestDialogTitle": "Select Files to Download",
-  "manifestGroupNamePlaceholder": "Untitled task group",
-  "manifestGroupNameTooltip": "Task group name (editable)",
   "manifestSummary": "{count} items · {size}",
   "manifestPluginBadge": "Plugin parsed",
   "manifestSearchPlaceholder": "Search all levels…",
