@@ -1,0 +1,32 @@
+<svg width="512" height="512" viewBox="56 56 400 400" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title>FluxDown · Frost</title>
+  <desc>Cobalt squircle with a pale, frosted-glass download arrow and a bright rim</desc>
+  <defs>
+    <linearGradient id="bg" x1="96" y1="56" x2="416" y2="456" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3D7BFF"/>
+      <stop offset="1" stop-color="#1B33B8"/>
+    </linearGradient>
+    <radialGradient id="sheen" cx="256" cy="30" r="340" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#9CC2FF" stop-opacity=".45"/>
+      <stop offset="1" stop-color="#9CC2FF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="frost" x1="0" y1="119" x2="0" y2="390" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset=".55" stop-color="#E3ECFF"/>
+      <stop offset="1" stop-color="#B9CCFF"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="119" x2="0" y2="390" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity=".95"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity=".25"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#0A1670" flood-opacity=".45"/>
+    </filter>
+    <path id="arrow" d="M 226 131 Q 226 119 238 119 L 274 119 Q 286 119 286 131 L 286 296 L 331 251 Q 340 242 349 251 L 363 265 Q 372 274 363 283 L 265 381 Q 256 390 247 381 L 149 283 Q 140 274 149 265 L 163 251 Q 172 242 181 251 L 226 296 Z"/>
+  </defs>
+
+  <rect x="56" y="56" width="400" height="400" rx="88" fill="url(#bg)"/>
+  <rect x="56" y="56" width="400" height="400" rx="88" fill="url(#sheen)"/>
+  <use href="#arrow" fill="url(#frost)" filter="url(#shadow)"/>
+  <use href="#arrow" fill="none" stroke="url(#rim)" stroke-width="3" stroke-linejoin="round"/>
+</svg>

@@ -12,6 +12,7 @@
  *   assets/logo/
  *     fluxdown_logo.png (600×600；Linux 打包图标，GPUI PC 客户端 X11 窗口图标同源)
  *     fluxdown_bolt.png (512×512, 内置备选应用图标「闪电」；Windows / Linux 运行期由 agent 派生 ICO / 托盘图)
+ *     fluxdown_{classic,frost,sunset}.png (512×512, 内置备选应用图标「经典」「霜蓝」「日落」，同上)
  *     logo.png (600×600)
  *     tray_iconTemplate.png (36×36, macOS 2x 菜单栏模板图标)
  *     tray_iconTemplate@1x.png (18×18, macOS 1x 菜单栏模板图标)
@@ -23,6 +24,7 @@
  *   assets/logo/macos/
  *     app_icon_{16,32,64,128,256,512,1024}.png（app_icon_512 同时是 GPUI 裸二进制的 Dock 图标）
  *     app_icon_bolt_512.png（「闪电」的 Apple HIG 版：圆角方块占 824/1024，GPUI 运行期 Dock 图标）
+ *     app_icon_{classic,frost,sunset}_512.png（其余内置备选图标的 Apple HIG 版，同上）
  *
  *   mobile/Android/app/src/main/res/
  *     mipmap-{mdpi,hdpi,xhdpi,xxhdpi,xxxhdpi}/ic_launcher.png
@@ -58,6 +60,8 @@ const ROOT = resolve(REPO_ROOT, "..");
 const SVG_SRC = join(ROOT, "assets", "logo", "fluxdown_logo.svg");
 // 内置备选图标「闪电」源 SVG（可选 — 不存在时跳过生成）
 const BOLT_SVG_SRC = join(ROOT, "assets", "logo", "fluxdown_bolt.svg");
+// 其余内置备选图标：viewBox 与默认 logo 一样收紧到圆角方块边界
+const ALT_ICON_KEYS = ["classic", "frost", "sunset"] as const;
 
 if (!existsSync(SVG_SRC)) {
   console.error(`❌ 源文件不存在: ${SVG_SRC}`);
@@ -121,9 +125,10 @@ async function whitenTransparent(png: Buffer): Promise<Buffer> {
  * viewBox 已收紧到圆角矩形边界（内容占比 1.0），此处直接把内容渲染到画布的 824/1024。
  */
 const MAC_RECT_RATIO = 824 / 1024; // Apple HIG：形状占画布比例
-async function renderMacAppIcon(size: number): Promise<Buffer> {
+/** 任意 viewBox 已收紧到圆角方块的 SVG → Apple HIG 版应用图标 */
+async function renderMacAppIconFrom(src: string, size: number): Promise<Buffer> {
   const content = Math.round(size * MAC_RECT_RATIO);
-  const logo = await renderPngFrom(SVG_SRC, content);
+  const logo = await renderPngFrom(src, content);
   return sharp({
     create: {
       width: size,
@@ -434,6 +439,17 @@ async function main() {
       totalCount += 2;
     }
 
+    // 其余内置备选应用图标 — 同样 512px + macOS Dock 的 HIG 版
+    for (const key of ALT_ICON_KEYS) {
+      const src = join(ROOT, "assets", "logo", `fluxdown_${key}.svg`);
+      await saveFile(`assets/logo/fluxdown_${key}.png`, await renderPngFrom(src, 512));
+      await saveFile(
+        `assets/logo/macos/app_icon_${key}_512.png`,
+        await renderMacAppIconFrom(src, 512),
+      );
+      totalCount += 2;
+    }
+
     totalCount += 5;
   }
 
@@ -463,7 +479,7 @@ async function main() {
   {
     const macSizes = [16, 32, 64, 128, 256, 512, 1024];
     for (const size of macSizes) {
-      const buf = await renderMacAppIcon(size);
+      const buf = await renderMacAppIconFrom(SVG_SRC, size);
       await saveFile(
         `assets/logo/macos/app_icon_${size}.png`,
         buf,
