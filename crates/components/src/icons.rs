@@ -102,6 +102,7 @@ flux_icons! {
     ListFilter => "list-filter",
     QrCode => "qr-code",
     Magnet => "magnet",
+    Minus => "minus",
     Moon => "moon",
     Music => "music",
     Network => "network",

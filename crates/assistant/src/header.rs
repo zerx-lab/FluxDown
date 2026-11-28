@@ -95,6 +95,7 @@ impl Render for AssistantPanelHeader {
             .filter(|rename| !history && current.as_deref() == Some(rename.session_id.as_str()));
         let rename_input = renaming.map(|rename| rename.input.clone());
         let rename_busy = renaming.is_some_and(|rename| rename.busy);
+        let rename_over = renaming.is_some() && view.rename_over_limit(cx);
         let exporting = current
             .as_deref()
             .is_some_and(|id| view.exporting.as_deref() == Some(id));
@@ -106,6 +107,7 @@ impl Render for AssistantPanelHeader {
         let title_view = self.view.clone();
         let save_view = self.view.clone();
         let cancel_view = self.view.clone();
+        let escape_view = self.view.clone();
         let export_view = self.view.downgrade();
         let title_id = current.clone();
         let export_id = current;
@@ -117,12 +119,20 @@ impl Render for AssistantPanelHeader {
                 .items_center()
                 .gap(tokens.spacing.xxs)
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                // 顶栏插槽在 shell 标题栏下，不在面板的键位上下文里：Esc 在这里自己取消重命名。
+                .on_key_down(move |event: &gpui::KeyDownEvent, _, cx| {
+                    if event.keystroke.key == "escape" {
+                        escape_view.update(cx, |view, cx| view.cancel_rename(cx));
+                        cx.stop_propagation();
+                    }
+                })
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
                         .child(Input::new(&input).control(cx).w_full()),
                 )
+                .child(crate::render_history::rename_counter(view, cx))
                 .child(
                     icon_button(
                         "assistant-header-rename-save",
@@ -133,7 +143,7 @@ impl Render for AssistantPanelHeader {
                         ButtonVariant::Ghost,
                         cx,
                     )
-                    .disabled(rename_busy || stale)
+                    .disabled(rename_busy || stale || rename_over)
                     .on_click(move |_, _, cx| {
                         save_view.update(cx, |view, cx| view.commit_rename(cx));
                     }),

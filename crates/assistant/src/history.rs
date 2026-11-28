@@ -41,8 +41,11 @@ pub(crate) struct SessionList {
     pub(crate) total: u64,
     pub(crate) load: Load,
     pub(crate) more_loading: bool,
-    /// 当前 `items` 对应的服务端搜索词（空 = 不搜索）。
+    /// 最近一次请求的服务端搜索词（空 = 不搜索）；结果回来前 `items` 仍是旧词的。
     pub(crate) query: String,
+    /// 已取回的 `items` 实际对应的搜索词：`query` 在请求发出时就已更新，列表在结果回来前
+    /// 仍是旧词的结果。
+    pub(crate) items_query: String,
     /// 上次成功加载的时刻（面板重新打开时据此判断是否需要刷新）。
     pub(crate) loaded_at: Option<Instant>,
     /// 只增不减：账号切换 / 登出也不重置，旧请求永远对不上新的 epoch。
@@ -57,6 +60,7 @@ impl SessionList {
             load: Load::Idle,
             more_loading: false,
             query: String::new(),
+            items_query: String::new(),
             loaded_at: None,
             epoch: 0,
         }
@@ -99,6 +103,7 @@ impl SessionList {
         self.total = 0;
         self.load = Load::Idle;
         self.query.clear();
+        self.items_query.clear();
         self.loaded_at = None;
     }
 }
@@ -153,14 +158,47 @@ pub(crate) fn step_cursor(current: Option<usize>, len: usize, forward: bool) -> 
     })
 }
 
-/// 会话标题的提交值：去首尾空白后 1–[`ASSISTANT_MAX_TITLE_CHARS`] 字符（超出按字符截断，
-/// 不会切在多字节字符中间）；空白返回 `None`。
-pub(crate) fn normalize_title(raw: &str) -> Option<String> {
+/// 回车打开的会话（`items` 下标）：键盘光标所在的可见会话，没有就取第一条可见的。可见集合按
+/// 列表实际对应的搜索词 `applied` 与输入框里的 `typed` 判定，服务端结果还没回来时按标题本地过滤，
+/// 不会落到与搜索词无关的旧列表第一条上。
+pub(crate) fn enter_target(
+    items: &[AssistantSessionDto],
+    applied: &str,
+    typed: &str,
+    cursor: Option<&str>,
+) -> Option<usize> {
+    let visible = visible_indices(items, applied, typed);
+    cursor
+        .and_then(|id| {
+            visible
+                .iter()
+                .copied()
+                .find(|index| items.get(*index).is_some_and(|session| session.id == id))
+        })
+        .or_else(|| visible.first().copied())
+}
+
+/// 会话标题输入的校验结果。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum TitleCheck {
+    /// 去首尾空白后为空。
+    Empty,
+    /// 超过 [`ASSISTANT_MAX_TITLE_CHARS`] 个字符（按码点计）：输入框显示错误态、禁止提交。
+    TooLong,
+    /// 可提交的标题（已去首尾空白）。
+    Valid(String),
+}
+
+/// 校验会话标题：去首尾空白后 1–[`ASSISTANT_MAX_TITLE_CHARS`] 个字符（按码点计），不静默截断。
+pub(crate) fn check_title(raw: &str) -> TitleCheck {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return None;
+        return TitleCheck::Empty;
     }
-    Some(trimmed.chars().take(ASSISTANT_MAX_TITLE_CHARS).collect())
+    if trimmed.chars().count() > ASSISTANT_MAX_TITLE_CHARS {
+        return TitleCheck::TooLong;
+    }
+    TitleCheck::Valid(trimmed.to_owned())
 }
 
 /// 导出文件的默认名：云端给的名字为空时按格式兜底。
@@ -178,7 +216,11 @@ pub(crate) fn export_file_name(suggested: &str, format: AssistantExportFormat) -
 /// 每个有待确认工具的进行中会话及其待确认数。
 pub(crate) fn pending_per_session(state: &AssistantStateDto, now_ms: i64) -> Vec<(String, usize)> {
     let mut out: Vec<(String, usize)> = Vec::new();
-    for run in state.runs.iter().filter(|run| run.status.is_active()) {
+    for run in state
+        .runs
+        .iter()
+        .filter(|run| run.status.is_active() && !run.observing)
+    {
         let count = run
             .items
             .iter()
@@ -208,7 +250,7 @@ impl AssistantView {
     pub(crate) fn visible_sessions(&self) -> Vec<usize> {
         visible_indices(
             &self.sessions.items,
-            &self.sessions.query,
+            &self.sessions.items_query,
             &self.search_text,
         )
     }
@@ -226,11 +268,11 @@ impl AssistantView {
             return;
         }
         let epoch = self.sessions.begin_load();
-        let query = self.sessions.query.clone();
+        let requested_query = self.sessions.query.clone();
         let future = self.port.sessions(AssistantSessionsParams {
             limit: Some(limit),
             offset: Some(0),
-            query: (!query.is_empty()).then_some(query),
+            query: (!requested_query.is_empty()).then(|| requested_query.clone()),
         });
         self.run(future, cx, move |this, result, cx| {
             // 期间被作废（删除 / 清空 / 搜索 / 又一次刷新）：作废时已保证 `load` 不会停在加载中。
@@ -240,6 +282,7 @@ impl AssistantView {
             match result {
                 Ok(page) => {
                     this.sessions.items = page.items;
+                    this.sessions.items_query = requested_query;
                     this.sessions.total = page.total;
                     this.sessions.load = Load::Ready;
                     this.sessions.loaded_at = Some(Instant::now());
@@ -382,13 +425,14 @@ impl AssistantView {
         if self.renaming.is_some() {
             return;
         }
-        let visible = self.visible_sessions();
-        let target = self
-            .cursor_position(&visible)
-            .or_else(|| (!visible.is_empty()).then_some(0))
-            .and_then(|position| visible.get(position))
-            .and_then(|index| self.sessions.items.get(*index))
-            .map(|session| session.id.clone());
+        let target = enter_target(
+            &self.sessions.items,
+            &self.sessions.items_query,
+            &self.search_text,
+            self.history_cursor.as_deref(),
+        )
+        .and_then(|index| self.sessions.items.get(index))
+        .map(|session| session.id.clone());
         if let Some(id) = target {
             self.select_session(id, window, cx);
         }
@@ -626,8 +670,9 @@ impl AssistantView {
         let subscription = cx.subscribe_in(
             &input,
             window,
-            |this: &mut Self, _, event: &InputEvent, window, cx| match event {
-                InputEvent::Change => this.clamp_rename_input(window, cx),
+            |this: &mut Self, _, event: &InputEvent, _window, cx| match event {
+                // 字数统计与超限错误态随输入重绘；不截断，超限时禁止提交。
+                InputEvent::Change => cx.notify(),
                 InputEvent::PressEnter { .. } => this.commit_rename(cx),
                 // 失焦不提交也不取消：点确认 / 取消按钮会先让输入框失焦。
                 InputEvent::Focus | InputEvent::Blur => {}
@@ -643,19 +688,16 @@ impl AssistantView {
         cx.notify();
     }
 
-    /// 标题输入框最多 [`ASSISTANT_MAX_TITLE_CHARS`] 个字符：超出部分直接截掉。
-    fn clamp_rename_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(rename) = self.renaming.as_ref() else {
-            return;
-        };
-        let value = rename.input.read(cx).value();
-        if value.chars().count() > ASSISTANT_MAX_TITLE_CHARS {
-            let clamped: String = value.chars().take(ASSISTANT_MAX_TITLE_CHARS).collect();
-            rename
-                .input
-                .update(cx, |input, cx| input.set_value(clamped, window, cx));
-        }
-        cx.notify();
+    /// 重命名输入框里的字符数（去首尾空白后按码点计），供 `assistantRenameCount` 显示。
+    pub(crate) fn rename_chars(&self, cx: &gpui::App) -> usize {
+        self.renaming.as_ref().map_or(0, |rename| {
+            rename.input.read(cx).value().trim().chars().count()
+        })
+    }
+
+    /// 重命名输入超过 [`ASSISTANT_MAX_TITLE_CHARS`]：错误态、禁止提交。
+    pub(crate) fn rename_over_limit(&self, cx: &gpui::App) -> bool {
+        self.rename_chars(cx) > ASSISTANT_MAX_TITLE_CHARS
     }
 
     pub(crate) fn cancel_rename(&mut self, cx: &mut Context<Self>) {
@@ -673,10 +715,18 @@ impl AssistantView {
         }
         let session_id = rename.session_id.clone();
         let typed = rename.input.read(cx).value();
-        let Some(title) = normalize_title(&typed) else {
-            self.renaming = None;
-            cx.notify();
-            return;
+        let title = match check_title(&typed) {
+            TitleCheck::Valid(title) => title,
+            TitleCheck::Empty => {
+                self.renaming = None;
+                cx.notify();
+                return;
+            }
+            // 超限：保持错误态，不静默截断、不提交。
+            TitleCheck::TooLong => {
+                cx.notify();
+                return;
+            }
         };
         if title == self.session_title(&session_id) {
             self.renaming = None;
@@ -908,17 +958,46 @@ mod tests {
     }
 
     #[test]
-    fn titles_are_trimmed_and_capped_by_characters() {
-        assert_eq!(normalize_title("  hello  ").as_deref(), Some("hello"));
-        assert_eq!(normalize_title(" \n\t"), None);
-        let long = "字".repeat(ASSISTANT_MAX_TITLE_CHARS + 20);
-        let capped = normalize_title(&long).unwrap();
-        assert_eq!(capped.chars().count(), ASSISTANT_MAX_TITLE_CHARS);
-        let emoji = "😀".repeat(ASSISTANT_MAX_TITLE_CHARS + 1);
+    fn titles_are_trimmed_and_checked_by_code_points() {
         assert_eq!(
-            normalize_title(&emoji).unwrap().chars().count(),
-            ASSISTANT_MAX_TITLE_CHARS
+            check_title("  hello  "),
+            TitleCheck::Valid("hello".to_owned())
         );
+        assert_eq!(check_title(" \n\t"), TitleCheck::Empty);
+        let exact = "字".repeat(ASSISTANT_MAX_TITLE_CHARS);
+        assert_eq!(check_title(&exact), TitleCheck::Valid(exact.clone()));
+        // 超限不再被静默截断：给出错误态由用户自己改。
+        let long = "字".repeat(ASSISTANT_MAX_TITLE_CHARS + 1);
+        assert_eq!(check_title(&long), TitleCheck::TooLong);
+        // 按码点而不是 UTF-16 / 字节计：一个 emoji 算一个字符。
+        let emoji = "😀".repeat(ASSISTANT_MAX_TITLE_CHARS);
+        assert_eq!(check_title(&emoji), TitleCheck::Valid(emoji.clone()));
+        assert_eq!(check_title(&format!("  {emoji}😀  ")), TitleCheck::TooLong);
+    }
+
+    #[test]
+    fn enter_never_opens_a_session_from_a_stale_list() {
+        let items = [session("a", "Alpha"), session("b", "Beta")];
+        // 搜索词刚输入、服务端结果还没回来（列表仍是空搜索词的旧结果）：只在标题命中里选。
+        assert_eq!(enter_target(&items, "", "bet", None), Some(1));
+        assert_eq!(enter_target(&items, "", "zzz", None), None);
+        // 光标行不在命中里时不能打开它。
+        assert_eq!(enter_target(&items, "", "bet", Some("a")), Some(1));
+        // 服务端结果已回来：全部可见，优先光标，其次第一条。
+        assert_eq!(enter_target(&items, "bet", "bet", Some("b")), Some(1));
+        assert_eq!(enter_target(&items, "bet", "bet", None), Some(0));
+        assert_eq!(enter_target(&[], "", "", None), None);
+    }
+
+    #[test]
+    fn observed_runs_do_not_count_as_pending() {
+        let mut observed = run("a", AssistantRunStatus::Running, vec![pending_tool(2_000)]);
+        observed.observing = true;
+        let state = AssistantStateDto {
+            runs: vec![observed],
+            ..AssistantStateDto::default()
+        };
+        assert!(pending_per_session(&state, 1_000).is_empty());
     }
 
     #[test]

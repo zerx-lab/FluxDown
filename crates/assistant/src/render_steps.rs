@@ -83,7 +83,15 @@ impl AssistantView {
                         );
                     }
                     Block::Tool(call) => {
-                        list = list.child(self.render_tool(call, running, now_ms, cx));
+                        // 旁观执行的确认只能在发起它的设备上处理：不显示确认卡片与按钮。
+                        let element = if turn.is_observing() && call.confirmation.is_some() {
+                            let mut observed = call.clone();
+                            observed.confirmation = None;
+                            self.render_tool(&observed, running, now_ms, cx)
+                        } else {
+                            self.render_tool(call, running, now_ms, cx)
+                        };
+                        list = list.child(element);
                     }
                     // 问题单草稿在 `Turn::issues` 单独渲染，不会进过程列表。
                     Block::Issue(_) => {}

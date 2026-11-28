@@ -15,7 +15,6 @@ use crate::{
     view::AssistantView,
     widgets::{
         CircleTone, body_text, circle_button, compact_button, dot_matrix, meta_text, spinner,
-        thumbnail,
     },
 };
 
@@ -41,7 +40,8 @@ impl AssistantView {
             .pb(tokens.spacing.md)
             .pt(tokens.spacing.xs);
 
-        if quota_exhausted {
+        // 当天最后一次提问进行中：云端已把它计入额度，但停止按钮与输入区仍要保留（同会话上限卡）。
+        if quota_exhausted && self.current_run().is_none() && self.visible_outgoing().is_none() {
             let limit = self
                 .state
                 .config
@@ -376,7 +376,7 @@ impl AssistantView {
             .into_any_element()
     }
 
-    /// 输入卡片内上方的缩略图条：每张带编号「#n」与移除按钮；还在处理的图以转圈占位。
+    /// 输入卡片内上方的缩略图条：每张带编号「#n」与移除按钮，点缩略图看大图；还在处理的图以转圈占位。
     fn render_attachments(&self, cx: &Context<Self>) -> AnyElement {
         let theme = active_theme(cx);
         let tokens = theme.tokens();
@@ -405,13 +405,21 @@ impl AssistantView {
                 cx,
             )
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                // 移除按钮压在缩略图角上：别让同一次点击再打开大图。
+                cx.stop_propagation();
                 this.remove_image(number, window, cx);
             }));
             strip = strip.child(
                 div()
                     .relative()
                     .flex_none()
-                    .child(thumbnail(&attachment.thumbnail, side, cx))
+                    .child(self.previewable_thumbnail(
+                        SharedString::from(format!("assistant-draft-thumb-{number}")),
+                        number,
+                        &attachment.image,
+                        side,
+                        cx,
+                    ))
                     .child(
                         div()
                             .absolute()

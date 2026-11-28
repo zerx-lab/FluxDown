@@ -37,6 +37,15 @@ impl Mime {
             Self::Webp => "data:image/webp;base64,",
         }
     }
+
+    const fn gpui_format(self) -> gpui::ImageFormat {
+        match self {
+            Self::Png => gpui::ImageFormat::Png,
+            Self::Jpeg => gpui::ImageFormat::Jpeg,
+            Self::Gif => gpui::ImageFormat::Gif,
+            Self::Webp => gpui::ImageFormat::Webp,
+        }
+    }
 }
 
 /// 按文件头识别云端直接接受的格式；其他格式（TIFF / BMP 等）返回 `None`。
@@ -74,10 +83,28 @@ pub(crate) enum ImageError {
     TooLarge,
 }
 
-/// 已处理好的一张图：待发送的 `data:` URL 与输入区缩略图。
+/// 一张本机可显示的图：缩略图用于输入区 / 气泡，原图只在大图预览时渲染（不把整张大图当缩略图纹理）。
+#[derive(Clone)]
+pub(crate) struct LocalImage {
+    pub(crate) thumbnail: Arc<gpui::Image>,
+    pub(crate) full: Arc<gpui::Image>,
+}
+
+impl LocalImage {
+    /// 占用的已编码字节数（缩略图与原图是同一份时只算一次）。
+    pub(crate) fn byte_len(&self) -> usize {
+        if Arc::ptr_eq(&self.thumbnail, &self.full) {
+            self.full.bytes.len()
+        } else {
+            self.thumbnail.bytes.len() + self.full.bytes.len()
+        }
+    }
+}
+
+/// 已处理好的一张图：待发送的 `data:` URL 与本机显示用的图。
 pub(crate) struct Prepared {
     pub(crate) data_url: String,
-    pub(crate) thumbnail: Arc<gpui::Image>,
+    pub(crate) image: LocalImage,
 }
 
 /// 路径的扩展名是否是可添加的图片。
@@ -217,12 +244,6 @@ pub(crate) fn prepare(source: ImageSource, max_bytes: u64) -> Result<Prepared, I
         return Err(ImageError::TooLarge);
     }
     let decoded = decode(&bytes)?;
-    // 本身就不大的图直接当缩略图：`thumbnail` 会把小图放大，白白多出像素。
-    let thumbnail = if decoded.width().max(decoded.height()) <= THUMBNAIL_EDGE {
-        encode_png(&decoded)?
-    } else {
-        encode_png(&decoded.thumbnail(THUMBNAIL_EDGE, THUMBNAIL_EDGE))?
-    };
     let (mime, payload) = match direct {
         Some(mime) => (mime, bytes),
         None => {
@@ -233,14 +254,15 @@ pub(crate) fn prepare(source: ImageSource, max_bytes: u64) -> Result<Prepared, I
             (Mime::Png, png)
         }
     };
+    let url = data_url(mime, &payload);
     Ok(Prepared {
-        data_url: data_url(mime, &payload),
-        thumbnail: Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, thumbnail)),
+        data_url: url,
+        image: local_image(&decoded, mime, payload)?,
     })
 }
 
-/// 历史提问里取回的图片（`data:` URL）→ 对话气泡下的缩略图；解码较重，调用方在后台线程执行。
-pub(crate) fn thumbnail_from_data_url(url: &str) -> Result<Arc<gpui::Image>, ImageError> {
+/// 历史提问里取回的图片（`data:` URL）→ 缩略图 + 原图；解码较重，调用方在后台线程执行。
+pub(crate) fn image_from_data_url(url: &str) -> Result<LocalImage, ImageError> {
     let (header, payload) = url.split_once(',').ok_or(ImageError::Unsupported)?;
     if !header.starts_with("data:image/") || !header.ends_with(";base64") {
         return Err(ImageError::Unsupported);
@@ -249,15 +271,31 @@ pub(crate) fn thumbnail_from_data_url(url: &str) -> Result<Arc<gpui::Image>, Ima
         .decode(payload.trim())
         .map_err(|_| ImageError::Unsupported)?;
     let decoded = decode(&bytes)?;
+    match sniff(&bytes) {
+        Some(mime) => local_image(&decoded, mime, bytes),
+        // 云端只收四种格式；万一不是，原图也转成 PNG 以便 gpui 渲染。
+        None => {
+            let png = encode_png(&decoded)?;
+            local_image(&decoded, Mime::Png, png)
+        }
+    }
+}
+
+/// 由已解码的图与原图字节（`mime` 格式）生成缩略图 + 原图。本身就不大的图直接当缩略图：
+/// `thumbnail` 会把小图放大，白白多出像素。
+fn local_image(
+    decoded: &DynamicImage,
+    mime: Mime,
+    payload: Vec<u8>,
+) -> Result<LocalImage, ImageError> {
+    let full = Arc::new(gpui::Image::from_bytes(mime.gpui_format(), payload));
     let thumbnail = if decoded.width().max(decoded.height()) <= THUMBNAIL_EDGE {
-        encode_png(&decoded)?
+        Arc::clone(&full)
     } else {
-        encode_png(&decoded.thumbnail(THUMBNAIL_EDGE, THUMBNAIL_EDGE))?
+        let png = encode_png(&decoded.thumbnail(THUMBNAIL_EDGE, THUMBNAIL_EDGE))?;
+        Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, png))
     };
-    Ok(Arc::new(gpui::Image::from_bytes(
-        gpui::ImageFormat::Png,
-        thumbnail,
-    )))
+    Ok(LocalImage { thumbnail, full })
 }
 
 #[cfg(test)]
@@ -297,8 +335,10 @@ mod tests {
         let (prefix, encoded) = prepared.data_url.split_at("data:image/png;base64,".len());
         assert_eq!(prefix, "data:image/png;base64,");
         assert_eq!(STANDARD.decode(encoded).unwrap(), png);
-        let thumbnail = image::load_from_memory(&prepared.thumbnail.bytes).unwrap();
+        let thumbnail = image::load_from_memory(&prepared.image.thumbnail.bytes).unwrap();
         assert!(thumbnail.width().max(thumbnail.height()) <= THUMBNAIL_EDGE);
+        // 预览用原图：原样字节，不缩小。
+        assert_eq!(prepared.image.full.bytes, png);
     }
 
     #[test]
@@ -424,31 +464,38 @@ mod tests {
     }
 
     #[test]
-    fn history_data_url_becomes_a_small_thumbnail_and_rejects_junk() {
+    fn history_data_url_gives_a_small_thumbnail_and_the_original_and_rejects_junk() {
         let png = sample(ImageFormat::Png, 400, 300);
         let url = data_url(Mime::Png, &png);
-        let thumbnail = thumbnail_from_data_url(&url).unwrap();
-        let decoded = image::load_from_memory(&thumbnail.bytes).unwrap();
+        let image = image_from_data_url(&url).unwrap();
+        let decoded = image::load_from_memory(&image.thumbnail.bytes).unwrap();
         assert!(decoded.width().max(decoded.height()) <= THUMBNAIL_EDGE);
+        assert_eq!(image.full.bytes, png);
+        assert_eq!(image.byte_len(), image.thumbnail.bytes.len() + png.len());
+        // 小图缩略图与原图是同一份，只算一次。
+        let small = sample(ImageFormat::Png, 40, 30);
+        let image = image_from_data_url(&data_url(Mime::Png, &small)).unwrap();
+        assert!(Arc::ptr_eq(&image.thumbnail, &image.full));
+        assert_eq!(image.byte_len(), small.len());
         // 头部合法但负载不是图片 / 不是 base64：不支持，不 panic。
         assert_eq!(
-            thumbnail_from_data_url("data:image/png;base64,aGk=").err(),
+            image_from_data_url("data:image/png;base64,aGk=").err(),
             Some(ImageError::Unsupported)
         );
         assert_eq!(
-            thumbnail_from_data_url("data:image/png,aGk=").err(),
+            image_from_data_url("data:image/png,aGk=").err(),
             Some(ImageError::Unsupported)
         );
         assert_eq!(
-            thumbnail_from_data_url("data:text/plain;base64,aGk=").err(),
+            image_from_data_url("data:text/plain;base64,aGk=").err(),
             Some(ImageError::Unsupported)
         );
         assert_eq!(
-            thumbnail_from_data_url("not a data url").err(),
+            image_from_data_url("not a data url").err(),
             Some(ImageError::Unsupported)
         );
         assert_eq!(
-            thumbnail_from_data_url("data:image/png;base64,@@@").err(),
+            image_from_data_url("data:image/png;base64,@@@").err(),
             Some(ImageError::Unsupported)
         );
     }

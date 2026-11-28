@@ -13,6 +13,7 @@ mod dates;
 mod draft;
 mod header;
 mod history;
+mod image_viewer;
 mod images;
 mod markdown;
 mod model;

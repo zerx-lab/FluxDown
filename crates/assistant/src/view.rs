@@ -27,10 +27,12 @@ use crate::{
     dates::local_now,
     draft::{Attachment, SentImages},
     history::{Load, Rename, SessionList},
+    image_viewer::ImagePreview,
     images::ImageCache,
     model::{
         ActionError, Gate, SendFailure, SessionQuota, Turn, agent_now_ms, build_timeline,
-        clock_offset_ms, gate, pending_confirmations, session_quota, turn_transcript,
+        clock_offset_ms, gate, merge_config_response, pending_confirmations, rating_comment,
+        session_quota, turn_transcript,
     },
 };
 
@@ -40,6 +42,8 @@ const FOLLOW_BOTTOM_SLACK: f32 = 40.;
 const INPUT_MIN_ROWS: usize = 3;
 /// 输入框最多长到几行。
 const INPUT_MAX_ROWS: usize = 8;
+/// 「感谢反馈」的停留时长。
+const THANKS_FLASH: Duration = Duration::from_secs(3);
 /// 倒计时刷新间隔。
 const TICK: Duration = Duration::from_secs(1);
 /// 面板重新打开时，配置 / 会话列表超过这个时长就后台刷新。
@@ -94,6 +98,18 @@ pub(crate) struct IssueEditor {
     _subscriptions: [Subscription; 2],
 }
 
+/// 评价点踩后就地出现的可选说明输入。
+pub(crate) struct RateComment {
+    pub(crate) message_id: String,
+    pub(crate) input: Entity<InputState>,
+    /// 说明提交中。
+    pub(crate) busy: bool,
+    /// 已提交：显示「感谢反馈」。
+    pub(crate) thanks: bool,
+    /// 输入变化时重绘（字数与提交按钮的可用性随之变化）。
+    _subscription: Subscription,
+}
+
 /// 刚复制过什么：按钮短暂显示勾。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CopyKind {
@@ -115,6 +131,8 @@ pub struct AssistantView {
     pending_submit: bool,
     /// 账号变化后要清空输入框（下一次渲染里生效，那里才有 `window`）。
     pub(crate) draft_reset: bool,
+    /// 待在下一次渲染里写回输入框的文本：编辑重发被中断（当前会话被删 / 清空）后还原暂存的草稿。
+    pub(crate) pending_draft: Option<String>,
     pub(crate) input: Entity<TextareaState>,
     /// 输入框当前 placeholder；语言切换后在 render 中同步（输入框只在构造时取一次）。
     pub(crate) input_placeholder: SharedString,
@@ -150,6 +168,8 @@ pub struct AssistantView {
     /// 配置在途时又来了一次强制刷新：当前这次返回后再取一次。
     config_refetch: bool,
     config_loaded_at: Option<Instant>,
+    /// 助手配置被推送改写的次数：配置请求发出后若期间有推送改写了配置，响应里的配置就比推送旧。
+    config_push_gen: u64,
     /// agent 主机时钟比本机快多少毫秒（换算确认截止时刻用）。
     clock_offset: i64,
 
@@ -201,6 +221,12 @@ pub struct AssistantView {
     pub(crate) ratings: HashMap<String, Option<String>>,
     /// 评价请求进行中的消息 ID（避免重复点击）。
     pub(crate) rating_busy: HashSet<String>,
+    /// 点踩后的说明输入。
+    pub(crate) rate_comment: Option<RateComment>,
+    /// 附图大图预览。
+    pub(crate) image_preview: Option<ImagePreview>,
+    /// 侧栏面板是否展开（面板收起时待确认要在入口角标提醒）。
+    pub(crate) panel_open: bool,
     pub(crate) copied: Option<(String, CopyKind)>,
     copied_generation: u32,
     /// 待随下一条提问发送的图片；第 n 张对应输入文本里的 `[Image #n]`。
@@ -273,6 +299,7 @@ impl AssistantView {
             history_open: false,
             pending_submit: false,
             draft_reset: false,
+            pending_draft: None,
             input,
             input_placeholder,
             search,
@@ -295,6 +322,7 @@ impl AssistantView {
             config_requested: false,
             config_refetch: false,
             config_loaded_at: None,
+            config_push_gen: 0,
             clock_offset: 0,
             sessions: SessionList::new(),
             current: None,
@@ -329,6 +357,9 @@ impl AssistantView {
             input_text: SharedString::default(),
             attaching: 0,
             sent_images: None,
+            rate_comment: None,
+            image_preview: None,
+            panel_open: false,
             images: ImageCache::default(),
             ticker_running: false,
         }
@@ -345,8 +376,17 @@ impl AssistantView {
         pending_confirmations(&self.state, self.agent_now())
     }
 
+    /// 入口角标:只在面板收起或停在历史视图时提醒待确认(对话视图里确认卡片就在眼前)。
+    pub fn badge_pending(&self) -> bool {
+        (!self.panel_open || self.history_open) && self.pending_count() > 0
+    }
+
     /// 面板打开：焦点交给输入框（历史视图则交给列表），配置与会话列表过期就后台刷新。
     pub fn on_panel_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.panel_open {
+            self.panel_open = true;
+            cx.notify();
+        }
         let open = matches!(self.gate(), Gate::Open { .. });
         if self.history_open && open {
             window.focus(&self.history_focus, cx);
@@ -372,10 +412,23 @@ impl AssistantView {
         {
             self.reload_sessions(cx);
         }
+        if open {
+            self.reload_detail_for_retry(cx);
+        }
     }
 
     /// 面板收起：焦点还在面板里就清掉，让快捷键回到主区。
     pub fn on_panel_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.panel_open {
+            self.panel_open = false;
+            cx.notify();
+        }
+        // 重命名输入框与大图预览不跨面板收起残留（两个都要取，不能短路）。
+        let renaming = self.renaming.take();
+        let preview = self.image_preview.take();
+        if renaming.is_some() || preview.is_some() {
+            cx.notify();
+        }
         if self.root_focus.contains_focused(window, cx) {
             window.blur(cx);
         }
@@ -391,6 +444,10 @@ impl AssistantView {
         self.input
             .update(cx, |input, cx| input.set_value(text, window, cx));
         self.sync_input_text(cx);
+        // 新问题取代整份草稿：账号变化遗留的「待清空」标记（面板没渲染过就没被消费）与暂存的
+        // 草稿都不能再作用到这次写入的问题上。
+        self.draft_reset = false;
+        self.pending_draft = None;
         self.pending_submit = true;
         cx.notify();
     }
@@ -618,6 +675,8 @@ impl AssistantView {
         self.cancelling = false;
         self.sent_images = None;
         self.images.clear();
+        self.rate_comment = None;
+        self.image_preview = None;
         self.attachments.clear();
         self.attaching = 0;
         self.draft_reset = true;
@@ -638,6 +697,9 @@ impl AssistantView {
         let follow = self.near_bottom();
         let before = active_runs(&self.state);
         let runs_changed = self.state.runs != state.runs;
+        if self.state.config != state.config {
+            self.config_push_gen = self.config_push_gen.wrapping_add(1);
+        }
         self.state = state;
         let after = active_runs(&self.state);
         let pending = pending_request_ids(&self.state);
@@ -663,6 +725,9 @@ impl AssistantView {
                 self.load_detail(current, cx);
             }
         }
+        if runs_changed {
+            self.reload_detail_for_retry(cx);
+        }
         self.ensure_ticker(cx);
         if follow {
             self.scroll.scroll_to_bottom();
@@ -674,6 +739,20 @@ impl AssistantView {
         let max = self.scroll.max_offset().y;
         let offset = self.scroll.offset().y;
         max <= px(0.) || offset + max < px(FOLLOW_BOTTOM_SLACK)
+    }
+
+    /// 最后一轮失败、已有执行 ID 却还没读到它的用户消息（重读历史失败 / 还没落到）：重读一次会话历史，
+    /// 读到后重试变成「替换」。只在状态推送与面板打开时触发，历史读取自己的结果不会再触发它，不会循环。
+    fn reload_detail_for_retry(&mut self, cx: &mut Context<Self>) {
+        if !self.signed_in || self.stale || self.detail.load == Load::Loading {
+            return;
+        }
+        let Some(session_id) = self.current.clone() else {
+            return;
+        };
+        if self.timeline.last().is_some_and(Turn::awaiting_history) {
+            self.load_detail(session_id, cx);
+        }
     }
 
     /// 倒计时：有待确认的工具时每秒重绘（只重绘，不重建时间线）；待确认消失（到期）后补刷一次并停止。
@@ -773,6 +852,7 @@ impl AssistantView {
             return;
         }
         self.config_loading = true;
+        let requested_push_gen = self.config_push_gen;
         let future = if refresh {
             self.port.refresh()
         } else {
@@ -782,9 +862,10 @@ impl AssistantView {
             this.config_loading = false;
             match result {
                 Ok(state) => {
-                    // 执行（runs）只信推送：这次响应可能比推送更旧，整体替换会让进行中的执行倒退。
-                    let runs = this.state.runs.clone();
-                    this.apply_state(AssistantStateDto { runs, ..state }, cx);
+                    // 执行（runs）只信推送；期间若有推送改写了配置，响应里的配置比推送旧，不应用。
+                    let stale = this.config_push_gen != requested_push_gen;
+                    let merged = merge_config_response(&this.state, state, stale);
+                    this.apply_state(merged, cx);
                     this.config_failed = false;
                     this.config_loaded_at = Some(Instant::now());
                 }
@@ -821,6 +902,8 @@ impl AssistantView {
         self.issue_overrides.clear();
         self.ratings.clear();
         self.sent_images = None;
+        self.rate_comment = None;
+        self.image_preview = None;
         self.rebuild_timeline(cx);
     }
 
@@ -891,7 +974,7 @@ impl AssistantView {
 
     /// 当前会话已不存在（被删 / 清空）：回到新对话。
     pub(crate) fn leave_current(&mut self, cx: &mut Context<Self>) {
-        self.editing = None;
+        self.abandon_edit();
         self.enter_session(None, cx);
     }
 
@@ -920,7 +1003,7 @@ impl AssistantView {
         }
     }
 
-    /// 取一张历史附图并在后台解码成缩略图；已在加载 / 已完成的不重复取。
+    /// 取一张历史附图并在后台解码成缩略图 + 原图；已在加载 / 已完成的不重复取。
     pub(crate) fn fetch_image(&mut self, id: String, cx: &mut Context<Self>) {
         if !self.images.begin(&id) {
             return;
@@ -933,7 +1016,7 @@ impl AssistantView {
                     let decoded = cx
                         .background_executor()
                         .spawn(async move {
-                            crate::attachment::thumbnail_from_data_url(&attachment.data_url)
+                            crate::attachment::image_from_data_url(&attachment.data_url)
                         })
                         .await;
                     match decoded {
@@ -951,7 +1034,12 @@ impl AssistantView {
             };
             let Ok(()) = this.update(cx, move |this, cx| {
                 if this.account_epoch == account {
-                    this.images.finish(id, image);
+                    let keep: HashSet<String> = this
+                        .timeline
+                        .iter()
+                        .flat_map(|turn| turn.image_ids.iter().cloned())
+                        .collect();
+                    this.images.finish(id, image, &keep);
                     cx.notify();
                 }
             }) else {
@@ -1070,6 +1158,7 @@ impl AssistantView {
         message_id: String,
         rating: &'static str,
         server: Option<String>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(session_id) = self.current.clone() else {
@@ -1084,6 +1173,15 @@ impl AssistantView {
         self.action_error = None;
         self.rating_busy.insert(message_id.clone());
         self.ratings.insert(message_id.clone(), next.clone());
+        if next.as_deref() == Some("down") {
+            self.open_rate_comment(message_id.clone(), window, cx);
+        } else if self
+            .rate_comment
+            .as_ref()
+            .is_some_and(|comment| comment.message_id == message_id)
+        {
+            self.rate_comment = None;
+        }
         let params = AssistantRateParams {
             session_id,
             message_id: message_id.clone(),
@@ -1096,6 +1194,13 @@ impl AssistantView {
             if let Err(error) = result {
                 // 回滚到点击之前的状态；期间已被清空 / 改写的不动。
                 if this.ratings.get(&message_id) == Some(&next) {
+                    if this
+                        .rate_comment
+                        .as_ref()
+                        .is_some_and(|comment| comment.message_id == message_id)
+                    {
+                        this.rate_comment = None;
+                    }
                     match previous {
                         Some(previous) => {
                             this.ratings.insert(message_id, previous);
@@ -1188,6 +1293,17 @@ impl AssistantView {
         cx.notify();
     }
 
+    /// 只在编辑器正是这张问题单的时候关掉：别的问题单的编辑不能被这张的提交 / 丢弃结果带走。
+    fn close_issue_editor_for(&mut self, issue_id: &str) {
+        if self
+            .issue_editor
+            .as_ref()
+            .is_some_and(|editor| editor.issue_id == issue_id)
+        {
+            self.issue_editor = None;
+        }
+    }
+
     /// 确认提交问题单；`edited` 为修改后的标题 / 正文。
     pub(crate) fn confirm_issue(
         &mut self,
@@ -1210,8 +1326,8 @@ impl AssistantView {
             this.issue_busy.remove(&issue_id);
             match result {
                 Ok(issue) => {
+                    this.close_issue_editor_for(&issue_id);
                     this.issue_overrides.insert(issue_id, issue);
-                    this.issue_editor = None;
                     this.rebuild_timeline(cx);
                 }
                 Err(error) => this.report_failure("confirm issue", &error, cx),
@@ -1234,9 +1350,9 @@ impl AssistantView {
                 Ok(()) => {
                     if let Some(mut issue) = snapshot {
                         "discarded".clone_into(&mut issue.status);
-                        this.issue_overrides.insert(issue_id, issue);
+                        this.issue_overrides.insert(issue_id.clone(), issue);
                     }
-                    this.issue_editor = None;
+                    this.close_issue_editor_for(&issue_id);
                     this.rebuild_timeline(cx);
                 }
                 Err(error) => this.report_failure("discard issue", &error, cx),
@@ -1246,12 +1362,134 @@ impl AssistantView {
         cx.notify();
     }
 
+    // ───────────────────────── 点踩说明 ─────────────────────────
+
+    /// 点踩后打开说明输入（输入框随即获得焦点）。
+    fn open_rate_comment(
+        &mut self,
+        message_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = cx.new(|cx| InputState::new(window, cx));
+        let subscription = cx.subscribe(&input, |this, _, event: &InputEvent, cx| match event {
+            InputEvent::Change => cx.notify(),
+            InputEvent::PressEnter { .. } => this.submit_rate_comment(cx),
+            _ => {}
+        });
+        input.update(cx, |input, cx| input.focus(window, cx));
+        self.rate_comment = Some(RateComment {
+            message_id,
+            input,
+            busy: false,
+            thanks: false,
+            _subscription: subscription,
+        });
+    }
+
+    /// 说明输入框里的字符数（去首尾空白后按码点计）。
+    pub(crate) fn rate_comment_chars(&self, cx: &App) -> usize {
+        self.rate_comment.as_ref().map_or(0, |comment| {
+            comment.input.read(cx).value().trim().chars().count()
+        })
+    }
+
+    /// 提交点踩说明：同一 rating 带 `comment` 再调一次 `rate`。
+    pub(crate) fn submit_rate_comment(&mut self, cx: &mut Context<Self>) {
+        let Some(session_id) = self.current.clone() else {
+            return;
+        };
+        let busy_ratings = &self.rating_busy;
+        let Some(comment) = self
+            .rate_comment
+            .as_mut()
+            .filter(|comment| !comment.busy && !busy_ratings.contains(&comment.message_id))
+        else {
+            return;
+        };
+        let Some(text) = rating_comment(&comment.input.read(cx).value()) else {
+            return;
+        };
+        comment.busy = true;
+        let message_id = comment.message_id.clone();
+        // 说明与此前的评价请求不能并发：否则不带说明的那次后到会把云端的说明清空。
+        self.rating_busy.insert(message_id.clone());
+        let future = self.port.rate(AssistantRateParams {
+            session_id,
+            message_id: message_id.clone(),
+            rating: Some("down".to_owned()),
+            comment: Some(text),
+        });
+        self.run(future, cx, move |this, result, cx| {
+            this.rating_busy.remove(&message_id);
+            let current = this
+                .rate_comment
+                .as_mut()
+                .filter(|comment| comment.message_id == message_id);
+            match (current, result) {
+                (Some(comment), Ok(_)) => {
+                    comment.busy = false;
+                    comment.thanks = true;
+                    this.clear_thanks_later(message_id, cx);
+                }
+                (Some(comment), Err(error)) => {
+                    comment.busy = false;
+                    this.report_failure("rate comment", &error, cx);
+                }
+                (None, Err(error)) => this.report_failure("rate comment", &error, cx),
+                (None, Ok(_)) => {}
+            }
+            cx.notify();
+        });
+        cx.notify();
+    }
+
+    /// 跳过 / 关闭点踩说明。
+    pub(crate) fn dismiss_rate_comment(&mut self, cx: &mut Context<Self>) {
+        if self.rate_comment.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// 「感谢反馈」只停留一会儿。
+    fn clear_thanks_later(&mut self, message_id: String, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(THANKS_FLASH).await;
+            let Ok(()) = this.update(cx, |this, cx| {
+                if this
+                    .rate_comment
+                    .as_ref()
+                    .is_some_and(|comment| comment.message_id == message_id && comment.thanks)
+                {
+                    this.rate_comment = None;
+                    cx.notify();
+                }
+            }) else {
+                // 视图已释放，结束回调而不再更新状态。
+                return;
+            };
+        })
+        .detach();
+    }
+
+    // ───────────────────────── 回到底部 ─────────────────────────
+
+    /// 「回到最新」：滚到底并重新跟随。
+    pub(crate) fn scroll_to_latest(&mut self, cx: &mut Context<Self>) {
+        self.scroll.scroll_to_bottom();
+        cx.notify();
+    }
+
     // ───────────────────────── 键盘 ─────────────────────────
 
     /// Esc：依次取消待确认的删除 / 清空、重命名、编辑重发，其次停止进行中的回答，清掉搜索词，
     /// 最后关闭历史视图。什么都没有可取消时交还给上层（不吞掉 Esc）。
     pub(crate) fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.delete_pending.is_some() || self.clear_pending {
+        if self.image_preview.is_some() {
+            self.image_preview = None;
+        } else if self.rate_comment.is_some() {
+            self.rate_comment = None;
+        } else if self.delete_pending.is_some() || self.clear_pending {
             self.delete_pending = None;
             self.clear_pending = false;
             self.confirm_gen = self.confirm_gen.wrapping_add(1);

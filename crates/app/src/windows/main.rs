@@ -133,7 +133,7 @@ fn open_with(cx: &mut App, focus: bool) -> Option<WindowHandle<Root>> {
                         move |cx| {
                             assistant
                                 .upgrade()
-                                .is_some_and(|assistant| assistant.read(cx).pending_count() > 0)
+                                .is_some_and(|assistant| assistant.read(cx).badge_pending())
                         }
                     }),
                 ),
@@ -237,11 +237,11 @@ fn open_with(cx: &mut App, focus: bool) -> Option<WindowHandle<Root>> {
             shell.observe_widget_source(&downloads, cx);
             // 版本条目被隐藏时，更新状态变化决定是否临时显示它。
             shell.observe_widget_source(&version_button, cx);
-            // 待确认的工具调用数变化时刷新助手按钮的圆点（面板收起时也要显示）；
-            // 流式回答的逐帧更新不触发 shell 重绘。
+            // 面板收起或停在历史视图时有待确认的工具调用，助手按钮显示圆点（对话视图里确认卡片就在
+            // 眼前，不重复提醒）；流式回答的逐帧更新不触发 shell 重绘。
             let had_pending = std::cell::Cell::new(false);
             cx.observe(&assistant, move |_, assistant, cx| {
-                let pending = assistant.read(cx).pending_count() > 0;
+                let pending = assistant.read(cx).badge_pending();
                 if had_pending.replace(pending) != pending {
                     cx.notify();
                 }

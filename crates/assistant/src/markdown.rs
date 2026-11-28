@@ -1,7 +1,7 @@
-//! 回答 Markdown 的呈现策略：链接只放行 https，图片一律不加载，代码块带复制按钮。
+//! 回答 Markdown 的呈现策略：链接只放行 http / https，图片一律不加载，代码块带复制按钮。
 //!
 //! 回答里的链接与图片来自模型（可能被工具输出里的提示注入左右），所以：
-//! - 点击只打开 `https://` 地址（`file://`、自定义协议、`javascript:` 等全部忽略），悬停显示目标地址；
+//! - 点击只打开 `http://` / `https://` 地址（`file://`、自定义协议、`javascript:` 等全部忽略），悬停显示目标地址；
 //! - 图片地址永远不发起网络请求（否则图片 URL 可以把数据带出去）。
 
 use std::{
@@ -12,14 +12,18 @@ use std::{
 
 use fluxdown_ui_components::{ButtonVariant, FluxIcon, icon_button, toast, tooltip_view};
 use fluxdown_ui_theme::active_theme;
-use gpui::{App, ClipboardItem, ImageSource, SharedString, Styled as _, Window};
+use gpui::{
+    App, ClickEvent, ClipboardItem, ImageSource, MouseButton, SharedString, Styled as _, Window,
+};
 use gpui_component::{Icon, WindowExt as _, text::TextView};
 
 /// 链接长度上限：超长的多半是在夹带数据。
 const MAX_LINK_CHARS: usize = 2048;
 const HTTPS_PREFIX: &str = "https://";
+const HTTP_PREFIX: &str = "http://";
 
-/// 允许打开的链接：`https://` + 非空主机，无空白 / 控制字符，长度有限。返回去掉首尾空白后的地址。
+/// 允许打开的链接：`http://` / `https://` + 非空主机，无 userinfo、无空白 / 控制字符，长度有限
+/// （与 Web 端同一口径）。返回去掉首尾空白后的地址。
 pub(crate) fn safe_link(url: &str) -> Option<&str> {
     let url = url.trim();
     if url.chars().count() > MAX_LINK_CHARS
@@ -27,14 +31,27 @@ pub(crate) fn safe_link(url: &str) -> Option<&str> {
     {
         return None;
     }
-    let scheme = url.get(..HTTPS_PREFIX.len())?;
-    if !scheme.eq_ignore_ascii_case(HTTPS_PREFIX) {
-        return None;
-    }
-    let rest = url.get(HTTPS_PREFIX.len()..)?;
+    let rest = [HTTPS_PREFIX, HTTP_PREFIX].iter().find_map(|prefix| {
+        let scheme = url.get(..prefix.len())?;
+        scheme
+            .eq_ignore_ascii_case(prefix)
+            .then(|| url.get(prefix.len()..))
+            .flatten()
+    })?;
     let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
     // 主机里带 `@` 是 userinfo 伪装（`https://docs.example.com@evil.test/`）：不放行。
     (!host.is_empty() && !host.starts_with(['.', ':']) && !host.contains('@')).then_some(url)
+}
+
+/// 点击是否应当打开链接：只认左键 / 中键、键盘与普通轻触（右键、长按走菜单，不打开）。
+fn opens_link(event: &ClickEvent) -> bool {
+    match event {
+        ClickEvent::Mouse(click) => {
+            matches!(click.up.button, MouseButton::Left | MouseButton::Middle)
+        }
+        ClickEvent::Keyboard(_) => true,
+        ClickEvent::Touch(touch) => !touch.long_press,
+    }
 }
 
 /// 回答 Markdown 视图用到的文案。
@@ -61,9 +78,14 @@ pub(crate) fn answer_view(
         SharedString::from(Arc::clone(text)),
     )
     .selectable(true)
-    .on_link_click(move |url, _, _, cx| match safe_link(url) {
-        Some(link) => open_link(link, cx),
-        None => log::debug!("assistant markdown link ignored (not https)"),
+    .on_link_click(move |url, event, _, cx| {
+        if !opens_link(event) {
+            return;
+        }
+        match safe_link(url) {
+            Some(link) => open_link(link, cx),
+            None => log::debug!("assistant markdown link ignored (not http/https)"),
+        }
     })
     .link_tooltip(|url, window, cx| tooltip_view(url.clone(), window, cx))
     // 不发任何图片请求：来源恒为「永远加载中」的自定义源。
@@ -100,7 +122,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_https_links_with_a_host_open() {
+    fn only_http_and_https_links_with_a_host_open() {
         assert_eq!(
             safe_link("https://fluxdown.com/docs?a=1#x"),
             Some("https://fluxdown.com/docs?a=1#x")
@@ -110,7 +132,7 @@ mod tests {
             Some("HTTPS://fluxdown.com")
         );
         for bad in [
-            "http://fluxdown.com",
+            "ftp://fluxdown.com",
             "file:///Applications/Calculator.app",
             "javascript:alert(1)",
             "fluxdown://open",
@@ -158,6 +180,12 @@ mod tests {
         assert_eq!(safe_link("HtTpS://a.b"), Some("HtTpS://a.b"));
         assert_eq!(safe_link("\thttps://a.b/x\n"), Some("https://a.b/x"));
         assert_eq!(safe_link("https://a.b?x=1"), Some("https://a.b?x=1"));
+        assert_eq!(
+            safe_link("http://fluxdown.com"),
+            Some("http://fluxdown.com")
+        );
+        assert_eq!(safe_link("HTTP://a.b/x"), Some("HTTP://a.b/x"));
+        assert_eq!(safe_link("http://u:p@a.b/x"), None);
     }
 
     #[test]

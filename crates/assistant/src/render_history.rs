@@ -333,7 +333,7 @@ impl AssistantView {
             )
             .size(button_side)
             .text_color(ext.colors.success)
-            .disabled(self.stale || busy)
+            .disabled(self.stale || busy || self.rename_over_limit(cx))
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.commit_rename(cx)));
             let cancel = icon_button(
                 SharedString::from(format!("assistant-session-rename-cancel-{id}")),
@@ -359,6 +359,7 @@ impl AssistantView {
                                 .min_w_0()
                                 .child(Input::new(&rename.input).control(cx).w_full()),
                         )
+                        .child(rename_counter(self, cx))
                         .child(if busy {
                             spinner(ext.icon.sm).into_any_element()
                         } else {
@@ -571,4 +572,21 @@ impl AssistantView {
             })
             .into_any_element()
     }
+}
+
+/// 重命名输入框旁的字数提示（`assistantRenameCount`）；超过上限用危险色。
+pub(crate) fn rename_counter(view: &AssistantView, cx: &gpui::App) -> AnyElement {
+    let chars = view.rename_chars(cx);
+    let max = fluxdown_protocol::ASSISTANT_MAX_TITLE_CHARS;
+    meta_text(cx)
+        .flex_none()
+        .when(chars > max, |this| {
+            this.text_color(active_theme(cx).tokens().colors.destructive)
+        })
+        .child(view.with(
+            "assistantRenameCount",
+            &[("count", &chars.to_string()), ("max", &max.to_string())],
+            cx,
+        ))
+        .into_any_element()
 }

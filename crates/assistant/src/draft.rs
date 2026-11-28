@@ -3,14 +3,16 @@
 //! 附件在后台线程读取 / 转码；完成后按顺序加入并在光标处插入 `[Image #n]`。账号变化会作废
 //! 在途的处理（回写前比较 `account_epoch`）。
 
-use std::{path::PathBuf, sync::Arc};
+use std::path::PathBuf;
 
 use fluxdown_ui_components::{size_units::format_bytes, toast};
-use gpui::{App, ClipboardItem, Context, Image, PathPromptOptions, Task, Window};
+use gpui::{App, ClipboardItem, Context, PathPromptOptions, Task, Window};
 use gpui_component::WindowExt as _;
 
 use crate::{
-    attachment::{ImageError, ImageSource, Prepared, clipboard_sources, is_image_path, prepare},
+    attachment::{
+        ImageError, ImageSource, LocalImage, Prepared, clipboard_sources, is_image_path, prepare,
+    },
     model::{
         Edit, Gate, Turn, insert_placeholder, map_offset, orphaned_images, placeholder_remnant,
         remove_placeholder,
@@ -22,8 +24,8 @@ use crate::{
 pub(crate) struct Attachment {
     /// `data:image/<type>;base64,...`。
     pub(crate) data_url: String,
-    /// 输入区的缩略图。
-    pub(crate) thumbnail: Arc<Image>,
+    /// 输入区缩略图与大图预览用的原图。
+    pub(crate) image: LocalImage,
 }
 
 /// 刚发出的带图提问：气泡据此显示本地缩略图（云端历史里只有图片 ID）。
@@ -31,7 +33,9 @@ pub(crate) struct SentImages {
     pub(crate) session_id: String,
     /// 提问文本（含占位符），用来对上对应的那一轮。
     pub(crate) text: String,
-    pub(crate) thumbnails: Vec<Arc<Image>>,
+    pub(crate) images: Vec<LocalImage>,
+    /// 与 `images` 一一对应的原图（`data:` URL）：失败后一键重发时再带上。
+    pub(crate) data_urls: Vec<String>,
 }
 
 /// 拖入的路径里能当图片的部分（按扩展名先过滤，再去计算名额）。
@@ -87,14 +91,20 @@ impl AssistantView {
         self.input.update(cx, |input, cx| input.focus(window, cx));
     }
 
-    /// 清空草稿（文本与附件）：账号变化后在下一次渲染里生效（那里才有 `window`）。
+    /// 下一次渲染里要落到输入框的草稿变化（那里才有 `window`）：账号变化清空草稿（文本与附件）；
+    /// 编辑重发被中断（当前会话被删 / 清空）则把暂存的原草稿写回。
     pub(crate) fn flush_draft_reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.draft_reset {
+        let text = if self.draft_reset {
+            self.draft_reset = false;
+            self.pending_draft = None;
+            String::new()
+        } else if let Some(text) = self.pending_draft.take() {
+            text
+        } else {
             return;
-        }
-        self.draft_reset = false;
+        };
         self.input
-            .update(cx, |input, cx| input.set_value("", window, cx));
+            .update(cx, |input, cx| input.set_value(text, window, cx));
         self.sync_input_text(cx);
     }
 
@@ -285,7 +295,7 @@ impl AssistantView {
                     }
                     self.attachments.push(Attachment {
                         data_url: prepared.data_url,
-                        thumbnail: prepared.thumbnail,
+                        image: prepared.image,
                     });
                     let number = self.attachments.len();
                     self.insert_image_placeholder(number, window, cx);
@@ -408,15 +418,21 @@ impl AssistantView {
         cx.notify();
     }
 
-    /// 这一轮提问的本地缩略图：只认刚发出的那条（最后一轮、文本一致、张数对得上）。
-    pub(crate) fn local_thumbnails(&self, turn: &Turn, last: bool) -> Option<&[Arc<Image>]> {
+    /// 这一轮提问对应的刚发出的带图提问：只认最后一轮、文本一致、张数对得上的那条。
+    pub(crate) fn local_images(&self, turn: &Turn, last: bool) -> Option<&SentImages> {
         let sent = self.sent_images.as_ref()?;
         let session = self.current.as_deref()?;
         let same = last
             && sent.session_id == session
             && sent.text == turn.question
-            && (turn.live.is_some() || turn.image_count == sent.thumbnails.len());
-        same.then_some(sent.thumbnails.as_slice())
+            && (turn.live.is_some() || turn.image_count == sent.images.len());
+        same.then_some(sent)
+    }
+
+    /// 这一轮提问的本地图片。
+    pub(crate) fn local_thumbnails(&self, turn: &Turn, last: bool) -> Option<&[LocalImage]> {
+        self.local_images(turn, last)
+            .map(|sent| sent.images.as_slice())
     }
 }
 

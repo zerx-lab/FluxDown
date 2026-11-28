@@ -8,14 +8,15 @@ use fluxdown_ui_components::{
 };
 use fluxdown_ui_theme::active_theme;
 use gpui::{
-    AnyElement, App, ClickEvent, Context, FontWeight, Image, InteractiveElement as _, IntoElement,
-    ParentElement, Render, SharedString, StatefulInteractiveElement as _, Styled, Window, div,
-    prelude::FluentBuilder as _, px, relative,
+    AnyElement, App, ClickEvent, Context, FontWeight, InteractiveElement as _, IntoElement,
+    ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement as _, Styled, Window,
+    div, prelude::FluentBuilder as _, px, relative,
 };
 use gpui_component::{
     Icon, IconName,
     button::{Button, ButtonVariants as _},
     h_flex,
+    input::Input,
     scroll::ScrollableElement as _,
     v_flex,
 };
@@ -23,12 +24,16 @@ use std::sync::Arc;
 
 use crate::{
     actions::{Dismiss, HistoryNext, HistoryOpen, HistoryPrev, KEY_CONTEXT, NewChat},
+    attachment::LocalImage,
     dates::local_now,
     history::Load,
     images::ImageSlot,
     markdown::{AnswerLabels, answer_view},
-    model::{Gate, Turn, pending_elsewhere, run_error_key, run_error_known},
-    view::{AssistantView, CopyKind},
+    model::{
+        Gate, MAX_RATING_COMMENT_CHARS, Turn, pending_elsewhere, rating_comment, run_error_key,
+        run_error_known, show_scroll_to_bottom,
+    },
+    view::{AssistantView, CopyKind, RateComment},
     widgets::{action_button, body_text, meta_text, spinner, thumbnail, thumbnail_slot},
 };
 
@@ -90,7 +95,11 @@ impl Render for AssistantView {
             .size_full()
             .min_w_0()
             .min_h_0()
+            .relative()
             .child(body)
+            .when_some(self.image_preview.as_ref(), |this, preview| {
+                this.child(self.render_image_preview(preview, cx))
+            })
     }
 }
 
@@ -375,7 +384,8 @@ impl AssistantView {
             if let Some(outgoing) = outgoing {
                 list = list.child(self.render_outgoing(
                     &outgoing.text,
-                    &outgoing.thumbnails,
+                    &outgoing.images,
+                    &outgoing.image_ids,
                     outgoing.image_count,
                     cx,
                 ));
@@ -383,6 +393,13 @@ impl AssistantView {
             list.into_any_element()
         };
 
+        // 离底部超过一屏：显示「回到最新」。
+        let show_latest = !empty
+            && show_scroll_to_bottom(
+                f32::from(self.scroll.max_offset().y),
+                f32::from(self.scroll.offset().y),
+                f32::from(self.scroll.bounds().size.height),
+            );
         div()
             .relative()
             .flex_1()
@@ -397,6 +414,30 @@ impl AssistantView {
                     .child(body),
             )
             .vertical_scrollbar(&self.scroll)
+            .when(show_latest, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .bottom(tokens.spacing.md)
+                        .left_0()
+                        .right_0()
+                        .flex()
+                        .justify_center()
+                        .child(
+                            button(
+                                "assistant-scroll-bottom",
+                                self.t("assistantScrollToBottom", cx),
+                                ButtonVariant::Secondary,
+                                cx,
+                            )
+                            .on_click(cx.listener(
+                                |this, _: &ClickEvent, _, cx| {
+                                    this.scroll_to_latest(cx);
+                                },
+                            )),
+                        ),
+                )
+            })
             .into_any_element()
     }
 
@@ -418,7 +459,8 @@ impl AssistantView {
     fn render_outgoing(
         &self,
         text: &str,
-        thumbnails: &[Arc<Image>],
+        thumbnails: &[LocalImage],
+        image_ids: &[String],
         image_count: usize,
         cx: &Context<Self>,
     ) -> AnyElement {
@@ -430,7 +472,10 @@ impl AssistantView {
             .gap(tokens.spacing.xxs)
             .child(self.question_bubble(text, cx));
         if !thumbnails.is_empty() {
-            bubble_column = bubble_column.child(sent_thumbnails(thumbnails, cx));
+            bubble_column = bubble_column.child(self.sent_thumbnails("outgoing", thumbnails, cx));
+        } else if !image_ids.is_empty() {
+            // 沿用旧图（重新生成 / 编辑重发）：经附件缓存显示。
+            bubble_column = bubble_column.child(self.history_images(image_ids, cx));
         } else if image_count > 0 {
             bubble_column = bubble_column.child(self.images_text(image_count, cx));
         }
@@ -462,10 +507,22 @@ impl AssistantView {
         cx: &Context<Self>,
     ) -> Option<AnyElement> {
         if let Some(thumbnails) = self.local_thumbnails(turn, last) {
-            return Some(sent_thumbnails(thumbnails, cx));
+            return Some(self.sent_thumbnails(&turn.key, thumbnails, cx));
         }
         if !turn.image_ids.is_empty() {
-            return Some(self.history_images(&turn.image_ids, cx));
+            let history = self.history_images(&turn.image_ids, cx);
+            let fresh = turn.new_image_count();
+            // 编辑重发时新附的图在云端历史里没有附件 ID：只显示张数。
+            return Some(if fresh > 0 {
+                v_flex()
+                    .items_end()
+                    .gap(active_theme(cx).tokens().spacing.xxs)
+                    .child(history)
+                    .child(self.images_text(fresh, cx))
+                    .into_any_element()
+            } else {
+                history
+            });
         }
         (turn.image_count > 0).then(|| self.images_text(turn.image_count, cx))
     }
@@ -483,7 +540,15 @@ impl AssistantView {
             .gap(tokens.spacing.xs);
         for (index, id) in ids.iter().enumerate() {
             let cell: AnyElement = match self.images.get(id) {
-                Some(ImageSlot::Ready(image)) => thumbnail(image, side, cx).into_any_element(),
+                Some(ImageSlot::Ready(image)) => self
+                    .previewable_thumbnail(
+                        SharedString::from(format!("assistant-image-ready-{id}")),
+                        index + 1,
+                        image,
+                        side,
+                        cx,
+                    )
+                    .into_any_element(),
                 Some(ImageSlot::Failed) => {
                     let label = self.with(
                         "assistantImageLoadFailed",
@@ -556,6 +621,9 @@ impl AssistantView {
         }
 
         let mut reply = v_flex().w_full().gap(tokens.spacing.sm);
+        if turn.is_observing() && running {
+            reply = reply.child(meta_text(cx).child(self.t("assistantRunObserving", cx)));
+        }
         if !turn.steps.is_empty() {
             reply = reply.child(self.render_steps(turn, now_ms, cx));
         }
@@ -616,6 +684,13 @@ impl AssistantView {
         }
         if !running {
             reply = reply.child(self.render_turn_actions(turn, last, cx));
+            if let Some(comment) = self
+                .rate_comment
+                .as_ref()
+                .filter(|comment| turn.rateable_message() == Some(comment.message_id.as_str()))
+            {
+                reply = reply.child(self.render_rate_comment(comment, cx));
+            }
         }
         if turn.membership_offer {
             reply = reply.child(self.render_membership_offer(&turn.key, cx));
@@ -648,7 +723,21 @@ impl AssistantView {
         if let Some(message_id) = turn.rateable_message() {
             actions = actions.child(self.render_rating(message_id, turn.rating.as_deref(), cx));
         }
-        if last && turn.user_message_id.is_some() && self.can_resend() {
+        // 失败轮次：一键重试（已落库的替换原提问，未落库的重发同一问题）；其余沿用重新生成。
+        if last && self.retry_available().is_some() {
+            actions = actions.child(
+                action_button(
+                    SharedString::from(format!("assistant-retry-{}", turn.key)),
+                    self.t("assistantRetry", cx),
+                    Icon::new(FluxIcon::RotateCw).size(ext.icon.md),
+                    muted,
+                    cx,
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.retry_failed(window, cx);
+                })),
+            );
+        } else if last && turn.user_message_id.is_some() && self.can_regenerate() {
             actions = actions.child(
                 action_button(
                     SharedString::from(format!("assistant-regenerate-{}", turn.key)),
@@ -746,8 +835,8 @@ impl AssistantView {
                 cx,
             )
             .disabled(self.stale)
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                this.rate(target.clone(), value, server.clone(), cx);
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                this.rate(target.clone(), value, server.clone(), window, cx);
             }))
         };
         h_flex()
@@ -816,17 +905,113 @@ impl AssistantView {
             )
             .into_any_element()
     }
-}
 
-/// 用户气泡下方、本地已知的图片缩略图（靠右，与气泡对齐）。
-fn sent_thumbnails(thumbnails: &[Arc<Image>], cx: &App) -> AnyElement {
-    let theme = active_theme(cx);
-    let side = theme.text_extent(BUBBLE_THUMBNAIL_SIDE);
-    h_flex()
-        .max_w(theme.text_extent(BUBBLE_WIDTH))
-        .flex_wrap()
-        .justify_end()
-        .gap(theme.tokens().spacing.xs)
-        .children(thumbnails.iter().map(|image| thumbnail(image, side, cx)))
-        .into_any_element()
+    /// 可点开大图的缩略图：显示缩略图，点开看原图。
+    pub(crate) fn previewable_thumbnail(
+        &self,
+        id: SharedString,
+        number: usize,
+        image: &LocalImage,
+        side: Pixels,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let target = Arc::clone(&image.full);
+        let label = self.with("assistantImagePreview", &[("n", &number.to_string())], cx);
+        thumbnail(&image.thumbnail, side, cx)
+            .id(id)
+            .cursor_pointer()
+            .tooltip(move |window, cx| {
+                fluxdown_ui_components::tooltip_view(label.clone(), window, cx)
+            })
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                // 焦点回到面板根，Esc 才能关闭预览。
+                window.focus(&this.root_focus, cx);
+                this.open_image_preview(Arc::clone(&target), cx);
+            }))
+    }
+
+    /// 用户气泡下方、本地已知的图片缩略图（靠右，与气泡对齐）。`scope` 区分不同轮次的元素 ID。
+    fn sent_thumbnails(
+        &self,
+        scope: &str,
+        thumbnails: &[LocalImage],
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let theme = active_theme(cx);
+        let side = theme.text_extent(BUBBLE_THUMBNAIL_SIDE);
+        h_flex()
+            .max_w(theme.text_extent(BUBBLE_WIDTH))
+            .flex_wrap()
+            .justify_end()
+            .gap(theme.tokens().spacing.xs)
+            .children(thumbnails.iter().enumerate().map(|(index, image)| {
+                self.previewable_thumbnail(
+                    SharedString::from(format!("assistant-sent-thumb-{scope}-{index}")),
+                    index + 1,
+                    image,
+                    side,
+                    cx,
+                )
+            }))
+            .into_any_element()
+    }
+
+    /// 点踩后就地出现的可选说明：输入框 + 提交 / 跳过；提交后短暂显示感谢。
+    fn render_rate_comment(&self, comment: &RateComment, cx: &Context<Self>) -> AnyElement {
+        let theme = active_theme(cx);
+        let tokens = theme.tokens();
+        if comment.thanks {
+            return meta_text(cx)
+                .child(self.t("assistantRateCommentThanks", cx))
+                .into_any_element();
+        }
+        let chars = self.rate_comment_chars(cx);
+        let over = chars > MAX_RATING_COMMENT_CHARS;
+        let counter = meta_text(cx)
+            .when(over, |this| this.text_color(tokens.colors.destructive))
+            .child(self.with(
+                "assistantRenameCount",
+                &[
+                    ("count", &chars.to_string()),
+                    ("max", &MAX_RATING_COMMENT_CHARS.to_string()),
+                ],
+                cx,
+            ));
+        // 此前的评价请求（不带说明）还在途中时不能提交，免得它后到把云端的说明清空。
+        let can_submit = !self.stale
+            && !comment.busy
+            && !self.rating_busy.contains(&comment.message_id)
+            && rating_comment(&comment.input.read(cx).value()).is_some();
+        let submit = loading_button(
+            "assistant-rate-comment-submit",
+            self.t("assistantRateCommentSubmit", cx),
+            ButtonVariant::Primary,
+            comment.busy,
+            cx,
+        )
+        .disabled(!can_submit)
+        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.submit_rate_comment(cx)));
+        let skip = button(
+            "assistant-rate-comment-skip",
+            self.t("assistantRateCommentSkip", cx),
+            ButtonVariant::Ghost,
+            cx,
+        )
+        .disabled(comment.busy)
+        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.dismiss_rate_comment(cx)));
+        v_flex()
+            .w_full()
+            .gap(tokens.spacing.xs)
+            .child(meta_text(cx).child(self.t("assistantRateCommentPrompt", cx)))
+            .child(Input::new(&comment.input).control(cx).w_full())
+            .child(
+                h_flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(tokens.spacing.sm)
+                    .child(counter)
+                    .child(h_flex().gap(tokens.spacing.xs).child(skip).child(submit)),
+            )
+            .into_any_element()
+    }
 }
